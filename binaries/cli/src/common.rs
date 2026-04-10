@@ -1,10 +1,10 @@
 use crate::{LOCALHOST, formatting::FormatDataflowError, ws_client::WsSession};
-use adora_core::{
+use dora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::ADORA_COORDINATOR_PORT_WS_DEFAULT,
+    topics::DORA_COORDINATOR_PORT_WS_DEFAULT,
 };
-use adora_download::download_file;
-use adora_message::{
+use dora_download::download_file;
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
@@ -65,7 +65,7 @@ macro_rules! expect_reply {
     // Tuple variant: ControlRequestReply::Foo(inner)
     ($reply:expr, $variant:ident ($inner:ident)) => {
         match $reply {
-            adora_message::coordinator_to_cli::ControlRequestReply::$variant($inner) => {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant($inner) => {
                 Ok($inner)
             }
             other => Err(eyre::eyre!(
@@ -77,7 +77,7 @@ macro_rules! expect_reply {
     // Struct variant: ControlRequestReply::Foo { a, b }
     ($reply:expr, $variant:ident { $($field:ident),+ $(,)? }) => {
         match $reply {
-            adora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ } => {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ } => {
                 Ok(($($field),+))
             }
             other => Err(eyre::eyre!(
@@ -103,14 +103,14 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
     }
 
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
-    let active: Vec<adora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
+    let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
             let available: Vec<_> = active.iter().filter_map(|d| d.name.as_deref()).collect();
             if available.is_empty() {
                 bail!(
                     "no dataflow with name `{name}` is running\n\n  \
-                     hint: use `adora list` to see running dataflows"
+                     hint: use `dora list` to see running dataflows"
                 );
             } else {
                 bail!(
@@ -125,7 +125,7 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
     Ok(match &active[..] {
         [] => bail!(
             "no dataflows are running\n\n  \
-             hint: start a dataflow with `adora start` or `adora run`"
+             hint: start a dataflow with `dora start` or `dora run`"
         ),
         [entry] => entry.uuid,
         _ => {
@@ -141,11 +141,11 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
 
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
-    /// Address of the adora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
+    /// Address of the dora coordinator
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "DORA_COORDINATOR_ADDR")]
     pub coordinator_addr: IpAddr,
     /// Port number of the coordinator WebSocket server
-    #[clap(long, value_name = "PORT", default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_WS_DEFAULT, env = "DORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
 }
 
@@ -239,7 +239,7 @@ pub(crate) fn cli_and_daemon_on_same_machine(session: &WsSession) -> eyre::Resul
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {
-    std::env::var("ADORA_WRITE_EVENTS_TO")
+    std::env::var("DORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
 }

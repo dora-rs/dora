@@ -6,7 +6,7 @@ nodes run in parallel (e.g. in the multi-camera dataflow).
 
 import numpy as np
 import pyarrow as pa
-from adora import Node
+from dora import Node
 from ultralytics import YOLO
 
 CAMERA_WIDTH = 640

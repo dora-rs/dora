@@ -1,4 +1,4 @@
-use adora_cli::{build, run as adora_run};
+use dora_cli::{build, run as dora_run};
 use eyre::WrapErr;
 use std::path::Path;
 
@@ -20,7 +20,7 @@ fn main() -> eyre::Result<()> {
         false,
     )?;
 
-    adora_run("dataflow.yml".to_string(), true)?;
+    dora_run("dataflow.yml".to_string(), true)?;
 
     Ok(())
 }

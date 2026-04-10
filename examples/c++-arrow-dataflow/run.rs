@@ -28,30 +28,30 @@ fn main() -> eyre::Result<()> {
 
     std::fs::create_dir_all("build")?;
 
-    build_package("adora-node-api-cxx")?;
+    build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
-        .join("adora-node-api-cxx")
+        .join("dora-node-api-cxx")
         .join("install");
 
     build_cxx_node(
         root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("adora-node-api.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
         ],
         "node_rust_api",
         &[
             "-I",
             &node_cxxbridge.as_os_str().to_str().unwrap(),
             "-l",
-            "adora_node_api_cxx",
+            "dora_node_api_cxx",
             &arrow_config.cflags,
             &arrow_config.libs,
         ],
     )?;
 
-    adora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }

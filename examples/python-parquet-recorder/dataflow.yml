@@ -14,7 +14,7 @@ nodes:
     path: camera.py
     restart_policy: on-failure
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
       recorder_status: recorder/status
     outputs:
       - image

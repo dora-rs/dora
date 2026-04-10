@@ -1,8 +1,8 @@
-# Adora C++ Dataflow Example
+# Dora C++ Dataflow Example
 
-This example shows how to create adora operators and custom nodes with C++.
+This example shows how to create dora operators and custom nodes with C++.
 
-Adora does not provide a C++ API yet, but we can create adapters for either the C or Rust API. The `operator-rust-api` and `node-rust-api` folders implement an example operator and node based on adora's Rust API, using the `cxx` crate for bridging. The `operator-c-api` and `node-c-api` show how to create operators and nodes based on adora's C API. Both approaches work, so you can choose the API that fits your application better.
+Dora does not provide a C++ API yet, but we can create adapters for either the C or Rust API. The `operator-rust-api` and `node-rust-api` folders implement an example operator and node based on dora's Rust API, using the `cxx` crate for bridging. The `operator-c-api` and `node-c-api` show how to create operators and nodes based on dora's C API. Both approaches work, so you can choose the API that fits your application better.
 
 ## Compile and Run
 
@@ -16,13 +16,13 @@ For a manual build, follow these steps:
   cargo build -p cxx-dataflow-example-node-rust-api --release
   cargo build -p cxx-dataflow-example-operator-rust-api --release
   ```
-- Compile the `adora-node-api-c` crate into a static library.
-  - Run `cargo build -p adora-node-api-c --release`
-  - The resulting staticlib is then available under `../../target/release/libadora-node-api-c.a`.
+- Compile the `dora-node-api-c` crate into a static library.
+  - Run `cargo build -p dora-node-api-c --release`
+  - The resulting staticlib is then available under `../../target/release/libdora-node-api-c.a`.
 - Compile the `node-c-api/main.cc` (e.g. using `clang++`) and link the staticlib
   - For example, use the following command:
     ```
-    clang++ node-c-api/main.cc <FLAGS> -std=c++14 -ladora_node_api_c -L ../../target/release --output build/node_c_api
+    clang++ node-c-api/main.cc <FLAGS> -std=c++14 -ldora_node_api_c -L ../../target/release --output build/node_c_api
     ```
   - The `<FLAGS>` depend on the operating system and the libraries that the C node uses. The following flags are required for each OS:
     - Linux: `-lm -lrt -ldl -pthread`
@@ -43,15 +43,15 @@ For a manual build, follow these steps:
     ```
     Omit the `-fPIC` argument on Windows. Replace the `liboperator_c_api.so` name with the shared library standard library prefix/extensions used on your OS, e.g. `.dll` on Windows.
 
-**Build the adora coordinator and runtime:**
+**Build the dora coordinator and runtime:**
 
-- Build the `adora-coordinator` executable using `cargo build -p adora-coordinator --release`
-- Build the `adora-runtime` executable using `cargo build -p adora-runtime --release`
+- Build the `dora-coordinator` executable using `cargo build -p dora-coordinator --release`
+- Build the `dora-runtime` executable using `cargo build -p dora-runtime --release`
 
 **Run the dataflow:**
 
-- Start the `adora-coordinator`, passing the paths to the dataflow file and the `adora-runtime` as arguments:
+- Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
 
   ```
-  ../../target/release/adora-daemon --run-dataflow dataflow.yml ../../target/release/adora-runtime
+  ../../target/release/dora-daemon --run-dataflow dataflow.yml ../../target/release/dora-runtime
   ```

@@ -1,5 +1,5 @@
 ---
-description: "Adora project architecture, conventions, and patterns. Auto-activate when working in this repository. Keywords: adora, dataflow, node, operator, daemon, coordinator, shared memory, zero-copy, Arrow, YAML, DaemonRequest, DaemonReply, AdoraNode, AdoraOperator, DataflowId, NodeId, RuntimeConfig"
+description: "Dora project architecture, conventions, and patterns. Auto-activate when working in this repository. Keywords: dora, dataflow, node, operator, daemon, coordinator, shared memory, zero-copy, Arrow, YAML, DaemonRequest, DaemonReply, DoraNode, DoraOperator, DataflowId, NodeId, RuntimeConfig"
 triggers:
   - dataflow
   - node
@@ -8,12 +8,12 @@ triggers:
   - coordinator
   - shared memory
   - DaemonRequest
-  - AdoraNode
+  - DoraNode
   - RuntimeConfig
   - DataflowId
 ---
 
-# Adora Project Patterns
+# Dora Project Patterns
 
 ## Architecture Overview
 
@@ -53,8 +53,8 @@ Messages are versioned. Version check happens at connection init.
 
 ```rust
 // Node API (apis/rust/node/src/node/mod.rs)
-pub struct AdoraNode { /* ... */ }
-impl AdoraNode {
+pub struct DoraNode { /* ... */ }
+impl DoraNode {
     pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)>;
     pub fn init_from_env() -> NodeResult<(Self, EventStream)>;
     pub fn init_from_node_id(node_id: NodeId) -> NodeResult<(Self, EventStream)>;
@@ -67,8 +67,8 @@ impl AdoraNode {
 }
 
 // Operator API (apis/rust/operator/src/lib.rs)
-pub trait AdoraOperator: Default {
-    fn on_event(&mut self, event: &Event, output_sender: &mut AdoraOutputSender) -> Result<AdoraStatus, String>;
+pub trait DoraOperator: Default {
+    fn on_event(&mut self, event: &Event, output_sender: &mut DoraOutputSender) -> Result<DoraStatus, String>;
 }
 ```
 
@@ -108,8 +108,8 @@ health_check_interval: 5.0           # seconds (global)
 ```
 
 **Virtual inputs** (daemon-generated):
-- `adora/timer/secs/<N>` or `adora/timer/millis/<N>`
-- `adora/logs`, `adora/logs/<level>`, `adora/logs/<level>/<node>`
+- `dora/timer/secs/<N>` or `dora/timer/millis/<N>`
+- `dora/logs`, `dora/logs/<level>`, `dora/logs/<level>/<node>`
 
 ## Communication Patterns
 
@@ -126,7 +126,7 @@ let request_id = node.send_service_request(
 )?;
 
 // Server: pass through request_id from incoming metadata
-if let Some(req_id) = metadata.get(adora_message::metadata::REQUEST_ID) {
+if let Some(req_id) = metadata.get(dora_message::metadata::REQUEST_ID) {
     let mut params = MetadataParameters::default();
     params.insert(REQUEST_ID.to_string(), req_id.clone());
     node.send_service_response("response_output".into(), params, result)?;
@@ -172,23 +172,23 @@ Uses `goal_id` and `goal_status` metadata keys. Supports cancellation.
 - `run_smoke_test(name, yaml, timeout)` -- networked mode (up/start/poll/stop/down)
 - `run_smoke_test_local(name, yaml, stop_after_secs)` -- local mode (run --stop-after)
 
-**Integration test setup**: `setup_integration_testing()` with JSON inputs via `ADORA_TEST_WITH_INPUTS` env var.
+**Integration test setup**: `setup_integration_testing()` with JSON inputs via `DORA_TEST_WITH_INPUTS` env var.
 
 ## Build Commands (Quick Reference)
 
 ```bash
 # Build (exclude Python)
-cargo build --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
+cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test (exclude Python + examples)
-cargo test --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python --exclude adora-cli-api-python --exclude adora-examples
+cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python --exclude dora-cli-api-python --exclude dora-examples
 
 # Single crate
-cargo test -p adora-core
+cargo test -p dora-core
 
 # Pre-commit (mandatory)
 cargo fmt --all -- --check
-cargo clippy --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python -- -D warnings
+cargo clippy --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python -- -D warnings
 ```
 
 ## PyO3 Bindings

@@ -1,5 +1,5 @@
 [package]
-name = "adora-cli-api-python"
+name = "dora-cli-api-python"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,13 +11,13 @@ repository.workspace = true
 
 [features]
 default = ["telemetry"]
-telemetry = ["adora-runtime/telemetry"]
+telemetry = ["dora-runtime/telemetry"]
 
 [dependencies]
-adora-cli = { workspace = true, features = ["python"] }
-adora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
-adora-download = { workspace = true }
-adora-node-api = { workspace = true }
+dora-cli = { workspace = true, features = ["python"] }
+dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
+dora-download = { workspace = true }
+dora-node-api = { workspace = true }
 eyre = { workspace = true }
 pyo3.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
@@ -26,5 +26,5 @@ tokio = { workspace = true, features = ["rt-multi-thread"] }
 pyo3-build-config = "0.28"
 
 [lib]
-name = "adora_cli"
+name = "dora_cli"
 crate-type = ["cdylib"]

@@ -1,4 +1,4 @@
-# Adora v0.1.1+ Sprint Plan
+# Dora v0.1.1+ Sprint Plan
 
 **Based on**: audit-report-2026-03-21.md (combined audit)
 **Created**: 2026-03-23
@@ -45,7 +45,7 @@
 | 12 | Q3 | Tracing `.unwrap()` in `tokio::spawn` -> log + fallback | DONE | `6f2e032` |
 | 13 | Q4 | Python `drain()` error -> log instead of silent empty dict | DONE | `6f2e032` |
 | 14 | DC7 | `AllNodesReady` race: `bail!` -> warn + proceed | DONE | `6f2e032` |
-| 15 | S1 | Log warning when `adora run` uses no auth | DONE | `6f2e032` |
+| 15 | S1 | Log warning when `dora run` uses no auth | DONE | `6f2e032` |
 | 16 | P1 | Wrap `DataMessage` in `Arc` for fan-out | DONE | `425fde8` |
 | 17 | P2 | Wrap `Metadata` in `Arc` for fan-out | DONE | `425fde8` |
 | 18 | S2/P13 | Bounded per-node event channels (capacity 1000) | DONE | `04ac605` |

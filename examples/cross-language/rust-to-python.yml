@@ -3,7 +3,7 @@ nodes:
     build: cargo build -p cross-language-rust-sender
     path: ../../target/debug/cross-language-rust-sender
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - values
     output_types:

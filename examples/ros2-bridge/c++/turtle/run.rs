@@ -18,17 +18,17 @@ fn main() -> eyre::Result<()> {
 
     std::fs::create_dir_all("build")?;
 
-    build_package("adora-node-api-cxx", &["ros2-bridge"])?;
+    build_package("dora-node-api-cxx", &["ros2-bridge"])?;
     let node_cxxbridge = target
         .join("cxxbridge")
-        .join("adora-node-api-cxx")
+        .join("dora-node-api-cxx")
         .join("install");
 
     build_cxx_node(
         &root,
         &[
             &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("adora-node-api.cc"))?,
+            &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/sensor_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/geometry_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/example_interfaces.cc"))?,
@@ -43,12 +43,12 @@ fn main() -> eyre::Result<()> {
             "-I",
             node_cxxbridge.as_os_str().to_str().unwrap(),
             "-l",
-            "adora_node_api_cxx",
+            "dora_node_api_cxx",
         ],
     )?;
 
     let dataflow_task = std::thread::spawn(|| {
-        adora_cli::run("dataflow.yml".to_string(), false).unwrap();
+        dora_cli::run("dataflow.yml".to_string(), false).unwrap();
     });
 
     let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;

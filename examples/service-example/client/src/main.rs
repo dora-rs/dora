@@ -1,16 +1,16 @@
 use std::collections::HashMap;
 
-use adora_node_api::{
-    AdoraNode, Event, MetadataParameters, REQUEST_ID,
+use dora_node_api::{
+    DoraNode, Event, MetadataParameters, REQUEST_ID,
     arrow::array::{Array, Int64Array, StructArray},
     get_string_param,
 };
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    let node_id = std::env::var("ADORA_NODE_ID").unwrap_or_else(|_| "client".into());
+    let node_id = std::env::var("DORA_NODE_ID").unwrap_or_else(|_| "client".into());
     let mut in_flight: HashMap<String, (i64, i64)> = HashMap::new();
     let mut tick_count: i64 = 0;
 

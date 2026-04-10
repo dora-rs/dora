@@ -11,8 +11,8 @@ use crate::{
     formatting::OutputFormat,
     ws_client::WsSession,
 };
-use adora_core::config::InputMapping;
-use adora_message::{
+use dora_core::config::InputMapping;
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, NodeInfo},
     descriptor::Descriptor,
@@ -27,13 +27,13 @@ use eyre::{Context, bail};
 /// Examples:
 ///
 /// Show info for a node:
-///   adora node info camera_node
+///   dora node info camera_node
 ///
 /// Show info for a node in a specific dataflow:
-///   adora node info camera_node --dataflow my-dataflow
+///   dora node info camera_node --dataflow my-dataflow
 ///
 /// Output as JSON:
-///   adora node info camera_node --format json
+///   dora node info camera_node --format json
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Info {
@@ -215,7 +215,7 @@ fn fetch_node_metrics(
 }
 
 fn build_output_info(
-    node_desc: &adora_message::descriptor::Node,
+    node_desc: &dora_message::descriptor::Node,
     descriptor: &Descriptor,
 ) -> Vec<OutputInfo> {
     node_desc
@@ -241,7 +241,7 @@ fn build_output_info(
         .collect()
 }
 
-fn build_input_info(node_desc: &adora_message::descriptor::Node) -> Vec<InputInfo> {
+fn build_input_info(node_desc: &dora_message::descriptor::Node) -> Vec<InputInfo> {
     node_desc
         .inputs
         .iter()
@@ -249,7 +249,7 @@ fn build_input_info(node_desc: &adora_message::descriptor::Node) -> Vec<InputInf
             let source = match &input.mapping {
                 InputMapping::User(user) => format!("{}/{}", user.source, user.output),
                 InputMapping::Timer { interval } => {
-                    format!("adora/timer/millis/{}", interval.as_millis())
+                    format!("dora/timer/millis/{}", interval.as_millis())
                 }
                 mapping @ InputMapping::Logs(_) => mapping.to_string(),
             };

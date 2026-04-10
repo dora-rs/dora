@@ -1,9 +1,9 @@
 # Python API Reference
 
-This document covers the Python APIs for building adora nodes, operators, and dataflows. Install with:
+This document covers the Python APIs for building dora nodes, operators, and dataflows. Install with:
 
 ```bash
-pip install adora-rs
+pip install dora-rs
 ```
 
 ---
@@ -13,7 +13,7 @@ pip install adora-rs
 - [Node API](#node-api)
   - [Node class](#node-class)
   - [Event dictionary](#event-dictionary)
-  - [AdoraStatus enum](#adorastatus-enum)
+  - [DoraStatus enum](#dorastatus-enum)
 - [Operator API](#operator-api)
   - [Operator class (user-defined)](#operator-class-user-defined)
   - [send_output callback](#send_output-callback)
@@ -31,7 +31,7 @@ pip install adora-rs
 ## Node API
 
 ```python
-from adora import Node
+from dora import Node
 ```
 
 The `Node` class is the primary interface for custom nodes. It connects to a running dataflow, receives input events, and sends outputs.
@@ -51,7 +51,7 @@ node = Node(node_id="my-dynamic-node")
 ```
 
 **Parameters:**
-- `node_id` (str, optional) -- Explicit node ID for dynamic nodes. When omitted, the node reads its identity from environment variables set by the adora daemon.
+- `node_id` (str, optional) -- Explicit node ID for dynamic nodes. When omitted, the node reads its identity from environment variables set by the dora daemon.
 
 **Raises:** `RuntimeError` if the node cannot connect to the dataflow.
 
@@ -220,11 +220,11 @@ Python nodes can log using either Python's built-in `logging` module (recommende
 
 **Python `logging` module (auto-bridged):**
 
-When `Node()` is created, it automatically installs a handler that routes Python's `logging` module through the adora daemon. No configuration needed:
+When `Node()` is created, it automatically installs a handler that routes Python's `logging` module through the dora daemon. No configuration needed:
 
 ```python
 import logging
-from adora import Node
+from dora import Node
 
 node = Node()  # Installs the logging bridge
 
@@ -233,7 +233,7 @@ logging.warning("High temperature")      # -> structured "warn" log entry
 logging.debug("Raw bytes: %s", data)     # -> structured "debug" log entry
 ```
 
-These log entries are captured with full metadata (level, message, file path, line number) and work with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+These log entries are captured with full metadata (level, message, file path, line number) and work with `min_log_level` filtering, `send_logs_as` routing, and `dora/logs` subscribers.
 
 > **Note:** Do not call `logging.basicConfig()` before creating `Node()`. The constructor sets up the bridge; calling `basicConfig()` first may install a conflicting handler.
 
@@ -254,7 +254,7 @@ node.log("error", "Sensor timeout", fields={"sensor": "lidar", "retry": "3"})
 - `target` (str, optional) -- Target module or subsystem name.
 - `fields` (dict[str, str], optional) -- Structured key-value context fields.
 
-Works with the daemon's `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+Works with the daemon's `min_log_level` filtering, `send_logs_as` routing, and `dora/logs` subscribers.
 
 ---
 
@@ -351,7 +351,7 @@ print(f"Restart #{node.restart_count()}")
 Merge a ROS2 subscription stream into the node's main event loop. After calling this method, ROS2 messages arrive as events with `kind` set to `"external"`.
 
 ```python
-from adora import Node, Ros2Context, Ros2Node, Ros2NodeOptions, Ros2Topic
+from dora import Node, Ros2Context, Ros2Node, Ros2NodeOptions, Ros2Topic
 
 node = Node()
 ros2_context = Ros2Context()
@@ -365,11 +365,11 @@ for event in node:
     if event["kind"] == "external":
         print("ROS2:", event["value"])
     elif event["type"] == "INPUT":
-        print("Adora:", event["id"])
+        print("Dora:", event["id"])
 ```
 
 **Parameters:**
-- `subscription` (`adora.Ros2Subscription`) -- A ROS2 subscription created via the adora ROS2 bridge.
+- `subscription` (`dora.Ros2Subscription`) -- A ROS2 subscription created via the dora ROS2 bridge.
 
 ---
 
@@ -402,7 +402,7 @@ An input message arrived from another node.
 {
     "type": "INPUT",
     "id": "camera_image",          # input ID as declared in the dataflow YAML
-    "kind": "adora",               # "adora" for dataflow events, "external" for ROS2
+    "kind": "dora",               # "dora" for dataflow events, "external" for ROS2
     "value": <pyarrow.Array>,      # the payload as an Apache Arrow array
     "metadata": {
         "timestamp": datetime,     # UTC-aware datetime.datetime
@@ -426,7 +426,7 @@ An input channel was closed (the upstream node finished).
 {
     "type": "INPUT_CLOSED",
     "id": "camera_image",
-    "kind": "adora",
+    "kind": "dora",
 }
 ```
 
@@ -438,7 +438,7 @@ The dataflow is shutting down.
 {
     "type": "STOP",
     "id": "MANUAL" | "ALL_INPUTS_CLOSED",   # stop cause
-    "kind": "adora",
+    "kind": "dora",
 }
 ```
 
@@ -450,7 +450,7 @@ An error occurred in the runtime.
 {
     "type": "ERROR",
     "error": "description of the error",
-    "kind": "adora",
+    "kind": "dora",
 }
 ```
 
@@ -467,52 +467,52 @@ When using `merge_external_events`, ROS2 messages arrive as:
 
 ---
 
-### AdoraStatus enum
+### DoraStatus enum
 
 Used as the return value from operator `on_event` methods to control the event loop.
 
 ```python
-from adora import AdoraStatus
+from dora import DoraStatus
 ```
 
 | Value | Meaning |
 |-------|---------|
-| `AdoraStatus.CONTINUE` | Continue processing events (value `0`) |
-| `AdoraStatus.STOP` | Stop this operator (value `1`) |
-| `AdoraStatus.STOP_ALL` | Stop the entire dataflow (value `2`) |
+| `DoraStatus.CONTINUE` | Continue processing events (value `0`) |
+| `DoraStatus.STOP` | Stop this operator (value `1`) |
+| `DoraStatus.STOP_ALL` | Stop the entire dataflow (value `2`) |
 
 ---
 
 ## Operator API
 
-Operators run inside the adora runtime process (no separate OS process). They are defined as a Python class named `Operator` with an `on_event` method.
+Operators run inside the dora runtime process (no separate OS process). They are defined as a Python class named `Operator` with an `on_event` method.
 
 ### Operator class (user-defined)
 
 Create a Python file with an `Operator` class:
 
 ```python
-from adora import AdoraStatus
+from dora import DoraStatus
 
 class Operator:
     def __init__(self):
         # Initialize state here
         self.count = 0
 
-    def on_event(self, adora_event, send_output) -> AdoraStatus:
-        if adora_event["type"] == "INPUT":
+    def on_event(self, dora_event, send_output) -> DoraStatus:
+        if dora_event["type"] == "INPUT":
             self.count += 1
             # Process the input and optionally send output
-            send_output("result", b"processed", adora_event["metadata"])
-        return AdoraStatus.CONTINUE
+            send_output("result", b"processed", dora_event["metadata"])
+        return DoraStatus.CONTINUE
 ```
 
 **Methods:**
 - `__init__(self)` -- Called once when the operator is loaded. Initialize any state or models here.
-- `on_event(self, adora_event, send_output) -> AdoraStatus` -- Called for every incoming event. Must return an `AdoraStatus` value.
+- `on_event(self, dora_event, send_output) -> DoraStatus` -- Called for every incoming event. Must return an `DoraStatus` value.
 
 **Parameters of `on_event`:**
-- `adora_event` (dict) -- An [event dictionary](#event-dictionary).
+- `dora_event` (dict) -- An [event dictionary](#event-dictionary).
 - `send_output` (callable) -- Callback to send output data (see below).
 
 The runtime also sets `self.dataflow_descriptor` on the operator instance with the parsed dataflow YAML as a dictionary.
@@ -528,20 +528,20 @@ send_output(output_id, data, metadata=None)
 **Parameters:**
 - `output_id` (str) -- The output name as declared in the dataflow YAML.
 - `data` (bytes | pyarrow.Array) -- The payload.
-- `metadata` (dict, optional) -- Metadata to attach. Pass `adora_event["metadata"]` to propagate tracing context.
+- `metadata` (dict, optional) -- Metadata to attach. Pass `dora_event["metadata"]` to propagate tracing context.
 
 **Example:**
 
 ```python
 import pyarrow as pa
-from adora import AdoraStatus
+from dora import DoraStatus
 
 class Operator:
-    def on_event(self, adora_event, send_output) -> AdoraStatus:
-        if adora_event["type"] == "INPUT":
+    def on_event(self, dora_event, send_output) -> DoraStatus:
+        if dora_event["type"] == "INPUT":
             result = pa.array([42], type=pa.int64())
-            send_output("output", result, adora_event["metadata"])
-        return AdoraStatus.CONTINUE
+            send_output("output", result, dora_event["metadata"])
+        return DoraStatus.CONTINUE
 ```
 
 ---
@@ -549,14 +549,14 @@ class Operator:
 ## DataflowBuilder
 
 ```python
-from adora.builder import DataflowBuilder, Node, Operator, Output
+from dora.builder import DataflowBuilder, Node, Operator, Output
 ```
 
 Build dataflow YAML programmatically in Python.
 
 ### DataflowBuilder class
 
-#### `__init__(name="adora-dataflow")`
+#### `__init__(name="dora-dataflow")`
 
 Create a new dataflow builder.
 
@@ -565,7 +565,7 @@ flow = DataflowBuilder("my-robot")
 ```
 
 **Parameters:**
-- `name` (str, optional) -- Name of the dataflow. Defaults to `"adora-dataflow"`.
+- `name` (str, optional) -- Name of the dataflow. Defaults to `"dora-dataflow"`.
 
 #### `add_node(id, **kwargs) -> Node`
 
@@ -681,7 +681,7 @@ output = sender.add_output("data")
 receiver.add_input("data", output)
 
 # Using a string reference
-receiver.add_input("tick", "adora/timer/millis/100")
+receiver.add_input("tick", "dora/timer/millis/100")
 
 # With a custom queue size
 receiver.add_input("images", camera_output, queue_size=2)
@@ -746,7 +746,7 @@ Return the dictionary representation for YAML serialization.
 ## CUDA Module
 
 ```python
-from adora.cuda import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora.cuda import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
 ```
 
 Utilities for zero-copy GPU tensor sharing between nodes via CUDA IPC. Requires PyTorch with CUDA and Numba with CUDA support.
@@ -758,8 +758,8 @@ Convert a PyTorch CUDA tensor into an Arrow array containing the CUDA IPC handle
 ```python
 import torch
 import pyarrow as pa
-from adora import Node
-from adora.cuda import torch_to_ipc_buffer
+from dora import Node
+from dora.cuda import torch_to_ipc_buffer
 
 node = Node()
 tensor = torch.randn(1024, 768, device="cuda")
@@ -779,7 +779,7 @@ node.send_output("gpu_data", ipc_buffer, metadata)
 Reconstruct a CUDA IPC handle from a received Arrow buffer and metadata.
 
 ```python
-from adora.cuda import ipc_buffer_to_ipc_handle
+from dora.cuda import ipc_buffer_to_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
@@ -798,7 +798,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 Open a CUDA IPC handle and yield a PyTorch tensor. Use as a context manager to ensure proper cleanup.
 
 ```python
-from adora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
@@ -826,7 +826,7 @@ A complete node that receives images, processes them, and sends results:
 import logging
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 
 def main():
@@ -863,7 +863,7 @@ if __name__ == "__main__":
 Run with:
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ---
@@ -876,7 +876,7 @@ Build a dataflow programmatically instead of writing YAML by hand:
 #!/usr/bin/env python3
 """Build a simple sender -> receiver dataflow."""
 
-from adora.builder import DataflowBuilder, Operator
+from dora.builder import DataflowBuilder, Operator
 
 flow = DataflowBuilder("example-flow")
 
@@ -893,7 +893,7 @@ receiver.add_input("message", tick_output)
 # Add a node with a timer input
 timed_node = flow.add_node("periodic")
 timed_node.path("periodic.py")
-timed_node.add_input("tick", "adora/timer/millis/100")
+timed_node.add_input("tick", "dora/timer/millis/100")
 
 # Add a node with an operator
 runtime_node = flow.add_node("runtime-node")

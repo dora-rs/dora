@@ -10,7 +10,7 @@ import time
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from adora import Node
+from dora import Node
 
 LOG_DIR = os.getenv("LOG_DIR", "logs")
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", 30))

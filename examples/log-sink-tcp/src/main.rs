@@ -1,4 +1,4 @@
-use adora_node_api::{AdoraNode, Event};
+use dora_node_api::{DoraNode, Event};
 use eyre::Result;
 use std::{
     env,
@@ -11,7 +11,7 @@ use std::{
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 
 fn main() -> Result<()> {
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
     // Default matches dataflow.yml; override via SINK_ADDR env var.
     let raw_addr = env::var("SINK_ADDR").unwrap_or_else(|_| "127.0.0.1:9876".to_string());
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
                 metadata: _,
                 data,
             } => {
-                let log = match adora_log_utils::parse_log_from_arrow(&data) {
+                let log = match dora_log_utils::parse_log_from_arrow(&data) {
                     Ok(log) => log,
                     Err(e) => {
                         eprintln!("failed to parse log entry: {e}");
@@ -37,7 +37,7 @@ fn main() -> Result<()> {
                     }
                 };
 
-                let line = format!("{}\n", adora_log_utils::format_json(&log));
+                let line = format!("{}\n", dora_log_utils::format_json(&log));
 
                 if !try_write(&mut stream, line.as_bytes()) {
                     // Throttle reconnects to avoid SYN-flooding

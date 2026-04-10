@@ -8,7 +8,7 @@ use crate::{
     common::{CoordinatorOptions, connect_to_coordinator, query_running_dataflows},
     ws_client::WsSession,
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };
@@ -22,10 +22,10 @@ use eyre::Context;
 /// Examples:
 ///
 /// Run diagnostics:
-///   adora doctor
+///   dora doctor
 ///
 /// Include dataflow validation:
-///   adora doctor --dataflow dataflow.yml
+///   dora doctor --dataflow dataflow.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Doctor {
@@ -239,7 +239,7 @@ fn check_daemon(session: &WsSession) -> eyre::Result<bool> {
 
 fn check_connected_machines(
     session: &WsSession,
-) -> eyre::Result<Vec<adora_message::coordinator_to_cli::DaemonInfo>> {
+) -> eyre::Result<Vec<dora_message::coordinator_to_cli::DaemonInfo>> {
     let reply_raw = session
         .request(&serde_json::to_vec(&ControlRequest::ConnectedMachines).unwrap())
         .wrap_err("failed to send ConnectedMachines")?;
@@ -269,7 +269,7 @@ fn check_node_health(session: &WsSession) -> eyre::Result<(usize, usize, usize, 
 
     for node in &nodes {
         if let Some(metrics) = &node.metrics {
-            use adora_message::daemon_to_coordinator::NodeStatus;
+            use dora_message::daemon_to_coordinator::NodeStatus;
             match metrics.status {
                 NodeStatus::Running => healthy += 1,
                 NodeStatus::Restarting => healthy += 1,
@@ -285,7 +285,7 @@ fn check_node_health(session: &WsSession) -> eyre::Result<(usize, usize, usize, 
 }
 
 fn validate_dataflow(path: &std::path::Path) -> eyre::Result<()> {
-    use adora_core::descriptor::{Descriptor, DescriptorExt};
+    use dora_core::descriptor::{Descriptor, DescriptorExt};
     let working_dir = path
         .canonicalize()
         .context("failed to canonicalize dataflow path")?

@@ -1,6 +1,6 @@
 # Communication Patterns
 
-Adora is a dataflow framework based on pub/sub message passing. On top of
+Dora is a dataflow framework based on pub/sub message passing. On top of
 basic topics, the framework supports **service** (request/reply), **action**
 (goal/feedback/result), and **streaming** (session/segment/chunk) patterns
 using well-known metadata keys. No changes to the daemon, coordinator, or
@@ -33,7 +33,7 @@ A client sends a request and expects exactly one response, correlated by a
 
 | Key | Constant | Description |
 |-----|----------|-------------|
-| `request_id` | `adora_node_api::REQUEST_ID` | UUID v7 correlating request and response |
+| `request_id` | `dora_node_api::REQUEST_ID` | UUID v7 correlating request and response |
 
 ### YAML
 
@@ -41,7 +41,7 @@ A client sends a request and expects exactly one response, correlated by a
 nodes:
   - id: client
     inputs:
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
       response: server/response
     outputs:
       - request
@@ -106,8 +106,8 @@ Actions support cancellation.
 
 | Key | Constant | Description |
 |-----|----------|-------------|
-| `goal_id` | `adora_node_api::GOAL_ID` | UUID v7 identifying the goal |
-| `goal_status` | `adora_node_api::GOAL_STATUS` | Final status of the goal |
+| `goal_id` | `dora_node_api::GOAL_ID` | UUID v7 identifying the goal |
+| `goal_status` | `dora_node_api::GOAL_STATUS` | Final status of the goal |
 
 Goal status values:
 
@@ -123,7 +123,7 @@ Goal status values:
 nodes:
   - id: client
     inputs:
-      tick: adora/timer/millis/2000
+      tick: dora/timer/millis/2000
       feedback: server/feedback
       result: server/result
     outputs:
@@ -152,7 +152,7 @@ to wait for a terminal result (`goal_status` ∈ {`succeeded`, `aborted`,
 `canceled`}) for a specific `goal_id`:
 
 ```rust
-let goal_id = AdoraNode::new_request_id();
+let goal_id = DoraNode::new_request_id();
 let mut params = MetadataParameters::default();
 params.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
 node.send_output("goal".into(), params, data)?;
@@ -219,7 +219,7 @@ nodes:
 ### Node API
 
 ```rust
-use adora_node_api::{StreamSegment, AdoraNode};
+use dora_node_api::{StreamSegment, DoraNode};
 
 let mut seg = StreamSegment::new();
 

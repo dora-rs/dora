@@ -3,13 +3,13 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::bail;
 
 /// Disconnect two nodes in a running dataflow (remove a mapping).
 ///
 /// Example:
-///   adora node disconnect demo sender/value filter/input
+///   dora node disconnect demo sender/value filter/input
 #[derive(Debug, clap::Args)]
 pub struct Disconnect {
     #[clap(flatten)]

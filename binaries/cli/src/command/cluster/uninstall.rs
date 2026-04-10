@@ -7,13 +7,13 @@ use crate::command::{Executable, default_tracing};
 use super::config::ClusterConfig;
 use super::{print_summary, record_ssh_result, run_ssh, ssh_target};
 
-/// Uninstall adora-daemon systemd services from each machine.
+/// Uninstall dora-daemon systemd services from each machine.
 ///
 /// SSH-es into each machine, stops, disables, and removes the systemd unit.
 ///
 /// Examples:
 ///
-///   adora cluster uninstall cluster.yml
+///   dora cluster uninstall cluster.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Uninstall {
@@ -31,7 +31,7 @@ impl Executable for Uninstall {
 
         for machine in &config.machines {
             let target = ssh_target(machine);
-            let service_name = format!("adora-daemon-{}", machine.id);
+            let service_name = format!("dora-daemon-{}", machine.id);
 
             let cmd = format!(
                 "sudo systemctl stop {service_name} 2>/dev/null; \

@@ -1,20 +1,20 @@
 """Backward-compatible shim: ``from dora import Node`` works for dora-hub nodes.
 
-This package re-exports the adora Python API under the ``dora`` namespace so
+This package re-exports the dora Python API under the ``dora`` namespace so
 that existing dora-hub nodes and operators work without modification.
 """
 
-from adora import (  # noqa: F401
-    AdoraStatus,
+from dora import (  # noqa: F401
+    DoraStatus,
     Node,
     build,
     run,
 )
 
-# ROS2 types are optional — adora may be built without ROS2 support.
+# ROS2 types are optional — dora may be built without ROS2 support.
 # Wrap in try/except so `from dora import Node` works for everyone.
 try:
-    from adora import (  # noqa: F401
+    from dora import (  # noqa: F401
         Ros2Context,
         Ros2Durability,
         Ros2Liveliness,
@@ -28,11 +28,11 @@ try:
 except ImportError:
     pass
 
-# start_runtime is provided by the adora-cli package, not the node API.
+# start_runtime is provided by the dora-cli package, not the node API.
 try:
-    from adora import start_runtime  # noqa: F401
+    from dora import start_runtime  # noqa: F401
 except ImportError:
     pass
 
 # Backward-compatible alias used by dora-hub operators.
-DoraStatus = AdoraStatus
+DoraStatus = DoraStatus

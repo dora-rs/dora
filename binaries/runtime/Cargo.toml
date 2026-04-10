@@ -1,5 +1,5 @@
 [package]
-name = "adora-runtime"
+name = "dora-runtime"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,13 +12,13 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-adora-node-api = { workspace = true, default-features = false }
-adora-operator-api-python = { workspace = true, optional = true }
-adora-operator-api-types = { workspace = true }
-adora-core = { workspace = true }
-adora-tracing = { workspace = true, optional = true }
-adora-metrics = { workspace = true, optional = true }
-adora-message = { workspace = true }
+dora-node-api = { workspace = true, default-features = false }
+dora-operator-api-python = { workspace = true, optional = true }
+dora-operator-api-types = { workspace = true }
+dora-core = { workspace = true }
+dora-tracing = { workspace = true, optional = true }
+dora-metrics = { workspace = true, optional = true }
+dora-message = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true }
 futures-concurrency = "7.1.0"
@@ -29,7 +29,7 @@ tokio-stream = "0.1.8"
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html
 pyo3 = { workspace = true, features = ["eyre", "abi3-py37"], optional = true }
 tracing = { workspace = true }
-adora-download = { workspace = true }
+dora-download = { workspace = true }
 flume = { workspace = true }
 tracing-opentelemetry = { version = "0.32.0", optional = true }
 pythonize = { workspace = true, optional = true }
@@ -38,7 +38,7 @@ aligned-vec = "0.5.0"
 
 [features]
 default = ["tracing", "metrics"]
-tracing = ["adora-tracing"]
+tracing = ["dora-tracing"]
 telemetry = ["tracing", "tracing-opentelemetry"]
-metrics = ["adora-metrics"]
-python = ["pyo3", "adora-operator-api-python", "pythonize", "arrow/pyarrow"]
+metrics = ["dora-metrics"]
+python = ["pyo3", "dora-operator-api-python", "pythonize", "arrow/pyarrow"]

@@ -13,7 +13,7 @@ Both clients use the same binary -- the YAML wires them as separate nodes with d
 
 ## Nodes
 
-**service-client-1 / service-client-2** (Rust, same binary) -- Sends requests at 500ms / 700ms intervals containing a `StructArray` with fields `a` (sequential counter) and `b` (counter + 10). Uses `node.send_service_request()` which automatically generates a `REQUEST_ID` and embeds it in metadata. Tracks pending requests by ID in a HashMap and matches responses. Logs are prefixed with the node ID (`ADORA_NODE_ID`) to distinguish output.
+**service-client-1 / service-client-2** (Rust, same binary) -- Sends requests at 500ms / 700ms intervals containing a `StructArray` with fields `a` (sequential counter) and `b` (counter + 10). Uses `node.send_service_request()` which automatically generates a `REQUEST_ID` and embeds it in metadata. Tracks pending requests by ID in a HashMap and matches responses. Logs are prefixed with the node ID (`DORA_NODE_ID`) to distinguish output.
 
 **service-server** (Rust) -- Receives requests from both clients (via separate named inputs), extracts fields `a` and `b`, computes `sum = a + b`, and returns a response `StructArray` with the `sum` field. Uses `node.send_service_response()` which propagates the `REQUEST_ID` from the incoming metadata.
 
@@ -31,16 +31,16 @@ See [docs/patterns.md](../../docs/patterns.md#2-service-requestreply) for the fu
 
 ```bash
 cargo build -p service-example-client -p service-example-server
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Or in distributed mode:
 
 ```bash
-adora up
-adora start dataflow.yml --attach
+dora up
+dora start dataflow.yml --attach
 # Ctrl+C to detach, then:
-adora stop --all && adora down
+dora stop --all && dora down
 ```
 
 ## What This Demonstrates

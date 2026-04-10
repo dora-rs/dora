@@ -6,8 +6,8 @@ use std::{
 
 use crate::common::resolve_dataflow_identifier_interactive;
 use crate::ws_client::WsSession;
-use adora_core::{config::InputMapping, descriptor::Descriptor};
-use adora_message::{
+use dora_core::{config::InputMapping, descriptor::Descriptor};
+use dora_message::{
     DataflowId,
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,

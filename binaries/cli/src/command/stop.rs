@@ -4,7 +4,7 @@ use crate::common::{
     send_control_request,
 };
 use crate::ws_client::WsSession;
-use adora_message::cli_to_coordinator::ControlRequest;
+use dora_message::cli_to_coordinator::ControlRequest;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
@@ -64,12 +64,12 @@ fn stop_dataflow_interactive(
     let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
-        println!("No dataflows are running. Use `adora list` to check dataflow status.");
+        println!("No dataflows are running. Use `dora list` to check dataflow status.");
     } else if active.len() == 1 {
         stop_dataflow(active[0].uuid, grace_duration, force, session)?;
     } else if !std::io::stdin().is_terminal() {
         bail!(
-            "Multiple dataflows running. Specify one:\n  adora stop <UUID>\n  adora stop --name <NAME>"
+            "Multiple dataflows running. Specify one:\n  dora stop <UUID>\n  dora stop --name <NAME>"
         );
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;

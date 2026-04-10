@@ -4,7 +4,7 @@ nodes:
     path: ./send_data.py
     inputs:
       tick:
-        source: adora/timer/millis/10
+        source: dora/timer/millis/10
         queue_size: 100
     outputs:
       - data

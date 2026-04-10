@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-pub use adora_message::{config, uhlc};
+pub use dora_message::{config, uhlc};
 
 #[cfg(feature = "build")]
 pub mod build;
@@ -31,7 +31,7 @@ pub mod types;
 ///
 /// ```
 /// use std::path::Path;
-/// use adora_core::adjust_shared_library_path;
+/// use dora_core::adjust_shared_library_path;
 ///
 /// let adjusted = adjust_shared_library_path(Path::new("mylib")).unwrap();
 /// let expected = format!("{}mylib{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);

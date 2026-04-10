@@ -256,7 +256,7 @@ mod tests {
             // f64 strategy: only generate values that are guaranteed to
             // round-trip exactly through JSON. Arbitrary f64s near the edge
             // of precision (e.g., 1e120) lose 1 ULP through the string
-            // representation; that's a property of JSON itself, not adora.
+            // representation; that's a property of JSON itself, not dora.
             // We restrict to values within the i32 range cast to f64, which
             // are always representable losslessly.
             (any::<i32>()).prop_map(|n| serde_json::Number::from_f64(f64::from(n))

@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, io::Write};
 
-use adora_core::config::InputMapping;
-use adora_message::id::{DataId, NodeId};
 use clap::Args;
+use dora_core::config::InputMapping;
+use dora_message::id::{DataId, NodeId};
 use serde::Serialize;
 use tabwriter::TabWriter;
 
@@ -17,10 +17,10 @@ use crate::{
 /// Examples:
 ///
 /// List topics in a dataflow:
-///   adora topic list -d my-dataflow
+///   dora topic list -d my-dataflow
 ///
 /// List topics as JSON:
-///   adora topic list -d my-dataflow --format json
+///   dora topic list -d my-dataflow --format json
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct List {

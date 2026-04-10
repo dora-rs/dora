@@ -1,10 +1,10 @@
 use crate::{DaemonNodeEvent, Event};
-use adora_core::{
+use dora_core::{
     config::{LocalCommunicationConfig, NodeId},
     topics::LOCALHOST,
     uhlc,
 };
-use adora_message::{
+use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},

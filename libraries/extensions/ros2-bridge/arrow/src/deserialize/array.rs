@@ -1,5 +1,5 @@
-use adora_ros2_bridge_msg_gen::types::sequences;
 use arrow::array::ArrayData;
+use dora_ros2_bridge_msg_gen::types::sequences;
 
 use crate::TypeInfo;
 

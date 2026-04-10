@@ -2,7 +2,7 @@ use aligned_vec::AVec;
 use arrow_schema::DataType;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
-use adora_message::{
+use dora_message::{
     common::DataMessage,
     id::DataId,
     metadata::{ArrowTypeInfo, Metadata},

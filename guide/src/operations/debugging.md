@@ -1,6 +1,6 @@
 # Debugging and Observability Guide
 
-This guide covers how to debug, record, replay, and monitor adora dataflows. It is written for new users who want to understand what went wrong in a dataflow, measure performance, or reproduce issues offline.
+This guide covers how to debug, record, replay, and monitor dora dataflows. It is written for new users who want to understand what went wrong in a dataflow, measure performance, or reproduce issues offline.
 
 ---
 
@@ -47,8 +47,8 @@ Before using topic inspection commands (`topic echo`, `topic hz`, `topic info`),
 **Option 1: CLI flag (recommended)**
 
 ```bash
-adora start dataflow.yml --debug
-adora run dataflow.yml --debug
+dora start dataflow.yml --debug
+dora run dataflow.yml --debug
 ```
 
 **Option 2: YAML descriptor**
@@ -70,45 +70,45 @@ When something goes wrong, follow this sequence:
 
 ```bash
 # 1. Run full environment diagnosis
-adora doctor --dataflow dataflow.yml
+dora doctor --dataflow dataflow.yml
 
 # 2. What dataflows are active?
-adora list
+dora list
 
 # 3. Inspect the problem node
-adora node info -d my-dataflow problem-node
+dora node info -d my-dataflow problem-node
 
 # 4. Check node resource usage
-adora top
+dora top
 
 # 5. Stream logs from the problem node
-adora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow problem-node --follow --level debug
 
 # 6. Is the node producing output?
-adora topic echo -d my-dataflow problem-node/output
+dora topic echo -d my-dataflow problem-node/output
 
 # 7. Inject test data
-adora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
+dora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
 
 # 8. Is it publishing at the expected rate?
-adora topic hz -d my-dataflow --window 5
+dora topic hz -d my-dataflow --window 5
 
 # 9. Check/modify runtime parameters
-adora param list -d my-dataflow problem-node
-adora param set -d my-dataflow problem-node debug_level 2
+dora param list -d my-dataflow problem-node
+dora param set -d my-dataflow problem-node debug_level 2
 
 # 10. Restart a misbehaving node (without stopping the dataflow)
-adora node restart -d my-dataflow problem-node
+dora node restart -d my-dataflow problem-node
 
 # 11. View coordinator traces (no external infra needed)
-adora trace list
-adora trace view <trace-id-prefix>
+dora trace list
+dora trace view <trace-id-prefix>
 
 # 12. Visualize the dataflow graph
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 
 # 13. Record for offline analysis
-adora record dataflow.yml -o debug-capture.adorec
+dora record dataflow.yml -o debug-capture.adorec
 ```
 
 ---
@@ -121,13 +121,13 @@ Record captures live dataflow messages to a file. Replay substitutes source node
 
 ```bash
 # Record all topics (default output: recording_{timestamp}.adorec)
-adora record dataflow.yml
+dora record dataflow.yml
 
 # Specify output file
-adora record dataflow.yml -o my-capture.adorec
+dora record dataflow.yml -o my-capture.adorec
 ```
 
-This injects a hidden `__adora_record__` node into the dataflow that subscribes to all node outputs and writes them to an `.adorec` file. The record node binary (`adora-record-node`) is auto-built on first use.
+This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to an `.adorec` file. The record node binary (`dora-record-node`) is auto-built on first use.
 
 The recording runs until you press Ctrl-C or the dataflow stops.
 
@@ -135,10 +135,10 @@ The recording runs until you press Ctrl-C or the dataflow stops.
 
 ```bash
 # Only record camera and lidar
-adora record dataflow.yml --topics sensor/image,lidar/points
+dora record dataflow.yml --topics sensor/image,lidar/points
 ```
 
-Topic names use the format `node_id/output_id`. Available topics can be discovered with `adora topic list -d <dataflow>`.
+Topic names use the format `node_id/output_id`. Available topics can be discovered with `dora topic list -d <dataflow>`.
 
 ### Proxy Recording (Remote / Diskless)
 
@@ -146,17 +146,17 @@ When the target machine has no local disk or you want to record on your local ma
 
 ```bash
 # Start the dataflow first (detached)
-adora start dataflow.yml --detach
+dora start dataflow.yml --detach
 
 # Record via WebSocket proxy -- data streams through coordinator to CLI
-adora record dataflow.yml --proxy -o capture.adorec
+dora record dataflow.yml --proxy -o capture.adorec
 
 # Record specific topics via proxy
-adora record dataflow.yml --proxy --topics sensor/image,lidar/points
+dora record dataflow.yml --proxy --topics sensor/image,lidar/points
 ```
 
 How proxy mode works:
-1. The dataflow must already be running (`adora start --detach`)
+1. The dataflow must already be running (`dora start --detach`)
 2. The CLI connects to the coordinator via WebSocket
 3. The coordinator subscribes to Zenoh on the CLI's behalf
 4. Message data streams through WebSocket binary frames to the CLI
@@ -178,22 +178,22 @@ This requires `publish_all_messages_to_zenoh: true` in the descriptor.
 
 ```bash
 # Replay at original speed
-adora replay recording.adorec
+dora replay recording.adorec
 
 # Replay at 2x speed
-adora replay recording.adorec --speed 2.0
+dora replay recording.adorec --speed 2.0
 
 # Replay as fast as possible (speed 0)
-adora replay recording.adorec --speed 0
+dora replay recording.adorec --speed 0
 ```
 
 Replay works by:
 1. Reading the `.adorec` file header to get the original dataflow descriptor
 2. Identifying which nodes produced the recorded data
-3. Replacing those source nodes with `adora-replay-node` instances
+3. Replacing those source nodes with `dora-replay-node` instances
 4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
 
-The replay node binary (`adora-replay-node`) is auto-built on first use.
+The replay node binary (`dora-replay-node`) is auto-built on first use.
 
 ### Replay Options
 
@@ -210,10 +210,10 @@ Replace only specific source nodes while keeping others live:
 
 ```bash
 # Only replace the sensor node, keep camera live
-adora replay recording.adorec --replace sensor
+dora replay recording.adorec --replace sensor
 
 # Replace sensor and lidar, keep everything else live
-adora replay recording.adorec --replace sensor,lidar
+dora replay recording.adorec --replace sensor,lidar
 ```
 
 This is useful when you want to debug a specific processing pipeline with known input data while keeping other parts of the system live.
@@ -224,10 +224,10 @@ Both record and replay support `--output-yaml` to see the modified descriptor wi
 
 ```bash
 # See what the record-injected descriptor looks like
-adora record dataflow.yml --output-yaml record-modified.yml
+dora record dataflow.yml --output-yaml record-modified.yml
 
 # See what the replay-modified descriptor looks like
-adora replay recording.adorec --output-yaml replay-modified.yml
+dora replay recording.adorec --output-yaml replay-modified.yml
 ```
 
 ### Recording File Format
@@ -269,10 +269,10 @@ The `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` bincode
 Get detailed information about a specific node including its status, inputs, outputs, metrics, and restart count:
 
 ```bash
-adora node info -d my-dataflow camera
+dora node info -d my-dataflow camera
 
 # JSON output
-adora node info -d my-dataflow camera --format json
+dora node info -d my-dataflow camera --format json
 ```
 
 ### Node Restart
@@ -281,10 +281,10 @@ Restart a single node without stopping the entire dataflow. Useful for recoverin
 
 ```bash
 # Restart with default grace period
-adora node restart -d my-dataflow camera
+dora node restart -d my-dataflow camera
 
 # Restart with custom grace period
-adora node restart -d my-dataflow camera --grace 10s
+dora node restart -d my-dataflow camera --grace 10s
 ```
 
 The daemon sends a stop event, waits for the grace period, then respawns the node process.
@@ -294,10 +294,10 @@ The daemon sends a stop event, waits for the grace period, then respawns the nod
 Stop a single node without stopping the entire dataflow:
 
 ```bash
-adora node stop -d my-dataflow camera
+dora node stop -d my-dataflow camera
 
 # With custom grace period
-adora node stop -d my-dataflow camera --grace 5s
+dora node stop -d my-dataflow camera --grace 5s
 ```
 
 ---
@@ -310,10 +310,10 @@ Topic inspection commands subscribe to live dataflow messages via the coordinato
 
 ```bash
 # List all topics in a running dataflow
-adora topic list -d my-dataflow
+dora topic list -d my-dataflow
 
 # JSON output
-adora topic list -d my-dataflow --format json
+dora topic list -d my-dataflow --format json
 ```
 
 Shows each output, which node publishes it, and which nodes subscribe to it. This command reads from the descriptor and does **not** require `publish_all_messages_to_zenoh`.
@@ -324,16 +324,16 @@ Stream live topic data to the terminal:
 
 ```bash
 # Echo a single topic
-adora topic echo -d my-dataflow camera_node/image
+dora topic echo -d my-dataflow camera_node/image
 
 # Echo multiple topics
-adora topic echo -d my-dataflow robot1/pose robot2/vel
+dora topic echo -d my-dataflow robot1/pose robot2/vel
 
 # JSON output (useful for piping to jq or other tools)
-adora topic echo -d my-dataflow robot1/pose --format json
+dora topic echo -d my-dataflow robot1/pose --format json
 
 # Echo all topics
-adora topic echo -d my-dataflow
+dora topic echo -d my-dataflow
 ```
 
 Each line shows the topic name, Arrow data content, and metadata parameters. Use `--format json` for machine-readable output:
@@ -348,10 +348,10 @@ Interactive TUI showing per-topic publish frequency:
 
 ```bash
 # All topics with 10-second sliding window
-adora topic hz -d my-dataflow --window 10
+dora topic hz -d my-dataflow --window 10
 
 # Specific topics with 5-second window
-adora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 ```
 
 The TUI displays:
@@ -368,13 +368,13 @@ Inject data into a running dataflow for testing. Requires `publish_all_messages_
 
 ```bash
 # Publish a single Arrow array
-adora topic pub -d my-dataflow sensor/threshold '[42]'
+dora topic pub -d my-dataflow sensor/threshold '[42]'
 
 # Publish from a JSON file
-adora topic pub -d my-dataflow sensor/config --file test-config.json
+dora topic pub -d my-dataflow sensor/config --file test-config.json
 
 # Publish multiple messages
-adora topic pub -d my-dataflow sensor/trigger '[1]' --count 10
+dora topic pub -d my-dataflow sensor/trigger '[1]' --count 10
 ```
 
 This is useful for:
@@ -388,10 +388,10 @@ One-shot statistics collection:
 
 ```bash
 # Collect stats for 5 seconds (default)
-adora topic info -d my-dataflow camera_node/image
+dora topic info -d my-dataflow camera_node/image
 
 # Collect for 10 seconds
-adora topic info -d my-dataflow camera_node/image --duration 10
+dora topic info -d my-dataflow camera_node/image --duration 10
 ```
 
 Reports:
@@ -409,17 +409,17 @@ Runtime parameters let you read and modify node configuration while a dataflow i
 
 ```bash
 # List all parameters for a node
-adora param list -d my-dataflow detector
+dora param list -d my-dataflow detector
 
 # Get a single parameter
-adora param get -d my-dataflow detector confidence
+dora param get -d my-dataflow detector confidence
 
 # Set a parameter (value is JSON)
-adora param set -d my-dataflow detector confidence 0.8
-adora param set -d my-dataflow detector config '{"nms": 0.5, "classes": ["car", "person"]}'
+dora param set -d my-dataflow detector confidence 0.8
+dora param set -d my-dataflow detector config '{"nms": 0.5, "classes": ["car", "person"]}'
 
 # Delete a parameter
-adora param delete -d my-dataflow detector confidence
+dora param delete -d my-dataflow detector confidence
 ```
 
 Parameters are persisted in the coordinator store (in-memory or redb). When a node is running, `param set` also forwards the new value to the node's daemon. Nodes can read parameters through the node event stream.
@@ -430,14 +430,14 @@ Parameters are persisted in the coordinator store (in-memory or redb). When a no
 
 ## Environment Diagnosis
 
-`adora doctor` performs a comprehensive health check of your environment:
+`dora doctor` performs a comprehensive health check of your environment:
 
 ```bash
 # Basic diagnosis
-adora doctor
+dora doctor
 
 # Diagnosis + dataflow validation
-adora doctor --dataflow dataflow.yml
+dora doctor --dataflow dataflow.yml
 ```
 
 Checks performed:
@@ -452,12 +452,12 @@ Use this as a first step when debugging any issue, or in CI to validate the envi
 
 ## Trace Inspection
 
-The coordinator captures tracing spans in-memory from `adora_coordinator` and `adora_core` crates (up to 4096 spans in a ring buffer). You can view these traces without any external tracing infrastructure (no Jaeger, Tempo, etc. required).
+The coordinator captures tracing spans in-memory from `dora_coordinator` and `dora_core` crates (up to 4096 spans in a ring buffer). You can view these traces without any external tracing infrastructure (no Jaeger, Tempo, etc. required).
 
 ### Listing Traces
 
 ```bash
-adora trace list
+dora trace list
 ```
 
 Shows all captured traces with their root span name, span count, start time, and total duration:
@@ -472,10 +472,10 @@ f8e7d6c5b4a3  build_dataflow     5      2026-03-01 10:29:58  0.500s
 
 ```bash
 # Full trace ID
-adora trace view a1b2c3d4-e5f6-7890-abcd-1234567890ab
+dora trace view a1b2c3d4-e5f6-7890-abcd-1234567890ab
 
 # Or use a unique prefix
-adora trace view a1b2c3d4
+dora trace view a1b2c3d4
 ```
 
 Displays spans as an indented tree showing parent-child relationships, log levels, durations, and span fields:
@@ -495,23 +495,23 @@ spawn_dataflow [INFO 1.234s] {build_id="abc", session_id="def"}
 - **Performance analysis** -- identify slow spans in dataflow lifecycle operations
 - **Deployment troubleshooting** -- understand the sequence and timing of coordinator operations
 
-For full distributed tracing across daemons and nodes, set `ADORA_OTLP_ENDPOINT` and use an OTLP-compatible backend.
+For full distributed tracing across daemons and nodes, set `DORA_OTLP_ENDPOINT` and use an OTLP-compatible backend.
 
 ---
 
 ## Resource Monitoring
 
-`adora top` (also `adora inspect top`) provides a real-time TUI showing per-node resource usage:
+`dora top` (also `dora inspect top`) provides a real-time TUI showing per-node resource usage:
 
 ```bash
 # Default 2-second refresh
-adora top
+dora top
 
 # Custom refresh interval
-adora top --refresh-interval 5
+dora top --refresh-interval 5
 
 # JSON snapshot for scripting/CI
-adora top --once | jq .
+dora top --once | jq .
 ```
 
 Displays for each node:
@@ -537,16 +537,16 @@ Note: CPU percentages are per-core, so values can exceed 100% for multi-threaded
 
 ```bash
 # Stream logs from a specific node
-adora logs my-dataflow sensor-node --follow
+dora logs my-dataflow sensor-node --follow
 
 # Stream logs from all nodes
-adora logs my-dataflow --all-nodes --follow
+dora logs my-dataflow --all-nodes --follow
 
 # Filter by log level
-adora logs my-dataflow sensor-node --follow --level debug
+dora logs my-dataflow sensor-node --follow --level debug
 
 # Stream with grep filter
-adora logs my-dataflow --all-nodes --follow --grep "error"
+dora logs my-dataflow --all-nodes --follow --grep "error"
 ```
 
 Without `--follow`, reads from local log files. With `--follow`, streams live from the coordinator via WebSocket.
@@ -567,10 +567,10 @@ Read directly:
 
 ```bash
 # All nodes, local files
-adora logs --local --all-nodes
+dora logs --local --all-nodes
 
 # Specific node, last 50 lines
-adora logs --local sensor-node --tail 50
+dora logs --local sensor-node --tail 50
 ```
 
 ### Filtering and Searching
@@ -586,9 +586,9 @@ adora logs --local sensor-node --tail 50
 | `--log-format <FMT>` | `--log-format json` | Output format: pretty (default) or json |
 
 Environment variables:
-- `ADORA_LOG_LEVEL` -- default log level
-- `ADORA_LOG_FORMAT` -- default log format
-- `ADORA_LOG_FILTER` -- default per-node filter
+- `DORA_LOG_LEVEL` -- default log level
+- `DORA_LOG_FORMAT` -- default log format
+- `DORA_LOG_FILTER` -- default per-node filter
 
 ---
 
@@ -598,10 +598,10 @@ Generate a visual graph of your dataflow:
 
 ```bash
 # Generate HTML and open in browser
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 
 # Generate Mermaid diagram text
-adora graph dataflow.yml --mermaid
+dora graph dataflow.yml --mermaid
 ```
 
 The Mermaid output can be pasted into [mermaid.live](https://mermaid.live/) or used in GitHub markdown:
@@ -622,26 +622,26 @@ The HTML mode generates a self-contained file with an interactive mermaid.js dia
 
 ```bash
 # Full environment diagnosis
-adora doctor
+dora doctor
 
 # List all dataflows (active and completed)
-adora list
+dora list
 
 # List nodes in a specific dataflow
-adora node list -d my-dataflow
+dora node list -d my-dataflow
 
 # Get detailed info on a specific node
-adora node info -d my-dataflow camera
+dora node info -d my-dataflow camera
 
 # Check coordinator/daemon status
-adora status
+dora status
 
 # View/modify runtime parameters
-adora param list -d my-dataflow detector
-adora param set -d my-dataflow detector threshold 0.5
+dora param list -d my-dataflow detector
+dora param set -d my-dataflow detector threshold 0.5
 ```
 
-`adora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow.
+`dora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow.
 
 ---
 
@@ -651,61 +651,61 @@ adora param set -d my-dataflow detector threshold 0.5
 
 ```bash
 # 1. Verify the node is running
-adora list
-adora top
+dora list
+dora top
 
 # 2. Check its logs
-adora logs my-dataflow problem-node --follow --level trace
+dora logs my-dataflow problem-node --follow --level trace
 
 # 3. Check if upstream nodes are publishing
-adora topic echo -d my-dataflow upstream-node/output
+dora topic echo -d my-dataflow upstream-node/output
 
 # 4. Verify topic wiring
-adora topic list -d my-dataflow
-adora graph dataflow.yml --open
+dora topic list -d my-dataflow
+dora graph dataflow.yml --open
 ```
 
 ### Workflow 2: Unexpected Data or Wrong Values
 
 ```bash
 # 1. Echo the topic to see raw data
-adora topic echo -d my-dataflow node/output --format json
+dora topic echo -d my-dataflow node/output --format json
 
 # 2. Record for offline analysis
-adora record dataflow.yml -o debug.adorec
+dora record dataflow.yml -o debug.adorec
 
 # 3. Replay with known input to isolate the issue
-adora replay debug.adorec --replace sensor --speed 0
+dora replay debug.adorec --replace sensor --speed 0
 ```
 
 ### Workflow 3: Performance Issues
 
 ```bash
 # 1. Check CPU/memory per node
-adora top
+dora top
 
 # 2. Measure publish frequencies
-adora topic hz -d my-dataflow --window 10
+dora topic hz -d my-dataflow --window 10
 
 # 3. Get bandwidth stats for suspected bottleneck
-adora topic info -d my-dataflow heavy-node/output --duration 10
+dora topic info -d my-dataflow heavy-node/output --duration 10
 
 # 4. Record and replay at max speed to find throughput limits
-adora record dataflow.yml -o perf.adorec
-adora replay perf.adorec --speed 0
+dora record dataflow.yml -o perf.adorec
+dora replay perf.adorec --speed 0
 ```
 
 ### Workflow 4: Reproducing a Field Issue
 
 ```bash
 # On the robot / target machine:
-adora start dataflow.yml --detach
-adora record dataflow.yml --proxy -o field-capture.adorec
+dora start dataflow.yml --detach
+dora record dataflow.yml --proxy -o field-capture.adorec
 
 # Transfer the .adorec file to your workstation, then:
-adora replay field-capture.adorec
-adora replay field-capture.adorec --speed 0.5  # slow motion
-adora replay field-capture.adorec --loop        # continuous replay
+dora replay field-capture.adorec
+dora replay field-capture.adorec --speed 0.5  # slow motion
+dora replay field-capture.adorec --loop        # continuous replay
 ```
 
 ### Workflow 5: Remote Debugging (No Direct Access)
@@ -714,12 +714,12 @@ When you only have WebSocket connectivity to the coordinator:
 
 ```bash
 # All these commands work over WebSocket -- no Zenoh needed
-adora list
-adora top
-adora logs my-dataflow --all-nodes --follow
-adora topic echo -d my-dataflow node/output
-adora topic hz -d my-dataflow
-adora record dataflow.yml --proxy -o remote-capture.adorec
+dora list
+dora top
+dora logs my-dataflow --all-nodes --follow
+dora topic echo -d my-dataflow node/output
+dora topic hz -d my-dataflow
+dora record dataflow.yml --proxy -o remote-capture.adorec
 ```
 
 ---

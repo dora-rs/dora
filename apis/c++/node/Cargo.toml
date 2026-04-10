@@ -1,5 +1,5 @@
 [package]
-name = "adora-node-api-cxx"
+name = "dora-node-api-cxx"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,10 +16,10 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["tracing"]
-tracing = ["adora-node-api/tracing"]
+tracing = ["dora-node-api/tracing"]
 ros2-bridge = [
-    "dep:adora-ros2-bridge",
-    "dep:adora-ros2-bridge-msg-gen",
+    "dep:dora-ros2-bridge",
+    "dep:dora-ros2-bridge-msg-gen",
     "dep:rust-format",
     "dep:prettyplease",
     "dep:serde-big-array",
@@ -27,9 +27,9 @@ ros2-bridge = [
 
 [dependencies]
 cxx = "1.0.73"
-adora-node-api = { workspace = true }
+dora-node-api = { workspace = true }
 eyre = { workspace = true }
-adora-ros2-bridge = { workspace = true, optional = true }
+dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.2" }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -39,7 +39,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
 cxx-build = "1.0.73"
-adora-ros2-bridge-msg-gen = { workspace = true, optional = true }
+dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }

@@ -2,9 +2,9 @@
 
 ## Context
 
-Adora's topology is currently static — all nodes and connections must be declared in the YAML descriptor before the dataflow starts. The `mappings` routing table is built once at `spawn_dataflow()` and never modified. This is the "Static topology" constraint from the audit report.
+Dora's topology is currently static — all nodes and connections must be declared in the YAML descriptor before the dataflow starts. The `mappings` routing table is built once at `spawn_dataflow()` and never modified. This is the "Static topology" constraint from the audit report.
 
-For AI agent use cases, this means you can't dynamically spin up new LLM agents, add sensor nodes, or remove failed components without restarting the entire dataflow. The goal: enable `adora node add` / `adora node remove` on a running dataflow.
+For AI agent use cases, this means you can't dynamically spin up new LLM agents, add sensor nodes, or remove failed components without restarting the entire dataflow. The goal: enable `dora node add` / `dora node remove` on a running dataflow.
 
 ## Approach: Incremental Topology Mutation
 
@@ -89,16 +89,16 @@ When a node is removed, its Zenoh publishers stop. Existing `OutputClosed` inter
 **File:** `binaries/cli/src/command/node/add.rs` (new), `remove.rs` (exists, extend)
 
 ```
-adora node add <dataflow> --from-yaml <node-def.yml>
-adora node add <dataflow> --id <id> --path <exe> --input tick=adora/timer/hz/10
-adora node remove <dataflow> <node-id> [--grace 5s]
-adora node connect <dataflow> <source/output> <target/input>
-adora node disconnect <dataflow> <source/output> <target/input>
+dora node add <dataflow> --from-yaml <node-def.yml>
+dora node add <dataflow> --id <id> --path <exe> --input tick=dora/timer/hz/10
+dora node remove <dataflow> <node-id> [--grace 5s]
+dora node connect <dataflow> <source/output> <target/input>
+dora node disconnect <dataflow> <source/output> <target/input>
 ```
 
 ### 3.2 Info enhancement
 
-`adora info` shows `[dynamic]` tag on dynamically added nodes.
+`dora info` shows `[dynamic]` tag on dynamically added nodes.
 
 ## Key Files
 
@@ -116,18 +116,18 @@ adora node disconnect <dataflow> <source/output> <target/input>
 
 - **Descriptor becomes stale**: `RunningDataflow.descriptor` won't reflect dynamic changes. Accept for now (it's "initial topology").
 - **Recording**: `.adorec` header won't include dynamic nodes. Document as limitation.
-- **Restart behavior**: `adora restart <dataflow>` should only restart original descriptor nodes. Dynamic nodes are caller's responsibility.
+- **Restart behavior**: `dora restart <dataflow>` should only restart original descriptor nodes. Dynamic nodes are caller's responsibility.
 - **No message replay**: New nodes miss messages sent before they joined. Same as Zenoh late-subscribe behavior.
 
 ## Verification
 
 1. Unit test: add node to RunningDataflow, verify mappings updated
-2. Integration test: start dataflow, `adora node add`, send message, verify new node receives it
-3. Integration test: `adora node remove`, verify cleanup (no phantom restarts, no dangling channels)
-4. Smoke test: dynamic add in networked mode (adora up + adora node add)
+2. Integration test: start dataflow, `dora node add`, send message, verify new node receives it
+3. Integration test: `dora node remove`, verify cleanup (no phantom restarts, no dangling channels)
+4. Smoke test: dynamic add in networked mode (dora up + dora node add)
 
 ## Open Questions
 
-1. Should dynamically added nodes survive `adora restart <dataflow>`?
+1. Should dynamically added nodes survive `dora restart <dataflow>`?
 2. Max dynamic nodes limit per dataflow?
-3. Should `adora node add --from-yaml` support inline node definition or require a file?
+3. Should `dora node add --from-yaml` support inline node definition or require a file?

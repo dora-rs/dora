@@ -29,7 +29,7 @@ cargo build -p log-sink-tcp
 nc -l 9876
 
 # Terminal 2: run the dataflow
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ## What This Demonstrates

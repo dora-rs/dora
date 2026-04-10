@@ -1,7 +1,7 @@
-# CI workflow for Rust adora node crates.
+# CI workflow for Rust dora node crates.
 # Copy this file to your project's .github/workflows/ directory.
 #
-# Prerequisites: your Cargo.toml depends on adora-node-api.
+# Prerequisites: your Cargo.toml depends on dora-node-api.
 
 name: Rust Node CI
 

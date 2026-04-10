@@ -1,6 +1,6 @@
 # ROS2 Bridge
 
-Adora provides a declarative YAML-based ROS2 bridge that lets any Adora node communicate with ROS2 topics, services, and actions without importing ROS2 libraries. You define the bridge in your dataflow YAML using the `ros2:` key, and the framework automatically spawns a bridge binary that converts between Apache Arrow (Adora's native format) and ROS2 CDR/DDS. Your user nodes stay ROS2-free -- they send and receive pure Arrow `StructArray` data.
+Dora provides a declarative YAML-based ROS2 bridge that lets any Dora node communicate with ROS2 topics, services, and actions without importing ROS2 libraries. You define the bridge in your dataflow YAML using the `ros2:` key, and the framework automatically spawns a bridge binary that converts between Apache Arrow (Dora's native format) and ROS2 CDR/DDS. Your user nodes stay ROS2-free -- they send and receive pure Arrow `StructArray` data.
 
 ## Features at a Glance
 
@@ -20,7 +20,7 @@ Adora provides a declarative YAML-based ROS2 bridge that lets any Adora node com
 
 ## Architecture
 
-When the Adora descriptor resolver encounters a `ros2:` key on a node, it converts it into a `Custom` node pointing to the `adora-ros2-bridge-node` binary. The bridge config is serialized as JSON into the `ADORA_ROS2_BRIDGE_CONFIG` environment variable.
+When the Dora descriptor resolver encounters a `ros2:` key on a node, it converts it into a `Custom` node pointing to the `dora-ros2-bridge-node` binary. The bridge config is serialized as JSON into the `DORA_ROS2_BRIDGE_CONFIG` environment variable.
 
 ```
 User Node <--(Arrow/SharedMem)--> Bridge Binary <--(CDR/DDS)--> ROS2
@@ -52,7 +52,7 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 
 ### Single Topic (Subscribe)
 
-Subscribe to a ROS2 topic and forward messages as Arrow data to downstream Adora nodes.
+Subscribe to a ROS2 topic and forward messages as Arrow data to downstream Dora nodes.
 
 ```yaml
 nodes:
@@ -69,7 +69,7 @@ The bridge creates a ROS2 subscription on `/turtle1/pose`, deserializes each inc
 
 ### Single Topic (Publish)
 
-Receive Arrow data from Adora nodes and publish to a ROS2 topic.
+Receive Arrow data from Dora nodes and publish to a ROS2 topic.
 
 ```yaml
 nodes:
@@ -114,9 +114,9 @@ Multi-topic mode supports up to 64 topics per bridge node.
 
 ### Input/Output ID Mapping
 
-By default, topic names are converted to Adora IDs by stripping the leading `/` and replacing remaining `/` with `_`:
+By default, topic names are converted to Dora IDs by stripping the leading `/` and replacing remaining `/` with `_`:
 
-| ROS2 Topic | Default Adora ID |
+| ROS2 Topic | Default Dora ID |
 |------------|------------------|
 | `/turtle1/pose` | `turtle1_pose` |
 | `/camera/image_raw` | `camera_image_raw` |
@@ -129,7 +129,7 @@ In multi-topic mode, you can override this with explicit `output` (for subscribe
 
 ### Service Client
 
-Send requests from Adora to an external ROS2 service and receive responses.
+Send requests from Dora to an external ROS2 service and receive responses.
 
 ```yaml
 nodes:
@@ -153,13 +153,13 @@ The bridge waits for the service to become available (up to 10 retries, 2 second
 
 ### Service Server
 
-Expose an Adora handler node as a ROS2 service that external ROS2 clients can call.
+Expose an Dora handler node as a ROS2 service that external ROS2 clients can call.
 
 ```yaml
 nodes:
   - id: add_server
     ros2:
-      service: /adora_add_two_ints
+      service: /dora_add_two_ints
       service_type: example_interfaces/AddTwoInts
       role: server
     inputs:
@@ -207,7 +207,7 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 
 ### Action Client
 
-Send goals from Adora to an external ROS2 action server, receiving feedback and results.
+Send goals from Dora to an external ROS2 action server, receiving feedback and results.
 
 ```yaml
 nodes:
@@ -252,7 +252,7 @@ The bridge supports up to 8 concurrent in-flight goals (`MAX_CONCURRENT_GOALS`).
 
 ### Action Server
 
-Expose an Adora handler node as a ROS2 action server that external ROS2 clients can call.
+Expose an Dora handler node as a ROS2 action server that external ROS2 clients can call.
 
 ```yaml
 nodes:
@@ -323,7 +323,7 @@ Unrecognized `goal_status` values default to `Aborted` with a warning logged. Om
 
 Rust example:
 ```rust
-use adora_node_api::{GOAL_STATUS, GOAL_STATUS_ABORTED, Parameter};
+use dora_node_api::{GOAL_STATUS, GOAL_STATUS_ABORTED, Parameter};
 
 let mut params = metadata.parameters; // contains goal_id
 params.insert(GOAL_STATUS.to_string(), Parameter::String(GOAL_STATUS_ABORTED.to_string()));
@@ -592,9 +592,9 @@ nodes:
 
       # --- Optional ROS2 node config ---
       namespace: /                     # ROS2 namespace (default: "/")
-      node_name: my_ros_node           # ROS2 node name (default: adora node id)
+      node_name: my_ros_node           # ROS2 node name (default: dora node id)
 
-    # --- Standard Adora node fields ---
+    # --- Standard Dora node fields ---
     inputs:
       input_id: source_node/output_id
     outputs:
@@ -641,7 +641,7 @@ nodes:
   - id: planner
     path: ./target/debug/planner
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     outputs:
       - cmd_vel
 
@@ -723,7 +723,7 @@ nodes:
     path: ./target/debug/planner
     inputs:
       pose: turtle_bridge/pose
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     outputs:
       - cmd_vel
 ```
@@ -735,7 +735,7 @@ nodes:
   - id: requester
     path: ./target/debug/requester
     inputs:
-      tick: adora/timer/millis/1000
+      tick: dora/timer/millis/1000
       response: add_client/response
     outputs:
       - request
@@ -756,7 +756,7 @@ Prerequisites: run a ROS2 service first:
 ros2 run examples_rclcpp_minimal_service service_main
 ```
 
-### 5. Service Server: Expose an Adora Handler as ROS2 Service
+### 5. Service Server: Expose an Dora Handler as ROS2 Service
 
 ```yaml
 nodes:
@@ -790,7 +790,7 @@ nodes:
   - id: goal_sender
     path: ./target/debug/goal-sender
     inputs:
-      tick: adora/timer/millis/5000
+      tick: dora/timer/millis/5000
       feedback: fib_client/feedback
       result: fib_client/result
     outputs:
@@ -815,7 +815,7 @@ ros2 run examples_rclcpp_action_server fibonacci_action_server
 
 The goal node sends `{order: int32}`, receives streamed `{partial_sequence: int32[]}` feedback, and a final `{sequence: int32[]}` result.
 
-### 7. Action Server: Expose an Adora Handler as ROS2 Action
+### 7. Action Server: Expose an Dora Handler as ROS2 Action
 
 ```yaml
 nodes:

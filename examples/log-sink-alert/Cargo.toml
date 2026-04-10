@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-adora-node-api = { workspace = true }
-adora-log-utils = { workspace = true }
-adora-arrow-convert = { workspace = true }
-adora-message = { workspace = true }
+dora-node-api = { workspace = true }
+dora-log-utils = { workspace = true }
+dora-arrow-convert = { workspace = true }
+dora-message = { workspace = true }
 eyre = { workspace = true }

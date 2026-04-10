@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "adora-rs specification",
-  "description": "The main configuration structure for defining a Adora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: adora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
+  "title": "dora-rs specification",
+  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
   "type": "object",
   "properties": {
     "health_check_interval": {
@@ -14,7 +14,7 @@
       "default": null
     },
     "nodes": {
-      "description": "List of nodes in the dataflow\n\nThis is the most important field of the dataflow specification.\nEach node must be identified by a unique `id`:\n\n## Example\n\n```yaml\nnodes:\n  - id: foo\n    path: path/to/the/executable\n    # ... (see below)\n  - id: bar\n    path: path/to/another/executable\n    # ... (see below)\n```\n\nFor each node, you need to specify the `path` of the executable or script that Adora should run when starting the node.\nMost of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.",
+      "description": "List of nodes in the dataflow\n\nThis is the most important field of the dataflow specification.\nEach node must be identified by a unique `id`:\n\n## Example\n\n```yaml\nnodes:\n  - id: foo\n    path: path/to/the/executable\n    # ... (see below)\n  - id: bar\n    path: path/to/another/executable\n    # ... (see below)\n```\n\nFor each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.\nMost of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.",
       "type": "array",
       "items": {
         "$ref": "#/$defs/Node"
@@ -334,8 +334,8 @@
       ]
     },
     "Node": {
-      "title": "Adora Node Configuration",
-      "description": "A node represents a computational unit in a Adora dataflow. Each node runs as a\nseparate process and can communicate with other nodes through inputs and outputs.",
+      "title": "Dora Node Configuration",
+      "description": "A node represents a computational unit in a Dora dataflow. Each node runs as a\nseparate process and can communicate with other nodes through inputs and outputs.",
       "type": "object",
       "properties": {
         "args": {
@@ -346,14 +346,14 @@
           ]
         },
         "branch": {
-          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the branch that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    branch: some-branch-name\n```",
+          "description": "Git branch to checkout after cloning.\n\nThe `branch` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the branch that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    branch: some-branch-name\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "build": {
-          "description": "Build commands executed during `adora build`. Each line runs separately.\n\nThe `build` key specifies the command that should be invoked for building the node.\nThe key expects a single- or multi-line string.\n\nEach line is run as a separate command.\nSpaces are used to separate arguments.\n\nNote that all the environment variables specified in the [`env`](Self::env) field are also\napplied to the build commands.\n\n## Special treatment of `pip`\n\nBuild lines that start with `pip` or `pip3` are treated in a special way:\nIf the `--uv` argument is passed to the `adora build` command, all `pip`/`pip3` commands are\nrun through the [`uv` package manager](https://docs.astral.sh/uv/).\n\n## Example\n\n```yaml\nnodes:\n- id: build-example\n  build: cargo build -p receive_data --release\n  path: target/release/receive_data\n- id: multi-line-example\n  build: |\n      pip install requirements.txt\n      pip install -e some/local/package\n  path: package\n```\n\nIn the above example, the `pip` commands will be replaced by `uv pip` when run through\n`adora build --uv`.",
+          "description": "Build commands executed during `dora build`. Each line runs separately.\n\nThe `build` key specifies the command that should be invoked for building the node.\nThe key expects a single- or multi-line string.\n\nEach line is run as a separate command.\nSpaces are used to separate arguments.\n\nNote that all the environment variables specified in the [`env`](Self::env) field are also\napplied to the build commands.\n\n## Special treatment of `pip`\n\nBuild lines that start with `pip` or `pip3` are treated in a special way:\nIf the `--uv` argument is passed to the `dora build` command, all `pip`/`pip3` commands are\nrun through the [`uv` package manager](https://docs.astral.sh/uv/).\n\n## Example\n\n```yaml\nnodes:\n- id: build-example\n  build: cargo build -p receive_data --release\n  path: target/release/receive_data\n- id: multi-line-example\n  build: |\n      pip install requirements.txt\n      pip install -e some/local/package\n  path: package\n```\n\nIn the above example, the `pip` commands will be replaced by `uv pip` when run through\n`dora build --uv`.",
           "type": [
             "string",
             "null"
@@ -388,7 +388,7 @@
           }
         },
         "git": {
-          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories.\nThis can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `adora build` automatically clones the specified repository\n(or reuse an existing clone).\nThen it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or\n[`rev`](Self::rev), or the default branch if none of them are specified.\nAfterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the\n[`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    build: cargo build -p rust-dataflow-example-node\n    path: target/debug/rust-dataflow-example-node\n```\n\nIn the above example, `adora build` will first clone the specified `git` repository and then\nrun the specified `build` inside the local clone directory.\nWhen `adora run` or `adora start` is invoked, the working directory will be the git clone\ndirectory too. So a relative `path` will start from the clone directory.",
+          "description": "Git repository URL for downloading nodes.\n\nThe `git` key allows downloading nodes (i.e. their source code) from git repositories.\nThis can be especially useful for distributed dataflows.\n\nWhen a `git` key is specified, `dora build` automatically clones the specified repository\n(or reuse an existing clone).\nThen it checks out the specified [`branch`](Self::branch), [`tag`](Self::tag), or\n[`rev`](Self::rev), or the default branch if none of them are specified.\nAfterwards it runs the [`build`](Self::build) command if specified.\n\nNote that the git clone directory is set as working directory for both the\n[`build`](Self::build) command and the specified [`path`](Self::path).\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    build: cargo build -p rust-dataflow-example-node\n    path: target/debug/rust-dataflow-example-node\n```\n\nIn the above example, `dora build` will first clone the specified `git` repository and then\nrun the specified `build` inside the local clone directory.\nWhen `dora run` or `dora start` is invoked, the working directory will be the git clone\ndirectory too. So a relative `path` will start from the clone directory.",
           "type": [
             "string",
             "null"
@@ -407,14 +407,14 @@
           "$ref": "#/$defs/NodeId"
         },
         "input_types": {
-          "description": "Optional type annotations for inputs.\n\nMaps input identifiers to expected type URNs. Used by `adora validate`\nto check that upstream output types match expectations.",
+          "description": "Optional type annotations for inputs.\n\nMaps input identifiers to expected type URNs. Used by `dora validate`\nto check that upstream output types match expectations.",
           "type": "object",
           "additionalProperties": {
             "type": "string"
           }
         },
         "inputs": {
-          "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n  - `input_id` is the local identifier that should be used for this input.\n\n    This will map to the `id` field of\n    [`Event::Input`](https://docs.rs/adora-node-api/latest/adora_node_api/enum.Event.html#variant.Input)\n    events sent to the node event loop.\n  - `source_node_id` should be the `id` field of the node that sends the output that we want\n    to subscribe to\n  - `source_node_output_id` should be the identifier of the output that that we want\n    to subscribe to\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - one\n      - two\n  - id: receiver\n    inputs:\n        my_input: example-node/two\n```",
+          "description": "Input data connections from other nodes.\n\nDefines the inputs that this node is subscribing to.\n\nThe `inputs` field should be a key-value map of the following format:\n\n`input_id: source_node_id/source_node_output_id`\n\nThe components are defined as follows:\n\n  - `input_id` is the local identifier that should be used for this input.\n\n    This will map to the `id` field of\n    [`Event::Input`](https://docs.rs/dora-node-api/latest/dora_node_api/enum.Event.html#variant.Input)\n    events sent to the node event loop.\n  - `source_node_id` should be the `id` field of the node that sends the output that we want\n    to subscribe to\n  - `source_node_output_id` should be the identifier of the output that that we want\n    to subscribe to\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - one\n      - two\n  - id: receiver\n    inputs:\n        my_input: example-node/two\n```",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Input"
@@ -503,7 +503,7 @@
           }
         },
         "outputs": {
-          "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends.\nMust contain all `output_id` values that the node uses when sending output, e.g. through the\n[`send_output`](https://docs.rs/adora-node-api/latest/adora_node_api/struct.AdoraNode.html#method.send_output)\nfunction.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - processed_image\n      - metadata\n```",
+          "description": "Output data identifiers produced by this node.\n\nList of output identifiers that the node sends.\nMust contain all `output_id` values that the node uses when sending output, e.g. through the\n[`send_output`](https://docs.rs/dora-node-api/latest/dora_node_api/struct.DoraNode.html#method.send_output)\nfunction.\n\n## Example\n\n```yaml\nnodes:\n  - id: example-node\n    outputs:\n      - processed_image\n      - metadata\n```",
           "type": "array",
           "default": [],
           "items": {
@@ -519,7 +519,7 @@
           }
         },
         "path": {
-          "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Adora should run when starting the\ndataflow.\nThis can point to a normal executable (e.g. when using a compiled language such as Rust) or\na Python script.\n\nAdora will automatically append a `.exe` extension on Windows systems when the specified\nfile name has no extension.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-example\n    path: target/release/rust-node\n  - id: python-example\n    path: ./receive_data.py\n```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path.\nIn this case, Adora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended**\nanymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)\nkey.",
+          "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Dora should run when starting the\ndataflow.\nThis can point to a normal executable (e.g. when using a compiled language such as Rust) or\na Python script.\n\nDora will automatically append a `.exe` extension on Windows systems when the specified\nfile name has no extension.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-example\n    path: target/release/rust-node\n  - id: python-example\n    path: ./receive_data.py\n```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path.\nIn this case, Dora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended**\nanymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)\nkey.",
           "type": [
             "string",
             "null"
@@ -547,14 +547,14 @@
           "format": "double"
         },
         "rev": {
-          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    rev: 64ab0d7c\n```",
+          "description": "Git revision (e.g. commit hash) to checkout after cloning.\n\nThe `rev` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git revision (e.g. a commit hash) that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    rev: 64ab0d7c\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "ros2": {
-          "description": "ROS2 bridge configuration (unstable).\n\nDeclares this node as a ROS2 bridge that automatically subscribes to or\npublishes on ROS2 topics. No custom code is needed -- the framework spawns\na bridge binary that converts between ROS2 DDS messages and Adora's Arrow\nformat.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_bridge\n    ros2:\n      topic: /camera/image_raw\n      message_type: sensor_msgs/Image\n      direction: subscribe\n    outputs:\n      - image\n```",
+          "description": "ROS2 bridge configuration (unstable).\n\nDeclares this node as a ROS2 bridge that automatically subscribes to or\npublishes on ROS2 topics. No custom code is needed -- the framework spawns\na bridge binary that converts between ROS2 DDS messages and Dora's Arrow\nformat.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_bridge\n    ros2:\n      topic: /camera/image_raw\n      message_type: sensor_msgs/Image\n      direction: subscribe\n    outputs:\n      - image\n```",
           "anyOf": [
             {
               "$ref": "#/$defs/Ros2BridgeConfig"
@@ -572,14 +572,14 @@
           ]
         },
         "send_stdout_as": {
-          "description": "Redirect stdout/stderr to a data output.\n\nThis field can be used to send all stdout and stderr output of the node as a Adora output.\nEach output line is sent as a separate message.\n\n\n## Example\n\n```yaml\nnodes:\n  - id: example\n    send_stdout_as: stdout_output\n  - id: logger\n    inputs:\n        example_output: example/stdout_output\n```",
+          "description": "Redirect stdout/stderr to a data output.\n\nThis field can be used to send all stdout and stderr output of the node as a Dora output.\nEach output line is sent as a separate message.\n\n\n## Example\n\n```yaml\nnodes:\n  - id: example\n    send_stdout_as: stdout_output\n  - id: logger\n    inputs:\n        example_output: example/stdout_output\n```",
           "type": [
             "string",
             "null"
           ]
         },
         "tag": {
-          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/adora.git\n    tag: v0.3.0\n```",
+          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.3.0\n```",
           "type": [
             "string",
             "null"
@@ -800,7 +800,7 @@
           "const": "on-failure"
         },
         {
-          "description": "Always restart the node when it exits, regardless of exit code.\n\nThe node will not be restarted on the following conditions:\n\n- The node was stopped by the user (e.g., via `adora stop`).\n- All inputs to the node have been closed and the node finished with a non-zero exit code.",
+          "description": "Always restart the node when it exits, regardless of exit code.\n\nThe node will not be restarted on the following conditions:\n\n- The node was stopped by the user (e.g., via `dora stop`).\n- All inputs to the node have been closed and the node finished with a non-zero exit code.",
           "type": "string",
           "const": "always"
         }
@@ -825,7 +825,7 @@
           ]
         },
         "direction": {
-          "description": "Direction: subscribe (ROS2 -> Adora) or publish (Adora -> ROS2).\nDefaults to subscribe. Only used with `topic`/`topics`.",
+          "description": "Direction: subscribe (ROS2 -> Dora) or publish (Dora -> ROS2).\nDefaults to subscribe. Only used with `topic`/`topics`.",
           "$ref": "#/$defs/Ros2Direction",
           "default": "subscribe"
         },
@@ -842,7 +842,7 @@
           "default": "/"
         },
         "node_name": {
-          "description": "ROS2 node name. Defaults to the adora node id.",
+          "description": "ROS2 node name. Defaults to the dora node id.",
           "type": [
             "string",
             "null"
@@ -905,12 +905,12 @@
       "description": "Direction of ROS2 bridge communication.",
       "oneOf": [
         {
-          "description": "Subscribe: receive from ROS2, forward to adora outputs.",
+          "description": "Subscribe: receive from ROS2, forward to dora outputs.",
           "type": "string",
           "const": "subscribe"
         },
         {
-          "description": "Publish: receive from adora inputs, publish to ROS2.",
+          "description": "Publish: receive from dora inputs, publish to ROS2.",
           "type": "string",
           "const": "publish"
         }
@@ -996,7 +996,7 @@
           "default": "subscribe"
         },
         "input": {
-          "description": "Maps to an adora input id (for publish direction).",
+          "description": "Maps to an dora input id (for publish direction).",
           "type": [
             "string",
             "null"
@@ -1007,7 +1007,7 @@
           "type": "string"
         },
         "output": {
-          "description": "Maps to an adora output id (for subscribe direction).",
+          "description": "Maps to an dora output id (for subscribe direction).",
           "type": [
             "string",
             "null"

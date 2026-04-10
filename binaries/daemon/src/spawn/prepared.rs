@@ -1,14 +1,16 @@
 use crate::{
-    AdoraEvent, CoreNodeKindExt, Event, OutputId, ProcessOperation, RunningNode,
+    CoreNodeKindExt, DoraEvent, Event, OutputId, ProcessOperation, RunningNode,
     log::{self, NodeLogger},
 };
-use adora_arrow_convert::IntoArrow;
-use adora_core::{
+use aligned_vec::{AVec, ConstAlign};
+use crossbeam::queue::ArrayQueue;
+use dora_arrow_convert::IntoArrow;
+use dora_core::{
     config::DataId,
     descriptor::{ResolvedNode, ResolvedNodeExt},
     uhlc::HLC,
 };
-use adora_message::{
+use dora_message::{
     DataflowId,
     common::{LogLevel, LogMessage, LogMessageHelper},
     daemon_to_coordinator::{DataMessage, NodeExitStatus, Timestamped},
@@ -16,13 +18,11 @@ use adora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use adora_node_api::{
+use dora_node_api::{
     Metadata,
     arrow::array::ArrayData,
     arrow_utils::{copy_array_into_sample, required_data_size},
 };
-use aligned_vec::{AVec, ConstAlign};
-use crossbeam::queue::ArrayQueue;
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::TokioCommandWrap;
 use std::{
@@ -139,29 +139,29 @@ impl PreparedNode {
 
     fn restart_policy(&self) -> RestartPolicy {
         match &self.node.kind {
-            adora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            adora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
         }
     }
 
     fn health_check_timeout(&self) -> Option<Duration> {
         match &self.node.kind {
-            adora_core::descriptor::CoreNodeKind::Custom(n) => {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 n.health_check_timeout.map(Duration::from_secs_f64)
             }
-            adora_core::descriptor::CoreNodeKind::Runtime(_) => None,
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
     }
 
     fn restart_config(&self) -> RestartConfig {
         match &self.node.kind {
-            adora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
                 max_restarts: n.max_restarts,
                 restart_delay: n.restart_delay.map(Duration::from_secs_f64),
                 max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
                 restart_window: n.restart_window.map(Duration::from_secs_f64),
             },
-            adora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
         }
     }
 
@@ -248,7 +248,7 @@ impl PreparedNode {
                 false
             };
 
-            let event = AdoraEvent::SpawnedNodeResult {
+            let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
                 exit_status,
@@ -297,7 +297,7 @@ impl PreparedNode {
                 }
 
                 restart_count += 1;
-                // `node_config.restart_count` is serialized into ADORA_NODE_CONFIG
+                // `node_config.restart_count` is serialized into DORA_NODE_CONFIG
                 // for the restarted child process. `shared_restart_count` is read by
                 // the daemon's metrics reporting path in lib.rs. Both must stay in sync.
                 self.node_config.restart_count = restart_count;
@@ -342,7 +342,7 @@ impl PreparedNode {
                         // Install the new `ProcessHandle` in
                         // `running_nodes` so subsequent stop/kill
                         // operations target this incarnation.
-                        let handle_replaced = AdoraEvent::ProcessHandleReplaced {
+                        let handle_replaced = DoraEvent::ProcessHandleReplaced {
                             dataflow_id: self.dataflow_id,
                             node_id: self.node.id.clone(),
                             new_handle: crate::ProcessHandle::new(op_tx_new),
@@ -389,7 +389,7 @@ impl PreparedNode {
     ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
-                // Re-serialize ADORA_NODE_CONFIG from the current
+                // Re-serialize DORA_NODE_CONFIG from the current
                 // node_config. The command was built once at initial
                 // spawn time with the initial config; the restart_loop
                 // updates self.node_config.restart_count between
@@ -398,7 +398,7 @@ impl PreparedNode {
                 // restart_count=0 (pre-existing bug, first caught by
                 // the restart_recovers_from_failure E2E test).
                 if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
-                    command.set_env("ADORA_NODE_CONFIG", &config_yaml);
+                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
                 }
 
                 #[allow(unused_mut)]
@@ -723,7 +723,7 @@ impl PreparedNode {
                         node_id.clone(),
                         DataId::from(stdout_output_name.to_string()),
                     );
-                    let event = AdoraEvent::Logs {
+                    let event = DoraEvent::Logs {
                         dataflow_id,
                         output_id,
                         metadata,
@@ -758,7 +758,7 @@ impl PreparedNode {
                         daemon_id: Some(daemon_id.clone()),
                         dataflow_id: Some(dataflow_id),
                         build_id: None,
-                        level: adora_core::build::LogLevelOrStdout::Stdout,
+                        level: dora_core::build::LogLevelOrStdout::Stdout,
                         node_id: Some(node_id.clone()),
                         target: None,
                         message: formatted,
@@ -777,10 +777,10 @@ impl PreparedNode {
                     continue;
                 }
 
-                // Broadcast to adora/logs subscribers (try_send to avoid
+                // Broadcast to dora/logs subscribers (try_send to avoid
                 // blocking the log processing task if the daemon queue is full)
                 {
-                    let event = AdoraEvent::LogBroadcast {
+                    let event = DoraEvent::LogBroadcast {
                         dataflow_id,
                         log_message: log_message.clone(),
                     }
@@ -790,7 +790,7 @@ impl PreparedNode {
                         timestamp: uhlc.new_timestamp(),
                     };
                     if daemon_tx_log_broadcast.try_send(event).is_err() {
-                        tracing::debug!("adora/logs broadcast queue full, dropping log event");
+                        tracing::debug!("dora/logs broadcast queue full, dropping log event");
                     }
                 }
 
@@ -808,7 +808,7 @@ impl PreparedNode {
                     let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
                     let output_id =
                         OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
-                    let event = AdoraEvent::Logs {
+                    let event = DoraEvent::Logs {
                         dataflow_id,
                         output_id,
                         metadata,
@@ -829,14 +829,14 @@ impl PreparedNode {
                 let log_entry = serde_json::json!({
                     "ts": ts,
                     "level": match &log_message.level {
-                        adora_core::build::LogLevelOrStdout::LogLevel(l) => match l {
+                        dora_core::build::LogLevelOrStdout::LogLevel(l) => match l {
                             LogLevel::Error => "error",
                             LogLevel::Warn => "warn",
                             LogLevel::Info => "info",
                             LogLevel::Debug => "debug",
                             LogLevel::Trace => "trace",
                         },
-                        adora_core::build::LogLevelOrStdout::Stdout => "stdout",
+                        dora_core::build::LogLevelOrStdout::Stdout => "stdout",
                     },
                     "node": node_id.to_string(),
                     "stream": stream_str,
@@ -903,7 +903,7 @@ impl PreparedNode {
                 }
 
                 // Forward to channel/coordinator for live display
-                if std::env::var("ADORA_QUIET").is_err() {
+                if std::env::var("DORA_QUIET").is_err() {
                     cloned_logger.log(log_message).await;
                 }
 

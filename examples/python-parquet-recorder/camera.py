@@ -8,7 +8,7 @@ import os
 
 import cv2
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 CAMERA_INDEX = int(os.getenv("CAMERA_INDEX", 0))
 CAMERA_WIDTH = 640

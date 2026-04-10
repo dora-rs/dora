@@ -1,9 +1,9 @@
-"""Tests for adora.builder (Pythonic dataflow definition API)."""
+"""Tests for dora.builder (Pythonic dataflow definition API)."""
 
 import yaml
 import pytest
 
-from adora.builder import DataflowBuilder, Node, Operator, Output
+from dora.builder import DataflowBuilder, Node, Operator, Output
 
 
 def test_empty_dataflow():

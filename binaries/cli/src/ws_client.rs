@@ -3,7 +3,7 @@
 //! Replaces `TcpRequestReplyConnection` with a single WS connection that handles
 //! both request-reply and log streaming.
 
-use adora_message::ws_protocol::WsRequest;
+use dora_message::ws_protocol::WsRequest;
 use eyre::{Context, eyre};
 use futures::{SinkExt, StreamExt};
 use std::{collections::HashMap, net::SocketAddr, sync::mpsc as std_mpsc};
@@ -88,7 +88,7 @@ impl WsSession {
                         tungstenite::handshake::client::generate_key(),
                     )
                     .header("Sec-WebSocket-Version", "13");
-                if let Some(token) = adora_message::auth::discover_token() {
+                if let Some(token) = dora_message::auth::discover_token() {
                     request = request.header("Authorization", format!("Bearer {}", token.as_hex()));
                 }
                 let request = request.body(()).expect("failed to build WS request");
@@ -101,17 +101,17 @@ impl WsSession {
                 {
                     eyre!(
                         "cannot connect to coordinator at {addr}: {msg}\n\n  \
-                         hint: is the coordinator running? Start it with `adora up`"
+                         hint: is the coordinator running? Start it with `dora up`"
                     )
                 } else if msg.contains("401") || msg.contains("Unauthorized") {
                     eyre!(
                         "authentication failed connecting to coordinator at {addr}: {msg}\n\n  \
                          The coordinator was started with --auth and requires a valid token.\n  \
-                         The token is stored in ~/.config/adora/.adora-token\n\n  \
+                         The token is stored in ~/.config/dora/.dora-token\n\n  \
                          Possible fixes:\n  \
-                         - Run `adora down && adora up` to regenerate the token\n  \
+                         - Run `dora down && dora up` to regenerate the token\n  \
                          - Ensure you're using the same user that started the coordinator\n  \
-                         - Set ADORA_AUTH_TOKEN env var to match the coordinator's token\n  \
+                         - Set DORA_AUTH_TOKEN env var to match the coordinator's token\n  \
                          - Restart without --auth to disable authentication"
                     )
                 } else {
@@ -134,11 +134,11 @@ impl WsSession {
         Ok(session)
     }
 
-    /// Send a `ControlRequest::Hello` stamped with the CLI's adora
+    /// Send a `ControlRequest::Hello` stamped with the CLI's dora
     /// crate version and verify the coordinator accepts it. Fails with
     /// a clear error on version mismatch.
     fn handshake_hello(&self) -> eyre::Result<()> {
-        use adora_message::{
+        use dora_message::{
             cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
         };
         let req = serde_json::to_vec(&ControlRequest::hello())
@@ -150,9 +150,9 @@ impl WsSession {
         let reply: ControlRequestReply = serde_json::from_slice(&raw_reply)
             .map_err(|e| eyre!("failed to parse Hello reply: {e}"))?;
         match reply {
-            ControlRequestReply::HelloOk { adora_version } => {
+            ControlRequestReply::HelloOk { dora_version } => {
                 tracing::debug!(
-                    coordinator_version = %adora_version,
+                    coordinator_version = %dora_version,
                     "protocol version handshake OK"
                 );
                 Ok(())
@@ -160,7 +160,7 @@ impl WsSession {
             ControlRequestReply::Error(msg) => Err(eyre!(
                 "coordinator rejected CLI: {msg}\n\n  \
                  hint: the CLI and coordinator binaries must share a \
-                 semver-compatible adora version. Upgrade the component \
+                 semver-compatible dora version. Upgrade the component \
                  that is behind."
             )),
             other => Err(eyre!(
@@ -196,10 +196,10 @@ impl WsSession {
     pub fn subscribe_topics(
         &self,
         dataflow_id: Uuid,
-        topics: Vec<(adora_message::id::NodeId, adora_message::id::DataId)>,
+        topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
         let request = serde_json::to_vec(
-            &adora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
+            &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
                 dataflow_id,
                 topics,
             },
@@ -463,16 +463,16 @@ fn handle_response(
             let _ = ack_tx.send(Err(eyre!("{error}")));
         } else if let Some(raw) = &result {
             // Parse TopicSubscribed { subscription_id } from the result
-            let reply: Result<adora_message::coordinator_to_cli::ControlRequestReply, _> =
+            let reply: Result<dora_message::coordinator_to_cli::ControlRequestReply, _> =
                 serde_json::from_str(raw.get());
             match reply {
-                Ok(adora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
+                Ok(dora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
                     subscription_id,
                 }) => {
                     topic_subscribers.insert(subscription_id, data_tx);
                     let _ = ack_tx.send(Ok(subscription_id));
                 }
-                Ok(adora_message::coordinator_to_cli::ControlRequestReply::Error(e)) => {
+                Ok(dora_message::coordinator_to_cli::ControlRequestReply::Error(e)) => {
                     let _ = ack_tx.send(Err(eyre!("{e}")));
                 }
                 _ => {
@@ -489,7 +489,7 @@ fn handle_response(
     if let Some(reply_tx) = pending_requests.remove(&id) {
         let reply = if let Some(error) = error {
             // Map WS error to ControlRequestReply::Error for compatibility
-            let err_reply = adora_message::coordinator_to_cli::ControlRequestReply::Error(error);
+            let err_reply = dora_message::coordinator_to_cli::ControlRequestReply::Error(error);
             Ok(serde_json::to_vec(&err_reply).unwrap_or_default())
         } else if let Some(raw) = result {
             // Preserve raw JSON bytes to maintain u128 fidelity for uhlc::ID

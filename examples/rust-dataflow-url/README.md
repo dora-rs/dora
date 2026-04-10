@@ -1,6 +1,6 @@
 # Rust Dataflow (Programmatic Build + Run)
 
-Same three-node pipeline as [rust-dataflow](../rust-dataflow), but launched programmatically via `adora_cli::build()` and `adora_cli::run()` in `run.rs` instead of the CLI.
+Same three-node pipeline as [rust-dataflow](../rust-dataflow), but launched programmatically via `dora_cli::build()` and `dora_cli::run()` in `run.rs` instead of the CLI.
 
 ## Architecture
 
@@ -19,10 +19,10 @@ timer (10ms) --> rust-node --> random --> rust-status-node --> status --> rust-s
 
 ## How It Works
 
-The `run.rs` harness calls adora CLI functions as a library:
+The `run.rs` harness calls dora CLI functions as a library:
 
 ```rust
-use adora_cli::{build, run};
+use dora_cli::{build, run};
 
 fn main() -> eyre::Result<()> {
     build("dataflow.yml".to_string(), None, None, false, true)?;
@@ -31,7 +31,7 @@ fn main() -> eyre::Result<()> {
 }
 ```
 
-This demonstrates embedding adora's build and run steps in a Rust program -- useful for testing, CI, or custom orchestration.
+This demonstrates embedding dora's build and run steps in a Rust program -- useful for testing, CI, or custom orchestration.
 
 ## Run
 
@@ -42,15 +42,15 @@ cargo run --example rust-dataflow-url
 Or using the CLI directly:
 
 ```bash
-adora build dataflow.yml
-adora run dataflow.yml
+dora build dataflow.yml
+dora run dataflow.yml
 ```
 
 ## What This Demonstrates
 
 | Feature | Where |
 |---------|-------|
-| `adora_cli::build()` programmatic API | `run.rs` |
-| `adora_cli::run()` programmatic API | `run.rs` |
+| `dora_cli::build()` programmatic API | `run.rs` |
+| `dora_cli::run()` programmatic API | `run.rs` |
 | `build:` commands in YAML | YAML (all nodes) |
 | Same topology, programmatic launch | vs rust-dataflow |

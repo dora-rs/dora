@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Adora and ROS2 benchmark CSV results side-by-side."""
+"""Compare Dora and ROS2 benchmark CSV results side-by-side."""
 
 import csv
 import sys
@@ -37,24 +37,24 @@ def fmt_us(ns):
 
 def main():
     if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <adora.csv> <ros2.csv>")
+        print(f"Usage: {sys.argv[0]} <dora.csv> <ros2.csv>")
         sys.exit(1)
 
-    adora = load_csv(sys.argv[1])
+    dora = load_csv(sys.argv[1])
     ros2 = load_csv(sys.argv[2])
 
     # Latency comparison
     print("Latency Comparison (avg / p99):")
-    print(f"{'Size':>8}  {'Adora avg':>12}  {'ROS2 avg':>12}  {'Speedup':>8}  "
-          f"{'Adora p99':>12}  {'ROS2 p99':>12}  {'Speedup':>8}")
+    print(f"{'Size':>8}  {'Dora avg':>12}  {'ROS2 avg':>12}  {'Speedup':>8}  "
+          f"{'Dora p99':>12}  {'ROS2 p99':>12}  {'Speedup':>8}")
     print("-" * 90)
 
     lat_keys = sorted(
-        [k for k in adora if k[0] == "latency" and k in ros2],
+        [k for k in dora if k[0] == "latency" and k in ros2],
         key=lambda k: k[1],
     )
     for key in lat_keys:
-        a = adora[key]
+        a = dora[key]
         r = ros2[key]
         a_avg, a_p99 = a["values"][AVG], a["values"][P99]
         r_avg, r_p99 = r["values"][AVG], r["values"][P99]
@@ -68,15 +68,15 @@ def main():
     # Throughput comparison
     print()
     print("Throughput Comparison (msg/s):")
-    print(f"{'Size':>8}  {'Adora msg/s':>14}  {'ROS2 msg/s':>14}  {'Speedup':>8}")
+    print(f"{'Size':>8}  {'Dora msg/s':>14}  {'ROS2 msg/s':>14}  {'Speedup':>8}")
     print("-" * 50)
 
     tp_keys = sorted(
-        [k for k in adora if k[0] == "throughput" and k in ros2],
+        [k for k in dora if k[0] == "throughput" and k in ros2],
         key=lambda k: k[1],
     )
     for key in tp_keys:
-        a = adora[key]
+        a = dora[key]
         r = ros2[key]
         a_mps = a["values"][MSG_PER_SEC]
         r_mps = r["values"][MSG_PER_SEC]

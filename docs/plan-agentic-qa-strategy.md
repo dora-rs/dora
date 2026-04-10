@@ -1,9 +1,9 @@
 # Agentic QA Strategy
 
-**Status**: Draft — POC in adora, roll out to dora post-consolidation
+**Status**: Draft — POC in dora, roll out to dora post-consolidation
 **Date**: 2026-04-07
 **Author**: heyong4725 (with AI assistance)
-**Scope**: How to verify code quality and correctness at high confidence when the code is being authored by AI agents at high velocity. Applies first to `dora-rs/adora` as a POC, then to `dora-rs/dora` after the 1.0 consolidation (see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md)).
+**Scope**: How to verify code quality and correctness at high confidence when the code is being authored by AI agents at high velocity. Applies first to `dora-rs/dora` as a POC, then to `dora-rs/dora` after the 1.0 consolidation (see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md)).
 
 ---
 
@@ -33,7 +33,7 @@ These are the core of this plan.
 
 ---
 
-## 2. Current state (adora, 2026-04-07)
+## 2. Current state (dora, 2026-04-07)
 
 ### 2.1 What exists
 
@@ -164,9 +164,9 @@ Target runtime: 15 minutes for the full gate. Current CI is ~12 minutes (Format,
       - name: Generate coverage
         run: |
           cargo llvm-cov --workspace \
-            --exclude adora-node-api-python \
-            --exclude adora-operator-api-python \
-            --exclude adora-ros2-bridge-python \
+            --exclude dora-node-api-python \
+            --exclude dora-operator-api-python \
+            --exclude dora-ros2-bridge-python \
             --lcov --output-path lcov.info
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
@@ -185,7 +185,7 @@ Target runtime: 15 minutes for the full gate. Current CI is ~12 minutes (Format,
 
 **Metrics to publish:** total line coverage, total branch coverage, per-crate coverage in the PR comment.
 
-**POC time:** 1 day in adora. Baseline number will likely be in the 40-60% range given current state.
+**POC time:** 1 day in dora. Baseline number will likely be in the 40-60% range given current state.
 
 ### T1.2 Mutation testing with `cargo-mutants` on changed files (DAYS 2-4)
 
@@ -212,17 +212,17 @@ Target runtime: 15 minutes for the full gate. Current CI is ~12 minutes (Format,
       - name: Run mutants on diff
         run: |
           cargo mutants --in-diff origin/main \
-            --package adora-core --package adora-daemon \
-            --package adora-coordinator --package adora-message \
+            --package dora-core --package dora-daemon \
+            --package dora-coordinator --package dora-message \
             --timeout 120 \
             --jobs 4 \
-            -- --exclude adora-node-api-python \
-               --exclude adora-operator-api-python
+            -- --exclude dora-node-api-python \
+               --exclude dora-operator-api-python
         continue-on-error: false
 ```
 
 **Scoping notes:**
-- Start with the crates where correctness matters most: `adora-core`, `adora-daemon`, `adora-coordinator`, `adora-message`, `adora-coordinator-store`, `shared-memory-server`.
+- Start with the crates where correctness matters most: `dora-core`, `dora-daemon`, `dora-coordinator`, `dora-message`, `dora-coordinator-store`, `shared-memory-server`.
 - Exclude: Python bindings (too slow), examples, tests.
 - `--in-diff` scopes mutations to files changed in the PR. Full-repo runs take hours; diff-scoped runs take minutes.
 - `--timeout 120` kills tests that take >2 minutes per mutation (catches infinite loops triggered by a mutation).
@@ -231,14 +231,14 @@ Target runtime: 15 minutes for the full gate. Current CI is ~12 minutes (Format,
 
 **POC time:** 2-3 days (1 day to wire up, 1-2 days to tune exclusions and initial skip list).
 
-**Expected initial pain:** the first mutation run on adora will find dozens of escaped mutants. This is the point. Triage them into: (a) real test gaps to fix, (b) untestable code to refactor, (c) grandfathered legacy to accept. The skip list should shrink over time.
+**Expected initial pain:** the first mutation run on dora will find dozens of escaped mutants. This is the point. Triage them into: (a) real test gaps to fix, (b) untestable code to refactor, (c) grandfathered legacy to accept. The skip list should shrink over time.
 
 **Triage guidance (added 2026-04-08 from POC experience)**: initial runs typically find 60-70% escaped mutants on library crates with basic unit test coverage. Sort them into four buckets:
 
-1. **Real test gaps** (most) — function had tests but they weren't thorough. Add focused tests that distinguish each match arm / comparison / boundary. Example: `parse_byte_size` in `adora-core::descriptor::validate` — 14 escaped mutants fixed by writing one test per unit (B/KB/MB/GB).
-2. **Tautological tests** (some) — code had high coverage but tests mirror the implementation. Rewrite tests to assert behavior from the spec, not from the implementation. Example: `types_match` in `adora-core::types` — 2 of 3 escaped mutants were in unparseable-URN fallback paths no test exercised.
+1. **Real test gaps** (most) — function had tests but they weren't thorough. Add focused tests that distinguish each match arm / comparison / boundary. Example: `parse_byte_size` in `dora-core::descriptor::validate` — 14 escaped mutants fixed by writing one test per unit (B/KB/MB/GB).
+2. **Tautological tests** (some) — code had high coverage but tests mirror the implementation. Rewrite tests to assert behavior from the spec, not from the implementation. Example: `types_match` in `dora-core::types` — 2 of 3 escaped mutants were in unparseable-URN fallback paths no test exercised.
 3. **Equivalent mutants** (rare, 3-10%) — mathematically indistinguishable from the original code. No test can catch them. Document in `.cargo/mutants.toml` with explicit `exclude_re` entry + inline reasoning. See `types_match` `||`→`&&` example.
-4. **Cargo-mutants scoping artifacts** — low caught-rate on binary crates like `adora-daemon` (5.8% initially) is an artifact of `cargo mutants --package` not running workspace-level tests. Fix: set `test_workspace = true` in `.cargo/mutants.toml`. Verified 2026-04-08 that `fault_tolerance.rs` goes from 21 missed/0 caught (package-scoped) to 0 missed/21 caught (workspace-scoped).
+4. **Cargo-mutants scoping artifacts** — low caught-rate on binary crates like `dora-daemon` (5.8% initially) is an artifact of `cargo mutants --package` not running workspace-level tests. Fix: set `test_workspace = true` in `.cargo/mutants.toml`. Verified 2026-04-08 that `fault_tolerance.rs` goes from 21 missed/0 caught (package-scoped) to 0 missed/21 caught (workspace-scoped).
 
 **`exclude_re` pattern discipline**: when adding an equivalent-mutant waiver, match on the mutation **name** only, never pin to line:column numbers. Line numbers shift when unrelated code above the target is edited, silently breaking the waiver and reintroducing the mutant as noise. Learned in commit `3ff3785`.
 
@@ -445,7 +445,7 @@ fi
         with:
           tool: cargo-semver-checks
       - run: |
-          for crate in adora-node-api adora-operator-api adora-core adora-message; do
+          for crate in dora-node-api dora-operator-api dora-core dora-message; do
             echo "=== $crate ==="
             cargo semver-checks check-release -p $crate || FAILED=1
           done
@@ -468,7 +468,7 @@ fi
 | T1.6 SemVer check | 0.5 day | ~1 min | Medium |
 | **Total** | **~5.5 days** | **~10 min/PR** | — |
 
-**Priority order for POC in adora:** T1.1 → T1.3 → T1.4 → T1.2 → T1.5 → T1.6. Coverage first because it establishes the baseline; supply chain and adversarial review next because they're cheap and high-signal; mutation testing fourth because it's the most valuable but also the most work to tune; unwrap budget and SemVer as the final polish.
+**Priority order for POC in dora:** T1.1 → T1.3 → T1.4 → T1.2 → T1.5 → T1.6. Coverage first because it establishes the baseline; supply chain and adversarial review next because they're cheap and high-signal; mutation testing fourth because it's the most valuable but also the most work to tune; unwrap budget and SemVer as the final polish.
 
 ---
 
@@ -489,11 +489,11 @@ Target runtime: <4 hours. Runs once per night on main. Failures page the contrac
 3. If the latter: constrain the strategy, document why in a comment, and add a regression unit test pinning the equivalence as intentional.
 4. If the former: it's a real finding. Fix or document as invariant.
 
-Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>()` produced values like `-5.78e+120` that lose 1 ULP through JSON Number roundtrip. Not an adora bug, a property of JSON. Strategy was constrained to `i32 as f64` (always representable losslessly). Then the *real* finding surfaced: `WsResponse { result: Some(Value::Null) }` does not round-trip through the wire (serde collapses `Some(Null)` to `None`). That was pinned as a documented invariant with a regression unit test.
+Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>()` produced values like `-5.78e+120` that lose 1 ULP through JSON Number roundtrip. Not an dora bug, a property of JSON. Strategy was constrained to `i32 as f64` (always representable losslessly). Then the *real* finding surfaced: `WsResponse { result: Some(Value::Null) }` does not round-trip through the wire (serde collapses `Some(Null)` to `None`). That was pinned as a documented invariant with a regression unit test.
 
-**High-value targets for adora/dora:**
+**High-value targets for dora/dora:**
 
-1. **`adora-message` encode/decode round-trip.** For every message type:
+1. **`dora-message` encode/decode round-trip.** For every message type:
    ```rust
    proptest! {
      #[test]
@@ -504,9 +504,9 @@ Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>(
      }
    }
    ```
-   Add an `Arbitrary` impl (or derive via `proptest-derive`) for each type. Expect to find at least one serialization bug in adora's current protocol set.
+   Add an `Arbitrary` impl (or derive via `proptest-derive`) for each type. Expect to find at least one serialization bug in dora's current protocol set.
 
-2. **`adora-core` YAML descriptor parsing.** Property: "parsing never panics on any UTF-8 input."
+2. **`dora-core` YAML descriptor parsing.** Property: "parsing never panics on any UTF-8 input."
    ```rust
    proptest! {
      #[test]
@@ -590,7 +590,7 @@ cargo fuzz add yaml_descriptor
 
 **What:** `miri` is a Rust interpreter that detects undefined behavior (data races, use-after-free, out-of-bounds, pointer provenance violations). Run on the crates that contain `unsafe` blocks.
 
-**Why:** adora has ~185 `unsafe` blocks at the time of writing, concentrated in `shared-memory-server` (custom POSIX shmem IPC). The 2026-03-21 audit found memory-safety issues in exactly that area.
+**Why:** dora has ~185 `unsafe` blocks at the time of writing, concentrated in `shared-memory-server` (custom POSIX shmem IPC). The 2026-03-21 audit found memory-safety issues in exactly that area.
 
 **Major amendment 2026-04-08**: the initial target list in this plan was wrong. `shared-memory-server` **cannot** be analyzed by miri — every test in that crate calls `ShmemConf::create` which invokes libc's `shm_open`, and miri does not support foreign function calls to POSIX shmem syscalls on any platform. Every test entry point aborts with "unsupported operation" before the unsafe code under test is reached.
 
@@ -603,10 +603,10 @@ cargo fuzz add yaml_descriptor
 
 **The shared-memory-server coverage gap is real and requires a different mitigation.** Two options:
 
-- **Preferred**: adopt Zenoh's native shared memory feature. Upstream dora already did this in `dora-rs/dora#1378`. Deletes ~660 lines and ~11 unsafe blocks from `channel.rs`, eliminates the uncoverable code by removing it. This is sequenced into the dora 1.0 consolidation as Phase 3b — see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md).
+- **Preferred**: adopt Zenoh's native shared memory feature. Upstream dora already did this in `dora-rs/adora#1378`. Deletes ~660 lines and ~11 unsafe blocks from `channel.rs`, eliminates the uncoverable code by removing it. This is sequenced into the dora 1.0 consolidation as Phase 3b — see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md).
 - **Short-term**: refactor `shared-memory-server` to separate the pure-Rust pointer-arithmetic core from the libc wrapper. Test the core under miri + proptest; leave the wrapper thin. ~2-3 days of work.
 
-**Infrastructure-as-forcing-function meta-finding**: when applying miri to a new target, always **write the miri-required unit tests first, then run miri**. Writing the tests forces close-reading of the unsafe code, which is when bugs are most likely to be spotted. Miri itself has never caught a bug in this POC — but the process of preparing it to run has caught two (`metadata::from_array` off-by-one and `adora_send_operator_output` null UB).
+**Infrastructure-as-forcing-function meta-finding**: when applying miri to a new target, always **write the miri-required unit tests first, then run miri**. Writing the tests forces close-reading of the unsafe code, which is when bugs are most likely to be spotted. Miri itself has never caught a bug in this POC — but the process of preparing it to run has caught two (`metadata::from_array` off-by-one and `dora_send_operator_output` null UB).
 
 **Setup:**
 ```yaml
@@ -620,7 +620,7 @@ cargo fuzz add yaml_descriptor
         with:
           toolchain: nightly
           components: miri
-      - run: cargo miri test -p adora-core metadata::tests
+      - run: cargo miri test -p dora-core metadata::tests
       # Other miri-compatible targets to be added as they gain
       # focused unit tests. Do NOT add shared-memory-server — its
       # tests require libc shm_open which miri does not support.
@@ -673,11 +673,11 @@ cargo fuzz add yaml_descriptor
           tool: cargo-mutants
       - name: Full mutation run
         run: |
-          cargo mutants --package adora-core \
-                        --package adora-daemon \
-                        --package adora-coordinator \
-                        --package adora-message \
-                        --package adora-coordinator-store \
+          cargo mutants --package dora-core \
+                        --package dora-daemon \
+                        --package dora-coordinator \
+                        --package dora-message \
+                        --package dora-coordinator-store \
                         --package shared-memory-server \
                         --jobs 4 \
                         --timeout 120 \
@@ -699,7 +699,7 @@ cargo fuzz add yaml_descriptor
 | T2.4 Fault injection | 3 days | 20 min | Highest for distributed bugs |
 | T2.5 Full mutation | (included in T1.2) | 2-4 hours | Medium (trend signal) |
 
-**POC priority in adora:** T2.3 (miri) first because it's fastest to set up and addresses the known audit gaps; T2.1 (proptest) second because it has high-value targets (protocol); T2.2 (fuzz) third; T2.4 (fault injection) fourth.
+**POC priority in dora:** T2.3 (miri) first because it's fastest to set up and addresses the known audit gaps; T2.1 (proptest) second because it has high-value targets (protocol); T2.2 (fuzz) third; T2.4 (fault injection) fourth.
 
 ---
 
@@ -744,18 +744,18 @@ use cargo_metadata::MetadataCommand;
 fn core_does_not_depend_on_binaries() {
     let metadata = MetadataCommand::new().exec().unwrap();
     let core = metadata.packages.iter()
-        .find(|p| p.name == "adora-core").unwrap();
+        .find(|p| p.name == "dora-core").unwrap();
     for dep in &core.dependencies {
-        assert!(!dep.name.starts_with("adora-cli"),
-                "adora-core must not depend on CLI");
-        assert!(!dep.name.starts_with("adora-daemon"),
-                "adora-core must not depend on daemon");
+        assert!(!dep.name.starts_with("dora-cli"),
+                "dora-core must not depend on CLI");
+        assert!(!dep.name.starts_with("dora-daemon"),
+                "dora-core must not depend on daemon");
     }
 }
 
 #[test]
 fn protocol_crate_has_no_runtime_deps() {
-    // similar logic for adora-message
+    // similar logic for dora-message
 }
 
 #[test]
@@ -807,16 +807,16 @@ This report is part of the release notes. Users see it. It is the claim-with-evi
 
 ---
 
-## 8. POC plan in adora
+## 8. POC plan in dora
 
-The goal of the POC is to validate these tools on the adora codebase, tune them, and produce a known-good CI configuration that can be ported to dora 1.0 post-consolidation.
+The goal of the POC is to validate these tools on the dora codebase, tune them, and produce a known-good CI configuration that can be ported to dora 1.0 post-consolidation.
 
 **POC executed 2026-04-07 to 2026-04-08**: compressed the 5-week phased plan below into a single intensive session. Actual results:
 
-- Tier 1 gates: all 6 wired (fmt, clippy, test, audit, unwrap, coverage+semver soft). CI integration landed on the `main` branch of adora.
+- Tier 1 gates: all 6 wired (fmt, clippy, test, audit, unwrap, coverage+semver soft). CI integration landed on the `main` branch of dora.
 - Tier 2 gates: 3 of 4 wired (proptest on `ws_protocol`, miri on `metadata.rs`, mutation baselines on 4 critical crates). Fault injection designed (`plan-fault-injection.md`) but not yet implemented.
 - Tier 3 gates: dogfood campaign designed (`plan-dogfood-campaign.md`); first execution tied to the dora 1.0 release cycle.
-- Case studies landed: 8 (+22 tautological-test fixes), 3 of which are genuine production bugs (`metadata::from_array` double off-by-one, `adora_send_operator_output` null UB, `NodeId::TryFrom` misleading doc), all caught by focused unsafe-code audit during miri or mutation prep — not by the tools themselves.
+- Case studies landed: 8 (+22 tautological-test fixes), 3 of which are genuine production bugs (`metadata::from_array` double off-by-one, `dora_send_operator_output` null UB, `NodeId::TryFrom` misleading doc), all caught by focused unsafe-code audit during miri or mutation prep — not by the tools themselves.
 
 The full case-study table, metrics before/after, and meta-findings live in Section 10a of this doc.
 
@@ -831,15 +831,15 @@ Tasks, in order:
 3. **Day 2 — Unwrap budget script.** Run, capture 743 as baseline. Commit `.unwrap-budget`. Add CI gate.
 4. **Day 2 — Adversarial review wiring.** Write the Python script, add the workflow. Test on a sample PR. Tune the prompt based on output.
 5. **Day 3-4 — Coverage diff gate in CI.** Add the workflow from T1.1. Test on a throwaway PR. Tune the thresholds.
-6. **Day 5 — Initial mutation testing run.** Scope to `adora-core`. Run `cargo mutants --list` to count mutations. Run a small subset to validate the setup. Capture baseline mutation score.
+6. **Day 5 — Initial mutation testing run.** Scope to `dora-core`. Run `cargo mutants --list` to count mutations. Run a small subset to validate the setup. Capture baseline mutation score.
 
 **Deliverable:** `docs/qa-baseline-2026-04-07.md` with all numbers; PR that adds the above to CI.
 
 ### Phase P2: Mutation testing and proptest (week 2)
 
-1. **Day 1-2 — Mutation testing on critical crates.** Extend to `adora-daemon`, `adora-coordinator`, `adora-message`. Run to completion. Collect escaped mutants.
+1. **Day 1-2 — Mutation testing on critical crates.** Extend to `dora-daemon`, `dora-coordinator`, `dora-message`. Run to completion. Collect escaped mutants.
 2. **Day 3 — Triage escaped mutants.** For each: real test gap / untestable / grandfather. Produce a `mutants.toml` skip list.
-3. **Day 4-5 — Property tests for `adora-message`.** Implement round-trip tests for all message types. Find and fix any surfaced bugs.
+3. **Day 4-5 — Property tests for `dora-message`.** Implement round-trip tests for all message types. Find and fix any surfaced bugs.
 
 **Deliverable:** `mutants.toml` baseline; `libraries/message/tests/proptest_roundtrip.rs`; PR that adds mutation testing as a Tier 1 gate.
 
@@ -871,7 +871,7 @@ Tasks, in order:
 
 ### POC success criteria
 
-At the end of 5 weeks, adora should have:
+At the end of 5 weeks, dora should have:
 
 - [ ] Tier 1 fully in CI (coverage, mutation, supply chain, adversarial review, unwrap budget, semver)
 - [ ] Tier 2 nightly workflow running (proptest, fuzz, miri, fault injection, full mutation weekly)
@@ -880,18 +880,18 @@ At the end of 5 weeks, adora should have:
 - [ ] A `docs/qa-runbook.md` explaining how each gate works and how to diagnose failures
 - [ ] A `docs/agentic-qa-lessons.md` documenting what worked, what didn't, and prompt/config tuning that made a difference
 
-**Lessons from the POC feed directly into the dora rollout.** Nothing gets ported to dora that hasn't been validated on adora.
+**Lessons from the POC feed directly into the dora rollout.** Nothing gets ported to dora that hasn't been validated on dora.
 
 ---
 
 ## 9. Rollout to dora (post-consolidation)
 
-After dora 1.0 is released (see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md)), the QA infrastructure validated in adora ports to dora. The port is mostly mechanical — the YAML workflows and scripts move verbatim, with adora → dora find/replace.
+After dora 1.0 is released (see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md)), the QA infrastructure validated in dora ports to dora. The port is mostly mechanical — the YAML workflows and scripts move verbatim, with dora → dora find/replace.
 
 ### Rollout phases
 
 **Week 1 post-1.0 release — Tier 1 migration:**
-- Copy `.github/workflows/ci.yml` additions from adora to dora.
+- Copy `.github/workflows/ci.yml` additions from dora to dora.
 - Copy `deny.toml`, `.unwrap-budget`, `scripts/adversarial-review.py`, `mutants.toml` baselines.
 - Re-establish baselines on the dora tree (different commits = different numbers).
 - First week of dora PRs run through the full Tier 1 gate.
@@ -906,11 +906,11 @@ After dora 1.0 is released (see [`plan-dora-1.0-consolidation.md`](plan-dora-1.0
 - Port the architectural fitness tests.
 - Set new ratchet targets for unwrap budget based on dora 1.0 tree.
 
-**Ongoing:** dora's cadence from this point forward is the same as adora's POC cadence. Agent-authored PRs gate on Tier 1. Nightly Tier 2. Pre-release Tier 3. External audit per minor version.
+**Ongoing:** dora's cadence from this point forward is the same as dora's POC cadence. Agent-authored PRs gate on Tier 1. Nightly Tier 2. Pre-release Tier 3. External audit per minor version.
 
 ### What changes at the dora scale
 
-Three things are different about dora vs adora POC:
+Three things are different about dora vs dora POC:
 
 1. **Higher PR volume.** More contributors, more agents. CI budget becomes more precious. Consider caching mutations by file hash to skip re-running on unchanged files.
 2. **Higher scrutiny.** 3188 stars of users will read CI failures in public PRs. Failure messages must be user-friendly, not debug-grade.
@@ -941,7 +941,7 @@ Each contributor agent session needs, at minimum:
 - A read-on-start context file pinned to the top of every session prompt. Think of this as the project's "long-term memory."
 - Repeated clear decisions documented as ADRs (Architecture Decision Records) in `docs/adr/`.
 
-Adora already has most of this. Dora post-consolidation inherits it.
+Dora already has most of this. Dora post-consolidation inherits it.
 
 ### 10.3 Architectural memory
 
@@ -983,7 +983,7 @@ Every agent session should `Read docs/adr/*.md` at start if it's touching anythi
 
 Agents cannot make the following decisions unilaterally, and CI should flag any PR that attempts them:
 
-- Adding a new dependency to a critical crate (`adora-core`, `adora-message`, `shared-memory-server`).
+- Adding a new dependency to a critical crate (`dora-core`, `dora-message`, `shared-memory-server`).
 - Changing a wire protocol.
 - Removing a public API.
 - Modifying `unsafe` blocks.
@@ -1022,7 +1022,7 @@ Six findings across the QA stack, in commit order:
 |---|---|---|---|
 | 1 | `time 0.3.45` DoS (RUSTSEC-2026-0009) | `cargo-audit` | Medium 6.8 — fixed by upgrade |
 | 2 | `lru 0.12.5` unsoundness (RUSTSEC-2026-0002) | `cargo-audit` | Latent UB — fixed by ratatui 0.30 upgrade |
-| 3 | `types_match` tautological tests in `adora-core` | `cargo-mutants` | Low — 2 of 3 missed mutants fixed, 1 equivalent mutant documented |
+| 3 | `types_match` tautological tests in `dora-core` | `cargo-mutants` | Low — 2 of 3 missed mutants fixed, 1 equivalent mutant documented |
 | 4 | `.cargo/mutants.toml` regex pinned to specific line | Adversarial LLM review (claude) | Low — silently breaks if unrelated edits shift code |
 | 5 | `WsResponse { result: Some(Value::Null) }` serde asymmetry | Property testing (proptest, first 12 cases) | Low — documented as intentional invariant with regression test |
 | 6 | **`metadata::from_array` double off-by-one in region bounds** | **Reading the code while writing miri tests** | **High — rejects valid Arrow buffers at region start / empty buffers at region end** |
@@ -1049,7 +1049,7 @@ Based on the six findings above, here is the distinct signal each gate produced 
 | Miri (the actual tool) | **Nothing in this POC** — either couldn't run (shared-memory-server) or passed cleanly (metadata.rs) | — |
 | Semver check | Nothing | Baseline established |
 
-**Four of six findings (#3, #4, #5, #6) would have been missed by every gate that existed in adora prior to this POC.** That is the core validation of the agentic QA strategy: the new gates catch things the old gates couldn't.
+**Four of six findings (#3, #4, #5, #6) would have been missed by every gate that existed in dora prior to this POC.** That is the core validation of the agentic QA strategy: the new gates catch things the old gates couldn't.
 
 ### 10a.3 Meta-finding: "infrastructure as forcing function"
 
@@ -1082,18 +1082,18 @@ This matters because:
 **Options** (none chosen yet, this is for discussion):
 
 - **Option A:** Refactor `shared-memory-server` to have a pure-Rust core (all pointer arithmetic) and a libc wrapper (shm_open/mmap). The pure-Rust core gets miri + proptest + fuzz; the wrapper is thin. Moderate work.
-- **Option B:** Adopt Zenoh's native shared memory feature (see `plan-zenoh-shared-memory.md` — upstream dora already did this in `dora-rs/dora#1378`). Deletes 660 lines and ~11 unsafe blocks from `channel.rs`, removes the pinned `raw_sync_2 =0.1.5` fork dep, aligns with upstream. **This is also the right thing to do as part of the dora 1.0 consolidation.**
+- **Option B:** Adopt Zenoh's native shared memory feature (see `plan-zenoh-shared-memory.md` — upstream dora already did this in `dora-rs/adora#1378`). Deletes 660 lines and ~11 unsafe blocks from `channel.rs`, removes the pinned `raw_sync_2 =0.1.5` fork dep, aligns with upstream. **This is also the right thing to do as part of the dora 1.0 consolidation.**
 - **Option C:** Add a mock-shmem backend conditionally compiled for miri targets. Complex, maintenance burden.
 
-**Recommendation: Option B, sequenced as part of dora 1.0 consolidation.** Fold the zenoh-SHM migration into the consolidation merge. The 30 unsafe blocks stop being an adora problem because they stop being code. See `plan-dora-1.0-consolidation.md` for the amendment.
+**Recommendation: Option B, sequenced as part of dora 1.0 consolidation.** Fold the zenoh-SHM migration into the consolidation merge. The 30 unsafe blocks stop being an dora problem because they stop being code. See `plan-dora-1.0-consolidation.md` for the amendment.
 
 ### 10a.5 Meta-finding: proptest strategies need scope discipline
 
 The `ws_protocol` property tests initially failed on two things:
 
-1. **f64 precision near the edge** — arbitrary `f64` values like `-5.78e+120` lose 1 ULP through the JSON Number roundtrip. Not an adora bug, a JSON limitation. The proptest strategy was too broad; it was testing a property of JSON itself, not a property of adora's serialization.
+1. **f64 precision near the edge** — arbitrary `f64` values like `-5.78e+120` lose 1 ULP through the JSON Number roundtrip. Not an dora bug, a JSON limitation. The proptest strategy was too broad; it was testing a property of JSON itself, not a property of dora's serialization.
 
-2. **`Some(Value::Null)` asymmetry** — a real bug in adora that the broad strategy uncovered.
+2. **`Some(Value::Null)` asymmetry** — a real bug in dora that the broad strategy uncovered.
 
 **Lesson**: broad proptest strategies find a mix of real bugs and "properties of the underlying platform." Triaging which is which is a skill. The first reaction to a proptest failure should be:
 - Reproduce manually
@@ -1221,9 +1221,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - run: |
           cargo llvm-cov --workspace \
-            --exclude adora-node-api-python \
-            --exclude adora-operator-api-python \
-            --exclude adora-ros2-bridge-python \
+            --exclude dora-node-api-python \
+            --exclude dora-operator-api-python \
+            --exclude dora-ros2-bridge-python \
             --lcov --output-path lcov.info
       - uses: codecov/codecov-action@v4
         with:
@@ -1246,8 +1246,8 @@ jobs:
           tool: cargo-mutants
       - run: |
           cargo mutants --in-diff origin/main \
-            --package adora-core --package adora-daemon \
-            --package adora-coordinator --package adora-message \
+            --package dora-core --package dora-daemon \
+            --package dora-coordinator --package dora-message \
             --timeout 120 --jobs 4
 
   supply-chain:
@@ -1295,7 +1295,7 @@ jobs:
         with:
           tool: cargo-semver-checks
       - run: |
-          for crate in adora-node-api adora-operator-api adora-core adora-message; do
+          for crate in dora-node-api dora-operator-api dora-core dora-message; do
             cargo semver-checks check-release -p $crate || true
           done
 
@@ -1336,8 +1336,8 @@ jobs:
           toolchain: nightly
           components: miri
       - run: cargo miri test -p shared-memory-server
-      - run: cargo miri test -p adora-arrow-convert
-      - run: cargo miri test -p adora-message
+      - run: cargo miri test -p dora-arrow-convert
+      - run: cargo miri test -p dora-message
 
   mutants-full:
     if: github.event_name == 'schedule' && github.event.schedule == '0 2 * * 0'
@@ -1351,9 +1351,9 @@ jobs:
         with:
           tool: cargo-mutants
       - run: |
-          cargo mutants --package adora-core --package adora-daemon \
-                        --package adora-coordinator --package adora-message \
-                        --package adora-coordinator-store \
+          cargo mutants --package dora-core --package dora-daemon \
+                        --package dora-coordinator --package dora-message \
+                        --package dora-coordinator-store \
                         --package shared-memory-server \
                         --jobs 4 --timeout 120 --json > mutants.json
 ```

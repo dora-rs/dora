@@ -1,4 +1,4 @@
-"""Log viewer node that receives ALL logs via adora/logs virtual input.
+"""Log viewer node that receives ALL logs via dora/logs virtual input.
 
 No manual wiring needed -- this node automatically receives structured
 log messages from every node in the dataflow.
@@ -6,7 +6,7 @@ log messages from every node in the dataflow.
 
 import json
 
-from adora import Node
+from dora import Node
 
 node = Node()
 

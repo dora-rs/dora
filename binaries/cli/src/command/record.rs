@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, io::Write, path::PathBuf, time::SystemTime};
 
-use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::NodeId};
-use adora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use clap::Args;
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::NodeId};
+use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
 
 use crate::command::{Executable, Run, default_tracing};
@@ -15,19 +15,19 @@ use crate::command::{Executable, Run, default_tracing};
 /// Examples:
 ///
 ///   Record all topics:
-///     adora record dataflow.yml
+///     dora record dataflow.yml
 ///
 ///   Record specific topics:
-///     adora record dataflow.yml --topics sensor/image,lidar/points
+///     dora record dataflow.yml --topics sensor/image,lidar/points
 ///
 ///   Specify output file:
-///     adora record dataflow.yml -o capture.adorec
+///     dora record dataflow.yml -o capture.adorec
 ///
 ///   Just generate the modified YAML:
-///     adora record dataflow.yml --output-yaml modified.yml
+///     dora record dataflow.yml --output-yaml modified.yml
 ///
 ///   Stream data through coordinator WS (for diskless targets):
-///     adora record dataflow.yml --proxy
+///     dora record dataflow.yml --proxy
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Record {
@@ -167,15 +167,15 @@ fn run_record(args: Record) -> eyre::Result<()> {
     // Build env vars
     let mut env_mapping = serde_yaml::Mapping::new();
     env_mapping.insert(
-        serde_yaml::Value::String("ADORA_RECORD_FILE".to_string()),
+        serde_yaml::Value::String("DORA_RECORD_FILE".to_string()),
         serde_yaml::Value::String(output_path.to_string_lossy().to_string()),
     );
     env_mapping.insert(
-        serde_yaml::Value::String("ADORA_RECORD_TOPICS".to_string()),
+        serde_yaml::Value::String("DORA_RECORD_TOPICS".to_string()),
         serde_yaml::Value::String(topics_json),
     );
     env_mapping.insert(
-        serde_yaml::Value::String("ADORA_RECORD_DESCRIPTOR".to_string()),
+        serde_yaml::Value::String("DORA_RECORD_DESCRIPTOR".to_string()),
         serde_yaml::Value::String(String::from_utf8_lossy(&yaml_bytes).to_string()),
     );
 
@@ -183,7 +183,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let mut record_node = serde_yaml::Mapping::new();
     record_node.insert(
         serde_yaml::Value::String("id".to_string()),
-        serde_yaml::Value::String("__adora_record__".to_string()),
+        serde_yaml::Value::String("__dora_record__".to_string()),
     );
     record_node.insert(
         serde_yaml::Value::String("path".to_string()),
@@ -293,15 +293,15 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // For proxy mode, the user should have already started the dataflow
     let list_raw = session
         .request(
-            &serde_json::to_vec(&adora_message::cli_to_coordinator::ControlRequest::List)
+            &serde_json::to_vec(&dora_message::cli_to_coordinator::ControlRequest::List)
                 .wrap_err("failed to serialize List request")?,
         )
         .wrap_err("failed to list dataflows")?;
-    let list_reply: adora_message::coordinator_to_cli::ControlRequestReply =
+    let list_reply: dora_message::coordinator_to_cli::ControlRequestReply =
         serde_json::from_slice(&list_raw).wrap_err("failed to parse list reply")?;
 
     let active_ids = match list_reply {
-        adora_message::coordinator_to_cli::ControlRequestReply::DataflowList(list) => {
+        dora_message::coordinator_to_cli::ControlRequestReply::DataflowList(list) => {
             list.get_active()
         }
         _ => bail!("unexpected reply to List"),
@@ -309,8 +309,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     if active_ids.is_empty() {
         bail!(
-            "no running dataflows found. Start a dataflow first with `adora start`, \
-             then use `adora record --proxy` to record it."
+            "no running dataflows found. Start a dataflow first with `dora start`, \
+             then use `dora record --proxy` to record it."
         );
     }
 
@@ -426,7 +426,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 }
 
 fn find_record_node_binary() -> eyre::Result<PathBuf> {
-    super::node_binary::find("adora-record-node", "adora-record-node")
+    super::node_binary::find("dora-record-node", "dora-record-node")
 }
 
 fn format_topics(topics: Vec<String>) -> String {

@@ -1,6 +1,6 @@
 # cargo-deny configuration — see https://embarkstudios.github.io/cargo-deny/
 #
-# Enforces license, source, and dependency policy for the adora workspace.
+# Enforces license, source, and dependency policy for the dora workspace.
 # Run via: cargo deny check
 # Or via:  scripts/qa/audit.sh
 

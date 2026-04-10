@@ -3,7 +3,7 @@ nodes:
   - id: webcam_0
     path: webcam.py
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:
@@ -30,7 +30,7 @@ nodes:
   - id: webcam_1
     path: webcam.py
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - image
     env:

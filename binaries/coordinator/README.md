@@ -1,6 +1,6 @@
 # Coordinator
 
-Prototype for a process/library-based adora-rs implementation, instead of framework-based. The idea is that each operator is compiled as a separate executable. The `adora-coordinator` runtime is responsible for reading the dataflow descriptor file and launching the operators accordingly. The operators use a common library called `adora-api`, which implements the communication layer based on zenoh.
+Prototype for a process/library-based dora-rs implementation, instead of framework-based. The idea is that each operator is compiled as a separate executable. The `dora-coordinator` runtime is responsible for reading the dataflow descriptor file and launching the operators accordingly. The operators use a common library called `dora-api`, which implements the communication layer based on zenoh.
 
 This approach has the following advantages:
 

@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 
-use adora_node_api::{
-    AdoraNode, Event, GOAL_ID, GOAL_STATUS, MetadataParameters, Parameter,
+use dora_node_api::{
+    DoraNode, Event, GOAL_ID, GOAL_STATUS, MetadataParameters, Parameter,
     arrow::array::{Array, Int64Array},
     get_string_param,
 };
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
-    let node_id = std::env::var("ADORA_NODE_ID").unwrap_or_else(|_| "client".into());
+    let node_id = std::env::var("DORA_NODE_ID").unwrap_or_else(|_| "client".into());
     let mut active_goals: HashMap<String, i64> = HashMap::new();
     let mut tick_count: i64 = 0;
 
@@ -20,7 +20,7 @@ fn main() -> eyre::Result<()> {
                     let start_value = 3 + tick_count;
                     tick_count += 1;
 
-                    let goal_id = AdoraNode::new_goal_id();
+                    let goal_id = DoraNode::new_goal_id();
                     let mut params = MetadataParameters::default();
                     params.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
 

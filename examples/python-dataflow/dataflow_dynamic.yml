@@ -3,7 +3,7 @@ nodes:
     build: pip install "git+https://github.com/dora-rs/dora-hub.git#egg=opencv-video-capture&subdirectory=node-hub/opencv-video-capture"
     path: opencv-video-capture
     inputs:
-      tick: adora/timer/millis/16
+      tick: dora/timer/millis/16
     outputs:
       - image
     env:

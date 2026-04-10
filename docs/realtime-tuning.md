@@ -1,6 +1,6 @@
 # Real-Time Tuning Guide
 
-Adora achieves 10-17x lower latency than ROS2 out of the box via zero-copy
+Dora achieves 10-17x lower latency than ROS2 out of the box via zero-copy
 shared memory and Apache Arrow. For latency-sensitive robotics deployments
 (1-10ms control loops), additional OS-level tuning can reduce jitter further.
 
@@ -17,15 +17,15 @@ shared memory and Apache Arrow. For latency-sensitive robotics deployments
 
 ## Daemon `--rt` Flag
 
-Adora provides an optional `--rt` flag that enables memory locking and
+Dora provides an optional `--rt` flag that enables memory locking and
 real-time thread priority:
 
 ```bash
 # Start daemon with real-time profile
-adora daemon --rt
+dora daemon --rt
 
 # Requires CAP_SYS_NICE + CAP_IPC_LOCK (or run as root)
-sudo adora daemon --rt
+sudo dora daemon --rt
 ```
 
 This sets:
@@ -91,7 +91,7 @@ clocksource=tsc tsc=reliable nohz_full=2-7 isolcpus=2-7 rcu_nocbs=2-7
 
 ```bash
 # Pin daemon to cores 2-3 (avoid core 0 for IRQs)
-taskset -c 2,3 adora daemon
+taskset -c 2,3 dora daemon
 
 # Pin a specific node to core 4
 taskset -c 4 ./my-node
@@ -104,10 +104,10 @@ taskset -p <pid>
 
 ```bash
 # Set SCHED_FIFO priority 50 (requires CAP_SYS_NICE)
-chrt -f 50 adora daemon
+chrt -f 50 dora daemon
 
 # Set nice level (less aggressive than SCHED_FIFO)
-nice -n -20 adora daemon
+nice -n -20 dora daemon
 ```
 
 ### Memory Locking
@@ -117,22 +117,22 @@ nice -n -20 adora daemon
 ulimit -l unlimited
 
 # Or in /etc/security/limits.conf:
-adora-user  soft  memlock  unlimited
-adora-user  hard  memlock  unlimited
+dora-user  soft  memlock  unlimited
+dora-user  hard  memlock  unlimited
 ```
 
 ## Systemd Service Configuration
 
 ```ini
 [Unit]
-Description=Adora Daemon
+Description=Dora Daemon
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/adora daemon --rt
-User=adora
-Group=adora
+ExecStart=/usr/local/bin/dora daemon --rt
+User=dora
+Group=dora
 
 # CPU affinity: pin to cores 2-3
 CPUAffinity=2 3
@@ -165,7 +165,7 @@ docker run \
   --cap-add IPC_LOCK \
   --ulimit memlock=-1:-1 \
   --cpuset-cpus="2,3" \
-  adora-image adora daemon --rt
+  dora-image dora daemon --rt
 ```
 
 ### Kubernetes
@@ -175,8 +175,8 @@ apiVersion: v1
 kind: Pod
 spec:
   containers:
-    - name: adora-daemon
-      command: ["adora", "daemon", "--rt"]
+    - name: dora-daemon
+      command: ["dora", "daemon", "--rt"]
       resources:
         limits:
           cpu: "2"
@@ -193,7 +193,7 @@ spec:
 
 ```bash
 # Control worker thread count (default: num_cpus)
-adora daemon --worker-threads 4
+dora daemon --worker-threads 4
 ```
 
 ## Zenoh Transport Tuning
@@ -212,25 +212,25 @@ For distributed deployments, Zenoh transport settings affect latency:
 ```
 
 ```bash
-ZENOH_CONFIG=zenoh-config.json5 adora daemon
+ZENOH_CONFIG=zenoh-config.json5 dora daemon
 ```
 
 ## Benchmarking Tips
 
 ```bash
 # Pin benchmark to specific cores for reproducible results
-taskset -c 2,3 adora run examples/benchmark/dataflow.yml --release
+taskset -c 2,3 dora run examples/benchmark/dataflow.yml --release
 
 # Disable CPU frequency scaling before benchmarking
 echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 
 # Use --stop-after for fixed-duration runs
-adora run examples/benchmark/dataflow.yml --stop-after 30s
+dora run examples/benchmark/dataflow.yml --stop-after 30s
 ```
 
-## What Adora Cannot Guarantee
+## What Dora Cannot Guarantee
 
-- **Hard real-time**: Adora runs on Linux (not an RTOS). Even with PREEMPT_RT,
+- **Hard real-time**: Dora runs on Linux (not an RTOS). Even with PREEMPT_RT,
   worst-case latency is microseconds, not nanoseconds.
 - **Deterministic allocation**: The Rust standard allocator is not real-time safe.
   Consider jemalloc or mimalloc for more predictable allocation patterns.

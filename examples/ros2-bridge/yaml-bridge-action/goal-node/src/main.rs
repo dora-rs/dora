@@ -6,12 +6,12 @@
 
 use std::sync::Arc;
 
-use adora_node_api::{self, AdoraNode, Event, adora_core::config::DataId};
 use arrow::array::{Array, Int32Array, ListArray, StructArray};
 use arrow::datatypes::{DataType, Field};
+use dora_node_api::{self, DoraNode, Event, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
     let output = DataId::from("goal".to_owned());
 
     let mut order: i32 = 5;

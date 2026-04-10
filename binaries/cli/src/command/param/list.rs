@@ -5,7 +5,7 @@ use crate::{
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
     formatting::OutputFormat,
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::bail;
@@ -15,13 +15,13 @@ use eyre::bail;
 /// Examples:
 ///
 /// List parameters for a node:
-///   adora param list camera_node
+///   dora param list camera_node
 ///
 /// List for a specific dataflow:
-///   adora param list camera_node -d my-dataflow
+///   dora param list camera_node -d my-dataflow
 ///
 /// Output as JSON:
-///   adora param list camera_node --format json
+///   dora param list camera_node --format json
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct List {

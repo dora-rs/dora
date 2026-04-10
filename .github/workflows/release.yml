@@ -32,33 +32,33 @@ jobs:
           # Topological order: leaves first, binaries last.
           # Skips Python crates (published to PyPI separately).
           CRATES=(
-            adora-message
-            adora-arrow-convert
+            dora-message
+            dora-arrow-convert
             shared-memory-server
-            adora-coordinator-store
-            adora-core
-            adora-recording
-            adora-download
-            adora-tracing
-            adora-metrics
-            adora-operator-api-types
-            adora-operator-api-macros
-            adora-operator-api
-            adora-node-api
-            adora-node-api-c
-            adora-operator-api-c
-            adora-node-api-cxx
-            adora-operator-api-cxx
-            adora-ros2-bridge-msg-gen
-            adora-ros2-bridge
-            adora-ros2-bridge-arrow
-            adora-ros2-bridge-node
-            adora-runtime
-            adora-coordinator
-            adora-daemon
-            adora-record-node
-            adora-replay-node
-            adora-cli
+            dora-coordinator-store
+            dora-core
+            dora-recording
+            dora-download
+            dora-tracing
+            dora-metrics
+            dora-operator-api-types
+            dora-operator-api-macros
+            dora-operator-api
+            dora-node-api
+            dora-node-api-c
+            dora-operator-api-c
+            dora-node-api-cxx
+            dora-operator-api-cxx
+            dora-ros2-bridge-msg-gen
+            dora-ros2-bridge
+            dora-ros2-bridge-arrow
+            dora-ros2-bridge-node
+            dora-runtime
+            dora-coordinator
+            dora-daemon
+            dora-record-node
+            dora-replay-node
+            dora-cli
           )
           for crate in "${CRATES[@]}"; do
             echo "::group::Publishing $crate"
@@ -85,7 +85,7 @@ jobs:
           - { runner: macos-14,      target: aarch64, os: macos,   zig: false }
           - { runner: windows-2022,  target: x64,     os: windows, zig: false }
         repository:
-          - { path: apis/python/node, name: adora-rs }
+          - { path: apis/python/node, name: dora-rs }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -121,11 +121,11 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/p/adora-rs
+      url: https://pypi.org/p/dora-rs
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: adora-rs*
+          pattern: dora-rs*
           merge-multiple: true
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
@@ -156,26 +156,26 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
       - name: Build CLI for ${{ matrix.target }}
-        run: cargo build -p adora-cli --release --target ${{ matrix.target }}
+        run: cargo build -p dora-cli --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Package binary (unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/adora artifacts/adora
-          tar czf artifacts/adora-${{ matrix.target }}.tar.gz -C artifacts adora
+          cp target/${{ matrix.target }}/release/dora artifacts/dora
+          tar czf artifacts/dora-${{ matrix.target }}.tar.gz -C artifacts dora
       - name: Package binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
-          Copy-Item "target/${{ matrix.target }}/release/adora.exe" "artifacts/adora.exe"
-          Compress-Archive -Path "artifacts/adora.exe" -DestinationPath "artifacts/adora-${{ matrix.target }}.zip"
+          Copy-Item "target/${{ matrix.target }}/release/dora.exe" "artifacts/dora.exe"
+          Compress-Archive -Path "artifacts/dora.exe" -DestinationPath "artifacts/dora-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v4
         with:
           name: dist-${{ matrix.target }}
-          path: artifacts/adora-*.*
+          path: artifacts/dora-*.*
 
   # ── 5. Create GitHub Release with changelog ───────────────────────────────
   github-release:
@@ -193,8 +193,8 @@ jobs:
           path: release-assets/
       - name: Copy install scripts to release assets
         run: |
-          cp install.sh release-assets/adora-cli-installer.sh
-          cp install.ps1 release-assets/adora-cli-installer.ps1
+          cp install.sh release-assets/dora-cli-installer.sh
+          cp install.ps1 release-assets/dora-cli-installer.ps1
       - name: Generate changelog
         uses: orhun/git-cliff-action@v4
         id: cliff

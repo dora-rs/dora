@@ -1,5 +1,5 @@
 use super::Executable;
-use adora_core::{
+use dora_core::{
     descriptor::{
         Descriptor, DescriptorExt,
         validate::{check_type_annotations_full, check_wiring},

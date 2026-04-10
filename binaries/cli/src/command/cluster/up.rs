@@ -11,7 +11,7 @@ use eyre::Context;
 use crate::{
     command::{
         Executable, default_tracing,
-        up::{adora_executable_path, detach_process},
+        up::{detach_process, dora_executable_path},
     },
     common::{connect_to_coordinator, connect_with_retry},
 };
@@ -26,7 +26,7 @@ use super::{format_labels_arg, query_connected_daemons, run_ssh, ssh_target};
 ///
 /// Examples:
 ///
-///   adora cluster up cluster.yml
+///   dora cluster up cluster.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Up {
@@ -62,7 +62,7 @@ impl Executable for Up {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
             let remote_cmd = format!(
-                "nohup adora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet > /tmp/adora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
@@ -154,7 +154,7 @@ impl Executable for Up {
 }
 
 fn start_coordinator(port: u16) -> eyre::Result<()> {
-    let path = adora_executable_path()?;
+    let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.args([
         "coordinator",
@@ -165,7 +165,7 @@ fn start_coordinator(port: u16) -> eyre::Result<()> {
         "--quiet",
     ]);
     detach_process(&mut cmd);
-    cmd.spawn().wrap_err("failed to start adora coordinator")?;
+    cmd.spawn().wrap_err("failed to start dora coordinator")?;
     println!("Started coordinator on 0.0.0.0:{port}");
     Ok(())
 }

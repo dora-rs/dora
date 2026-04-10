@@ -1,5 +1,5 @@
 use crate::command::Executable;
-use adora_message::id::{DataId, NodeId};
+use dora_message::id::{DataId, NodeId};
 
 mod add;
 mod connect;

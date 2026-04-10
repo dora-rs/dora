@@ -1,6 +1,6 @@
-# Adora Testing Guide
+# Dora Testing Guide
 
-This guide covers how to run, write, and troubleshoot tests across the Adora workspace.
+This guide covers how to run, write, and troubleshoot tests across the Dora workspace.
 
 ## Prerequisites
 
@@ -17,16 +17,16 @@ cargo fmt --all -- --check
 
 # 2. Lint (~60s first run, cached after)
 cargo clippy --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python \
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python \
   -- -D warnings
 
 # 3. Unit + integration tests (~90s first run)
 cargo test --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 ```
 
 All three must pass before opening a PR. Python packages are excluded because they require maturin.
@@ -38,7 +38,7 @@ All three must pass before opening a PR. Python packages are excluded because th
 | **Format** | Code style | `cargo fmt --all -- --check` | ~5s |
 | **Lint** | Warnings, correctness | `cargo clippy --all ...` | ~60s |
 | **Unit** | Individual functions | `cargo test --all ...` | ~90s |
-| **CLI** | Command parsing, validation | `cargo test -p adora-cli` | ~5s |
+| **CLI** | Command parsing, validation | `cargo test -p dora-cli` | ~5s |
 | **Integration** | Node I/O via env vars | `cargo test --test example-tests` | ~30s |
 | **Smoke** | Full CLI lifecycle | `cargo test --test example-smoke -- --test-threads=1` | ~3min |
 | **E2E** | Multi-dataflow scenarios | `cargo test --test ws-cli-e2e -- --ignored --test-threads=1` | ~2min |
@@ -53,23 +53,23 @@ Unit tests live alongside the code they test using `#[cfg(test)]` modules. Key c
 
 | Crate | Test count | What's tested |
 |-------|-----------|---------------|
-| adora-arrow-convert | ~26 | Round-trip Arrow type conversions |
-| adora-cli | ~96 | Command parsing, value parsers, log grep/filtering, JSON parsing, WebSocket client, cluster config |
-| adora-coordinator | ~24 | WS control/daemon plane, health check, concurrent requests, artifact store, rate limiter, error sanitization |
-| adora-coordinator-store | ~10 | In-memory and redb CRUD, schema versioning, persistence |
-| adora-core | ~8 | Dataflow descriptor validation |
-| adora-daemon | ~2 | Shlex argument parsing |
-| adora-node-api | ~10 | Input tracking, service/action helpers (ID generation, send_service_request/response) |
-| adora-log-utils | ~11 | Log parsing utilities |
-| adora-message | ~36 | Common types, WS protocol, node/data IDs, metadata, auth tokens |
+| dora-arrow-convert | ~26 | Round-trip Arrow type conversions |
+| dora-cli | ~96 | Command parsing, value parsers, log grep/filtering, JSON parsing, WebSocket client, cluster config |
+| dora-coordinator | ~24 | WS control/daemon plane, health check, concurrent requests, artifact store, rate limiter, error sanitization |
+| dora-coordinator-store | ~10 | In-memory and redb CRUD, schema versioning, persistence |
+| dora-core | ~8 | Dataflow descriptor validation |
+| dora-daemon | ~2 | Shlex argument parsing |
+| dora-node-api | ~10 | Input tracking, service/action helpers (ID generation, send_service_request/response) |
+| dora-log-utils | ~11 | Log parsing utilities |
+| dora-message | ~36 | Common types, WS protocol, node/data IDs, metadata, auth tokens |
 | ros2-bridge | ~30 | ROS2 message/service/action parsing |
 
 Run a single crate's tests:
 
 ```bash
-cargo test -p adora-cli
-cargo test -p adora-core
-cargo test -p adora-arrow-convert
+cargo test -p dora-cli
+cargo test -p dora-core
+cargo test -p dora-arrow-convert
 ```
 
 ### CLI Tests
@@ -87,7 +87,7 @@ CLI tests verify command parsing, argument validation, and value parsers without
 **How to run:**
 
 ```bash
-cargo test -p adora-cli
+cargo test -p dora-cli
 ```
 
 **How to add new tests:**
@@ -106,8 +106,8 @@ cargo test --test example-tests
 
 How it works:
 1. Builds and runs a node crate (e.g., `rust-dataflow-example-node`)
-2. Sets `ADORA_TEST_WITH_INPUTS` to a JSON file with timed events
-3. Sets `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` for deterministic output
+2. Sets `DORA_TEST_WITH_INPUTS` to a JSON file with timed events
+3. Sets `DORA_TEST_NO_OUTPUT_TIME_OFFSET=1` for deterministic output
 4. Compares JSONL output against `tests/sample-inputs/expected-outputs-*.jsonl`
 
 Sample input/output files live in `tests/sample-inputs/`.
@@ -118,8 +118,8 @@ File: `tests/example-smoke.rs`
 
 Two execution modes are tested for each applicable example:
 
-- **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` + `adora down`): exercises the full coordinator/daemon WS control plane.
-- **Local** (`adora run --stop-after`): runs everything in-process, testing the single-process dataflow path.
+- **Networked** (`dora up` + `dora start --detach` + poll + `dora stop` + `dora down`): exercises the full coordinator/daemon WS control plane.
+- **Local** (`dora run --stop-after`): runs everything in-process, testing the single-process dataflow path.
 
 ```bash
 # Must run single-threaded (shared coordinator port)
@@ -190,7 +190,7 @@ cargo test --test ws-cli-e2e
 - `cli_stop_nonexistent` -- error for missing dataflows
 - `cli_multiple_requests_same_session` -- session reuse
 
-**Ignored (full stack):** Use `adora up` with real nodes:
+**Ignored (full stack):** Use `dora up` with real nodes:
 ```bash
 cargo test --test ws-cli-e2e -- --ignored --test-threads=1
 ```
@@ -221,7 +221,7 @@ Files: `binaries/coordinator/tests/ws_control_tests.rs`, `binaries/coordinator/t
 These start an in-process coordinator and test the WebSocket control/daemon planes.
 
 ```bash
-cargo test -p adora-coordinator
+cargo test -p dora-coordinator
 ```
 
 Topics covered: health check, list/stop/destroy requests, invalid JSON/params, concurrent requests, ping/pong, daemon registration, disconnect cleanup, error sanitization (no internal chain leaks), artifact store cleanup on drop.
@@ -243,7 +243,7 @@ typos ─────────────┘
 |-----|--------|-----------|
 | **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
 | **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
-| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python + adora-examples) |
+| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python + dora-examples) |
 | **e2e** | ubuntu-latest | example-tests, fault-tolerance, smoke tests, WS E2E |
 | **typos** | ubuntu-latest | `crate-ci/typos@master` |
 
@@ -270,7 +270,7 @@ mod tests {
 
 ### Integration tests for nodes
 
-Use the integration testing framework in `adora-node-api`. Three approaches:
+Use the integration testing framework in `dora-node-api`. Three approaches:
 
 **1. `setup_integration_testing` (recommended)**
 
@@ -314,29 +314,29 @@ fn test_main_function() -> eyre::Result<()> {
 Test the compiled executable directly, closest to production behavior:
 
 ```bash
-ADORA_TEST_WITH_INPUTS=path/to/inputs.json \
-ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
-ADORA_TEST_WRITE_OUTPUTS_TO=/tmp/out.jsonl \
+DORA_TEST_WITH_INPUTS=path/to/inputs.json \
+DORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
+DORA_TEST_WRITE_OUTPUTS_TO=/tmp/out.jsonl \
 cargo run -p my-node
 ```
 
-**3. `AdoraNode::init_testing`**
+**3. `DoraNode::init_testing`**
 
 For testing node logic without going through `main`:
 
 ```rust
-let (node, events) = AdoraNode::init_testing(inputs, outputs, Default::default())?;
+let (node, events) = DoraNode::init_testing(inputs, outputs, Default::default())?;
 ```
 
 ### Generating test input files
 
-Record real dataflow events by setting `ADORA_WRITE_EVENTS_TO`:
+Record real dataflow events by setting `DORA_WRITE_EVENTS_TO`:
 
 ```bash
-ADORA_WRITE_EVENTS_TO=/tmp/recorded-events adora run examples/rust-dataflow/dataflow.yml
+DORA_WRITE_EVENTS_TO=/tmp/recorded-events dora run examples/rust-dataflow/dataflow.yml
 ```
 
-This writes `inputs-{node_id}.json` files that can be used directly with `ADORA_TEST_WITH_INPUTS`.
+This writes `inputs-{node_id}.json` files that can be used directly with `DORA_TEST_WITH_INPUTS`.
 
 ### Workspace-level integration tests
 
@@ -344,15 +344,15 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 
 **Networked pattern** (exercises coordinator + daemon):
 1. Build nodes with `Once` guards (avoid rebuilding per test)
-2. Clean up stale processes with `adora down`
-3. Start cluster with `adora up`
-4. Run dataflow with `adora start --detach`
-5. Poll `adora list --json` for completion
-6. Clean up with `adora stop --all` and `adora down`
+2. Clean up stale processes with `dora down`
+3. Start cluster with `dora up`
+4. Run dataflow with `dora start --detach`
+5. Poll `dora list --json` for completion
+6. Clean up with `dora stop --all` and `dora down`
 
 **Local pattern** (single-process, in-process coordinator):
 1. Build CLI with `Once` guard
-2. Run `adora run <yaml> --stop-after <duration>`
+2. Run `dora run <yaml> --stop-after <duration>`
 3. Assert exit code is success
 
 ### Conventions
@@ -371,19 +371,19 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 Always exclude Python packages:
 ```bash
 cargo test --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 ```
 
 ### Smoke/E2E tests fail with "address already in use"
 
 A stale coordinator or daemon is still running. Clean up:
 ```bash
-adora down
+dora down
 # or kill processes manually:
-pkill -f adora-coordinator
-pkill -f adora-daemon
+pkill -f dora-coordinator
+pkill -f dora-daemon
 ```
 
 ### Smoke tests hang or timeout
@@ -408,12 +408,12 @@ cargo test --test ws-cli-e2e -- --ignored --test-threads=1
 
 ### Integration test output doesn't match expected
 
-1. Check that `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` is set (time offsets vary per machine)
+1. Check that `DORA_TEST_NO_OUTPUT_TIME_OFFSET=1` is set (time offsets vary per machine)
 2. Regenerate baselines if the node's behavior intentionally changed:
    ```bash
-   ADORA_TEST_WITH_INPUTS=tests/sample-inputs/inputs-rust-node.json \
-   ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
-   ADORA_TEST_WRITE_OUTPUTS_TO=tests/sample-inputs/expected-outputs-rust-node.jsonl \
+   DORA_TEST_WITH_INPUTS=tests/sample-inputs/inputs-rust-node.json \
+   DORA_TEST_NO_OUTPUT_TIME_OFFSET=1 \
+   DORA_TEST_WRITE_OUTPUTS_TO=tests/sample-inputs/expected-outputs-rust-node.jsonl \
    cargo run -p rust-dataflow-example-node
    ```
 

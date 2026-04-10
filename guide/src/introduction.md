@@ -1,8 +1,8 @@
-# Adora
+# Dora
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
-## Why Adora?
+## Why Dora?
 
 ### Performance
 
@@ -13,7 +13,7 @@
 
 ### Developer Experience
 
-- **Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
+- **Single CLI, full lifecycle** -- `dora run` for local dev, `dora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
 - **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, optional [type annotations](concepts/types.md) with static validation
 - **Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs (not wrappers); mix languages freely in one dataflow
 - **[Reusable modules](concepts/modules.md)** -- compose sub-graphs as standalone YAML files with typed inputs/outputs, parameters, and nested composition
@@ -33,8 +33,8 @@
 
 - **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
-- **Resource monitoring** -- `adora top` TUI showing per-node CPU, memory, queue depth, network I/O across all machines
-- **Log aggregation** -- subscribe to `adora/logs` to receive structured log messages from all nodes without extra wiring
+- **Resource monitoring** -- `dora top` TUI showing per-node CPU, memory, queue depth, network I/O across all machines
+- **Log aggregation** -- subscribe to `dora/logs` to receive structured log messages from all nodes without extra wiring
 - **Trace inspection** -- `trace list` and `trace view` for viewing coordinator spans without external infrastructure
 
 ### Ecosystem
@@ -45,7 +45,7 @@
 
 ## Next Steps
 
-- [Install Adora](getting-started/installation.md)
+- [Install Dora](getting-started/installation.md)
 - [Quick Start tutorial](getting-started/quickstart.md)
 - [Architecture overview](concepts/architecture.md)
 - [Dataflow YAML reference](concepts/dataflow-yaml.md)

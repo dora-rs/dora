@@ -2,25 +2,25 @@
 #
 # This dataflow starts with a simple sender -> receiver pipeline.
 # After starting, you can dynamically add a "filter" node between them
-# using `adora node add` and `adora node connect`.
+# using `dora node add` and `dora node connect`.
 #
 # Step 1: Start the base dataflow
-#   adora up
-#   adora start dataflow.yml --detach
+#   dora up
+#   dora start dataflow.yml --detach
 #
 # Step 2: Add a filter node dynamically
-#   adora node add --from-yaml filter-node.yml --dataflow dynamic-add-remove
+#   dora node add --from-yaml filter-node.yml --dataflow dynamic-add-remove
 #
 # Step 3: Wire the filter into the pipeline
-#   adora node connect <dataflow> sender/value filter/input
-#   adora node connect <dataflow> filter/output receiver/filtered
+#   dora node connect <dataflow> sender/value filter/input
+#   dora node connect <dataflow> filter/output receiver/filtered
 #
 # Step 4: Remove the filter
-#   adora node remove <dataflow> filter
+#   dora node remove <dataflow> filter
 #
 # Step 5: Stop
-#   adora stop --all
-#   adora down
+#   dora stop --all
+#   dora down
 
 nodes:
   - id: sender
@@ -28,7 +28,7 @@ nodes:
     outputs:
       - value
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
 
   - id: receiver
     path: receiver.py

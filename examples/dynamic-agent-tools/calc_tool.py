@@ -7,7 +7,7 @@ import json
 import logging
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 
 def main():

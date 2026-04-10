@@ -1,4 +1,4 @@
-use adora_node_api::{self, AdoraNode, adora_core::config::DataId};
+use dora_node_api::{self, DoraNode, dora_core::config::DataId};
 use rand::RngCore;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ fn main() -> eyre::Result<()> {
     let latency = DataId::from("latency".to_owned());
     let throughput = DataId::from("throughput".to_owned());
 
-    let (mut node, _events) = AdoraNode::init_from_env()?;
+    let (mut node, _events) = DoraNode::init_from_env()?;
     let sizes = [
         0,
         8,

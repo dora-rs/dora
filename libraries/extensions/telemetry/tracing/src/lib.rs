@@ -55,11 +55,11 @@ fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
 /// Setup tracing with a default configuration.
 ///
 /// This will set up a global subscriber that logs to stdout with a filter level of "warn".
-/// Outputs structured JSONL that the adora daemon parses as `LogMessage`,
+/// Outputs structured JSONL that the dora daemon parses as `LogMessage`,
 /// so `tracing::info!()` calls in user nodes are automatically routed through
-/// the adora log pipeline (file, coordinator, `adora/logs` subscribers).
+/// the dora log pipeline (file, coordinator, `dora/logs` subscribers).
 ///
-/// Should **ONLY** be used in `AdoraNode` implementations.
+/// Should **ONLY** be used in `DoraNode` implementations.
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     TracingBuilder::new(name)
         .with_node_stdout("warn")
@@ -92,7 +92,7 @@ impl TracingBuilder {
     }
 
     /// Add a layer that writes structured JSONL to stdout, compatible with the
-    /// adora daemon's `LogMessageHelper` parser.
+    /// dora daemon's `LogMessageHelper` parser.
     ///
     /// This is the recommended layer for user nodes: `tracing::info!()` calls
     /// are automatically parsed by the daemon and routed through the log pipeline.
@@ -113,17 +113,17 @@ impl TracingBuilder {
 
     /// Add a layer that write logs to the [std::io::stdout] with the given filter.
     ///
-    /// **DO NOT** use this in `AdoraNode` implementations,
+    /// **DO NOT** use this in `DoraNode` implementations,
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
         let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_log.contains("adora_daemon") {
-            parsed = parsed.add_directive(directive("adora_daemon=info"));
+        if !env_log.contains("dora_daemon") {
+            parsed = parsed.add_directive(directive("dora_daemon=info"));
         }
-        if !env_log.contains("adora_core") {
-            parsed = parsed.add_directive(directive("adora_core=warn"));
+        if !env_log.contains("dora_core") {
+            parsed = parsed.add_directive(directive("dora_core=warn"));
         }
         if !env_log.contains("zenoh") {
             parsed = parsed.add_directive(directive("zenoh=warn"));
@@ -169,14 +169,14 @@ impl TracingBuilder {
 
     /// Add OpenTelemetry tracing layer with OTLP exporter.
     ///
-    /// Reads the OTLP endpoint from `ADORA_OTLP_ENDPOINT` environment variable.
-    /// If not set, falls back to `ADORA_JAEGER_TRACING` for backward compatibility.
+    /// Reads the OTLP endpoint from `DORA_OTLP_ENDPOINT` environment variable.
+    /// If not set, falls back to `DORA_JAEGER_TRACING` for backward compatibility.
     ///
     /// The endpoint should be in the format: "http://localhost:4317"
     pub fn with_otlp_tracing(mut self) -> eyre::Result<Self> {
-        let endpoint = std::env::var("ADORA_OTLP_ENDPOINT")
-            .or_else(|_| std::env::var("ADORA_JAEGER_TRACING"))
-            .wrap_err("ADORA_OTLP_ENDPOINT or ADORA_JAEGER_TRACING environment variable not set")?;
+        let endpoint = std::env::var("DORA_OTLP_ENDPOINT")
+            .or_else(|_| std::env::var("DORA_JAEGER_TRACING"))
+            .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
 
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
         let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
@@ -197,8 +197,8 @@ impl TracingBuilder {
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
         let mut filter_otel = with_noisy_crates_off(EnvFilter::new("trace"));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
-        if !env_log.contains("adora_daemon") {
-            filter_otel = filter_otel.add_directive(directive("adora_daemon=debug"));
+        if !env_log.contains("dora_daemon") {
+            filter_otel = filter_otel.add_directive(directive("dora_daemon=debug"));
         }
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
@@ -216,12 +216,12 @@ impl TracingBuilder {
 
     /// Add a layer that captures completed spans into the given store.
     ///
-    /// Only captures spans from `adora_*` crates at info level to avoid noise
+    /// Only captures spans from `dora_*` crates at info level to avoid noise
     /// from third-party dependencies.
     pub fn with_span_capture(mut self, store: span_store::SharedSpanStore) -> Self {
         let filter = EnvFilter::new("off")
-            .add_directive(directive("adora_coordinator=info"))
-            .add_directive(directive("adora_core=info"));
+            .add_directive(directive("dora_coordinator=info"))
+            .add_directive(directive("dora_core=info"));
         let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
         self.layers.push(layer.boxed());
         self
@@ -282,7 +282,7 @@ impl Drop for OtelGuard {
 ///
 /// # Example
 /// ```no_run
-/// use adora_tracing::init_tracing_subscriber;
+/// use dora_tracing::init_tracing_subscriber;
 /// use tracing::level_filters::LevelFilter;
 ///
 /// // Note: This function requires a tokio runtime context to be active
@@ -303,8 +303,7 @@ pub fn init_tracing_subscriber(
     let mut builder = TracingBuilder::new(name);
     let guard: Option<OtelGuard>;
 
-    if std::env::var("ADORA_OTLP_ENDPOINT").is_ok() || std::env::var("ADORA_JAEGER_TRACING").is_ok()
-    {
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() || std::env::var("DORA_JAEGER_TRACING").is_ok() {
         builder = builder
             .with_otlp_tracing()
             .wrap_err("failed to set up OTLP tracing")?;

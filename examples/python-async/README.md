@@ -35,7 +35,7 @@ For simple sequential processing, the synchronous `for event in node` loop is si
 ## Run
 
 ```bash
-adora run dataflow.yaml
+dora run dataflow.yaml
 ```
 
 ## What This Demonstrates

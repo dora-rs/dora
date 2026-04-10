@@ -35,24 +35,24 @@ timer --> webcam_1 --> object_detection_1 --> plot_1  (Camera 1)
 Download the YOLOv8-nano weights before running:
 
 ```bash
-pip install adora-rs numpy opencv-python pyarrow ultralytics
+pip install dora-rs numpy opencv-python pyarrow ultralytics
 python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
 ```
 
-> **Note:** The PyPI package is `adora-rs`, not `adora`. The model weights (`yolov8n.pt`) are downloaded automatically by the `ultralytics` package and are excluded from the repository via `.gitignore`.
+> **Note:** The PyPI package is `dora-rs`, not `dora`. The model weights (`yolov8n.pt`) are downloaded automatically by the `ultralytics` package and are excluded from the repository via `.gitignore`.
 
 ## Run
 
 Single camera:
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Two cameras simultaneously:
 
 ```bash
-adora run dataflow_multi.yml
+dora run dataflow_multi.yml
 ```
 
 Set `CAMERA_INDEX` in the dataflow YAML to select a different camera device.
@@ -67,6 +67,6 @@ Set `CAMERA_INDEX` in the dataflow YAML to select a different camera device.
 | Async frame/bbox synchronization | Plot |
 | Multiple inputs on one node (`image` + `bbox`) | Plot |
 | `event["id"]` to distinguish inputs | Plot |
-| `restart_policy: on-failure` (Adora-specific) | Detection, Plot |
+| `restart_policy: on-failure` (Dora-specific) | Detection, Plot |
 | Parallel pipelines for multiple cameras | `dataflow_multi.yml` |
 | `WINDOW_NAME` env var for multi-window display | Plot (multi) |

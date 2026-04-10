@@ -1,7 +1,7 @@
 use crate::DaemonConnections;
 
-use adora_core::{descriptor::DescriptorExt, uhlc::HLC};
-use adora_message::{
+use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
+use dora_message::{
     BuildId, SessionId,
     common::DaemonId,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes, Timestamped},

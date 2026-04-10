@@ -1,4 +1,4 @@
-#include "adora-node-api.h" // adjust this path if necessary
+#include "dora-node-api.h" // adjust this path if necessary
 
 #include <iostream>
 #include <vector>
@@ -8,18 +8,18 @@ int main()
     std::cout << "HELLO FROM C++" << std::endl;
     unsigned char counter = 0;
 
-    auto adora_node = init_adora_node();
+    auto dora_node = init_dora_node();
 
     while (1)
     {
-        auto event = adora_node.events->next();
+        auto event = dora_node.events->next();
         auto ty = event_type(event);
 
-        if (ty == AdoraEventType::AllInputsClosed)
+        if (ty == DoraEventType::AllInputsClosed)
         {
             break;
         }
-        else if (ty == AdoraEventType::Input)
+        else if (ty == DoraEventType::Input)
         {
             auto input = event_as_input(std::move(event));
             auto input_id = input.id;

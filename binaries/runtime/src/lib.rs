@@ -1,13 +1,13 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use adora_core::{
+use dora_core::{
     config::{DataId, OperatorId},
     descriptor::OperatorConfig,
 };
-use adora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use adora_metrics::run_metrics_monitor;
-use adora_node_api::{AdoraNode, Event};
-use adora_tracing::TracingBuilder;
+use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
+use dora_metrics::run_metrics_monitor;
+use dora_node_api::{DoraNode, Event};
+use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
@@ -26,8 +26,8 @@ mod operator;
 
 pub fn main() -> eyre::Result<()> {
     let config: RuntimeConfig = {
-        let raw = std::env::var("ADORA_RUNTIME_CONFIG")
-            .wrap_err("env variable ADORA_RUNTIME_CONFIG must be set")?;
+        let raw = std::env::var("DORA_RUNTIME_CONFIG")
+            .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
         serde_yaml::from_str(&raw).context("failed to deserialize runtime config")?
     };
     let RuntimeConfig {
@@ -112,12 +112,12 @@ pub fn main() -> eyre::Result<()> {
 
 fn queue_sizes(
     config: &OperatorConfig,
-) -> std::collections::BTreeMap<DataId, (usize, adora_message::config::QueuePolicy)> {
+) -> std::collections::BTreeMap<DataId, (usize, dora_message::config::QueuePolicy)> {
     let mut sizes = BTreeMap::new();
     for (input_id, input) in &config.inputs {
         let queue_size = input
             .queue_size
-            .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE);
+            .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE);
         let policy = input.queue_policy.unwrap_or_default();
         sizes.insert(input_id.clone(), (queue_size, policy));
     }
@@ -140,7 +140,7 @@ async fn run(
         .wrap_err("failed to init an operator")?;
     tracing::info!("All operators are ready, starting runtime");
 
-    let (mut node, mut daemon_events) = AdoraNode::init(config)?;
+    let (mut node, mut daemon_events) = DoraNode::init(config)?;
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
     tokio::task::spawn_blocking(move || {
         while let Some(event) = daemon_events.recv() {

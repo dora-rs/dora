@@ -26,7 +26,7 @@ pub enum CoordinatorRequest {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DaemonRegisterRequest {
-    adora_version: semver::Version,
+    dora_version: semver::Version,
     pub machine_id: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -35,7 +35,7 @@ pub struct DaemonRegisterRequest {
 impl DaemonRegisterRequest {
     pub fn new(machine_id: Option<String>, labels: BTreeMap<String, String>) -> Self {
         Self {
-            adora_version: current_crate_version(),
+            dora_version: current_crate_version(),
             machine_id,
             labels,
         }
@@ -43,7 +43,7 @@ impl DaemonRegisterRequest {
 
     pub fn check_version(&self) -> Result<(), String> {
         let crate_version = current_crate_version();
-        let specified_version = &self.adora_version;
+        let specified_version = &self.dora_version;
 
         if versions_compatible(&crate_version, specified_version)? {
             Ok(())
@@ -51,7 +51,7 @@ impl DaemonRegisterRequest {
             Err(format!(
                 "version mismatch: message format v{} is not compatible \
                 with expected message format v{crate_version}",
-                self.adora_version
+                self.dora_version
             ))
         }
     }

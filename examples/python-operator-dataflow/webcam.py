@@ -6,7 +6,7 @@ import time
 import cv2
 import numpy as np
 import pyarrow as pa
-from adora import AdoraStatus
+from dora import DoraStatus
 
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
@@ -29,11 +29,11 @@ class Operator:
 
     def on_event(
         self,
-        adora_event: str,
+        dora_event: str,
         send_output,
-    ) -> AdoraStatus:
+    ) -> DoraStatus:
         """TODO: Add docstring."""
-        event_type = adora_event["type"]
+        event_type = dora_event["type"]
         if event_type == "INPUT":
             ret, frame = self.video_capture.read()
             if ret:
@@ -54,12 +54,12 @@ class Operator:
                 )
             else:
                 self.failure_count += 1
-                return AdoraStatus.CONTINUE
+                return DoraStatus.CONTINUE
 
             send_output(
                 "image",
                 pa.array(frame.ravel()),
-                adora_event["metadata"],
+                dora_event["metadata"],
             )
         elif event_type == "STOP":
             print("received stop")
@@ -67,8 +67,8 @@ class Operator:
             print("received unexpected event:", event_type)
 
         if time.time() - self.start_time < 20 or CI != "true":
-            return AdoraStatus.CONTINUE
-        return AdoraStatus.STOP
+            return DoraStatus.CONTINUE
+        return DoraStatus.STOP
 
     def __del__(self):
         """TODO: Add docstring."""

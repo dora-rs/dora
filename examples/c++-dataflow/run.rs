@@ -13,10 +13,10 @@ fn main() -> eyre::Result<()> {
     std::fs::create_dir_all("build")?;
     let build_dir = Path::new("build");
 
-    build_package("adora-node-api-cxx")?;
+    build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
-        .join("adora-node-api-cxx")
+        .join("dora-node-api-cxx")
         .join("src");
     std::fs::copy(
         node_cxxbridge.join("lib.rs.cc"),
@@ -24,17 +24,17 @@ fn main() -> eyre::Result<()> {
     )?;
     std::fs::copy(
         node_cxxbridge.join("lib.rs.h"),
-        build_dir.join("adora-node-api.h"),
+        build_dir.join("dora-node-api.h"),
     )?;
     std::fs::write(
         build_dir.join("operator.h"),
         r###"#include "../operator-rust-api/operator.h""###,
     )?;
 
-    build_package("adora-operator-api-cxx")?;
+    build_package("dora-operator-api-cxx")?;
     let operator_cxxbridge = target
         .join("cxxbridge")
-        .join("adora-operator-api-cxx")
+        .join("dora-operator-api-cxx")
         .join("src");
     std::fs::copy(
         operator_cxxbridge.join("lib.rs.cc"),
@@ -42,11 +42,11 @@ fn main() -> eyre::Result<()> {
     )?;
     std::fs::copy(
         operator_cxxbridge.join("lib.rs.h"),
-        build_dir.join("adora-operator-api.h"),
+        build_dir.join("dora-operator-api.h"),
     )?;
 
-    build_package("adora-node-api-c")?;
-    build_package("adora-operator-api-c")?;
+    build_package("dora-node-api-c")?;
+    build_package("dora-operator-api-c")?;
     build_cxx_node(
         root,
         &[
@@ -54,7 +54,7 @@ fn main() -> eyre::Result<()> {
             &dunce::canonicalize(build_dir.join("node-bridge.cc"))?,
         ],
         "node_rust_api",
-        &["-l", "adora_node_api_cxx"],
+        &["-l", "dora_node_api_cxx"],
     )?;
     build_cxx_node(
         root,
@@ -62,7 +62,7 @@ fn main() -> eyre::Result<()> {
             Path::new("node-c-api").join("main.cc"),
         )?],
         "node_c_api",
-        &["-l", "adora_node_api_c"],
+        &["-l", "dora_node_api_c"],
     )?;
     build_cxx_operator(
         &[
@@ -72,7 +72,7 @@ fn main() -> eyre::Result<()> {
         "operator_rust_api",
         &[
             "-l",
-            "adora_operator_api_cxx",
+            "dora_operator_api_cxx",
             "-L",
             root.join("target").join("debug").to_str().unwrap(),
         ],
@@ -84,15 +84,15 @@ fn main() -> eyre::Result<()> {
         "operator_c_api",
         &[
             "-l",
-            "adora_operator_api_c",
+            "dora_operator_api_c",
             "-L",
             root.join("target").join("debug").to_str().unwrap(),
         ],
     )?;
 
-    build_package("adora-runtime")?;
+    build_package("dora-runtime")?;
 
-    adora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }

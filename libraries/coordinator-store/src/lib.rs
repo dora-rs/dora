@@ -23,8 +23,8 @@ pub fn validate_param_limits(key: &str, value: &[u8]) -> Result<()> {
 #[cfg(feature = "redb-backend")]
 pub use redb_store::RedbStore;
 
-use adora_message::common::DaemonId;
-use adora_message::id::NodeId;
+use dora_message::common::DaemonId;
+use dora_message::id::NodeId;
 use eyre::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

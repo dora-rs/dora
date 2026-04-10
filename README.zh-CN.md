@@ -1,10 +1,10 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Adora
+# Dora
 
 **智能体数据流导向的机器人架构（Agentic Dataflow-Oriented Robotic Architecture）** -- 一个 100% Rust 编写的实时机器人与 AI 应用框架。
 
-[**User Guide**](https://dora-rs.ai/adora/) | [**用户指南 (中文)**](https://dora-rs.ai/adora/zh-CN/)
+[**User Guide**](https://dora-rs.ai/dora/) | [**用户指南 (中文)**](https://dora-rs.ai/dora/zh-CN/)
 
 > 通过**智能体工程（agentic engineering）**方式构建和维护 -- 代码生成、审查、重构、测试和提交均由自主 AI 智能体驱动。
 
@@ -33,7 +33,7 @@
 
 ### 开发者体验
 
-- **单一 CLI，全生命周期管理** -- `adora run` 用于本地开发，`adora up/start` 用于分布式生产环境，加上构建、日志、监控、录制/回放，全部集成在一个工具中
+- **单一 CLI，全生命周期管理** -- `dora run` 用于本地开发，`dora up/start` 用于分布式生产环境，加上构建、日志、监控、录制/回放，全部集成在一个工具中
 - **声明式 YAML 数据流** -- 将流水线定义为有向图，通过类型化的输入/输出连接节点，支持环境变量覆盖
 - **多语言节点** -- 使用 Rust、Python、C 或 C++ 编写节点，提供原生 API（非封装层）；可在同一数据流中自由混合语言
 - **热重载** -- 无需重启数据流即可实时重载 Python 算子
@@ -50,7 +50,7 @@
 
 - **录制/回放** -- 将数据流消息捕获到 `.adorec` 文件，支持以任意速度离线回放并替换节点，用于回归测试
 - **主题检查** -- `topic echo` 打印实时数据，`topic hz` TUI 进行频率分析，`topic info` 查看 schema 和带宽
-- **资源监控** -- `adora top` TUI 显示所有机器上每个节点的 CPU、内存、队列深度、网络 I/O、重启次数和健康状态；`--once` 标志可输出可脚本化的 JSON 快照
+- **资源监控** -- `dora top` TUI 显示所有机器上每个节点的 CPU、内存、队列深度、网络 I/O、重启次数和健康状态；`--once` 标志可输出可脚本化的 JSON 快照
 - **追踪检查** -- `trace list` 和 `trace view` 无需外部基础设施即可查看协调器 span
 - **数据流可视化** -- 从 YAML 描述符生成交互式 HTML 或 Mermaid 图表
 
@@ -66,16 +66,16 @@
 ### 从 crates.io 安装（推荐）
 
 ```bash
-cargo install adora-cli           # CLI（adora 命令）
-pip install adora-rs              # Python 节点/算子 API
+cargo install dora-cli           # CLI（dora 命令）
+pip install dora-rs              # Python 节点/算子 API
 ```
 
 ### 从源码构建
 
 ```bash
 git clone https://github.com/dora-rs/adora.git
-cd adora
-cargo build --release -p adora-cli
+cd dora
+cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
 
 # Python API（需要 maturin：pip install maturin）
@@ -89,13 +89,13 @@ maturin develop -m apis/python/operator/Cargo.toml
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
+  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows：**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### 构建特性
@@ -109,7 +109,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | `prometheus` | 协调器上的 Prometheus `/metrics` 端点 | 否 |
 
 ```bash
-cargo install adora-cli --features redb-backend
+cargo install dora-cli --features redb-backend
 ```
 
 ## 快速开始
@@ -117,17 +117,17 @@ cargo install adora-cli --features redb-backend
 ### 1. 运行 Python 数据流
 
 ```bash
-cargo install adora-cli            # 或使用下方安装脚本
-pip install adora-rs
-git clone https://github.com/dora-rs/adora.git && cd adora
-adora run examples/python-dataflow/dataflow.yml
+cargo install dora-cli            # 或使用下方安装脚本
+pip install dora-rs
+git clone https://github.com/dora-rs/adora.git && cd dora
+dora run examples/python-dataflow/dataflow.yml
 ```
 
 这将运行一个 sender -> transformer -> receiver 流水线。以下是 Python 节点代码示例：
 
 ```python
 # sender.py -- 发送 100 条消息
-from adora import Node
+from dora import Node
 import pyarrow as pa
 
 node = Node()
@@ -137,7 +137,7 @@ for i in range(100):
 
 ```python
 # receiver.py -- 接收并打印消息
-from adora import Node
+from dora import Node
 
 node = Node()
 for event in node:
@@ -153,43 +153,43 @@ for event in node:
 
 ```bash
 cd examples/rust-dataflow
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ### 3. 分布式模式（临时部署）
 
 ```bash
 # 终端 1：启动协调器 + 守护进程
-adora up
+dora up
 
 # 终端 2：启动数据流（--debug 启用主题检查）
-adora start dataflow.yml --attach --debug
+dora start dataflow.yml --attach --debug
 
 # 终端 3：监控
-adora list
-adora logs <dataflow-id>
-adora top
+dora list
+dora logs <dataflow-id>
+dora top
 
 # 停止或重启
-adora stop <dataflow-id>
-adora restart --name <name>
-adora down
+dora stop <dataflow-id>
+dora restart --name <name>
+dora down
 ```
 
 ### 4. 托管集群
 
 ```bash
 # 从配置文件启动多机集群
-adora cluster up cluster.yml
+dora cluster up cluster.yml
 
 # 在集群上启动数据流
-adora start dataflow.yml --name my-app --attach
+dora start dataflow.yml --name my-app --attach
 
 # 检查集群健康状态
-adora cluster status
+dora cluster status
 
 # 关闭集群
-adora cluster down
+dora cluster down
 ```
 
 参见[分布式部署指南](docs/distributed-deployment.md)了解 cluster.yml 配置、标签调度、systemd 服务、滚动升级和运维手册。
@@ -200,53 +200,53 @@ adora cluster down
 
 | 命令 | 描述 |
 |------|------|
-| `adora run <PATH>` | 本地运行数据流（无需协调器/守护进程） |
-| `adora up` | 以本地模式启动协调器和守护进程 |
-| `adora down` | 关闭协调器和守护进程 |
-| `adora build <PATH>` | 从数据流描述符执行构建命令 |
-| `adora start <PATH>` | 在运行中的协调器上启动数据流 |
-| `adora stop <ID>` | 停止运行中的数据流 |
-| `adora restart <ID>` | 重启运行中的数据流（停止 + 重新启动） |
+| `dora run <PATH>` | 本地运行数据流（无需协调器/守护进程） |
+| `dora up` | 以本地模式启动协调器和守护进程 |
+| `dora down` | 关闭协调器和守护进程 |
+| `dora build <PATH>` | 从数据流描述符执行构建命令 |
+| `dora start <PATH>` | 在运行中的协调器上启动数据流 |
+| `dora stop <ID>` | 停止运行中的数据流 |
+| `dora restart <ID>` | 重启运行中的数据流（停止 + 重新启动） |
 
 ### 监控
 
 | 命令 | 描述 |
 |------|------|
-| `adora list` | 列出运行中的数据流（别名：`ps`） |
-| `adora logs <ID>` | 显示数据流或节点的日志 |
-| `adora top` | 实时资源监控（TUI）；也可使用 `adora inspect top` |
-| `adora topic list` | 列出数据流中的主题 |
-| `adora topic hz <TOPIC>` | 测量主题发布频率（TUI） |
-| `adora topic echo <TOPIC>` | 将主题消息打印到标准输出 |
-| `adora topic info <TOPIC>` | 显示主题类型和元数据 |
-| `adora node list` | 列出数据流中的节点 |
-| `adora trace list` | 列出协调器捕获的最近追踪 |
-| `adora trace view <ID>` | 查看特定追踪的 span（支持前缀匹配） |
-| `adora record <PATH>` | 将数据流消息录制到 `.adorec` 文件 |
-| `adora replay <FILE>` | 从 `.adorec` 文件回放录制的消息 |
+| `dora list` | 列出运行中的数据流（别名：`ps`） |
+| `dora logs <ID>` | 显示数据流或节点的日志 |
+| `dora top` | 实时资源监控（TUI）；也可使用 `dora inspect top` |
+| `dora topic list` | 列出数据流中的主题 |
+| `dora topic hz <TOPIC>` | 测量主题发布频率（TUI） |
+| `dora topic echo <TOPIC>` | 将主题消息打印到标准输出 |
+| `dora topic info <TOPIC>` | 显示主题类型和元数据 |
+| `dora node list` | 列出数据流中的节点 |
+| `dora trace list` | 列出协调器捕获的最近追踪 |
+| `dora trace view <ID>` | 查看特定追踪的 span（支持前缀匹配） |
+| `dora record <PATH>` | 将数据流消息录制到 `.adorec` 文件 |
+| `dora replay <FILE>` | 从 `.adorec` 文件回放录制的消息 |
 
 ### 集群管理
 
 | 命令 | 描述 |
 |------|------|
-| `adora cluster up <PATH>` | 从 cluster.yml 文件启动集群 |
-| `adora cluster status` | 显示已连接的守护进程和活跃的数据流 |
-| `adora cluster down` | 关闭集群 |
-| `adora cluster install <PATH>` | 将守护进程安装为 systemd 服务 |
-| `adora cluster uninstall <PATH>` | 移除 systemd 服务 |
-| `adora cluster upgrade <PATH>` | 滚动升级：SCP 二进制文件 + 逐机重启 |
-| `adora cluster restart <NAME>` | 按名称或 UUID 重启数据流 |
+| `dora cluster up <PATH>` | 从 cluster.yml 文件启动集群 |
+| `dora cluster status` | 显示已连接的守护进程和活跃的数据流 |
+| `dora cluster down` | 关闭集群 |
+| `dora cluster install <PATH>` | 将守护进程安装为 systemd 服务 |
+| `dora cluster uninstall <PATH>` | 移除 systemd 服务 |
+| `dora cluster upgrade <PATH>` | 滚动升级：SCP 二进制文件 + 逐机重启 |
+| `dora cluster restart <NAME>` | 按名称或 UUID 重启数据流 |
 
 ### 设置与工具
 
 | 命令 | 描述 |
 |------|------|
-| `adora status` | 检查系统健康状态（别名：`check`） |
-| `adora new` | 生成新项目或节点 |
-| `adora graph <PATH>` | 可视化数据流（Mermaid 或 HTML） |
-| `adora system` | 系统管理（守护进程/协调器控制） |
-| `adora completion <SHELL>` | 生成 shell 补全脚本 |
-| `adora self update` | 更新 adora CLI |
+| `dora status` | 检查系统健康状态（别名：`check`） |
+| `dora new` | 生成新项目或节点 |
+| `dora graph <PATH>` | 可视化数据流（Mermaid 或 HTML） |
+| `dora system` | 系统管理（守护进程/协调器控制） |
+| `dora completion <SHELL>` | 生成 shell 补全脚本 |
+| `dora self update` | 更新 dora CLI |
 
 完整 CLI 文档请参见 [docs/cli.md](docs/cli.md)。分布式部署请参见 [docs/distributed-deployment.md](docs/distributed-deployment.md)。
 
@@ -260,7 +260,7 @@ nodes:
     build: pip install opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: adora/timer/millis/20
+      tick: dora/timer/millis/20
     outputs:
       - image
     env:
@@ -269,22 +269,22 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: object-detection
-    build: pip install adora-yolo
-    path: adora-yolo
+    build: pip install dora-yolo
+    path: dora-yolo
     inputs:
       image: camera/image
     outputs:
       - bbox
 
   - id: plot
-    build: pip install adora-rerun
-    path: adora-rerun
+    build: pip install dora-rerun
+    path: dora-rerun
     inputs:
       image: camera/image
       boxes2d: object-detection/bbox
 ```
 
-**内置定时器节点：** `adora/timer/millis/<N>` 和 `adora/timer/hz/<N>`。
+**内置定时器节点：** `dora/timer/millis/<N>` 和 `dora/timer/hz/<N>`。
 
 **输入格式：** `<node-id>/<output-name>` 用于订阅另一个节点的输出。
 
@@ -314,7 +314,7 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 
 ```
 binaries/
-  cli/                  # adora CLI 二进制文件
+  cli/                  # dora CLI 二进制文件
   coordinator/          # 编排服务
   daemon/               # 节点管理器 + IPC
   runtime/              # 进程内算子运行时
@@ -334,8 +334,8 @@ libraries/
     ros2-bridge/        # ROS2 互操作（桥接、消息生成、Arrow、Python）
     download/           # 下载工具
 apis/
-  rust/node/            # Rust 节点 API（adora-node-api）
-  rust/operator/        # Rust 算子 API（adora-operator-api）
+  rust/node/            # Rust 节点 API（dora-node-api）
+  rust/operator/        # Rust 算子 API（dora-operator-api）
   python/node/          # Python 节点 API（PyO3）
   python/operator/      # Python 算子 API（PyO3）
   python/cli/           # Python CLI 接口
@@ -350,11 +350,11 @@ examples/               # 示例数据流
 
 | 语言 | 节点 API | 算子 API | 文档 | 状态 |
 |------|----------|----------|------|------|
-| Rust | `adora-node-api` | `adora-operator-api` | [API 参考](docs/api-rust.md) | 一等支持 |
-| Python >= 3.8 | `pip install adora-rs` | 已包含 | [入门指南](docs/python-guide.md)、[API 参考](docs/api-python.md) | 一等支持 |
-| C | `adora-node-api-c` | `adora-operator-api-c` | [API 参考](docs/api-c.md) | 支持 |
-| C++ | `adora-node-api-cxx` | `adora-operator-api-cxx` | [API 参考](docs/api-cxx.md) | 支持 |
-| ROS2 >= Foxy | `adora-ros2-bridge` | -- | [桥接指南](docs/ros2-bridge.md) | 实验性 |
+| Rust | `dora-node-api` | `dora-operator-api` | [API 参考](docs/api-rust.md) | 一等支持 |
+| Python >= 3.8 | `pip install dora-rs` | 已包含 | [入门指南](docs/python-guide.md)、[API 参考](docs/api-python.md) | 一等支持 |
+| C | `dora-node-api-c` | `dora-operator-api-c` | [API 参考](docs/api-c.md) | 支持 |
+| C++ | `dora-node-api-cxx` | `dora-operator-api-cxx` | [API 参考](docs/api-cxx.md) | 支持 |
+| ROS2 >= Foxy | `dora-ros2-bridge` | -- | [桥接指南](docs/ros2-bridge.md) | 实验性 |
 
 ### 平台支持
 
@@ -410,7 +410,7 @@ examples/               # 示例数据流
 | [log-sink-tcp](examples/log-sink-tcp) | YAML | 基于 TCP 的日志接收器 |
 | [log-sink-file](examples/log-sink-file) | YAML | 基于文件的日志接收器 |
 | [log-sink-alert](examples/log-sink-alert) | YAML | 基于告警的日志接收器 |
-| [log-aggregator](examples/log-aggregator) | Python | 通过 `adora/logs` 集中日志聚合 |
+| [log-aggregator](examples/log-aggregator) | Python | 通过 `dora/logs` 集中日志聚合 |
 
 ### 性能
 
@@ -440,12 +440,12 @@ examples/               # 示例数据流
 ```bash
 # 构建全部（排除需要 maturin 的 Python 包）
 cargo build --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 
 # 构建特定包
-cargo build -p adora-cli
+cargo build -p dora-cli
 ```
 
 ### 测试
@@ -453,12 +453,12 @@ cargo build -p adora-cli
 ```bash
 # 运行所有测试
 cargo test --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 
 # 测试单个包
-cargo test -p adora-core
+cargo test -p dora-core
 
 # 冒烟测试（需要协调器/守护进程）
 cargo test --test example-smoke -- --test-threads=1
@@ -486,7 +486,7 @@ cargo run --example benchmark --release
 ### 交流
 
 - [Discord](https://discord.gg/6eMGGutkfE)
-- [GitHub Discussions](https://github.com/orgs/adora-rs/discussions)
+- [GitHub Discussions](https://github.com/orgs/dora-rs/discussions)
 
 ## AI 辅助开发
 

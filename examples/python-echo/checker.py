@@ -1,6 +1,6 @@
 """Checker node: validates that each received array matches the expected value."""
 
-from adora import Node
+from dora import Node
 
 EXPECTED = [1, 2, 3, 4, 5]
 

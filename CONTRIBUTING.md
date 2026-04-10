@@ -1,4 +1,4 @@
-# How to contribute to `adora-rs`
+# How to contribute to `dora-rs`
 
 We welcome bug reports, feature requests, and pull requests!
 
@@ -7,17 +7,17 @@ This way, we can avoid unnecessary work on both sides.
 
 ## Building
 
-The `adora` project is set up as a [cargo workspace](https://doc.rust-lang.org/cargo/reference/workspaces.html).
+The `dora` project is set up as a [cargo workspace](https://doc.rust-lang.org/cargo/reference/workspaces.html).
 You can use the standard `cargo check`, `cargo build`, `cargo run`, and `cargo test` commands.
-To run a command for a specific package only, pass e.g. `--package adora-daemon`.
+To run a command for a specific package only, pass e.g. `--package dora-daemon`.
 Running a command for the whole workspace is possible by passing `--workspace`.
 
 ```bash
 # Build all (excluding Python packages which require maturin)
-cargo build --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
+cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test all
-cargo test --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
+cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Lint
 cargo clippy --all -- -D warnings
@@ -51,15 +51,15 @@ Current CI jobs:
 
 ## Issue Management
 
-### Adora Bot
+### Dora Bot
 
 We use a custom Github Action to help manage issue assignments. You can interact with this action using the following:
 
-- `@adora-bot assign me` - Assigns the current issue to you.
-- `@adora-bot unassign me` - Removes yourself from the issue assignment.
+- `@dora-bot assign me` - Assigns the current issue to you.
+- `@dora-bot unassign me` - Removes yourself from the issue assignment.
 
 For maintainers only:
-- `adora-bot unassign @username` - Allows maintainers to unassign other contributors
+- `dora-bot unassign @username` - Allows maintainers to unassign other contributors
 Note: All issue assignments will be removed automatically after 2 weeks of inactivity.
 
 ## Style
@@ -95,7 +95,7 @@ cargo release minor --execute    # bumps workspace version, tags v0.5.0, pushes
 
 CI takes over from the tag push and automatically:
 - Publishes all crates to crates.io (in dependency order)
-- Builds and publishes the Python node API wheel to PyPI (`adora-rs`)
+- Builds and publishes the Python node API wheel to PyPI (`dora-rs`)
 - Builds CLI binaries for all platforms
 - Creates a GitHub Release with changelog and binary assets
 

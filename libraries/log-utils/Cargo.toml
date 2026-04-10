@@ -1,16 +1,16 @@
 [package]
-name = "adora-log-utils"
+name = "dora-log-utils"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Parsing, merging, filtering, and formatting utilities for adora log messages"
+description = "Parsing, merging, filtering, and formatting utilities for dora log messages"
 license.workspace = true
 repository.workspace = true
 publish = false
 
 [dependencies]
-adora-message = { workspace = true }
-adora-arrow-convert = { workspace = true }
+dora-message = { workspace = true }
+dora-arrow-convert = { workspace = true }
 arrow = { workspace = true }
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }

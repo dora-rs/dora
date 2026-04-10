@@ -1,10 +1,10 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use adora_core::{
+use dora_core::{
     config::NodeId,
     uhlc::{HLC, Timestamp},
 };
-use adora_message::{
+use dora_message::{
     DataflowId,
     common::DaemonId,
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
@@ -28,7 +28,7 @@ pub struct PendingNodes {
     ///
     /// Subscribe requests block the node until all other nodes are ready too.
     waiting_subscribers: HashMap<NodeId, oneshot::Sender<DaemonReply>>,
-    /// List of nodes that finished before connecting to the adora daemon.
+    /// List of nodes that finished before connecting to the dora daemon.
     ///
     /// If this list is non-empty, we should not start the dataflow at all. Instead,
     /// we report an error to the other nodes.
@@ -94,7 +94,7 @@ impl PendingNodes {
                     LogLevel::Warn,
                     Some(node_id.clone()),
                     Some("daemon::pending".into()),
-                    "node exited before initializing adora connection",
+                    "node exited before initializing dora connection",
                 )
                 .await;
             self.exited_before_subscribe.push(node_id.clone());
@@ -182,8 +182,8 @@ impl PendingNodes {
 
         let result = match &node_exited_before_subscribe {
             Some(causing_node) => Err(format!(
-                "Node {causing_node} exited before initializing adora. For \
-                more information, run `adora logs {} {causing_node}`.",
+                "Node {causing_node} exited before initializing dora. For \
+                more information, run `dora logs {} {causing_node}`.",
                 self.dataflow_id
             )),
             None => Ok(()),
@@ -234,7 +234,7 @@ impl PendingNodes {
         sender
             .send_event(&msg)
             .await
-            .wrap_err("failed to send AllNodesReady message to adora-coordinator")?;
+            .wrap_err("failed to send AllNodesReady message to dora-coordinator")?;
         Ok(())
     }
 }

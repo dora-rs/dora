@@ -3,9 +3,9 @@ use crate::common::CoordinatorOptions;
 use crate::common::connect_to_coordinator;
 use crate::formatting::OutputFormat;
 use crate::ws_client::WsSession;
-use adora_core::descriptor::Descriptor;
-use adora_core::descriptor::DescriptorExt;
-use adora_message::{
+use dora_core::descriptor::Descriptor;
+use dora_core::descriptor::DescriptorExt;
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowStatus},
 };

@@ -1,11 +1,11 @@
 use crate::log::NodeLogger;
-use adora_core::{
+use clonable_command::Command;
+use dora_core::{
     descriptor::{DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, source_is_url},
     get_python_path,
 };
-use adora_download::download_file;
-use adora_message::common::LogLevel;
-use clonable_command::Command;
+use dora_download::download_file;
+use dora_message::common::LogLevel;
 use eyre::WrapErr;
 use std::path::Path;
 
@@ -13,23 +13,23 @@ pub(super) async fn path_spawn_command(
     working_dir: &Path,
     uv: bool,
     logger: &mut NodeLogger<'_>,
-    node: &adora_core::descriptor::CustomNode,
+    node: &dora_core::descriptor::CustomNode,
     permit_url: bool,
 ) -> eyre::Result<Option<Command>> {
     let cmd = match node.path.as_str() {
         DYNAMIC_SOURCE => return Ok(None),
         SHELL_SOURCE => {
-            if std::env::var("ADORA_ALLOW_SHELL_NODES").as_deref() != Ok("true") {
+            if std::env::var("DORA_ALLOW_SHELL_NODES").as_deref() != Ok("true") {
                 eyre::bail!(
                     "Shell nodes are disabled by default (security risk). \
-                     Set ADORA_ALLOW_SHELL_NODES=true to enable."
+                     Set DORA_ALLOW_SHELL_NODES=true to enable."
                 );
             }
             logger
                 .log(
                     LogLevel::Warn,
                     Some("spawner".into()),
-                    "ADORA_ALLOW_SHELL_NODES is set: shell node will execute arbitrary commands"
+                    "DORA_ALLOW_SHELL_NODES is set: shell node will execute arbitrary commands"
                         .to_string(),
                 )
                 .await;
@@ -57,7 +57,7 @@ pub(super) async fn path_spawn_command(
                     const ALLOWED_VARS: &[&str] = &[
                         "HOME",
                         "USER",
-                        "ADORA_WORKSPACE",
+                        "DORA_WORKSPACE",
                         "CARGO_MANIFEST_DIR",
                         "PWD",
                     ];
@@ -66,7 +66,7 @@ pub(super) async fn path_spawn_command(
                     } else {
                         tracing::warn!(
                             "skipping env expansion for '${var}' in node path \
-                             (only HOME, USER, ADORA_WORKSPACE, CARGO_MANIFEST_DIR, PWD are allowed)"
+                             (only HOME, USER, DORA_WORKSPACE, CARGO_MANIFEST_DIR, PWD are allowed)"
                         );
                         None
                     }

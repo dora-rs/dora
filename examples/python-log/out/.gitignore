@@ -1,5 +1,0 @@
-/dataflow.adora-session.yaml
-
-# Ignore all runtime artifacts (log files, UUID dirs)
-*
-!.gitignore

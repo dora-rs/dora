@@ -1,6 +1,6 @@
 """Echo node: forwards any incoming value and metadata unchanged."""
 
-from adora import Node
+from dora import Node
 
 
 def main():

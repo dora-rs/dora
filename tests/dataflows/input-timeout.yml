@@ -3,7 +3,7 @@ nodes:
     build: cargo build -p rust-dataflow-example-node
     path: ../../target/debug/rust-dataflow-example-node
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     outputs:
       - random
 
@@ -11,8 +11,8 @@ nodes:
     build: cargo build -p rust-dataflow-example-status-node
     path: ../../target/debug/rust-dataflow-example-status-node
     inputs:
-      tick: adora/timer/millis/100
-      trigger-exit: adora/timer/millis/500
+      tick: dora/timer/millis/100
+      trigger-exit: dora/timer/millis/500
       random: rust-node/random
     outputs:
       - status

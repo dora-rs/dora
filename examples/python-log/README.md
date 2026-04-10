@@ -1,6 +1,6 @@
 # Python Log
 
-Demonstrates Python `logging` module integration with adora's log capture system.
+Demonstrates Python `logging` module integration with dora's log capture system.
 
 ## Architecture
 
@@ -27,17 +27,17 @@ for event in node:
         log.log(logging.ERROR, f"received {event} with data")
 ```
 
-Adora captures Python logging output automatically -- no special configuration needed. Use `--log-level` to filter:
+Dora captures Python logging output automatically -- no special configuration needed. Use `--log-level` to filter:
 
 ```bash
-adora run dataflow.yaml --log-level warn    # only warnings and above
-adora run dataflow.yaml --log-level debug   # everything
+dora run dataflow.yaml --log-level warn    # only warnings and above
+dora run dataflow.yaml --log-level debug   # everything
 ```
 
 ## Run
 
 ```bash
-adora run dataflow.yaml
+dora run dataflow.yaml
 ```
 
 ## What This Demonstrates
@@ -47,4 +47,4 @@ adora run dataflow.yaml
 | `logging.getLogger()` integration | Receiver |
 | Multiple log levels (debug, info, warn, error) | Receiver |
 | `--log-level` CLI filtering | CLI flag |
-| Automatic stdout/stderr capture | Adora runtime |
+| Automatic stdout/stderr capture | Dora runtime |

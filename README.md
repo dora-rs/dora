@@ -1,10 +1,10 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Adora
+# Dora
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
-[**User Guide**](https://dora-rs.ai/adora/) | [**用户指南 (中文)**](https://dora-rs.ai/adora/zh-CN/)
+[**User Guide**](https://dora-rs.ai/dora/) | [**用户指南 (中文)**](https://dora-rs.ai/dora/zh-CN/)
 
 > Built and maintained with **agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
 
@@ -35,7 +35,7 @@
 
 ### Developer experience
 
-- **Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
+- **Single CLI, full lifecycle** -- `dora run` for local dev, `dora up/start` for distributed prod, plus build, logs, monitoring, record/replay all from one tool
 - **Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs, optional [type annotations](docs/types.md) with static validation, override with environment variables
 - **Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs (not wrappers); mix languages freely in one dataflow
 - **[Reusable modules](docs/modules.md)** -- compose sub-graphs as standalone YAML files with typed inputs/outputs, parameters, optional ports, and nested composition (compile-time expansion, zero runtime overhead)
@@ -47,7 +47,7 @@
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based [cluster management](docs/distributed-deployment.md) with label scheduling, rolling upgrades, and auto-recovery
 - **Coordinator HA** -- persistent redb-backed state store (default), daemon auto-reconnect with exponential backoff, dataflow state reconstruction on coordinator restart
-- **Dynamic topology** -- add and remove nodes from running dataflows via CLI (`adora node add/remove/connect/disconnect`) without restarting
+- **Dynamic topology** -- add and remove nodes from running dataflows via CLI (`dora node add/remove/connect/disconnect`) without restarting
 - **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning in YAML; comprehensive [tuning guide](docs/realtime-tuning.md) for memory locking, kernel params, and container deployment
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
 
@@ -55,7 +55,7 @@
 
 - **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution for regression testing
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
-- **Resource monitoring** -- `adora top` TUI showing per-node CPU, memory, queue depth, network I/O, restart count, and health status across all machines; `--once` flag for scriptable JSON snapshots
+- **Resource monitoring** -- `dora top` TUI showing per-node CPU, memory, queue depth, network I/O, restart count, and health status across all machines; `--once` flag for scriptable JSON snapshots
 - **Trace inspection** -- `trace list` and `trace view` for viewing coordinator spans without external infrastructure
 - **Dataflow visualization** -- generate interactive HTML or Mermaid graphs from YAML descriptors
 
@@ -71,16 +71,16 @@
 ### From crates.io (recommended)
 
 ```bash
-cargo install adora-cli           # CLI (adora command)
-pip install adora-rs              # Python node/operator API
+cargo install dora-cli           # CLI (dora command)
+pip install dora-rs              # Python node/operator API
 ```
 
 ### From source
 
 ```bash
 git clone https://github.com/dora-rs/adora.git
-cd adora
-cargo build --release -p adora-cli
+cd dora
+cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
 
 # Python API (requires maturin >= 1.8: pip install maturin)
@@ -94,13 +94,13 @@ cd apis/python/node && maturin develop --uv && cd ../../..
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
+  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows:**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### Build features
@@ -114,29 +114,29 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
 ```bash
-cargo install adora-cli --features redb-backend
+cargo install dora-cli --features redb-backend
 ```
 
 ## Quick Start
 
 ### 1. Run a Python dataflow
 
-> **Important:** The PyPI package is **`adora-rs`**, not `adora`. The import name
-> is `adora` (`from adora import Node`), but `pip install adora` installs an
+> **Important:** The PyPI package is **`dora-rs`**, not `dora`. The import name
+> is `dora` (`from dora import Node`), but `pip install dora` installs an
 > unrelated package.
 
 ```bash
-cargo install adora-cli            # or use install script below
-pip install adora-rs numpy pyarrow
-git clone https://github.com/dora-rs/adora.git && cd adora
-adora run examples/python-dataflow/dataflow.yml
+cargo install dora-cli            # or use install script below
+pip install dora-rs numpy pyarrow
+git clone https://github.com/dora-rs/adora.git && cd dora
+dora run examples/python-dataflow/dataflow.yml
 ```
 
 This runs a sender -> transformer -> receiver pipeline. Here's what the Python node code looks like:
 
 ```python
 # sender.py -- sends 100 messages
-from adora import Node
+from dora import Node
 import pyarrow as pa
 
 node = Node()
@@ -146,7 +146,7 @@ for i in range(100):
 
 ```python
 # receiver.py -- receives and prints messages
-from adora import Node
+from dora import Node
 
 node = Node()
 for event in node:
@@ -162,43 +162,43 @@ See the [Python Getting Started Guide](docs/python-guide.md) for a full tutorial
 
 ```bash
 cd examples/rust-dataflow
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ### 3. Distributed mode (ad-hoc)
 
 ```bash
 # Terminal 1: start coordinator + daemon
-adora up
+dora up
 
 # Terminal 2: start a dataflow (--debug enables topic inspection)
-adora start dataflow.yml --attach --debug
+dora start dataflow.yml --attach --debug
 
 # Terminal 3: monitor
-adora list
-adora logs <dataflow-id>
-adora top
+dora list
+dora logs <dataflow-id>
+dora top
 
 # Stop or restart
-adora stop <dataflow-id>
-adora restart --name <name>
-adora down
+dora stop <dataflow-id>
+dora restart --name <name>
+dora down
 ```
 
 ### 4. Managed cluster
 
 ```bash
 # Bring up a multi-machine cluster from a config file
-adora cluster up cluster.yml
+dora cluster up cluster.yml
 
 # Start a dataflow across the cluster
-adora start dataflow.yml --name my-app --attach
+dora start dataflow.yml --name my-app --attach
 
 # Check cluster health
-adora cluster status
+dora cluster status
 
 # Tear down
-adora cluster down
+dora cluster down
 ```
 
 See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks.
@@ -209,68 +209,68 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 
 | Command | Description |
 |---------|-------------|
-| `adora run <PATH>` | Run a dataflow locally (no coordinator/daemon needed) |
-| `adora up` | Start coordinator and daemon in local mode |
-| `adora down` | Tear down coordinator and daemon |
-| `adora build <PATH>` | Run build commands from a dataflow descriptor |
-| `adora start <PATH>` | Start a dataflow on a running coordinator |
-| `adora stop <ID>` | Stop a running dataflow |
-| `adora restart <ID>` | Restart a running dataflow (stop + re-start) |
+| `dora run <PATH>` | Run a dataflow locally (no coordinator/daemon needed) |
+| `dora up` | Start coordinator and daemon in local mode |
+| `dora down` | Tear down coordinator and daemon |
+| `dora build <PATH>` | Run build commands from a dataflow descriptor |
+| `dora start <PATH>` | Start a dataflow on a running coordinator |
+| `dora stop <ID>` | Stop a running dataflow |
+| `dora restart <ID>` | Restart a running dataflow (stop + re-start) |
 
 ### Monitoring
 
 | Command | Description |
 |---------|-------------|
-| `adora list` | List running dataflows (alias: `ps`) |
-| `adora logs <ID>` | Show logs for a dataflow or node |
-| `adora top` | Real-time resource monitor (TUI); also `adora inspect top` |
-| `adora topic list` | List topics in a dataflow |
-| `adora topic hz <TOPIC>` | Measure topic publish frequency (TUI) |
-| `adora topic echo <TOPIC>` | Print topic messages to stdout |
-| `adora topic info <TOPIC>` | Show topic type and metadata |
-| `adora node list` | List nodes in a dataflow |
-| `adora node info <NODE>` | Show detailed node status, inputs, outputs, and metrics |
-| `adora node add --from-yaml <FILE>` | Add a node to a running dataflow |
-| `adora node remove <NODE>` | Remove a node from a running dataflow |
-| `adora node connect <SRC> <DST>` | Add a live mapping between nodes |
-| `adora node disconnect <SRC> <DST>` | Remove a live mapping between nodes |
-| `adora node restart <NODE>` | Restart a single node within a running dataflow |
-| `adora node stop <NODE>` | Stop a single node within a running dataflow |
-| `adora topic pub <TOPIC> <DATA>` | Publish JSON data to a topic |
-| `adora param list <NODE>` | List runtime parameters for a node |
-| `adora param get <NODE> <KEY>` | Get a runtime parameter value |
-| `adora param set <NODE> <KEY> <VALUE>` | Set a runtime parameter (JSON value) |
-| `adora param delete <NODE> <KEY>` | Delete a runtime parameter |
-| `adora trace list` | List recent traces captured by the coordinator |
-| `adora trace view <ID>` | View spans for a specific trace (supports prefix matching) |
-| `adora record <PATH>` | Record dataflow messages to `.adorec` file |
-| `adora replay <FILE>` | Replay recorded messages from `.adorec` file |
+| `dora list` | List running dataflows (alias: `ps`) |
+| `dora logs <ID>` | Show logs for a dataflow or node |
+| `dora top` | Real-time resource monitor (TUI); also `dora inspect top` |
+| `dora topic list` | List topics in a dataflow |
+| `dora topic hz <TOPIC>` | Measure topic publish frequency (TUI) |
+| `dora topic echo <TOPIC>` | Print topic messages to stdout |
+| `dora topic info <TOPIC>` | Show topic type and metadata |
+| `dora node list` | List nodes in a dataflow |
+| `dora node info <NODE>` | Show detailed node status, inputs, outputs, and metrics |
+| `dora node add --from-yaml <FILE>` | Add a node to a running dataflow |
+| `dora node remove <NODE>` | Remove a node from a running dataflow |
+| `dora node connect <SRC> <DST>` | Add a live mapping between nodes |
+| `dora node disconnect <SRC> <DST>` | Remove a live mapping between nodes |
+| `dora node restart <NODE>` | Restart a single node within a running dataflow |
+| `dora node stop <NODE>` | Stop a single node within a running dataflow |
+| `dora topic pub <TOPIC> <DATA>` | Publish JSON data to a topic |
+| `dora param list <NODE>` | List runtime parameters for a node |
+| `dora param get <NODE> <KEY>` | Get a runtime parameter value |
+| `dora param set <NODE> <KEY> <VALUE>` | Set a runtime parameter (JSON value) |
+| `dora param delete <NODE> <KEY>` | Delete a runtime parameter |
+| `dora trace list` | List recent traces captured by the coordinator |
+| `dora trace view <ID>` | View spans for a specific trace (supports prefix matching) |
+| `dora record <PATH>` | Record dataflow messages to `.adorec` file |
+| `dora replay <FILE>` | Replay recorded messages from `.adorec` file |
 
 ### Cluster management
 
 | Command | Description |
 |---------|-------------|
-| `adora cluster up <PATH>` | Bring up a cluster from a cluster.yml file |
-| `adora cluster status` | Show connected daemons and active dataflows |
-| `adora cluster down` | Tear down the cluster |
-| `adora cluster install <PATH>` | Install daemons as systemd services |
-| `adora cluster uninstall <PATH>` | Remove systemd services |
-| `adora cluster upgrade <PATH>` | Rolling upgrade: SCP binary + restart per-machine |
-| `adora cluster restart <NAME>` | Restart a dataflow by name or UUID |
+| `dora cluster up <PATH>` | Bring up a cluster from a cluster.yml file |
+| `dora cluster status` | Show connected daemons and active dataflows |
+| `dora cluster down` | Tear down the cluster |
+| `dora cluster install <PATH>` | Install daemons as systemd services |
+| `dora cluster uninstall <PATH>` | Remove systemd services |
+| `dora cluster upgrade <PATH>` | Rolling upgrade: SCP binary + restart per-machine |
+| `dora cluster restart <NAME>` | Restart a dataflow by name or UUID |
 
 ### Setup and utilities
 
 | Command | Description |
 |---------|-------------|
-| `adora doctor` | Diagnose environment, connectivity, and dataflow health |
-| `adora status` | Check system health (alias: `check`) |
-| `adora new` | Generate a new project or node |
-| `adora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |
-| `adora expand <PATH>` | Expand module references and print flat YAML |
-| `adora validate <PATH>` | Validate dataflow YAML and check [type annotations](docs/types.md) |
-| `adora system` | System management (daemon/coordinator control) |
-| `adora completion <SHELL>` | Generate shell completions |
-| `adora self update` | Update adora CLI |
+| `dora doctor` | Diagnose environment, connectivity, and dataflow health |
+| `dora status` | Check system health (alias: `check`) |
+| `dora new` | Generate a new project or node |
+| `dora graph <PATH>` | Visualize a dataflow (Mermaid or HTML) |
+| `dora expand <PATH>` | Expand module references and print flat YAML |
+| `dora validate <PATH>` | Validate dataflow YAML and check [type annotations](docs/types.md) |
+| `dora system` | System management (daemon/coordinator control) |
+| `dora completion <SHELL>` | Generate shell completions |
+| `dora self update` | Update dora CLI |
 
 For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 
@@ -284,7 +284,7 @@ nodes:
     build: pip install opencv-video-capture
     path: opencv-video-capture
     inputs:
-      tick: adora/timer/millis/20
+      tick: dora/timer/millis/20
     outputs:
       - image
     env:
@@ -293,22 +293,22 @@ nodes:
       IMAGE_HEIGHT: 480
 
   - id: object-detection
-    build: pip install adora-yolo
-    path: adora-yolo
+    build: pip install dora-yolo
+    path: dora-yolo
     inputs:
       image: camera/image
     outputs:
       - bbox
 
   - id: plot
-    build: pip install adora-rerun
-    path: adora-rerun
+    build: pip install dora-rerun
+    path: dora-rerun
     inputs:
       image: camera/image
       boxes2d: object-detection/bbox
 ```
 
-**Built-in timer nodes:** `adora/timer/millis/<N>` and `adora/timer/hz/<N>`.
+**Built-in timer nodes:** `dora/timer/millis/<N>` and `dora/timer/hz/<N>`.
 
 **Input format:** `<node-id>/<output-name>` to subscribe to another node's output. Long form supports `queue_size`, `queue_policy` (`drop_oldest` or `backpressure`), and `input_timeout`. See the [YAML Specification](docs/yaml-spec.md) for details.
 
@@ -325,10 +325,10 @@ nodes:
 ```
 
 ```bash
-adora validate dataflow.yml                        # static check (warnings)
-adora validate --strict-types dataflow.yml         # fail on warnings (CI)
-adora build dataflow.yml --strict-types            # type check during build
-ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml  # runtime check
+dora validate dataflow.yml                        # static check (warnings)
+dora validate --strict-types dataflow.yml         # fail on warnings (CI)
+dora build dataflow.yml --strict-types            # type check during build
+DORA_RUNTIME_TYPE_CHECK=warn dora run dataflow.yml  # runtime check
 ```
 
 **Modules:** Extract reusable sub-graphs into separate files with `module:` instead of `path:`. See the [Modules Guide](docs/modules.md) for details.
@@ -368,7 +368,7 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 
 ```
 binaries/
-  cli/                  # adora CLI binary
+  cli/                  # dora CLI binary
   coordinator/          # Orchestration service
   daemon/               # Node manager + IPC
   runtime/              # In-process operator runtime
@@ -388,8 +388,8 @@ libraries/
     ros2-bridge/        # ROS2 interop (bridge, msg-gen, arrow, python)
     download/           # Download utilities
 apis/
-  rust/node/            # Rust node API (adora-node-api)
-  rust/operator/        # Rust operator API (adora-operator-api)
+  rust/node/            # Rust node API (dora-node-api)
+  rust/operator/        # Rust operator API (dora-operator-api)
   python/node/          # Python node API (PyO3)
   python/operator/      # Python operator API (PyO3)
   python/cli/           # Python CLI interface
@@ -404,11 +404,11 @@ examples/               # Example dataflows
 
 | Language | Node API | Operator API | Docs | Status |
 |----------|----------|--------------|------|--------|
-| Rust | `adora-node-api` | `adora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
-| Python >= 3.8 | `pip install adora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
-| C | `adora-node-api-c` | `adora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
-| C++ | `adora-node-api-cxx` | `adora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
-| ROS2 >= Foxy | `adora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |
+| Rust | `dora-node-api` | `dora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
+| Python >= 3.8 | `pip install dora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
+| C | `dora-node-api-c` | `dora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
+| C++ | `dora-node-api-cxx` | `dora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
+| ROS2 >= Foxy | `dora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |
 
 ### Platform support
 
@@ -439,7 +439,7 @@ examples/               # Example dataflows
 | Example | Language | Description |
 |---------|----------|-------------|
 | [module-dataflow](examples/module-dataflow) | Python | Reusable module composition |
-| [typed-dataflow](examples/typed-dataflow) | Python | Type annotations with `adora validate` |
+| [typed-dataflow](examples/typed-dataflow) | Python | Type annotations with `dora validate` |
 
 ### Communication patterns
 
@@ -479,14 +479,14 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [log-sink-tcp](examples/log-sink-tcp) | YAML | TCP-based log sink |
 | [log-sink-file](examples/log-sink-file) | YAML | File-based log sink |
 | [log-sink-alert](examples/log-sink-alert) | YAML | Alert-based log sink |
-| [log-aggregator](examples/log-aggregator) | Python | Centralized log aggregation via `adora/logs` |
+| [log-aggregator](examples/log-aggregator) | Python | Centralized log aggregation via `dora/logs` |
 
 ### Performance
 
 | Example | Language | Description |
 |---------|----------|-------------|
 | [benchmark](examples/benchmark) | Rust/Python | Latency and throughput benchmark |
-| [ros2-comparison](examples/ros2-comparison) | Python | Adora vs ROS2 comparison |
+| [ros2-comparison](examples/ros2-comparison) | Python | Dora vs ROS2 comparison |
 | [cuda-benchmark](examples/cuda-benchmark) | Rust/CUDA | GPU zero-copy benchmark |
 
 ### ROS2 integration
@@ -510,12 +510,12 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 ```bash
 # Build all (excluding Python packages which require maturin)
 cargo build --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 
 # Build specific package
-cargo build -p adora-cli
+cargo build -p dora-cli
 ```
 
 ### Test
@@ -523,12 +523,12 @@ cargo build -p adora-cli
 ```bash
 # Run all tests
 cargo test --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python
 
 # Test single package
-cargo test -p adora-core
+cargo test -p dora-core
 
 # Smoke tests (requires coordinator/daemon)
 cargo test --test example-smoke -- --test-threads=1
@@ -551,7 +551,7 @@ cargo run --example benchmark --release
 
 ## Quality assurance
 
-Adora ships with a three-tier QA system designed for AI-authored code. Everything runs locally first; CI mirrors the same scripts.
+Dora ships with a three-tier QA system designed for AI-authored code. Everything runs locally first; CI mirrors the same scripts.
 
 ```bash
 make qa-install     # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
@@ -567,7 +567,7 @@ make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-rele
 - **Coverage** -- `cargo-llvm-cov` with diff-coverage gate (70% on PR-touched lines)
 - **Mutation testing** -- `cargo-mutants` against critical crates (library crates at package scope, binary crates with `test_workspace = true`)
 - **Property testing** -- `proptest` on wire-protocol types; catches edge cases unit tests miss
-- **Miri** -- UB detection on pure-Rust unsafe hotspots (e.g., `adora-core::metadata`)
+- **Miri** -- UB detection on pure-Rust unsafe hotspots (e.g., `dora-core::metadata`)
 - **SemVer check** -- `cargo-semver-checks` against the last git tag
 - **Adversarial LLM review** -- `scripts/qa/adversarial.sh` runs a *different* model on your diff to catch single-model blind spots (local today; CI pending API secret)
 
@@ -584,7 +584,7 @@ We welcome contributors of all experience levels. See the [contributing guide](C
 ### Communication
 
 - [Discord](https://discord.gg/6eMGGutkfE)
-- [GitHub Discussions](https://github.com/orgs/adora-rs/discussions)
+- [GitHub Discussions](https://github.com/orgs/dora-rs/discussions)
 
 ## AI-Assisted Development
 

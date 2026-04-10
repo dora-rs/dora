@@ -14,9 +14,9 @@
 #      file is test-only)
 #   3. Content after the first `#[cfg(test)]` line in any remaining
 #      source file (inline `mod tests {}` blocks at the bottom of a
-#      source file — adora's convention)
+#      source file — dora's convention)
 #
-# Rule 3 uses simple line-based truncation, which works because adora
+# Rule 3 uses simple line-based truncation, which works because dora
 # consistently places `#[cfg(test)]` only at the top of a test module
 # and only at the end of source files. Verified 2026-04-08 by grep —
 # if this convention changes, this script must be updated.

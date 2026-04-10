@@ -5,7 +5,7 @@ use std::{
     path::Path,
 };
 
-use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
+use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,7 +23,7 @@ pub struct CoordinatorConfig {
 }
 
 fn default_port() -> u16 {
-    ADORA_COORDINATOR_PORT_WS_DEFAULT
+    DORA_COORDINATOR_PORT_WS_DEFAULT
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -86,7 +86,7 @@ mod tests {
             "coordinator:\n  addr: 192.168.1.100\nmachines:\n  - id: arm\n    host: 192.168.1.101\n",
         );
         let cfg = ClusterConfig::load(f.path()).unwrap();
-        assert_eq!(cfg.coordinator.port, ADORA_COORDINATOR_PORT_WS_DEFAULT);
+        assert_eq!(cfg.coordinator.port, DORA_COORDINATOR_PORT_WS_DEFAULT);
         assert_eq!(cfg.machines.len(), 1);
         assert_eq!(cfg.machines[0].id, "arm");
         assert!(cfg.machines[0].user.is_none());

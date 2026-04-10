@@ -21,7 +21,7 @@ Small, self-contained items that can be picked up in any free slot.
 
 - **Effort**: ~30 min (workflow addition) after the API key/secret is configured
 - **Trigger**: once OpenAI Codex is set up (user mentioned this is pending)
-- **Blocker**: `ANTHROPIC_API_KEY` (or equivalent Codex auth) as a GitHub Actions secret on `dora-rs/adora`
+- **Blocker**: `ANTHROPIC_API_KEY` (or equivalent Codex auth) as a GitHub Actions secret on `dora-rs/dora`
 - **Owner**: heyong4725
 - **Steps**:
   1. `gh secret set ANTHROPIC_API_KEY` or equivalent
@@ -81,7 +81,7 @@ Expensive but unsupervised work. Kick off in a terminal, come back later.
 - **Trigger**: before citing the daemon/coordinator mutation scores in any formal report
 - **Owner**: heyong4725
 - **Why**: the current 5.8% / 26.1% numbers are scoping artifacts, not real scores. `test_workspace = true` is now the default in `.cargo/mutants.toml` but the re-run hasn't been done
-- **Command**: `cargo mutants --package adora-daemon --jobs 4 --timeout 120 --output /tmp/mutation/daemon-workspace` (similar for coordinator)
+- **Command**: `cargo mutants --package dora-daemon --jobs 4 --timeout 120 --output /tmp/mutation/daemon-workspace` (similar for coordinator)
 - **Expected outcome**: scores likely jump to 40-60%+ range based on the `fault_tolerance.rs` single-file experiment (21 missed → 21 caught)
 - **Reference**: `.cargo/mutants.toml` comment block, commit `9e0c2c6`
 
@@ -176,7 +176,7 @@ Not technical tasks — decisions and conversations that determine what "next" m
 - **Owner**: heyong4725
 - **Critical path**: this is the gating decision for Phase -1 of `plan-dora-1.0-consolidation.md`. Until it happens, the whole consolidation plan is speculative
 - **Agenda items**:
-  1. Present the adora fork and the agentic engineering POC results (`qa-poc-report-2026-04-09.md` is the sharing doc)
+  1. Present the dora fork and the agentic engineering POC results (`qa-poc-report-2026-04-09.md` is the sharing doc)
   2. Present the consolidation proposal (`plan-dora-1.0-consolidation.md` — emphasize Phase 3b Zenoh SHM as the architectural anchor)
   3. Collect objections, concerns, and constraints
   4. Align on the critical-path Decision Points (D-1 through D-7 in the consolidation plan)
@@ -197,7 +197,7 @@ Not technical tasks — decisions and conversations that determine what "next" m
 - **Effort**: 2-3 days of implementation in Phase 3b of the dora 1.0 consolidation
 - **Trigger**: during the dora 1.0 consolidation merge, not before and not after
 - **Owner**: contractor executing Phase 3b
-- **Why**: closes the `shared-memory-server` miri/proptest/fuzz blind spot by removing the code. Aligns with upstream dora (which already made the switch in `dora-rs/dora#1378`). Deletes ~660 lines and ~11 unsafe blocks. Eliminates the pinned `raw_sync_2 =0.1.5` fork dep
+- **Why**: closes the `shared-memory-server` miri/proptest/fuzz blind spot by removing the code. Aligns with upstream dora (which already made the switch in `dora-rs/adora#1378`). Deletes ~660 lines and ~11 unsafe blocks. Eliminates the pinned `raw_sync_2 =0.1.5` fork dep
 - **Sequencing options** (Decision Point D-7):
   - D-7a: Full migration in Phase 3b (~3 days extra on critical path)
   - D-7b: Defer to dora 1.1 (ships 1.0 with the known QA gap)
@@ -207,7 +207,7 @@ Not technical tasks — decisions and conversations that determine what "next" m
 ### D-4. Fix the misleading `NodeId::TryFrom<String>` API (follow-up beyond the doc fix)
 
 - **Effort**: ~1 day (requires a SemVer-breaking change)
-- **Trigger**: next time `adora-message` has a breaking change anyway, or the dora 1.0 consolidation
+- **Trigger**: next time `dora-message` has a breaking change anyway, or the dora 1.0 consolidation
 - **Owner**: contributor with SemVer confidence
 - **What**: the doc comment was fixed in `b878e50` to point users at `parse::<NodeId>()` instead of the misleading `TryFrom`. But the **real** fix is to override the blanket `TryFrom<String>` impl with an explicit one that returns `Result<Self, InvalidId>`. This is a breaking change (callers relying on the blanket Infallible type will break) so it's gated on a SemVer bump
 - **Reference**: `libraries/message/src/id.rs` lines ~56-67, commit `b878e50`

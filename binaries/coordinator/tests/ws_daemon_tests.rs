@@ -4,7 +4,7 @@
 
 mod common;
 
-use adora_message::{
+use dora_message::{
     daemon_to_coordinator::{CoordinatorRequest, DaemonRegisterRequest, Timestamped},
     ws_protocol::{WsRequest, WsResponse},
 };
@@ -50,7 +50,7 @@ fn make_register_request() -> (Uuid, String) {
     ));
     let timestamped = Timestamped {
         inner: register,
-        timestamp: adora_message::uhlc::HLC::default().new_timestamp(),
+        timestamp: dora_message::uhlc::HLC::default().new_timestamp(),
     };
     // Build WsRequest-shaped JSON manually, embedding the Timestamped params
     // as a raw JSON fragment to preserve u128 fidelity.
@@ -101,7 +101,7 @@ async fn register_daemon_and_wait(
     loop {
         let mut ctrl = connect_control(port).await;
         let params = serde_json::to_value(
-            &adora_message::cli_to_coordinator::ControlRequest::DaemonConnected,
+            &dora_message::cli_to_coordinator::ControlRequest::DaemonConnected,
         )
         .unwrap();
         let resp = control_request_reply(&mut ctrl, params).await;
@@ -126,7 +126,7 @@ async fn daemon_register_success() {
     // Verify registration via a control connection
     let mut ctrl = connect_control(port).await;
     let params =
-        serde_json::to_value(&adora_message::cli_to_coordinator::ControlRequest::DaemonConnected)
+        serde_json::to_value(&dora_message::cli_to_coordinator::ControlRequest::DaemonConnected)
             .unwrap();
     let resp = control_request_reply(&mut ctrl, params).await;
 
@@ -143,7 +143,7 @@ async fn daemon_register_then_status() {
 
     let mut ctrl = connect_control(port).await;
     let params =
-        serde_json::to_value(&adora_message::cli_to_coordinator::ControlRequest::ConnectedMachines)
+        serde_json::to_value(&dora_message::cli_to_coordinator::ControlRequest::ConnectedMachines)
             .unwrap();
     let resp = control_request_reply(&mut ctrl, params).await;
 
@@ -168,7 +168,7 @@ async fn daemon_disconnect_cleanup() {
     loop {
         let mut ctrl = connect_control(port).await;
         let params = serde_json::to_value(
-            &adora_message::cli_to_coordinator::ControlRequest::DaemonConnected,
+            &dora_message::cli_to_coordinator::ControlRequest::DaemonConnected,
         )
         .unwrap();
         let resp = control_request_reply(&mut ctrl, params).await;

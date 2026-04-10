@@ -1,4 +1,4 @@
-# Adora Framework Audit Report
+# Dora Framework Audit Report
 
 **Date**: 2026-03-13
 **Scope**: Architecture, performance, security, DX, AI agent readiness
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Adora is a well-engineered, production-ready Rust robotics framework with genuine
+Dora is a well-engineered, production-ready Rust robotics framework with genuine
 strengths in latency, zero-copy IPC, and AI agent communication patterns. At 0.1.0
 it is at a strong foundation stage. This audit identified critical bugs (now fixed),
 architectural constraints worth documenting, and high-impact improvements for the
@@ -126,7 +126,7 @@ robotics + AI agent audience.
 
 ### Strengths
 
-- Rich CLI: `adora run`, `doctor`, `top`, `topic echo/hz/pub`, `param`, record/replay
+- Rich CLI: `dora run`, `doctor`, `top`, `topic echo/hz/pub`, `param`, record/replay
 - Clean Python API with sync/async support
 - YAML dataflow spec with comprehensive documentation (855-line architecture doc)
 - Service/Action/Streaming patterns with zero boilerplate
@@ -139,14 +139,14 @@ robotics + AI agent audience.
 | High | Rust node scaffold inconsistent with examples | Add tokio runtime + tracing to template |
 | High | Python bytes API produces unreadable output | Document send/receive pair for bytes case |
 | High | Python metadata convention inconsistent | Unify `metadata=` dict format |
-| Medium | `adora new --kind node` produces no YAML | Add minimal `dataflow-example.yml` |
+| Medium | `dora new --kind node` produces no YAML | Add minimal `dataflow-example.yml` |
 | Medium | `_unstable_*` naming with no stability legend | Add stability docs + graduation criteria |
 | Medium | No canonical robotics example | Add sensor -> filter -> pose pipeline example |
 | Medium | No getting-started tutorial | Add `docs/quickstart.md` with expected output |
 | Medium | Operator API uses `String` not `DataId` | Align with Node API (breaking, do at 0.1.x) |
 | Low | `Reload` event variant exposed in public API | Add `#[doc(hidden)]` |
 | Low | `ParamUpdate` missing from api-rust.md | Update docs |
-| Low | `adora doctor` doesn't check Python version | Wire existing `get_python_adora_version()` |
+| Low | `dora doctor` doesn't check Python version | Wire existing `get_python_dora_version()` |
 
 ---
 
@@ -206,7 +206,7 @@ robotics + AI agent audience.
 
 ### Phase 1: Stability & Correctness (v0.1.x)
 
-- [ ] Enable auth by default in `adora run`
+- [ ] Enable auth by default in `dora run`
 - [ ] Bounded per-node event channels with drop-oldest
 - [ ] `Arc<Metadata>` in fan-out loop
 - [ ] Fix Rust node scaffold template
@@ -223,7 +223,7 @@ robotics + AI agent audience.
 - [ ] Canonical robotics example (sensor fusion pipeline)
 - [ ] Align Operator API with Node API (`DataId`, proper error types)
 - [ ] Arrow type validation at dataflow startup
-- [ ] `#[adora::node]` proc macro for Rust boilerplate
+- [ ] `#[dora::node]` proc macro for Rust boilerplate
 
 ### Phase 3: Scale & Distribution (v0.3+)
 

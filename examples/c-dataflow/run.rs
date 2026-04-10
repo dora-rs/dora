@@ -11,14 +11,14 @@ fn main() -> eyre::Result<()> {
 
     std::fs::create_dir_all("build")?;
 
-    build_package("adora-node-api-c")?;
+    build_package("dora-node-api-c")?;
     build_c_node(root, "node.c", "c_node")?;
     build_c_node(root, "sink.c", "c_sink")?;
 
-    build_package("adora-operator-api-c")?;
+    build_package("dora-operator-api-c")?;
     build_c_operator(root)?;
 
-    adora_cli::run("dataflow.yml".to_string(), false)?;
+    dora_cli::run("dataflow.yml".to_string(), false)?;
 
     Ok(())
 }
@@ -37,7 +37,7 @@ fn build_package(package: &str) -> eyre::Result<()> {
 fn build_c_node(root: &Path, name: &str, out_name: &str) -> eyre::Result<()> {
     let mut clang = std::process::Command::new("clang");
     clang.arg(name);
-    clang.arg("-l").arg("adora_node_api_c");
+    clang.arg("-l").arg("dora_node_api_c");
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
@@ -116,7 +116,7 @@ fn build_c_operator(root: &Path) -> eyre::Result<()> {
     let mut link = std::process::Command::new("clang");
     link.arg("-shared").arg("build/operator.o");
     link.arg("-L").arg(root.join("target").join("debug"));
-    link.arg("-l").arg("adora_operator_api_c");
+    link.arg("-l").arg("dora_operator_api_c");
     #[cfg(target_os = "windows")]
     {
         link.arg("-ladvapi32");

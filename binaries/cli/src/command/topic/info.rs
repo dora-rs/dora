@@ -3,12 +3,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use adora_core::config::InputMapping;
-use adora_message::{
-    common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
-};
 use arrow_schema::DataType;
 use clap::Args;
+use dora_core::config::InputMapping;
+use dora_message::{
+    common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
+};
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -23,7 +23,7 @@ use crate::{
 /// Examples:
 ///
 /// Get info for a single topic:
-///   adora topic info -d my-dataflow camera_node/image
+///   dora topic info -d my-dataflow camera_node/image
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected (or messages must cross machine

@@ -2,7 +2,7 @@
 
 Dataflows are defined in YAML files. Each file describes a graph of nodes, their inputs/outputs, and execution parameters.
 
-A JSON Schema is available at the repo root (`adora-schema.json`) for editor autocompletion and validation.
+A JSON Schema is available at the repo root (`dora-schema.json`) for editor autocompletion and validation.
 
 ## Quick Start
 
@@ -19,14 +19,14 @@ nodes:
       message: sender/message
 ```
 
-Run with `adora run dataflow.yml` (local mode) or `adora up && adora start dataflow.yml` (networked mode).
+Run with `dora run dataflow.yml` (local mode) or `dora up && dora start dataflow.yml` (networked mode).
 
 ## Editor Setup
 
 Add a schema comment at the top of your YAML file for VS Code autocompletion (requires the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)):
 
 ```yaml
-# yaml-language-server: $schema=https://raw.githubusercontent.com/dora-rs/adora/main/adora-schema.json
+# yaml-language-server: $schema=https://raw.githubusercontent.com/dora-rs/dora/main/dora-schema.json
 nodes:
   - id: my-node
     # ... autocompletion works here
@@ -63,11 +63,11 @@ A node's executable comes from a local path, a git repository, a module referenc
 |-------|------|-------------|
 | `path` | string | Path to executable or script. Can also be a URL (legacy) |
 | `module` | string | Path to a module definition file (mutually exclusive with `path`). See [Modules Guide](modules.md) |
-| `git` | string | Git repo URL. `adora build` clones it and uses the clone dir as working directory |
+| `git` | string | Git repo URL. `dora build` clones it and uses the clone dir as working directory |
 | `branch` | string | Branch to checkout (requires `git`, mutually exclusive with `tag`/`rev`) |
 | `tag` | string | Tag to checkout (requires `git`, mutually exclusive with `branch`/`rev`) |
 | `rev` | string | Commit hash to checkout (requires `git`, mutually exclusive with `branch`/`tag`) |
-| `build` | string | Build commands run during `adora build`. Each line runs separately. `pip`/`pip3` lines use `uv` when `--uv` is passed |
+| `build` | string | Build commands run during `dora build`. Each line runs separately. `pip`/`pip3` lines use `uv` when `--uv` is passed |
 | `args` | string | Command-line arguments (space-separated) |
 
 Example with git source:
@@ -90,7 +90,7 @@ Inputs subscribe to another node's output using the format `<node-id>/<output-id
 inputs:
   # Short form
   image: camera/frames
-  tick: adora/timer/millis/100
+  tick: dora/timer/millis/100
 
   # Long form with options
   sensor_data:
@@ -119,9 +119,9 @@ Timers are virtual nodes that emit ticks at fixed intervals:
 
 ```yaml
 inputs:
-  tick: adora/timer/millis/100   # every 100ms
-  slow: adora/timer/millis/1000  # every 1s
-  fast: adora/timer/hz/30        # 30 Hz (~33ms)
+  tick: dora/timer/millis/100   # every 100ms
+  slow: dora/timer/millis/1000  # every 1s
+  fast: dora/timer/hz/30        # 30 Hz (~33ms)
 ```
 
 #### Built-in Log Aggregation
@@ -130,12 +130,12 @@ Subscribe to structured log messages from all (or filtered) nodes:
 
 ```yaml
 inputs:
-  all_logs: adora/logs               # all nodes, all levels
-  errors:   adora/logs/error         # error+ from all nodes
-  sensor:   adora/logs/info/sensor   # info+ from specific node
+  all_logs: dora/logs               # all nodes, all levels
+  errors:   dora/logs/error         # error+ from all nodes
+  sensor:   dora/logs/info/sensor   # info+ from specific node
 ```
 
-Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#adoralogs----automatic-log-aggregation) for details.
+Each message arrives as a JSON-encoded `LogMessage` string. See [Logging](logging.md#doralogs----automatic-log-aggregation) for details.
 
 #### Outputs
 
@@ -182,14 +182,14 @@ Optional type annotations for inputs and outputs. Types are never required -- un
 
 Type URNs use the format `std/<category>/v<version>/<TypeName>` and support parameters (e.g. `std/media/v1/AudioFrame[sample_type=f32]`). See the [Type Annotations Guide](types.md) for the full standard type library, parameterized types, compatibility rules, and user-defined types.
 
-Run `adora validate <file>` to check type annotations statically. For runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:
+Run `dora validate <file>` to check type annotations statically. For runtime checking, set `DORA_RUNTIME_TYPE_CHECK=warn` or `error`:
 
 ```bash
-adora validate dataflow.yml
-ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml
+dora validate dataflow.yml
+DORA_RUNTIME_TYPE_CHECK=warn dora run dataflow.yml
 ```
 
-Types also appear on `adora graph` edge labels when annotated.
+Types also appear on `dora graph` edge labels when annotated.
 
 ### Arrow IPC Framing
 
@@ -233,7 +233,7 @@ env:
   PORT: 8080                # integer
   RATE: 1.5                 # float
   FROM_HOST:
-    __adora_env: HOST_VAR   # read from host environment at runtime
+    __dora_env: HOST_VAR   # read from host environment at runtime
 ```
 
 Environment variables apply to both `build` commands and node execution. Values support `$VAR` expansion syntax.
@@ -396,7 +396,7 @@ Operators also support `inputs`, `outputs`, `build`, `send_stdout_as`, `send_log
 
 ## ROS2 Bridge
 
-Declare a node as a ROS2 bridge to automatically convert between ROS2 DDS messages and Adora's Arrow format. No custom code needed.
+Declare a node as a ROS2 bridge to automatically convert between ROS2 DDS messages and Dora's Arrow format. No custom code needed.
 
 ### Single Topic
 
@@ -489,11 +489,11 @@ _unstable_debug:
   publish_all_messages_to_zenoh: true
 ```
 
-Required for `adora topic echo`, `adora topic hz`, and `adora topic info` commands.
+Required for `dora topic echo`, `dora topic hz`, and `dora topic info` commands.
 
 ## Communication Patterns
 
-Adora supports four communication patterns built on top of the dataflow:
+Dora supports four communication patterns built on top of the dataflow:
 
 - **Topic** (default): pub/sub dataflow
 - **Service**: request/reply via `request_id` metadata
@@ -515,7 +515,7 @@ nodes:
     operator:
       python: webcam.py
       inputs:
-        tick: adora/timer/millis/100
+        tick: dora/timer/millis/100
       outputs:
         - image
 

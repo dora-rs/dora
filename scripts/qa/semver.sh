@@ -17,14 +17,14 @@ if ! command -v cargo-semver-checks >/dev/null; then
 fi
 
 PUBLIC_CRATES=(
-  adora-node-api
-  adora-operator-api
-  adora-core
-  adora-message
-  adora-arrow-convert
+  dora-node-api
+  dora-operator-api
+  dora-core
+  dora-message
+  dora-arrow-convert
 )
 
-# adora-* crates are not yet published on crates.io, so use the last git
+# dora-* crates are not yet published on crates.io, so use the last git
 # tag as the baseline. Override by exporting SEMVER_BASELINE=<ref> before
 # running this script.
 BASELINE="${SEMVER_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}"

@@ -1,24 +1,24 @@
 # Getting Started with Python
 
-This guide walks you through writing Python nodes and operators for adora dataflows.
+This guide walks you through writing Python nodes and operators for dora dataflows.
 
 ## Prerequisites
 
 ```bash
-cargo install adora-cli    # CLI (adora command)
-pip install adora-rs       # Python node/operator API
+cargo install dora-cli    # CLI (dora command)
+pip install dora-rs       # Python node/operator API
 ```
 
-The `adora-rs` package includes `pyarrow` as a dependency.
+The `dora-rs` package includes `pyarrow` as a dependency.
 
-**Building from source** (instead of `pip install adora-rs`):
+**Building from source** (instead of `pip install dora-rs`):
 
 ```bash
 pip install maturin  # requires >= 1.8
 cd apis/python/node && maturin develop --uv && cd ../../..
 ```
 
-The operator API is compiled into the `adora` Python module automatically -- there is no separate install step for it.
+The operator API is compiled into the `dora` Python module automatically -- there is no separate install step for it.
 
 ## Hello World: Sender and Receiver
 
@@ -28,7 +28,7 @@ Create three files:
 
 ```python
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 node = Node()
 for i in range(100):
@@ -38,7 +38,7 @@ for i in range(100):
 **receiver.py** -- receives and prints messages:
 
 ```python
-from adora import Node
+from dora import Node
 
 node = Node()
 for event in node:
@@ -67,7 +67,7 @@ nodes:
 Run it:
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ## Events
@@ -96,7 +96,7 @@ for event in node:
 
 ## Working with Arrow Data
 
-All data flows through adora as Apache Arrow arrays. Common patterns:
+All data flows through dora as Apache Arrow arrays. Common patterns:
 
 ```python
 import pyarrow as pa
@@ -121,21 +121,21 @@ node.send_output("frame", pa.array(raw_bytes))
 
 ## Operators
 
-Operators are lightweight alternatives to nodes. They run inside the adora runtime process (no separate OS process), making them faster for simple transformations.
+Operators are lightweight alternatives to nodes. They run inside the dora runtime process (no separate OS process), making them faster for simple transformations.
 
 Define an `Operator` class with an `on_event` method:
 
 ```python
 # doubler_op.py
 import pyarrow as pa
-from adora import AdoraStatus
+from dora import DoraStatus
 
 class Operator:
-    def on_event(self, event, send_output) -> AdoraStatus:
+    def on_event(self, event, send_output) -> DoraStatus:
         if event["type"] == "INPUT":
             value = event["value"].to_pylist()[0]
             send_output("doubled", pa.array([value * 2]), event["metadata"])
-        return AdoraStatus.CONTINUE
+        return DoraStatus.CONTINUE
 ```
 
 Reference it in YAML with `operator` instead of `path`:
@@ -143,7 +143,7 @@ Reference it in YAML with `operator` instead of `path`:
 ```yaml
 nodes:
   - id: timer
-    path: adora/timer/millis/500
+    path: dora/timer/millis/500
     outputs:
       - tick
 
@@ -171,7 +171,7 @@ For nodes that need async I/O (HTTP calls, database queries, etc.), use `recv_as
 
 ```python
 import asyncio
-from adora import Node
+from dora import Node
 
 async def main():
     node = Node()
@@ -190,13 +190,13 @@ See [examples/python-async](../examples/python-async) for a complete example.
 
 ## Logging
 
-Use `node.log()` for structured logging that integrates with `adora logs`:
+Use `node.log()` for structured logging that integrates with `dora logs`:
 
 ```python
 node.log("info", "Processing item", {"count": str(i)})
 ```
 
-Or use Python's standard `logging` module -- adora captures stdout/stderr automatically:
+Or use Python's standard `logging` module -- dora captures stdout/stderr automatically:
 
 ```python
 import logging
@@ -212,7 +212,7 @@ Built-in timer nodes generate periodic ticks without writing any code:
 ```yaml
 nodes:
   - id: tick-source
-    path: adora/timer/millis/100    # tick every 100ms
+    path: dora/timer/millis/100    # tick every 100ms
     outputs:
       - tick
 
@@ -222,11 +222,11 @@ nodes:
       tick: tick-source/tick
 ```
 
-Also available: `adora/timer/hz/30` for 30 Hz.
+Also available: `dora/timer/hz/30` for 30 Hz.
 
 ## Next Steps
 
 - [Python API Reference](api-python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA
 - [Communication Patterns](patterns.md) -- service (request/reply), action (goal/feedback/result), and streaming (session/segment/chunk) patterns
 - [Examples](../examples/) -- python-dataflow, python-async, python-drain, python-concurrent-rw, python-multiple-arrays
-- [Distributed Deployment](distributed-deployment.md) -- running across multiple machines with `adora up`
+- [Distributed Deployment](distributed-deployment.md) -- running across multiple machines with `dora up`

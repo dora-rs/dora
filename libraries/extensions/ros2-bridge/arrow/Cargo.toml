@@ -1,11 +1,11 @@
 [package]
-name = "adora-ros2-bridge-arrow"
+name = "dora-ros2-bridge-arrow"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
 
 [dependencies]
-adora-ros2-bridge-msg-gen = { path = "../msg-gen" }
+dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
 arrow = { workspace = true }
 eyre = { workspace = true }
 ros2-client = "0.8"

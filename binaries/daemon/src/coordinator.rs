@@ -1,6 +1,6 @@
 use crate::DaemonCoordinatorEvent;
-use adora_core::uhlc::HLC;
-use adora_message::{
+use dora_core::uhlc::HLC;
+use dora_message::{
     common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
@@ -60,7 +60,7 @@ pub async fn register(
     impl Stream<Item = Timestamped<CoordinatorEvent>>,
 )> {
     let display_url = format!("ws://{addr}/api/daemon");
-    let auth_token = adora_message::auth::discover_token();
+    let auth_token = dora_message::auth::discover_token();
     let ws_stream = {
         let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
         let mut attempts: u32 = 0;
@@ -161,7 +161,7 @@ pub async fn register(
     .await
     .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
 
-    tracing::info!("Connected to adora-coordinator at ws://{addr}/api/daemon");
+    tracing::info!("Connected to dora-coordinator at ws://{addr}/api/daemon");
 
     let (tx, rx) = mpsc::channel(1);
 

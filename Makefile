@@ -1,4 +1,4 @@
-# Adora QA targets
+# Dora QA targets
 #
 # Local-first quality gates. Same scripts run in CI.
 # See docs/plan-agentic-qa-strategy.md for the full strategy.
@@ -31,18 +31,18 @@ qa-unwrap:
 
 qa-clippy:
 	@cargo clippy --all \
-		--exclude adora-node-api-python \
-		--exclude adora-operator-api-python \
-		--exclude adora-ros2-bridge-python \
+		--exclude dora-node-api-python \
+		--exclude dora-operator-api-python \
+		--exclude dora-ros2-bridge-python \
 		-- -D warnings
 
 qa-test:
 	@cargo test --all \
-		--exclude adora-node-api-python \
-		--exclude adora-operator-api-python \
-		--exclude adora-ros2-bridge-python \
-		--exclude adora-cli-api-python \
-		--exclude adora-examples
+		--exclude dora-node-api-python \
+		--exclude dora-operator-api-python \
+		--exclude dora-ros2-bridge-python \
+		--exclude dora-cli-api-python \
+		--exclude dora-examples
 
 qa-coverage:
 	@scripts/qa/coverage.sh

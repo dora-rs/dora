@@ -1,18 +1,18 @@
 # Real-Time Tuning
 
-Adora provides optional real-time features for latency-sensitive robotics deployments.
+Dora provides optional real-time features for latency-sensitive robotics deployments.
 
 ## Quick Start
 
 ```bash
 # Start daemon with real-time profile (mlockall + SCHED_FIFO)
-sudo adora daemon --rt
+sudo dora daemon --rt
 
 # Control worker threads
-adora daemon --worker-threads 4
+dora daemon --worker-threads 4
 
 # Pin to specific CPU cores
-taskset -c 2,3 adora daemon --rt
+taskset -c 2,3 dora daemon --rt
 ```
 
 ## What `--rt` Does

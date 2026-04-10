@@ -1,22 +1,22 @@
 # Rust API Reference
 
-This document covers the two main Rust crates for building Adora dataflow components:
+This document covers the two main Rust crates for building Dora dataflow components:
 
-- **`adora-node-api`** -- for standalone node executables
-- **`adora-operator-api`** -- for in-process operators managed by the Adora runtime
+- **`dora-node-api`** -- for standalone node executables
+- **`dora-operator-api`** -- for in-process operators managed by the Dora runtime
 
 ---
 
-## Node API (`adora-node-api`)
+## Node API (`dora-node-api`)
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-adora-node-api = { workspace = true }
+dora-node-api = { workspace = true }
 ```
 
-### AdoraNode
+### DoraNode
 
 The primary struct for sending outputs and retrieving node information. Obtained through one of the initialization functions below.
 
@@ -49,8 +49,8 @@ pub fn init_testing(
 `init_from_env` is the recommended entry point. It checks, in order:
 
 1. Thread-local testing state set by `setup_integration_testing`
-2. `ADORA_NODE_CONFIG` environment variable (set by the daemon)
-3. `ADORA_TEST_WITH_INPUTS` environment variable (file-based integration testing)
+2. `DORA_NODE_CONFIG` environment variable (set by the daemon)
+3. `DORA_TEST_WITH_INPUTS` environment variable (file-based integration testing)
 4. Interactive terminal fallback (only if stdin is a TTY)
 
 #### Sending Outputs
@@ -149,10 +149,10 @@ node.send_service_response("response".into(), metadata.parameters, result)?;
 
 **Action example** (client sends goal, server streams feedback + result):
 ```rust
-use adora_node_api::{GOAL_ID, GOAL_STATUS, GOAL_STATUS_SUCCEEDED, Parameter};
+use dora_node_api::{GOAL_ID, GOAL_STATUS, GOAL_STATUS_SUCCEEDED, Parameter};
 
 // Client: generate goal_id, attach to params
-let goal_id = AdoraNode::new_goal_id();
+let goal_id = DoraNode::new_goal_id();
 params.insert(GOAL_ID.to_string(), Parameter::String(goal_id));
 node.send_output("goal".into(), params, data)?;
 
@@ -162,7 +162,7 @@ let gid = get_string_param(&metadata.parameters, GOAL_ID);
 
 **Streaming example** (real-time voice/video pipeline with interruption):
 ```rust
-use adora_node_api::StreamSegment;
+use dora_node_api::StreamSegment;
 
 // Create a streaming segment builder (auto-generates session_id)
 let mut seg = StreamSegment::new();
@@ -215,7 +215,7 @@ Rust nodes have two ways to emit structured logs. Both produce identical structu
 
 **Option 1: Node API (recommended for most cases)**
 
-All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering, `send_logs_as` routing, and `adora/logs` subscribers.
+All log methods emit structured JSONL to stdout, which the daemon parses automatically. Works with `min_log_level` filtering, `send_logs_as` routing, and `dora/logs` subscribers.
 
 ```rust
 // General structured log. Level: "error", "warn", "info", "debug", "trace".
@@ -240,7 +240,7 @@ pub fn log_trace(&self, message: &str)
 
 **Option 2: Rust `tracing` crate**
 
-When adora's tracing subscriber is initialized (via `init_tracing()` or the default feature), `tracing::info!()` etc. output structured JSON to stdout that the daemon parses identically:
+When dora's tracing subscriber is initialized (via `init_tracing()` or the default feature), `tracing::info!()` etc. output structured JSON to stdout that the daemon parses identically:
 
 ```rust
 tracing::info!("Sensor started");
@@ -337,7 +337,7 @@ pub enum Event {
 ```rust
 #[non_exhaustive]
 pub enum StopCause {
-    // Explicit stop via `adora stop` or Ctrl-C. Exit promptly or be killed.
+    // Explicit stop via `dora stop` or Ctrl-C. Exit promptly or be killed.
     Manual,
 
     // All inputs were closed (upstream nodes exited). Only sent if the node has inputs.
@@ -397,7 +397,7 @@ pub fn get_bool_param(params: &MetadataParameters, key: &str) -> Option<bool>
 | `FIN` | `"fin"` | Last chunk of a streaming segment |
 | `FLUSH` | `"flush"` | Discard older queued messages on input |
 
-All constants are re-exported from `adora_node_api`.
+All constants are re-exported from `dora_node_api`.
 
 #### Identity Types
 
@@ -498,7 +498,7 @@ The `integration_testing` module provides tools for testing nodes without a runn
 
 #### setup_integration_testing
 
-Sets up thread-local state so that the next call to `AdoraNode::init_from_env` on the same thread initializes in test mode.
+Sets up thread-local state so that the next call to `DoraNode::init_from_env` on the same thread initializes in test mode.
 
 ```rust
 pub fn setup_integration_testing(
@@ -551,39 +551,39 @@ Nodes using `init_from_env` also support file-based testing via environment vari
 
 | Variable | Description |
 |----------|-------------|
-| `ADORA_TEST_WITH_INPUTS` | Path to a JSON input file (`IntegrationTestInput` format) |
-| `ADORA_TEST_WRITE_OUTPUTS_TO` | Path for the output JSONL file (default: `outputs.jsonl` next to inputs) |
-| `ADORA_TEST_NO_OUTPUT_TIME_OFFSET` | If set, omit time offsets for deterministic outputs |
+| `DORA_TEST_WITH_INPUTS` | Path to a JSON input file (`IntegrationTestInput` format) |
+| `DORA_TEST_WRITE_OUTPUTS_TO` | Path for the output JSONL file (default: `outputs.jsonl` next to inputs) |
+| `DORA_TEST_NO_OUTPUT_TIME_OFFSET` | If set, omit time offsets for deterministic outputs |
 
 ---
 
-## Operator API (`adora-operator-api`)
+## Operator API (`dora-operator-api`)
 
-Operators are in-process components managed by the Adora runtime. They are compiled as shared libraries (`.so`/`.dylib`/`.dll`) and loaded by the runtime.
+Operators are in-process components managed by the Dora runtime. They are compiled as shared libraries (`.so`/`.dylib`/`.dll`) and loaded by the runtime.
 
 Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-adora-operator-api = { workspace = true }
+dora-operator-api = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]
 ```
 
-### AdoraOperator Trait
+### DoraOperator Trait
 
 ```rust
-pub trait AdoraOperator: Default {
+pub trait DoraOperator: Default {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut AdoraOutputSender,
-    ) -> Result<AdoraStatus, String>;
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<DoraStatus, String>;
 }
 ```
 
-Implement this trait to define your operator's behavior. The runtime calls `on_event` for each incoming event. Return `AdoraStatus` to control execution flow.
+Implement this trait to define your operator's behavior. The runtime calls `on_event` for each incoming event. Return `DoraStatus` to control execution flow.
 
 ### Event (Operator)
 
@@ -606,23 +606,23 @@ pub enum Event<'a> {
 }
 ```
 
-### AdoraOutputSender
+### DoraOutputSender
 
 ```rust
-pub struct AdoraOutputSender<'a>(/* ... */);
+pub struct DoraOutputSender<'a>(/* ... */);
 
-impl AdoraOutputSender<'_> {
+impl DoraOutputSender<'_> {
     // Send an output. `id` is the output ID from your dataflow YAML.
     pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String>
 }
 ```
 
-### AdoraStatus
+### DoraStatus
 
 Returned from `on_event` to control the operator lifecycle.
 
 ```rust
-pub enum AdoraStatus {
+pub enum DoraStatus {
     Continue,  // keep running, wait for the next event
     Stop,      // stop this operator
     StopAll,   // stop the entire dataflow
@@ -631,15 +631,15 @@ pub enum AdoraStatus {
 
 ### register_operator! Macro
 
-Generates the FFI entry points required by the Adora runtime to load and call your operator.
+Generates the FFI entry points required by the Dora runtime to load and call your operator.
 
 ```rust
-use adora_operator_api::register_operator;
+use dora_operator_api::register_operator;
 
 register_operator!(MyOperator);
 ```
 
-This must be called exactly once per crate, at the top level, with the type that implements `AdoraOperator`.
+This must be called exactly once per crate, at the top level, with the type that implements `DoraOperator`.
 
 ---
 
@@ -648,10 +648,10 @@ This must be called exactly once per crate, at the top level, with the type that
 A minimal node that receives `tick` inputs and sends a random number as output.
 
 ```rust
-use adora_node_api::{AdoraNode, Event, IntoArrow, adora_core::config::DataId};
+use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     let output = DataId::from("random".to_owned());
 
@@ -681,7 +681,7 @@ Corresponding dataflow YAML:
 ```yaml
 nodes:
   - id: timer
-    path: adora/timer/millis/100
+    path: dora/timer/millis/100
     outputs:
       - tick
 
@@ -707,8 +707,8 @@ A minimal operator that counts ticks and forwards formatted messages.
 ```rust
 #![warn(unsafe_op_in_unsafe_fn)]
 
-use adora_operator_api::{
-    AdoraOperator, AdoraOutputSender, AdoraStatus, Event, IntoArrow, register_operator,
+use dora_operator_api::{
+    DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
 };
 
 register_operator!(MyOperator);
@@ -718,12 +718,12 @@ struct MyOperator {
     ticks: usize,
 }
 
-impl AdoraOperator for MyOperator {
+impl DoraOperator for MyOperator {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut AdoraOutputSender,
-    ) -> Result<AdoraStatus, String> {
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<DoraStatus, String> {
         match event {
             Event::Input { id, data } => match *id {
                 "tick" => {
@@ -735,7 +735,7 @@ impl AdoraOperator for MyOperator {
             },
             Event::InputClosed { id } => {
                 if *id == "tick" {
-                    return Ok(AdoraStatus::Stop);
+                    return Ok(DoraStatus::Stop);
                 }
             }
             Event::Stop => {}
@@ -744,7 +744,7 @@ impl AdoraOperator for MyOperator {
             }
         }
 
-        Ok(AdoraStatus::Continue)
+        Ok(DoraStatus::Continue)
     }
 }
 ```
@@ -754,7 +754,7 @@ Corresponding dataflow YAML:
 ```yaml
 nodes:
   - id: timer
-    path: adora/timer/millis/500
+    path: dora/timer/millis/500
     outputs:
       - tick
 

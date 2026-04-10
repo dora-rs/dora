@@ -2,12 +2,12 @@
 
 ## Context
 
-Adora transmits Arrow data as raw bytes + `ArrowTypeInfo` metadata (buffer offsets, data type, null count). There is no Arrow IPC framing — no schema, no field names, no dictionary encoding. Nodes must pre-agree on types via YAML annotations or prior knowledge.
+Dora transmits Arrow data as raw bytes + `ArrowTypeInfo` metadata (buffer offsets, data type, null count). There is no Arrow IPC framing — no schema, no field names, no dictionary encoding. Nodes must pre-agree on types via YAML annotations or prior knowledge.
 
 **What breaks:**
 - Sender upgrades Float32 -> Float64: receiver gets garbage (wrong byte alignment)
 - Struct field order changes: silent data corruption
-- No runtime type mismatch detection (unless `ADORA_RUNTIME_TYPE_CHECK` env var set)
+- No runtime type mismatch detection (unless `DORA_RUNTIME_TYPE_CHECK` env var set)
 - No schema evolution (adding fields requires full redeployment)
 - No dynamic type discovery (receiver can't inspect incoming schema)
 
@@ -39,7 +39,7 @@ Don't change the default fast path. Add an optional `framing: arrow-ipc` flag on
 
 ### 1.1 Always-on lightweight type check
 
-Currently `ADORA_RUNTIME_TYPE_CHECK` is opt-in via env var. Make it automatic:
+Currently `DORA_RUNTIME_TYPE_CHECK` is opt-in via env var. Make it automatic:
 - On first message received per input, compare `ArrowTypeInfo.data_type` with `input_types` from descriptor
 - Log warning on mismatch (don't error by default — backward compat)
 - Zero cost after first message (cached result per input)
@@ -121,7 +121,7 @@ Define compatibility rules (similar to Avro/Protobuf):
 
 ### 3.3 Type validation at dataflow startup
 
-`adora validate` already checks type URN compatibility. Extend to:
+`dora validate` already checks type URN compatibility. Extend to:
 - Resolve type URNs to full Arrow schemas
 - Check field-level compatibility (not just top-level type name)
 - Report field-level mismatches with suggestions

@@ -5,8 +5,8 @@
 
 mod common;
 
-use adora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
-use adora_message::{
+use dora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
+use dora_message::{
     BuildId,
     cli_to_coordinator::ControlRequest,
     ws_protocol::{WsRequest, WsResponse},
@@ -374,7 +374,7 @@ async fn stop_node_nonexistent_dataflow() {
 
 #[tokio::test]
 async fn param_list_empty() {
-    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let dataflow_id = Uuid::new_v4();
     seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["camera"]);
     let store: Arc<dyn CoordinatorStore> = store_impl;
@@ -397,14 +397,14 @@ async fn param_list_empty() {
 
 #[tokio::test]
 async fn param_set_then_get() {
-    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let df_id = Uuid::new_v4();
     seed_dataflow_record(store_impl.as_ref(), df_id, &["sensor"]);
     let store: Arc<dyn CoordinatorStore> = store_impl;
     let (port, _handle) = common::start_test_coordinator_with_store(store).await;
     let mut ws = connect_control(port).await;
 
-    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+    let node_id: dora_message::id::NodeId = "sensor".to_string().into();
 
     let params = serde_json::to_value(&ControlRequest::SetParam {
         dataflow_id: df_id,
@@ -433,14 +433,14 @@ async fn param_set_then_get() {
 
 #[tokio::test]
 async fn param_set_list_delete() {
-    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let df_id = Uuid::new_v4();
     seed_dataflow_record(store_impl.as_ref(), df_id, &["camera"]);
     let store: Arc<dyn CoordinatorStore> = store_impl;
     let (port, _handle) = common::start_test_coordinator_with_store(store).await;
     let mut ws = connect_control(port).await;
 
-    let node_id: adora_message::id::NodeId = "camera".to_string().into();
+    let node_id: dora_message::id::NodeId = "camera".to_string().into();
 
     for (key, value) in [("fps", json!(30)), ("resolution", json!("1080p"))] {
         let params = serde_json::to_value(&ControlRequest::SetParam {
@@ -541,7 +541,7 @@ async fn param_delete_rejects_unknown_target() {
 
 #[tokio::test]
 async fn param_get_nonexistent() {
-    let store_impl = Arc::new(adora_coordinator::InMemoryStore::new());
+    let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let dataflow_id = Uuid::new_v4();
     seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["node"]);
     let store: Arc<dyn CoordinatorStore> = store_impl;

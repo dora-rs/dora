@@ -23,19 +23,19 @@ Without coverage in these areas, distributed-system bugs that span process bound
 
 ## 2. Implementation prerequisites
 
-The existing fault-tolerance tests call `adora_daemon::Daemon::run_dataflow` **in-process** via the library API. This makes them fast but means they cannot test scenarios that require killing a component — the daemon is a library call, not a process.
+The existing fault-tolerance tests call `dora_daemon::Daemon::run_dataflow` **in-process** via the library API. This makes them fast but means they cannot test scenarios that require killing a component — the daemon is a library call, not a process.
 
 **Real fault injection requires one of:**
 
 ### Option A: Subprocess-based tests (recommended for most scenarios)
 
-Spawn `adora` binary as a subprocess, kill it with SIGKILL at specific points, then bring it back up and verify recovery. Pattern:
+Spawn `dora` binary as a subprocess, kill it with SIGKILL at specific points, then bring it back up and verify recovery. Pattern:
 
 ```rust
 // Scaffolding to add:
 mod subprocess {
-    pub struct AdoraProcess { child: Child, port: u16 }
-    impl AdoraProcess {
+    pub struct DoraProcess { child: Child, port: u16 }
+    impl DoraProcess {
         pub async fn start(...) -> Self { ... }
         pub fn kill(&mut self) { self.child.kill().unwrap() }
         pub async fn wait_ready(&mut self, timeout: Duration) -> bool { ... }
@@ -56,7 +56,7 @@ Example hook:
 fault_inject::maybe_panic("coordinator::state_catchup::before_ack");
 ```
 
-Requires one new crate (`adora-fault-inject`) and ~30 lines of conditional code in each target location. Invasive but enables precise scenarios.
+Requires one new crate (`dora-fault-inject`) and ~30 lines of conditional code in each target location. Invasive but enables precise scenarios.
 
 ### Recommendation
 
@@ -72,7 +72,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 
 **Setup**:
 1. Start coordinator A, daemon B, daemon C
-2. Send `adora start` for a multi-node dataflow
+2. Send `dora start` for a multi-node dataflow
 3. Wait until at least one node is `ready`
 
 **Fault**: `SIGKILL` the coordinator immediately after the first node reports ready (subprocess pattern from Option A; precise timing needs Option B).
@@ -83,7 +83,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 3. Coordinator should re-establish connections to both daemons
 4. The in-flight dataflow should either complete successfully OR be cleanly marked as failed
 
-**Invariant**: no "zombie" state — the coordinator's view of running dataflows matches what the daemons actually have running. `adora list` after restart returns the same set of active dataflows as the daemons' local state.
+**Invariant**: no "zombie" state — the coordinator's view of running dataflows matches what the daemons actually have running. `dora list` after restart returns the same set of active dataflows as the daemons' local state.
 
 **Status**: Not implemented. Requires Option A scaffolding + Option B hook for precise timing.
 
@@ -256,9 +256,9 @@ fault-injection:
     - uses: dtolnay/rust-toolchain@master
     - uses: Swatinem/rust-cache@v2
     - name: Build CLI
-      run: cargo build -p adora-cli --release
+      run: cargo build -p dora-cli --release
     - name: Install CLI
-      run: cp target/release/adora /usr/local/bin/adora
+      run: cp target/release/dora /usr/local/bin/dora
     - name: Run fault injection suite
       run: cargo test --test fault-tolerance-e2e -- --test-threads=1 --include-ignored
 ```

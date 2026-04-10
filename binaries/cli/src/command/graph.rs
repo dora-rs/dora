@@ -1,5 +1,5 @@
 use super::Executable;
-use adora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use eyre::Context;
 use std::{
     fs::File,

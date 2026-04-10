@@ -1,4 +1,4 @@
-"""Adora benchmark receiver for ROS2 comparison.
+"""Dora benchmark receiver for ROS2 comparison.
 
 Same measurement logic as ros2_receiver.py — uses perf_counter_ns timestamps
 embedded in the first 8 bytes of each payload for comparable latency measurement.
@@ -7,7 +7,7 @@ embedded in the first 8 bytes of each payload for comparable latency measurement
 import os
 import time
 
-from adora import Node
+from dora import Node
 
 
 def percentile(sorted_vals, pct):
@@ -83,7 +83,7 @@ def flush():
                 )
 
 
-print("Adora Latency:")
+print("Dora Latency:")
 
 for event in node:
     if event["type"] == "INPUT":
@@ -106,7 +106,7 @@ for event in node:
         elif event_id == "throughput" and latency_mode:
             latency_mode = False
             flush()
-            print("\nAdora Throughput:")
+            print("\nDora Throughput:")
             current_size = data_len
             n = 0
             latencies_ns = []

@@ -23,7 +23,7 @@ timer (10ms) --> send_data --> data --> receive_data_with_sleep
 ## Run
 
 ```bash
-adora run dataflow.yaml
+dora run dataflow.yaml
 ```
 
 ## What This Demonstrates

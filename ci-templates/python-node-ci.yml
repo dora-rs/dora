@@ -1,8 +1,8 @@
-# CI workflow for Python adora nodes.
+# CI workflow for Python dora nodes.
 # Copy this file to your project's .github/workflows/ directory.
 #
-# Prerequisites: your node uses `from adora import Node` and has a
-# tests/ directory with pytest tests (using MockNode from adora.testing).
+# Prerequisites: your node uses `from dora import Node` and has a
+# tests/ directory with pytest tests (using MockNode from dora.testing).
 
 name: Python Node CI
 
@@ -28,7 +28,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pyarrow adora-rs pytest
+          pip install pyarrow dora-rs pytest
 
       - name: Run tests
         run: pytest tests/ -v

@@ -15,12 +15,12 @@ import time
 import uuid
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 # Simulated responses (in production, these come from an LLM)
 RESPONSES = {
     "Tell me about robotics": "Robotics combines mechanical engineering, electrical engineering, and computer science to create machines that can interact with the physical world.",
-    "Explain zero-copy IPC": "Zero-copy IPC avoids data copies between processes by sharing memory regions directly. Adora uses shared memory for messages over 4KB.",
+    "Explain zero-copy IPC": "Zero-copy IPC avoids data copies between processes by sharing memory regions directly. Dora uses shared memory for messages over 4KB.",
     "What is Apache Arrow?": "Apache Arrow is a columnar memory format for flat and hierarchical data. It enables zero-serialization data sharing between processes.",
     "How does shared memory work?": "Shared memory maps the same physical memory pages into multiple process address spaces, enabling direct data access without copying.",
 }

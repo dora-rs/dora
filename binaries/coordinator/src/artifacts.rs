@@ -12,7 +12,7 @@ pub(crate) struct ArtifactStore {
 impl ArtifactStore {
     /// Create a new artifact store in a unique temp directory.
     pub fn new() -> eyre::Result<Self> {
-        let base_dir = std::env::temp_dir().join(format!("adora-artifacts-{}", Uuid::new_v4()));
+        let base_dir = std::env::temp_dir().join(format!("dora-artifacts-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&base_dir)
             .with_context(|| format!("failed to create artifact dir {}", base_dir.display()))?;
         Ok(Self { base_dir })
@@ -104,7 +104,7 @@ mod tests {
         let dir = {
             let store = ArtifactStore {
                 base_dir: std::env::temp_dir()
-                    .join(format!("adora-artifacts-test-{}", Uuid::new_v4())),
+                    .join(format!("dora-artifacts-test-{}", Uuid::new_v4())),
             };
             std::fs::create_dir_all(&store.base_dir).unwrap();
             let dir = store.base_dir.clone();

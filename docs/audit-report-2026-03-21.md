@@ -1,4 +1,4 @@
-# Adora Framework Audit Report
+# Dora Framework Audit Report
 
 **Date**: 2026-03-21 (combined with 2026-03-13 audit)
 **Scope**: Architecture, performance, security, code quality, DX, AI agent readiness, dependencies
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-Adora 0.1.0 is released. The framework has genuine strengths in latency, zero-copy IPC,
+Dora 0.1.0 is released. The framework has genuine strengths in latency, zero-copy IPC,
 and AI agent communication patterns. Since the 2026-03-13 audit, release engineering and
 CI have been the focus (12 commits), with must-fix bugs (F1-F8) resolved. However, this
 deep-dive audit uncovered **3 memory-safety issues** (shmem bounds check, unsound `Sync`
@@ -207,7 +207,7 @@ Optimal:  Node A -> [metadata ser] -> [shmem write raw] -> [shmem read zero-copy
 - All `unsafe` blocks have `# Safety` doc comments
 - `umask(0o077)` before shmem/credential file creation
 - Watchdog, health-check kills, circuit-breaker recovery
-- Shell nodes gated by `ADORA_ALLOW_SHELL_NODES=true`
+- Shell nodes gated by `DORA_ALLOW_SHELL_NODES=true`
 - `ENV_DENYLIST` strips `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, auth tokens from child nodes
 - `shlex` argument parsing for non-shell nodes
 - Node stdin closed (`Stdio::Null`) for all spawned nodes
@@ -218,7 +218,7 @@ Optimal:  Node A -> [metadata ser] -> [shmem write raw] -> [shmem read zero-copy
 
 | # | Issue | Severity | Location | Recommendation |
 |---|-------|----------|----------|----------------|
-| S1 | Auth disabled for `adora run` (embedded coordinator) — any local process can connect | High | `cli/command/run.rs:193`, `coordinator/lib.rs:116` | Add `--auth` flag or at minimum log warning |
+| S1 | Auth disabled for `dora run` (embedded coordinator) — any local process can connect | High | `cli/command/run.rs:193`, `coordinator/lib.rs:116` | Add `--auth` flag or at minimum log warning |
 | S2 | Unbounded per-node event channels — OOM via slow receiver | High | `running_dataflow.rs:159,162` | Bounded channel with drop-oldest |
 | S3 | `node.id` embedded in Python `-c` string — structurally fragile for injection | Medium | `spawn/spawner.rs:239,265,293` | Pass as env var instead |
 | S4 | Artifact served via `tokio::fs::read` — no size cap, OOM on large files | Medium | `ws_server.rs:216` | Stream with size limit |
@@ -291,14 +291,14 @@ Optimal:  Node A -> [metadata ser] -> [shmem write raw] -> [shmem read zero-copy
 
 ### Strengths
 
-- Rich CLI: `adora run`, `doctor`, `top`, `topic echo/hz/pub`, `param`, record/replay
+- Rich CLI: `dora run`, `doctor`, `top`, `topic echo/hz/pub`, `param`, record/replay
 - Clean Python API with sync/async support and `for event in node:` iteration
 - YAML dataflow spec with comprehensive docs (855-line architecture doc)
 - Service/Action/Streaming patterns with zero boilerplate (Rust)
 - Hot reload for Python operators
 - 28 example directories covering Rust, Python, C, C++, ROS2, benchmark, service, action
-- `adora doctor` provides comprehensive system diagnostics
-- `adora new` scaffolds complete projects with `Cargo.toml`/`pyproject.toml` + YAML
+- `dora doctor` provides comprehensive system diagnostics
+- `dora new` scaffolds complete projects with `Cargo.toml`/`pyproject.toml` + YAML
 
 ### DX Issues
 
@@ -311,8 +311,8 @@ Optimal:  Node A -> [metadata ser] -> [shmem write raw] -> [shmem read zero-copy
 | D5 | **Python template bug** — checks `event["id"] == "TICK"` (uppercase) but timer uses lowercase `tick` | High | `template/python/__node-name__/main.py:13` | Fix to lowercase `tick` |
 | D6 | **No streaming pattern example** — service and action have examples, streaming does not | Medium | `examples/` | Add `examples/streaming-example/` |
 | D7 | Python `close_outputs` missing — no way to signal completion to downstream | Medium | `python/node/lib.rs` | Add `close_outputs()` |
-| D8 | `adora new --kind operator` not supported but referenced in operator docs | Medium | `cli/src/lib.rs:15` | Add operator kind or fix docs |
-| D9 | `adora new` doesn't print next-step instructions | Low | `cli/src/command/new.rs` | Print `cd ... && adora build && adora run` |
+| D8 | `dora new --kind operator` not supported but referenced in operator docs | Medium | `cli/src/lib.rs:15` | Add operator kind or fix docs |
+| D9 | `dora new` doesn't print next-step instructions | Low | `cli/src/command/new.rs` | Print `cd ... && dora build && dora run` |
 | D10 | No doc index page linking all 21 docs | Low | `docs/` | Add `docs/README.md` |
 | D11 | `examples/action-example/out/` — runtime artifacts committed to git | Low | `examples/` | Add to `.gitignore` |
 | D12 | Python bytes API produces unreadable output | High | Python node API | Document send/receive pair for bytes case |
@@ -321,7 +321,7 @@ Optimal:  Node A -> [metadata ser] -> [shmem write raw] -> [shmem read zero-copy
 | D15 | No canonical robotics example | Medium | `examples/` | Add sensor -> filter -> pose pipeline |
 | D16 | `Reload` event variant exposed in public API | Low | `apis/rust/node` | Add `#[doc(hidden)]` |
 | D17 | `ParamUpdate` missing from api-rust.md | Low | `docs/api-rust.md` | Update docs |
-| D18 | `adora doctor` doesn't check Python version | Low | `cli/src/` | Wire existing `get_python_adora_version()` |
+| D18 | `dora doctor` doesn't check Python version | Low | `cli/src/` | Wire existing `get_python_dora_version()` |
 
 ### ROS2 Bridge Status
 
@@ -404,9 +404,9 @@ Known gaps: no action cancel forwarding, no `wait_for_action_server`, node disco
 | DEP3 | **High** | `tokio` | All three binaries use `features = ["full"]` — enables `test-util`, `io-std`, `signal`, etc. unnecessarily | Use only needed features: `rt-multi-thread`, `macros`, `net`, `sync`, `fs`, `process`, `time`, `io-util` |
 | DEP4 | **High** | `zenoh` | Workspace pins `"1.1.1"` but resolves to 1.7.2. Default features enable ALL transports (quic, quic_datagram, tcp, tls, udp, unixsock, websocket). **935 transitive dep lines.** | Set `default-features = false`, enable only needed transports (tcp, maybe tls). Could halve dep tree. |
 | DEP5 | **Medium** | `git2` | Enables `ssh` + `vendored-openssl`. SSH likely not needed. Vendored OpenSSL adds significant compile time. | `default-features = false, features = ["vendored-openssl", "https"]` to drop SSH |
-| DEP6 | **Medium** | `once_cell` | Used in `adora-message` and `adora-core`. MSRV 1.85 has `std::sync::LazyLock` stabilized. Only 1 file uses it. | Replace with `std::sync::LazyLock`, drop dep |
+| DEP6 | **Medium** | `once_cell` | Used in `dora-message` and `dora-core`. MSRV 1.85 has `std::sync::LazyLock` stabilized. Only 1 file uses it. | Replace with `std::sync::LazyLock`, drop dep |
 | DEP7 | **Medium** | `libloading` | Pinned to 0.7.3 while 0.8.x exists in tree (from Zenoh). Causes duplicate. | Bump to `libloading = "0.8"` |
-| DEP8 | **Medium** | `inquire` in `adora-node-api` | TUI prompt library in a **library crate**. Pulls `console` + terminal deps into every node. Used for one interactive debug feature. | Move behind feature flag `interactive` (off by default) or move to CLI |
+| DEP8 | **Medium** | `inquire` in `dora-node-api` | TUI prompt library in a **library crate**. Pulls `console` + terminal deps into every node. Used for one interactive debug feature. | Move behind feature flag `interactive` (off by default) or move to CLI |
 | DEP9 | **Medium** | `criterion` | `html_reports` feature enabled in 3 bench crates. Pulls in `plotters` (heavy compile). | Use `default-features = false` for dev builds; enable `html_reports` only when generating reports |
 | DEP10 | **Medium** | `which` | v5.0.0 (daemon, core) and v7.0.3 (CLI) — two versions compiled | Align all to `which = "7"` |
 
@@ -437,7 +437,7 @@ Workspace mixes exact (`"1.1.1"`), caret (`"0.9.33"`), and major-only (`"1.0.145
 |---------|---------|----------------|
 | `[profile.release]` | Not configured | Add `lto = "thin"` for default release builds |
 | `[profile.dist]` | `lto = "fat"`, `codegen-units = 1` | Good for distribution |
-| `adora-cli` binary | Embeds daemon + coordinator + runtime | Intentional for `adora run`; could be feature-gated |
+| `dora-cli` binary | Embeds daemon + coordinator + runtime | Intentional for `dora run`; could be feature-gated |
 | `self_update` in CLI | ~15 direct deps for auto-update | Could be feature-gated |
 | `webbrowser` in CLI | Used in 1 line (`graph.rs:72`) | Replace with lighter `open::that()` |
 | `raw_sync_2 = "=0.1.5"` | Exact pin blocking upgrades | Track upstream PR; consider vendoring |
@@ -464,7 +464,7 @@ Workspace mixes exact (`"1.1.1"`), caret (`"0.9.33"`), and major-only (`"1.0.145
 - [ ] **Q4**: Python `drain()` error silently swallowed -> return error or log
 
 **Security:**
-- [ ] **S1**: Add `--auth` flag to `adora run` or log warning
+- [ ] **S1**: Add `--auth` flag to `dora run` or log warning
 - [ ] **S2/P13**: Bounded per-node event channels with drop-oldest
 
 **Performance (highest ROI):**
@@ -503,7 +503,7 @@ Workspace mixes exact (`"1.1.1"`), caret (`"0.9.33"`), and major-only (`"1.0.145
 - [ ] **DEP4**: Zenoh `default-features = false` — enable only needed transports
 - [ ] **DEP3**: Tokio `features = ["full"]` -> explicit feature list
 - [ ] **DEP6**: Replace `once_cell` with `std::sync::LazyLock`
-- [ ] **DEP8**: Move `inquire` behind feature flag in `adora-node-api`
+- [ ] **DEP8**: Move `inquire` behind feature flag in `dora-node-api`
 - [ ] **DEP10**: Align `which` to v7 across all crates
 - [ ] Centralize all deps in `[workspace.dependencies]`
 
@@ -535,7 +535,7 @@ Workspace mixes exact (`"1.1.1"`), caret (`"0.9.33"`), and major-only (`"1.0.145
 
 **DX:**
 - [ ] AI agent guide / tutorial document
-- [ ] `#[adora::node]` proc macro for Rust boilerplate
+- [ ] `#[dora::node]` proc macro for Rust boilerplate
 - [ ] Distributed parameter server
 
 ---
@@ -806,7 +806,7 @@ Most are transitive through Zenoh 1.7.2. Upgrading Zenoh will resolve the majori
 - `binaries/cli/src/lib.rs` — command structure, argument parsing
 - `binaries/cli/src/common.rs` — CLI helper functions
 - `binaries/cli/src/ws_client.rs` — WebSocket client (637 lines)
-- `binaries/cli/src/command/run.rs` — `adora run` command
+- `binaries/cli/src/command/run.rs` — `dora run` command
 - `binaries/cli/src/template/` — scaffolding templates (Rust, Python, C, C++)
 - `binaries/runtime/src/lib.rs` — operator runtime
 - `binaries/runtime/src/operator/shared_lib.rs` — dynamic library loading

@@ -15,13 +15,13 @@ Instead of referencing local paths, each node specifies a Git URL and tag:
 
 ```yaml
 - id: rust-node
-  git: https://github.com/dora-rs/adora.git
+  git: https://github.com/dora-rs/dora.git
   tag: v0.1.0
   build: cargo build -p rust-dataflow-example-node
   path: target/debug/rust-dataflow-example-node
 ```
 
-Adora clones the repository at the pinned tag, runs the `build:` command inside the clone, then executes the built binary. This enables:
+Dora clones the repository at the pinned tag, runs the `build:` command inside the clone, then executes the built binary. This enables:
 - **Version pinning**: `tag:` ensures reproducible builds
 - **Remote nodes**: pull node code from any Git repository
 - **Independent versioning**: each node can use a different tag or repo
@@ -35,8 +35,8 @@ cargo run --example rust-dataflow-git
 Or directly:
 
 ```bash
-adora build dataflow.yml
-adora run dataflow.yml
+dora build dataflow.yml
+dora run dataflow.yml
 ```
 
 ## What This Demonstrates

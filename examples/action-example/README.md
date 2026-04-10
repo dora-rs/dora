@@ -15,14 +15,14 @@ Both clients use the same binary -- the YAML wires them as separate nodes with d
 
 ## Nodes
 
-**action-client-1 / action-client-2** (Rust, same binary) -- Sends goals at 2s / 3s intervals with a countdown value. Tracks active goals by `GOAL_ID` in a HashMap. Receives feedback (progress updates) and result (final status). Logs are prefixed with the node ID (`ADORA_NODE_ID`) to distinguish output.
+**action-client-1 / action-client-2** (Rust, same binary) -- Sends goals at 2s / 3s intervals with a countdown value. Tracks active goals by `GOAL_ID` in a HashMap. Receives feedback (progress updates) and result (final status). Logs are prefixed with the node ID (`DORA_NODE_ID`) to distinguish output.
 
 **action-server** (Rust) -- Manages up to 64 active goals and 128 pending cancellations from any number of clients. On each input event, decrements the countdown for all active goals, sends feedback with current progress. When a goal reaches zero, sends a result with `GOAL_STATUS_SUCCEEDED`. Accepts `cancel` inputs for goal cancellation. Uses prefix matching (`starts_with("goal")` / `starts_with("cancel")`) to handle multiple named inputs.
 
 ## Key Concepts
 
 - **Multi-client fan-in/fan-out**: multiple clients share one server; feedback/results fan out, clients correlate by ID
-- **Goal ID**: unique identifier created via `AdoraNode::new_goal_id()` (UUID v7)
+- **Goal ID**: unique identifier created via `DoraNode::new_goal_id()` (UUID v7)
 - **Metadata keys**: `GOAL_ID` and `GOAL_STATUS` propagated on all action messages
 - **Bidirectional**: server outputs feed back to client inputs
 - **Same binary, multiple nodes**: YAML declares distinct nodes pointing to the same executable
@@ -33,16 +33,16 @@ See [docs/patterns.md](../../docs/patterns.md#3-action-goalfeedbackresult) for t
 
 ```bash
 cargo build -p action-example-client -p action-example-server
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Or in distributed mode:
 
 ```bash
-adora up
-adora start dataflow.yml --attach
+dora up
+dora start dataflow.yml --attach
 # Ctrl+C to detach, then:
-adora stop --all && adora down
+dora stop --all && dora down
 ```
 
 ## What This Demonstrates

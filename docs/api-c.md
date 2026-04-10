@@ -1,17 +1,17 @@
 # C API Reference
 
-This document covers the two C APIs provided by the Adora framework: the **Node API** for standalone C processes and the **Operator API** for shared-library operators loaded by the Adora runtime.
+This document covers the two C APIs provided by the Dora framework: the **Node API** for standalone C processes and the **Operator API** for shared-library operators loaded by the Dora runtime.
 
 ## Table of Contents
 
-- [Node API (adora-node-api-c)](#node-api-adora-node-api-c)
+- [Node API (dora-node-api-c)](#node-api-dora-node-api-c)
   - [Initialization](#initialization)
   - [Event Loop](#event-loop)
   - [Event Inspection](#event-inspection)
   - [Output](#output)
   - [Logging](#logging)
   - [Enums](#enums)
-- [Operator API (adora-operator-api-c)](#operator-api-adora-operator-api-c)
+- [Operator API (dora-operator-api-c)](#operator-api-dora-operator-api-c)
   - [Lifecycle Functions](#lifecycle-functions)
   - [Event Handling](#event-handling)
   - [Input Reading](#input-reading)
@@ -25,104 +25,104 @@ This document covers the two C APIs provided by the Adora framework: the **Node 
 
 ---
 
-## Node API (adora-node-api-c)
+## Node API (dora-node-api-c)
 
 Header: [`apis/c/node/node_api.h`](../apis/c/node/node_api.h)
-Crate: `adora-node-api-c` (builds as `staticlib`)
+Crate: `dora-node-api-c` (builds as `staticlib`)
 
-The Node API is used by standalone C executables that participate in an Adora dataflow as external processes. The daemon spawns the process and sets environment variables that the node reads during initialization.
+The Node API is used by standalone C executables that participate in an Dora dataflow as external processes. The daemon spawns the process and sets environment variables that the node reads during initialization.
 
 ### Initialization
 
-#### `init_adora_context_from_env`
+#### `init_dora_context_from_env`
 
 ```c
-void *init_adora_context_from_env();
+void *init_dora_context_from_env();
 ```
 
-Initializes an Adora node context from environment variables set by the daemon. Returns an opaque pointer to the context on success, or `NULL` on failure.
+Initializes an Dora node context from environment variables set by the daemon. Returns an opaque pointer to the context on success, or `NULL` on failure.
 
-The returned pointer must be passed to all subsequent Node API calls that expect a context argument. When the node is finished, free it with `free_adora_context`.
+The returned pointer must be passed to all subsequent Node API calls that expect a context argument. When the node is finished, free it with `free_dora_context`.
 
-#### `free_adora_context`
+#### `free_dora_context`
 
 ```c
-void free_adora_context(void *adora_context);
+void free_dora_context(void *dora_context);
 ```
 
-Frees a context previously created by `init_adora_context_from_env`. Each context must be freed exactly once. After freeing, the pointer must not be used again.
+Frees a context previously created by `init_dora_context_from_env`. Each context must be freed exactly once. After freeing, the pointer must not be used again.
 
 ### Event Loop
 
-#### `adora_next_event`
+#### `dora_next_event`
 
 ```c
-void *adora_next_event(void *adora_context);
+void *dora_next_event(void *dora_context);
 ```
 
 Blocks until the next event is available for this node. Returns an opaque pointer to the event, or `NULL` when all event streams have closed (indicating the node should exit).
 
-The returned pointer must not be dereferenced directly. Use the `read_adora_*` functions to extract the event type and payload. Free the event with `free_adora_event` when done.
+The returned pointer must not be dereferenced directly. Use the `read_dora_*` functions to extract the event type and payload. Free the event with `free_dora_event` when done.
 
-#### `free_adora_event`
+#### `free_dora_event`
 
 ```c
-void free_adora_event(void *adora_event);
+void free_dora_event(void *dora_event);
 ```
 
-Frees an event previously returned by `adora_next_event`. Each event must be freed exactly once. After freeing, the event pointer and all derived pointers (from `read_adora_input_id`, `read_adora_input_data`) become invalid.
+Frees an event previously returned by `dora_next_event`. Each event must be freed exactly once. After freeing, the event pointer and all derived pointers (from `read_dora_input_id`, `read_dora_input_data`) become invalid.
 
 ### Event Inspection
 
-#### `read_adora_event_type`
+#### `read_dora_event_type`
 
 ```c
-enum AdoraEventType read_adora_event_type(void *adora_event);
+enum DoraEventType read_dora_event_type(void *dora_event);
 ```
 
-Returns the type of the given event. See [AdoraEventType](#adoraeventtype) for possible values.
+Returns the type of the given event. See [DoraEventType](#doraeventtype) for possible values.
 
-#### `read_adora_input_id`
+#### `read_dora_input_id`
 
 ```c
-void read_adora_input_id(void *adora_event, char **out_ptr, size_t *out_len);
+void read_dora_input_id(void *dora_event, char **out_ptr, size_t *out_len);
 ```
 
-Reads the input ID from an `AdoraEventType_Input` event. Writes the string start pointer to `*out_ptr` and its byte length to `*out_len`. The string is valid UTF-8 but **not** null-terminated; use `out_len` to determine its bounds.
+Reads the input ID from an `DoraEventType_Input` event. Writes the string start pointer to `*out_ptr` and its byte length to `*out_len`. The string is valid UTF-8 but **not** null-terminated; use `out_len` to determine its bounds.
 
 If the event is not an input event, sets `*out_ptr = NULL` and `*out_len = 0`.
 
-The returned pointer borrows from the event. It becomes invalid after `free_adora_event` is called.
+The returned pointer borrows from the event. It becomes invalid after `free_dora_event` is called.
 
-#### `read_adora_input_data`
+#### `read_dora_input_data`
 
 ```c
-void read_adora_input_data(void *adora_event, char **out_ptr, size_t *out_len);
+void read_dora_input_data(void *dora_event, char **out_ptr, size_t *out_len);
 ```
 
-Reads the raw data bytes from an `AdoraEventType_Input` event. Writes the data start pointer to `*out_ptr` and its byte length to `*out_len`.
+Reads the raw data bytes from an `DoraEventType_Input` event. Writes the data start pointer to `*out_ptr` and its byte length to `*out_len`.
 
 Sets `*out_ptr = NULL` and `*out_len = 0` if the event is not an input event or the input carries no data.
 
 Currently only `UInt8` Arrow arrays are supported. Other Arrow data types will cause a runtime panic. Future versions will use the Arrow C Data Interface for full type support.
 
-The returned pointer borrows from the event. It becomes invalid after `free_adora_event` is called.
+The returned pointer borrows from the event. It becomes invalid after `free_dora_event` is called.
 
-#### `read_adora_input_timestamp`
+#### `read_dora_input_timestamp`
 
 ```c
-unsigned long long read_adora_input_timestamp(void *adora_event);
+unsigned long long read_dora_input_timestamp(void *dora_event);
 ```
 
 Returns the hybrid logical clock timestamp from an input event's metadata as a `uint64` value. Returns `0` if the event is not an input event.
 
 ### Output
 
-#### `adora_send_output`
+#### `dora_send_output`
 
 ```c
-int adora_send_output(
-    void *adora_context,
+int dora_send_output(
+    void *dora_context,
     const char *id_ptr,
     size_t id_len,
     const char *data_ptr,
@@ -138,11 +138,11 @@ Returns `-1` immediately if any pointer argument is `NULL`.
 
 ### Logging
 
-#### `adora_log`
+#### `dora_log`
 
 ```c
-int adora_log(
-    void *adora_context,
+int dora_log(
+    void *dora_context,
     const char *level_ptr,
     size_t level_len,
     const char *msg_ptr,
@@ -150,7 +150,7 @@ int adora_log(
 );
 ```
 
-Sends a structured log message through the Adora logging pipeline. Both `level` and `msg` must be valid UTF-8 strings.
+Sends a structured log message through the Dora logging pipeline. Both `level` and `msg` must be valid UTF-8 strings.
 
 Valid log levels: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
 
@@ -158,57 +158,57 @@ Returns `0` on success, `-1` on error. Returns `-1` immediately if any pointer a
 
 ### Enums
 
-#### `AdoraEventType`
+#### `DoraEventType`
 
 ```c
-enum AdoraEventType {
-    AdoraEventType_Stop,        // Graceful shutdown requested
-    AdoraEventType_Input,       // New input data available
-    AdoraEventType_InputClosed, // An input stream was closed
-    AdoraEventType_Error,       // An error occurred
-    AdoraEventType_Unknown,     // Unrecognized event type
+enum DoraEventType {
+    DoraEventType_Stop,        // Graceful shutdown requested
+    DoraEventType_Input,       // New input data available
+    DoraEventType_InputClosed, // An input stream was closed
+    DoraEventType_Error,       // An error occurred
+    DoraEventType_Unknown,     // Unrecognized event type
 };
 ```
 
 ---
 
-## Operator API (adora-operator-api-c)
+## Operator API (dora-operator-api-c)
 
 Headers: [`apis/c/operator/operator_api.h`](../apis/c/operator/operator_api.h), [`apis/c/operator/operator_types.h`](../apis/c/operator/operator_types.h)
-Crate: `adora-operator-api-c`
+Crate: `dora-operator-api-c`
 
-The Operator API is used by shared libraries (`.so`/`.dylib`/`.dll`) loaded into the Adora runtime process. Unlike nodes, operators do not have their own `main` function. Instead, they export three functions that the runtime calls at the appropriate lifecycle points.
+The Operator API is used by shared libraries (`.so`/`.dylib`/`.dll`) loaded into the Dora runtime process. Unlike nodes, operators do not have their own `main` function. Instead, they export three functions that the runtime calls at the appropriate lifecycle points.
 
 The `operator_types.h` header is auto-generated by `safer-ffi` and defines all C-compatible struct and enum types.
 
 ### Lifecycle Functions
 
-#### `adora_init_operator`
+#### `dora_init_operator`
 
 ```c
-AdoraInitResult_t adora_init_operator(void);
+DoraInitResult_t dora_init_operator(void);
 ```
 
 Called once when the runtime loads the operator. Allocate and initialize any operator state, then return it via the `operator_context` field. The runtime passes this pointer back on every subsequent call.
 
-Return an `AdoraInitResult_t` with `.result.error = NULL` on success.
+Return an `DoraInitResult_t` with `.result.error = NULL` on success.
 
-#### `adora_drop_operator`
+#### `dora_drop_operator`
 
 ```c
-AdoraResult_t adora_drop_operator(void *operator_context);
+DoraResult_t dora_drop_operator(void *operator_context);
 ```
 
 Called once when the operator is being unloaded. Free all resources associated with `operator_context`.
 
-Return an `AdoraResult_t` with `.error = NULL` on success.
+Return an `DoraResult_t` with `.error = NULL` on success.
 
 ### Event Handling
 
-#### `adora_on_event`
+#### `dora_on_event`
 
 ```c
-OnEventResult_t adora_on_event(
+OnEventResult_t dora_on_event(
     RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context
@@ -224,34 +224,34 @@ Called by the runtime each time an event arrives for this operator. Inspect the 
 | `event->error.ptr != NULL` | An error occurred (UTF-8 string in `error.ptr`/`error.len`) |
 | `event->input_closed.ptr != NULL` | An input stream closed (input ID in `input_closed.ptr`/`input_closed.len`) |
 
-Use `send_output` to emit data to downstream nodes (see `adora_send_operator_output`). Return an `OnEventResult_t` with the appropriate `AdoraStatus_t` to control the operator lifecycle.
+Use `send_output` to emit data to downstream nodes (see `dora_send_operator_output`). Return an `OnEventResult_t` with the appropriate `DoraStatus_t` to control the operator lifecycle.
 
 ### Input Reading
 
-#### `adora_read_input_id`
+#### `dora_read_input_id`
 
 ```c
-char *adora_read_input_id(const Input_t *input);
+char *dora_read_input_id(const Input_t *input);
 ```
 
-Returns a newly allocated null-terminated string containing the input ID. The caller must free it with `adora_free_input_id`.
+Returns a newly allocated null-terminated string containing the input ID. The caller must free it with `dora_free_input_id`.
 
-#### `adora_read_data`
+#### `dora_read_data`
 
 ```c
-Vec_uint8_t adora_read_data(Input_t *input);
+Vec_uint8_t dora_read_data(Input_t *input);
 ```
 
 Reads the input data as a byte array. Consumes the underlying Arrow array from the input (the data can only be read once per event). Returns a `Vec_uint8_t` with `.ptr = NULL` if the input has no data or the data has already been consumed.
 
-The caller must free the returned data with `adora_free_data`.
+The caller must free the returned data with `dora_free_data`.
 
 ### Output Sending
 
-#### `adora_send_operator_output`
+#### `dora_send_operator_output`
 
 ```c
-AdoraResult_t adora_send_operator_output(
+DoraResult_t dora_send_operator_output(
     const SendOutput_t *send_output,
     const char *id,
     const uint8_t *data_ptr,
@@ -261,7 +261,7 @@ AdoraResult_t adora_send_operator_output(
 
 Sends output data to downstream subscribers. The `id` must be a null-terminated string matching one of the operator's declared outputs. The data (`data_ptr`/`data_len`) is converted to a UInt8 Arrow array internally.
 
-Returns an `AdoraResult_t` with `.error = NULL` on success.
+Returns an `DoraResult_t` with `.error = NULL` on success.
 
 ### Memory Management
 
@@ -269,12 +269,12 @@ The Operator API allocates memory that the caller must free using the correspond
 
 | Allocation source | Free function |
 |-------------------|---------------|
-| `adora_read_input_id` | `adora_free_input_id` |
-| `adora_read_data` | `adora_free_data` |
+| `dora_read_input_id` | `dora_free_input_id` |
+| `dora_read_data` | `dora_free_data` |
 
 ```c
-void adora_free_input_id(char *input_id);
-void adora_free_data(Vec_uint8_t data);
+void dora_free_input_id(char *input_id);
+void dora_free_data(Vec_uint8_t data);
 ```
 
 Failing to call these functions will leak memory. Do not use `free()` on these allocations -- they are allocated by the Rust runtime and must be freed through the API.
@@ -291,39 +291,39 @@ typedef struct Vec_uint8 {
 } Vec_uint8_t;
 ```
 
-A Rust-allocated byte vector. Access `len` bytes starting at `ptr`. Do not modify `cap`. Free with `adora_free_data`.
+A Rust-allocated byte vector. Access `len` bytes starting at `ptr`. Do not modify `cap`. Free with `dora_free_data`.
 
-#### `AdoraResult_t`
+#### `DoraResult_t`
 
 ```c
-typedef struct AdoraResult {
+typedef struct DoraResult {
     Vec_uint8_t *error;  // NULL on success, points to error string on failure
-} AdoraResult_t;
+} DoraResult_t;
 ```
 
 Generic result type. A `NULL` error pointer indicates success. When non-NULL, the error pointer contains a UTF-8 error message.
 
-#### `AdoraInitResult_t`
+#### `DoraInitResult_t`
 
 ```c
-typedef struct AdoraInitResult {
-    AdoraResult_t result;
+typedef struct DoraInitResult {
+    DoraResult_t result;
     void *operator_context;  // opaque pointer to operator state
-} AdoraInitResult_t;
+} DoraInitResult_t;
 ```
 
-Returned by `adora_init_operator`. On success, `result.error` is `NULL` and `operator_context` holds the operator state pointer.
+Returned by `dora_init_operator`. On success, `result.error` is `NULL` and `operator_context` holds the operator state pointer.
 
 #### `OnEventResult_t`
 
 ```c
 typedef struct OnEventResult {
-    AdoraResult_t result;
-    AdoraStatus_t status;
+    DoraResult_t result;
+    DoraStatus_t status;
 } OnEventResult_t;
 ```
 
-Returned by `adora_on_event`. Contains both an error/success result and a status code controlling the operator lifecycle.
+Returned by `dora_on_event`. Contains both an error/success result and a status code controlling the operator lifecycle.
 
 #### `RawEvent_t`
 
@@ -344,7 +344,7 @@ Represents an event delivered to the operator. Multiple fields may be set simult
 typedef struct Input Input_t;  // opaque
 ```
 
-Opaque type representing an input event's data. Use `adora_read_input_id` and `adora_read_data` to extract its contents.
+Opaque type representing an input event's data. Use `dora_read_input_id` and `dora_read_data` to extract its contents.
 
 #### `Output_t`
 
@@ -352,17 +352,17 @@ Opaque type representing an input event's data. Use `adora_read_input_id` and `a
 typedef struct Output Output_t;  // opaque
 ```
 
-Opaque type used internally by `adora_send_operator_output`. Not created directly by user code.
+Opaque type used internally by `dora_send_operator_output`. Not created directly by user code.
 
 #### `SendOutput_t`
 
 ```c
 typedef struct SendOutput {
-    ArcDynFn1_AdoraResult_Output_t send_output;
+    ArcDynFn1_DoraResult_Output_t send_output;
 } SendOutput_t;
 ```
 
-Callback handle passed to `adora_on_event`. Pass it to `adora_send_operator_output` to emit data. Do not store it beyond the scope of the current `adora_on_event` call.
+Callback handle passed to `dora_on_event`. Pass it to `dora_send_operator_output` to emit data. Do not store it beyond the scope of the current `dora_on_event` call.
 
 #### `Metadata_t`
 
@@ -376,15 +376,15 @@ Event metadata containing an OpenTelemetry trace context string.
 
 ### Operator Enums
 
-#### `AdoraStatus_t`
+#### `DoraStatus_t`
 
 ```c
-enum AdoraStatus {
-    ADORA_STATUS_CONTINUE = 0,  // Keep running
-    ADORA_STATUS_STOP     = 1,  // Stop this operator
-    ADORA_STATUS_STOP_ALL = 2,  // Stop the entire dataflow
+enum DoraStatus {
+    DORA_STATUS_CONTINUE = 0,  // Keep running
+    DORA_STATUS_STOP     = 1,  // Stop this operator
+    DORA_STATUS_STOP_ALL = 2,  // Stop the entire dataflow
 };
-typedef uint8_t AdoraStatus_t;
+typedef uint8_t DoraStatus_t;
 ```
 
 Returned in `OnEventResult_t` to control operator lifecycle after processing an event.
@@ -401,23 +401,23 @@ A complete C node that receives timer ticks and sends output messages:
 #include "node_api.h"
 
 int main() {
-    void *ctx = init_adora_context_from_env();
+    void *ctx = init_dora_context_from_env();
     if (ctx == NULL) {
-        fprintf(stderr, "failed to init adora context\n");
+        fprintf(stderr, "failed to init dora context\n");
         return 1;
     }
 
     for (int i = 0; i < 100; i++) {
-        void *event = adora_next_event(ctx);
+        void *event = dora_next_event(ctx);
         if (event == NULL)
             break;  // all streams closed
 
-        enum AdoraEventType ty = read_adora_event_type(event);
+        enum DoraEventType ty = read_dora_event_type(event);
 
-        if (ty == AdoraEventType_Input) {
+        if (ty == DoraEventType_Input) {
             char *id;
             size_t id_len;
-            read_adora_input_id(event, &id, &id_len);
+            read_dora_input_id(event, &id, &id_len);
 
             // Send a response
             char out_id[] = "message";
@@ -425,17 +425,17 @@ int main() {
             int out_len = snprintf(out_data, sizeof(out_data),
                                    "iteration %d", i);
 
-            adora_send_output(ctx, out_id, strlen(out_id),
+            dora_send_output(ctx, out_id, strlen(out_id),
                               out_data, out_len);
-        } else if (ty == AdoraEventType_Stop) {
-            free_adora_event(event);
+        } else if (ty == DoraEventType_Stop) {
+            free_dora_event(event);
             break;
         }
 
-        free_adora_event(event);
+        free_dora_event(event);
     }
 
-    free_adora_context(ctx);
+    free_dora_context(ctx);
     return 0;
 }
 ```
@@ -447,7 +447,7 @@ nodes:
   - id: c_node
     path: build/c_node
     inputs:
-      timer: adora/timer/millis/100
+      timer: dora/timer/millis/100
     outputs:
       - message
 ```
@@ -462,31 +462,31 @@ A complete C operator that reads input, maintains state, and sends output:
 #include <stdlib.h>
 #include <string.h>
 
-AdoraInitResult_t adora_init_operator(void) {
+DoraInitResult_t dora_init_operator(void) {
     // Allocate operator state (a simple counter)
     int *counter = (int *)calloc(1, sizeof(int));
 
-    AdoraInitResult_t result = {.operator_context = counter};
+    DoraInitResult_t result = {.operator_context = counter};
     return result;
 }
 
-AdoraResult_t adora_drop_operator(void *operator_context) {
+DoraResult_t dora_drop_operator(void *operator_context) {
     free(operator_context);
-    AdoraResult_t result = {.error = NULL};
+    DoraResult_t result = {.error = NULL};
     return result;
 }
 
-OnEventResult_t adora_on_event(
+OnEventResult_t dora_on_event(
     RawEvent_t *event,
     const SendOutput_t *send_output,
     void *operator_context)
 {
-    OnEventResult_t result = {.status = ADORA_STATUS_CONTINUE};
+    OnEventResult_t result = {.status = DORA_STATUS_CONTINUE};
     int *counter = (int *)operator_context;
 
     if (event->input != NULL) {
-        char *id = adora_read_input_id(event->input);
-        Vec_uint8_t data = adora_read_data(event->input);
+        char *id = dora_read_input_id(event->input);
+        Vec_uint8_t data = dora_read_data(event->input);
 
         if (data.ptr != NULL) {
             *counter += 1;
@@ -495,17 +495,17 @@ OnEventResult_t adora_on_event(
             // Send counter value as string
             char buf[64];
             int len = snprintf(buf, sizeof(buf), "count=%d", *counter);
-            result.result = adora_send_operator_output(
+            result.result = dora_send_operator_output(
                 send_output, "counter", (uint8_t *)buf, len);
 
-            adora_free_data(data);
+            dora_free_data(data);
         }
 
-        adora_free_input_id(id);
+        dora_free_input_id(id);
     }
 
     if (event->stop) {
-        result.status = ADORA_STATUS_STOP;
+        result.status = DORA_STATUS_STOP;
     }
 
     return result;
@@ -532,20 +532,20 @@ nodes:
 
 ### Node (static library)
 
-C nodes link against `adora-node-api-c`, which builds as a static library.
+C nodes link against `dora-node-api-c`, which builds as a static library.
 
 **Step 1: Build the static library**
 
 ```bash
-cargo build -p adora-node-api-c --release
+cargo build -p dora-node-api-c --release
 ```
 
-This produces `target/release/libadora_node_api_c.a` (or `.lib` on Windows).
+This produces `target/release/libdora_node_api_c.a` (or `.lib` on Windows).
 
 **Step 2: Compile and link**
 
 ```bash
-clang node.c -ladora_node_api_c -L ../../target/release -o build/c_node <FLAGS>
+clang node.c -ldora_node_api_c -L ../../target/release -o build/c_node <FLAGS>
 ```
 
 Platform-specific linker flags:
@@ -560,7 +560,7 @@ On Windows, add the `.exe` extension to the output file.
 
 ### Operator (shared library)
 
-C operators are compiled into shared libraries that the Adora runtime loads at startup.
+C operators are compiled into shared libraries that the Dora runtime loads at startup.
 
 **Step 1: Compile to object file**
 
@@ -603,10 +603,10 @@ The Node API header is at `apis/c/node/node_api.h`. The Operator API headers are
 
 ```bash
 # Node
-clang -I path/to/adora/apis/c/node node.c ...
+clang -I path/to/dora/apis/c/node node.c ...
 
 # Operator
-clang -I path/to/adora/apis/c/operator operator.c ...
+clang -I path/to/dora/apis/c/operator operator.c ...
 ```
 
 ### C++ Compatibility

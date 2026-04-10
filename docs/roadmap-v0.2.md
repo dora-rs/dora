@@ -1,4 +1,4 @@
-# Adora v0.2 Roadmap
+# Dora v0.2 Roadmap
 
 **Created**: 2026-03-24
 **Updated**: 2026-03-25 (all deferred items addressed except Q5 daemon split)
@@ -87,7 +87,7 @@
 
 | # | Task | Effort | Files |
 |---|------|--------|-------|
-| 1 | Add zenoh session + ShmProvider to AdoraNode | M | `apis/rust/node/src/node/mod.rs` |
+| 1 | Add zenoh session + ShmProvider to DoraNode | M | `apis/rust/node/src/node/mod.rs` |
 | 2 | Send path: publish via zenoh when data >= 4KB threshold | M | `apis/rust/node/src/node/mod.rs` |
 | 3 | Receive path: zenoh subscriber per input, ZShm zero-copy | M | `apis/rust/node/src/event_stream/mod.rs` |
 | 4 | Daemon: remove DropToken tracking, receive data-less notifications | M | `binaries/daemon/src/lib.rs` |
@@ -141,7 +141,7 @@
 **Depends on:** Sprint 8 (clean daemon code makes reconnection loop easier)
 
 ### Sprint 10: Dynamic Topology
-**Goal:** adora node add / remove / connect / disconnect
+**Goal:** dora node add / remove / connect / disconnect
 
 | # | Task | Effort | Files |
 |---|------|--------|-------|
@@ -151,7 +151,7 @@
 | 4 | Daemon add_mapping / remove_mapping | S | `daemon/lib.rs` |
 | 5 | Coordinator relay (validate, resolve, dispatch) | M | `coordinator/handlers.rs` |
 | 6 | Cross-daemon: remote source subscriptions for added nodes | M | `daemon/lib.rs` |
-| 7 | CLI: adora node add/remove/connect/disconnect | M | `cli/command/node/add.rs` (new) |
+| 7 | CLI: dora node add/remove/connect/disconnect | M | `cli/command/node/add.rs` (new) |
 
 **Depends on:** Sprint 9 (reliable coordinator needed for topology mutations)
 
@@ -230,7 +230,7 @@ By doing Zenoh SHM first (Sprint 6), these deferred items become irrelevant:
 
 - [x] v0.2-alpha: Zenoh SHM data plane + event loop separation passing all smoke tests
 - [x] v0.2-beta: Daemon reconnects to restarted coordinator, dataflows survive
-- [x] v0.2-rc: `adora node add/remove` protocol + CLI + coordinator dispatch
+- [x] v0.2-rc: `dora node add/remove` protocol + CLI + coordinator dispatch
 - [x] v0.2: Arrow IPC framing, type validation, soft RT guide, streaming example
 
 ## Remaining for v0.3

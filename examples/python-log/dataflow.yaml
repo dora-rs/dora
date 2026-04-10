@@ -3,7 +3,7 @@ nodes:
     build: pip install numpy pyarrow
     path: ./send_data.py
     inputs:
-      tick: adora/timer/millis/10
+      tick: dora/timer/millis/10
     outputs:
       - data
 

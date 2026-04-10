@@ -1,5 +1,5 @@
 [package]
-name = "adora-coordinator-store"
+name = "dora-coordinator-store"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,7 @@ default = []
 redb-backend = ["dep:redb", "dep:bincode", "dep:libc"]
 
 [dependencies]
-adora-message = { workspace = true }
+dora-message = { workspace = true }
 bincode = { version = "2.0", features = ["serde"], optional = true }
 eyre = { workspace = true }
 libc = { version = "0.2", optional = true }

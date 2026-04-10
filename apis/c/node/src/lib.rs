@@ -1,7 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use adora_node_api::{AdoraNode, Event, EventStream, arrow::array::AsArray};
 use arrow_array::UInt8Array;
+use dora_node_api::{DoraNode, Event, EventStream, arrow::array::AsArray};
 use eyre::Context;
 use std::{
     ffi::{c_int, c_void},
@@ -10,26 +10,26 @@ use std::{
 
 pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 
-struct AdoraContext {
-    node: &'static mut AdoraNode,
+struct DoraContext {
+    node: &'static mut DoraNode,
     events: EventStream,
 }
 
-/// Initializes a adora context from the environment variables that were set by
-/// the adora-coordinator.
+/// Initializes a dora context from the environment variables that were set by
+/// the dora-coordinator.
 ///
-/// Returns a pointer to the adora context on success. This pointer can be
-/// used to call adora API functions that expect a `context` argument. Any
-/// other use is prohibited. To free the adora context when it is no longer
-/// needed, use the [`free_adora_context`] function.
+/// Returns a pointer to the dora context on success. This pointer can be
+/// used to call dora API functions that expect a `context` argument. Any
+/// other use is prohibited. To free the dora context when it is no longer
+/// needed, use the [`free_dora_context`] function.
 ///
 /// On error, a null pointer is returned.
 #[unsafe(no_mangle)]
-pub extern "C" fn init_adora_context_from_env() -> *mut c_void {
+pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
     let context = || {
-        let (node, events) = AdoraNode::init_from_env()?;
+        let (node, events) = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
-        Result::<_, eyre::Report>::Ok(AdoraContext { node, events })
+        Result::<_, eyre::Report>::Ok(DoraContext { node, events })
     };
     let context = match context().context("failed to initialize node") {
         Ok(n) => n,
@@ -43,40 +43,40 @@ pub extern "C" fn init_adora_context_from_env() -> *mut c_void {
     Box::into_raw(Box::new(context)).cast()
 }
 
-/// Frees the given adora context.
+/// Frees the given dora context.
 ///
 /// ## Safety
 ///
-/// Only pointers created through [`init_adora_context_from_env`] are allowed
+/// Only pointers created through [`init_dora_context_from_env`] are allowed
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer must not be used anymore.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn free_adora_context(context: *mut c_void) {
-    let context: Box<AdoraContext> = unsafe { Box::from_raw(context.cast()) };
+pub unsafe extern "C" fn free_dora_context(context: *mut c_void) {
+    let context: Box<DoraContext> = unsafe { Box::from_raw(context.cast()) };
     // drop all fields except for `node`
-    let AdoraContext { node, .. } = *context;
+    let DoraContext { node, .. } = *context;
     // convert the `'static` reference back to a Box, then drop it
-    let _ = unsafe { Box::from_raw(node as *const AdoraNode as *mut AdoraNode) };
+    let _ = unsafe { Box::from_raw(node as *const DoraNode as *mut DoraNode) };
 }
 
 /// Waits for the next incoming event for the node.
 ///
 /// Returns a pointer to the event on success. This pointer must not be used
-/// directly. Instead, use the `read_adora_event_*` functions to read out the
+/// directly. Instead, use the `read_dora_event_*` functions to read out the
 /// type and payload of the event. When the event is not needed anymore, use
-/// [`free_adora_event`] to free it again.
+/// [`free_dora_event`] to free it again.
 ///
 /// Returns a null pointer when all event streams were closed. This means that
 /// no more event will be available. Nodes typically react by stopping.
 ///
 /// ## Safety
 ///
-/// The `context` argument must be a adora context created through
-/// [`init_adora_context_from_env`]. The context must be still valid, i.e., not
+/// The `context` argument must be a dora context created through
+/// [`init_dora_context_from_env`]. The context must be still valid, i.e., not
 /// freed yet.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn adora_next_event(context: *mut c_void) -> *mut c_void {
-    let context: &mut AdoraContext = unsafe { &mut *context.cast() };
+pub unsafe extern "C" fn dora_next_event(context: *mut c_void) -> *mut c_void {
+    let context: &mut DoraContext = unsafe { &mut *context.cast() };
     match context.events.recv() {
         Some(event) => Box::into_raw(Box::new(event)).cast(),
         None => ptr::null_mut(),
@@ -87,11 +87,11 @@ pub unsafe extern "C" fn adora_next_event(context: *mut c_void) -> *mut c_void {
 ///
 /// ## Safety
 ///
-/// The `event` argument must be a adora event received through
-/// [`adora_next_event`]. The event must be still valid, i.e., not
+/// The `event` argument must be a dora event received through
+/// [`dora_next_event`]. The event must be still valid, i.e., not
 /// freed yet.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn read_adora_event_type(event: *const ()) -> EventType {
+pub unsafe extern "C" fn read_dora_event_type(event: *const ()) -> EventType {
     let event: &Event = unsafe { &*event.cast() };
     match event {
         Event::Stop(_) => EventType::Stop,
@@ -120,8 +120,8 @@ pub enum EventType {
 ///
 /// ## Safety
 ///
-/// - The `event` argument must be a adora event received through
-///   [`adora_next_event`]. The event must be still valid, i.e., not
+/// - The `event` argument must be a dora event received through
+///   [`dora_next_event`]. The event must be still valid, i.e., not
 ///   freed yet. The returned `out_ptr` must not be used after
 ///   freeing the `event`, since it points directly into the event's
 ///   memory.
@@ -129,7 +129,7 @@ pub enum EventType {
 /// - Note: `Out_ptr` is not a null-terminated string. The length of the string
 ///   is given by `out_len`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn read_adora_input_id(
+pub unsafe extern "C" fn read_dora_input_id(
     event: *const (),
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -163,13 +163,13 @@ pub unsafe extern "C" fn read_adora_input_id(
 ///
 /// ## Safety
 ///
-/// The `event` argument must be a adora event received through
-/// [`adora_next_event`]. The event must be still valid, i.e., not
+/// The `event` argument must be a dora event received through
+/// [`dora_next_event`]. The event must be still valid, i.e., not
 /// freed yet. The returned `out_ptr` must not be used after
 /// freeing the `event`, since it points directly into the event's
 /// memory.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn read_adora_input_data(
+pub unsafe extern "C" fn read_dora_input_data(
     event: *const (),
     out_ptr: *mut *const u8,
     out_len: *mut usize,
@@ -177,7 +177,7 @@ pub unsafe extern "C" fn read_adora_input_data(
     let event: &Event = unsafe { &*event.cast() };
     match event {
         Event::Input { data, metadata, .. } => match metadata.type_info.data_type {
-            adora_node_api::arrow::datatypes::DataType::UInt8 => {
+            dora_node_api::arrow::datatypes::DataType::UInt8 => {
                 let array: &UInt8Array = data.as_primitive();
                 let ptr = array.values().as_ptr();
                 unsafe {
@@ -185,12 +185,12 @@ pub unsafe extern "C" fn read_adora_input_data(
                     *out_len = metadata.type_info.len;
                 }
             }
-            adora_node_api::arrow::datatypes::DataType::Null => unsafe {
+            dora_node_api::arrow::datatypes::DataType::Null => unsafe {
                 *out_ptr = ptr::null();
                 *out_len = 0;
             },
             _ => {
-                todo!("adora C++ Node does not yet support higher level type of arrow. Only UInt8. 
+                todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
                 The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
             }
         },
@@ -207,7 +207,7 @@ pub unsafe extern "C" fn read_adora_input_data(
 ///
 /// Return `0` if the given event is not an input event.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn read_adora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
+pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
     match event {
         Event::Input { metadata, .. } => metadata.timestamp().get_time().as_u64(),
@@ -215,28 +215,28 @@ pub unsafe extern "C" fn read_adora_input_timestamp(event: *const ()) -> core::f
     }
 }
 
-/// Frees the given adora event.
+/// Frees the given dora event.
 ///
 /// ## Safety
 ///
-/// Only pointers created through [`adora_next_event`] are allowed
+/// Only pointers created through [`dora_next_event`] are allowed
 /// as arguments. Each context pointer must be freed exactly once. After
 /// freeing, the pointer and all derived pointers must not be used anymore.
-/// This also applies to the `read_adora_event_*` functions, which return
+/// This also applies to the `read_dora_event_*` functions, which return
 /// pointers into the original event structure.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn free_adora_event(event: *mut c_void) {
+pub unsafe extern "C" fn free_dora_event(event: *mut c_void) {
     let _: Box<Event> = unsafe { Box::from_raw(event.cast()) };
 }
 
-/// Sends the given output to subscribed adora nodes/operators.
+/// Sends the given output to subscribed dora nodes/operators.
 ///
 /// The `id_ptr` and `id_len` fields must be the start pointer and length of an
 /// UTF8-encoded string. The ID string must correspond to one of the node's
 /// outputs specified in the dataflow YAML file.
 ///
 /// The `data_ptr` and `data_len` fields must be the start pointer and length
-/// a byte array. The adora API sends this data as-is, without any processing.
+/// a byte array. The dora API sends this data as-is, without any processing.
 ///
 /// ## Safety
 ///
@@ -245,7 +245,7 @@ pub unsafe extern "C" fn free_adora_event(event: *mut c_void) {
 /// - The `data_ptr` and `data_len` fields must be the start pointer and length
 ///   a byte array.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn adora_send_output(
+pub unsafe extern "C" fn dora_send_output(
     context: *mut c_void,
     id_ptr: *const u8,
     id_len: usize,
@@ -269,9 +269,9 @@ unsafe fn try_send_output(
     data_len: usize,
 ) -> eyre::Result<()> {
     if context.is_null() || id_ptr.is_null() || data_ptr.is_null() {
-        eyre::bail!("null pointer passed to adora_send_output");
+        eyre::bail!("null pointer passed to dora_send_output");
     }
-    let context: &mut AdoraContext = unsafe { &mut *context.cast() };
+    let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
@@ -294,11 +294,11 @@ unsafe fn try_send_output(
 ///
 /// ## Safety
 ///
-/// - The `context` argument must be a valid adora context from
-///   [`init_adora_context_from_env`].
+/// - The `context` argument must be a valid dora context from
+///   [`init_dora_context_from_env`].
 /// - The pointer/length pairs must describe valid UTF-8 byte slices.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn adora_log(
+pub unsafe extern "C" fn dora_log(
     context: *mut c_void,
     level_ptr: *const u8,
     level_len: usize,
@@ -322,9 +322,9 @@ unsafe fn try_log(
     msg_len: usize,
 ) -> eyre::Result<()> {
     if context.is_null() || level_ptr.is_null() || msg_ptr.is_null() {
-        eyre::bail!("null pointer passed to adora_log");
+        eyre::bail!("null pointer passed to dora_log");
     }
-    let context: &mut AdoraContext = unsafe { &mut *context.cast() };
+    let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let level = std::str::from_utf8(unsafe { slice::from_raw_parts(level_ptr, level_len) })?;
     let message = std::str::from_utf8(unsafe { slice::from_raw_parts(msg_ptr, msg_len) })?;
     context.node.log(level, message, None);

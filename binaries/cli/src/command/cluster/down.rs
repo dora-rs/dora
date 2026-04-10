@@ -9,7 +9,7 @@ use crate::{
 ///
 /// Examples:
 ///
-///   adora cluster down
+///   dora cluster down
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Down {

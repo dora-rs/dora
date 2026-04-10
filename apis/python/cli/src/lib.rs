@@ -6,10 +6,10 @@ use pyo3::prelude::*;
 /// :rtype: None
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
-    adora_runtime::main().wrap_err("Adora Runtime raised an error.")
+    dora_runtime::main().wrap_err("Dora Runtime raised an error.")
 }
 
-/// Build a Dataflow, exactly the same way as `adora build` command line tool.
+/// Build a Dataflow, exactly the same way as `dora build` command line tool.
 ///
 ///
 /// :type dataflow_path: str
@@ -27,7 +27,7 @@ pub fn build(
     coordinator_port: Option<u16>,
     force_local: bool,
 ) -> eyre::Result<()> {
-    adora_cli::build(
+    dora_cli::build(
         dataflow_path,
         coordinator_addr
             .map(|addr| addr.parse())
@@ -44,7 +44,7 @@ pub fn build(
     )
 }
 
-/// Run a Dataflow, exactly the same way as `adora run` command line tool.
+/// Run a Dataflow, exactly the same way as `dora run` command line tool.
 ///
 /// :type dataflow_path: str
 /// :type uv: bool, optional
@@ -53,10 +53,10 @@ pub fn build(
 #[pyfunction]
 #[pyo3(signature = (dataflow_path, uv=None, stop_after=None))]
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
-    use adora_cli::Executable;
+    use dora_cli::Executable;
 
     let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
-    let mut run = adora_cli::RunCommand::new(dataflow_path);
+    let mut run = dora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         run.uv = uv;
     }
@@ -66,8 +66,8 @@ pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> 
     run.execute()
 }
 
-#[pymodule(name = "adora_cli")]
-fn adora_cli_python(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "dora_cli")]
+fn dora_cli_python(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(start_runtime, &m)?)?;
     m.add_function(wrap_pyfunction!(run, &m)?)?;
     m.add_function(wrap_pyfunction!(build, &m)?)?;

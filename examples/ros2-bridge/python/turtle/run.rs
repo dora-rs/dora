@@ -1,4 +1,4 @@
-use adora_cli::{build, run as adora_run};
+use dora_cli::{build, run as dora_run};
 use eyre::WrapErr;
 use std::path::Path;
 
@@ -23,7 +23,7 @@ fn main() -> eyre::Result<()> {
     )?;
 
     let dataflow_task = std::thread::spawn(|| {
-        adora_run("dataflow.yml".to_string(), true).unwrap();
+        dora_run("dataflow.yml".to_string(), true).unwrap();
     });
 
     // let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;

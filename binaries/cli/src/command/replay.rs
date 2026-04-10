@@ -5,8 +5,8 @@ use std::{
     path::PathBuf,
 };
 
-use adora_recording::RecordingReader;
 use clap::Args;
+use dora_recording::RecordingReader;
 use eyre::{Context, bail};
 
 use crate::command::{Executable, Run};
@@ -20,19 +20,19 @@ use crate::command::{Executable, Run};
 /// Examples:
 ///
 ///   Replay at original speed:
-///     adora replay recording.adorec
+///     dora replay recording.adorec
 ///
 ///   Replay at 2x speed:
-///     adora replay recording.adorec --speed 2.0
+///     dora replay recording.adorec --speed 2.0
 ///
 ///   Replay as fast as possible:
-///     adora replay recording.adorec --speed 0
+///     dora replay recording.adorec --speed 0
 ///
 ///   Only replace specific nodes:
-///     adora replay recording.adorec --replace sensor,camera
+///     dora replay recording.adorec --replace sensor,camera
 ///
 ///   Just generate the modified YAML:
-///     adora replay recording.adorec --output-yaml modified.yml
+///     dora replay recording.adorec --output-yaml modified.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Replay {
@@ -94,7 +94,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         bail!(
             "recording `{}` contains no messages\n\n  \
              hint: the recording may be empty or corrupted. \
-             Try re-recording with `adora record`",
+             Try re-recording with `dora record`",
             args.file
         );
     }
@@ -171,20 +171,20 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         };
 
         env.insert(
-            serde_yaml::Value::String("ADORA_REPLAY_FILE".to_string()),
+            serde_yaml::Value::String("DORA_REPLAY_FILE".to_string()),
             serde_yaml::Value::String(recording_path.to_string_lossy().to_string()),
         );
         env.insert(
-            serde_yaml::Value::String("ADORA_REPLAY_NODE".to_string()),
+            serde_yaml::Value::String("DORA_REPLAY_NODE".to_string()),
             serde_yaml::Value::String(node_id),
         );
         env.insert(
-            serde_yaml::Value::String("ADORA_REPLAY_SPEED".to_string()),
+            serde_yaml::Value::String("DORA_REPLAY_SPEED".to_string()),
             serde_yaml::Value::String(args.speed.to_string()),
         );
         if args.r#loop {
             env.insert(
-                serde_yaml::Value::String("ADORA_REPLAY_LOOP".to_string()),
+                serde_yaml::Value::String("DORA_REPLAY_LOOP".to_string()),
                 serde_yaml::Value::String("true".to_string()),
             );
         }
@@ -233,5 +233,5 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 }
 
 fn find_replay_node_binary() -> eyre::Result<PathBuf> {
-    super::node_binary::find("adora-replay-node", "adora-replay-node")
+    super::node_binary::find("dora-replay-node", "dora-replay-node")
 }

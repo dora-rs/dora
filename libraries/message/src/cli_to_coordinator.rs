@@ -200,21 +200,21 @@ pub enum ControlRequest {
     /// or [`ControlRequestReply::Error`] with a human-readable mismatch
     /// message.
     Hello {
-        adora_version: semver::Version,
+        dora_version: semver::Version,
     },
 }
 
 impl ControlRequest {
     /// Build a Hello request stamped with the current crate version of
-    /// `adora-message` (the wire-protocol version).
+    /// `dora-message` (the wire-protocol version).
     pub fn hello() -> Self {
         Self::Hello {
-            adora_version: crate::current_crate_version(),
+            dora_version: crate::current_crate_version(),
         }
     }
 }
 
-/// Check whether a CLI-reported adora version is compatible with this
+/// Check whether a CLI-reported dora version is compatible with this
 /// coordinator's crate version. Returns `Ok(())` on success or a
 /// human-readable error describing the mismatch.
 pub fn check_cli_version(cli_version: &semver::Version) -> Result<(), String> {
@@ -223,7 +223,7 @@ pub fn check_cli_version(cli_version: &semver::Version) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "adora version mismatch: CLI v{cli_version} is not compatible \
+            "dora version mismatch: CLI v{cli_version} is not compatible \
              with coordinator v{crate_version}. Upgrade the component that \
              is behind (usually the CLI) so both sides share a semver-compatible \
              version."
@@ -241,8 +241,8 @@ mod tests {
     fn hello_stamps_current_crate_version() {
         let req = ControlRequest::hello();
         match req {
-            ControlRequest::Hello { adora_version } => {
-                assert_eq!(adora_version, crate::current_crate_version());
+            ControlRequest::Hello { dora_version } => {
+                assert_eq!(dora_version, crate::current_crate_version());
             }
             other => panic!("expected Hello, got {other:?}"),
         }
@@ -284,8 +284,8 @@ mod tests {
         let json = serde_json::to_string(&req).expect("serialize");
         let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            ControlRequest::Hello { adora_version } => {
-                assert_eq!(adora_version, crate::current_crate_version());
+            ControlRequest::Hello { dora_version } => {
+                assert_eq!(dora_version, crate::current_crate_version());
             }
             other => panic!("expected Hello, got {other:?}"),
         }

@@ -1,11 +1,11 @@
-# Adora vs ROS2 Benchmark Comparison
+# Dora vs ROS2 Benchmark Comparison
 
-Reproducible latency and throughput comparison between Adora and ROS2 using identical workloads.
+Reproducible latency and throughput comparison between Dora and ROS2 using identical workloads.
 
 ## Prerequisites
 
-- Adora CLI installed (`cargo install --path binaries/cli`)
-- Python Adora package: `pip install adora-rs`
+- Dora CLI installed (`cargo install --path binaries/cli`)
+- Python Dora package: `pip install dora-rs`
 - `numpy` and `pyarrow`: `pip install numpy pyarrow`
 - ROS2 Humble (or later) with `rclpy` and `std_msgs`
 
@@ -32,10 +32,10 @@ This runs both benchmarks sequentially and prints a comparison table.
 
 ## Manual Execution
 
-### Adora
+### Dora
 
 ```bash
-BENCH_CSV=results/adora.csv adora run dataflow.yml --uv
+BENCH_CSV=results/dora.csv dora run dataflow.yml --uv
 ```
 
 ### ROS2
@@ -53,7 +53,7 @@ python3 ros2_sender.py
 ### Compare Results
 
 ```bash
-python3 analyze.py results/adora.csv results/ros2.csv
+python3 analyze.py results/dora.csv results/ros2.csv
 ```
 
 ## Output Format
@@ -69,9 +69,9 @@ throughput,<bytes>,<label>,<n>,<msg_per_sec>,<elapsed_ns>,0,0,0,0,0
 
 | File | Description |
 |------|-------------|
-| `adora_sender.py` | Adora benchmark sender node |
-| `adora_receiver.py` | Adora benchmark receiver node |
-| `dataflow.yml` | Adora dataflow definition |
+| `dora_sender.py` | Dora benchmark sender node |
+| `dora_receiver.py` | Dora benchmark receiver node |
+| `dataflow.yml` | Dora dataflow definition |
 | `ros2_sender.py` | ROS2 benchmark publisher |
 | `ros2_receiver.py` | ROS2 benchmark subscriber |
 | `run_comparison.sh` | Orchestration script |

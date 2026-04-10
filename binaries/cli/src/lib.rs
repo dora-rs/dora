@@ -34,17 +34,17 @@ fn get_version_info() -> clap::builder::Str {
 
 fn build_version_string() -> String {
     // Only return the CLI version for fast --version output.
-    // Python version check moved to `adora self check` to avoid spawning
+    // Python version check moved to `dora self check` to avoid spawning
     // external processes on every --version invocation.
     env!("CARGO_PKG_VERSION").to_string()
 }
 
-/// Check if a Python adora-rs package is installed and return its version.
-#[allow(dead_code)] // used in tests; intended for future `adora self check` command
-pub(crate) fn get_python_adora_version() -> Option<String> {
+/// Check if a Python dora-rs package is installed and return its version.
+#[allow(dead_code)] // used in tests; intended for future `dora self check` command
+pub(crate) fn get_python_dora_version() -> Option<String> {
     // Try with uv first
     if let Ok(output) = std::process::Command::new("uv")
-        .args(["pip", "show", "adora-rs"])
+        .args(["pip", "show", "dora-rs"])
         .output()
         && output.status.success()
         && let Some(version) = parse_version_from_pip_show(&output.stdout)
@@ -54,7 +54,7 @@ pub(crate) fn get_python_adora_version() -> Option<String> {
 
     // Try with regular pip
     if let Ok(output) = std::process::Command::new("pip")
-        .args(["show", "adora-rs"])
+        .args(["show", "dora-rs"])
         .output()
         && output.status.success()
         && let Some(version) = parse_version_from_pip_show(&output.stdout)
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn pip_show_valid_output() {
-        let output = b"Name: adora-rs\nVersion: 0.1.0\nSummary: some desc\n";
+        let output = b"Name: dora-rs\nVersion: 0.1.0\nSummary: some desc\n";
         assert_eq!(
             parse_version_from_pip_show(output),
             Some("0.1.0".to_string())
@@ -91,7 +91,7 @@ mod tests {
 
     #[test]
     fn pip_show_missing_version_line() {
-        let output = b"Name: adora-rs\nSummary: some desc\n";
+        let output = b"Name: dora-rs\nSummary: some desc\n";
         assert_eq!(parse_version_from_pip_show(output), None);
     }
 

@@ -1,6 +1,6 @@
 # QA Runbook
 
-**Audience**: adora developers (human or agent) running QA locally.
+**Audience**: dora developers (human or agent) running QA locally.
 **Purpose**: tell you which command to run, how to read the output, and what to do when something fails.
 **Deep dives**: see [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) for the strategy and rationale; this document is the operational reference.
 
@@ -60,7 +60,7 @@ All targets call scripts under `scripts/qa/`. The scripts are the source of trut
 
 ### 3.2 `clippy` failed
 
-**Cause**: a clippy lint fires on your code. Common ones in adora:
+**Cause**: a clippy lint fires on your code. Common ones in dora:
 - `collapsible_if` — nested `if let`s can use `&&` chain syntax (Rust 2024).
 - `let-and-return`
 - Needless `.clone()`
@@ -222,11 +222,11 @@ rustup component add miri --toolchain nightly
 
 ```bash
 # metadata.rs — known-good target with focused unit tests
-cargo +nightly miri test -p adora-core metadata::tests
+cargo +nightly miri test -p dora-core metadata::tests
 
 # Add more targets as they gain focused unit tests:
-# cargo +nightly miri test -p adora-coordinator-store
-# cargo +nightly miri test -p adora-arrow-convert
+# cargo +nightly miri test -p dora-coordinator-store
+# cargo +nightly miri test -p dora-arrow-convert
 ```
 
 **Do NOT** run miri on `shared-memory-server` — its tests call libc's `shm_open` which miri does not support. Every test aborts with "unsupported operation". See `plan-agentic-qa-strategy.md` Section T2.3 for the explanation and the long-term fix (Zenoh SHM migration).
@@ -238,13 +238,13 @@ cargo +nightly miri test -p adora-core metadata::tests
 Proptest strategies live inside `#[cfg(test)] mod tests` in the target source files. They run automatically under `cargo test`.
 
 ```bash
-cargo test -p adora-message ws_protocol::tests::prop_
+cargo test -p dora-message ws_protocol::tests::prop_
 ```
 
 To increase the case count for a focused hunt:
 
 ```bash
-PROPTEST_CASES=20000 cargo test -p adora-message ws_protocol::tests::prop_
+PROPTEST_CASES=20000 cargo test -p dora-message ws_protocol::tests::prop_
 ```
 
 Failed proptest cases are saved in `libraries/message/proptest-regressions/` and **should be committed** to source control — they re-run as fast regression checks on every test run.
@@ -266,7 +266,7 @@ cargo mutants --in-diff origin/main --package <pkg>
 
 **Tip**: mutation runs are expensive. When investigating a specific bug hypothesis, scope to a single file.
 
-**Tip**: the full critical-crate chain takes about 17 hours (`adora-core`, `adora-message`, `adora-coordinator-store`, `adora-coordinator`, `adora-daemon`) with workspace-scoped tests. Budget accordingly.
+**Tip**: the full critical-crate chain takes about 17 hours (`dora-core`, `dora-message`, `dora-coordinator-store`, `dora-coordinator`, `dora-daemon`) with workspace-scoped tests. Budget accordingly.
 
 ---
 

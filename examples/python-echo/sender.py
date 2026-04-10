@@ -1,7 +1,7 @@
 """Sender node: emits a fixed PyArrow array every 500ms."""
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 
 def main():

@@ -1,8 +1,8 @@
 use super::{Executable, default_tracing};
 use crate::common::{CoordinatorOptions, query_running_dataflows};
 use crate::ws_client::WsSession;
-use adora_message::cli_to_coordinator::ControlRequest;
-use adora_message::coordinator_to_cli::ControlRequestReply;
+use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::coordinator_to_cli::ControlRequestReply;
 use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
@@ -62,7 +62,7 @@ fn restart_dataflow_interactive(
         restart_dataflow(active[0].uuid, grace_duration, force, session)?;
     } else if !std::io::stdin().is_terminal() {
         bail!(
-            "Multiple dataflows running. Specify one:\n  adora restart <UUID>\n  adora restart --name <NAME>"
+            "Multiple dataflows running. Specify one:\n  dora restart <UUID>\n  dora restart --name <NAME>"
         );
     } else {
         let selection = inquire::Select::new("Choose dataflow to restart:", active).prompt()?;

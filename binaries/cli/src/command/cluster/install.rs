@@ -7,13 +7,13 @@ use crate::command::{Executable, default_tracing};
 use super::config::ClusterConfig;
 use super::{format_labels_arg, print_summary, record_ssh_result, run_ssh, ssh_target};
 
-/// Install adora-daemon as a systemd service on each machine.
+/// Install dora-daemon as a systemd service on each machine.
 ///
 /// SSH-es into each machine, writes a systemd unit file, and enables the service.
 ///
 /// Examples:
 ///
-///   adora cluster install cluster.yml
+///   dora cluster install cluster.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Install {
@@ -32,17 +32,17 @@ impl Executable for Install {
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
-            let service_name = format!("adora-daemon-{}", machine.id);
+            let service_name = format!("dora-daemon-{}", machine.id);
 
             let unit = format!(
                 r#"[Unit]
-Description=Adora Daemon ({id})
+Description=Dora Daemon ({id})
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=adora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet
+ExecStart=dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet
 Restart=on-failure
 RestartSec=5
 

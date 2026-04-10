@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use adora_message::{
+use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, DataMessage, NodeEvent},
     id::DataId,
@@ -26,7 +26,7 @@ use crate::{
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
-use adora_core::{
+use dora_core::{
     config::{Input, NodeId},
     uhlc,
 };
@@ -58,7 +58,7 @@ mod thread;
 /// [`EventStream`] to combine the stream with an external one.)_
 ///
 /// Once the event stream finished, nodes should exit.
-/// Note that Adora kills nodes that don't exit quickly after a [`Event::Stop`] of type
+/// Note that Dora kills nodes that don't exit quickly after a [`Event::Stop`] of type
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
@@ -160,7 +160,7 @@ impl EventStream {
                     (
                         config
                             .queue_size
-                            .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE),
+                            .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE),
                         VecDeque::new(),
                     ),
                 )
@@ -172,7 +172,7 @@ impl EventStream {
             (1_000, VecDeque::new()),
         );
 
-        let queue_policies: HashMap<DataId, adora_message::config::QueuePolicy> = input_config
+        let queue_policies: HashMap<DataId, dora_message::config::QueuePolicy> = input_config
             .iter()
             .filter_map(|(input, config)| config.queue_policy.map(|p| (input.clone(), p)))
             .collect();
@@ -183,7 +183,7 @@ impl EventStream {
             .values()
             .map(|c| {
                 c.queue_size
-                    .unwrap_or(adora_message::config::DEFAULT_QUEUE_SIZE)
+                    .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
             })
             .sum::<usize>()
             .max(64);
@@ -220,7 +220,7 @@ impl EventStream {
         // Resolve input type URNs to Arrow DataTypes for first-message validation.
         let mut input_type_checks = HashMap::new();
         {
-            let registry = adora_core::types::TypeRegistry::new();
+            let registry = dora_core::types::TypeRegistry::new();
             for (input_id, type_urn) in input_types {
                 match registry.resolve_arrow_type(type_urn) {
                     Some(dt) => {
@@ -280,7 +280,7 @@ impl EventStream {
                 timestamp: clock.new_timestamp(),
             })
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with adora-daemon")?;
+            .wrap_err("failed to create subscription with dora-daemon")?;
 
         match reply {
             DaemonReply::Result(Ok(())) => {}
@@ -312,10 +312,10 @@ impl EventStream {
             for (input_id, input) in input_config {
                 let mapping = &input.mapping;
                 // Only user inputs from other nodes need zenoh subscribers
-                if let adora_message::config::InputMapping::User(user_mapping) = mapping {
+                if let dora_message::config::InputMapping::User(user_mapping) = mapping {
                     let source_node = &user_mapping.source;
                     let source_output = &user_mapping.output;
-                    let topic = adora_core::topics::zenoh_output_publish_topic(
+                    let topic = dora_core::topics::zenoh_output_publish_topic(
                         dataflow_id,
                         source_node,
                         source_output,
@@ -347,55 +347,58 @@ impl EventStream {
 
                     let tx_clone = tx.clone();
                     let input_id = input_id.clone();
-                    let handle = std::thread::Builder::new()
-                        .name(format!("zenoh-sub-{input_id}"))
-                        .spawn(move || {
-                            while let Ok(sample) = subscriber.recv() {
-                                // Extract metadata from attachment
-                                let metadata = match sample.attachment() {
-                                    Some(att) => {
-                                        match bincode::deserialize::<
-                                            adora_message::metadata::Metadata,
-                                        >(
-                                            &att.to_bytes()
-                                        ) {
-                                            Ok(m) => m,
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "zenoh metadata deserialization failed: {e}"
-                                                );
-                                                continue;
+                    let handle =
+                        std::thread::Builder::new()
+                            .name(format!("zenoh-sub-{input_id}"))
+                            .spawn(move || {
+                                while let Ok(sample) = subscriber.recv() {
+                                    // Extract metadata from attachment
+                                    let metadata = match sample.attachment() {
+                                        Some(att) => {
+                                            match bincode::deserialize::<
+                                                dora_message::metadata::Metadata,
+                                            >(
+                                                &att.to_bytes()
+                                            ) {
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        "zenoh metadata deserialization failed: {e}"
+                                                    );
+                                                    continue;
+                                                }
                                             }
                                         }
-                                    }
-                                    None => {
-                                        tracing::warn!("zenoh sample missing metadata attachment");
-                                        continue;
-                                    }
-                                };
+                                        None => {
+                                            tracing::warn!(
+                                                "zenoh sample missing metadata attachment"
+                                            );
+                                            continue;
+                                        }
+                                    };
 
-                                // Send the raw ZBytes payload to the event
-                                // loop for zero-copy Arrow conversion.
-                                // The old path copied SHM payloads into an
-                                // AVec; this path holds the ZBytes directly
-                                // so `convert_event_item` can wrap it in an
-                                // Arrow Buffer backed by the original zenoh
-                                // buffer (dora-rs/adora#132).
-                                let payload = sample.payload().clone();
+                                    // Send the raw ZBytes payload to the event
+                                    // loop for zero-copy Arrow conversion.
+                                    // The old path copied SHM payloads into an
+                                    // AVec; this path holds the ZBytes directly
+                                    // so `convert_event_item` can wrap it in an
+                                    // Arrow Buffer backed by the original zenoh
+                                    // buffer (dora-rs/adora#132).
+                                    let payload = sample.payload().clone();
 
-                                if tx_clone
-                                    .send(EventItem::ZenohInput {
-                                        id: input_id.clone(),
-                                        metadata: std::sync::Arc::new(metadata),
-                                        payload,
-                                    })
-                                    .is_err()
-                                {
-                                    break; // receiver dropped
+                                    if tx_clone
+                                        .send(EventItem::ZenohInput {
+                                            id: input_id.clone(),
+                                            metadata: std::sync::Arc::new(metadata),
+                                            payload,
+                                        })
+                                        .is_err()
+                                    {
+                                        break; // receiver dropped
+                                    }
                                 }
-                            }
-                            tracing::trace!("zenoh subscriber thread exiting");
-                        });
+                                tracing::trace!("zenoh subscriber thread exiting");
+                            });
                     match handle {
                         Ok(h) => zenoh_thread_handles.push(h),
                         Err(e) => {
@@ -528,13 +531,13 @@ impl EventStream {
         {
             let is_pattern_message = metadata
                 .parameters
-                .contains_key(adora_message::metadata::REQUEST_ID)
+                .contains_key(dora_message::metadata::REQUEST_ID)
                 || metadata
                     .parameters
-                    .contains_key(adora_message::metadata::GOAL_ID)
+                    .contains_key(dora_message::metadata::GOAL_ID)
                 || metadata
                     .parameters
-                    .contains_key(adora_message::metadata::GOAL_STATUS);
+                    .contains_key(dora_message::metadata::GOAL_STATUS);
             if !is_pattern_message {
                 // Consume the check and validate.
                 self.input_type_checks.remove(id);
@@ -782,9 +785,9 @@ impl EventStream {
             expected_server,
             |event, request_id| match event {
                 Event::Input { metadata, .. } => {
-                    adora_message::metadata::get_string_param(
+                    dora_message::metadata::get_string_param(
                         &metadata.parameters,
-                        adora_message::metadata::REQUEST_ID,
+                        dora_message::metadata::REQUEST_ID,
                     ) == Some(request_id)
                 }
                 _ => false,
@@ -813,21 +816,21 @@ impl EventStream {
             expected_server,
             |event, goal_id| match event {
                 Event::Input { metadata, .. } => {
-                    let matches_goal = adora_message::metadata::get_string_param(
+                    let matches_goal = dora_message::metadata::get_string_param(
                         &metadata.parameters,
-                        adora_message::metadata::GOAL_ID,
+                        dora_message::metadata::GOAL_ID,
                     ) == Some(goal_id);
                     if !matches_goal {
                         return false;
                     }
                     matches!(
-                        adora_message::metadata::get_string_param(
+                        dora_message::metadata::get_string_param(
                             &metadata.parameters,
-                            adora_message::metadata::GOAL_STATUS,
+                            dora_message::metadata::GOAL_STATUS,
                         ),
-                        Some(adora_message::metadata::GOAL_STATUS_SUCCEEDED)
-                            | Some(adora_message::metadata::GOAL_STATUS_ABORTED)
-                            | Some(adora_message::metadata::GOAL_STATUS_CANCELED)
+                        Some(dora_message::metadata::GOAL_STATUS_SUCCEEDED)
+                            | Some(dora_message::metadata::GOAL_STATUS_ABORTED)
+                            | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
                     )
                 }
                 _ => false,
@@ -999,18 +1002,18 @@ pub enum TryRecvError {
 /// (dora-rs/adora#132)
 fn zenoh_payload_to_arrow_array(
     payload: zenoh::bytes::ZBytes,
-    metadata: &adora_message::metadata::Metadata,
+    metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
     use std::ptr::NonNull;
 
-    let is_ipc = adora_message::metadata::get_string_param(
+    let is_ipc = dora_message::metadata::get_string_param(
         &metadata.parameters,
-        adora_message::metadata::FRAMING,
-    ) == Some(adora_message::metadata::FRAMING_ARROW_IPC);
+        dora_message::metadata::FRAMING,
+    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
 
     if payload.is_empty() {
-        let empty = adora_arrow_convert::IntoArrow::into_arrow(());
+        let empty = dora_arrow_convert::IntoArrow::into_arrow(());
         return Ok(arrow::array::make_array(empty.into()));
     }
 
@@ -1072,7 +1075,7 @@ fn zenoh_payload_to_arrow_array(
 
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
-    metadata: &adora_message::metadata::Metadata,
+    metadata: &dora_message::metadata::Metadata,
     drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data = match data {
@@ -1092,10 +1095,10 @@ pub fn data_to_arrow_array(
         },
     };
 
-    let is_ipc = adora_message::metadata::get_string_param(
+    let is_ipc = dora_message::metadata::get_string_param(
         &metadata.parameters,
-        adora_message::metadata::FRAMING,
-    ) == Some(adora_message::metadata::FRAMING_ARROW_IPC);
+        dora_message::metadata::FRAMING,
+    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
 
     data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
@@ -1141,13 +1144,13 @@ impl Stream for EventStream {
         {
             let is_pattern_message = metadata
                 .parameters
-                .contains_key(adora_message::metadata::REQUEST_ID)
+                .contains_key(dora_message::metadata::REQUEST_ID)
                 || metadata
                     .parameters
-                    .contains_key(adora_message::metadata::GOAL_ID)
+                    .contains_key(dora_message::metadata::GOAL_ID)
                 || metadata
                     .parameters
-                    .contains_key(adora_message::metadata::GOAL_STATUS);
+                    .contains_key(dora_message::metadata::GOAL_STATUS);
             if !is_pattern_message {
                 self.input_type_checks.remove(id);
                 let actual = data.data_type();
@@ -1176,7 +1179,7 @@ impl Drop for EventStream {
             .close_channel
             .request(&request)
             .map_err(|e| eyre!(e))
-            .wrap_err("failed to signal event stream closure to adora-daemon")
+            .wrap_err("failed to signal event stream closure to dora-daemon")
             .and_then(|r| match r {
                 DaemonReply::Result(Ok(())) => Ok(()),
                 DaemonReply::Result(Err(err)) => Err(eyre!("EventStreamClosed failed: {err}")),
@@ -1326,13 +1329,13 @@ mod tests {
 
     // ---- dora-rs/adora#148: pattern-aware correlation classification ----
 
-    use adora_arrow_convert::ArrowData;
-    use adora_message::metadata::{
+    use arrow::array::new_empty_array;
+    use arrow::datatypes::DataType as ArrowDataType;
+    use dora_arrow_convert::ArrowData;
+    use dora_message::metadata::{
         ArrowTypeInfo, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
     };
-    use arrow::array::new_empty_array;
-    use arrow::datatypes::DataType as ArrowDataType;
 
     fn make_metadata(params: MetadataParameters) -> Metadata {
         let type_info = ArrowTypeInfo {
@@ -1347,7 +1350,7 @@ mod tests {
             schema_hash: None,
         };
         Metadata::from_parameters(
-            adora_core::uhlc::HLC::default().new_timestamp(),
+            dora_core::uhlc::HLC::default().new_timestamp(),
             type_info,
             params,
         )
@@ -1379,7 +1382,7 @@ mod tests {
     fn is_request_match(needle: &str) -> impl Fn(&Event) -> bool + '_ {
         move |event: &Event| match event {
             Event::Input { metadata, .. } => {
-                adora_message::metadata::get_string_param(&metadata.parameters, REQUEST_ID)
+                dora_message::metadata::get_string_param(&metadata.parameters, REQUEST_ID)
                     == Some(needle)
             }
             _ => false,
@@ -1390,12 +1393,12 @@ mod tests {
         move |event: &Event| match event {
             Event::Input { metadata, .. } => {
                 let p = &metadata.parameters;
-                adora_message::metadata::get_string_param(p, GOAL_ID) == Some(needle)
+                dora_message::metadata::get_string_param(p, GOAL_ID) == Some(needle)
                     && matches!(
-                        adora_message::metadata::get_string_param(p, GOAL_STATUS),
+                        dora_message::metadata::get_string_param(p, GOAL_STATUS),
                         Some(GOAL_STATUS_SUCCEEDED)
                             | Some(GOAL_STATUS_ABORTED)
-                            | Some(adora_message::metadata::GOAL_STATUS_CANCELED)
+                            | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
                     )
             }
             _ => false,
@@ -1538,7 +1541,7 @@ mod tests {
     };
 
     /// Create a minimal EventStream via the testing path.
-    fn test_event_stream() -> (crate::AdoraNode, EventStream) {
+    fn test_event_stream() -> (crate::DoraNode, EventStream) {
         let events = vec![TimedIncomingEvent {
             time_offset_secs: 0.0,
             event: IncomingEvent::Stop,
@@ -1552,7 +1555,7 @@ mod tests {
         let options = TestingOptions {
             skip_output_time_offsets: true,
         };
-        crate::AdoraNode::init_testing(inputs, outputs, options).unwrap()
+        crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
     }
 
     #[test]

@@ -28,7 +28,7 @@ timer (200ms) --> sensor (Python)    --> log_entries --> file_sink (Rust) --> co
 
 ```bash
 cargo build -p log-sink-file
-adora run dataflow.yml
+dora run dataflow.yml
 
 # Check output
 cat combined.jsonl | head

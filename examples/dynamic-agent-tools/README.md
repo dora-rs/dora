@@ -35,9 +35,9 @@ for `"tool": "calc"` requests.
 ### Step 1: Start with echo tool only
 
 ```bash
-pip install adora-rs pyarrow
-adora up
-adora start examples/dynamic-agent-tools/dataflow.yml --detach --name agent-demo
+pip install dora-rs pyarrow
+dora up
+dora start examples/dynamic-agent-tools/dataflow.yml --detach --name agent-demo
 ```
 
 The agent sends requests. Echo tool responds to echo requests.
@@ -46,12 +46,12 @@ Calc requests go unanswered (no calc tool yet).
 ### Step 2: Add calculator tool
 
 ```bash
-adora node add --from-yaml examples/dynamic-agent-tools/calc-tool-node.yml --dataflow agent-demo
+dora node add --from-yaml examples/dynamic-agent-tools/calc-tool-node.yml --dataflow agent-demo
 ```
 
 After wiring the calc tool's response to the agent:
 ```bash
-adora node connect --dataflow agent-demo calc-tool/response agent/tool-response
+dora node connect --dataflow agent-demo calc-tool/response agent/tool-response
 ```
 
 The agent now receives responses from both tools on the same `tool-response`
@@ -61,7 +61,7 @@ from all sources are interleaved in arrival order.
 ### Step 3: Remove calculator tool
 
 ```bash
-adora node remove agent-demo calc-tool
+dora node remove agent-demo calc-tool
 ```
 
 Back to echo-only. Calc requests go unanswered again.
@@ -69,8 +69,8 @@ Back to echo-only. Calc requests go unanswered again.
 ### Step 4: Clean up
 
 ```bash
-adora stop --all
-adora down
+dora stop --all
+dora down
 ```
 
 ## What This Demonstrates

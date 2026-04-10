@@ -4,7 +4,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::bail;
@@ -14,10 +14,10 @@ use eyre::bail;
 /// Examples:
 ///
 /// Get a parameter:
-///   adora param get camera_node fps
+///   dora param get camera_node fps
 ///
 /// Get from a specific dataflow:
-///   adora param get camera_node fps -d my-dataflow
+///   dora param get camera_node fps -d my-dataflow
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Get {

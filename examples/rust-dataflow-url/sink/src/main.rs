@@ -1,8 +1,8 @@
-use adora_node_api::{self, AdoraNode};
+use dora_node_api::{self, DoraNode};
 use eyre::{bail, Context};
 
 fn main() -> eyre::Result<()> {
-    let mut operator = AdoraNode::init_from_env()?;
+    let mut operator = DoraNode::init_from_env()?;
 
     let inputs = operator.inputs()?;
 

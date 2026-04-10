@@ -4,26 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Adora (AI-Dora, Agentic Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. It provides 10-17x faster latency than ROS2 via zero-copy shared memory and Apache Arrow data format. Supports Rust, Python (PyO3), C, and C++ nodes.
+Dora (AI-Dora, Agentic Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. It provides 10-17x faster latency than ROS2 via zero-copy shared memory and Apache Arrow data format. Supports Rust, Python (PyO3), C, and C++ nodes.
 
 ## Build Commands
 
 ```bash
 # Build all (Python packages require maturin, exclude them for normal builds)
-cargo build --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
+cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Build specific package
-cargo build -p adora-cli
-cargo build -p adora-daemon
+cargo build -p dora-cli
+cargo build -p dora-daemon
 
 # Check all
 cargo check --all
 
 # Test all (excluding Python)
-cargo test --all --exclude adora-node-api-python --exclude adora-operator-api-python --exclude adora-ros2-bridge-python
+cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test single package
-cargo test -p adora-core
+cargo test -p dora-core
 
 # Lint
 cargo clippy --all
@@ -42,8 +42,8 @@ cargo run --example benchmark --release
 cargo install --path binaries/cli --locked
 
 # Run a dataflow
-adora run examples/rust-dataflow/dataflow.yml
-adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+dora run examples/rust-dataflow/dataflow.yml
+dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 ```
 
 ## Workspace Layout
@@ -55,16 +55,16 @@ adora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
 | Path | Crate | Role |
 |------|-------|------|
-| `binaries/cli` | adora-cli | CLI binary (`adora` command) - build, run, stop dataflows |
-| `binaries/daemon` | adora-daemon | Spawns nodes, manages local shared-memory/TCP communication |
-| `binaries/coordinator` | adora-coordinator | Orchestrates distributed multi-daemon deployments |
-| `binaries/runtime` | adora-runtime | In-process operator execution runtime |
-| `libraries/message` | adora-message | All inter-component message types and protocol definitions |
-| `libraries/core` | adora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
+| `binaries/cli` | dora-cli | CLI binary (`dora` command) - build, run, stop dataflows |
+| `binaries/daemon` | dora-daemon | Spawns nodes, manages local shared-memory/TCP communication |
+| `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments |
+| `binaries/runtime` | dora-runtime | In-process operator execution runtime |
+| `libraries/message` | dora-message | All inter-component message types and protocol definitions |
+| `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for large messages (>4KB) |
-| `apis/rust/node` | adora-node-api | Rust API for writing custom nodes |
-| `apis/rust/operator` | adora-operator-api | Rust API for writing in-process operators |
-| `apis/python/node` | adora-node-api-python | Python node API (PyO3) |
+| `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
+| `apis/rust/operator` | dora-operator-api | Rust API for writing in-process operators |
+| `apis/python/node` | dora-node-api-python | Python node API (PyO3) |
 
 ## Architecture
 
@@ -81,7 +81,7 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 
 ### Dataflow specification
 
-Dataflows are defined in YAML files. Nodes declare inputs (subscribing to other nodes' outputs) and outputs. Built-in timer nodes: `adora/timer/millis/<N>`, `adora/timer/hz/<N>`.
+Dataflows are defined in YAML files. Nodes declare inputs (subscribing to other nodes' outputs) and outputs. Built-in timer nodes: `dora/timer/millis/<N>`, `dora/timer/hz/<N>`.
 
 ### Communication patterns
 
@@ -110,18 +110,18 @@ cargo fmt --all -- --check
 
 # 2. Clippy with warnings-as-errors — CI uses -D warnings
 cargo clippy --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python \
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python \
   -- -D warnings
 
 # 3. Tests — at minimum the affected crate; full workspace before push
 cargo test --all \
-  --exclude adora-node-api-python \
-  --exclude adora-operator-api-python \
-  --exclude adora-ros2-bridge-python \
-  --exclude adora-cli-api-python \
-  --exclude adora-examples
+  --exclude dora-node-api-python \
+  --exclude dora-operator-api-python \
+  --exclude dora-ros2-bridge-python \
+  --exclude dora-cli-api-python \
+  --exclude dora-examples
 
 # Quick single-crate check while iterating:
 # cargo test -p <crate-name>
@@ -194,8 +194,8 @@ cargo test --test example-smoke -- --test-threads=1
 
 Two helpers are available in `tests/example-smoke.rs`:
 
-- `run_smoke_test(name, yaml, timeout)` -- networked: `adora up` + `adora start --detach` + poll + `adora stop` + `adora down`
-- `run_smoke_test_local(name, yaml, stop_after_secs)` -- local: `adora run --stop-after`
+- `run_smoke_test(name, yaml, timeout)` -- networked: `dora up` + `dora start --detach` + poll + `dora stop` + `dora down`
+- `run_smoke_test_local(name, yaml, stop_after_secs)` -- local: `dora run --stop-after`
 
 New example dataflows should have tests in both modes. Use `Once` guards to share build steps across tests.
 
@@ -213,5 +213,5 @@ For quick local validation: `./scripts/smoke-all.sh`
 - Format with `rustfmt` default settings before submitting PRs
 - Discuss non-trivial changes in a GitHub issue or Discord first
 - Don't fix unrelated warnings in PRs
-- Python node API is distributed via PyPI (`adora-rs`); CLI is distributed via crates.io and GitHub Releases
+- Python node API is distributed via PyPI (`dora-rs`); CLI is distributed via crates.io and GitHub Releases
 - Release profile `dist` uses fat LTO

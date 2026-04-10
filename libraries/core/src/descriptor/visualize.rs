@@ -1,4 +1,4 @@
-use adora_message::{
+use dora_message::{
     config::{Input, InputMapping, UserInputMapping, format_duration},
     descriptor::{CoreNodeKind, OperatorDefinition},
     id::{DataId, NodeId},
@@ -54,13 +54,13 @@ pub fn visualize_nodes_with_boundaries(
         }
     }
 
-    let adora_timers = collect_adora_timers(nodes);
-    if !adora_timers.is_empty() {
-        writeln!(flowchart, "subgraph ___adora___ [adora]").unwrap();
+    let dora_timers = collect_dora_timers(nodes);
+    if !dora_timers.is_empty() {
+        writeln!(flowchart, "subgraph ___dora___ [dora]").unwrap();
         writeln!(flowchart, "  subgraph ___timer_timer___ [timer]").unwrap();
-        for interval in adora_timers {
+        for interval in dora_timers {
             let duration = format_duration(interval);
-            writeln!(flowchart, "    adora/timer/{duration}[\\{duration}/]").unwrap();
+            writeln!(flowchart, "    dora/timer/{duration}[\\{duration}/]").unwrap();
         }
         flowchart.push_str("  end\n");
         flowchart.push_str("end\n");
@@ -73,32 +73,32 @@ pub fn visualize_nodes_with_boundaries(
     flowchart
 }
 
-pub fn collect_adora_timers(nodes: &BTreeMap<NodeId, ResolvedNode>) -> BTreeSet<Duration> {
-    let mut adora_timers = BTreeSet::new();
+pub fn collect_dora_timers(nodes: &BTreeMap<NodeId, ResolvedNode>) -> BTreeSet<Duration> {
+    let mut dora_timers = BTreeSet::new();
     for node in nodes.values() {
         match &node.kind {
             CoreNodeKind::Runtime(node) => {
                 for operator in &node.operators {
-                    collect_adora_nodes(operator.config.inputs.values(), &mut adora_timers);
+                    collect_dora_nodes(operator.config.inputs.values(), &mut dora_timers);
                 }
             }
             CoreNodeKind::Custom(node) => {
-                collect_adora_nodes(node.run_config.inputs.values(), &mut adora_timers);
+                collect_dora_nodes(node.run_config.inputs.values(), &mut dora_timers);
             }
         }
     }
-    adora_timers
+    dora_timers
 }
 
-fn collect_adora_nodes(
+fn collect_dora_nodes(
     values: std::collections::btree_map::Values<DataId, Input>,
-    adora_timers: &mut BTreeSet<Duration>,
+    dora_timers: &mut BTreeSet<Duration>,
 ) {
     for input in values {
         match &input.mapping {
             InputMapping::User(_) | InputMapping::Logs(_) => {}
             InputMapping::Timer { interval } => {
-                adora_timers.insert(*interval);
+                dora_timers.insert(*interval);
             }
         }
     }

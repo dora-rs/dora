@@ -1,5 +1,5 @@
-use adora_node_api::{
-    self, AdoraNode, Event, EventStream, IntoArrow, adora_core::config::DataId, init_tracing,
+use dora_node_api::{
+    self, DoraNode, Event, EventStream, IntoArrow, dora_core::config::DataId, init_tracing,
 };
 use eyre::Context;
 use tracing::{Level, span};
@@ -10,7 +10,7 @@ mod tests;
 fn main() -> eyre::Result<()> {
     println!("hello");
 
-    let (node, events) = AdoraNode::init_from_env()?;
+    let (node, events) = DoraNode::init_from_env()?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -26,7 +26,7 @@ fn main() -> eyre::Result<()> {
     result
 }
 
-fn run(mut node: AdoraNode, mut events: EventStream) -> eyre::Result<()> {
+fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
     let span = span!(Level::INFO, "Node Span");
     let _enter = span.enter();
     // use a fixed seed for reproducibility (we use this node's output in integration tests)

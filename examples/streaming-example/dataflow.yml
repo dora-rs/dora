@@ -7,13 +7,13 @@
 #   prompt-source (0.5 Hz) --> generator --> token stream --> sink
 #
 # Run:
-#   adora run examples/streaming-example/dataflow.yml --uv
+#   dora run examples/streaming-example/dataflow.yml --uv
 
 nodes:
   - id: prompt-source
     path: prompt_source.py
     inputs:
-      tick: adora/timer/hz/0.5
+      tick: dora/timer/hz/0.5
     outputs:
       - prompt
 

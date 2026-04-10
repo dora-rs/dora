@@ -1,6 +1,6 @@
 # Fault Tolerance
 
-Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, detect stale upstream connections, gracefully degrade when inputs are unavailable, and the coordinator can persist state to disk so it survives crashes and restarts.
+Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, detect stale upstream connections, gracefully degrade when inputs are unavailable, and the coordinator can persist state to disk so it survives crashes and restarts.
 
 ## Features at a Glance
 
@@ -11,7 +11,7 @@ Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can 
 | Input timeouts | Per-input | `input_timeout` |
 | Circuit breaker | Automatic | Triggered by `input_timeout`, auto-recovers |
 | NodeRestarted event | Downstream nodes | Automatic when upstream restarts |
-| InputTracker API | Rust nodes | `adora_node_api::InputTracker` |
+| InputTracker API | Rust nodes | `dora_node_api::InputTracker` |
 | Observability | Daemon-wide | Atomic counters logged periodically |
 | Distributed health | Multi-daemon | Coordinator heartbeat monitoring |
 | Coordinator state persistence | Coordinator | `--store redb` (requires `redb-backend` feature) |
@@ -42,7 +42,7 @@ nodes:
 **`on-failure`** -- Restart only when the node exits with a non-zero exit code. Clean exits (code 0) are not restarted.
 
 **`always`** -- Restart on any exit, except:
-- The dataflow was stopped by the user (`adora stop` or Ctrl-C)
+- The dataflow was stopped by the user (`dora stop` or Ctrl-C)
 - All inputs were closed and the node exited with a non-zero code
 
 ### How Restarts Work Internally
@@ -215,9 +215,9 @@ This means recovery is fully automatic. If the upstream node restarts (via resta
 In Rust nodes, handle these events in your event loop:
 
 ```rust
-use adora_node_api::{AdoraNode, Event};
+use dora_node_api::{DoraNode, Event};
 
-let (mut node, mut events) = AdoraNode::init_from_env()?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 while let Some(event) = events.recv() {
     match event {
         Event::Input { id, data, .. } => {
@@ -244,9 +244,9 @@ while let Some(event) = events.recv() {
 The `InputTracker` helper tracks input health and caches the last received value per input, making graceful degradation easy.
 
 ```rust
-use adora_node_api::{AdoraNode, Event, InputTracker, InputState};
+use dora_node_api::{DoraNode, Event, InputTracker, InputState};
 
-let (mut node, mut events) = AdoraNode::init_from_env()?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 let mut tracker = InputTracker::new();
 
 while let Some(event) = events.recv() {
@@ -379,7 +379,7 @@ Coordinator (stateless process)
 CoordinatorStore trait
     |
     +-- InMemoryStore (default, no persistence)
-    +-- RedbStore     (persists to ~/.adora/coordinator.redb)
+    +-- RedbStore     (persists to ~/.dora/coordinator.redb)
 ```
 
 This separation means:
@@ -390,14 +390,14 @@ This separation means:
 ### Enabling Persistence
 
 ```bash
-# Use default path (~/.adora/coordinator.redb)
-adora coordinator --store redb
+# Use default path (~/.dora/coordinator.redb)
+dora coordinator --store redb
 
 # Use custom path
-adora coordinator --store redb:/path/to/coordinator.redb
+dora coordinator --store redb:/path/to/coordinator.redb
 
 # Default: in-memory only (no persistence)
-adora coordinator --store memory
+dora coordinator --store memory
 ```
 
 The `redb` backend requires the `redb-backend` Cargo feature, which is enabled in the default CLI build.
@@ -472,13 +472,13 @@ The redb database includes a `meta` table with a `schema_version` key. On open:
 - If the stored version matches the binary's version, the database opens normally
 - If there is a mismatch, the database is rejected with an error
 
-This prevents silent data corruption when the serialization format of stored records changes between Adora versions. The current schema version is `1`.
+This prevents silent data corruption when the serialization format of stored records changes between Dora versions. The current schema version is `1`.
 
 ### File Security
 
 On Unix systems:
 - The database file is set to `0600` (owner read/write only) after creation
-- The default directory (`~/.adora/`) is set to `0700` (owner only)
+- The default directory (`~/.dora/`) is set to `0700` (owner only)
 - Custom paths provided via `redb:/path` are validated to reject `..` components
 
 ### Internal Architecture
@@ -510,7 +510,7 @@ nodes:
   - id: sensor-node
     path: ./target/debug/sensor
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     outputs:
       - frames
 
@@ -553,7 +553,7 @@ nodes:
     restart_delay: 2.0            # wait for USB to re-enumerate
     max_restart_delay: 30.0
     inputs:
-      tick: adora/timer/millis/33  # ~30 FPS
+      tick: dora/timer/millis/33  # ~30 FPS
     outputs:
       - frames
 
@@ -590,9 +590,9 @@ nodes:
 **Node-side handling in the planner:**
 
 ```rust
-use adora_node_api::{AdoraNode, Event, InputTracker};
+use dora_node_api::{DoraNode, Event, InputTracker};
 
-let (mut node, mut events) = AdoraNode::init_from_env()?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 let mut tracker = InputTracker::new();
 
 while let Some(event) = events.recv() {
@@ -678,9 +678,9 @@ nodes:
 **Node-side with InputTracker:**
 
 ```rust
-use adora_node_api::{AdoraNode, Event, InputTracker};
+use dora_node_api::{DoraNode, Event, InputTracker};
 
-let (mut node, mut events) = AdoraNode::init_from_env()?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 let mut tracker = InputTracker::new();
 
 while let Some(event) = events.recv() {
@@ -706,7 +706,7 @@ while let Some(event) = events.recv() {
     }
 }
 
-fn compute_and_send_fusion(node: &mut AdoraNode, tracker: &InputTracker) {
+fn compute_and_send_fusion(node: &mut DoraNode, tracker: &InputTracker) {
     // Use fresh data where available, stale cache for degraded sensors
     let camera = tracker.last_value(&"camera".into());
     let lidar = tracker.last_value(&"lidar".into());
@@ -737,7 +737,7 @@ nodes:
     max_restarts: 0               # unlimited
     restart_delay: 1.0
     inputs:
-      tick: adora/timer/millis/1000
+      tick: dora/timer/millis/1000
     outputs:
       - records
 
@@ -800,25 +800,25 @@ A long-running multi-daemon deployment where the coordinator must survive restar
 
 ```bash
 # Start coordinator with persistent store
-adora coordinator --store redb
+dora coordinator --store redb
 
 # In another terminal, start a dataflow
-adora start examples/rust-dataflow/dataflow.yml --name my-pipeline --detach
+dora start examples/rust-dataflow/dataflow.yml --name my-pipeline --detach
 
 # Coordinator crashes or is killed (e.g., OOM, hardware failure)
 # ... time passes ...
 
 # Restart coordinator with the same store
-adora coordinator --store redb
+dora coordinator --store redb
 ```
 
 **What happens on restart:**
 
-1. Coordinator opens `~/.adora/coordinator.redb` and reads persisted dataflow records
+1. Coordinator opens `~/.dora/coordinator.redb` and reads persisted dataflow records
 2. Finds `my-pipeline` with status `Running`
 3. Marks it as `Failed { error: "coordinator restarted" }`, increments generation
 4. Logs: `INFO recovering stale dataflow <uuid> ("my-pipeline") -> marking as Failed`
-5. `adora list` now shows `my-pipeline` with its final status and timestamps
+5. `dora list` now shows `my-pipeline` with its final status and timestamps
 6. Daemons detect the coordinator disconnect independently and stop their nodes
 7. User can start a fresh dataflow -- the coordinator is fully operational
 
@@ -837,7 +837,7 @@ nodes:
     restart_delay: 10.0           # wait 10s between batches
     max_restart_delay: 10.0       # no exponential growth
     inputs:
-      trigger: adora/timer/millis/1  # immediate first trigger
+      trigger: dora/timer/millis/1  # immediate first trigger
     outputs:
       - batch-result
 ```

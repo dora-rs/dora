@@ -32,11 +32,11 @@ cargo run --example rust-dataflow
 
 # Or manually:
 cargo build -p rust-dataflow-example-node -p rust-dataflow-example-status-node -p rust-dataflow-example-sink
-adora run dataflow.yml
+dora run dataflow.yml
 
 # Dynamic variant
 cargo build -p rust-dataflow-example-sink-dynamic
-adora run dataflow_dynamic.yml
+dora run dataflow_dynamic.yml
 ```
 
 ## What This Demonstrates

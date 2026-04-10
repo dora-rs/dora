@@ -2,16 +2,16 @@
 
 import time
 
-from adora import Node
+from dora import Node
 
 
 def main() -> None:
     """TODO: Add docstring."""
-    adora_node = Node()
+    dora_node = Node()
 
     i = 0
     while True:
-        message = adora_node.next(timeout=0.05)
+        message = dora_node.next(timeout=0.05)
         if message is None:
             break
 

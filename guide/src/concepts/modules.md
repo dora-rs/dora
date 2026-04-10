@@ -155,10 +155,10 @@ Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MOD
 6. Replace the module node with the expanded flat nodes
 7. Substitute `params:` values in `args:` fields and inject as env vars
 
-Use `adora expand` to see the result:
+Use `dora expand` to see the result:
 
 ```bash
-adora expand dataflow.yml
+dora expand dataflow.yml
 ```
 
 ## Nested Modules
@@ -213,10 +213,10 @@ When the parent doesn't wire `config`, the input is simply omitted from the expa
 
 ## Visualization
 
-`adora graph` renders module boundaries as Mermaid subgraphs, making it easy to see which nodes came from which module:
+`dora graph` renders module boundaries as Mermaid subgraphs, making it easy to see which nodes came from which module:
 
 ```bash
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 ```
 
 ## Validation
@@ -224,7 +224,7 @@ adora graph dataflow.yml --open
 Validate a standalone module file without a full dataflow:
 
 ```bash
-adora expand --module modules/transform_module.yml
+dora expand --module modules/transform_module.yml
 ```
 
 This checks:
@@ -246,5 +246,5 @@ This checks:
 See [`examples/module-dataflow/`](../examples/module-dataflow/) for a complete working example with a sender, transform module (doubler + filter), and receiver.
 
 ```bash
-adora run examples/module-dataflow/dataflow.yml
+dora run examples/module-dataflow/dataflow.yml
 ```

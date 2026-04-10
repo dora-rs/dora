@@ -1,19 +1,19 @@
 use super::{OperatorEvent, StopReason};
-use adora_core::{
+use aligned_vec::{AVec, ConstAlign};
+use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
     descriptor::source_is_url,
 };
-use adora_download::download_file;
-use adora_node_api::{
+use dora_download::download_file;
+use dora_node_api::{
     Event, Parameter,
     arrow_utils::{copy_array_into_sample, required_data_size},
 };
-use adora_operator_api_types::{
-    AdoraDropOperator, AdoraInitOperator, AdoraInitResult, AdoraOnEvent, AdoraResult, AdoraStatus,
+use dora_operator_api_types::{
+    DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent, DoraResult, DoraStatus,
     Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
 };
-use aligned_vec::{AVec, ConstAlign};
 use eyre::{Context, Result, bail, eyre};
 use libloading::Symbol;
 use std::{
@@ -58,7 +58,7 @@ pub fn run(
                 let err = err.wrap_err(format!(
                     "failed to init operator bindings from `{}`. \
                         On Windows, ensure that the shared library exports the required symbols \
-                        (adora_init_operator, adora_drop_operator, adora_on_event).",
+                        (dora_init_operator, dora_drop_operator, dora_on_event).",
                     path.display()
                 ));
                 let _ = init_done.send(Err(eyre!("{err:?}")));
@@ -99,7 +99,7 @@ struct SharedLibraryOperator<'lib> {
 impl SharedLibraryOperator<'_> {
     fn run(self, init_done: oneshot::Sender<Result<()>>) -> eyre::Result<StopReason> {
         let operator_context = {
-            let AdoraInitResult {
+            let DoraInitResult {
                 result,
                 operator_context,
             } = unsafe { (self.bindings.init_operator.init_operator)() };
@@ -135,7 +135,7 @@ impl SharedLibraryOperator<'_> {
 
             let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
                 Ok(a) => a,
-                Err(err) => return AdoraResult::from_error(err.to_string()),
+                Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
             let total_len = required_data_size(&arrow_array);
@@ -156,8 +156,8 @@ impl SharedLibraryOperator<'_> {
                 .map_err(|_| eyre!("failed to send output to runtime"));
 
             match result {
-                Ok(()) => AdoraResult::SUCCESS,
-                Err(_) => AdoraResult::from_error("runtime process closed unexpectedly".into()),
+                Ok(()) => DoraResult::SUCCESS,
+                Err(_) => DoraResult::from_error("runtime process closed unexpectedly".into()),
             }
         });
 
@@ -178,7 +178,7 @@ impl SharedLibraryOperator<'_> {
                 ..
             } = &mut event
             {
-                use adora_tracing::telemetry::{deserialize_context, serialize_context};
+                use dora_tracing::telemetry::{deserialize_context, serialize_context};
                 use tracing_opentelemetry::OpenTelemetrySpanExt;
                 span.record("input_id", input_id.as_str());
 
@@ -196,7 +196,7 @@ impl SharedLibraryOperator<'_> {
             }
 
             let mut operator_event = match event {
-                Event::Stop(_) => adora_operator_api_types::RawEvent {
+                Event::Stop(_) => dora_operator_api_types::RawEvent {
                     input: None,
                     input_closed: None,
                     stop: true,
@@ -209,7 +209,7 @@ impl SharedLibraryOperator<'_> {
                 } => {
                     let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
                     let otel = metadata.open_telemetry_context();
-                    let operator_input = adora_operator_api_types::Input {
+                    let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),
                         data_array: Some(data_array),
                         schema,
@@ -217,14 +217,14 @@ impl SharedLibraryOperator<'_> {
                             open_telemetry_context: otel.into(),
                         },
                     };
-                    adora_operator_api_types::RawEvent {
+                    dora_operator_api_types::RawEvent {
                         input: Some(Box::new(operator_input).into()),
                         input_closed: None,
                         stop: false,
                         error: None,
                     }
                 }
-                Event::InputClosed { id: input_id } => adora_operator_api_types::RawEvent {
+                Event::InputClosed { id: input_id } => dora_operator_api_types::RawEvent {
                     input_closed: Some(input_id.to_string().into()),
                     input: None,
                     stop: false,
@@ -234,7 +234,7 @@ impl SharedLibraryOperator<'_> {
                     // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                     continue;
                 }
-                Event::Error(err) => adora_operator_api_types::RawEvent {
+                Event::Error(err) => dora_operator_api_types::RawEvent {
                     error: Some(err.into()),
                     input_closed: None,
                     input: None,
@@ -250,7 +250,7 @@ impl SharedLibraryOperator<'_> {
                 send_output: ArcDynFn1::new(send_output_closure.clone()),
             };
             let OnEventResult {
-                result: AdoraResult { error },
+                result: DoraResult { error },
                 status,
             } = unsafe {
                 (self.bindings.on_event.on_event)(
@@ -262,9 +262,9 @@ impl SharedLibraryOperator<'_> {
             match error {
                 Some(error) => bail!("on_input failed: {}", *error),
                 None => match status {
-                    AdoraStatus::Continue => {}
-                    AdoraStatus::Stop => break StopReason::ExplicitStop,
-                    AdoraStatus::StopAll => break StopReason::ExplicitStopAll,
+                    DoraStatus::Continue => {}
+                    DoraStatus::Stop => break StopReason::ExplicitStop,
+                    DoraStatus::StopAll => break StopReason::ExplicitStopAll,
                 },
             }
         };
@@ -274,7 +274,7 @@ impl SharedLibraryOperator<'_> {
 
 struct OperatorContext<'lib> {
     raw: *mut c_void,
-    drop_fn: Symbol<'lib, AdoraDropOperator>,
+    drop_fn: Symbol<'lib, DoraDropOperator>,
 }
 
 impl Drop for OperatorContext<'_> {
@@ -284,9 +284,9 @@ impl Drop for OperatorContext<'_> {
 }
 
 struct Bindings<'lib> {
-    init_operator: Symbol<'lib, AdoraInitOperator>,
-    drop_operator: Symbol<'lib, AdoraDropOperator>,
-    on_event: Symbol<'lib, AdoraOnEvent>,
+    init_operator: Symbol<'lib, DoraInitOperator>,
+    drop_operator: Symbol<'lib, DoraDropOperator>,
+    on_event: Symbol<'lib, DoraOnEvent>,
 }
 
 impl<'lib> Bindings<'lib> {
@@ -294,14 +294,14 @@ impl<'lib> Bindings<'lib> {
         let bindings = unsafe {
             Bindings {
                 init_operator: library
-                    .get(b"adora_init_operator")
-                    .wrap_err("failed to get `adora_init_operator`")?,
+                    .get(b"dora_init_operator")
+                    .wrap_err("failed to get `dora_init_operator`")?,
                 drop_operator: library
-                    .get(b"adora_drop_operator")
-                    .wrap_err("failed to get `adora_drop_operator`")?,
+                    .get(b"dora_drop_operator")
+                    .wrap_err("failed to get `dora_drop_operator`")?,
                 on_event: library
-                    .get(b"adora_on_event")
-                    .wrap_err("failed to get `adora_on_event`")?,
+                    .get(b"dora_on_event")
+                    .wrap_err("failed to get `dora_on_event`")?,
             }
         };
         Ok(bindings)

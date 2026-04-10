@@ -3,11 +3,11 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use eyre::Context;
 use uuid::Uuid;
 
-const MAGIC: &[u8; 8] = b"ADORAREC";
-const FOOTER_MAGIC: &[u8; 8] = b"ADORAEND";
+const MAGIC: &[u8; 8] = b"DORAREC\x00";
+const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
 const FORMAT_VERSION: u16 = 1;
 
-/// Header written at the start of a `.adorec` file.
+/// Header written at the start of a `.drec` file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordingHeader {
     pub version: u16,
@@ -193,7 +193,7 @@ fn read_header<R: Read>(r: &mut R) -> eyre::Result<RecordingHeader> {
     r.read_exact(&mut magic)
         .wrap_err("failed to read magic bytes")?;
     if &magic != MAGIC {
-        eyre::bail!("not an adora recording file (invalid magic)");
+        eyre::bail!("not an dora recording file (invalid magic)");
     }
 
     let mut version_buf = [0u8; 2];
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn invalid_magic_rejected() {
-        let buf = b"NOT_ADORA_RECORDING";
+        let buf = b"NOT_DORA_RECORDING";
         let result = RecordingReader::open(std::io::Cursor::new(buf));
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());

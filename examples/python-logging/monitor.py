@@ -8,7 +8,7 @@ that log data can be consumed and analyzed within the dataflow graph.
 import json
 import logging
 
-from adora import Node
+from dora import Node
 
 
 def main():

@@ -5,12 +5,12 @@
 //! the main test thread (no nested runtimes).
 //!
 //! Tests in the `real_dataflow` module use full coordinator+daemon+node stack
-//! via `adora up` CLI to test the complete lifecycle.
+//! via `dora up` CLI to test the complete lifecycle.
 
-use adora_cli::WsSession;
-use adora_coordinator::adora_coordinator_store::{DataflowRecord, DataflowStatus};
-use adora_coordinator::{CoordinatorStore, InMemoryStore};
-use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_cli::WsSession;
+use dora_coordinator::dora_coordinator_store::{DataflowRecord, DataflowStatus};
+use dora_coordinator::{CoordinatorStore, InMemoryStore};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
 
 /// Start a coordinator on a background tokio runtime. Returns the bound port.
@@ -32,7 +32,7 @@ fn start_coordinator_background_with_store(store: Arc<dyn CoordinatorStore>) -> 
         rt.block_on(async {
             let bind: SocketAddr = "127.0.0.1:0".parse().unwrap();
             let (port, future) =
-                adora_coordinator::start_testing_with_store(bind, futures::stream::empty(), store)
+                dora_coordinator::start_testing_with_store(bind, futures::stream::empty(), store)
                     .await
                     .expect("failed to start coordinator");
             port_tx.send(port).unwrap();
@@ -225,7 +225,7 @@ fn cli_param_set_rejects_unknown_target() {
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
     let df_id = uuid::Uuid::new_v4();
-    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+    let node_id: dora_message::id::NodeId = "sensor".to_string().into();
 
     let reply = send_request(
         &session,
@@ -272,7 +272,7 @@ fn cli_param_delete_rejects_unknown_target() {
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
     let df_id = uuid::Uuid::new_v4();
-    let node_id: adora_message::id::NodeId = "node".to_string().into();
+    let node_id: dora_message::id::NodeId = "node".to_string().into();
 
     let reply = send_request(
         &session,
@@ -298,7 +298,7 @@ fn cli_param_set_get_list_delete() {
     let port = start_coordinator_background_with_store(store);
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
-    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+    let node_id: dora_message::id::NodeId = "sensor".to_string().into();
 
     // Set params.
     for (key, value) in [
@@ -402,7 +402,7 @@ fn cli_param_set_json_types() {
     let port = start_coordinator_background_with_store(store);
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
-    let node_id: adora_message::id::NodeId = "sensor".to_string().into();
+    let node_id: dora_message::id::NodeId = "sensor".to_string().into();
 
     let test_cases = [
         ("int", serde_json::json!(42)),
@@ -453,13 +453,13 @@ fn cli_param_set_json_types() {
 
 /// Full-stack E2E tests using coordinator + daemon + real nodes.
 ///
-/// These tests use the `adora` CLI binary via `adora up` / `adora start` etc.
+/// These tests use the `dora` CLI binary via `dora up` / `dora start` etc.
 /// They must run sequentially (--test-threads=1) because they share the
 /// coordinator port. They are in a separate module to group them logically.
 mod real_dataflow {
-    use adora_cli::WsSession;
-    use adora_core::topics::{ADORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
-    use adora_message::{
+    use dora_cli::WsSession;
+    use dora_core::topics::{DORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST};
+    use dora_message::{
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
     use std::net::SocketAddr;
@@ -471,13 +471,13 @@ mod real_dataflow {
 
     static BUILD: Once = Once::new();
 
-    fn adora_bin() -> String {
+    fn dora_bin() -> String {
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let target_dir = Path::new(manifest).join("target/debug/adora");
+        let target_dir = Path::new(manifest).join("target/debug/dora");
         if target_dir.exists() {
             return target_dir.to_string_lossy().to_string();
         }
-        "adora".to_string()
+        "dora".to_string()
     }
 
     fn ensure_built() {
@@ -486,7 +486,7 @@ mod real_dataflow {
                 .args([
                     "build",
                     "-p",
-                    "adora-cli",
+                    "dora-cli",
                     "-p",
                     "rust-dataflow-example-node",
                     "-p",
@@ -500,14 +500,14 @@ mod real_dataflow {
         });
     }
 
-    fn cleanup(adora: &str) {
-        let _ = Command::new(adora)
+    fn cleanup(dora: &str) {
+        let _ = Command::new(dora)
             .args(["stop", "--all"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
         std::thread::sleep(Duration::from_millis(500));
-        let _ = Command::new(adora)
+        let _ = Command::new(dora)
             .arg("down")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -515,32 +515,32 @@ mod real_dataflow {
         std::thread::sleep(Duration::from_millis(500));
     }
 
-    fn start_cluster(adora: &str) {
-        cleanup(adora);
-        let status = Command::new(adora)
+    fn start_cluster(dora: &str) {
+        cleanup(dora);
+        let status = Command::new(dora)
             .arg("up")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .expect("failed to run adora up");
-        assert!(status.success(), "adora up failed");
+            .expect("failed to run dora up");
+        assert!(status.success(), "dora up failed");
     }
 
     fn connect_session() -> WsSession {
-        let addr: SocketAddr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
+        let addr: SocketAddr = (LOCALHOST, DORA_COORDINATOR_PORT_WS_DEFAULT).into();
         WsSession::connect(addr).expect("failed to connect ws session to local coordinator")
     }
 
-    fn start_rust_dataflow_detached(adora: &str) -> Uuid {
+    fn start_rust_dataflow_detached(dora: &str) -> Uuid {
         let yaml =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
-        let status = Command::new(adora)
+        let status = Command::new(dora)
             .args(["start", yaml.to_str().unwrap(), "--detach"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .expect("failed to run adora start");
-        assert!(status.success(), "adora start failed");
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start failed");
         std::thread::sleep(Duration::from_secs(1));
 
         let session = connect_session();
@@ -559,27 +559,27 @@ mod real_dataflow {
     #[test]
     fn e2e_start_list_stop() {
         ensure_built();
-        let adora = adora_bin();
-        start_cluster(&adora);
+        let dora = dora_bin();
+        start_cluster(&dora);
 
         let yaml =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
 
         // Start dataflow
-        let status = Command::new(&adora)
+        let status = Command::new(&dora)
             .args(["start", yaml.to_str().unwrap(), "--detach"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .unwrap();
-        assert!(status.success(), "adora start failed");
+        assert!(status.success(), "dora start failed");
 
         // Brief pause to let it register
         std::thread::sleep(Duration::from_secs(1));
 
         // List should show a dataflow (Running or Succeeded -- it may finish quickly)
-        let list_output = Command::new(&adora).arg("list").output().unwrap();
-        assert!(list_output.status.success(), "adora list failed");
+        let list_output = Command::new(&dora).arg("list").output().unwrap();
+        assert!(list_output.status.success(), "dora list failed");
         let stdout = String::from_utf8_lossy(&list_output.stdout);
         let has_dataflow = stdout.contains("Running")
             || stdout.contains("Succeeded")
@@ -591,27 +591,27 @@ mod real_dataflow {
         );
 
         // Stop all
-        let _ = Command::new(&adora)
+        let _ = Command::new(&dora)
             .args(["stop", "--all"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
 
-        cleanup(&adora);
+        cleanup(&dora);
     }
 
     /// Verify that a second start after the first completes works correctly.
     #[test]
     fn e2e_sequential_dataflows() {
         ensure_built();
-        let adora = adora_bin();
-        start_cluster(&adora);
+        let dora = dora_bin();
+        start_cluster(&dora);
 
         let yaml =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rust-dataflow/dataflow.yml");
 
         // First dataflow
-        let status = Command::new(&adora)
+        let status = Command::new(&dora)
             .args(["start", yaml.to_str().unwrap(), "--detach"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -623,7 +623,7 @@ mod real_dataflow {
         std::thread::sleep(Duration::from_secs(8));
 
         // Stop if still running and wait for full teardown before restarting.
-        let _ = Command::new(&adora)
+        let _ = Command::new(&dora)
             .args(["stop", "--all"])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -632,7 +632,7 @@ mod real_dataflow {
         std::thread::sleep(Duration::from_secs(3));
 
         // Second dataflow -- verifies coordinator handles sequential runs
-        let output2 = Command::new(&adora)
+        let output2 = Command::new(&dora)
             .args(["start", yaml.to_str().unwrap(), "--detach"])
             .output()
             .unwrap();
@@ -645,7 +645,7 @@ mod real_dataflow {
         std::thread::sleep(Duration::from_secs(1));
 
         // Verify it's listed
-        let list_output = Command::new(&adora).arg("list").output().unwrap();
+        let list_output = Command::new(&dora).arg("list").output().unwrap();
         assert!(list_output.status.success());
         let stdout = String::from_utf8_lossy(&list_output.stdout);
         let has_dataflow = stdout.contains("Running")
@@ -654,16 +654,16 @@ mod real_dataflow {
             || stdout.contains("Failed");
         assert!(has_dataflow, "second dataflow not listed: {stdout}");
 
-        cleanup(&adora);
+        cleanup(&dora);
     }
 
     #[test]
     fn e2e_param_set_get_list_delete_running_dataflow() {
         ensure_built();
-        let adora = adora_bin();
-        start_cluster(&adora);
-        let dataflow_id = start_rust_dataflow_detached(&adora);
-        let node_id: adora_message::id::NodeId = "rust-node".to_string().into();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_rust_dataflow_detached(&dora);
+        let node_id: dora_message::id::NodeId = "rust-node".to_string().into();
         let session = connect_session();
 
         let reply = super::send_request(
@@ -739,16 +739,16 @@ mod real_dataflow {
         .unwrap();
         assert!(matches!(reply, ControlRequestReply::Error(_)));
 
-        cleanup(&adora);
+        cleanup(&dora);
     }
 
     #[test]
     fn e2e_param_set_json_types_running_dataflow() {
         ensure_built();
-        let adora = adora_bin();
-        start_cluster(&adora);
-        let dataflow_id = start_rust_dataflow_detached(&adora);
-        let node_id: adora_message::id::NodeId = "rust-node".to_string().into();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_rust_dataflow_detached(&dora);
+        let node_id: dora_message::id::NodeId = "rust-node".to_string().into();
         let session = connect_session();
 
         let test_cases: Vec<(&str, serde_json::Value)> = vec![
@@ -796,6 +796,6 @@ mod real_dataflow {
             }
         }
 
-        cleanup(&adora);
+        cleanup(&dora);
     }
 }

@@ -199,8 +199,8 @@ out/
 # macOS debug symbol bundles
 *.dSYM/
 
-# Adora auth token (generated at runtime)
-.adora-token
+# Dora auth token (generated at runtime)
+.dora-token
 .daemon-id
 
 #Miscellaneous

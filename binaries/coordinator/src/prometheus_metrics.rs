@@ -22,30 +22,30 @@ impl Metrics {
         let registry = Registry::new();
 
         let node_cpu = GaugeVec::new(
-            Opts::new("adora_node_cpu_usage", "CPU usage percentage per node"),
+            Opts::new("dora_node_cpu_usage", "CPU usage percentage per node"),
             &["dataflow", "node", "daemon"],
         )
         .unwrap();
         let node_memory = IntGaugeVec::new(
-            Opts::new("adora_node_memory_bytes", "Memory usage in bytes per node"),
+            Opts::new("dora_node_memory_bytes", "Memory usage in bytes per node"),
             &["dataflow", "node", "daemon"],
         )
         .unwrap();
         let node_pending = IntGaugeVec::new(
             Opts::new(
-                "adora_node_pending_messages",
+                "dora_node_pending_messages",
                 "Pending messages in node queue",
             ),
             &["dataflow", "node", "daemon"],
         )
         .unwrap();
         let node_restarts = IntGaugeVec::new(
-            Opts::new("adora_node_restart_count", "Current restart count per node"),
+            Opts::new("dora_node_restart_count", "Current restart count per node"),
             &["dataflow", "node", "daemon"],
         )
         .unwrap();
         let dataflow_nodes = IntGaugeVec::new(
-            Opts::new("adora_dataflow_nodes", "Number of nodes in a dataflow"),
+            Opts::new("dora_dataflow_nodes", "Number of nodes in a dataflow"),
             &["dataflow", "name"],
         )
         .unwrap();
@@ -100,7 +100,7 @@ pub(crate) fn sanitize_prom_label(s: &str) -> String {
 pub(crate) async fn metrics_handler(
     axum::extract::State((metrics, auth_token)): axum::extract::State<(
         SharedMetrics,
-        Option<adora_message::auth::AuthToken>,
+        Option<dora_message::auth::AuthToken>,
     )>,
     headers: axum::http::HeaderMap,
     axum::extract::Query(_query): axum::extract::Query<crate::ws_server::TokenQuery>,

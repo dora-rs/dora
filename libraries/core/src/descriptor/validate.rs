@@ -4,7 +4,7 @@ use crate::{
     get_python_path,
 };
 
-use adora_message::{
+use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
@@ -71,7 +71,7 @@ pub fn check_dataflow(
     for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom) => match &custom.source {
-                adora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
+                dora_message::descriptor::NodeSource::Local => match custom.path.as_str() {
                     SHELL_SOURCE => (),
                     DYNAMIC_SOURCE => (),
                     source => {
@@ -94,7 +94,7 @@ pub fn check_dataflow(
                         };
                     }
                 },
-                adora_message::descriptor::NodeSource::GitBranch { .. } => {
+                dora_message::descriptor::NodeSource::GitBranch { .. } => {
                     info!("skipping check for node with git source");
                 }
             },
@@ -162,7 +162,7 @@ pub fn check_dataflow(
 pub trait ResolvedNodeExt {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>>;
     fn send_logs_as(&self) -> eyre::Result<Option<String>>;
-    fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>>;
+    fn min_log_level(&self) -> eyre::Result<Option<dora_message::common::LogLevelOrStdout>>;
     fn max_log_size(&self) -> eyre::Result<Option<u64>>;
     fn max_rotated_files(&self) -> eyre::Result<Option<u32>>;
 }
@@ -221,7 +221,7 @@ impl ResolvedNodeExt for ResolvedNode {
         }
     }
 
-    fn min_log_level(&self) -> eyre::Result<Option<adora_message::common::LogLevelOrStdout>> {
+    fn min_log_level(&self) -> eyre::Result<Option<dora_message::common::LogLevelOrStdout>> {
         let level_str = match &self.kind {
             CoreNodeKind::Runtime(n) => {
                 // Use the first operator's min_log_level (only one allowed)
@@ -331,24 +331,24 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
     Ok((num * multiplier as f64) as u64)
 }
 
-fn parse_log_level(s: &str) -> eyre::Result<adora_message::common::LogLevelOrStdout> {
+fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdout> {
     match s.to_lowercase().as_str() {
-        "error" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+        "error" => Ok(dora_message::common::LogLevelOrStdout::LogLevel(
             log::Level::Error,
         )),
-        "warn" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+        "warn" => Ok(dora_message::common::LogLevelOrStdout::LogLevel(
             log::Level::Warn,
         )),
-        "info" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+        "info" => Ok(dora_message::common::LogLevelOrStdout::LogLevel(
             log::Level::Info,
         )),
-        "debug" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+        "debug" => Ok(dora_message::common::LogLevelOrStdout::LogLevel(
             log::Level::Debug,
         )),
-        "trace" => Ok(adora_message::common::LogLevelOrStdout::LogLevel(
+        "trace" => Ok(dora_message::common::LogLevelOrStdout::LogLevel(
             log::Level::Trace,
         )),
-        "stdout" => Ok(adora_message::common::LogLevelOrStdout::Stdout),
+        "stdout" => Ok(dora_message::common::LogLevelOrStdout::Stdout),
         _ => bail!(
             "invalid min_log_level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
         ),
@@ -405,28 +405,28 @@ fn check_input(
 }
 
 fn check_python_runtime() -> eyre::Result<()> {
-    // Check if python adora-rs is installed and match cli version
+    // Check if python dora-rs is installed and match cli version
     let reinstall_command =
-        format!("Please reinstall it with: `pip install adora-rs=={VERSION} --force`");
+        format!("Please reinstall it with: `pip install dora-rs=={VERSION} --force`");
     let mut command = Command::new(get_python_path().context("Could not get python binary")?);
     command.args([
         "-c",
         &format!(
             "
-import adora;
-assert adora.__version__=='{VERSION}',  'Python adora-rs should be {VERSION}, but current version is %s. {reinstall_command}' % (adora.__version__)
+import dora;
+assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but current version is %s. {reinstall_command}' % (dora.__version__)
         "
         ),
     ]);
     let mut result = command
         .spawn()
-        .wrap_err("Could not spawn python adora-rs command.")?;
+        .wrap_err("Could not spawn python dora-rs command.")?;
     let status = result
         .wait()
-        .wrap_err("Could not get exit status when checking python adora-rs")?;
+        .wrap_err("Could not get exit status when checking python dora-rs")?;
 
     if !status.success() {
-        bail!("Something went wrong with Python adora-rs. {reinstall_command}")
+        bail!("Something went wrong with Python dora-rs. {reinstall_command}")
     }
 
     Ok(())
@@ -434,11 +434,11 @@ assert adora.__version__=='{VERSION}',  'Python adora-rs should be {VERSION}, bu
 
 fn validate_ros2_config(
     node_id: &NodeId,
-    config: &adora_message::descriptor::Ros2BridgeConfig,
+    config: &dora_message::descriptor::Ros2BridgeConfig,
     node_inputs: &BTreeMap<DataId, Input>,
     node_outputs: &BTreeSet<DataId>,
 ) -> eyre::Result<()> {
-    use adora_message::descriptor::{Ros2Direction, Ros2Role};
+    use dora_message::descriptor::{Ros2Direction, Ros2Role};
 
     // Exactly one of topic, topics, service, action must be set
     let mode_count = [
@@ -604,7 +604,7 @@ fn validate_ros2_config(
 
 fn validate_ros2_qos(
     node_id: &NodeId,
-    qos: &adora_message::descriptor::Ros2QosConfig,
+    qos: &dora_message::descriptor::Ros2QosConfig,
 ) -> eyre::Result<()> {
     if let Some(d) = &qos.durability {
         match d.as_str() {
@@ -1135,8 +1135,8 @@ fn validate_ros2_type_format(node_id: &NodeId, name: &str, type_str: &str) -> ey
 mod tests {
     use super::*;
     use crate::types::TypeRegistry;
-    use adora_message::config::{Input, InputMapping};
-    use adora_message::descriptor::{Descriptor, Ros2BridgeConfig, Ros2Role};
+    use dora_message::config::{Input, InputMapping};
+    use dora_message::descriptor::{Descriptor, Ros2BridgeConfig, Ros2Role};
     use std::time::Duration;
 
     fn dummy_input() -> Input {
@@ -1450,7 +1450,7 @@ mod tests {
             service: Some("/svc".into()),
             service_type: Some("a/B".into()),
             role: Some(Ros2Role::Client),
-            qos: adora_message::descriptor::Ros2QosConfig {
+            qos: dora_message::descriptor::Ros2QosConfig {
                 durability: Some("persistent".into()),
                 ..Default::default()
             },
@@ -1471,7 +1471,7 @@ mod tests {
             service: Some("/svc".into()),
             service_type: Some("a/B".into()),
             role: Some(Ros2Role::Client),
-            qos: adora_message::descriptor::Ros2QosConfig {
+            qos: dora_message::descriptor::Ros2QosConfig {
                 keep_last: Some(100_000),
                 ..Default::default()
             },
@@ -1833,7 +1833,7 @@ nodes:
 nodes:
   - id: node
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     input_types:
       tick: std/media/v1/Image
 ",
@@ -1850,7 +1850,7 @@ nodes:
             service: Some("/svc".into()),
             service_type: Some("a/B".into()),
             role: Some(Ros2Role::Client),
-            qos: adora_message::descriptor::Ros2QosConfig {
+            qos: dora_message::descriptor::Ros2QosConfig {
                 lease_duration: Some(-1.0),
                 ..Default::default()
             },
@@ -1925,7 +1925,7 @@ nodes:
     // --- Focused unit tests for parse_byte_size and parse_log_level ---
     //
     // Added 2026-04-08 to close the biggest mutation-score gap in
-    // adora-core: 14 escaped mutants in parse_byte_size and 6 in
+    // dora-core: 14 escaped mutants in parse_byte_size and 6 in
     // parse_log_level (20 of the 91 missed mutants in validate.rs).
     // See docs/qa-baseline-2026-04-07.md.
     //
@@ -2037,7 +2037,7 @@ nodes:
 
     #[test]
     fn parse_log_level_all_levels() {
-        use adora_message::common::LogLevelOrStdout;
+        use dora_message::common::LogLevelOrStdout;
 
         assert!(matches!(
             parse_log_level("error").unwrap(),
@@ -2067,7 +2067,7 @@ nodes:
 
     #[test]
     fn parse_log_level_case_insensitive() {
-        use adora_message::common::LogLevelOrStdout;
+        use dora_message::common::LogLevelOrStdout;
 
         for variant in ["ERROR", "Error", "error", "ErRoR"] {
             assert!(matches!(

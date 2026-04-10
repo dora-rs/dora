@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 LATENCY_SAMPLES = 100
 THROUGHPUT_MESSAGES = 100

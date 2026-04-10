@@ -1,4 +1,4 @@
-#include "adora-node-api.h" // adjust this path if necessary
+#include "dora-node-api.h" // adjust this path if necessary
 
 #include <iostream>
 #include <vector>
@@ -8,11 +8,11 @@ int main()
     std::cout << "HELLO FROM C++" << std::endl;
     unsigned char counter = 0;
 
-    auto adora_node = init_adora_node();
+    auto dora_node = init_dora_node();
 
     while (1)
     {
-        auto input = next_input(adora_node.inputs);
+        auto input = next_input(dora_node.inputs);
         if (input.end_of_input)
         {
             break;
@@ -23,7 +23,7 @@ int main()
 
         std::vector<unsigned char> out_vec{counter};
         rust::Slice<const uint8_t> out_slice{out_vec.data(), out_vec.size()};
-        auto result = send_output(adora_node.send_output, "counter", out_slice);
+        auto result = send_output(dora_node.send_output, "counter", out_slice);
         auto error = std::string(result.error);
         if (!error.empty())
         {

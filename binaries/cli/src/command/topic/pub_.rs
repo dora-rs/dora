@@ -5,7 +5,7 @@ use crate::{
     common::CoordinatorOptions,
     ws_client::WsSession,
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
@@ -27,13 +27,13 @@ use eyre::{Context, bail};
 /// Examples:
 ///
 /// Publish JSON data to a topic:
-///   adora topic pub -d my-dataflow sensor/reading '{"temperature": 25.5}'
+///   dora topic pub -d my-dataflow sensor/reading '{"temperature": 25.5}'
 ///
 /// Publish from a file:
-///   adora topic pub -d my-dataflow sensor/reading --file data.json
+///   dora topic pub -d my-dataflow sensor/reading --file data.json
 ///
 /// Publish multiple times:
-///   adora topic pub -d my-dataflow sensor/reading '42' --count 10
+///   dora topic pub -d my-dataflow sensor/reading '42' --count 10
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Pub {

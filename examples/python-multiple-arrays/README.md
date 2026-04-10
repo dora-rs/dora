@@ -1,6 +1,6 @@
 # Python Multiple Arrays
 
-Demonstrates efficient multi-array messaging -- sending multiple numpy arrays (e.g., images, sensor readings) in a single adora message with near-zero-copy performance.
+Demonstrates efficient multi-array messaging -- sending multiple numpy arrays (e.g., images, sensor readings) in a single dora message with near-zero-copy performance.
 
 ## Architecture
 
@@ -26,7 +26,7 @@ Keep data in binary format using `numpy.ravel()` to flatten arrays, then pass di
 
 ```bash
 pip install numpy pyarrow
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Expected output:

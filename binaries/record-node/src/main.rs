@@ -1,25 +1,25 @@
 use std::{collections::HashMap, fs::File, time::SystemTime};
 
-use adora_message::{
+use aligned_vec::AVec;
+use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use adora_node_api::{AdoraNode, Event, arrow_utils};
-use adora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
-use aligned_vec::AVec;
+use dora_node_api::{DoraNode, Event, arrow_utils};
+use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
     let output_file =
-        std::env::var("ADORA_RECORD_FILE").wrap_err("ADORA_RECORD_FILE env var not set")?;
+        std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
     let topics_json =
-        std::env::var("ADORA_RECORD_TOPICS").wrap_err("ADORA_RECORD_TOPICS env var not set")?;
-    let descriptor_yaml = std::env::var("ADORA_RECORD_DESCRIPTOR").unwrap_or_default();
+        std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
+    let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
 
     // Parse topic map: { "input_id_on_record_node": "source_node/source_output" }
     let topic_map: HashMap<String, String> =
-        serde_json::from_str(&topics_json).wrap_err("failed to parse ADORA_RECORD_TOPICS")?;
+        serde_json::from_str(&topics_json).wrap_err("failed to parse DORA_RECORD_TOPICS")?;
 
     // Build reverse map: input_id -> (source_node_id, source_output_id)
     let mut reverse_map: HashMap<String, (String, String)> = HashMap::new();
@@ -33,7 +33,7 @@ fn main() -> eyre::Result<()> {
         );
     }
 
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
     let start_nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -52,7 +52,7 @@ fn main() -> eyre::Result<()> {
     let mut writer = RecordingWriter::new(file, &header)?;
     let mut msg_count: u64 = 0;
 
-    eprintln!("adora-record-node: recording to {output_file}");
+    eprintln!("dora-record-node: recording to {output_file}");
 
     while let Some(event) = events.recv() {
         match event {
@@ -107,7 +107,7 @@ fn main() -> eyre::Result<()> {
     }
 
     let footer = writer.finish()?;
-    eprintln!("adora-record-node: recording complete");
+    eprintln!("dora-record-node: recording complete");
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
     eprintln!("  File:     {output_file}");

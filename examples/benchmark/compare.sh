@@ -2,8 +2,8 @@
 # Run Rust and Python benchmarks side-by-side and compare results.
 #
 # Prerequisites:
-#   - adora CLI installed
-#   - Python adora package: pip install adora-rs
+#   - dora CLI installed
+#   - Python dora package: pip install dora-rs
 #   - numpy and pyarrow: pip install numpy pyarrow
 #
 # Usage:
@@ -23,11 +23,11 @@ cargo build --release -p benchmark-example-node -p benchmark-example-sink
 
 echo ""
 echo "=== Running Rust benchmark ==="
-BENCH_CSV="$RESULTS_DIR/rust.csv" adora run dataflow.yml | tee "$RESULTS_DIR/rust.txt"
+BENCH_CSV="$RESULTS_DIR/rust.csv" dora run dataflow.yml | tee "$RESULTS_DIR/rust.txt"
 
 echo ""
 echo "=== Running Python benchmark ==="
-BENCH_CSV="$RESULTS_DIR/python.csv" adora run python-dataflow.yml --uv | tee "$RESULTS_DIR/python.txt"
+BENCH_CSV="$RESULTS_DIR/python.csv" dora run python-dataflow.yml --uv | tee "$RESULTS_DIR/python.txt"
 
 echo ""
 echo "=== Results ==="

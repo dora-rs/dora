@@ -3,12 +3,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use adora_node_api::{
-    AdoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
-    merged::{MergeExternalSend, MergedEvent},
-};
 use arrow::pyarrow::ToPyArrow;
 use chrono::{DateTime, Utc};
+use dora_node_api::{
+    DoraNode, Event, EventStream, Metadata, MetadataParameters, Parameter, StopCause,
+    merged::{MergeExternalSend, MergedEvent},
+};
 use eyre::{Context, Result};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge as _;
@@ -28,16 +28,16 @@ fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> 
         .bind(py))
 }
 
-/// Adora Event
+/// Dora Event
 pub struct PyEvent {
     pub event: MergedEvent<Py<PyAny>>,
 }
 
-/// Keeps the adora node alive until all event objects have been dropped.
+/// Keeps the dora node alive until all event objects have been dropped.
 #[derive(Clone)]
 #[pyclass(skip_from_py_object)]
 pub struct NodeCleanupHandle {
-    pub _handles: Arc<CleanupHandle<AdoraNode>>,
+    pub _handles: Arc<CleanupHandle<DoraNode>>,
 }
 
 /// Owned type with delayed cleanup (using `handle` method).
@@ -79,9 +79,9 @@ where
         self,
         external_events: impl Stream<Item = E> + Unpin + Send + Sync + 'a,
     ) -> Box<dyn Stream<Item = Self::Item> + Unpin + Send + Sync + 'a> {
-        let adora = self.map(MergedEvent::Adora);
+        let dora = self.map(MergedEvent::Dora);
         let external = external_events.map(MergedEvent::External);
-        Box::new((adora, external).merge())
+        Box::new((dora, external).merge())
     }
 }
 
@@ -92,9 +92,9 @@ impl PyEvent {
     pub fn to_py_dict(self, py: Python<'_>) -> PyResult<Py<PyDict>> {
         let mut pydict = HashMap::new();
         match &self.event {
-            MergedEvent::Adora(_) => pydict.insert(
+            MergedEvent::Dora(_) => pydict.insert(
                 "kind",
-                "adora"
+                "dora"
                     .into_pyobject(py)
                     .context("Failed to create pystring")?
                     .unbind()
@@ -110,7 +110,7 @@ impl PyEvent {
             ),
         };
         match &self.event {
-            MergedEvent::Adora(event) => {
+            MergedEvent::Dora(event) => {
                 if let Some(id) = Self::id(event) {
                     pydict.insert(
                         "id",
@@ -168,7 +168,7 @@ impl PyEvent {
             Event::ParamDeleted { .. } => "PARAM_DELETED",
             Event::Error(_) => "ERROR",
             // `Event` is `#[non_exhaustive]`; surface genuinely new variants
-            // as UNKNOWN rather than failing to build on future adora upgrades.
+            // as UNKNOWN rather than failing to build on future dora upgrades.
             _other => "UNKNOWN",
         }
     }
@@ -197,7 +197,7 @@ impl PyEvent {
     /// - `ParamUpdate`: the new parameter value, converted from JSON.
     fn value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match &self.event {
-            MergedEvent::Adora(Event::Input { data, .. }) => {
+            MergedEvent::Dora(Event::Input { data, .. }) => {
                 // Ownership transfer: to_data() clones buffer Arcs, to_pyarrow()
                 // creates an FFI_ArrowArray with a release callback. PyArrow's
                 // _import_from_c takes ownership and calls release when the Python
@@ -205,7 +205,7 @@ impl PyEvent {
                 let array_data = data.to_data().to_pyarrow(py)?.unbind();
                 Ok(Some(array_data))
             }
-            MergedEvent::Adora(Event::ParamUpdate { value, .. }) => {
+            MergedEvent::Dora(Event::ParamUpdate { value, .. }) => {
                 // `pythonize` converts serde_json::Value recursively into native
                 // Python types (None, bool, int, float, str, list, dict).
                 let obj = pythonize::pythonize(py, value)
@@ -318,7 +318,7 @@ pub fn metadata_to_pydict<'a>(
     // Add timestamp as timezone-aware Python datetime (UTC)
     // Note: uhlc::Timestamp is a Hybrid Logical Clock. We use get_time().to_system_time()
     // which extracts the physical clock component. This pattern is used consistently
-    // throughout the adora codebase (e.g., in binaries/daemon/src/log.rs, binaries/coordinator/src/lib.rs)
+    // throughout the dora codebase (e.g., in binaries/daemon/src/log.rs, binaries/coordinator/src/lib.rs)
     // and assumes the physical time component represents UTC wall-clock time.
     let timestamp = metadata.timestamp();
     let system_time = timestamp.get_time().to_system_time();
@@ -410,10 +410,10 @@ mod tests {
         buffer::Buffer,
     };
 
-    use adora_node_api::arrow_utils::{
+    use arrow_schema::{DataType, Field};
+    use dora_node_api::arrow_utils::{
         buffer_into_arrow_array, copy_array_into_sample, required_data_size,
     };
-    use arrow_schema::{DataType, Field};
     use eyre::{Context, Result};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
@@ -498,9 +498,9 @@ mod tests {
     // tolerance and runtime parameters unusable from Python.
     mod py_event_types {
         use super::super::PyEvent;
-        use adora_node_api::{
+        use dora_node_api::{
             Event,
-            adora_core::config::{DataId, NodeId, OperatorId},
+            dora_core::config::{DataId, NodeId, OperatorId},
         };
 
         #[test]

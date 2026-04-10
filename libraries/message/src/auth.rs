@@ -14,7 +14,7 @@ use std::{
 const TOKEN_BYTES: usize = 32;
 
 /// File name used for storing the auth token.
-const TOKEN_FILENAME: &str = ".adora-token";
+const TOKEN_FILENAME: &str = ".dora-token";
 
 /// Opaque authentication token.
 ///
@@ -67,15 +67,15 @@ pub fn token_path(working_dir: &Path) -> PathBuf {
 }
 
 /// Return the token path inside the user's config directory
-/// (e.g. `~/.config/adora/.adora-token` on Linux).
+/// (e.g. `~/.config/dora/.dora-token` on Linux).
 ///
 /// Returns `None` if no config directory can be determined.
 pub fn config_token_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("adora").join(TOKEN_FILENAME))
+    dirs::config_dir().map(|d| d.join("dora").join(TOKEN_FILENAME))
 }
 
-/// Write the token to `<working_dir>/.adora-token` **and** to the user config
-/// directory (e.g. `~/.config/adora/.adora-token`).
+/// Write the token to `<working_dir>/.dora-token` **and** to the user config
+/// directory (e.g. `~/.config/dora/.dora-token`).
 ///
 /// On Unix, files are created with mode `0o600` atomically to prevent
 /// a TOCTOU window where the file is briefly world-readable.
@@ -117,7 +117,7 @@ fn write_token_to(path: &Path, token: &AuthToken) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Read the token from `<working_dir>/.adora-token`.
+/// Read the token from `<working_dir>/.dora-token`.
 ///
 /// Returns `None` if the file does not exist.
 pub fn read_token(working_dir: &Path) -> std::io::Result<Option<AuthToken>> {
@@ -176,14 +176,14 @@ pub fn remove_token(working_dir: &Path) {
 }
 
 /// Attempt to read the auth token from (in order):
-/// 1. `ADORA_AUTH_TOKEN` environment variable
-/// 2. `<cwd>/.adora-token` file
-/// 3. User config directory (e.g. `~/.config/adora/.adora-token`)
+/// 1. `DORA_AUTH_TOKEN` environment variable
+/// 2. `<cwd>/.dora-token` file
+/// 3. User config directory (e.g. `~/.config/dora/.dora-token`)
 ///
 /// Returns `None` if no token is found.
 pub fn discover_token() -> Option<AuthToken> {
     // 1. Environment variable override
-    if let Ok(val) = std::env::var("ADORA_AUTH_TOKEN")
+    if let Ok(val) = std::env::var("DORA_AUTH_TOKEN")
         && !val.is_empty()
     {
         return Some(AuthToken(val));
@@ -243,7 +243,7 @@ mod tests {
         // Should return a path on any system with a home directory
         let path = config_token_path();
         if let Some(p) = &path {
-            assert!(p.ends_with("adora/.adora-token"));
+            assert!(p.ends_with("dora/.dora-token"));
         }
     }
 

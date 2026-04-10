@@ -1,6 +1,6 @@
 """Verify that dora-hub import patterns work via the dora compatibility shim.
 
-These tests ensure that existing dora-hub nodes can be used with adora
+These tests ensure that existing dora-hub nodes can be used with dora
 without any import changes.
 """
 
@@ -24,12 +24,12 @@ def test_from_dora_import_dora_status():
     assert DoraStatus.STOP_ALL.value == 2
 
 
-def test_dora_status_is_adora_status():
-    """DoraStatus must be the same class as AdoraStatus."""
-    from adora import AdoraStatus
+def test_dora_status_is_dora_status():
+    """DoraStatus must be the same class as DoraStatus."""
+    from dora import DoraStatus
     from dora import DoraStatus
 
-    assert DoraStatus is AdoraStatus
+    assert DoraStatus is DoraStatus
 
 
 def test_from_dora_import_node_and_status():
@@ -40,12 +40,12 @@ def test_from_dora_import_node_and_status():
     assert DoraStatus.CONTINUE.value == 0
 
 
-def test_dora_node_same_as_adora_node():
+def test_dora_node_same_as_dora_node():
     """The Node class from both packages must be identical."""
-    from adora import Node as AdoraNode
+    from dora import Node as DoraNode
     from dora import Node as DoraNode
 
-    assert DoraNode is AdoraNode
+    assert DoraNode is DoraNode
 
 
 def test_dora_ros2_types_accessible():

@@ -1,7 +1,7 @@
 use std::io::Write;
 
-use adora_message::coordinator_to_cli::TraceSummary;
 use clap::Args;
+use dora_message::coordinator_to_cli::TraceSummary;
 use tabwriter::TabWriter;
 
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
 ///
 /// Examples:
 ///
-///   adora trace list
+///   dora trace list
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct List {

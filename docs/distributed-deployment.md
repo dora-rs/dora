@@ -1,6 +1,6 @@
 # Distributed Deployment Guide
 
-Adora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices.
+Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices.
 
 ## Table of Contents
 
@@ -9,13 +9,13 @@ Adora supports deploying dataflows across multiple machines for multi-robot flee
 - [Features at a Glance](#features-at-a-glance)
 - [Cluster Configuration Reference](#cluster-configuration-reference)
 - [Cluster Commands Reference](#cluster-commands-reference)
-  - [adora cluster up](#adora-cluster-up)
-  - [adora cluster status](#adora-cluster-status)
-  - [adora cluster down](#adora-cluster-down)
-  - [adora cluster install](#adora-cluster-install)
-  - [adora cluster uninstall](#adora-cluster-uninstall)
-  - [adora cluster upgrade](#adora-cluster-upgrade)
-  - [adora cluster restart](#adora-cluster-restart)
+  - [dora cluster up](#dora-cluster-up)
+  - [dora cluster status](#dora-cluster-status)
+  - [dora cluster down](#dora-cluster-down)
+  - [dora cluster install](#dora-cluster-install)
+  - [dora cluster uninstall](#dora-cluster-uninstall)
+  - [dora cluster upgrade](#dora-cluster-upgrade)
+  - [dora cluster restart](#dora-cluster-restart)
 - [Node Scheduling](#node-scheduling)
   - [Machine-based scheduling](#machine-based-scheduling)
   - [Label-based scheduling](#label-based-scheduling)
@@ -33,7 +33,7 @@ Adora supports deploying dataflows across multiple machines for multi-robot flee
 
 ## Overview
 
-Adora's distributed architecture has three tiers:
+Dora's distributed architecture has three tiers:
 
 ```
 CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
@@ -47,9 +47,9 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 
 There are two paths to distributed deployment:
 
-**Ad-hoc** -- manually start `adora daemon` on each machine, then use the coordinator for control. Good for development and testing. See [Distributed Deployments in the CLI reference](cli.md#distributed-deployments).
+**Ad-hoc** -- manually start `dora daemon` on each machine, then use the coordinator for control. Good for development and testing. See [Distributed Deployments in the CLI reference](cli.md#distributed-deployments).
 
-**Managed (cluster.yml)** -- define your cluster topology in a YAML file, then use `adora cluster` commands for SSH-based lifecycle management. This guide focuses on the managed path.
+**Managed (cluster.yml)** -- define your cluster topology in a YAML file, then use `dora cluster` commands for SSH-based lifecycle management. This guide focuses on the managed path.
 
 ---
 
@@ -72,25 +72,25 @@ machines:
 2. Bring up the cluster:
 
 ```bash
-adora cluster up cluster.yml
+dora cluster up cluster.yml
 ```
 
 3. Start a dataflow:
 
 ```bash
-adora start dataflow.yml --name my-app --attach
+dora start dataflow.yml --name my-app --attach
 ```
 
 4. Check cluster health:
 
 ```bash
-adora cluster status
+dora cluster status
 ```
 
 5. Tear down:
 
 ```bash
-adora cluster down
+dora cluster down
 ```
 
 ---
@@ -99,13 +99,13 @@ adora cluster down
 
 | Feature | Command / Config | Description |
 |---------|-----------------|-------------|
-| Cluster lifecycle | `adora cluster up/status/down` | SSH-based daemon management from a single machine |
+| Cluster lifecycle | `dora cluster up/status/down` | SSH-based daemon management from a single machine |
 | Label scheduling | `_unstable_deploy.labels` | Route nodes to daemons by key-value labels |
 | Binary distribution | `_unstable_deploy.distribute` | local, scp, or http strategies |
-| systemd services | `adora cluster install/uninstall` | Persistent daemon services that survive reboots |
+| systemd services | `dora cluster install/uninstall` | Persistent daemon services that survive reboots |
 | Auto-recovery | Automatic | Re-spawn nodes when a daemon reconnects |
-| Rolling upgrade | `adora cluster upgrade` | SCP binary + restart per-machine sequentially |
-| Dataflow restart | `adora cluster restart` | Restart a running dataflow by name or UUID |
+| Rolling upgrade | `dora cluster upgrade` | SCP binary + restart per-machine sequentially |
+| Dataflow restart | `dora cluster restart` | Restart a running dataflow by name or UUID |
 
 ---
 
@@ -190,16 +190,16 @@ machines:
 
 ## Cluster Commands Reference
 
-All `adora cluster` commands operate on a `cluster.yml` file and use SSH to manage remote machines.
+All `dora cluster` commands operate on a `cluster.yml` file and use SSH to manage remote machines.
 
 SSH options used: `BatchMode=yes`, `ConnectTimeout=10`, `StrictHostKeyChecking=accept-new`.
 
-### adora cluster up
+### dora cluster up
 
 Bring up a multi-machine cluster from a cluster.yml file. Starts the coordinator locally, then SSH-es into each machine to start a daemon.
 
 ```
-adora cluster up <PATH>
+dora cluster up <PATH>
 ```
 
 **Arguments:**
@@ -212,25 +212,25 @@ adora cluster up <PATH>
 
 1. Loads and validates the cluster config.
 2. Starts the coordinator locally on `addr:port`.
-3. For each machine, SSH-es in and runs `nohup adora daemon --machine-id <id> --coordinator-addr <addr> --coordinator-port <port> [--labels k1=v1,k2=v2] --quiet`.
+3. For each machine, SSH-es in and runs `nohup dora daemon --machine-id <id> --coordinator-addr <addr> --coordinator-port <port> [--labels k1=v1,k2=v2] --quiet`.
 4. Polls until all expected daemons register with the coordinator (30s timeout).
 
 **Example:**
 
 ```bash
-$ adora cluster up cluster.yml
+$ dora cluster up cluster.yml
 Starting coordinator on 10.0.0.1:6013...
 Starting daemon on robot (ubuntu@10.0.0.2)... OK
 Starting daemon on gpu-server (ubuntu@10.0.0.3)... OK
 All 2 daemons connected.
 ```
 
-### adora cluster status
+### dora cluster status
 
 Show the current status of the cluster. Displays connected daemons and active dataflow count.
 
 ```
-adora cluster status [--coordinator-addr ADDR] [--coordinator-port PORT]
+dora cluster status [--coordinator-addr ADDR] [--coordinator-port PORT]
 ```
 
 **Flags:**
@@ -243,7 +243,7 @@ adora cluster status [--coordinator-addr ADDR] [--coordinator-port PORT]
 **Example:**
 
 ```bash
-$ adora cluster status
+$ dora cluster status
 DAEMON ID      LAST HEARTBEAT
 robot          2s ago
 gpu-server     1s ago
@@ -251,22 +251,22 @@ gpu-server     1s ago
 Active dataflows: 1
 ```
 
-### adora cluster down
+### dora cluster down
 
 Tear down the cluster (coordinator and all daemons).
 
 ```
-adora cluster down [--coordinator-addr ADDR] [--coordinator-port PORT]
+dora cluster down [--coordinator-addr ADDR] [--coordinator-port PORT]
 ```
 
 Terminates all daemons and the coordinator process.
 
-### adora cluster install
+### dora cluster install
 
-Install `adora-daemon` as a systemd service on each machine. SSH-es into each machine, writes a systemd unit file, and enables the service.
+Install `dora-daemon` as a systemd service on each machine. SSH-es into each machine, writes a systemd unit file, and enables the service.
 
 ```
-adora cluster install <PATH>
+dora cluster install <PATH>
 ```
 
 **Arguments:**
@@ -277,16 +277,16 @@ adora cluster install <PATH>
 
 **Behavior:**
 
-For each machine, creates and enables a systemd service named `adora-daemon-<id>`. The unit file:
+For each machine, creates and enables a systemd service named `dora-daemon-<id>`. The unit file:
 
 ```ini
 [Unit]
-Description=Adora Daemon (<id>)
+Description=Dora Daemon (<id>)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-ExecStart=adora daemon --machine-id <id> --coordinator-addr <addr> --coordinator-port <port> --labels k1=v1,k2=v2 --quiet
+ExecStart=dora daemon --machine-id <id> --coordinator-addr <addr> --coordinator-port <port> --labels k1=v1,k2=v2 --quiet
 Restart=on-failure
 RestartSec=5
 
@@ -297,18 +297,18 @@ WantedBy=multi-user.target
 **Example:**
 
 ```bash
-$ adora cluster install cluster.yml
-Installing adora-daemon-robot on ubuntu@10.0.0.2... OK
-Installing adora-daemon-gpu-server on ubuntu@10.0.0.3... OK
+$ dora cluster install cluster.yml
+Installing dora-daemon-robot on ubuntu@10.0.0.2... OK
+Installing dora-daemon-gpu-server on ubuntu@10.0.0.3... OK
 2/2 succeeded.
 ```
 
-### adora cluster uninstall
+### dora cluster uninstall
 
-Uninstall adora-daemon systemd services from each machine. Stops, disables, and removes the systemd unit.
+Uninstall dora-daemon systemd services from each machine. Stops, disables, and removes the systemd unit.
 
 ```
-adora cluster uninstall <PATH>
+dora cluster uninstall <PATH>
 ```
 
 **Behavior:**
@@ -316,26 +316,26 @@ adora cluster uninstall <PATH>
 For each machine, runs:
 
 ```bash
-sudo systemctl stop adora-daemon-<id>
-sudo systemctl disable adora-daemon-<id>
-sudo rm -f /etc/systemd/system/adora-daemon-<id>.service
+sudo systemctl stop dora-daemon-<id>
+sudo systemctl disable dora-daemon-<id>
+sudo rm -f /etc/systemd/system/dora-daemon-<id>.service
 sudo systemctl daemon-reload
 ```
 
-### adora cluster upgrade
+### dora cluster upgrade
 
-Rolling upgrade: SCP the local `adora` binary to each machine and restart daemons. Processes machines sequentially to maintain availability.
+Rolling upgrade: SCP the local `dora` binary to each machine and restart daemons. Processes machines sequentially to maintain availability.
 
 ```
-adora cluster upgrade <PATH>
+dora cluster upgrade <PATH>
 ```
 
 **Behavior:**
 
 For each machine sequentially:
 
-1. SCP the local `adora` binary to `/usr/local/bin/adora` on the target machine.
-2. Restart the systemd service via `sudo systemctl restart adora-daemon-<id>`.
+1. SCP the local `dora` binary to `/usr/local/bin/dora` on the target machine.
+2. Restart the systemd service via `sudo systemctl restart dora-daemon-<id>`.
 3. Poll the coordinator until the daemon reconnects (30s timeout, 500ms intervals).
 
 Nodes on other machines continue running while each machine is being upgraded.
@@ -343,7 +343,7 @@ Nodes on other machines continue running while each machine is being upgraded.
 **Example:**
 
 ```bash
-$ adora cluster upgrade cluster.yml
+$ dora cluster upgrade cluster.yml
 Upgrading robot (ubuntu@10.0.0.2)...
   SCP binary... OK
   Restart service... OK
@@ -355,12 +355,12 @@ Upgrading gpu-server (ubuntu@10.0.0.3)...
 2/2 succeeded.
 ```
 
-### adora cluster restart
+### dora cluster restart
 
 Restart a running dataflow by name or UUID. Stops the dataflow and immediately re-starts it using the stored descriptor (no YAML path needed).
 
 ```
-adora cluster restart <DATAFLOW>
+dora cluster restart <DATAFLOW>
 ```
 
 **Arguments:**
@@ -372,7 +372,7 @@ adora cluster restart <DATAFLOW>
 **Example:**
 
 ```bash
-$ adora cluster restart my-app
+$ dora cluster restart my-app
 Restarting dataflow `my-app`
 dataflow restarted: a1b2c3d4-... -> e5f6a7b8-...
 ```
@@ -502,10 +502,10 @@ For production deployments, install daemons as systemd services so they survive 
 ### Install
 
 ```bash
-adora cluster install cluster.yml
+dora cluster install cluster.yml
 ```
 
-Creates a systemd unit file on each machine (see [adora cluster install](#adora-cluster-install) for the full unit template). Key properties:
+Creates a systemd unit file on each machine (see [dora cluster install](#dora-cluster-install) for the full unit template). Key properties:
 
 - **Restart=on-failure** with **RestartSec=5**: daemon auto-restarts if it crashes.
 - **After=network-online.target**: waits for network before starting.
@@ -514,7 +514,7 @@ Creates a systemd unit file on each machine (see [adora cluster install](#adora-
 ### Uninstall
 
 ```bash
-adora cluster uninstall cluster.yml
+dora cluster uninstall cluster.yml
 ```
 
 Stops, disables, and removes the unit file from each machine, then reloads the systemd daemon.
@@ -524,7 +524,7 @@ Stops, disables, and removes the unit file from each machine, then reloads the s
 After install, check services directly:
 
 ```bash
-ssh ubuntu@10.0.0.2 sudo systemctl status adora-daemon-robot
+ssh ubuntu@10.0.0.2 sudo systemctl status dora-daemon-robot
 ```
 
 ---
@@ -551,33 +551,33 @@ This means a node that crashes immediately will only be re-spawned once every 30
 
 ### Limitations
 
-- Auto-recovery only applies to dataflows started via `adora start` (coordinator-managed). Local `adora run` dataflows are not tracked by the coordinator.
+- Auto-recovery only applies to dataflows started via `dora start` (coordinator-managed). Local `dora run` dataflows are not tracked by the coordinator.
 - Recovery re-spawns all nodes assigned to the reconnecting daemon, not individual nodes. For per-node restart on crash, use [restart policies](fault-tolerance.md#restart-policies).
 
 ---
 
 ## Rolling Upgrade
 
-Upgrade the `adora` binary on all cluster machines with zero downtime using sequential per-machine upgrades.
+Upgrade the `dora` binary on all cluster machines with zero downtime using sequential per-machine upgrades.
 
 ### Process
 
 ```bash
-adora cluster upgrade cluster.yml
+dora cluster upgrade cluster.yml
 ```
 
 For each machine, sequentially:
 
-1. **SCP** the local `adora` binary to `/usr/local/bin/adora` on the target.
-2. **Restart** the systemd service (`systemctl restart adora-daemon-<id>`).
+1. **SCP** the local `dora` binary to `/usr/local/bin/dora` on the target.
+2. **Restart** the systemd service (`systemctl restart dora-daemon-<id>`).
 3. **Poll** the coordinator until the daemon reconnects (30s timeout).
 
 Because machines are upgraded one at a time, nodes on other machines continue running. After the daemon reconnects, auto-recovery re-spawns any dataflow nodes that were running on that machine.
 
 ### Prerequisites
 
-- Daemons must be installed as systemd services (`adora cluster install`).
-- The local `adora` binary must be compatible with the cluster's coordinator version.
+- Daemons must be installed as systemd services (`dora cluster install`).
+- The local `dora` binary must be compatible with the cluster's coordinator version.
 - SSH access with `sudo` permissions on all target machines.
 
 ---
@@ -699,29 +699,29 @@ Automate cluster management in CI:
 
 ```bash
 # Setup
-adora cluster install cluster.yml
+dora cluster install cluster.yml
 
 # Deploy new version
-adora cluster upgrade cluster.yml
+dora cluster upgrade cluster.yml
 
 # Run integration tests
-adora start test-dataflow.yml --name integration-test --attach
+dora start test-dataflow.yml --name integration-test --attach
 
 # Monitor
-adora cluster status
-adora top
+dora cluster status
+dora top
 
 # Cleanup
-adora stop integration-test
+dora stop integration-test
 ```
 
 ### 4. Development to Production
 
 | Stage | Approach | Command |
 |-------|----------|---------|
-| **Local dev** | Single-process, no coordinator | `adora run dataflow.yml` |
-| **Staging** | Ad-hoc daemons, manual setup | `adora up` + `adora daemon` on each machine |
-| **Production** | Managed cluster, systemd services | `adora cluster install cluster.yml` |
+| **Local dev** | Single-process, no coordinator | `dora run dataflow.yml` |
+| **Staging** | Ad-hoc daemons, manual setup | `dora up` + `dora daemon` on each machine |
+| **Production** | Managed cluster, systemd services | `dora cluster install cluster.yml` |
 
 ---
 
@@ -730,7 +730,7 @@ adora stop integration-test
 ### Initial Setup Checklist
 
 1. **SSH keys**: Distribute SSH keys so the CLI machine can reach all cluster machines without a password (`BatchMode=yes`).
-2. **Adora binary**: Install the `adora` binary on all machines (same version).
+2. **Dora binary**: Install the `dora` binary on all machines (same version).
 3. **Network**: Ensure coordinator port (default 6013) is reachable from all machines. Ensure Zenoh ports are open between daemons for cross-machine node communication.
 4. **cluster.yml**: Create the cluster configuration with correct IPs, users, and labels.
 
@@ -738,29 +738,29 @@ adora stop integration-test
 
 ```bash
 # Start a dataflow
-adora start dataflow.yml --name my-app --attach
+dora start dataflow.yml --name my-app --attach
 
 # List running dataflows
-adora list
+dora list
 
 # Monitor resource usage
-adora top
+dora top
 
 # View node logs
-adora logs my-app <node-id> --follow
+dora logs my-app <node-id> --follow
 
 # Stop a dataflow
-adora stop my-app
+dora stop my-app
 
 # Check cluster health
-adora cluster status
+dora cluster status
 ```
 
 ### Upgrading
 
-1. Build or download the new `adora` binary locally.
-2. Run `adora cluster upgrade cluster.yml`.
-3. Verify with `adora cluster status` that all daemons reconnected.
+1. Build or download the new `dora` binary locally.
+2. Run `dora cluster upgrade cluster.yml`.
+3. Verify with `dora cluster status` that all daemons reconnected.
 4. Running dataflows are automatically re-spawned via auto-recovery.
 
 ### Troubleshooting
@@ -768,7 +768,7 @@ adora cluster status
 **Daemon not connecting**
 
 - Verify the coordinator is running and reachable: `curl http://<addr>:6013/api/health` (or check coordinator logs).
-- Check daemon logs: `journalctl -u adora-daemon-<id> -f` (systemd) or the daemon's stderr output (ad-hoc).
+- Check daemon logs: `journalctl -u dora-daemon-<id> -f` (systemd) or the daemon's stderr output (ad-hoc).
 - Confirm the `--coordinator-addr` and `--coordinator-port` match the coordinator's actual bind address.
 
 **SSH failures during cluster commands**
@@ -781,11 +781,11 @@ adora cluster status
 
 - Error: `no daemon matches labels {"gpu": "true"}`.
 - Check that the daemon was started with the correct `--labels` flag.
-- Run `adora cluster status` to see connected daemons. Labels are set at daemon startup from `cluster.yml` and cannot be changed at runtime.
+- Run `dora cluster status` to see connected daemons. Labels are set at daemon startup from `cluster.yml` and cannot be changed at runtime.
 
 **Auto-recovery not triggering**
 
-- Auto-recovery only applies to coordinator-managed dataflows (`adora start`), not `adora run`.
+- Auto-recovery only applies to coordinator-managed dataflows (`dora start`), not `dora run`.
 - Check coordinator logs for `auto-recovery: re-spawning` messages.
 - If the node crashes immediately, recovery is throttled to once every 30 seconds per daemon per dataflow.
 
@@ -829,9 +829,9 @@ nodes:
 
 - **Use labels over machine IDs** for flexibility. Labels decouple your dataflow from specific machines, making it easier to add, remove, or replace hardware.
 - **Use systemd install for production**. Daemon services survive reboots and auto-restart on failure with `Restart=on-failure`.
-- **Use coordinator persistence** (`adora coordinator --store redb`) with clusters so the coordinator survives restarts. See [Coordinator State Persistence](fault-tolerance.md#coordinator-state-persistence).
+- **Use coordinator persistence** (`dora coordinator --store redb`) with clusters so the coordinator survives restarts. See [Coordinator State Persistence](fault-tolerance.md#coordinator-state-persistence).
 - **Set restart policies on nodes** for per-node resilience. Combine with auto-recovery for defense in depth. See [Restart Policies](fault-tolerance.md#restart-policies).
-- **Monitor with multiple tools**: `adora cluster status` for daemon health, `adora top` for resource usage, `adora logs` for node output.
-- **Test locally first**. Develop with `adora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `_unstable_deploy` fields are ignored in local mode.
-- **Use rolling upgrades** instead of stopping the entire cluster. `adora cluster upgrade` processes one machine at a time to maintain availability.
+- **Monitor with multiple tools**: `dora cluster status` for daemon health, `dora top` for resource usage, `dora logs` for node output.
+- **Test locally first**. Develop with `dora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `_unstable_deploy` fields are ignored in local mode.
+- **Use rolling upgrades** instead of stopping the entire cluster. `dora cluster upgrade` processes one machine at a time to maintain availability.
 - **Keep cluster.yml in version control** alongside your dataflow definitions.

@@ -7,8 +7,8 @@
  *                                         *
  *******************************************/
 
-#ifndef __RUST_ADORA_OPERATOR_API_C__
-#define __RUST_ADORA_OPERATOR_API_C__
+#ifndef __RUST_DORA_OPERATOR_API_C__
+#define __RUST_DORA_OPERATOR_API_C__
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -32,57 +32,57 @@ typedef struct Vec_uint8 {
 } Vec_uint8_t;
 
 /** <No documentation available> */
-typedef struct AdoraResult {
+typedef struct DoraResult {
     /** <No documentation available> */
     Vec_uint8_t * error;
-} AdoraResult_t;
+} DoraResult_t;
 
 /** <No documentation available> */
-typedef struct AdoraDropOperator {
+typedef struct DoraDropOperator {
     /** <No documentation available> */
-    AdoraResult_t (*drop_operator)(void *);
-} AdoraDropOperator_t;
+    DoraResult_t (*drop_operator)(void *);
+} DoraDropOperator_t;
 
 /** <No documentation available> */
-typedef struct AdoraInitResult {
+typedef struct DoraInitResult {
     /** <No documentation available> */
-    AdoraResult_t result;
+    DoraResult_t result;
 
     /** <No documentation available> */
     void * operator_context;
-} AdoraInitResult_t;
+} DoraInitResult_t;
 
 /** <No documentation available> */
-typedef struct AdoraInitOperator {
+typedef struct DoraInitOperator {
     /** <No documentation available> */
-    AdoraInitResult_t (*init_operator)(void);
-} AdoraInitOperator_t;
+    DoraInitResult_t (*init_operator)(void);
+} DoraInitOperator_t;
 
 /** <No documentation available> */
 /** \remark Has the same ABI as `uint8_t` **/
 #ifdef DOXYGEN
 typedef
 #endif
-enum AdoraStatus {
+enum DoraStatus {
     /** <No documentation available> */
-    ADORA_STATUS_CONTINUE = 0,
+    DORA_STATUS_CONTINUE = 0,
     /** <No documentation available> */
-    ADORA_STATUS_STOP = 1,
+    DORA_STATUS_STOP = 1,
     /** <No documentation available> */
-    ADORA_STATUS_STOP_ALL = 2,
+    DORA_STATUS_STOP_ALL = 2,
 }
 #ifndef DOXYGEN
 ; typedef uint8_t
 #endif
-AdoraStatus_t;
+DoraStatus_t;
 
 /** <No documentation available> */
 typedef struct OnEventResult {
     /** <No documentation available> */
-    AdoraResult_t result;
+    DoraResult_t result;
 
     /** <No documentation available> */
-    AdoraStatus_t status;
+    DoraStatus_t status;
 } OnEventResult_t;
 
 /** <No documentation available> */
@@ -112,31 +112,31 @@ typedef struct Output Output_t;
 /** \brief
  *  `Arc<dyn Send + Sync + Fn(A1) -> Ret>`
  */
-typedef struct ArcDynFn1_AdoraResult_Output {
+typedef struct ArcDynFn1_DoraResult_Output {
     /** <No documentation available> */
     void * env_ptr;
 
     /** <No documentation available> */
-    AdoraResult_t (*call)(void *, Output_t);
+    DoraResult_t (*call)(void *, Output_t);
 
     /** <No documentation available> */
     void (*release)(void *);
 
     /** <No documentation available> */
     void (*retain)(void *);
-} ArcDynFn1_AdoraResult_Output_t;
+} ArcDynFn1_DoraResult_Output_t;
 
 /** <No documentation available> */
 typedef struct SendOutput {
     /** <No documentation available> */
-    ArcDynFn1_AdoraResult_Output_t send_output;
+    ArcDynFn1_DoraResult_Output_t send_output;
 } SendOutput_t;
 
 /** <No documentation available> */
-typedef struct AdoraOnEvent {
+typedef struct DoraOnEvent {
     /** <No documentation available> */
     OnEventResult_t (*on_event)(RawEvent_t *, SendOutput_t const *, void *);
-} AdoraOnEvent_t;
+} DoraOnEvent_t;
 
 /** <No documentation available> */
 typedef struct Metadata {
@@ -146,22 +146,22 @@ typedef struct Metadata {
 
 /** <No documentation available> */
 void
-adora_free_data (
+dora_free_data (
     Vec_uint8_t _data);
 
 /** <No documentation available> */
 void
-adora_free_input_id (
+dora_free_input_id (
     char * _input_id);
 
 /** <No documentation available> */
 Vec_uint8_t
-adora_read_data (
+dora_read_data (
     Input_t * input);
 
 /** <No documentation available> */
 char *
-adora_read_input_id (
+dora_read_input_id (
     Input_t const * input);
 
 /** \brief
@@ -178,13 +178,13 @@ adora_read_input_id (
  *  case is handled explicitly to match the C idiom of passing
  *  `(NULL, 0)` for zero-length messages.
  *
- *  This function parallels `adora_send_output` in `apis/c/node/src/lib.rs`,
+ *  This function parallels `dora_send_output` in `apis/c/node/src/lib.rs`,
  *  which has had a null check since its introduction. Adding the
  *  equivalent here closes the gap found during the 2026-04-08 unsafe
  *  audit.
  */
-AdoraResult_t
-adora_send_operator_output (
+DoraResult_t
+dora_send_operator_output (
     SendOutput_t const * send_output,
     char const * id,
     uint8_t const * data_ptr,
@@ -195,4 +195,4 @@ adora_send_operator_output (
 } /* extern \"C\" */
 #endif
 
-#endif /* __RUST_ADORA_OPERATOR_API_C__ */
+#endif /* __RUST_DORA_OPERATOR_API_C__ */

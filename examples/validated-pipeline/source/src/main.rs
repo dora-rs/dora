@@ -1,8 +1,8 @@
-use adora_node_api::{AdoraNode, Event, IntoArrow, adora_core::config::DataId};
+use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
     let output = DataId::from("value".to_owned());
 
     let mut sent: i64 = 0;

@@ -1,6 +1,6 @@
 """Processor node that transforms sensor readings."""
 
-from adora import Node
+from dora import Node
 
 node = Node()
 

@@ -1,9 +1,9 @@
-# Core library for adora
+# Core library for dora
 
-## Generating adora schema
+## Generating dora schema
 
 ```bash
-cargo run -p adora-core generate_schemas
+cargo run -p dora-core generate_schemas
 ```
 
 ## VSCode YAML Dataflow Support
@@ -24,7 +24,7 @@ We can pass the JSON Schema to VSCode [`redhat.vscode-yaml`](https://marketplace
 
 ```json
   "yaml.schemas": {
-    "https://raw.githubusercontent.com/dora-rs/adora/main/libraries/core/adora-schema.json": "/*"
+    "https://raw.githubusercontent.com/dora-rs/dora/main/libraries/core/dora-schema.json": "/*"
   },
 ```
 

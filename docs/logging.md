@@ -1,6 +1,6 @@
 # Logging
 
-Adora provides a structured logging system for real-time robotics and AI dataflows. Logs are captured per-node as structured JSONL files, forwarded to the coordinator for live streaming, and optionally routed through the dataflow graph as data messages.
+Dora provides a structured logging system for real-time robotics and AI dataflows. Logs are captured per-node as structured JSONL files, forwarded to the coordinator for live streaming, and optionally routed through the dataflow graph as data messages.
 
 ## Which Logging Approach Should I Use?
 
@@ -10,12 +10,12 @@ Start here if you're unsure which approach fits your use case.
 |--------------|----------|--------|
 | **Log from Python** | Use Python's `logging` module (auto-bridged) | Nothing -- just `import logging` |
 | **Log from Rust** | Use `node.log_info()` / `node.log_error()` etc. | Nothing -- works out of the box |
-| **Log from C/C++** | Use `adora_log()` / `log_message()` | Nothing -- works out of the box |
+| **Log from C/C++** | Use `dora_log()` / `log_message()` | Nothing -- works out of the box |
 | **Filter noisy nodes** | Set `min_log_level` in YAML | Per-node YAML field |
-| **Watch all logs in one place** | Subscribe to `adora/logs` virtual input | `inputs: logs: adora/logs` |
+| **Watch all logs in one place** | Subscribe to `dora/logs` virtual input | `inputs: logs: dora/logs` |
 | **Process one node's logs as data** | Use `send_logs_as` on that node | Per-node YAML + wire the output |
 | **Rotate log files** | Set `max_log_size` in YAML | Per-node YAML field |
-| **Build a custom log sink** | Use `adora-log-utils` crate | Rust dependency |
+| **Build a custom log sink** | Use `dora-log-utils` crate | Rust dependency |
 | **Filter CLI display** | Use `--log-level` / `--log-filter` flags | CLI flags or env vars |
 
 ### Language-Specific Quick Start
@@ -24,9 +24,9 @@ Start here if you're unsure which approach fits your use case.
 
 ```python
 import logging
-from adora import Node
+from dora import Node
 
-node = Node()  # Automatically bridges Python logging -> adora
+node = Node()  # Automatically bridges Python logging -> dora
 
 logging.info("Sensor started")       # Captured as structured "info" log
 logging.warning("High temp: 42C")    # Captured as structured "warn" log
@@ -45,7 +45,7 @@ node.log("info", "Reading acquired", fields={"sensor_id": "temp-01"})
 **Rust** -- use the node API convenience methods:
 
 ```rust
-let (node, mut events) = AdoraNode::init_from_env()?;
+let (node, mut events) = DoraNode::init_from_env()?;
 
 // Convenience methods (recommended for most cases)
 node.log_info("Sensor started");
@@ -57,7 +57,7 @@ fields.insert("sensor_id".into(), "temp-01".into());
 node.log_with_fields("info", "Reading acquired", None, Some(&fields));
 ```
 
-Alternatively, Rust nodes can use the `tracing` crate. When adora's tracing subscriber is initialized (via `init_tracing()`), `tracing::info!()` etc. output structured JSON to stdout, which the daemon parses automatically:
+Alternatively, Rust nodes can use the `tracing` crate. When dora's tracing subscriber is initialized (via `init_tracing()`), `tracing::info!()` etc. output structured JSON to stdout, which the daemon parses automatically:
 
 ```rust
 // Also works -- parsed as structured logs by the daemon
@@ -67,10 +67,10 @@ tracing::warn!(sensor_id = "temp-01", "High temperature");
 
 Use `node.log_*()` when you want explicit control over the log format. Use `tracing::*!()` when you want ecosystem integration (spans, instrumentation, OpenTelemetry). Both produce identical structured log entries in the daemon.
 
-**C** -- use the `adora_log()` function:
+**C** -- use the `dora_log()` function:
 
 ```c
-adora_log(ctx, "info", 4, "Sensor started", 14);
+dora_log(ctx, "info", 4, "Sensor started", 14);
 ```
 
 **C++** -- use the `log_message()` function:
@@ -85,21 +85,21 @@ log_message(node.send_output, "info", "Sensor started");
 
 | Feature | Scope | Config |
 |---------|-------|--------|
-| Log level filtering | CLI display | `--log-level`, `ADORA_LOG_LEVEL` |
-| Output formats | CLI display | `--log-format`, `ADORA_LOG_FORMAT` |
-| Per-node level overrides | CLI display | `--log-filter`, `ADORA_LOG_FILTER` |
+| Log level filtering | CLI display | `--log-level`, `DORA_LOG_LEVEL` |
+| Output formats | CLI display | `--log-format`, `DORA_LOG_FORMAT` |
+| Per-node level overrides | CLI display | `--log-filter`, `DORA_LOG_FILTER` |
 | Source-level filtering | Per-node YAML | `min_log_level` |
 | Stdout-as-data routing | Per-node YAML | `send_stdout_as` |
 | Structured log routing | Per-node YAML | `send_logs_as` |
 | Log file rotation | Per-node YAML | `max_log_size` |
 | Rotation file limit | Per-node YAML | `max_rotated_files` |
-| Node log API | Rust/Python/C/C++ node | `node.log()`, `adora_log()`, etc. |
-| Log utilities library | Rust crate | `adora-log-utils` |
-| **Log aggregation** | **Dataflow input** | **`adora/logs` virtual input** |
-| Time-range filtering | `adora logs` | `--since`, `--until` |
-| Live log streaming | `adora logs` | `--follow` |
-| Text search | `adora logs` | `--grep` |
-| Local log reading | `adora logs` | `--local`, `--all-nodes` |
+| Node log API | Rust/Python/C/C++ node | `node.log()`, `dora_log()`, etc. |
+| Log utilities library | Rust crate | `dora-log-utils` |
+| **Log aggregation** | **Dataflow input** | **`dora/logs` virtual input** |
+| Time-range filtering | `dora logs` | `--since`, `--until` |
+| Live log streaming | `dora logs` | `--follow` |
+| Text search | `dora logs` | `--grep` |
+| Local log reading | `dora logs` | `--local`, `--all-nodes` |
 
 ---
 
@@ -141,21 +141,21 @@ This means nodes using Rust's `tracing` or `log` crate with JSON output get full
 
 ---
 
-## Viewing Logs: `adora run`
+## Viewing Logs: `dora run`
 
-When running a dataflow with `adora run`, logs from all nodes are displayed in real-time on the terminal.
+When running a dataflow with `dora run`, logs from all nodes are displayed in real-time on the terminal.
 
 ### Flags
 
 ```
-adora run dataflow.yml [OPTIONS]
+dora run dataflow.yml [OPTIONS]
 ```
 
 | Flag | Default | Env Var | Description |
 |------|---------|---------|-------------|
-| `--log-level LEVEL` | `stdout` | `ADORA_LOG_LEVEL` | Minimum level to display |
-| `--log-format FORMAT` | `pretty` | `ADORA_LOG_FORMAT` | Output format: `pretty`, `json`, `compact` |
-| `--log-filter FILTER` | none | `ADORA_LOG_FILTER` | Per-node level overrides |
+| `--log-level LEVEL` | `stdout` | `DORA_LOG_LEVEL` | Minimum level to display |
+| `--log-format FORMAT` | `pretty` | `DORA_LOG_FORMAT` | Output format: `pretty`, `json`, `compact` |
+| `--log-filter FILTER` | none | `DORA_LOG_FILTER` | Per-node level overrides |
 
 ### Log Levels
 
@@ -191,7 +191,7 @@ error            info            yes      (error is less verbose than info)
 The `--log-filter` flag lets you set different levels for different nodes:
 
 ```bash
-adora run dataflow.yml --log-level info --log-filter "sensor=debug,planner=warn"
+dora run dataflow.yml --log-level info --log-filter "sensor=debug,planner=warn"
 ```
 
 This shows `info` and above for all nodes, except `sensor` (shows `debug` and above) and `planner` (shows `warn` and above).
@@ -204,7 +204,7 @@ Format: `"node1=level,node2=level"` (comma-separated `name=level` pairs).
 ```
 10:30:00 INFO   sensor: Starting sensor...
 
-10:30:01 INFO   [adora]: spawning node processor
+10:30:01 INFO   [dora]: spawning node processor
 
 10:30:01 stdout sensor: raw output line
 ```
@@ -212,7 +212,7 @@ Format: `"node1=level,node2=level"` (comma-separated `name=level` pairs).
 - Timestamp in local timezone (`HH:MM:SS`)
 - Level colored: ERROR (red), WARN (yellow), INFO (green), DEBUG (blue), TRACE (dimmed), stdout (italic dimmed blue)
 - Node name in bold with a unique color based on the name
-- System messages prefixed with `[adora]`
+- System messages prefixed with `[dora]`
 - Lifecycle messages (`spawning`, `node finished`, `stopping`) get visual separation with blank lines
 
 **Json** -- full `LogMessage` struct as JSON, one per line:
@@ -231,7 +231,7 @@ Useful for CI/CD environments and log files.
 
 ---
 
-## Viewing Logs: `adora logs`
+## Viewing Logs: `dora logs`
 
 Read historical logs or stream live logs from a running dataflow.
 
@@ -239,15 +239,15 @@ Read historical logs or stream live logs from a running dataflow.
 
 ```bash
 # Read logs for a specific node (via coordinator)
-adora logs <dataflow_uuid> <node_name>
+dora logs <dataflow_uuid> <node_name>
 
 # Read local log files directly
-adora logs --local <node_name>
-adora logs --local --all-nodes
+dora logs --local <node_name>
+dora logs --local --all-nodes
 
 # Stream live logs
-adora logs <dataflow_uuid> <node_name> --follow
-adora logs --local <node_name> --follow
+dora logs <dataflow_uuid> <node_name> --follow
+dora logs --local <node_name> --follow
 ```
 
 ### Flags
@@ -260,7 +260,7 @@ adora logs --local <node_name> --follow
 | `--follow` | `-f` | false | Stream new log entries as they arrive |
 | `--since DURATION` | | none | Only show logs newer than this duration ago |
 | `--until DURATION` | | none | Only show logs older than this duration ago |
-| `--level LEVEL` | | `stdout` | Minimum log level (env: `ADORA_LOG_LEVEL`) |
+| `--level LEVEL` | | `stdout` | Minimum log level (env: `DORA_LOG_LEVEL`) |
 | `--grep PATTERN` | | none | Case-insensitive text search |
 | `--coordinator-addr IP` | | `127.0.0.1` | Coordinator address |
 | `--coordinator-port PORT` | | default | Coordinator control port |
@@ -271,13 +271,13 @@ adora logs --local <node_name> --follow
 
 ```bash
 # Logs from the last 5 minutes
-adora logs --local sensor --since 5m
+dora logs --local sensor --since 5m
 
 # Logs from 1 hour ago to 30 minutes ago
-adora logs --local sensor --since 1h --until 30m
+dora logs --local sensor --since 1h --until 30m
 
 # Last 10 errors from the past hour
-adora logs --local sensor --since 1h --level error --tail 10
+dora logs --local sensor --since 1h --level error --tail 10
 ```
 
 Supported duration formats: `30` (seconds), `30s`, `5m`, `1h`, `2d`.
@@ -291,10 +291,10 @@ Supported duration formats: `30` (seconds), `30s`, `5m`, `1h`, `2d`.
 
 ```bash
 # Find all timeout-related messages
-adora logs --local --all-nodes --grep "timeout"
+dora logs --local --all-nodes --grep "timeout"
 
 # Find errors from a specific module
-adora logs --local sensor --grep "camera::driver" --level error
+dora logs --local sensor --grep "camera::driver" --level error
 ```
 
 ### Filter Pipeline
@@ -327,25 +327,25 @@ All environment variables serve as fallbacks -- CLI flags always take precedence
 
 | Variable | Used By | Values | Description |
 |----------|---------|--------|-------------|
-| `ADORA_LOG_LEVEL` | `adora run`, `adora logs` | `error`, `warn`, `info`, `debug`, `trace`, `stdout` | Default minimum log level |
-| `ADORA_LOG_FORMAT` | `adora run` | `pretty`, `json`, `compact` | Default output format |
-| `ADORA_LOG_FILTER` | `adora run` | `"node1=level,node2=level"` | Default per-node overrides |
-| `ADORA_QUIET` | daemon | any value | Suppress log forwarding to display (file writing continues) |
+| `DORA_LOG_LEVEL` | `dora run`, `dora logs` | `error`, `warn`, `info`, `debug`, `trace`, `stdout` | Default minimum log level |
+| `DORA_LOG_FORMAT` | `dora run` | `pretty`, `json`, `compact` | Default output format |
+| `DORA_LOG_FILTER` | `dora run` | `"node1=level,node2=level"` | Default per-node overrides |
+| `DORA_QUIET` | daemon | any value | Suppress log forwarding to display (file writing continues) |
 
 Example:
 
 ```bash
 # Set defaults for a development session
-export ADORA_LOG_LEVEL=info
-export ADORA_LOG_FORMAT=pretty
-export ADORA_LOG_FILTER="sensor=debug"
+export DORA_LOG_LEVEL=info
+export DORA_LOG_FORMAT=pretty
+export DORA_LOG_FILTER="sensor=debug"
 
 # These are equivalent:
-adora run dataflow.yml
-adora run dataflow.yml --log-level info --log-format pretty --log-filter "sensor=debug"
+dora run dataflow.yml
+dora run dataflow.yml --log-level info --log-format pretty --log-filter "sensor=debug"
 
 # CLI flag overrides env var:
-adora run dataflow.yml --log-level debug   # overrides ADORA_LOG_LEVEL=info
+dora run dataflow.yml --log-level debug   # overrides DORA_LOG_LEVEL=info
 ```
 
 ---
@@ -411,7 +411,7 @@ Unlike `send_stdout_as`, this only sends lines that were successfully parsed as 
 
 Use this to build log aggregation, alerting, or monitoring nodes within the dataflow itself.
 
-### `adora/logs` -- Automatic Log Aggregation
+### `dora/logs` -- Automatic Log Aggregation
 
 Subscribe to logs from **all nodes** with a single input line -- no manual wiring needed:
 
@@ -420,7 +420,7 @@ nodes:
   - id: sensor
     path: sensor.py
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
     outputs:
       - reading
 
@@ -434,26 +434,26 @@ nodes:
   - id: log-viewer
     path: log_viewer.py
     inputs:
-      logs: adora/logs              # all nodes, all levels
-      errors: adora/logs/error      # only error+ from all nodes
-      sensor: adora/logs/info/sensor  # info+ from one node
+      logs: dora/logs              # all nodes, all levels
+      errors: dora/logs/error      # only error+ from all nodes
+      sensor: dora/logs/info/sensor  # info+ from one node
 ```
 
-The `adora/logs` virtual input works like `adora/timer` -- the daemon handles subscription internally. Each log message arrives as a JSON-encoded `LogMessage` string in an Arrow array. To prevent infinite loops, a node never receives its own log messages.
+The `dora/logs` virtual input works like `dora/timer` -- the daemon handles subscription internally. Each log message arrives as a JSON-encoded `LogMessage` string in an Arrow array. To prevent infinite loops, a node never receives its own log messages.
 
 **Syntax:**
 
 | Input | Description |
 |-------|-------------|
-| `adora/logs` | All logs from all nodes |
-| `adora/logs/<level>` | Logs at `<level>` or above from all nodes |
-| `adora/logs/<level>/<node-id>` | Logs at `<level>` or above from a specific node |
+| `dora/logs` | All logs from all nodes |
+| `dora/logs/<level>` | Logs at `<level>` or above from all nodes |
+| `dora/logs/<level>/<node-id>` | Logs at `<level>` or above from a specific node |
 
 Levels: `stdout`, `error`, `warn`, `info`, `debug`, `trace`.
 
-**When to use `adora/logs` vs `send_logs_as`:**
+**When to use `dora/logs` vs `send_logs_as`:**
 
-| | `adora/logs` | `send_logs_as` |
+| | `dora/logs` | `send_logs_as` |
 |--|-------------|---------------|
 | Scope | All nodes at once | One node at a time |
 | YAML changes | Only the consumer | Each source node |
@@ -503,7 +503,7 @@ Maximum disk usage per node: `max_log_size * (1 + max_rotated_files)` (1 active 
 
 Without `max_log_size`, log files grow unbounded. For long-running dataflows, always set this.
 
-The `adora logs --local` command automatically reads all rotated files for a node and merges them in chronological order (oldest rotated file first, current file last).
+The `dora logs --local` command automatically reads all rotated files for a node and merges them in chronological order (oldest rotated file first, current file last).
 
 ### `max_rotated_files`
 
@@ -556,10 +556,10 @@ Nodes can emit structured log messages programmatically using the node API. Thes
 ### Rust
 
 ```rust
-use adora_node_api::AdoraNode;
+use dora_node_api::DoraNode;
 use std::collections::BTreeMap;
 
-let (node, mut events) = AdoraNode::init_from_env()?;
+let (node, mut events) = DoraNode::init_from_env()?;
 
 // General log with level string and optional target
 node.log("info", "sensor initialized", Some("sensor::init"));
@@ -585,7 +585,7 @@ The `level` parameter accepts `"error"`, `"warn"` (or `"warning"`), `"info"`, `"
 Python nodes have three ways to log, all producing structured log entries:
 
 ```python
-from adora import Node
+from dora import Node
 import logging
 
 node = Node()
@@ -595,7 +595,7 @@ logging.info("sensor initialized")
 logging.warning("temperature elevated")
 logging.debug("raw bytes: %s", data)
 
-# Option 2: Explicit adora API with level string
+# Option 2: Explicit dora API with level string
 node.log("info", "sensor initialized", target="sensor.init")
 node.log("info", "reading acquired", fields={"sensor_id": "temp-01", "reading": "42.5"})
 
@@ -626,51 +626,51 @@ print("raw output")
 ```c
 #include "node_api.h"
 
-void *ctx = init_adora_context_from_env();
+void *ctx = init_dora_context_from_env();
 const char *level = "info";
 const char *msg = "sensor initialized";
-adora_log(ctx, level, strlen(level), msg, strlen(msg));
+dora_log(ctx, level, strlen(level), msg, strlen(msg));
 ```
 
 ### C++
 
 ```cpp
 // Via the cxx bridge
-auto node = init_adora_node();
+auto node = init_dora_node();
 log_message(node.send_output, "info", "sensor initialized");
 ```
 
 ---
 
-## Log Utilities Library (`adora-log-utils`)
+## Log Utilities Library (`dora-log-utils`)
 
-The `adora-log-utils` crate provides parsing, merging, filtering, and formatting utilities for working with `LogMessage` entries in custom sink nodes. Use it when building nodes that consume log data via `send_logs_as`.
+The `dora-log-utils` crate provides parsing, merging, filtering, and formatting utilities for working with `LogMessage` entries in custom sink nodes. Use it when building nodes that consume log data via `send_logs_as`.
 
 ### API
 
 ```rust
-use adora_log_utils;
+use dora_log_utils;
 
 // Parse a LogMessage from JSON (as received from send_logs_as)
-let log = adora_log_utils::parse_log(json_str)?;
+let log = dora_log_utils::parse_log(json_str)?;
 
 // Parse directly from Arrow input data (convenience for event handlers)
-let log = adora_log_utils::parse_log_from_arrow(&data)?;
+let log = dora_log_utils::parse_log_from_arrow(&data)?;
 
 // Merge multiple log streams into a single timeline
-let merged = adora_log_utils::merge_by_timestamp(vec![stream_a, stream_b]);
+let merged = dora_log_utils::merge_by_timestamp(vec![stream_a, stream_b]);
 
 // Filter by minimum level
-let errors = adora_log_utils::filter_by_level(&logs, &min_level);
+let errors = dora_log_utils::filter_by_level(&logs, &min_level);
 
 // Format as JSON (one line, no trailing newline)
-let json = adora_log_utils::format_json(&log);
+let json = dora_log_utils::format_json(&log);
 
 // Format as compact single-line: "<timestamp> <node> <LEVEL>: <message>"
-let compact = adora_log_utils::format_compact(&log);
+let compact = dora_log_utils::format_compact(&log);
 
 // Format as pretty: "[<timestamp>][<LEVEL>][<node>] <message>"
-let pretty = adora_log_utils::format_pretty(&log);
+let pretty = dora_log_utils::format_pretty(&log);
 ```
 
 ### Dependency
@@ -679,7 +679,7 @@ Add to your sink node's `Cargo.toml`:
 
 ```toml
 [dependencies]
-adora-log-utils = { workspace = true }
+dora-log-utils = { workspace = true }
 ```
 
 ---
@@ -698,7 +698,7 @@ nodes:
     path: sensor.py
     send_logs_as: log_entries
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
     outputs:
       - reading
       - log_entries
@@ -721,7 +721,7 @@ nodes:
       LOG_FILE: "./combined.jsonl"
 ```
 
-The file sink reads `LOG_FILE` from the environment (default `./combined.jsonl`), parses each incoming Arrow message with `adora_log_utils::parse_log_from_arrow()`, formats it as JSON, and appends it to the file.
+The file sink reads `LOG_FILE` from the environment (default `./combined.jsonl`), parses each incoming Arrow message with `dora_log_utils::parse_log_from_arrow()`, formats it as JSON, and appends it to the file.
 
 ### TCP Sink (`examples/log-sink-tcp/`)
 
@@ -733,7 +733,7 @@ nodes:
     path: source.py
     send_logs_as: log_entries
     inputs:
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
     outputs:
       - data
       - log_entries
@@ -758,7 +758,7 @@ nodes:
     path: my_node.py
     send_stdout_as: log_entries
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
     outputs:
       - log_entries
 
@@ -771,24 +771,24 @@ nodes:
       - alerts
 ```
 
-The source node uses `send_stdout_as` to route its stdout lines as Arrow string data. The router parses each log entry with `adora_log_utils::parse_log_from_arrow()`, checks the level, and uses `node.send_output()` to forward data to the appropriate outputs. Nodes using the node API can alternatively use `send_logs_as` to route structured logs from `node.log()`.
+The source node uses `send_stdout_as` to route its stdout lines as Arrow string data. The router parses each log entry with `dora_log_utils::parse_log_from_arrow()`, checks the level, and uses `node.send_output()` to forward data to the appropriate outputs. Nodes using the node API can alternatively use `send_logs_as` to route structured logs from `node.log()`.
 
 ### Building a Custom Sink
 
 To build your own sink node, follow this pattern:
 
 ```rust
-use adora_node_api::{AdoraNode, Event};
+use dora_node_api::{DoraNode, Event};
 
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
     while let Some(event) = events.recv() {
         match event {
             Event::Input { data, .. } => {
-                let log = adora_log_utils::parse_log_from_arrow(&data)?;
+                let log = dora_log_utils::parse_log_from_arrow(&data)?;
                 // Process the log entry: write to file, send over network, etc.
-                let json = adora_log_utils::format_json(&log);
+                let json = dora_log_utils::format_json(&log);
                 println!("{json}");
             }
             Event::Stop(_) => break,
@@ -830,7 +830,7 @@ Node Process (stdout/stderr)
 [7] Rotation check: if bytes_written >= max_log_size, rotate files
     |
     v
-[8] Forward: send LogMessage to display channel (unless ADORA_QUIET)
+[8] Forward: send LogMessage to display channel (unless DORA_QUIET)
     |
     v
 [9] Sync: fsync log file to disk
@@ -841,7 +841,7 @@ Key details:
 - **Step 2** happens before parsing, so `send_stdout_as` captures every line including non-structured output
 - **Step 4** happens before Steps 5-8, so `min_log_level` suppresses messages from all downstream processing
 - **Step 5** only fires for successfully parsed structured logs (Step 3 success path)
-- **Step 8** sends to either a flume channel (`adora run` direct mode) or the coordinator (distributed mode)
+- **Step 8** sends to either a flume channel (`dora run` direct mode) or the coordinator (distributed mode)
 - **Step 9** calls `sync_all()` after every write, ensuring durability at the cost of some I/O overhead
 
 ### Structured Log Parsing
@@ -901,7 +901,7 @@ nodes:
     max_rotated_files: 5         # keep 5 rotated files (default, range 1-100)
 
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
 ```
 
 ---
@@ -923,7 +923,7 @@ nodes:
     min_log_level: info       # suppress debug noise at source
     max_log_size: "1KB"       # small for demo (triggers rotation quickly)
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - reading
 
@@ -949,59 +949,59 @@ nodes:
 - **processor** -- Uses `send_logs_as: log_entries` to route its structured log entries as dataflow data. Raw `print()` output is *not* routed (only parsed structured entries are).
 - **monitor** -- Subscribes to `processor/log_entries` and counts warnings/errors, demonstrating in-dataflow log aggregation.
 
-**Direct mode** (`adora run` -- single process, good for quick testing):
+**Direct mode** (`dora run` -- single process, good for quick testing):
 
 ```bash
 # Basic run
-adora run examples/python-logging/dataflow.yml --stop-after 5s
+dora run examples/python-logging/dataflow.yml --stop-after 5s
 
 # Only warnings and above
-adora run examples/python-logging/dataflow.yml --log-level warn --stop-after 5s
+dora run examples/python-logging/dataflow.yml --log-level warn --stop-after 5s
 
 # Per-node overrides
-adora run examples/python-logging/dataflow.yml --log-filter "monitor=debug,sensor=warn" --stop-after 5s
+dora run examples/python-logging/dataflow.yml --log-filter "monitor=debug,sensor=warn" --stop-after 5s
 
 # JSON output for machine parsing
-adora run examples/python-logging/dataflow.yml --log-format json --stop-after 3s
+dora run examples/python-logging/dataflow.yml --log-format json --stop-after 3s
 
 # Environment variable control
-ADORA_LOG_LEVEL=warn adora run examples/python-logging/dataflow.yml --stop-after 5s
+DORA_LOG_LEVEL=warn dora run examples/python-logging/dataflow.yml --stop-after 5s
 ```
 
-**Distributed mode** (`adora up` + `adora start` -- coordinator/daemon architecture, required for multi-machine deployments):
+**Distributed mode** (`dora up` + `dora start` -- coordinator/daemon architecture, required for multi-machine deployments):
 
 ```bash
 # Start infrastructure
-adora up
+dora up
 
 # Start attached (live log stream)
-adora start examples/python-logging/dataflow.yml --attach
+dora start examples/python-logging/dataflow.yml --attach
 
 # Or start detached and query logs separately
-adora start examples/python-logging/dataflow.yml
-adora logs <dataflow-id> sensor --follow                    # stream one node
-adora logs <dataflow-id> sensor --follow --level warn       # only warnings
-adora logs <dataflow-id> --all-nodes --tail 20              # last 20 lines
-adora logs <dataflow-id> processor --grep "error" --since 5m  # targeted search
+dora start examples/python-logging/dataflow.yml
+dora logs <dataflow-id> sensor --follow                    # stream one node
+dora logs <dataflow-id> sensor --follow --level warn       # only warnings
+dora logs <dataflow-id> --all-nodes --tail 20              # last 20 lines
+dora logs <dataflow-id> processor --grep "error" --since 5m  # targeted search
 ```
 
 In distributed mode, logs flow Node -> Daemon -> Coordinator -> CLI over WebSocket. The coordinator buffers log messages until a subscriber connects, so you won't miss logs even if you attach late. YAML-level settings (`min_log_level`, `send_logs_as`, `max_log_size`) work identically since they are applied at the daemon.
 
-| | `adora run` | `adora start` |
+| | `dora run` | `dora start` |
 |---|---|---|
-| Display filtering | `--log-level`, `--log-format`, `--log-filter` | `--level` on `adora logs` |
-| Per-node overrides | `--log-filter "sensor=debug"` | Separate `adora logs` per node |
+| Display filtering | `--log-level`, `--log-format`, `--log-filter` | `--level` on `dora logs` |
+| Per-node overrides | `--log-filter "sensor=debug"` | Separate `dora logs` per node |
 | Remote nodes | No | Yes |
-| Live streaming | Always attached | `--attach` or `adora logs --follow` |
+| Live streaming | Always attached | `--attach` or `dora logs --follow` |
 
 **Post-run log analysis** (works the same for both modes):
 
 ```bash
 # Read all local logs
-adora logs --local --all-nodes --tail 20
+dora logs --local --all-nodes --tail 20
 
 # Search for warnings in sensor logs
-adora logs --local sensor --grep "high temp"
+dora logs --local sensor --grep "high temp"
 
 # Check that rotation created multiple files
 ls -la out/*/log_sensor*.jsonl
@@ -1031,11 +1031,11 @@ nodes:
 
 ```bash
 # During development: see everything from detector, only warnings from camera
-adora run dataflow.yml --log-level debug --log-filter "camera=warn,detector=debug"
+dora run dataflow.yml --log-level debug --log-filter "camera=warn,detector=debug"
 
 # In production: only errors
-export ADORA_LOG_LEVEL=error
-adora run dataflow.yml
+export DORA_LOG_LEVEL=error
+dora run dataflow.yml
 ```
 
 **What happens:**
@@ -1072,17 +1072,17 @@ nodes:
       - alerts
 ```
 
-**Node-side handling in the log monitor (using `adora-log-utils`):**
+**Node-side handling in the log monitor (using `dora-log-utils`):**
 
 ```rust
-use adora_node_api::{AdoraNode, Event};
-use adora_message::common::{LogLevel, LogLevelOrStdout};
+use dora_node_api::{DoraNode, Event};
+use dora_message::common::{LogLevel, LogLevelOrStdout};
 
-let (mut node, mut events) = AdoraNode::init_from_env()?;
+let (mut node, mut events) = DoraNode::init_from_env()?;
 while let Some(event) = events.recv() {
     match event {
         Event::Input { data, .. } => {
-            let log = adora_log_utils::parse_log_from_arrow(&data)?;
+            let log = dora_log_utils::parse_log_from_arrow(&data)?;
 
             let is_error = matches!(log.level,
                 LogLevelOrStdout::LogLevel(LogLevel::Error));
@@ -1109,19 +1109,19 @@ After a dataflow crashes, investigate what happened in the last few minutes.
 ls out/
 
 # Read the last 50 lines from all nodes around the crash
-adora logs --local --all-nodes --tail 50
+dora logs --local --all-nodes --tail 50
 
 # Focus on errors in the last 5 minutes
-adora logs --local --all-nodes --since 5m --level error
+dora logs --local --all-nodes --since 5m --level error
 
 # Search for a specific error pattern
-adora logs --local --all-nodes --grep "out of memory"
+dora logs --local --all-nodes --grep "out of memory"
 
 # Drill into a specific node
-adora logs --local detector --since 2m
+dora logs --local detector --since 2m
 
 # Export as JSON for external analysis
-adora run dataflow.yml --log-format json 2>logs.json
+dora run dataflow.yml --log-format json 2>logs.json
 ```
 
 ### 4. Long-Running Production Dataflow
@@ -1136,7 +1136,7 @@ nodes:
     max_log_size: "100MB"      # ~600MB max per node (100MB * 6)
     restart_policy: always
     inputs:
-      tick: adora/timer/millis/1000
+      tick: dora/timer/millis/1000
     outputs:
       - data
 
@@ -1170,30 +1170,30 @@ Multiple daemons running on different machines, monitored from a central worksta
 
 ```bash
 # Start infrastructure (coordinator + local daemon)
-adora up
+dora up
 
 # On remote machines, start a daemon pointing to the coordinator:
-#   adora daemon --coordinator-addr 192.168.1.10
+#   dora daemon --coordinator-addr 192.168.1.10
 
 # Start the dataflow (detached)
-adora start dataflow.yml
+dora start dataflow.yml
 
 # Open targeted log streams in separate terminals:
 
 # Terminal 1: all sensor warnings
-adora logs <dataflow-id> sensor --follow --level warn
+dora logs <dataflow-id> sensor --follow --level warn
 
 # Terminal 2: processor errors with text search
-adora logs <dataflow-id> processor --follow --level error --grep "timeout"
+dora logs <dataflow-id> processor --follow --level error --grep "timeout"
 
 # Terminal 3: all nodes merged
-adora logs <dataflow-id> --all-nodes --follow
+dora logs <dataflow-id> --all-nodes --follow
 
 # Terminal 4: historical + live (errors from the last hour, then stream)
-adora logs <dataflow-id> processor --since 1h --level error --follow
+dora logs <dataflow-id> processor --since 1h --level error --follow
 
 # Monitor a remote coordinator from another machine:
-adora logs <dataflow-id> sensor --follow --coordinator-addr 192.168.1.10
+dora logs <dataflow-id> sensor --follow --coordinator-addr 192.168.1.10
 ```
 
 **How it works internally:**
@@ -1210,13 +1210,13 @@ In CI, use JSON format for machine-parseable output and compact format for reada
 
 ```bash
 # Machine-parseable logs for CI tooling
-adora run dataflow.yml --log-format json --stop-after 30s 2>test-logs.json
+dora run dataflow.yml --log-format json --stop-after 30s 2>test-logs.json
 
 # Compact logs for CI console output
-adora run dataflow.yml --log-format compact --log-level info --stop-after 30s
+dora run dataflow.yml --log-format compact --log-level info --stop-after 30s
 
 # Post-run analysis: count errors per node
-adora logs --local --all-nodes --level error | wc -l
+dora logs --local --all-nodes --level error | wc -l
 ```
 
 With JSON format, each line is a complete `LogMessage` that can be processed by `jq`, log aggregators, or custom scripts:
@@ -1236,7 +1236,7 @@ Logging adds I/O overhead proportional to log volume. Here's how to tune it:
 
 **`send_logs_as` adds a dataflow message per log line.** Each parsed log entry is serialized to JSON, converted to Arrow, and sent through the dataflow. For high-volume nodes, this can consume significant bandwidth. Use `min_log_level` to limit what gets routed.
 
-**`adora/logs` subscribers share a single serialization.** The daemon converts each log line to Arrow once and clones the result for each subscriber. The cost scales linearly with subscriber count, not log volume x subscriber count. For most dataflows (1-3 log subscribers), this is negligible.
+**`dora/logs` subscribers share a single serialization.** The daemon converts each log line to Arrow once and clones the result for each subscriber. The cost scales linearly with subscriber count, not log volume x subscriber count. For most dataflows (1-3 log subscribers), this is negligible.
 
 **Log line size is capped at 1 MB.** Lines longer than 1 MB from node stdout/stderr are truncated to prevent heap exhaustion. This protects against buggy nodes that dump large binary data to stdout.
 
@@ -1261,16 +1261,16 @@ nodes:
 
 **Always set `max_log_size` for long-running dataflows.** Without rotation, a single noisy node can fill the disk. Start with `"50MB"` (300MB total per node with rotation) and adjust based on your storage budget. Use `max_rotated_files` to tune how much history to keep (default 5, range 1-100).
 
-**Use environment variables for team defaults.** Set `ADORA_LOG_LEVEL` and `ADORA_LOG_FORMAT` in your shell profile or CI configuration. Individual developers can override with CLI flags.
+**Use environment variables for team defaults.** Set `DORA_LOG_LEVEL` and `DORA_LOG_FORMAT` in your shell profile or CI configuration. Individual developers can override with CLI flags.
 
 **Use `--log-filter` during development.** Instead of changing YAML config, use per-node display overrides to focus on the node you're debugging: `--log-filter "my-node=debug"`.
 
-**Use `send_logs_as` for operational monitoring.** Build monitoring nodes that watch for error patterns, compute error rates, or forward alerts. This keeps monitoring logic within the dataflow graph. Use `adora-log-utils` to parse and format log entries in custom sink nodes (see `examples/log-sink-file/` and `examples/log-sink-tcp/`).
+**Use `send_logs_as` for operational monitoring.** Build monitoring nodes that watch for error patterns, compute error rates, or forward alerts. This keeps monitoring logic within the dataflow graph. Use `dora-log-utils` to parse and format log entries in custom sink nodes (see `examples/log-sink-file/` and `examples/log-sink-tcp/`).
 
 **Prefer `send_logs_as` over `send_stdout_as` for structured data.** `send_stdout_as` captures every stdout line (including raw prints), while `send_logs_as` only captures parsed structured log entries with full metadata.
 
-**Use `--local` for post-mortem debugging.** After a crash, `adora logs --local --all-nodes` works without a running coordinator and merges all node logs chronologically.
+**Use `--local` for post-mortem debugging.** After a crash, `dora logs --local --all-nodes` works without a running coordinator and merges all node logs chronologically.
 
-**Combine `--since` with `--grep` for targeted debugging.** Instead of scrolling through thousands of lines, narrow the window: `adora logs --local sensor --since 5m --grep "error"`.
+**Combine `--since` with `--grep` for targeted debugging.** Instead of scrolling through thousands of lines, narrow the window: `dora logs --local sensor --since 5m --grep "error"`.
 
 **Use JSON format for log pipelines.** When feeding logs to external systems (ELK, Grafana Loki, Datadog), use `--log-format json` for structured ingestion.

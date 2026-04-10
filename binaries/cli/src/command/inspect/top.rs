@@ -3,16 +3,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use adora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-    id::NodeId,
-};
 use clap::Args;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, NodeInfo},
+    id::NodeId,
 };
 use eyre::{Context, eyre};
 use ratatui::{
@@ -58,7 +58,7 @@ impl Executable for Top {
         }
 
         if !io::stdout().is_terminal() {
-            eyre::bail!("`adora top` requires an interactive terminal");
+            eyre::bail!("`dora top` requires an interactive terminal");
         }
 
         // Setup terminal
@@ -490,7 +490,7 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     ];
 
     let title = format!(
-        " Adora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
+        " Dora Inspect Top - Refreshing every {}s (q: quit, n/c/m: sort, r: refresh nodes) ",
         refresh_duration.as_secs()
     );
 

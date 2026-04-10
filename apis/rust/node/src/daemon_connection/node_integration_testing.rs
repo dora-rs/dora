@@ -5,11 +5,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use adora_core::{
+use arrow::array::{Array, RecordBatch, StructArray};
+use arrow_schema::{DataType, Field, Schema};
+use colored::Colorize;
+use dora_core::{
     metadata::ArrowTypeInfoExt,
     uhlc::{self, HLC, NTP64, Timestamp},
 };
-use adora_message::{
+use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
     integration_testing_format::{
@@ -18,9 +21,6 @@ use adora_message::{
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
 };
-use arrow::array::{Array, RecordBatch, StructArray};
-use arrow_schema::{DataType, Field, Schema};
-use colored::Colorize;
 use eyre::{Context, ContextCompat};
 
 use crate::{
@@ -128,7 +128,7 @@ impl IntegrationTestingEvents {
 
     fn handle_output(
         &mut self,
-        output_id: &adora_message::id::DataId,
+        output_id: &dora_message::id::DataId,
         metadata: &Metadata,
         data: &Option<DataMessage>,
     ) -> Result<DaemonReply, eyre::Error> {
@@ -220,7 +220,7 @@ enum OutputWriter {
 }
 
 pub fn convert_output_to_json(
-    output_id: &adora_message::id::DataId,
+    output_id: &dora_message::id::DataId,
     metadata: &Metadata,
     data: &Option<std::sync::Arc<DataMessage>>,
     start_timestamp: Timestamp,

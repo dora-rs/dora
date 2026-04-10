@@ -3,7 +3,7 @@ use std::{net::SocketAddr, path::PathBuf};
 use clap::Args;
 use eyre::{Context, bail};
 
-use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 
 use crate::{
     command::{Executable, default_tracing},
@@ -18,7 +18,7 @@ use super::config::ClusterConfig;
 ///
 /// Examples:
 ///
-///   adora cluster restart cluster.yml my-dataflow
+///   dora cluster restart cluster.yml my-dataflow
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Restart {

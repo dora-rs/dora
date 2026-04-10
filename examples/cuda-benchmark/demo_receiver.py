@@ -7,8 +7,8 @@ import time
 import numpy as np
 import pyarrow as pa
 import torch
-from adora import Node
-from adora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora import Node
+from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 from helper import record_results
 from tqdm import tqdm
 
@@ -25,10 +25,10 @@ latencies = []
 mean_cpu = mean_cuda = 0
 DEVICE = os.getenv("DEVICE", "cuda")
 
-NAME = f"adora torch {DEVICE}"
+NAME = f"dora torch {DEVICE}"
 
 print()
-print("Receiving 40MB packets using default adora-rs")
+print("Receiving 40MB packets using default dora-rs")
 
 while True:
     event = node.next()
@@ -38,7 +38,7 @@ while True:
             pbar = tqdm(total=100)
         elif i == 100:
             print("vs")
-            print("Receiving 40MB packets using adora-rs CUDA->CUDA")
+            print("Receiving 40MB packets using dora-rs CUDA->CUDA")
             pbar = tqdm(total=100)
         t_send = event["metadata"]["time"]
 
@@ -80,8 +80,8 @@ time.sleep(2)
 
 print()
 print("----")
-print(f"Node communication duration with default adora-rs: {mean_cpu / 1000:.1f}ms")
-print(f"Node communication duration with adora CUDA->CUDA: {mean_cuda / 1000:.1f}ms")
+print(f"Node communication duration with default dora-rs: {mean_cpu / 1000:.1f}ms")
+print(f"Node communication duration with dora CUDA->CUDA: {mean_cuda / 1000:.1f}ms")
 
 print("----")
 print(f"Speed Up: {(mean_cpu) / (mean_cuda):.0f}")

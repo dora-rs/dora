@@ -1,9 +1,9 @@
 # Typed dataflow example -- same as python-dataflow but with type annotations.
 #
-# Validate types:   adora validate dataflow.yml
-# Strict (for CI):  adora validate --strict dataflow.yml
-# Visualize:        adora graph dataflow.yml --open
-# Run:              adora run dataflow.yml --uv
+# Validate types:   dora validate dataflow.yml
+# Strict (for CI):  dora validate --strict dataflow.yml
+# Visualize:        dora graph dataflow.yml --open
+# Run:              dora run dataflow.yml --uv
 nodes:
   - id: sensor
     path: sensor.py

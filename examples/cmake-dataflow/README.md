@@ -1,6 +1,6 @@
-# Adora CMake Dataflow Example
+# Dora CMake Dataflow Example
 
-This example shows how to create adora operators and custom nodes in CMake build system.
+This example shows how to create dora operators and custom nodes in CMake build system.
 
 See also [c++-example](https://github.com/dora-rs/adora/blob/main/examples/c%2B%2B-dataflow/README.md) for the implementation details of operator and node.
 
@@ -17,9 +17,9 @@ mkdir build
 cd build && cmake ..
 make install
 cd ..
-adora up
-adora start dataflow.yml
+dora up
+dora start dataflow.yml
 # When done:
-adora stop --all
-adora down
+dora stop --all
+dora down
 ```

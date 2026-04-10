@@ -1,11 +1,11 @@
 use super::Executable;
 use crate::{common::handle_dataflow_result, session::DataflowSession};
-use adora_core::topics::{
-    ADORA_COORDINATOR_PORT_WS_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
-    ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
+use dora_core::topics::{
+    DORA_COORDINATOR_PORT_WS_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
+    DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
 };
 
-use adora_daemon::LogDestination;
+use dora_daemon::LogDestination;
 use eyre::Context;
 use std::{
     collections::BTreeMap,
@@ -22,13 +22,13 @@ pub struct Daemon {
     #[clap(long)]
     machine_id: Option<String>,
     /// Local listen port for event such as dynamic node.
-    #[clap(long, default_value_t = ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
+    #[clap(long, default_value_t = DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT)]
     local_listen_port: u16,
-    /// Address and port number of the adora coordinator
-    #[clap(long, short, default_value_t = LOCALHOST, env = "ADORA_COORDINATOR_ADDR")]
+    /// Address and port number of the dora coordinator
+    #[clap(long, short, default_value_t = LOCALHOST, env = "DORA_COORDINATOR_ADDR")]
     coordinator_addr: IpAddr,
     /// Port number of the coordinator WebSocket server
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
+    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_WS_DEFAULT, env = "DORA_COORDINATOR_PORT")]
     coordinator_port: u16,
     #[clap(long, hide = true)]
     run_dataflow: Option<PathBuf>,
@@ -42,7 +42,7 @@ pub struct Daemon {
     /// Allow shell nodes to execute arbitrary commands.
     ///
     /// Shell nodes are disabled by default for security reasons. This flag
-    /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
+    /// sets the DORA_ALLOW_SHELL_NODES environment variable.
     #[clap(long)]
     allow_shell_nodes: bool,
     /// Number of tokio worker threads (default: number of CPU cores).
@@ -61,14 +61,14 @@ impl Executable for Daemon {
         if self.allow_shell_nodes {
             // SAFETY: Called before spawning any threads (tokio runtime not yet built),
             // so there are no concurrent reads of environment variables.
-            unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
+            unsafe { std::env::set_var("DORA_ALLOW_SHELL_NODES", "true") };
         }
         // Export the listen port so dynamic nodes (and spawned child processes)
         // can discover it via env var.
         // SAFETY: Called before the tokio runtime is built (no threads yet).
         unsafe {
             std::env::set_var(
-                ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV,
+                DORA_DAEMON_LOCAL_LISTEN_PORT_ENV,
                 self.local_listen_port.to_string(),
             );
         }
@@ -126,7 +126,7 @@ impl Executable for Daemon {
         let _guard = {
             let _enter = rt.enter();
 
-            let name = "adora-daemon";
+            let name = "dora-daemon";
             let filename = self
                 .machine_id
                 .as_ref()
@@ -140,7 +140,7 @@ impl Executable for Daemon {
                 None
             };
 
-            adora_tracing::init_tracing_subscriber(
+            dora_tracing::init_tracing_subscriber(
                 name,
                 stdout_filter.as_deref(),
                 Some(&filename),
@@ -161,18 +161,18 @@ impl Executable for Daemon {
                         let dataflow_session =
                             DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
-                        let result = adora_daemon::Daemon::run_dataflow(&dataflow_path,
+                        let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
                             LogDestination::Tracing, None, None, false,
                         ).await?;
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        adora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port).await
+                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port).await
                     }
                 }
             })
-            .context("failed to run adora-daemon")
+            .context("failed to run dora-daemon")
     }
 }
 

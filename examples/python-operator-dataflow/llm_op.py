@@ -7,7 +7,7 @@ import time
 
 import pyarrow as pa
 import pylcs
-from adora import AdoraStatus
+from dora import DoraStatus
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODEL_NAME_OR_PATH = "TheBloke/deepseek-coder-6.7B-instruct-GPTQ"
@@ -45,7 +45,7 @@ The response should look like this:
 
 ASSISTANT_TEMPLATE = """
 ### Instruction
-You're a helpuf assistant named adora. 
+You're a helpuf assistant named dora. 
 Reply with a short message. No code needed. 
 
 User {user_message}
@@ -191,12 +191,12 @@ class Operator:
 
     def on_event(
         self,
-        adora_event,
+        dora_event,
         send_output,
-    ) -> AdoraStatus:
+    ) -> DoraStatus:
         """TODO: Add docstring."""
-        if adora_event["type"] == "INPUT" and adora_event["id"] == "code_modifier":
-            input = adora_event["value"][0].as_py()
+        if dora_event["type"] == "INPUT" and dora_event["id"] == "code_modifier":
+            input = dora_event["value"][0].as_py()
 
             with open(input["path"], encoding="utf8") as f:
                 code = f.read()
@@ -221,16 +221,16 @@ class Operator:
                         },
                     ],
                 ),
-                adora_event["metadata"],
+                dora_event["metadata"],
             )
             print("response: ", output, flush=True)
             send_output(
                 "assistant_message",
                 pa.array([output]),
-                adora_event["metadata"],
+                dora_event["metadata"],
             )
-        elif adora_event["type"] == "INPUT" and adora_event["id"] == "message_sender":
-            user_message = adora_event["value"][0].as_py()
+        elif dora_event["type"] == "INPUT" and dora_event["id"] == "message_sender":
+            user_message = dora_event["value"][0].as_py()
             output = self.ask_llm(
                 MESSAGE_SENDER_TEMPLATE.format(user_message=user_message),
             )
@@ -246,22 +246,22 @@ class Operator:
                     send_output(
                         output["topic"],
                         pa.array(output["data"]),
-                        adora_event["metadata"],
+                        dora_event["metadata"],
                     )
                 else:
                     print("Could not find the topic: {}".format(output["topic"]))
             except:
                 print("Could not parse json")
             # if data is not iterable, put data in a list
-        elif adora_event["type"] == "INPUT" and adora_event["id"] == "assistant":
-            user_message = adora_event["value"][0].as_py()
+        elif dora_event["type"] == "INPUT" and dora_event["id"] == "assistant":
+            user_message = dora_event["value"][0].as_py()
             output = self.ask_llm(ASSISTANT_TEMPLATE.format(user_message=user_message))
             send_output(
                 "assistant_message",
                 pa.array([output]),
-                adora_event["metadata"],
+                dora_event["metadata"],
             )
-        return AdoraStatus.CONTINUE
+        return DoraStatus.CONTINUE
 
     def ask_llm(self, prompt):
 

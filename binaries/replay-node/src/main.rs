@@ -1,24 +1,24 @@
 use std::{fs::File, thread, time::Duration};
 
-use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
-use adora_node_api::AdoraNode;
-use adora_recording::RecordingReader;
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_node_api::DoraNode;
+use dora_recording::RecordingReader;
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
     let replay_file =
-        std::env::var("ADORA_REPLAY_FILE").wrap_err("ADORA_REPLAY_FILE env var not set")?;
+        std::env::var("DORA_REPLAY_FILE").wrap_err("DORA_REPLAY_FILE env var not set")?;
     let replay_node =
-        std::env::var("ADORA_REPLAY_NODE").wrap_err("ADORA_REPLAY_NODE env var not set")?;
-    let speed: f64 = std::env::var("ADORA_REPLAY_SPEED")
+        std::env::var("DORA_REPLAY_NODE").wrap_err("DORA_REPLAY_NODE env var not set")?;
+    let speed: f64 = std::env::var("DORA_REPLAY_SPEED")
         .unwrap_or_else(|_| "1.0".to_string())
         .parse()
-        .wrap_err("invalid ADORA_REPLAY_SPEED")?;
-    let do_loop = std::env::var("ADORA_REPLAY_LOOP")
+        .wrap_err("invalid DORA_REPLAY_SPEED")?;
+    let do_loop = std::env::var("DORA_REPLAY_LOOP")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let (mut node, _events) = AdoraNode::init_from_env()?;
+    let (mut node, _events) = DoraNode::init_from_env()?;
 
     loop {
         let file =
@@ -86,12 +86,12 @@ fn main() -> eyre::Result<()> {
             }
         }
 
-        eprintln!("adora-replay-node[{replay_node}]: replayed {replayed} messages");
+        eprintln!("dora-replay-node[{replay_node}]: replayed {replayed} messages");
 
         if !do_loop {
             break;
         }
-        eprintln!("adora-replay-node[{replay_node}]: looping...");
+        eprintln!("dora-replay-node[{replay_node}]: looping...");
     }
 
     Ok(())
