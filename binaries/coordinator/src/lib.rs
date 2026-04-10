@@ -1423,6 +1423,7 @@ async fn start_inner(
                                                     match conn.send_and_receive(&msg).await {
                                                         Ok(_) => {
                                                             // Clean up coordinator state
+                                                            // (inverse of AddNode inserts)
                                                             if let Some(dataflow) =
                                                                 running_dataflows
                                                                     .get_mut(&dataflow_id)
@@ -1430,6 +1431,11 @@ async fn start_inner(
                                                                 dataflow
                                                                     .node_to_daemon
                                                                     .remove(&node_id);
+                                                                dataflow
+                                                                    .descriptor
+                                                                    .nodes
+                                                                    .retain(|n| n.id != node_id);
+                                                                dataflow.nodes.remove(&node_id);
                                                             }
                                                             Ok(ControlRequestReply::NodeRemoved {
                                                                 dataflow_id,

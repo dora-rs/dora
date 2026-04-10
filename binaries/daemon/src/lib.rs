@@ -1749,6 +1749,10 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.drop_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+
+                    // Remove from stored descriptor (inverse of AddNode
+                    // push) so descriptor-based lookups stay consistent.
+                    dataflow.descriptor.nodes.retain(|n| n.id != node_id);
                 }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
