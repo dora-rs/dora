@@ -179,7 +179,7 @@ impl PreparedNode {
         let mut window_count: u32 = 0;
 
         loop {
-            let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
+            let Ok(NodeProcessFinished { exit_status }) = finished_rx.await else {
                 logger
                     .log(
                         LogLevel::Error,
@@ -325,15 +325,34 @@ impl PreparedNode {
                         )
                         .await;
                 }
+                // Fresh `(op_tx, op_rx)` per incarnation so any
+                // grace-kill task holding an older `op_tx` cannot
+                // reach the new process — closes the race in
+                // dora-rs/adora#152.
+                let (op_tx_new, op_rx_new) = flume::bounded(2);
                 let (finished_tx, finished_rx_new) = oneshot::channel();
                 let result = self
                     .clone()
-                    .spawn_inner(&mut logger, op_rx, finished_tx)
+                    .spawn_inner(&mut logger, op_rx_new, finished_tx)
                     .await;
                 match result {
                     Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
                         pid.store(new_pid, atomic::Ordering::Release);
+                        // Install the new `ProcessHandle` in
+                        // `running_nodes` so subsequent stop/kill
+                        // operations target this incarnation.
+                        let handle_replaced = AdoraEvent::ProcessHandleReplaced {
+                            dataflow_id: self.dataflow_id,
+                            node_id: self.node.id.clone(),
+                            new_handle: crate::ProcessHandle::new(op_tx_new),
+                        }
+                        .into();
+                        let msg = Timestamped {
+                            inner: handle_replaced,
+                            timestamp: self.clock.clone().new_timestamp(),
+                        };
+                        let _ = self.daemon_tx.clone().send(msg).await;
                     }
                     Ok(NodeKind::Dynamic) => {
                         logger
@@ -629,7 +648,12 @@ impl PreparedNode {
             };
 
             let _ = log_finish_rx.await;
-            let _ = finished_tx.send(NodeProcessFinished { exit_status, op_rx });
+            // Drop `op_rx` here so any grace-kill task still holding
+            // the paired `op_tx` sees a closed channel on the next
+            // `submit()` instead of routing operations to the
+            // subsequent incarnation (dora-rs/adora#152).
+            drop(op_rx);
+            let _ = finished_tx.send(NodeProcessFinished { exit_status });
         });
 
         let node_id = self.node.id.clone();
@@ -909,5 +933,11 @@ enum NodeKind {
 
 struct NodeProcessFinished {
     exit_status: NodeExitStatus,
-    op_rx: flume::Receiver<ProcessOperation>,
+    // Note: `op_rx` used to be returned here and recycled for the next
+    // incarnation. That allowed a grace-kill task holding the old
+    // `op_tx` to send SoftKill/Kill to the *new* process after a
+    // restart, because both incarnations shared the same channel
+    // (dora-rs/adora#152). The receiver is now dropped at the end of
+    // the spawn_inner task and each restart creates a fresh channel
+    // pair.
 }

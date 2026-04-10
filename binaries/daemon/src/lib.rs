@@ -3418,6 +3418,38 @@ impl Daemon {
                         .await?;
                 }
             }
+            AdoraEvent::ProcessHandleReplaced {
+                dataflow_id,
+                node_id,
+                new_handle,
+            } => {
+                // The per-node restart_loop just spawned a replacement
+                // process with a fresh op_tx/op_rx pair. Swap it into
+                // running_nodes so subsequent stop/kill operations
+                // target the new incarnation rather than a dead
+                // predecessor's channel (dora-rs/adora#152).
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
+                        // Overwriting the previous Some(old_handle)
+                        // drops it, which currently fires its `Kill`
+                        // send on the already-closed old op_rx — a
+                        // no-op.
+                        node.process = Some(new_handle);
+                    } else {
+                        tracing::warn!(
+                            %dataflow_id,
+                            %node_id,
+                            "ProcessHandleReplaced for unknown node"
+                        );
+                    }
+                } else {
+                    tracing::warn!(
+                        %dataflow_id,
+                        %node_id,
+                        "ProcessHandleReplaced for unknown dataflow"
+                    );
+                }
+            }
         }
         Ok(())
     }
