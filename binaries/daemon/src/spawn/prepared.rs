@@ -370,6 +370,18 @@ impl PreparedNode {
     ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
+                // Re-serialize ADORA_NODE_CONFIG from the current
+                // node_config. The command was built once at initial
+                // spawn time with the initial config; the restart_loop
+                // updates self.node_config.restart_count between
+                // restarts but the command's baked-in env var was stale.
+                // Without this, restarted nodes always see
+                // restart_count=0 (pre-existing bug, first caught by
+                // the restart_recovers_from_failure E2E test).
+                if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
+                    command.set_env("ADORA_NODE_CONFIG", &config_yaml);
+                }
+
                 #[allow(unused_mut)]
                 let mut std_command = command.to_std();
                 logger
