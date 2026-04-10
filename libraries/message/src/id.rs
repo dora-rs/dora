@@ -3,8 +3,11 @@ use std::{borrow::Borrow, convert::Infallible, str::FromStr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Validate that an identifier contains only safe characters: `[a-zA-Z0-9_.-]`.
-fn validate_id(id: &str) -> Result<(), InvalidId> {
+/// Validate that a node identifier contains only safe characters: `[a-zA-Z0-9_.-]`.
+///
+/// NodeIds must NOT contain `/` because `/` is the separator between
+/// `<node_id>/<output_id>` in input mapping syntax.
+fn validate_node_id(id: &str) -> Result<(), InvalidId> {
     if id.is_empty() {
         return Err(InvalidId("identifier must not be empty".into()));
     }
@@ -14,6 +17,27 @@ fn validate_id(id: &str) -> Result<(), InvalidId> {
     {
         return Err(InvalidId(format!(
             "identifier contains invalid character '{ch}' -- only [a-zA-Z0-9_.-] are allowed"
+        )));
+    }
+    Ok(())
+}
+
+/// Validate that a data identifier contains only safe characters: `[a-zA-Z0-9_./-]`.
+///
+/// DataIds allow `/` because runtime-node operator outputs are
+/// namespaced as `<operator-id>/<output-name>` (e.g. `rust-operator/status`).
+/// The input mapping syntax `<node-id>/<output-id>` splits on the
+/// FIRST `/`, so subsequent slashes are part of the DataId.
+fn validate_data_id(id: &str) -> Result<(), InvalidId> {
+    if id.is_empty() {
+        return Err(InvalidId("identifier must not be empty".into()));
+    }
+    if let Some(ch) = id
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.' && *c != '/')
+    {
+        return Err(InvalidId(format!(
+            "identifier contains invalid character '{ch}' -- only [a-zA-Z0-9_./-] are allowed"
         )));
     }
     Ok(())
@@ -39,7 +63,7 @@ impl<'de> Deserialize<'de> for NodeId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        validate_id(&s).map_err(serde::de::Error::custom)?;
+        validate_node_id(&s).map_err(serde::de::Error::custom)?;
         Ok(NodeId(s))
     }
 }
@@ -48,7 +72,7 @@ impl FromStr for NodeId {
     type Err = InvalidId;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        validate_id(s)?;
+        validate_node_id(s)?;
         Ok(Self(s.to_owned()))
     }
 }
@@ -66,7 +90,7 @@ impl FromStr for NodeId {
 /// is fallible.
 impl From<String> for NodeId {
     fn from(id: String) -> Self {
-        if let Err(e) = validate_id(&id) {
+        if let Err(e) = validate_node_id(&id) {
             panic!("invalid NodeId '{id}': {e}");
         }
         Self(id)
@@ -125,7 +149,7 @@ impl<'de> Deserialize<'de> for DataId {
         D: serde::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        validate_id(&s).map_err(serde::de::Error::custom)?;
+        validate_data_id(&s).map_err(serde::de::Error::custom)?;
         Ok(DataId(s))
     }
 }
@@ -134,7 +158,7 @@ impl FromStr for DataId {
     type Err = InvalidId;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        validate_id(s)?;
+        validate_data_id(s)?;
         Ok(Self(s.to_owned()))
     }
 }
@@ -151,7 +175,7 @@ impl From<DataId> for String {
 /// or `DataId::try_from(s)` when handling untrusted input.
 impl From<String> for DataId {
     fn from(id: String) -> Self {
-        if let Err(e) = validate_id(&id) {
+        if let Err(e) = validate_data_id(&id) {
             panic!("invalid DataId '{id}': {e}");
         }
         Self(id)
@@ -173,21 +197,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn valid_ids() {
-        assert!(validate_id("my-node").is_ok());
-        assert!(validate_id("my_node").is_ok());
-        assert!(validate_id("MyNode123").is_ok());
-        assert!(validate_id("node.v2").is_ok());
-        assert!(validate_id("a").is_ok());
+    fn valid_node_ids() {
+        assert!(validate_node_id("my-node").is_ok());
+        assert!(validate_node_id("my_node").is_ok());
+        assert!(validate_node_id("MyNode123").is_ok());
+        assert!(validate_node_id("node.v2").is_ok());
+        assert!(validate_node_id("a").is_ok());
     }
 
     #[test]
-    fn invalid_ids() {
-        assert!(validate_id("").is_err());
-        assert!(validate_id("node/output").is_err());
-        assert!(validate_id("node name").is_err());
-        assert!(validate_id("node;rm").is_err());
-        assert!(validate_id("node\0").is_err());
+    fn invalid_node_ids() {
+        assert!(validate_node_id("").is_err());
+        assert!(validate_node_id("node/output").is_err());
+        assert!(validate_node_id("node name").is_err());
+        assert!(validate_node_id("node;rm").is_err());
+        assert!(validate_node_id("node\0").is_err());
+    }
+
+    #[test]
+    fn data_id_allows_slash_for_operators() {
+        // Operator outputs are namespaced: `operator-id/output-name`
+        assert!(validate_data_id("rust-operator/status").is_ok());
+        assert!(validate_data_id("op/output").is_ok());
+        assert!(validate_data_id("simple").is_ok());
+    }
+
+    #[test]
+    fn data_id_rejects_other_specials() {
+        assert!(validate_data_id("").is_err());
+        assert!(validate_data_id("has space").is_err());
+        assert!(validate_data_id("semi;colon").is_err());
     }
 
     #[test]
