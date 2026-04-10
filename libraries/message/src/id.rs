@@ -40,6 +40,16 @@ fn validate_data_id(id: &str) -> Result<(), InvalidId> {
             "identifier contains invalid character '{ch}' -- only [a-zA-Z0-9_./-] are allowed"
         )));
     }
+    // Reject malformed slash patterns that would produce empty segments
+    // when split (e.g. "op/", "/out", "a//b"). These would cause panics
+    // in downstream code that does DataId::from(segment) on the split
+    // result (e.g. descriptor/validate.rs:379).
+    if id.starts_with('/') || id.ends_with('/') || id.contains("//") {
+        return Err(InvalidId(format!(
+            "identifier '{id}' has empty path segment -- \
+             leading, trailing, or consecutive '/' are not allowed"
+        )));
+    }
     Ok(())
 }
 
@@ -227,6 +237,14 @@ mod tests {
         assert!(validate_data_id("").is_err());
         assert!(validate_data_id("has space").is_err());
         assert!(validate_data_id("semi;colon").is_err());
+    }
+
+    #[test]
+    fn data_id_rejects_malformed_slash_patterns() {
+        assert!(validate_data_id("op/").is_err(), "trailing slash");
+        assert!(validate_data_id("/out").is_err(), "leading slash");
+        assert!(validate_data_id("a//b").is_err(), "double slash");
+        assert!(validate_data_id("/").is_err(), "bare slash");
     }
 
     #[test]
