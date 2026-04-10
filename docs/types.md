@@ -276,6 +276,9 @@ Valid values: `1`, `warn`, `true` (warn mode), `error` (error mode). Unset or an
 - Covers all languages that send Arrow arrays (Rust, Python, C++ Arrow path)
 - Raw byte sends (`send_output_bytes`, C nodes) are untyped and skip checking
 - Complex types (Struct-based: Image, Vector3, etc.) are skipped -- only primitive types, String, Bytes, and Bool are validated at runtime
+- **Pattern messages are skipped.** When a message carries `request_id`, `goal_id`, or `goal_status` in its metadata parameters, runtime type checking is bypassed for that message. Service, action, and streaming patterns legitimately multiplex multiple Arrow schemas through a single output — a service server may reply with different response shapes for different request types — so a single declared Arrow type cannot cover all variants. Non-pattern messages on the same output are still validated normally (dora-rs/adora#150).
+
+The same exemption applies to the receive-side first-message type check: if the first input message carries pattern metadata, the check stays armed and defers to the next non-pattern message. This avoids false positives on inputs that receive a polymorphic first message.
 
 ## Graph Visualization
 

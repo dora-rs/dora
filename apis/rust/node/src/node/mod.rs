@@ -803,9 +803,19 @@ impl AdoraNode {
 
         let arrow_array = data.to_data();
 
-        // Runtime type check (only when ADORA_RUNTIME_TYPE_CHECK is set)
+        // Runtime type check (only when ADORA_RUNTIME_TYPE_CHECK is set).
+        //
+        // Skip the check when this message carries pattern metadata
+        // (`request_id`, `goal_id`, or `goal_status`). Service, action,
+        // and streaming patterns legitimately multiplex multiple Arrow
+        // schemas through a single output — a service server may reply
+        // with different response shapes for different request types —
+        // so a single declared Arrow type cannot cover all variants.
+        // Non-pattern messages still get full validation
+        // (dora-rs/adora#150).
         if let Some((mode, checks)) = &self.runtime_type_checks
             && let Some(expected) = checks.get(&output_id)
+            && !carries_pattern_correlation(&parameters)
         {
             let actual = arrow_array.data_type();
             if actual != expected {
@@ -1566,6 +1576,20 @@ impl DerefMut for ShmemHandle {
 unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
 
+/// Returns `true` if the given metadata carries any pattern-correlation
+/// key (`request_id`, `goal_id`, or `goal_status`).
+///
+/// Messages marked with these keys belong to a service, action, or
+/// streaming pattern where multiple Arrow schemas can legitimately
+/// flow through a single output/input, distinguished by metadata
+/// rather than a fixed Arrow type. Type checks are skipped for such
+/// messages (dora-rs/adora#150).
+pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
+    params.contains_key(adora_message::metadata::REQUEST_ID)
+        || params.contains_key(adora_message::metadata::GOAL_ID)
+        || params.contains_key(adora_message::metadata::GOAL_STATUS)
+}
+
 /// Init Opentelemetry Tracing
 ///
 /// This requires a tokio runtime spawning this function to be functional
@@ -1829,6 +1853,54 @@ mod tests {
         let outputs: Vec<_> = rx.try_iter().collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "response");
+    }
+
+    // ---- dora-rs/adora#150: pattern polymorphism exemption ----
+
+    #[test]
+    fn carries_pattern_correlation_detects_request_id() {
+        let mut params = MetadataParameters::default();
+        params.insert(
+            adora_message::metadata::REQUEST_ID.to_string(),
+            adora_message::metadata::Parameter::String("req-1".into()),
+        );
+        assert!(carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn carries_pattern_correlation_detects_goal_id() {
+        let mut params = MetadataParameters::default();
+        params.insert(
+            adora_message::metadata::GOAL_ID.to_string(),
+            adora_message::metadata::Parameter::String("goal-1".into()),
+        );
+        assert!(carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn carries_pattern_correlation_detects_goal_status() {
+        let mut params = MetadataParameters::default();
+        params.insert(
+            adora_message::metadata::GOAL_STATUS.to_string(),
+            adora_message::metadata::Parameter::String("succeeded".into()),
+        );
+        assert!(carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn carries_pattern_correlation_empty_is_not_a_pattern() {
+        let params = MetadataParameters::default();
+        assert!(!carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn carries_pattern_correlation_ignores_non_pattern_keys() {
+        let mut params = MetadataParameters::default();
+        params.insert(
+            "custom_key".to_string(),
+            adora_message::metadata::Parameter::String("value".into()),
+        );
+        assert!(!carries_pattern_correlation(&params));
     }
 
     #[test]
