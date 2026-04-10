@@ -37,6 +37,10 @@ pub(crate) fn handle_dataflow_result(
 }
 
 /// Send a control request and deserialize the reply.
+///
+/// Returns `Err` if the coordinator replies with
+/// [`ControlRequestReply::Error`], so callers don't need to match
+/// on the error variant themselves (dora-rs/adora#153).
 pub(crate) fn send_control_request(
     session: &WsSession,
     request: &ControlRequest,
@@ -44,22 +48,50 @@ pub(crate) fn send_control_request(
     let reply_raw = session
         .request(&serde_json::to_vec(request).unwrap())
         .wrap_err("failed to send control request")?;
-    serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")
-}
-
-pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<DataflowList> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send list message")?;
     let reply: ControlRequestReply =
         serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let ids = match reply {
-        ControlRequestReply::DataflowList(list) => list,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected list dataflow reply: {other:?}"),
-    };
+    match reply {
+        ControlRequestReply::Error(err) => Err(eyre::eyre!("{err}")),
+        other => Ok(other),
+    }
+}
 
-    Ok(ids)
+/// Extract a specific reply variant, returning an error for mismatches.
+///
+/// Eliminates the repetitive
+/// `match reply { Variant(x) => x, other => bail!("unexpected: {other:?}") }`
+/// at every CLI call site (dora-rs/adora#153).
+macro_rules! expect_reply {
+    // Tuple variant: ControlRequestReply::Foo(inner)
+    ($reply:expr, $variant:ident ($inner:ident)) => {
+        match $reply {
+            adora_message::coordinator_to_cli::ControlRequestReply::$variant($inner) => {
+                Ok($inner)
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+    // Struct variant: ControlRequestReply::Foo { a, b }
+    ($reply:expr, $variant:ident { $($field:ident),+ $(,)? }) => {
+        match $reply {
+            adora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ } => {
+                Ok(($($field),+))
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+}
+pub(crate) use expect_reply;
+
+pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<DataflowList> {
+    let reply = send_control_request(session, &ControlRequest::List)?;
+    expect_reply!(reply, DataflowList(list))
 }
 
 pub(crate) fn resolve_dataflow_identifier_interactive(
