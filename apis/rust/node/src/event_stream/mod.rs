@@ -1028,43 +1028,43 @@ fn zenoh_payload_to_arrow_array(
     // allocation owner. The pointer remains valid because the ZBytes
     // inside the Arc keeps the mapping alive.
     //
-    // For non-SHM payloads, to_bytes() returns Cow::Owned(Vec<u8>).
-    // We extract the pointer from the Vec, then move the ZBytes into
-    // the Arc owner. The Cow::Owned's Vec is NOT dropped because we
-    // use ManuallyDrop — its memory is owned by the ZBytes internally
-    // and will be freed when the Arc drops.
-    let cow = payload.to_bytes();
-    let (ptr, len) = match &cow {
-        std::borrow::Cow::Borrowed(slice) => (slice.as_ptr(), slice.len()),
-        std::borrow::Cow::Owned(vec) => (vec.as_ptr(), vec.len()),
-    };
-    // SAFETY: `ptr` points into memory owned by `payload` (either SHM
-    // mapping or internal Vec). We move `payload` into the Arc below
-    // so the allocation stays alive for the lifetime of the Buffer.
-    // The raw pointer doesn't carry the Cow borrow — it's just a number.
-    // We must drop `cow` before moving `payload`.
-    // Wrap the ZBytes in a newtype that satisfies arrow's Allocation
-    // trait (Send + Sync). ZBytes is Send but its Sync impl depends on
-    // zenoh internals. Since we only access the buffer from the thread
-    // that holds the Arrow array (no concurrent reads from multiple
-    // threads on the raw buffer), the Sync impl is sound in practice.
-    #[allow(dead_code)] // field kept alive to own the zenoh buffer
-    struct ZBytesAllocation(zenoh::bytes::ZBytes);
-    // SAFETY: ZBytes is Send. The wrapped buffer is only accessed via
-    // the Arrow Buffer which serializes access through its own Arc.
-    // RefUnwindSafe is safe because we never observe interior state
-    // after a panic.
-    unsafe impl Sync for ZBytesAllocation {}
-    unsafe impl Send for ZBytesAllocation {}
-    impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+    // Branch on Cow to handle ownership correctly for each case.
+    let raw_buffer = match payload.to_bytes() {
+        std::borrow::Cow::Borrowed(slice) => {
+            // SHM path: the slice points into memory owned by `payload`
+            // (the zenoh shared-memory mapping). Wrap `payload` in an
+            // Arc as the allocation owner so the mapping stays alive
+            // for the lifetime of the Arrow buffer.
+            let ptr =
+                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+            let len = slice.len();
 
-    drop(cow);
-    let raw_buffer = unsafe {
-        arrow::buffer::Buffer::from_custom_allocation(
-            NonNull::new(ptr as *mut u8).expect("zenoh payload ptr is null"),
-            len,
-            Arc::new(ZBytesAllocation(payload)),
-        )
+            // Newtype satisfying arrow's Allocation trait.
+            #[allow(dead_code)] // field kept alive to own the zenoh buffer
+            struct ZBytesAllocation(zenoh::bytes::ZBytes);
+            unsafe impl Sync for ZBytesAllocation {}
+            unsafe impl Send for ZBytesAllocation {}
+            impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+
+            // SAFETY: `ptr` points into the SHM region owned by
+            // `payload`. Moving `payload` into the Arc keeps the
+            // region mapped for the lifetime of the Buffer.
+            unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(
+                    ptr,
+                    len,
+                    Arc::new(ZBytesAllocation(payload)),
+                )
+            }
+        }
+        std::borrow::Cow::Owned(vec) => {
+            // Non-SHM path: zenoh materialized a fresh Vec. Let the
+            // Arrow buffer own that Vec directly — no copy, correct
+            // ownership (the Vec's allocation is freed when the Buffer
+            // drops). `payload` is dropped here; it does not own the
+            // Vec's allocation.
+            arrow::buffer::Buffer::from_vec(vec)
+        }
     };
 
     buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
