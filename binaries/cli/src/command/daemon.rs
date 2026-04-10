@@ -98,7 +98,12 @@ impl Executable for Daemon {
                 // Set SCHED_FIFO priority 50 (Linux only).
                 #[cfg(target_os = "linux")]
                 {
-                    let param = libc::sched_param { sched_priority: 50 };
+                    // Use zeroed() + field set instead of struct literal
+                    // because musl libc's sched_param has extra POSIX
+                    // fields (sched_ss_*) that glibc doesn't expose
+                    // (dora-rs/adora#170).
+                    let mut param: libc::sched_param = unsafe { std::mem::zeroed() };
+                    param.sched_priority = 50;
                     let sched_result =
                         unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
                     if sched_result == 0 {
