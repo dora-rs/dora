@@ -3333,6 +3333,9 @@ impl Daemon {
                             .collect();
                         for receiver_id in &downstream {
                             if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
+                                // First try the non-blocking path. NodeRestarted is
+                                // control-classed inside send_with_timestamp, so it
+                                // benefits from the control headroom reservation.
                                 match send_with_timestamp(
                                     channel,
                                     NodeEvent::NodeRestarted {
@@ -3343,10 +3346,56 @@ impl Daemon {
                                     Ok(true) => {
                                         dataflow.inc_pending(receiver_id);
                                     }
-                                    Ok(false) => { /* event dropped (channel full) */ }
+                                    Ok(false) => {
+                                        // Channel full even with control headroom.
+                                        // NodeRestarted is a critical lifecycle event:
+                                        // dropping it leaves service/action clients
+                                        // blocked on pre-crash correlations forever
+                                        // (dora-rs/adora#148). Use an unconditional
+                                        // backpressure-aware send to guarantee delivery.
+                                        //
+                                        // This blocks the daemon main loop until the
+                                        // receiver drains one slot. Acceptable because:
+                                        // - NodeRestarted is rare (only on crash+restart)
+                                        // - The receiver (Listener::run_inner) is a tokio
+                                        //   task on the same runtime, so it will make
+                                        //   progress cooperatively
+                                        // - If the receiver is dead the channel is closed
+                                        //   and send() returns Err immediately
+                                        tracing::warn!(
+                                            %dataflow_id,
+                                            restarted_node = %node_id,
+                                            %receiver_id,
+                                            "NodeRestarted try_send failed (channel full); \
+                                             awaiting backpressure delivery"
+                                        );
+                                        let msg = Timestamped {
+                                            inner: NodeEvent::NodeRestarted {
+                                                id: node_id.clone(),
+                                            },
+                                            timestamp: self.clock.new_timestamp(),
+                                        };
+                                        match channel.send(msg).await {
+                                            Ok(()) => {
+                                                dataflow.inc_pending(receiver_id);
+                                            }
+                                            Err(_closed) => {
+                                                tracing::warn!(
+                                                    %dataflow_id,
+                                                    restarted_node = %node_id,
+                                                    %receiver_id,
+                                                    "NodeRestarted delivery failed: \
+                                                     receiver channel closed"
+                                                );
+                                            }
+                                        }
+                                    }
                                     Err(_) => {
                                         tracing::warn!(
-                                            "failed to send NodeRestarted to `{receiver_id}`"
+                                            %dataflow_id,
+                                            restarted_node = %node_id,
+                                            %receiver_id,
+                                            "failed to send NodeRestarted: receiver channel closed"
                                         );
                                     }
                                 }
