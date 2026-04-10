@@ -156,20 +156,32 @@ impl PyEvent {
             .unbind())
     }
 
-    fn ty(event: &Event) -> &str {
+    fn ty(event: &Event) -> &'static str {
         match event {
             Event::Stop(_) => "STOP",
             Event::Input { .. } => "INPUT",
             Event::InputClosed { .. } => "INPUT_CLOSED",
+            Event::InputRecovered { .. } => "INPUT_RECOVERED",
+            Event::NodeRestarted { .. } => "NODE_RESTARTED",
+            Event::Reload { .. } => "RELOAD",
+            Event::ParamUpdate { .. } => "PARAM_UPDATE",
+            Event::ParamDeleted { .. } => "PARAM_DELETED",
             Event::Error(_) => "ERROR",
+            // `Event` is `#[non_exhaustive]`; surface genuinely new variants
+            // as UNKNOWN rather than failing to build on future adora upgrades.
             _other => "UNKNOWN",
         }
     }
 
     fn id(event: &Event) -> Option<&str> {
         match event {
-            Event::Input { id, .. } => Some(id),
-            Event::InputClosed { id } => Some(id),
+            Event::Input { id, .. } => Some(id.as_ref()),
+            Event::InputClosed { id } => Some(id.as_ref()),
+            Event::InputRecovered { id } => Some(id.as_ref()),
+            Event::NodeRestarted { id } => Some(id.as_ref()),
+            Event::Reload { operator_id } => operator_id.as_ref().map(|id| id.as_ref()),
+            Event::ParamUpdate { key, .. } => Some(key.as_str()),
+            Event::ParamDeleted { key } => Some(key.as_str()),
             Event::Stop(cause) => match cause {
                 StopCause::Manual => Some("MANUAL"),
                 StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
@@ -179,7 +191,10 @@ impl PyEvent {
         }
     }
 
-    /// Returns the payload of an input event as an arrow array (if any).
+    /// Returns the payload of an event as a Python object (if any).
+    ///
+    /// - `Input`: the Arrow array payload.
+    /// - `ParamUpdate`: the new parameter value, converted from JSON.
     fn value(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         match &self.event {
             MergedEvent::Adora(Event::Input { data, .. }) => {
@@ -189,6 +204,14 @@ impl PyEvent {
                 // object is GC'd, which drops the cloned Arcs. No leak.
                 let array_data = data.to_data().to_pyarrow(py)?.unbind();
                 Ok(Some(array_data))
+            }
+            MergedEvent::Adora(Event::ParamUpdate { value, .. }) => {
+                // `pythonize` converts serde_json::Value recursively into native
+                // Python types (None, bool, int, float, str, list, dict).
+                let obj = pythonize::pythonize(py, value)
+                    .context("failed to convert ParamUpdate value to Python")?
+                    .unbind();
+                Ok(Some(obj))
             }
             _ => Ok(None),
         }
@@ -468,5 +491,69 @@ mod tests {
         assert_roundtrip(&list_array).context("ListArray roundtrip failed")?;
 
         Ok(())
+    }
+
+    // Regression tests for dora-rs/adora#147: Python event conversion used
+    // to return "UNKNOWN" with no id for five event types, making fault
+    // tolerance and runtime parameters unusable from Python.
+    mod py_event_types {
+        use super::super::PyEvent;
+        use adora_node_api::{
+            Event,
+            adora_core::config::{DataId, NodeId, OperatorId},
+        };
+
+        #[test]
+        fn node_restarted_has_type_and_id() {
+            let event = Event::NodeRestarted {
+                id: NodeId::from("upstream".to_string()),
+            };
+            assert_eq!(PyEvent::ty(&event), "NODE_RESTARTED");
+            assert_eq!(PyEvent::id(&event), Some("upstream"));
+        }
+
+        #[test]
+        fn input_recovered_has_type_and_id() {
+            let event = Event::InputRecovered {
+                id: DataId::from("sensor".to_string()),
+            };
+            assert_eq!(PyEvent::ty(&event), "INPUT_RECOVERED");
+            assert_eq!(PyEvent::id(&event), Some("sensor"));
+        }
+
+        #[test]
+        fn reload_has_type_and_operator_id() {
+            let event = Event::Reload {
+                operator_id: Some(OperatorId::from("op-1".to_string())),
+            };
+            assert_eq!(PyEvent::ty(&event), "RELOAD");
+            assert_eq!(PyEvent::id(&event), Some("op-1"));
+        }
+
+        #[test]
+        fn reload_without_operator_has_no_id() {
+            let event = Event::Reload { operator_id: None };
+            assert_eq!(PyEvent::ty(&event), "RELOAD");
+            assert_eq!(PyEvent::id(&event), None);
+        }
+
+        #[test]
+        fn param_update_has_type_and_key() {
+            let event = Event::ParamUpdate {
+                key: "threshold".to_string(),
+                value: serde_json::json!(0.85),
+            };
+            assert_eq!(PyEvent::ty(&event), "PARAM_UPDATE");
+            assert_eq!(PyEvent::id(&event), Some("threshold"));
+        }
+
+        #[test]
+        fn param_deleted_has_type_and_key() {
+            let event = Event::ParamDeleted {
+                key: "threshold".to_string(),
+            };
+            assert_eq!(PyEvent::ty(&event), "PARAM_DELETED");
+            assert_eq!(PyEvent::id(&event), Some("threshold"));
+        }
     }
 }
