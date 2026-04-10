@@ -454,7 +454,7 @@ jobs:
             cross: true
           - runner: ubuntu-latest
             target: x86_64-pc-windows-gnu
-            gcc: gcc-mingw-w64-x86-64
+            gcc: gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
           - runner: macos-latest
             target: aarch64-apple-darwin
           - runner: macos-latest
