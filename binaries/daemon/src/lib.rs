@@ -1524,10 +1524,136 @@ impl Daemon {
             DaemonCoordinatorEvent::AddNode {
                 dataflow_id,
                 node,
-                uv: _,
+                uv,
             } => {
-                // FIXME: implement full node spawning (spawn_node + listener + subscribe)
-                tracing::warn!(%dataflow_id, node_id = %node.id, "AddNode not yet implemented — node will not be spawned");
+                let node_id = node.id.clone();
+                tracing::info!(%dataflow_id, %node_id, "adding node to running dataflow");
+
+                let result: eyre::Result<()> = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    let base_working_dir = self
+                        .working_dir
+                        .get(&dataflow_id)
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+                    // 1. Register inputs (open_inputs, mappings, timers, deadlines)
+                    let inputs = node_inputs(&node);
+                    for (input_id, input) in &inputs {
+                        dataflow
+                            .open_inputs
+                            .entry(node_id.clone())
+                            .or_default()
+                            .insert(input_id.clone());
+                        match &input.mapping {
+                            InputMapping::User(mapping) => {
+                                if let Some(timeout) = input.input_timeout {
+                                    dataflow.input_deadlines.insert(
+                                        (node_id.clone(), input_id.clone()),
+                                        InputDeadline {
+                                            timeout: Duration::from_secs_f64(timeout),
+                                            last_received: None,
+                                        },
+                                    );
+                                }
+                                dataflow
+                                    .mappings
+                                    .entry(OutputId(mapping.source.clone(), mapping.output.clone()))
+                                    .or_default()
+                                    .insert((node_id.clone(), input_id.clone()));
+                            }
+                            InputMapping::Timer { interval } => {
+                                dataflow
+                                    .timers
+                                    .entry(*interval)
+                                    .or_default()
+                                    .insert((node_id.clone(), input_id.clone()));
+                            }
+                            InputMapping::Logs(filter) => {
+                                dataflow.log_subscribers.push(
+                                    crate::running_dataflow::LogSubscriber {
+                                        node_id: node_id.clone(),
+                                        input_id: input_id.clone(),
+                                        filter: filter.clone(),
+                                    },
+                                );
+                            }
+                        }
+                    }
+
+                    // 2. Mark as pending so the dataflow doesn't finish
+                    //    before the node is ready.
+                    if node.kind.dynamic() {
+                        dataflow.dynamic_nodes.insert(node_id.clone());
+                    } else {
+                        dataflow.pending_nodes.insert(node_id.clone());
+                    }
+
+                    // 3. Prepare stderr buffer
+                    let node_stderr = dataflow
+                        .node_stderr_most_recent
+                        .entry(node_id.clone())
+                        .or_insert_with(|| Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX)))
+                        .clone();
+
+                    // 4. Spawn the node
+                    let descriptor = dataflow.descriptor.clone();
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let task = spawner
+                        .spawn_node(
+                            node,
+                            base_working_dir,
+                            node_stderr,
+                            None, // no write_events_to for dynamically added nodes
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare node")?;
+                    let prepared = task.await.wrap_err("failed to build node")?;
+                    let dynamic_node = prepared.dynamic();
+                    let running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn node")?;
+
+                    // 5. Register the running node
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during spawn"))?;
+                    dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+                    tracing::info!(
+                        %dataflow_id,
+                        %node_id,
+                        dynamic = dynamic_node,
+                        "node added successfully"
+                    );
+                    Ok(())
+                }
+                .await;
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
+                }
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }

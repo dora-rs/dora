@@ -1335,8 +1335,7 @@ async fn start_inner(
                                                                     DaemonCoordinatorEvent::AddNode {
                                                                         dataflow_id,
                                                                         node: resolved_node,
-                                                                        // FIXME: thread `uv` from ControlRequest::AddNode when available
-                                                                        uv: false,
+                                                                        uv: dataflow.uv,
                                                                     },
                                                                 timestamp: clock.new_timestamp(),
                                                             })?;
