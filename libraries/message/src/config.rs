@@ -247,7 +247,7 @@ impl FromStr for InputMapping {
             "adora" => match output.split_once('/') {
                 Some(("timer", output)) => {
                     let (unit, value) = output.split_once('/').ok_or(
-                        "timer input must specify unit and value (e.g. `secs/5` or `millis/100`)",
+                        "timer input must specify unit and value (e.g. `secs/5`, `millis/100`, or `hz/30`)",
                     )?;
                     let interval = match unit {
                         "secs" => {
@@ -262,9 +262,20 @@ impl FromStr for InputMapping {
                             })?;
                             Duration::from_millis(value)
                         }
+                        "hz" => {
+                            let hz: f64 = value.parse().map_err(|_| {
+                                format!("hz must be a positive number (got `{value}`)")
+                            })?;
+                            if !hz.is_finite() || hz <= 0.0 {
+                                return Err(format!(
+                                    "hz must be a positive finite number (got `{value}`)"
+                                ));
+                            }
+                            Duration::from_secs_f64(1.0 / hz)
+                        }
                         other => {
                             return Err(format!(
-                                "timer unit must be either secs or millis (got `{other}`"
+                                "timer unit must be `secs`, `millis`, or `hz` (got `{other}`)"
                             ));
                         }
                     };
@@ -458,6 +469,52 @@ mod tests {
         let yaml = serde_yaml::to_string(&input).unwrap();
         let parsed: Input = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(input, parsed);
+    }
+
+    /// Regression tests for dora-rs/adora#144: `adora/timer/hz/N` is
+    /// documented across README, guide, schema, and real examples
+    /// (`streaming-example`, `dynamic-agent-tools`) but the parser
+    /// previously only accepted `secs` / `millis`.
+    #[test]
+    fn parse_timer_hz_integer() {
+        let mapping: InputMapping = "adora/timer/hz/30".parse().unwrap();
+        match mapping {
+            InputMapping::Timer { interval } => {
+                // 1 / 30 Hz ≈ 33.333 ms
+                assert_eq!(interval, Duration::from_secs_f64(1.0 / 30.0));
+            }
+            other => panic!("expected Timer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_timer_hz_fractional() {
+        // Used in examples/streaming-example/dataflow.yml
+        let mapping: InputMapping = "adora/timer/hz/0.5".parse().unwrap();
+        match mapping {
+            InputMapping::Timer { interval } => {
+                assert_eq!(interval, Duration::from_secs(2));
+            }
+            other => panic!("expected Timer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_timer_hz_rejects_zero() {
+        let err = "adora/timer/hz/0".parse::<InputMapping>().unwrap_err();
+        assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    #[test]
+    fn parse_timer_hz_rejects_negative() {
+        let err = "adora/timer/hz/-1".parse::<InputMapping>().unwrap_err();
+        assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    #[test]
+    fn parse_timer_hz_rejects_non_numeric() {
+        let err = "adora/timer/hz/foo".parse::<InputMapping>().unwrap_err();
+        assert!(err.contains("hz"), "error should mention hz: {err}");
     }
 
     #[test]
