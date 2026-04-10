@@ -1738,7 +1738,11 @@ impl Daemon {
                 {
                     continue;
                 }
-                if deadline.last_received.elapsed() > deadline.timeout {
+                // Only count elapsed time once the input has actually
+                // received a message. Inputs that never saw traffic are
+                // considered "not yet armed" — see InputDeadline::is_timed_out
+                // (dora-rs/adora#149).
+                if deadline.is_timed_out() {
                     timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
                 }
             }
@@ -2070,7 +2074,9 @@ impl Daemon {
                                     (node.id.clone(), input_id.clone()),
                                     InputDeadline {
                                         timeout: Duration::from_secs_f64(timeout),
-                                        last_received: Instant::now(),
+                                        // Unarmed until the first message
+                                        // arrives — see issue #149.
+                                        last_received: None,
                                     },
                                 );
                             }
@@ -3601,7 +3607,7 @@ async fn send_output_to_local_receivers(
                         .input_deadlines
                         .get_mut(&(receiver_id.clone(), input_id.clone()))
                     {
-                        deadline.last_received = Instant::now();
+                        deadline.last_received = Some(Instant::now());
                     }
                     // Circuit breaker recovery: re-open broken input
                     if let Some(timeout) = dataflow
@@ -3626,7 +3632,8 @@ async fn send_output_to_local_receivers(
                             (receiver_id.clone(), input_id.clone()),
                             InputDeadline {
                                 timeout,
-                                last_received: Instant::now(),
+                                // A message just arrived — arm immediately.
+                                last_received: Some(Instant::now()),
                             },
                         );
                         match send_with_timestamp(
@@ -4281,7 +4288,7 @@ mod fault_tolerance_tests {
             (receiver.clone(), input.clone()),
             InputDeadline {
                 timeout,
-                last_received: Instant::now(),
+                last_received: Some(Instant::now()),
             },
         );
 
