@@ -347,9 +347,6 @@ impl EventStream {
 
                     let tx_clone = tx.clone();
                     let input_id = input_id.clone();
-                    // Dummy ack channel — zenoh handles buffer lifecycle via ref counting,
-                    // no DropToken needed (unlike the custom shmem path).
-                    let dummy_ack = flume::bounded(0).0;
                     let handle = std::thread::Builder::new()
                         .name(format!("zenoh-sub-{input_id}"))
                         .spawn(move || {
@@ -377,45 +374,20 @@ impl EventStream {
                                     }
                                 };
 
-                                // Extract payload bytes from zenoh sample.
-                                // TODO: Use ZShm reference directly for true zero-copy
-                                // once data_conversion.rs supports RawData::ZenohShm.
-                                let payload = sample.payload();
-                                let data_bytes = payload.to_bytes();
-                                let data = if data_bytes.is_empty() {
-                                    None
-                                } else {
-                                    let avec = match data_bytes {
-                                        std::borrow::Cow::Owned(vec) => {
-                                            // Convert Vec<u8> to AVec without copying.
-                                            // SAFETY: Vec's allocation is always at least
-                                            // 1-byte aligned, which matches the runtime
-                                            // alignment we request.
-                                            let mut vec = std::mem::ManuallyDrop::new(vec);
-                                            let ptr = vec.as_mut_ptr();
-                                            let len = vec.len();
-                                            let cap = vec.capacity();
-                                            unsafe {
-                                                aligned_vec::AVec::from_raw_parts(ptr, 1, len, cap)
-                                            }
-                                        }
-                                        std::borrow::Cow::Borrowed(slice) => {
-                                            aligned_vec::AVec::from_slice(1, slice)
-                                        }
-                                    };
-                                    Some(std::sync::Arc::new(DataMessage::Vec(avec)))
-                                };
-
-                                let event = NodeEvent::Input {
-                                    id: input_id.clone(),
-                                    metadata: std::sync::Arc::new(metadata),
-                                    data,
-                                };
+                                // Send the raw ZBytes payload to the event
+                                // loop for zero-copy Arrow conversion.
+                                // The old path copied SHM payloads into an
+                                // AVec; this path holds the ZBytes directly
+                                // so `convert_event_item` can wrap it in an
+                                // Arrow Buffer backed by the original zenoh
+                                // buffer (dora-rs/adora#132).
+                                let payload = sample.payload().clone();
 
                                 if tx_clone
-                                    .send(EventItem::NodeEvent {
-                                        event,
-                                        ack_channel: dummy_ack.clone(),
+                                    .send(EventItem::ZenohInput {
+                                        id: input_id.clone(),
+                                        metadata: std::sync::Arc::new(metadata),
+                                        payload,
                                     })
                                     .is_err()
                                 {
@@ -981,6 +953,22 @@ impl EventStream {
                 }
             },
 
+            EventItem::ZenohInput {
+                id,
+                metadata,
+                payload,
+            } => {
+                let result = zenoh_payload_to_arrow_array(payload, &metadata);
+                match result {
+                    Ok(data) => Event::Input {
+                        id,
+                        metadata: Arc::unwrap_or_clone(metadata),
+                        data: data.into(),
+                    },
+                    Err(err) => Event::Error(format!("{err:?}")),
+                }
+            }
+
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
             }
@@ -998,6 +986,88 @@ pub enum TryRecvError {
     Empty,
     /// The event stream has been closed.
     Closed,
+}
+
+/// Convert a zenoh `ZBytes` payload into an Arrow array without copying
+/// for contiguous buffers (e.g. Zenoh SHM).
+///
+/// For `Cow::Borrowed` payloads (SHM), the Arrow `Buffer` is backed by
+/// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
+/// achieving true zero-copy. For `Cow::Owned` (normal network path),
+/// the owned `Vec` is wrapped via the same mechanism at zero cost.
+///
+/// (dora-rs/adora#132)
+fn zenoh_payload_to_arrow_array(
+    payload: zenoh::bytes::ZBytes,
+    metadata: &adora_message::metadata::Metadata,
+) -> eyre::Result<Arc<dyn arrow::array::Array>> {
+    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
+    use std::ptr::NonNull;
+
+    let is_ipc = adora_message::metadata::get_string_param(
+        &metadata.parameters,
+        adora_message::metadata::FRAMING,
+    ) == Some(adora_message::metadata::FRAMING_ARROW_IPC);
+
+    if payload.is_empty() {
+        let empty = adora_arrow_convert::IntoArrow::into_arrow(());
+        return Ok(arrow::array::make_array(empty.into()));
+    }
+
+    if is_ipc {
+        // IPC path: need contiguous bytes for the IPC reader.
+        let bytes = payload.to_bytes();
+        return decode_arrow_ipc(&bytes).map(arrow::array::make_array);
+    }
+
+    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer.
+    //
+    // For SHM payloads, to_bytes() returns Cow::Borrowed pointing into
+    // shared memory. We extract the raw pointer, then move the ZBytes
+    // (which owns the SHM mapping) into an Arc used as the custom
+    // allocation owner. The pointer remains valid because the ZBytes
+    // inside the Arc keeps the mapping alive.
+    //
+    // Branch on Cow to handle ownership correctly for each case.
+    let raw_buffer = match payload.to_bytes() {
+        std::borrow::Cow::Borrowed(slice) => {
+            // SHM path: the slice points into memory owned by `payload`
+            // (the zenoh shared-memory mapping). Wrap `payload` in an
+            // Arc as the allocation owner so the mapping stays alive
+            // for the lifetime of the Arrow buffer.
+            let ptr =
+                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+            let len = slice.len();
+
+            // Newtype satisfying arrow's Allocation trait.
+            #[allow(dead_code)] // field kept alive to own the zenoh buffer
+            struct ZBytesAllocation(zenoh::bytes::ZBytes);
+            unsafe impl Sync for ZBytesAllocation {}
+            unsafe impl Send for ZBytesAllocation {}
+            impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+
+            // SAFETY: `ptr` points into the SHM region owned by
+            // `payload`. Moving `payload` into the Arc keeps the
+            // region mapped for the lifetime of the Buffer.
+            unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(
+                    ptr,
+                    len,
+                    Arc::new(ZBytesAllocation(payload)),
+                )
+            }
+        }
+        std::borrow::Cow::Owned(vec) => {
+            // Non-SHM path: zenoh materialized a fresh Vec. Let the
+            // Arrow buffer own that Vec directly — no copy, correct
+            // ownership (the Vec's allocation is freed when the Buffer
+            // drops). `payload` is dropped here; it does not own the
+            // Vec's allocation.
+            arrow::buffer::Buffer::from_vec(vec)
+        }
+    };
+
+    buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
 }
 
 pub fn data_to_arrow_array(

@@ -33,6 +33,18 @@ pub enum EventItem {
         event: NodeEvent,
         ack_channel: flume::Sender<()>,
     },
+    /// Zenoh-received input carrying the raw `ZBytes` payload.
+    ///
+    /// Unlike `NodeEvent::Input` which wraps data in `DataMessage::Vec`
+    /// (requiring a copy for SHM payloads), this variant holds the
+    /// original zenoh buffer so the Arrow conversion can use
+    /// `Buffer::from_custom_allocation` for zero-copy
+    /// (dora-rs/adora#132).
+    ZenohInput {
+        id: adora_core::config::DataId,
+        metadata: std::sync::Arc<adora_message::metadata::Metadata>,
+        payload: zenoh::bytes::ZBytes,
+    },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
 }
