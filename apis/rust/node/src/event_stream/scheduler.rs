@@ -17,14 +17,14 @@ use super::thread::EventItem;
 /// client waits forever for a response or result that never arrives
 /// (dora-rs/adora#145).
 fn is_correlated(event: &EventItem) -> bool {
-    let EventItem::NodeEvent {
-        event: NodeEvent::Input { metadata, .. },
-        ..
-    } = event
-    else {
-        return false;
+    let params = match event {
+        EventItem::NodeEvent {
+            event: NodeEvent::Input { metadata, .. },
+            ..
+        } => &metadata.parameters,
+        EventItem::ZenohInput { metadata, .. } => &metadata.parameters,
+        _ => return false,
     };
-    let params = &metadata.parameters;
     params.contains_key(REQUEST_ID)
         || params.contains_key(GOAL_ID)
         || params.contains_key(GOAL_STATUS)
@@ -198,6 +198,13 @@ impl Scheduler {
                 event: NodeEvent::Input { id, metadata, .. },
                 ..
             } => {
+                let flush = adora_message::metadata::get_bool_param(
+                    &metadata.parameters,
+                    adora_message::metadata::FLUSH,
+                ) == Some(true);
+                (id, flush)
+            }
+            EventItem::ZenohInput { id, metadata, .. } => {
                 let flush = adora_message::metadata::get_bool_param(
                     &metadata.parameters,
                     adora_message::metadata::FLUSH,
