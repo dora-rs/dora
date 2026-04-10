@@ -583,9 +583,10 @@ impl EventStream {
         event
     }
 
-    /// Check if there are any buffered events in the scheduler or the receiver.
+    /// Check if there are any buffered events in the scheduler, the
+    /// receiver, or the passthrough buffer used by pattern-aware helpers.
     pub fn is_empty(&self) -> bool {
-        self.scheduler.is_empty() & self.receiver.is_empty()
+        self.pending_passthrough.is_empty() & self.scheduler.is_empty() & self.receiver.is_empty()
     }
 
     /// Returns and resets the accumulated drop counts per input ID.
@@ -1041,6 +1042,16 @@ impl Stream for EventStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        // Drain events that were buffered by pattern-aware helpers
+        // (`recv_service_response`, `recv_action_result`) before
+        // polling the underlying receiver. Mirrors the drain at the
+        // top of `recv_async` so `StreamExt::next()` and `recv()`
+        // return the same events in the same order
+        // (dora-rs/adora#172).
+        if let Some(event) = self.pending_passthrough.pop_front() {
+            return std::task::Poll::Ready(Some(event));
+        }
+
         let poll = self
             .receiver
             .poll_next_unpin(cx)
@@ -1118,6 +1129,16 @@ impl WriteEventsTo {
         serde_json::to_writer_pretty(file, &inputs_file)
             .context("failed to write events to file")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl EventStream {
+    /// Test-only: inject an event into the passthrough buffer so we can
+    /// verify that `is_empty`, `recv_async`, and `Stream::poll_next` all
+    /// drain it correctly (dora-rs/adora#172).
+    fn push_passthrough_for_testing(&mut self, event: Event) {
+        self.pending_passthrough.push_back(event);
     }
 }
 
@@ -1418,6 +1439,97 @@ mod tests {
         assert_eq!(
             classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
             CorrelationOutcome::Passthrough
+        );
+    }
+
+    // ---- dora-rs/adora#172: pending_passthrough integration ----
+
+    use crate::integration_testing::{
+        IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+        integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+    };
+
+    /// Create a minimal EventStream via the testing path.
+    fn test_event_stream() -> (crate::AdoraNode, EventStream) {
+        let events = vec![TimedIncomingEvent {
+            time_offset_secs: 0.0,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        crate::AdoraNode::init_testing(inputs, outputs, options).unwrap()
+    }
+
+    #[test]
+    fn is_empty_reflects_pending_passthrough() {
+        let (_node, mut events) = test_event_stream();
+        // Drain the initial Stop event so the stream is empty.
+        let _ = events.recv();
+        assert!(events.is_empty(), "should be empty after draining");
+
+        // Inject a passthrough event — is_empty must now return false.
+        events.push_passthrough_for_testing(Event::ParamDeleted {
+            key: "k".to_string(),
+        });
+        assert!(
+            !events.is_empty(),
+            "should not be empty with pending passthrough"
+        );
+    }
+
+    #[test]
+    fn stream_poll_next_drains_pending_passthrough() {
+        use futures::StreamExt;
+        let (_node, mut events) = test_event_stream();
+        // Drain the initial Stop event.
+        let _ = events.recv();
+
+        // Inject a passthrough event.
+        events.push_passthrough_for_testing(Event::ParamUpdate {
+            key: "threshold".to_string(),
+            value: serde_json::json!(42),
+        });
+
+        // StreamExt::next() should return the passthrough event, not
+        // block waiting on the underlying receiver.
+        let next = futures::executor::block_on(events.next());
+        match next {
+            Some(Event::ParamUpdate { key, value }) => {
+                assert_eq!(key, "threshold");
+                assert_eq!(value, serde_json::json!(42));
+            }
+            other => panic!("expected ParamUpdate from passthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recv_async_drains_pending_passthrough_before_receiver() {
+        let (_node, mut events) = test_event_stream();
+
+        // Inject a passthrough event BEFORE the Stop in the receiver.
+        events.push_passthrough_for_testing(Event::ParamDeleted {
+            key: "x".to_string(),
+        });
+
+        // First recv should return the passthrough event.
+        let first = events.recv();
+        assert!(
+            matches!(first, Some(Event::ParamDeleted { .. })),
+            "expected passthrough ParamDeleted first, got {first:?}"
+        );
+
+        // Second recv should return the Stop from the receiver.
+        let second = events.recv();
+        assert!(
+            matches!(second, Some(Event::Stop(_))),
+            "expected Stop second, got {second:?}"
         );
     }
 }
