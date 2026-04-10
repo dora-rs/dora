@@ -123,7 +123,51 @@ impl WsSession {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         rt.spawn(session_loop(ws_stream, cmd_rx));
 
-        Ok(Self { rt, cmd_tx })
+        let session = Self { rt, cmd_tx };
+
+        // Protocol version handshake — sent before any other request.
+        // Fails fast on version mismatch so the CLI never silently
+        // exchanges incompatible messages with the coordinator
+        // (dora-rs/adora#151).
+        session.handshake_hello()?;
+
+        Ok(session)
+    }
+
+    /// Send a `ControlRequest::Hello` stamped with the CLI's adora
+    /// crate version and verify the coordinator accepts it. Fails with
+    /// a clear error on version mismatch.
+    fn handshake_hello(&self) -> eyre::Result<()> {
+        use adora_message::{
+            cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+        };
+        let req = serde_json::to_vec(&ControlRequest::hello())
+            .map_err(|e| eyre!("failed to serialize Hello: {e}"))?;
+        let raw_reply = self.request(&req).wrap_err(
+            "protocol version handshake with coordinator failed \
+             (could not send or receive Hello)",
+        )?;
+        let reply: ControlRequestReply = serde_json::from_slice(&raw_reply)
+            .map_err(|e| eyre!("failed to parse Hello reply: {e}"))?;
+        match reply {
+            ControlRequestReply::HelloOk { adora_version } => {
+                tracing::debug!(
+                    coordinator_version = %adora_version,
+                    "protocol version handshake OK"
+                );
+                Ok(())
+            }
+            ControlRequestReply::Error(msg) => Err(eyre!(
+                "coordinator rejected CLI: {msg}\n\n  \
+                 hint: the CLI and coordinator binaries must share a \
+                 semver-compatible adora version. Upgrade the component \
+                 that is behind."
+            )),
+            other => Err(eyre!(
+                "unexpected reply to Hello: {other:?} — \
+                 coordinator may be too old to understand the handshake"
+            )),
+        }
     }
 
     /// Send a request and wait synchronously for the reply.
