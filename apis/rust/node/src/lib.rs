@@ -124,7 +124,7 @@ mod event_stream;
 pub mod integration_testing;
 mod node;
 
-pub use error::{NodeError, NodeResult};
+pub use error::{NodeError, NodeResult, PatternError};
 
 /// Backward-compatible alias for [`AdoraNode`] so that dora-hub nodes compile unchanged.
 pub type DoraNode = AdoraNode;

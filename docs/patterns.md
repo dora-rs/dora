@@ -67,6 +67,34 @@ The server MUST pass through the `request_id` from the incoming request's
 metadata parameters into the response. The client matches responses to
 requests using this key.
 
+#### Waiting for a response with timeout + fault tolerance
+
+Use [`EventStream::recv_service_response`](../apis/rust/node/src/event_stream/mod.rs)
+to wait for a specific `request_id` with built-in handling of timeouts and
+server restarts:
+
+```rust
+let rid = node.send_service_request("request".into(), params, data)?;
+match events
+    .recv_service_response(&rid, &server_node_id, Duration::from_secs(5))
+    .await
+{
+    Ok(Event::Input { data, .. }) => handle_response(data),
+    Err(PatternError::Timeout) => fallback_path(),
+    Err(PatternError::ServerRestarted(server)) => {
+        // The server instance crashed and was restarted by fault tolerance.
+        // The in-flight request_id is orphaned; retry against the new instance.
+        retry_with_new_instance()
+    }
+    Err(e) => return Err(e.into()),
+    _ => unreachable!(),
+}
+```
+
+Non-matching events arriving during the wait are buffered and replayed
+on subsequent `recv()` calls, so your main event loop never loses
+intermediate inputs, parameter updates, or lifecycle events.
+
 **Example**: `examples/service-example/`
 
 ## 3. Action (goal/feedback/result)
@@ -116,6 +144,37 @@ nodes:
 The client sends a message on the `cancel` output with `goal_id` in the
 metadata. The server checks for cancel requests between processing steps and
 sends a result with `goal_status = "canceled"`.
+
+### Waiting for a terminal result with timeout + fault tolerance
+
+Use [`EventStream::recv_action_result`](../apis/rust/node/src/event_stream/mod.rs)
+to wait for a terminal result (`goal_status` ∈ {`succeeded`, `aborted`,
+`canceled`}) for a specific `goal_id`:
+
+```rust
+let goal_id = AdoraNode::new_request_id();
+let mut params = MetadataParameters::default();
+params.insert(GOAL_ID.to_string(), Parameter::String(goal_id.clone()));
+node.send_output("goal".into(), params, data)?;
+
+match events
+    .recv_action_result(&goal_id, &server_node_id, Duration::from_secs(30))
+    .await
+{
+    Ok(Event::Input { metadata, data, .. }) => {
+        // Inspect metadata.parameters for goal_status
+        handle_terminal_result(metadata, data)
+    }
+    Err(PatternError::ServerRestarted(_)) => retry_with_new_instance(),
+    Err(PatternError::Timeout) => give_up_and_cleanup(),
+    Err(e) => return Err(e.into()),
+    _ => unreachable!(),
+}
+```
+
+Intermediate feedback events (matching `goal_id` without a terminal
+`goal_status`) are passed through to the caller's main event loop, so
+you can observe progress via `recv()` alongside the terminal wait.
 
 **Example**: `examples/action-example/`
 
@@ -216,6 +275,48 @@ node.send_output("text", data, metadata={"parameters": params})
 - **`goal_status` matching is case-sensitive.** Always use the exact lowercase
   values: `"succeeded"`, `"aborted"`, `"canceled"`. The ROS2 bridge defaults
   to `Aborted` for unrecognised values.
+
+### Fault tolerance for correlated patterns
+
+The fault tolerance system (`restart_policy`, `input_timeout`) restarts
+crashed nodes, but it does **not** synthesise per-correlation cancellation
+messages. When a service-server or action-server restarts:
+
+- In-flight `request_id` correlations are orphaned. The restarted server
+  has no knowledge of pre-crash requests, and no cancellation is sent
+  to waiting clients.
+- Active `goal_id` state machines are left in a non-terminal state.
+  Clients never receive `"aborted"` or `"canceled"` for the orphaned goals.
+- The daemon emits `NodeRestarted { id }` to all downstream nodes. Clients
+  can use this signal to fail pending correlations against that server.
+
+**Recommended**: use `recv_service_response` / `recv_action_result` (shown
+in §2 and §3 above). They:
+
+1. Take a `timeout` so waits are bounded.
+2. Watch for `NodeRestarted { id: expected_server }` and return
+   `PatternError::ServerRestarted` so you can retry against the new
+   instance without hanging.
+3. Buffer non-matching events so your main event loop keeps working.
+
+Alternatively, handle the fault manually:
+
+```rust
+while let Some(event) = events.recv() {
+    match event {
+        Event::Input { metadata, .. } if matches_my_request(&metadata) => break,
+        Event::NodeRestarted { id } if id == server_node_id => {
+            // orphaned — retry or surface to caller
+            break;
+        }
+        _ => continue,
+    }
+}
+```
+
+A future release may add daemon-side synthesis of per-correlation
+cancellations so clients without the helpers still get explicit
+terminal events (tracked in dora-rs/adora#148).
 
 ## 7. Python compatibility
 
