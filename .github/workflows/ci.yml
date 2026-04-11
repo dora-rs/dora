@@ -128,9 +128,10 @@ jobs:
       - name: Rust Dataflow example
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
-      # rust-dataflow-git clones upstream dora which depends on iceoryx
-      # (needs libacl1-dev on Linux). Skipped until we either install the
-      # system dep or update the example to clone this repo instead.
+      # rust-dataflow-git: tag updated to v0.5.0 (no more iceoryx dep),
+      # but `dora run` has a pre-existing session-handling bug with git
+      # sources — the build_id chain doesn't propagate correctly to the
+      # daemon when using `cargo run --example`. Skipped until fixed.
       # - name: Rust Git Dataflow example
       #   timeout-minutes: 30
       #   run: cargo run --example rust-dataflow-git
