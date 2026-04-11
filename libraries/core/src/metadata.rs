@@ -74,7 +74,10 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
                         .ok_or_else(|| eyre::eyre!("region length overflow"))?;
 
                     if (ptr as usize) >= region_end {
-                        eyre::bail!("ptr {ptr:p} starts after region {region_end}");
+                        eyre::bail!(
+                            "ptr {ptr:p} starts after region {region_end:#x} \
+                        (region: {region_start:p}..{region_end:#x})"
+                        );
                     }
 
                     let end_ptr = (ptr as usize)
@@ -82,7 +85,10 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
                         .ok_or_else(|| eyre::eyre!("buffer length overflow"))?;
 
                     if end_ptr > region_end {
-                        eyre::bail!("ptr {ptr:p} ends after region {region_start:p}");
+                        eyre::bail!(
+                            "ptr {ptr:p} ends after region {region_end:#x} \
+                            (region: {region_start:p}..{region_end:#x})"
+                        );
                     }
                     let offset = usize::try_from(unsafe { ptr.offset_from(region_start) })
                         .context("offset_from is negative")?;
