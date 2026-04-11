@@ -1,4 +1,4 @@
-use adora_operator_api::{register_operator, AdoraOperator, AdoraOutputSender, AdoraStatus, Event};
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 register_operator!(ExampleOperator);
 
@@ -7,12 +7,12 @@ struct ExampleOperator {
     example_field: u32,
 }
 
-impl AdoraOperator for ExampleOperator {
+impl DoraOperator for ExampleOperator {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut AdoraOutputSender,
-    ) -> Result<AdoraStatus, String> {
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<DoraStatus, String> {
         match event {
             Event::Input { id, metadata: _, data: _ } => match id {
                 other => eprintln!("Received input {other}"),
@@ -20,6 +20,6 @@ impl AdoraOperator for ExampleOperator {
             _other => {}
         }
 
-        Ok(AdoraStatus::Continue)
+        Ok(DoraStatus::Continue)
     }
 }

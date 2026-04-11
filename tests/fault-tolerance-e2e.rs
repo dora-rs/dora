@@ -1,5 +1,5 @@
-use adora_daemon::{Daemon, LogDestination};
-use adora_message::SessionId;
+use dora_daemon::{Daemon, LogDestination};
+use dora_message::SessionId;
 use std::path::Path;
 use std::sync::Once;
 use std::time::Duration;

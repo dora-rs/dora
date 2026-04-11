@@ -17,7 +17,7 @@ wheels = [
 ]
 
 [[package]]
-name = "adora-rs"
+name = "dora-rs"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow", version = "17.0.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.9'" },

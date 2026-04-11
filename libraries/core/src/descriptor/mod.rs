@@ -1,4 +1,4 @@
-use adora_message::{
+use dora_message::{
     config::{Input, InputMapping, NodeRunConfig},
     descriptor::{EnvValue, GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
@@ -13,13 +13,13 @@ use std::{
 use tokio::process::Command;
 
 // reexport for compatibility
-pub use adora_message::descriptor::{
+pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
     OperatorSource, PythonSource, ResolvedNode, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
     Ros2TopicConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
-pub use visualize::collect_adora_timers;
+pub use visualize::collect_dora_timers;
 
 mod expand;
 pub mod validate;
@@ -154,12 +154,12 @@ impl DescriptorExt for Descriptor {
 
                     let mut envs = BTreeMap::new();
                     envs.insert(
-                        "ADORA_ROS2_BRIDGE_CONFIG".to_string(),
+                        "DORA_ROS2_BRIDGE_CONFIG".to_string(),
                         EnvValue::String(bridge_config_json),
                     );
 
                     CoreNodeKind::Custom(CustomNode {
-                        path: "adora-ros2-bridge-node".to_string(),
+                        path: "dora-ros2-bridge-node".to_string(),
                         source: NodeSource::Local,
                         args: node.args,
                         build: None,
@@ -395,7 +395,7 @@ impl NodeExt for Node {
 #[derive(Debug)]
 pub enum NodeKind<'a> {
     Standard(&'a String),
-    /// Adora runtime node
+    /// Dora runtime node
     Runtime(&'a RuntimeNode),
     Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
@@ -412,7 +412,7 @@ enum NodeKindMut<'a> {
         source: NodeSource,
         inputs: &'a mut BTreeMap<DataId, Input>,
     },
-    /// Adora runtime node
+    /// Dora runtime node
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use adora_arrow_convert::ArrowData;
-use adora_core::config::{DataId, NodeId};
+use dora_arrow_convert::ArrowData;
+use dora_core::config::{DataId, NodeId};
 
 use super::event::Event;
 
@@ -162,9 +162,9 @@ impl Default for InputTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adora_message::metadata::{ArrowTypeInfo, Metadata};
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType;
+    use dora_message::metadata::{ArrowTypeInfo, Metadata};
 
     fn empty_data() -> ArrowData {
         ArrowData(new_empty_array(&DataType::Null))
@@ -182,7 +182,7 @@ mod tests {
             field_names: None,
             schema_hash: None,
         };
-        Metadata::new(adora_core::uhlc::HLC::default().new_timestamp(), type_info)
+        Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
     }
 
     fn make_input(id: &str, data: ArrowData) -> Event {

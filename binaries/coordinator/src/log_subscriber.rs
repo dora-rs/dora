@@ -1,4 +1,4 @@
-use adora_message::coordinator_to_cli::LogMessage;
+use dora_message::coordinator_to_cli::LogMessage;
 use eyre::{Context, ContextCompat};
 
 pub struct LogSubscriber {
@@ -16,16 +16,16 @@ impl LogSubscriber {
 
     pub async fn send_message(&mut self, message: &LogMessage) -> eyre::Result<()> {
         match message.level {
-            adora_core::build::LogLevelOrStdout::LogLevel(level) => {
+            dora_core::build::LogLevelOrStdout::LogLevel(level) => {
                 if level > self.level {
                     return Ok(());
                 }
             }
-            adora_core::build::LogLevelOrStdout::Stdout => {}
+            dora_core::build::LogLevelOrStdout::Stdout => {}
         }
 
         let sender = self.sender.as_ref().context("subscriber is closed")?;
-        let json = serde_json::to_string(&adora_message::ws_protocol::WsEvent {
+        let json = serde_json::to_string(&dora_message::ws_protocol::WsEvent {
             event: "log".to_string(),
             payload: serde_json::to_value(message)?,
         })

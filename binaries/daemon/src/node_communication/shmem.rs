@@ -2,8 +2,8 @@ use std::sync::{Arc, atomic::AtomicU64};
 
 use super::{Connection, Listener};
 use crate::Event;
-use adora_core::uhlc::HLC;
-use adora_message::{
+use dora_core::uhlc::HLC;
+use dora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::eyre;

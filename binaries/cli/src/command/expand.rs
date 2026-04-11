@@ -1,5 +1,5 @@
 use super::Executable;
-use adora_core::descriptor::{Descriptor, DescriptorExt, check_module_file};
+use dora_core::descriptor::{Descriptor, DescriptorExt, check_module_file};
 use eyre::Context;
 use std::path::PathBuf;
 

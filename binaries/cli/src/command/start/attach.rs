@@ -1,7 +1,7 @@
-use adora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use adora_message::cli_to_coordinator::ControlRequest;
-use adora_message::common::LogMessage;
-use adora_message::coordinator_to_cli::ControlRequestReply;
+use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
+use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::common::LogMessage;
+use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
@@ -44,7 +44,7 @@ pub fn attach_dataflow(
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
-                    if let adora_core::descriptor::OperatorSource::Python(python_source) =
+                    if let dora_core::descriptor::OperatorSource::Python(python_source) =
                         &op.config.source
                     {
                         let path = resolve_path(&python_source.source, &working_dir)

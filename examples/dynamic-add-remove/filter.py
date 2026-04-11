@@ -6,7 +6,7 @@ Passes through only even numbers. Odd numbers are dropped silently.
 import logging
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 
 def main():

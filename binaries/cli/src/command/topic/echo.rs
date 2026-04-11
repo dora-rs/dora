@@ -1,13 +1,13 @@
 use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 
-use adora_message::{
+use arrow::{buffer::OffsetBuffer, datatypes::Field};
+use clap::Args;
+use colored::Colorize;
+use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     metadata::{ArrowTypeInfo, BufferOffset, Parameter},
 };
-use arrow::{buffer::OffsetBuffer, datatypes::Field};
-use clap::Args;
-use colored::Colorize;
 use eyre::eyre;
 
 use crate::{
@@ -24,13 +24,13 @@ use crate::{
 /// Examples:
 ///
 /// Echo a single topic:
-///   adora topic echo -d my-dataflow robot1/pose
+///   dora topic echo -d my-dataflow robot1/pose
 ///
 /// Echo multiple topics:
-///   adora topic echo -d my-dataflow robot1/pose robot2/vel
+///   dora topic echo -d my-dataflow robot1/pose robot2/vel
 ///
 /// Emit JSON lines:
-///   adora topic echo -d my-dataflow robot1/pose --format json
+///   dora topic echo -d my-dataflow robot1/pose --format json
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:

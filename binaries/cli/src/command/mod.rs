@@ -60,7 +60,7 @@ use trace::Trace;
 use up::Up;
 use validate::Validate;
 
-/// adora-rs cli client
+/// dora-rs cli client
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
     // -- Lifecycle --
@@ -168,9 +168,9 @@ pub enum Command {
 fn default_tracing() -> eyre::Result<()> {
     #[cfg(feature = "tracing")]
     {
-        use adora_tracing::TracingBuilder;
+        use dora_tracing::TracingBuilder;
 
-        TracingBuilder::new("adora-cli")
+        TracingBuilder::new("dora-cli")
             .with_stdout("warn", false)
             .build()
             .wrap_err("failed to set up tracing subscriber")?;
@@ -242,153 +242,153 @@ mod tests {
 
     #[test]
     fn parse_run() {
-        parse_ok(&["adora", "run", "foo.yml"]);
+        parse_ok(&["dora", "run", "foo.yml"]);
     }
 
     #[test]
     fn parse_run_locked() {
-        parse_ok(&["adora", "run", "foo.yml", "--locked"]);
+        parse_ok(&["dora", "run", "foo.yml", "--locked"]);
     }
 
     #[test]
     fn reject_run_locked_and_write_lockfile() {
-        parse_err(&["adora", "run", "foo.yml", "--locked", "--write-lockfile"]);
+        parse_err(&["dora", "run", "foo.yml", "--locked", "--write-lockfile"]);
     }
 
     #[test]
     fn parse_up() {
-        parse_ok(&["adora", "up"]);
+        parse_ok(&["dora", "up"]);
     }
 
     #[test]
     fn parse_down() {
-        parse_ok(&["adora", "down"]);
+        parse_ok(&["dora", "down"]);
     }
 
     #[test]
     fn parse_start() {
-        parse_ok(&["adora", "start", "foo.yml"]);
+        parse_ok(&["dora", "start", "foo.yml"]);
     }
 
     #[test]
     fn parse_stop_uuid() {
-        parse_ok(&["adora", "stop", "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"]);
+        parse_ok(&["dora", "stop", "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"]);
     }
 
     #[test]
     fn parse_list() {
-        parse_ok(&["adora", "list"]);
+        parse_ok(&["dora", "list"]);
     }
 
     #[test]
     fn parse_logs() {
-        parse_ok(&["adora", "logs"]);
+        parse_ok(&["dora", "logs"]);
     }
 
     #[test]
     fn parse_build() {
-        parse_ok(&["adora", "build", "foo.yml"]);
+        parse_ok(&["dora", "build", "foo.yml"]);
     }
 
     #[test]
     fn parse_build_locked() {
-        parse_ok(&["adora", "build", "foo.yml", "--locked"]);
+        parse_ok(&["dora", "build", "foo.yml", "--locked"]);
     }
 
     #[test]
     fn reject_build_locked_and_write_lockfile() {
-        parse_err(&["adora", "build", "foo.yml", "--locked", "--write-lockfile"]);
+        parse_err(&["dora", "build", "foo.yml", "--locked", "--write-lockfile"]);
     }
 
     #[test]
     fn parse_graph() {
-        parse_ok(&["adora", "graph", "foo.yml"]);
+        parse_ok(&["dora", "graph", "foo.yml"]);
     }
 
     #[test]
     fn parse_expand() {
-        parse_ok(&["adora", "expand", "foo.yml"]);
+        parse_ok(&["dora", "expand", "foo.yml"]);
     }
 
     #[test]
     fn parse_expand_module() {
-        parse_ok(&["adora", "expand", "--module", "module.yml"]);
+        parse_ok(&["dora", "expand", "--module", "module.yml"]);
     }
 
     #[test]
     fn parse_validate() {
-        parse_ok(&["adora", "validate", "dataflow.yml"]);
+        parse_ok(&["dora", "validate", "dataflow.yml"]);
     }
 
     #[test]
     fn parse_validate_strict() {
-        parse_ok(&["adora", "validate", "--strict-types", "dataflow.yml"]);
+        parse_ok(&["dora", "validate", "--strict-types", "dataflow.yml"]);
     }
 
     #[test]
     fn parse_new() {
-        parse_ok(&["adora", "new", "test"]);
+        parse_ok(&["dora", "new", "test"]);
     }
 
     #[test]
     fn parse_status() {
-        parse_ok(&["adora", "status"]);
+        parse_ok(&["dora", "status"]);
     }
 
     #[test]
     fn parse_status_json() {
-        parse_ok(&["adora", "status", "--format", "json"]);
+        parse_ok(&["dora", "status", "--format", "json"]);
     }
 
     #[test]
     fn parse_status_json_short() {
-        parse_ok(&["adora", "status", "-f", "json"]);
+        parse_ok(&["dora", "status", "-f", "json"]);
     }
 
     #[test]
     fn parse_inspect_top() {
-        parse_ok(&["adora", "inspect", "top"]);
+        parse_ok(&["dora", "inspect", "top"]);
     }
 
     #[test]
     fn parse_topic_list() {
-        parse_ok(&["adora", "topic", "list"]);
+        parse_ok(&["dora", "topic", "list"]);
     }
 
     #[test]
     fn parse_topic_hz() {
-        parse_ok(&["adora", "topic", "hz"]);
+        parse_ok(&["dora", "topic", "hz"]);
     }
 
     #[test]
     fn parse_topic_echo() {
-        parse_ok(&["adora", "topic", "echo"]);
+        parse_ok(&["dora", "topic", "echo"]);
     }
 
     #[test]
     fn parse_node_list() {
-        parse_ok(&["adora", "node", "list"]);
+        parse_ok(&["dora", "node", "list"]);
     }
 
     #[test]
     fn parse_node_info() {
-        parse_ok(&["adora", "node", "info", "camera_node"]);
+        parse_ok(&["dora", "node", "info", "camera_node"]);
     }
 
     #[test]
     fn parse_node_info_with_dataflow() {
-        parse_ok(&["adora", "node", "info", "sensor", "-d", "my-dataflow"]);
+        parse_ok(&["dora", "node", "info", "sensor", "-d", "my-dataflow"]);
     }
 
     #[test]
     fn reject_node_info_no_node() {
-        parse_err(&["adora", "node", "info"]);
+        parse_err(&["dora", "node", "info"]);
     }
 
     #[test]
     fn parse_topic_pub() {
         parse_ok(&[
-            "adora",
+            "dora",
             "topic",
             "pub",
             "-d",
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn parse_topic_pub_with_file() {
         parse_ok(&[
-            "adora",
+            "dora",
             "topic",
             "pub",
             "-d",
@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn reject_topic_pub_no_data_or_file() {
         parse_err(&[
-            "adora",
+            "dora",
             "topic",
             "pub",
             "-d",
@@ -426,95 +426,95 @@ mod tests {
 
     #[test]
     fn parse_node_restart() {
-        parse_ok(&["adora", "node", "restart", "camera_node"]);
+        parse_ok(&["dora", "node", "restart", "camera_node"]);
     }
 
     #[test]
     fn parse_node_restart_with_grace() {
-        parse_ok(&["adora", "node", "restart", "sensor", "--grace", "30s"]);
+        parse_ok(&["dora", "node", "restart", "sensor", "--grace", "30s"]);
     }
 
     #[test]
     fn reject_node_restart_no_node() {
-        parse_err(&["adora", "node", "restart"]);
+        parse_err(&["dora", "node", "restart"]);
     }
 
     #[test]
     fn parse_node_stop() {
-        parse_ok(&["adora", "node", "stop", "camera_node"]);
+        parse_ok(&["dora", "node", "stop", "camera_node"]);
     }
 
     #[test]
     fn parse_node_stop_with_grace() {
         parse_ok(&[
-            "adora", "node", "stop", "sensor", "--grace", "10s", "-d", "my-flow",
+            "dora", "node", "stop", "sensor", "--grace", "10s", "-d", "my-flow",
         ]);
     }
 
     #[test]
     fn reject_node_stop_no_node() {
-        parse_err(&["adora", "node", "stop"]);
+        parse_err(&["dora", "node", "stop"]);
     }
 
     #[test]
     fn parse_param_list() {
-        parse_ok(&["adora", "param", "list", "camera_node"]);
+        parse_ok(&["dora", "param", "list", "camera_node"]);
     }
 
     #[test]
     fn parse_param_list_with_dataflow() {
-        parse_ok(&["adora", "param", "list", "sensor", "-d", "my-dataflow"]);
+        parse_ok(&["dora", "param", "list", "sensor", "-d", "my-dataflow"]);
     }
 
     #[test]
     fn parse_param_get() {
-        parse_ok(&["adora", "param", "get", "camera_node", "fps"]);
+        parse_ok(&["dora", "param", "get", "camera_node", "fps"]);
     }
 
     #[test]
     fn parse_param_set() {
-        parse_ok(&["adora", "param", "set", "camera_node", "fps", "60"]);
+        parse_ok(&["dora", "param", "set", "camera_node", "fps", "60"]);
     }
 
     #[test]
     fn parse_param_delete() {
-        parse_ok(&["adora", "param", "delete", "camera_node", "fps"]);
+        parse_ok(&["dora", "param", "delete", "camera_node", "fps"]);
     }
 
     #[test]
     fn reject_param_set_no_value() {
-        parse_err(&["adora", "param", "set", "camera_node", "fps"]);
+        parse_err(&["dora", "param", "set", "camera_node", "fps"]);
     }
 
     #[test]
     fn reject_param_get_no_key() {
-        parse_err(&["adora", "param", "get", "camera_node"]);
+        parse_err(&["dora", "param", "get", "camera_node"]);
     }
 
     #[test]
     fn parse_doctor() {
-        parse_ok(&["adora", "doctor"]);
+        parse_ok(&["dora", "doctor"]);
     }
 
     #[test]
     fn parse_doctor_with_dataflow() {
-        parse_ok(&["adora", "doctor", "--dataflow", "dataflow.yml"]);
+        parse_ok(&["dora", "doctor", "--dataflow", "dataflow.yml"]);
     }
 
     #[test]
     fn parse_record() {
-        parse_ok(&["adora", "record", "dataflow.yml"]);
+        parse_ok(&["dora", "record", "dataflow.yml"]);
     }
 
     #[test]
     fn parse_record_with_output() {
-        parse_ok(&["adora", "record", "dataflow.yml", "-o", "capture.adorec"]);
+        parse_ok(&["dora", "record", "dataflow.yml", "-o", "capture.adorec"]);
     }
 
     #[test]
     fn parse_record_with_topics() {
         parse_ok(&[
-            "adora",
+            "dora",
             "record",
             "dataflow.yml",
             "--topics",
@@ -525,7 +525,7 @@ mod tests {
     #[test]
     fn parse_record_output_yaml() {
         parse_ok(&[
-            "adora",
+            "dora",
             "record",
             "dataflow.yml",
             "--output-yaml",
@@ -535,18 +535,18 @@ mod tests {
 
     #[test]
     fn reject_record_no_file() {
-        parse_err(&["adora", "record"]);
+        parse_err(&["dora", "record"]);
     }
 
     #[test]
     fn parse_replay() {
-        parse_ok(&["adora", "replay", "recording.adorec"]);
+        parse_ok(&["dora", "replay", "recording.adorec"]);
     }
 
     #[test]
     fn parse_replay_with_options() {
         parse_ok(&[
-            "adora",
+            "dora",
             "replay",
             "recording.adorec",
             "--speed",
@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn parse_replay_output_yaml() {
         parse_ok(&[
-            "adora",
+            "dora",
             "replay",
             "recording.adorec",
             "--output-yaml",
@@ -570,58 +570,58 @@ mod tests {
 
     #[test]
     fn reject_replay_no_file() {
-        parse_err(&["adora", "replay"]);
+        parse_err(&["dora", "replay"]);
     }
 
     #[test]
     fn parse_trace_list() {
-        parse_ok(&["adora", "trace", "list"]);
+        parse_ok(&["dora", "trace", "list"]);
     }
 
     #[test]
     fn parse_trace_view() {
-        parse_ok(&["adora", "trace", "view", "abc123"]);
+        parse_ok(&["dora", "trace", "view", "abc123"]);
     }
 
     #[test]
     fn reject_trace_view_no_id() {
-        parse_err(&["adora", "trace", "view"]);
+        parse_err(&["dora", "trace", "view"]);
     }
 
     #[test]
     fn parse_cluster_up() {
-        parse_ok(&["adora", "cluster", "up", "cluster.yml"]);
+        parse_ok(&["dora", "cluster", "up", "cluster.yml"]);
     }
 
     #[test]
     fn parse_cluster_status() {
-        parse_ok(&["adora", "cluster", "status"]);
+        parse_ok(&["dora", "cluster", "status"]);
     }
 
     #[test]
     fn parse_cluster_down() {
-        parse_ok(&["adora", "cluster", "down"]);
+        parse_ok(&["dora", "cluster", "down"]);
     }
 
     #[test]
     fn reject_cluster_up_no_file() {
-        parse_err(&["adora", "cluster", "up"]);
+        parse_err(&["dora", "cluster", "up"]);
     }
 
     #[test]
     fn reject_unknown_subcommand() {
-        parse_err(&["adora", "foo"]);
+        parse_err(&["dora", "foo"]);
     }
 
     #[test]
     fn help_exits_cleanly() {
-        let err = Args::try_parse_from(["adora", "--help"]).unwrap_err();
+        let err = Args::try_parse_from(["dora", "--help"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
     }
 
     #[test]
     fn version_exits_cleanly() {
-        let err = Args::try_parse_from(["adora", "--version"]).unwrap_err();
+        let err = Args::try_parse_from(["dora", "--version"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
     }
 }

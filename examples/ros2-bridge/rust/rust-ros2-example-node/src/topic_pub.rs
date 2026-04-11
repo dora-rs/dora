@@ -1,5 +1,5 @@
-use adora_node_api::{self, AdoraNode, Event};
-use adora_ros2_bridge::{
+use dora_node_api::{self, DoraNode, Event};
+use dora_ros2_bridge::{
     messages::std_msgs::msg::String as Ros2String,
     ros2_client::{self, NodeOptions, ros2},
     rustdds::{self, policy},
@@ -23,9 +23,9 @@ fn main() -> eyre::Result<()> {
     })
     .context("failed to spawn ros2 spinner")?;
 
-    let (_node, adora_events) = AdoraNode::init_from_env()?;
+    let (_node, dora_events) = DoraNode::init_from_env()?;
 
-    let mut events = futures::executor::block_on_stream(adora_events);
+    let mut events = futures::executor::block_on_stream(dora_events);
 
     for i in 0..20 {
         let event = match events.next() {
@@ -41,7 +41,7 @@ fn main() -> eyre::Result<()> {
             } => match id.as_str() {
                 "tick" => {
                     let msg = Ros2String {
-                        data: format!("The {i} hello from Adora"),
+                        data: format!("The {i} hello from Dora"),
                     };
                     println!("tick {i}, sending {msg:?}");
                     publisher.publish(msg).unwrap();
@@ -64,7 +64,7 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
     ros_context
         .new_node(
-            ros2_client::NodeName::new("/", "ros2_adora_pub")
+            ros2_client::NodeName::new("/", "ros2_dora_pub")
                 .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
             NodeOptions::new().enable_rosout(true),
         )

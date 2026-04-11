@@ -4,7 +4,7 @@
 
 The daemon's single `while let Some(event) = events.next().await` loop processes both data-plane events (node messages, Zenoh publish) and control-plane events (metrics, heartbeat, health checks, coordinator commands). The main bottleneck: **Zenoh `publisher.put().await` is called inline** in the hot path. At 1000 msg/sec with 5 remote receivers, that's 5000 Zenoh awaits/sec blocking the entire event loop.
 
-Impact: `adora stop` under load takes 2-5s. Metrics collection causes 50-100ms latency spikes.
+Impact: `dora stop` under load takes 2-5s. Metrics collection causes 50-100ms latency spikes.
 
 ## Current Event Loop (line 560, daemon/lib.rs)
 
@@ -139,7 +139,7 @@ Move heartbeat serialization + WS send to a spawned interval task. Low priority 
 |--------|--------|-------|
 | Zenoh publish blocking | 1-10ms per message | 0 (channel push) |
 | Metrics latency spike | 50-100ms | 0 (background) |
-| `adora stop` under load | 2-5s | <500ms |
+| `dora stop` under load | 2-5s | <500ms |
 | 100ms warnings | frequent at >100 Hz | rare |
 
 ## Risks
@@ -153,5 +153,5 @@ Move heartbeat serialization + WS send to a spawned interval task. Low priority 
 
 1. Existing smoke tests pass (end-to-end data flow unchanged)
 2. Benchmark: event loop throughput with simulated Zenoh delay
-3. Manual: `adora stop` responds <500ms under 1000 Hz load
+3. Manual: `dora stop` responds <500ms under 1000 Hz load
 4. Manual: no `Daemon took >100ms` warnings during metrics

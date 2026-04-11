@@ -4,9 +4,9 @@ import yaml
 
 
 class DataflowBuilder:
-    """A adora dataflow."""
+    """A dora dataflow."""
 
-    def __init__(self, name: str = "adora-dataflow"):
+    def __init__(self, name: str = "dora-dataflow"):
         self.name = name
         self.nodes = []
 
@@ -48,7 +48,7 @@ _VALID_QUEUE_POLICIES = frozenset({"drop_oldest", "backpressure"})
 
 
 class Node:
-    """A node in a adora dataflow."""
+    """A node in a dora dataflow."""
 
     def __init__(self, id: str, **kwargs):
         self.id = id
@@ -149,7 +149,7 @@ class Node:
 
 
 class Operator:
-    """An operator in a adora dataflow."""
+    """An operator in a dora dataflow."""
 
     def __init__(
         self,

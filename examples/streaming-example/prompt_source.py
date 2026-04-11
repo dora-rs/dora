@@ -3,7 +3,7 @@
 import logging
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 PROMPTS = [
     "Tell me about robotics",

@@ -1,4 +1,4 @@
-# Adora User Guide
+# Dora User Guide
 
 Built with [mdBook](https://rust-lang.github.io/mdBook/). Available in English and Chinese (zh-CN).
 

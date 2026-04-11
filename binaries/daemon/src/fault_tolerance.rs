@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{self, AtomicU64},
 };
 
-use adora_core::config::NodeId;
+use dora_core::config::NodeId;
 
 /// Atomic counters for fault tolerance events, visible in periodic health check logs.
 #[derive(Default)]

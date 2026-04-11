@@ -2,9 +2,9 @@
 //!
 //! Two modes are exercised:
 //!
-//! - **Networked** (`adora up` + `adora start --detach` + poll + `adora stop` +
-//!   `adora down`): exercises the full coordinator/daemon WS control plane.
-//! - **Local** (`adora run --stop-after`): runs everything in-process, testing
+//! - **Networked** (`dora up` + `dora start --detach` + poll + `dora stop` +
+//!   `dora down`): exercises the full coordinator/daemon WS control plane.
+//! - **Local** (`dora run --stop-after`): runs everything in-process, testing
 //!   the single-process dataflow path.
 //!
 //! Run with: `cargo test --test example-smoke -- --test-threads=1`
@@ -24,22 +24,22 @@ static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
 static BUILD_VALIDATED_PIPELINE_NODES: Once = Once::new();
 static BUILD_QUEUE_LATEST_RUST: Once = Once::new();
 
-fn adora_bin() -> String {
+fn dora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let target_dir = Path::new(manifest).join("target/debug/adora");
+    let target_dir = Path::new(manifest).join("target/debug/dora");
     if target_dir.exists() {
         return target_dir.to_string_lossy().to_string();
     }
-    "adora".to_string()
+    "dora".to_string()
 }
 
 fn ensure_cli_built() {
     BUILD_CLI.call_once(|| {
         let status = Command::new("cargo")
-            .args(["build", "-p", "adora-cli"])
+            .args(["build", "-p", "dora-cli"])
             .status()
             .expect("failed to run cargo build for CLI");
-        assert!(status.success(), "failed to build adora CLI");
+        assert!(status.success(), "failed to build dora CLI");
     });
 }
 
@@ -131,8 +131,8 @@ fn ensure_action_nodes_built() {
 }
 
 /// Ensure no leftover coordinator/daemon from a previous test or manual run.
-fn cleanup_stale(adora: &str) {
-    let _ = Command::new(adora)
+fn cleanup_stale(dora: &str) {
+    let _ = Command::new(dora)
         .arg("down")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -142,14 +142,14 @@ fn cleanup_stale(adora: &str) {
 
 /// Run an example dataflow through the full WS control plane lifecycle.
 ///
-/// 1. `adora up` -- start coordinator + daemon
-/// 2. `adora start <yaml> --detach` -- launch the dataflow
-/// 3. Poll `adora list --json` until "Running" disappears or timeout
-/// 4. `adora stop --all` + `adora down` -- clean up
+/// 1. `dora up` -- start coordinator + daemon
+/// 2. `dora start <yaml> --detach` -- launch the dataflow
+/// 3. Poll `dora list --json` until "Running" disappears or timeout
+/// 4. `dora stop --all` + `dora down` -- clean up
 fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     ensure_cli_built();
 
-    let adora = adora_bin();
+    let dora = dora_bin();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let full_yaml = Path::new(manifest_dir).join(yaml_path);
     assert!(
@@ -157,29 +157,29 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         "{name}: dataflow YAML not found at {full_yaml:?}"
     );
 
-    cleanup_stale(&adora);
+    cleanup_stale(&dora);
 
-    // `adora up` starts coordinator + daemon and returns when both are ready.
+    // `dora up` starts coordinator + daemon and returns when both are ready.
     // Use Stdio::null() for all streams to prevent child processes from
     // keeping inherited pipe fds open.
-    let up_status = Command::new(&adora)
+    let up_status = Command::new(&dora)
         .arg("up")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .unwrap_or_else(|e| panic!("{name}: failed to run adora up: {e}"));
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora up: {e}"));
 
-    assert!(up_status.success(), "{name}: adora up failed");
+    assert!(up_status.success(), "{name}: dora up failed");
 
     // Start dataflow (detach so we get control back immediately)
-    let start_status = Command::new(&adora)
+    let start_status = Command::new(&dora)
         .args(["start", full_yaml.to_str().unwrap(), "--detach"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .unwrap_or_else(|e| panic!("{name}: failed to start dataflow: {e}"));
 
-    assert!(start_status.success(), "{name}: adora start failed");
+    assert!(start_status.success(), "{name}: dora start failed");
 
     // Wait for completion or timeout
     let start_time = std::time::Instant::now();
@@ -187,7 +187,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         std::thread::sleep(Duration::from_secs(2));
 
         // Check if any dataflows are still running
-        let list_result = Command::new(&adora)
+        let list_result = Command::new(&dora)
             .args(["list", "--json"])
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -197,12 +197,12 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains("Failed") {
                 // Clean up before panicking
-                let _ = Command::new(&adora)
+                let _ = Command::new(&dora)
                     .args(["stop", "--all"])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status();
-                let _ = Command::new(&adora)
+                let _ = Command::new(&dora)
                     .arg("down")
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -216,27 +216,27 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     }
 
     // Clean up: stop all dataflows and destroy coordinator+daemon
-    let _ = Command::new(&adora)
+    let _ = Command::new(&dora)
         .args(["stop", "--all"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     std::thread::sleep(Duration::from_millis(500));
-    let _ = Command::new(&adora)
+    let _ = Command::new(&dora)
         .arg("down")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
 }
 
-/// Run an example dataflow locally with `adora run --stop-after`.
+/// Run an example dataflow locally with `dora run --stop-after`.
 ///
 /// Exercises the single-process path where CLI, coordinator, and daemon
 /// all run in the same process.
 fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
     ensure_cli_built();
 
-    let adora = adora_bin();
+    let dora = dora_bin();
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let full_yaml = Path::new(manifest_dir).join(yaml_path);
     assert!(
@@ -245,7 +245,7 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
     );
 
     let stop_after = format!("{stop_after_secs}s");
-    let output = Command::new(&adora)
+    let output = Command::new(&dora)
         .args([
             "run",
             full_yaml.to_str().unwrap(),
@@ -255,11 +255,11 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
-        .unwrap_or_else(|e| panic!("{name}: failed to run adora run: {e}"));
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora run: {e}"));
 
     assert!(
         output.status.success(),
-        "{name}: adora run failed\nstderr:\n{}",
+        "{name}: dora run failed\nstderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
 }
@@ -444,7 +444,7 @@ fn smoke_streaming_example() {
 }
 
 // ---------------------------------------------------------------------------
-// Local-mode tests (adora run --stop-after)
+// Local-mode tests (dora run --stop-after)
 //
 // Same examples as above but exercising the single-process path.
 // ---------------------------------------------------------------------------

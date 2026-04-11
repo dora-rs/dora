@@ -3,7 +3,7 @@ nodes:
     path: source.py
     send_logs_as: log_entries
     inputs:
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
     outputs:
       - data
       - log_entries

@@ -1,8 +1,8 @@
-use adora_node_api::{
-    self, AdoraNode, Event,
+use dora_node_api::{
+    self, DoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
-use adora_ros2_bridge::{
+use dora_ros2_bridge::{
     messages::std_msgs::msg::String as Ros2String,
     ros2_client::{self, NodeOptions},
 };
@@ -25,15 +25,15 @@ fn main() -> eyre::Result<()> {
     })
     .context("failed to spawn ros2 spinner")?;
 
-    let (_node, adora_events) = AdoraNode::init_from_env()?;
+    let (_node, dora_events) = DoraNode::init_from_env()?;
 
-    let merged_events = adora_events.merge_external(Box::pin(subscriber.async_stream()));
+    let merged_events = dora_events.merge_external(Box::pin(subscriber.async_stream()));
     let mut events = futures::executor::block_on_stream(merged_events);
 
     let mut count = 0usize;
     while let Some(event) = events.next() {
         match event {
-            MergedEvent::Adora(event) => match event {
+            MergedEvent::Dora(event) => match event {
                 Event::Input {
                     id,
                     metadata: _,
@@ -66,7 +66,7 @@ fn init_ros_node() -> eyre::Result<ros2_client::Node> {
 
     ros_context
         .new_node(
-            ros2_client::NodeName::new("/", "ros2_adora_sub")
+            ros2_client::NodeName::new("/", "ros2_dora_sub")
                 .map_err(|e| eyre!("failed to create ROS2 node name: {e}"))?,
             NodeOptions::new().enable_rosout(true),
         )

@@ -37,11 +37,11 @@ path = "src/service_server.rs"
 required-features = ["ros2"]
 
 [dependencies]
-adora-node-api = { workspace = true, features = ["tracing"] }
+dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = { workspace = true }
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.3"
 rand = "0.8.5"
 tokio = { workspace = true, features = ["rt", "macros"] }
-adora-ros2-bridge = { workspace = true }
+dora-ros2-bridge = { workspace = true }
 serde_json = { workspace = true }

@@ -4,7 +4,7 @@ nodes:
     min_log_level: info       # suppress debug noise at source
     max_log_size: "1KB"       # small for demo (triggers rotation quickly)
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - reading
 

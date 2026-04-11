@@ -1,8 +1,8 @@
-use adora_node_api::{AdoraNode, Event, arrow};
+use dora_node_api::{DoraNode, Event, arrow};
 use eyre::{ContextCompat, bail};
 
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
     let mut received: i64 = 0;
 
     while let Some(event) = events.recv() {

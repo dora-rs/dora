@@ -6,23 +6,23 @@ use std::{
 use clap::Args;
 
 use crate::{
-    command::{Executable, default_tracing, up::adora_executable_path},
+    command::{Executable, default_tracing, up::dora_executable_path},
     common::connect_to_coordinator,
 };
 
 use super::config::ClusterConfig;
 use super::{query_connected_daemons, run_ssh, ssh_target};
 
-/// Rolling upgrade: SCP the local adora binary to each machine and restart daemons.
+/// Rolling upgrade: SCP the local dora binary to each machine and restart daemons.
 ///
 /// For each machine sequentially:
-///   1. SCP the local adora binary to `/usr/local/bin/adora`
+///   1. SCP the local dora binary to `/usr/local/bin/dora`
 ///   2. Restart the systemd service
 ///   3. Wait for the daemon to reconnect
 ///
 /// Examples:
 ///
-///   adora cluster upgrade cluster.yml
+///   dora cluster upgrade cluster.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Upgrade {
@@ -35,7 +35,7 @@ impl Executable for Upgrade {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         let config = ClusterConfig::load(&self.config)?;
-        let local_binary = adora_executable_path()?;
+        let local_binary = dora_executable_path()?;
         let coordinator_addr =
             std::net::SocketAddr::from((config.coordinator.addr, config.coordinator.port));
         let session = connect_to_coordinator(coordinator_addr)?;
@@ -44,7 +44,7 @@ impl Executable for Upgrade {
 
         for machine in &config.machines {
             let target = ssh_target(machine);
-            let service_name = format!("adora-daemon-{}", machine.id);
+            let service_name = format!("dora-daemon-{}", machine.id);
 
             println!("Upgrading {} ({target})...", machine.id);
 
@@ -58,7 +58,7 @@ impl Executable for Upgrade {
                     local_binary
                         .to_str()
                         .ok_or_else(|| eyre::eyre!("local binary path is not valid UTF-8"))?,
-                    &format!("{target}:/usr/local/bin/adora"),
+                    &format!("{target}:/usr/local/bin/dora"),
                 ])
                 .status();
 

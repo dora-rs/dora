@@ -1,5 +1,5 @@
 [package]
-name = "adora-cli"
+name = "dora-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,19 +12,19 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [[bin]]
-name = "adora"
+name = "dora"
 path = "src/main.rs"
 
 [features]
 default = ["tracing", "metrics", "redb-backend"]
-tracing = ["dep:adora-tracing"]
-metrics = ["adora-runtime/metrics", "adora-coordinator/prometheus"]
+tracing = ["dep:dora-tracing"]
+metrics = ["dora-runtime/metrics", "dora-coordinator/prometheus"]
 python = ["pyo3"]
 # Enable extension-module only when building the Python wheel via maturin.
 # This suppresses Python library linking, which is correct for cdylib targets
 # loaded into Python but breaks standalone binary and test builds.
 python-extension-module = ["python", "pyo3/extension-module"]
-redb-backend = ["adora-coordinator/redb-backend", "dep:libc"]
+redb-backend = ["dora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -33,11 +33,11 @@ clap = { version = "4.0.3", features = ["derive", "string", "env"] }
 clap_complete = "4.5.61"
 eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
-adora-core = { workspace = true, features = ["zenoh"] }
-adora-message = { workspace = true }
-adora-node-api-c = { workspace = true }
-adora-operator-api-c = { workspace = true }
-adora-download = { workspace = true }
+dora-core = { workspace = true, features = ["zenoh"] }
+dora-message = { workspace = true }
+dora-node-api-c = { workspace = true }
+dora-operator-api-c = { workspace = true }
+dora-download = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
 webbrowser = "0.8.3"
@@ -50,10 +50,10 @@ notify = "5.1.0"
 ctrlc = "3.2.5"
 tracing = { workspace = true }
 tracing-log = "0.2.0"
-adora-tracing = { workspace = true, optional = true }
-adora-daemon = { workspace = true }
-adora-coordinator = { workspace = true }
-adora-runtime = { workspace = true }
+dora-tracing = { workspace = true, optional = true }
+dora-daemon = { workspace = true }
+dora-coordinator = { workspace = true }
+dora-runtime = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
 futures = { workspace = true }
@@ -82,22 +82,22 @@ git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
 chrono = "0.4.42"
-adora-recording = { workspace = true }
+dora-recording = { workspace = true }
 which = "7"
 tempfile = { workspace = true }
 
 [build-dependencies]
 
 [lib]
-name = "adora_cli"
+name = "dora_cli"
 path = "src/lib.rs"
 # cdylib is required by maturin for the Python wheel build.
 # Cargo builds all listed crate-types for the lib target, so this adds
 # a small overhead to every build.  The alternative (removing cdylib and
 # using a wrapper crate) is more complex and breaks the pyproject.toml
-# scripts entry that provides the `adora` console command.
+# scripts entry that provides the `dora` console command.
 crate-type = ["lib", "cdylib"]
 
 [package.metadata.dist]
-# Enable adora-cli binary to be distributed
+# Enable dora-cli binary to be distributed
 dist = true

@@ -1,14 +1,14 @@
 # Dynamic node definition — add to a running dataflow with:
-#   adora node add --from-yaml filter-node.yml --dataflow <name>
+#   dora node add --from-yaml filter-node.yml --dataflow <name>
 #
 # This node filters values, keeping only even numbers.
 # After adding, wire it with:
-#   adora node connect <dataflow> sender/value filter/input
-#   adora node connect <dataflow> filter/output receiver/filtered
+#   dora node connect <dataflow> sender/value filter/input
+#   dora node connect <dataflow> filter/output receiver/filtered
 
 id: filter
 path: filter.py
 # No inputs declared — wire explicitly after adding:
-#   adora node connect <dataflow> sender/value filter/input
+#   dora node connect <dataflow> sender/value filter/input
 outputs:
   - output

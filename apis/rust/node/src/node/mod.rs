@@ -14,17 +14,18 @@ use self::{
     control_channel::ControlChannel,
     drop_stream::DropStream,
 };
-use adora_core::{
+use aligned_vec::{AVec, ConstAlign};
+use arrow::array::Array;
+use colored::Colorize;
+use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
     metadata::ArrowTypeInfoExt,
-    topics::{
-        ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
-    },
+    topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST},
     types::TypeRegistry,
     uhlc,
 };
-use adora_message::{
+use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     descriptor::OutputFraming,
@@ -34,9 +35,6 @@ use adora_message::{
     },
     node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
 };
-use aligned_vec::{AVec, ConstAlign};
-use arrow::array::Array;
-use colored::Colorize;
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
 use shared_memory_extended::{Shmem, ShmemConf};
@@ -54,14 +52,14 @@ use std::{
 use tokio::runtime::Handle;
 
 #[cfg(feature = "tracing")]
-use adora_tracing::{OtelGuard, TracingBuilder};
+use dora_tracing::{OtelGuard, TracingBuilder};
 use tracing::{info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
 mod drop_stream;
 
-/// Runtime type checking mode, controlled by `ADORA_RUNTIME_TYPE_CHECK` env var.
+/// Runtime type checking mode, controlled by `DORA_RUNTIME_TYPE_CHECK` env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeTypeCheck {
     /// No runtime type checking (default).
@@ -74,13 +72,13 @@ enum RuntimeTypeCheck {
 
 impl RuntimeTypeCheck {
     fn from_env() -> Self {
-        match std::env::var("ADORA_RUNTIME_TYPE_CHECK").as_deref() {
+        match std::env::var("DORA_RUNTIME_TYPE_CHECK").as_deref() {
             Ok("error") => Self::Error,
             Ok("1" | "warn" | "true") => Self::Warn,
             Ok("") | Err(_) => Self::Off,
             Ok(other) => {
                 tracing::warn!(
-                    "unknown ADORA_RUNTIME_TYPE_CHECK value \"{other}\", \
+                    "unknown DORA_RUNTIME_TYPE_CHECK value \"{other}\", \
                      expected \"warn\" or \"error\"; disabling runtime type check"
                 );
                 Self::Off
@@ -107,9 +105,9 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// Allows sending outputs and retrieving node information.
 ///
-/// The main purpose of this struct is to send outputs via Adora. There are also functions available
+/// The main purpose of this struct is to send outputs via Dora. There are also functions available
 /// for retrieving the node configuration.
-pub struct AdoraNode {
+pub struct DoraNode {
     id: NodeId,
     dataflow_id: DataflowId,
     node_config: NodeRunConfig,
@@ -143,20 +141,20 @@ pub struct AdoraNode {
     runtime_type_checks: Option<(RuntimeTypeCheck, HashMap<DataId, arrow_schema::DataType>)>,
 }
 
-impl AdoraNode {
-    /// Initiate a node from environment variables set by the Adora daemon or fall back to
+impl DoraNode {
+    /// Initiate a node from environment variables set by the Dora daemon or fall back to
     /// interactive mode.
     ///
-    /// This is the recommended initialization function for Adora nodes, which are spawned by
-    /// Adora daemon instances. The daemon will set a `ADORA_NODE_CONFIG` environment variable to
+    /// This is the recommended initialization function for Dora nodes, which are spawned by
+    /// Dora daemon instances. The daemon will set a `DORA_NODE_CONFIG` environment variable to
     /// configure the node.
     ///
-    /// When the node is started manually without the `ADORA_NODE_CONFIG` environment variable set,
+    /// When the node is started manually without the `DORA_NODE_CONFIG` environment variable set,
     /// the initialization will fall back to [`init_interactive`](Self::init_interactive) if `stdin`
     /// is a terminal (detected through
     /// [`isatty`](https://www.man7.org/linux/man-pages/man3/isatty.3.html)).
     ///
-    /// If the `ADORA_NODE_CONFIG` environment variable is not set and `ADORA_TEST_WITH_INPUTS` is
+    /// If the `DORA_NODE_CONFIG` environment variable is not set and `DORA_TEST_WITH_INPUTS` is
     /// set, the node will be initialized in integration test mode. See the
     /// [integration testing](crate::integration_testing) module for details.
     ///
@@ -165,19 +163,19 @@ impl AdoraNode {
     /// function was called before. This takes precedence over all environment variables.
     ///
     /// ```no_run
-    /// use adora_node_api::AdoraNode;
+    /// use dora_node_api::DoraNode;
     ///
-    /// let (mut node, mut events) = AdoraNode::init_from_env().expect("Could not init node.");
+    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
     /// ```
     pub fn init_from_env() -> NodeResult<(Self, EventStream)> {
         Self::init_from_env_inner(true)
     }
 
-    /// Initialize the node from environment variables set by the Adora daemon; error if not set.
+    /// Initialize the node from environment variables set by the Dora daemon; error if not set.
     ///
     /// This function behaves the same as [`init_from_env`](Self::init_from_env), but it does _not_
     /// fall back to [`init_interactive`](Self::init_interactive). Instead, an error is returned
-    /// when the `ADORA_NODE_CONFIG` environment variable is missing.
+    /// when the `DORA_NODE_CONFIG` environment variable is missing.
     pub fn init_from_env_force() -> NodeResult<(Self, EventStream)> {
         Self::init_from_env_inner(false)
     }
@@ -192,8 +190,8 @@ impl AdoraNode {
             return Self::init_testing(input, output, options);
         }
 
-        // normal execution (started by adora daemon)
-        match std::env::var("ADORA_NODE_CONFIG") {
+        // normal execution (started by dora daemon)
+        match std::env::var("DORA_NODE_CONFIG") {
             Ok(raw) => {
                 let node_config: NodeConfig =
                     serde_yaml::from_str(&raw).context("failed to deserialize node config")?;
@@ -201,21 +199,21 @@ impl AdoraNode {
             }
             Err(std::env::VarError::NotUnicode(_)) => {
                 return Err(NodeError::Init(
-                    "ADORA_NODE_CONFIG env variable is not valid unicode".into(),
+                    "DORA_NODE_CONFIG env variable is not valid unicode".into(),
                 ));
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
         };
 
         // node integration test mode
-        match std::env::var("ADORA_TEST_WITH_INPUTS") {
+        match std::env::var("DORA_TEST_WITH_INPUTS") {
             Ok(raw) => {
                 let input_file = PathBuf::from(raw);
-                let output_file = match std::env::var("ADORA_TEST_WRITE_OUTPUTS_TO") {
+                let output_file = match std::env::var("DORA_TEST_WRITE_OUTPUTS_TO") {
                     Ok(raw) => PathBuf::from(raw),
                     Err(std::env::VarError::NotUnicode(_)) => {
                         return Err(NodeError::Init(
-                            "ADORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode".into(),
+                            "DORA_TEST_WRITE_OUTPUTS_TO env variable is not valid unicode".into(),
                         ));
                     }
                     Err(std::env::VarError::NotPresent) => {
@@ -223,7 +221,7 @@ impl AdoraNode {
                     }
                 };
                 let skip_output_time_offsets =
-                    std::env::var_os("ADORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
+                    std::env::var_os("DORA_TEST_NO_OUTPUT_TIME_OFFSET").is_some();
 
                 let input = TestingInput::FromJsonFile(input_file);
                 let output = TestingOutput::ToFile(output_file);
@@ -235,7 +233,7 @@ impl AdoraNode {
             }
             Err(std::env::VarError::NotUnicode(_)) => {
                 return Err(NodeError::Init(
-                    "ADORA_TEST_WITH_INPUTS env variable is not valid unicode".into(),
+                    "DORA_TEST_WITH_INPUTS env variable is not valid unicode".into(),
                 ));
             }
             Err(std::env::VarError::NotPresent) => {} // continue trying other init methods
@@ -245,7 +243,7 @@ impl AdoraNode {
         if fallback_to_interactive && std::io::stdin().is_terminal() {
             println!(
                 "{}",
-                "Starting node in interactive mode as ADORA_NODE_CONFIG env variable is not set"
+                "Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set"
                     .green()
             );
             return Self::init_interactive();
@@ -253,7 +251,7 @@ impl AdoraNode {
 
         // no run mode applicable
         Err(NodeError::Init(
-            "ADORA_NODE_CONFIG env variable is not set".into(),
+            "DORA_NODE_CONFIG env variable is not set".into(),
         ))
     }
 
@@ -262,22 +260,22 @@ impl AdoraNode {
     /// This initialization function should be used for [_dynamic nodes_](index.html#dynamic-nodes).
     ///
     /// ```no_run
-    /// use adora_node_api::AdoraNode;
-    /// use adora_node_api::adora_core::config::NodeId;
+    /// use dora_node_api::DoraNode;
+    /// use dora_node_api::dora_core::config::NodeId;
     ///
-    /// let (mut node, mut events) = AdoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
+    /// let (mut node, mut events) = DoraNode::init_from_node_id(NodeId::from("plot".to_string())).expect("Could not init node plot");
     /// ```
     ///
     pub fn init_from_node_id(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
-        // Make sure that the node is initialized outside of adora start.
-        let port = match std::env::var(ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV) {
+        // Make sure that the node is initialized outside of dora start.
+        let port = match std::env::var(DORA_DAEMON_LOCAL_LISTEN_PORT_ENV) {
             Ok(p) => p.parse().unwrap_or_else(|e| {
                 tracing::warn!(
-                    "invalid {ADORA_DAEMON_LOCAL_LISTEN_PORT_ENV}={p:?}: {e}, using default port"
+                    "invalid {DORA_DAEMON_LOCAL_LISTEN_PORT_ENV}={p:?}: {e}, using default port"
                 );
-                ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT
+                DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT
             }),
-            Err(_) => ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
+            Err(_) => DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
         };
         let daemon_address = (LOCALHOST, port).into();
 
@@ -312,9 +310,9 @@ impl AdoraNode {
     /// [`init_from_env`][Self::init_from_env]. If this fails, it falls back to
     /// [`init_from_node_id`][Self::init_from_node_id].
     pub fn init_flexible(node_id: NodeId) -> NodeResult<(Self, EventStream)> {
-        if std::env::var("ADORA_NODE_CONFIG").is_ok() {
+        if std::env::var("DORA_NODE_CONFIG").is_ok() {
             info!(
-                "Skipping {node_id} specified within the node initialization in favor of `ADORA_NODE_CONFIG` specified by `adora start`"
+                "Skipping {node_id} specified within the node initialization in favor of `DORA_NODE_CONFIG` specified by `dora start`"
             );
             Self::init_from_env()
         } else {
@@ -324,8 +322,8 @@ impl AdoraNode {
 
     /// Initialize the node in a standalone mode that prompts for inputs on the terminal.
     ///
-    /// Instead of connecting to a `adora daemon`, this interactive mode prompts for node inputs
-    /// on the terminal. In this mode, the node is completely isolated from the adora daemon and
+    /// Instead of connecting to a `dora daemon`, this interactive mode prompts for node inputs
+    /// on the terminal. In this mode, the node is completely isolated from the dora daemon and
     /// other nodes, so it cannot be part of a dataflow.
     ///
     /// Note that this function will hang indefinitely if no input is supplied to the interactive
@@ -345,7 +343,7 @@ impl AdoraNode {
     /// > cargo build -p rust-dataflow-example-node
     /// > target/debug/rust-dataflow-example-node
     /// hello
-    /// Starting node in interactive mode as ADORA_NODE_CONFIG env variable is not set
+    /// Starting node in interactive mode as DORA_NODE_CONFIG env variable is not set
     /// Node asks for next input
     /// ? Input ID
     /// [empty input ID to stop]
@@ -455,7 +453,7 @@ impl AdoraNode {
 
     /// Initializes a node in integration test mode.
     ///
-    /// No connection to a adora daemon is made in this mode. Instead, inputs are read from the
+    /// No connection to a dora daemon is made in this mode. Instead, inputs are read from the
     /// specified `TestingInput`, and outputs are written to the specified `TestingOutput`.
     /// Additional options for the testing mode can be specified through `TestingOptions`.
     ///
@@ -493,7 +491,7 @@ impl AdoraNode {
         Ok((node, events))
     }
 
-    /// Internal initialization routine that should not be used outside of Adora.
+    /// Internal initialization routine that should not be used outside of Dora.
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)> {
@@ -559,11 +557,11 @@ impl AdoraNode {
             daemon_communication,
             DaemonCommunicationWrapper::Standard(_)
         );
-        let shm_pool_size = std::env::var("ADORA_NODE_SHM_POOL_SIZE")
+        let shm_pool_size = std::env::var("DORA_NODE_SHM_POOL_SIZE")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(8 * 1024 * 1024); // 8 MB default
-        let zenoh_zero_copy_threshold = std::env::var("ADORA_ZERO_COPY_THRESHOLD")
+        let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(ZERO_COPY_THRESHOLD);
@@ -577,7 +575,7 @@ impl AdoraNode {
                     // that context on current-thread runtimes).
                     let session = std::thread::scope(|s| {
                         match s
-                            .spawn(|| handle.block_on(adora_core::topics::open_zenoh_session(None)))
+                            .spawn(|| handle.block_on(dora_core::topics::open_zenoh_session(None)))
                             .join()
                         {
                             Ok(Ok(session)) => Some(session),
@@ -597,10 +595,10 @@ impl AdoraNode {
                         match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
                             Ok(p) => Some(p),
                             Err(e) => {
-                                if std::env::var("ADORA_SHM_REQUIRED").is_ok() {
+                                if std::env::var("DORA_SHM_REQUIRED").is_ok() {
                                     return Err(NodeError::Init(format!(
                                         "failed to create zenoh SHM provider: {e} \
-                                         (ADORA_SHM_REQUIRED is set)"
+                                         (DORA_SHM_REQUIRED is set)"
                                     )));
                                 }
                                 tracing::warn!(
@@ -741,10 +739,10 @@ impl AdoraNode {
     /// We take a closure as an input to enable zero copy on send.
     ///
     /// ```no_run
-    /// use adora_node_api::{AdoraNode, MetadataParameters};
-    /// use adora_core::config::DataId;
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
     ///
-    /// let (mut node, mut events) = AdoraNode::init_from_env().expect("Could not init node.");
+    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
     ///
     /// let output = DataId::from("output_id".to_owned());
     ///
@@ -803,7 +801,7 @@ impl AdoraNode {
 
         let arrow_array = data.to_data();
 
-        // Runtime type check (only when ADORA_RUNTIME_TYPE_CHECK is set).
+        // Runtime type check (only when DORA_RUNTIME_TYPE_CHECK is set).
         //
         // Skip the check when this message carries pattern metadata
         // (`request_id`, `goal_id`, or `goal_status`). Service, action,
@@ -959,7 +957,7 @@ impl AdoraNode {
         #[cfg(feature = "tracing")]
         if !parameters.contains_key("open_telemetry_context") {
             let cx = opentelemetry::Context::current();
-            let serialized = adora_tracing::telemetry::serialize_context(&cx);
+            let serialized = dora_tracing::telemetry::serialize_context(&cx);
             if !serialized.is_empty() {
                 parameters.insert(
                     "open_telemetry_context".to_string(),
@@ -1074,7 +1072,7 @@ impl AdoraNode {
 
         // Get or create publisher for this output
         if !self.zenoh_publishers.contains_key(output_id) {
-            let topic = adora_core::topics::zenoh_output_publish_topic(
+            let topic = dora_core::topics::zenoh_output_publish_topic(
                 self.dataflow_id,
                 &self.id,
                 output_id,
@@ -1134,7 +1132,7 @@ impl AdoraNode {
 
     /// Returns the unique identifier for the running dataflow instance.
     ///
-    /// Adora assigns each dataflow instance a random identifier when started.
+    /// Dora assigns each dataflow instance a random identifier when started.
     pub fn dataflow_id(&self) -> &DataflowId {
         &self.dataflow_id
     }
@@ -1207,13 +1205,13 @@ impl AdoraNode {
             if total <= Self::MAX_LOG_FIELDS_BYTES {
                 entry["fields"] = serde_json::json!(fields);
             } else {
-                eprintln!("adora log: fields too large ({total} bytes), dropping fields");
+                eprintln!("dora log: fields too large ({total} bytes), dropping fields");
                 entry["fields_dropped"] = serde_json::Value::Bool(true);
             }
         }
         match serde_json::to_string(&entry) {
             Ok(json) => println!("{json}"),
-            Err(e) => eprintln!("adora log serialization error: {e}"),
+            Err(e) => eprintln!("dora log serialization error: {e}"),
         }
     }
 
@@ -1275,13 +1273,13 @@ impl AdoraNode {
         mut parameters: MetadataParameters,
         data: impl Array,
     ) -> NodeResult<String> {
-        if parameters.contains_key(adora_message::metadata::REQUEST_ID) {
+        if parameters.contains_key(dora_message::metadata::REQUEST_ID) {
             tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
         }
         let request_id = Self::new_request_id();
         parameters.insert(
-            adora_message::metadata::REQUEST_ID.to_string(),
-            adora_message::metadata::Parameter::String(request_id.clone()),
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String(request_id.clone()),
         );
         self.send_output(output_id, parameters, data)?;
         Ok(request_id)
@@ -1415,14 +1413,14 @@ impl AdoraNode {
             Ok(d) => Ok(d),
             Err(err) => Err(NodeError::Data(format!(
                 "failed to parse dataflow descriptor: {err}\n\n\
-                    This might be caused by mismatched version numbers of adora \
-                    daemon and the adora node API"
+                    This might be caused by mismatched version numbers of dora \
+                    daemon and the dora node API"
             ))),
         }
     }
 }
 
-impl Drop for AdoraNode {
+impl Drop for DoraNode {
     fn drop(&mut self) {
         // Undeclare zenoh publishers to clean up network resources
         // before closing daemon channels.
@@ -1585,9 +1583,9 @@ unsafe impl Sync for ShmemHandle {}
 /// rather than a fixed Arrow type. Type checks are skipped for such
 /// messages (dora-rs/adora#150).
 pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
-    params.contains_key(adora_message::metadata::REQUEST_ID)
-        || params.contains_key(adora_message::metadata::GOAL_ID)
-        || params.contains_key(adora_message::metadata::GOAL_STATUS)
+    params.contains_key(dora_message::metadata::REQUEST_ID)
+        || params.contains_key(dora_message::metadata::GOAL_ID)
+        || params.contains_key(dora_message::metadata::GOAL_STATUS)
 }
 
 /// Init Opentelemetry Tracing
@@ -1604,8 +1602,8 @@ pub fn init_tracing(
     let tracing_monitor = async move {
         let mut builder = TracingBuilder::new(node_id_str.clone());
         // Only enable OTLP if environment variable is set
-        if std::env::var("ADORA_OTLP_ENDPOINT").is_ok()
-            || std::env::var("ADORA_JAEGER_TRACING").is_ok()
+        if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+            || std::env::var("DORA_JAEGER_TRACING").is_ok()
         {
             match builder.with_otlp_tracing() {
                 Ok(b) => {
@@ -1641,10 +1639,10 @@ pub fn init_tracing(
     // attempt to connect to `localhost:4317` on every node startup. Mirrors
     // the gating applied to tracing above.
     #[cfg(feature = "metrics")]
-    if std::env::var("ADORA_OTLP_ENDPOINT").is_ok() {
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
         let id = format!("{dataflow_id}/{node_id}");
         let monitor_task = async move {
-            use adora_metrics::run_metrics_monitor;
+            use dora_metrics::run_metrics_monitor;
 
             if let Err(e) = run_metrics_monitor(id.clone())
                 .await
@@ -1673,7 +1671,7 @@ impl StreamSegment {
     /// Start a new session with a generated session ID and segment 0.
     pub fn new() -> Self {
         Self {
-            session_id: AdoraNode::new_request_id(),
+            session_id: DoraNode::new_request_id(),
             segment_id: 0,
             seq: 0,
         }
@@ -1759,26 +1757,26 @@ mod tests {
 
     #[test]
     fn new_request_id_returns_valid_uuid() {
-        let id = AdoraNode::new_request_id();
+        let id = DoraNode::new_request_id();
         uuid::Uuid::parse_str(&id).expect("should be valid UUID");
     }
 
     #[test]
     fn new_request_id_is_unique() {
-        let ids: Vec<String> = (0..100).map(|_| AdoraNode::new_request_id()).collect();
+        let ids: Vec<String> = (0..100).map(|_| DoraNode::new_request_id()).collect();
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(ids.len(), unique.len(), "all IDs should be unique");
     }
 
     #[test]
     fn new_goal_id_returns_valid_uuid() {
-        let id = AdoraNode::new_goal_id();
+        let id = DoraNode::new_goal_id();
         uuid::Uuid::parse_str(&id).expect("should be valid UUID");
     }
 
     /// Helper: create a minimal test node with a channel output.
     fn test_node() -> (
-        AdoraNode,
+        DoraNode,
         crate::EventStream,
         flume::Receiver<serde_json::Map<String, serde_json::Value>>,
     ) {
@@ -1795,7 +1793,7 @@ mod tests {
         let options = TestingOptions {
             skip_output_time_offsets: true,
         };
-        let (node, event_stream) = AdoraNode::init_testing(inputs, outputs, options).unwrap();
+        let (node, event_stream) = DoraNode::init_testing(inputs, outputs, options).unwrap();
         (node, event_stream, rx)
     }
 
@@ -1842,8 +1840,8 @@ mod tests {
         // Simulate passing through a request_id from the incoming request
         let mut params = MetadataParameters::default();
         params.insert(
-            adora_message::metadata::REQUEST_ID.to_string(),
-            adora_message::metadata::Parameter::String("test-req-id".into()),
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String("test-req-id".into()),
         );
         node.send_service_response("response".into(), params, NullArray::new(0))
             .unwrap();
@@ -1861,8 +1859,8 @@ mod tests {
     fn carries_pattern_correlation_detects_request_id() {
         let mut params = MetadataParameters::default();
         params.insert(
-            adora_message::metadata::REQUEST_ID.to_string(),
-            adora_message::metadata::Parameter::String("req-1".into()),
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String("req-1".into()),
         );
         assert!(carries_pattern_correlation(&params));
     }
@@ -1871,8 +1869,8 @@ mod tests {
     fn carries_pattern_correlation_detects_goal_id() {
         let mut params = MetadataParameters::default();
         params.insert(
-            adora_message::metadata::GOAL_ID.to_string(),
-            adora_message::metadata::Parameter::String("goal-1".into()),
+            dora_message::metadata::GOAL_ID.to_string(),
+            dora_message::metadata::Parameter::String("goal-1".into()),
         );
         assert!(carries_pattern_correlation(&params));
     }
@@ -1881,8 +1879,8 @@ mod tests {
     fn carries_pattern_correlation_detects_goal_status() {
         let mut params = MetadataParameters::default();
         params.insert(
-            adora_message::metadata::GOAL_STATUS.to_string(),
-            adora_message::metadata::Parameter::String("succeeded".into()),
+            dora_message::metadata::GOAL_STATUS.to_string(),
+            dora_message::metadata::Parameter::String("succeeded".into()),
         );
         assert!(carries_pattern_correlation(&params));
     }
@@ -1898,7 +1896,7 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert(
             "custom_key".to_string(),
-            adora_message::metadata::Parameter::String("value".into()),
+            dora_message::metadata::Parameter::String("value".into()),
         );
         assert!(!carries_pattern_correlation(&params));
     }

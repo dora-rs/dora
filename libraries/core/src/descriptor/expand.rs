@@ -1,4 +1,4 @@
-use adora_message::{
+use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{Descriptor, EnvValue, Node},
     id::{DataId, NodeId},

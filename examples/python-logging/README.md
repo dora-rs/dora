@@ -1,6 +1,6 @@
 # Python Logging Example
 
-Demonstrates all adora logging features using a three-node pipeline:
+Demonstrates all dora logging features using a three-node pipeline:
 
 ```
 sensor (noisy, high-volume) --> processor (structured logs) --> monitor (log aggregator)
@@ -20,67 +20,67 @@ warnings and errors, demonstrating in-dataflow log aggregation.
 
 ## Running (Direct Mode)
 
-`adora run` executes the dataflow in a single process -- good for quick testing.
+`dora run` executes the dataflow in a single process -- good for quick testing.
 
 ```bash
 # Basic run (5 seconds)
-adora run dataflow.yml --stop-after 5s
+dora run dataflow.yml --stop-after 5s
 
 # Show only warnings and above
-adora run dataflow.yml --log-level warn --stop-after 5s
+dora run dataflow.yml --log-level warn --stop-after 5s
 
 # Per-node filtering: debug for monitor, warn for sensor
-adora run dataflow.yml --log-filter "monitor=debug,sensor=warn" --stop-after 5s
+dora run dataflow.yml --log-filter "monitor=debug,sensor=warn" --stop-after 5s
 
 # JSON output for machine parsing
-adora run dataflow.yml --log-format json --stop-after 3s
+dora run dataflow.yml --log-format json --stop-after 3s
 
 # Using environment variables
-ADORA_LOG_LEVEL=warn adora run dataflow.yml --stop-after 5s
+DORA_LOG_LEVEL=warn dora run dataflow.yml --stop-after 5s
 ```
 
 ## Running (Distributed Mode)
 
-`adora up` + `adora start` runs through the coordinator/daemon architecture --
+`dora up` + `dora start` runs through the coordinator/daemon architecture --
 required for multi-machine deployments.
 
 ```bash
 # 1. Start coordinator + daemon in background
-adora up
+dora up
 
 # 2a. Start attached (live log stream, Ctrl-C to detach)
-adora start dataflow.yml --attach
+dora start dataflow.yml --attach
 
 # 2b. Or start detached and query logs separately
-adora start dataflow.yml
+dora start dataflow.yml
 ```
 
-Once running, use `adora logs` to query any node:
+Once running, use `dora logs` to query any node:
 
 ```bash
 # Stream live logs from sensor
-adora logs <dataflow-id> sensor --follow
+dora logs <dataflow-id> sensor --follow
 
 # Stream only warnings and above from sensor
-adora logs <dataflow-id> sensor --follow --level warn
+dora logs <dataflow-id> sensor --follow --level warn
 
 # Last 20 lines from all nodes
-adora logs <dataflow-id> --all-nodes --tail 20
+dora logs <dataflow-id> --all-nodes --tail 20
 
 # Search for specific patterns
-adora logs <dataflow-id> processor --grep "error" --since 5m
+dora logs <dataflow-id> processor --grep "error" --since 5m
 
 # Multiple terminals for targeted monitoring:
-#   Terminal 1: adora logs <id> sensor --follow --level warn
-#   Terminal 2: adora logs <id> processor --follow --level error
-#   Terminal 3: adora logs <id> monitor --follow
+#   Terminal 1: dora logs <id> sensor --follow --level warn
+#   Terminal 2: dora logs <id> processor --follow --level error
+#   Terminal 3: dora logs <id> monitor --follow
 ```
 
 When done:
 
 ```bash
-adora stop
-adora down
+dora stop
+dora down
 ```
 
 ## Post-Run Analysis
@@ -89,13 +89,13 @@ Works the same for both direct and distributed mode:
 
 ```bash
 # Read local log files
-adora logs --local --all-nodes --tail 20
+dora logs --local --all-nodes --tail 20
 
 # Search sensor warnings
-adora logs --local sensor --grep "high temp"
+dora logs --local sensor --grep "high temp"
 
 # Time-filtered errors
-adora logs --local --all-nodes --since 10s --level error
+dora logs --local --all-nodes --since 10s --level error
 
 # Check log rotation (1KB limit triggers rotation quickly)
 ls -la out/*/log_sensor*.jsonl
@@ -113,5 +113,5 @@ ls -la out/*/log_sensor*.jsonl
 | `--log-level` | CLI-level display filtering |
 | `--log-filter` | Per-node display overrides |
 | `--log-format` | pretty, json, compact output |
-| `adora logs --local` | Post-run log file reading |
+| `dora logs --local` | Post-run log file reading |
 | `--grep`, `--since` | Targeted log search |

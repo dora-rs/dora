@@ -4,13 +4,13 @@ pub async fn socket_stream_send(
     connection: &mut (impl AsyncWrite + Unpin),
     message: &[u8],
 ) -> std::io::Result<()> {
-    if message.len() > adora_message::MAX_MESSAGE_BYTES {
+    if message.len() > dora_message::MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
                 "outgoing message size {} exceeds maximum {}",
                 message.len(),
-                adora_message::MAX_MESSAGE_BYTES
+                dora_message::MAX_MESSAGE_BYTES
             ),
         ));
     }
@@ -28,7 +28,7 @@ pub async fn socket_stream_send(
 pub async fn socket_stream_receive(
     connection: &mut (impl AsyncRead + Unpin),
 ) -> std::io::Result<Vec<u8>> {
-    let timeout = adora_message::TCP_READ_TIMEOUT;
+    let timeout = dora_message::TCP_READ_TIMEOUT;
     let reply_len = {
         let mut raw = [0; 8];
         tokio::time::timeout(timeout, connection.read_exact(&mut raw))
@@ -43,12 +43,12 @@ pub async fn socket_stream_receive(
             )
         })?
     };
-    if reply_len > adora_message::MAX_MESSAGE_BYTES {
+    if reply_len > dora_message::MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
                 "message size {reply_len} exceeds maximum {}",
-                adora_message::MAX_MESSAGE_BYTES
+                dora_message::MAX_MESSAGE_BYTES
             ),
         ));
     }

@@ -1,7 +1,7 @@
 use crate::control::ControlEvent;
 use crate::state::DaemonConnection;
-use adora_core::config::NodeId;
-use adora_message::{
+use dora_core::config::NodeId;
+use dora_message::{
     BuildId, DataflowId,
     common::DaemonId,
     coordinator_to_cli::LogMessage,
@@ -51,7 +51,7 @@ pub enum Event {
     },
     DaemonStatusReport {
         daemon_id: DaemonId,
-        running_dataflows: Vec<adora_message::daemon_to_coordinator::DataflowStatusEntry>,
+        running_dataflows: Vec<dora_message::daemon_to_coordinator::DataflowStatusEntry>,
     },
     DaemonStateCatchUpAck {
         daemon_id: DaemonId,
@@ -143,7 +143,7 @@ pub(crate) fn set_up_ctrlc_handler() -> Result<impl Stream<Item = Event>, eyre::
         } else {
             tracing::info!("received ctrlc signal");
             if ctrlc_tx.blocking_send(Event::CtrlC).is_err() {
-                tracing::error!("failed to report ctrl-c event to adora-coordinator");
+                tracing::error!("failed to report ctrl-c event to dora-coordinator");
             }
 
             ctrlc_sent = true;

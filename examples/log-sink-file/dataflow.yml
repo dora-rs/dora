@@ -3,7 +3,7 @@ nodes:
     path: sensor.py
     send_logs_as: log_entries
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
     outputs:
       - reading
       - log_entries

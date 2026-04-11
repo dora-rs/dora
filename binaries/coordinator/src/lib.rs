@@ -7,10 +7,11 @@ use crate::{
     },
     state::{ArchivedDataflow, CachedResult, ParamTarget, RunningBuild, RunningDataflow},
 };
-use adora_coordinator_store::DataflowStatus as StoreDataflowStatus;
-pub use adora_coordinator_store::{self, CoordinatorStore, InMemoryStore};
-use adora_core::{descriptor::DescriptorExt, uhlc::HLC};
-use adora_message::{
+pub use control::ControlEvent;
+use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
+pub use dora_coordinator_store::{self, CoordinatorStore, InMemoryStore};
+use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
+use dora_message::{
     BuildId, DataflowId,
     cli_to_coordinator::ControlRequest,
     common::DaemonId,
@@ -23,7 +24,6 @@ use adora_message::{
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
 };
-pub use control::ControlEvent;
 pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{Result, WrapErr, bail, eyre};
 use futures::{Future, Stream, StreamExt, stream::FuturesUnordered};
@@ -62,7 +62,7 @@ mod ws_server;
 /// When `Some`, the coordinator will serve `GetTraces` / `GetTraceSpans`
 /// requests by reading captured spans from this store.
 #[cfg(feature = "tracing")]
-pub type SpanStore = Option<adora_tracing::span_store::SharedSpanStore>;
+pub type SpanStore = Option<dora_tracing::span_store::SharedSpanStore>;
 #[cfg(not(feature = "tracing"))]
 pub type SpanStore = ();
 
@@ -79,7 +79,7 @@ pub async fn start(
 /// Like [`start`] but allows enabling token authentication.
 ///
 /// When `auth` is `true`, the coordinator generates a random token on startup,
-/// writes it to `~/.config/adora/.adora-token`, and requires all clients to
+/// writes it to `~/.config/dora/.dora-token`, and requires all clients to
 /// present it via the `Authorization: Bearer <token>` header.
 pub async fn start_with_auth(
     bind: SocketAddr,
@@ -91,14 +91,14 @@ pub async fn start_with_auth(
     let ctrlc_events = set_up_ctrlc_handler()?;
 
     let token = if auth {
-        let token = adora_message::auth::generate_token();
+        let token = dora_message::auth::generate_token();
         if let Ok(cwd) = std::env::current_dir() {
-            if let Err(e) = adora_message::auth::write_token(&cwd, &token) {
+            if let Err(e) = dora_message::auth::write_token(&cwd, &token) {
                 tracing::warn!("failed to write auth token: {e}");
             } else {
                 tracing::info!(
                     "auth token written to {}",
-                    adora_message::auth::token_path(&cwd).display()
+                    dora_message::auth::token_path(&cwd).display()
                 );
             }
         }
@@ -119,7 +119,7 @@ pub async fn start_with_auth(
 }
 
 /// Like [`start`] but without registering a ctrl-c handler.
-/// For embedding the coordinator in another process (e.g., `adora run`).
+/// For embedding the coordinator in another process (e.g., `dora run`).
 pub async fn start_embedded(
     bind: SocketAddr,
     external_events: impl Stream<Item = Event> + Unpin,
@@ -178,7 +178,7 @@ async fn start_with_events(
     external_events: impl Stream<Item = Event> + Unpin,
     extra_events: impl Stream<Item = Event> + Unpin,
     store: Arc<dyn CoordinatorStore>,
-    auth_token: Option<adora_message::auth::AuthToken>,
+    auth_token: Option<dora_message::auth::AuthToken>,
     span_store: SpanStore,
 ) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
     let clock = Arc::new(HLC::default());
@@ -252,7 +252,7 @@ async fn start_inner(
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
             .map(|_| Event::DaemonHeartbeatInterval);
 
-    // events that should be aborted on `adora down`
+    // events that should be aborted on `dora down`
     let (abortable_events, abort_handle) =
         futures::stream::abortable((events, daemon_heartbeat_interval).merge());
 
@@ -375,7 +375,7 @@ async fn start_inner(
                             let _ = daemon_id_tx.send(daemon_id.clone());
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
-                                store.register_daemon(adora_coordinator_store::DaemonInfo {
+                                store.register_daemon(dora_coordinator_store::DaemonInfo {
                                     daemon_id: daemon_id.clone(),
                                     machine_id: daemon_id.machine_id().map(|s| s.to_owned()),
                                     labels,
@@ -1000,7 +1000,7 @@ async fn start_inner(
                         ControlRequest::ConnectedMachines => {
                             let daemon_infos: Vec<_> = daemon_connections
                                 .iter_mut()
-                                .map(|(id, conn)| adora_message::coordinator_to_cli::DaemonInfo {
+                                .map(|(id, conn)| dora_message::coordinator_to_cli::DaemonInfo {
                                     daemon_id: id.clone(),
                                     last_heartbeat_ago_ms: conn.last_heartbeat.elapsed().as_millis()
                                         as u64,
@@ -1053,7 +1053,7 @@ async fn start_inner(
                             ));
                         }
                         ControlRequest::GetNodeInfo => {
-                            use adora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
+                            use dora_message::coordinator_to_cli::{NodeInfo, NodeMetricsInfo};
 
                             let mut node_infos = Vec::new();
                             for dataflow in running_dataflows.values() {
@@ -1307,13 +1307,13 @@ async fn start_inner(
                                         // Keep a clone of the original Node so
                                         // we can push it into the stored
                                         // descriptor after a successful spawn
-                                        // (so `adora info` reflects the new
+                                        // (so `dora info` reflects the new
                                         // node).
                                         let original_node = node.clone();
 
                                         // Resolve the Node into a ResolvedNode via a
                                         // temporary single-node descriptor.
-                                        let tmp_desc = adora_message::descriptor::Descriptor {
+                                        let tmp_desc = dora_message::descriptor::Descriptor {
                                             nodes: vec![node],
                                             communication: Default::default(),
                                             deploy: None,
@@ -1361,7 +1361,7 @@ async fn start_inner(
                                                                             );
                                                                         // Update the stored descriptor
                                                                         // and resolved nodes so
-                                                                        // `adora info` reflects the
+                                                                        // `dora info` reflects the
                                                                         // new node.
                                                                         dataflow
                                                                             .descriptor
@@ -2006,9 +2006,9 @@ async fn start_inner(
                         "auto-recovery: re-spawning {} node(s) for dataflow {uuid} on daemon {daemon_id}",
                         spawn_nodes.len()
                     );
-                    let spawn_command = adora_message::coordinator_to_daemon::SpawnDataflowNodes {
+                    let spawn_command = dora_message::coordinator_to_daemon::SpawnDataflowNodes {
                         build_id: None,
-                        session_id: adora_message::SessionId::generate(),
+                        session_id: dora_message::SessionId::generate(),
                         dataflow_id: *uuid,
                         local_working_dir: None,
                         nodes: df.nodes.clone(),
@@ -2128,7 +2128,7 @@ async fn start_inner(
 }
 
 struct ParamReplayItem {
-    node_id: adora_core::config::NodeId,
+    node_id: dora_core::config::NodeId,
     key: String,
     value_json: Vec<u8>,
 }
@@ -2143,7 +2143,7 @@ async fn handle_pruned_state_catchup_fallback(
     dataflow_id: DataflowId,
     dataflow: &mut RunningDataflow,
     daemon_id: &DaemonId,
-    store: Arc<dyn adora_coordinator_store::CoordinatorStore>,
+    store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     daemon_connections: &mut DaemonConnections,
     clock: Arc<HLC>,
     now: Instant,
@@ -2212,8 +2212,8 @@ async fn handle_pruned_state_catchup_fallback(
 
 fn collect_param_replay_items(
     dataflow_id: DataflowId,
-    node_ids_on_daemon: &[adora_core::config::NodeId],
-    store: &dyn adora_coordinator_store::CoordinatorStore,
+    node_ids_on_daemon: &[dora_core::config::NodeId],
+    store: &dyn dora_coordinator_store::CoordinatorStore,
 ) -> Vec<ParamReplayItem> {
     let mut items = Vec::new();
     for node_id in node_ids_on_daemon {
@@ -2239,15 +2239,15 @@ fn collect_param_replay_items(
 
 fn build_set_param_message_from_raw_json(
     dataflow_id: DataflowId,
-    node_id: &adora_core::config::NodeId,
+    node_id: &dora_core::config::NodeId,
     key: &str,
     value_json: &[u8],
-    timestamp: adora_core::uhlc::Timestamp,
+    timestamp: dora_core::uhlc::Timestamp,
 ) -> eyre::Result<Vec<u8>> {
     #[derive(Serialize)]
     struct SetParamPayloadRaw<'a> {
         dataflow_id: DataflowId,
-        node_id: &'a adora_core::config::NodeId,
+        node_id: &'a dora_core::config::NodeId,
         key: &'a str,
         value: &'a RawValue,
     }
@@ -2258,7 +2258,7 @@ fn build_set_param_message_from_raw_json(
     #[derive(Serialize)]
     struct TimestampedDaemonEventRaw<'a> {
         inner: DaemonCoordinatorEventRaw<'a>,
-        timestamp: adora_core::uhlc::Timestamp,
+        timestamp: dora_core::uhlc::Timestamp,
     }
 
     // Parse persisted bytes as raw JSON once, then rely on serde for
@@ -2282,7 +2282,7 @@ fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
     daemon_connections: &mut DaemonConnections,
-    store: Arc<dyn adora_coordinator_store::CoordinatorStore>,
+    store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: Arc<HLC>,
 ) {
     // Replay persisted runtime parameters once nodes are ready.
@@ -2320,8 +2320,8 @@ fn schedule_param_replay_for_ready_dataflow(
 async fn replay_persisted_params_for_daemon(
     dataflow_id: DataflowId,
     daemon_id: DaemonId,
-    node_ids_on_daemon: Vec<adora_core::config::NodeId>,
-    store: Arc<dyn adora_coordinator_store::CoordinatorStore>,
+    node_ids_on_daemon: Vec<dora_core::config::NodeId>,
+    store: Arc<dyn dora_coordinator_store::CoordinatorStore>,
     connection: crate::state::DaemonConnection,
     clock: Arc<HLC>,
 ) -> ParamReplaySummary {
@@ -2407,7 +2407,7 @@ async fn replay_persisted_params_for_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adora_message::descriptor::Descriptor;
+    use dora_message::descriptor::Descriptor;
     use std::collections::HashMap;
     use tokio::time::{Duration as TokioDuration, timeout};
     use uuid::Uuid;
@@ -2415,7 +2415,7 @@ mod tests {
     fn test_running_dataflow(
         dataflow_id: DataflowId,
         daemon_id: DaemonId,
-        node_id: adora_core::config::NodeId,
+        node_id: dora_core::config::NodeId,
     ) -> RunningDataflow {
         let mut daemons = BTreeSet::new();
         daemons.insert(daemon_id.clone());
@@ -2463,7 +2463,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(
@@ -2484,10 +2484,10 @@ mod tests {
     fn resolve_param_target_returns_persisted_only_for_known_stopped_dataflow() {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
         let running_dataflows = HashMap::new();
 
-        let record = adora_coordinator_store::DataflowRecord {
+        let record = dora_coordinator_store::DataflowRecord {
             uuid: dataflow_id,
             name: Some("df".to_string()),
             descriptor_json: serde_json::json!({
@@ -2496,7 +2496,7 @@ mod tests {
                 ]
             })
             .to_string(),
-            status: adora_coordinator_store::DataflowStatus::Succeeded,
+            status: dora_coordinator_store::DataflowStatus::Succeeded,
             daemon_ids: Vec::new(),
             node_to_daemon: BTreeMap::new(),
             uv: false,
@@ -2519,7 +2519,7 @@ mod tests {
     fn resolve_param_target_errors_for_unknown_dataflow() {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
         let running_dataflows = HashMap::new();
 
         let err = resolve_param_target(&running_dataflows, store.as_ref(), &dataflow_id, &node_id)
@@ -2533,8 +2533,8 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let existing_node: adora_core::config::NodeId = "camera".to_string().into();
-        let missing_node: adora_core::config::NodeId = "ghost".to_string().into();
+        let existing_node: dora_core::config::NodeId = "camera".to_string().into();
+        let missing_node: dora_core::config::NodeId = "ghost".to_string().into();
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(
@@ -2564,7 +2564,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let value_bytes = serde_json::to_vec(&serde_json::json!(42)).unwrap();
         store
@@ -2632,7 +2632,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
         let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -2667,7 +2667,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let value_bytes = serde_json::to_vec(&serde_json::json!(7)).unwrap();
         store
@@ -2720,7 +2720,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let value_bytes = serde_json::to_vec(&serde_json::json!(1)).unwrap();
         store
@@ -2752,7 +2752,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
         dataflow.state_log_sequence = 8;
@@ -2789,7 +2789,7 @@ mod tests {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let value_bytes = serde_json::to_vec(&serde_json::json!(123)).unwrap();
         store
@@ -2854,7 +2854,7 @@ mod tests {
     fn state_log_append_and_sequence() {
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
         assert_eq!(df.state_log_sequence, 0);
@@ -2881,7 +2881,7 @@ mod tests {
     fn state_log_delta_returns_missed_entries() {
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let daemon_id = DaemonId::new(Some("m1".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
         for i in 0..5 {
@@ -2908,7 +2908,7 @@ mod tests {
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let d1 = DaemonId::new(Some("m1".to_string()));
         let d2 = DaemonId::new(Some("m2".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
         df.daemons.insert(d2.clone());
@@ -2933,7 +2933,7 @@ mod tests {
         let dataflow_id = DataflowId::from(Uuid::new_v4());
         let d1 = DaemonId::new(Some("m1".to_string()));
         let d2 = DaemonId::new(Some("m2".to_string()));
-        let node_id: adora_core::config::NodeId = "camera".to_string().into();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
 
         let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
         df.daemons.insert(d2.clone());
@@ -2961,7 +2961,7 @@ mod tests {
 
 #[cfg(feature = "tracing")]
 fn handle_get_traces(span_store: &SpanStore) -> ControlRequestReply {
-    use adora_message::coordinator_to_cli::TraceSummary;
+    use dora_message::coordinator_to_cli::TraceSummary;
     use std::collections::HashMap;
 
     let Some(store) = span_store else {
@@ -2978,7 +2978,7 @@ fn handle_get_traces(span_store: &SpanStore) -> ControlRequestReply {
     };
 
     // Group spans by trace_id.
-    let mut groups: HashMap<&str, Vec<&adora_tracing::span_store::SpanRecord>> = HashMap::new();
+    let mut groups: HashMap<&str, Vec<&dora_tracing::span_store::SpanRecord>> = HashMap::new();
     for span in &records {
         groups.entry(&span.trace_id).or_default().push(span);
     }
@@ -3013,7 +3013,7 @@ fn handle_get_traces(_span_store: &SpanStore) -> ControlRequestReply {
 
 #[cfg(feature = "tracing")]
 fn handle_get_trace_spans(span_store: &SpanStore, trace_id: &str) -> ControlRequestReply {
-    use adora_message::coordinator_to_cli::TraceSpan;
+    use dora_message::coordinator_to_cli::TraceSpan;
 
     let Some(store) = span_store else {
         return ControlRequestReply::TraceSpans(Vec::new());
@@ -3099,7 +3099,7 @@ async fn restart_dataflow(
     // 3. Start a new dataflow with the stored descriptor
     let new_dataflow = start_dataflow(
         None, // no build_id for restart
-        adora_message::SessionId::generate(),
+        dora_message::SessionId::generate(),
         descriptor,
         None, // no local_working_dir for restart
         name,

@@ -1,5 +1,5 @@
 [package]
-name = "adora-arrow-convert"
+name = "dora-arrow-convert"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -178,60 +178,60 @@ dataflow {id} not found or publish_all_messages_to_zenoh not enabled
 
 ## CLI Commands
 
-### `adora topic echo`
+### `dora topic echo`
 
 Stream topic data to the terminal in real-time.
 
 ```bash
 # Echo a single topic
-adora topic echo -d my-dataflow camera_node/image
+dora topic echo -d my-dataflow camera_node/image
 
 # Echo multiple topics
-adora topic echo -d my-dataflow robot1/pose robot2/vel
+dora topic echo -d my-dataflow robot1/pose robot2/vel
 
 # JSON output for piping
-adora topic echo -d my-dataflow robot1/pose --format json
+dora topic echo -d my-dataflow robot1/pose --format json
 ```
 
 Internally: calls `session.subscribe_topics()`, receives `Timestamped<InterDaemonEvent>` from the `data_rx` channel, deserializes Arrow data, and renders as table or JSON.
 
-### `adora topic hz`
+### `dora topic hz`
 
 Interactive TUI displaying per-topic publish frequency statistics.
 
 ```bash
 # All topics
-adora topic hz -d my-dataflow --window 10
+dora topic hz -d my-dataflow --window 10
 
 # Specific topics
-adora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 ```
 
 Uses ratatui for the TUI. A background `std::thread` receives events from `data_rx` and dispatches to per-topic `HzStats` trackers via a `BTreeMap<(node_id, data_id), index>` lookup.
 
-### `adora topic info`
+### `dora topic info`
 
 One-shot topic metadata and statistics.
 
 ```bash
-adora topic info -d my-dataflow camera_node/image --duration 5
+dora topic info -d my-dataflow camera_node/image --duration 5
 ```
 
 Collects messages for `--duration` seconds, then displays type information, publisher, subscribers (from descriptor), message count, and bandwidth.
 
-### `adora record --proxy`
+### `dora record --proxy`
 
 Stream dataflow data through WebSocket for local recording.
 
 ```bash
 # Start dataflow first
-adora start dataflow.yml --detach
+dora start dataflow.yml --detach
 
 # Record via proxy (data streams through coordinator to CLI)
-adora record dataflow.yml --proxy -o capture.adorec
+dora record dataflow.yml --proxy -o capture.adorec
 
 # Record specific topics
-adora record dataflow.yml --proxy --topics sensor/image,lidar/points
+dora record dataflow.yml --proxy --topics sensor/image,lidar/points
 ```
 
 Use case: the target machine (running the daemon) has no local disk or limited storage. The `--proxy` flag routes data through the coordinator WebSocket to the CLI machine, where the `.adorec` file is written locally.
@@ -242,10 +242,10 @@ Without `--proxy` (default), a record node is injected into the dataflow and rec
 
 ## Zenoh Topic Format
 
-The coordinator subscribes to Zenoh topics using the format from `adora_core::topics::zenoh_output_publish_topic()`:
+The coordinator subscribes to Zenoh topics using the format from `dora_core::topics::zenoh_output_publish_topic()`:
 
 ```
-adora/{dataflow_id}/{node_id}/{data_id}
+dora/{dataflow_id}/{node_id}/{data_id}
 ```
 
 Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized with bincode. The coordinator forwards these bytes as-is (prepended with subscription UUID) -- no re-serialization.

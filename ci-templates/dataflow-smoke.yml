@@ -1,7 +1,7 @@
-# CI workflow for smoke-testing an adora dataflow.
+# CI workflow for smoke-testing an dora dataflow.
 # Copy this file to your project's .github/workflows/ directory.
 #
-# This installs the adora CLI, runs your dataflow with --stop-after,
+# This installs the dora CLI, runs your dataflow with --stop-after,
 # and fails if any node exits with an error.
 #
 # Adjust the DATAFLOW_PATH and STOP_AFTER values for your project.
@@ -39,13 +39,13 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python dependencies
-        run: pip install pyarrow adora-rs
+        run: pip install pyarrow dora-rs
 
-      - name: Install adora CLI
-        run: cargo install adora-cli --locked
+      - name: Install dora CLI
+        run: cargo install dora-cli --locked
 
       - name: Build nodes
-        run: adora build "$DATAFLOW_PATH"
+        run: dora build "$DATAFLOW_PATH"
 
       - name: Run dataflow
-        run: adora run "$DATAFLOW_PATH" --stop-after "$STOP_AFTER"
+        run: dora run "$DATAFLOW_PATH" --stop-after "$STOP_AFTER"

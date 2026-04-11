@@ -3,7 +3,7 @@ nodes:
     build: cargo build -p validated-pipeline-source
     path: ../../target/debug/validated-pipeline-source
     inputs:
-      tick: adora/timer/millis/50
+      tick: dora/timer/millis/50
     outputs:
       - value
     output_types:

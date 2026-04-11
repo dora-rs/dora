@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::Path, process::Stdio};
 
-use adora_message::descriptor::EnvValue;
+use dora_message::descriptor::EnvValue;
 use eyre::{Context, eyre};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},

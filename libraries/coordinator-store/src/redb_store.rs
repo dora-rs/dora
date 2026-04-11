@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use adora_message::common::DaemonId;
+use dora_message::common::DaemonId;
 use eyre::{Result, WrapErr, eyre};
 use redb::{Database, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
-use adora_message::id::NodeId;
+use dora_message::id::NodeId;
 
 use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
 
@@ -587,7 +587,7 @@ mod tests {
     // --- Focused tests for redb_store edge cases (added 2026-04-08) ---
     //
     // Added during the POC's follow-up case study on the persistence
-    // layer. 52 of 59 missed mutants in adora-coordinator-store were in
+    // layer. 52 of 59 missed mutants in dora-coordinator-store were in
     // this file. These tests cover boundary conditions, separator
     // handling, and prefix-scan behavior that the basic CRUD tests
     // did not exercise.

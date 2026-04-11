@@ -1,6 +1,6 @@
-# Adora CLI Reference
+# Dora CLI Reference
 
-Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. This document covers the `adora` CLI from both an end-user and developer perspective.
+Dora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. This document covers the `dora` CLI from both an end-user and developer perspective.
 
 ## Table of Contents
 
@@ -30,16 +30,16 @@ Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework
 
 ```bash
 # Create a new project
-adora new my-robot --kind dataflow --lang rust
+dora new my-robot --kind dataflow --lang rust
 
 # Run locally (no coordinator/daemon needed)
-adora run dataflow.yml
+dora run dataflow.yml
 
 # Or use coordinator/daemon for production
-adora up
-adora start dataflow.yml --attach
+dora up
+dora start dataflow.yml --attach
 # Ctrl-C to stop
-adora down
+dora down
 ```
 
 ## Installation
@@ -47,7 +47,7 @@ adora down
 ### From crates.io (recommended)
 
 ```bash
-cargo install adora-cli
+cargo install dora-cli
 ```
 
 ### From source
@@ -59,8 +59,8 @@ cargo install --path binaries/cli --locked
 ### Verify
 
 ```bash
-adora --version
-adora status
+dora --version
+dora status
 ```
 
 ---
@@ -75,8 +75,8 @@ A **dataflow** is a directed graph of nodes connected by typed data channels. No
 
 | Mode | Command | Infrastructure | Use case |
 |------|---------|---------------|----------|
-| **Local** | `adora run` | None | Development, testing, single-machine |
-| **Distributed** | `adora up` + `adora start` | Coordinator + Daemon(s) | Production, multi-machine |
+| **Local** | `dora run` | None | Development, testing, single-machine |
+| **Distributed** | `dora up` + `dora start` | Coordinator + Daemon(s) | Production, multi-machine |
 
 ### Component Roles
 
@@ -141,7 +141,7 @@ nodes:
     # --- Inputs ---
     inputs:
       # Short form: source_node/output_id
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
       data: other-node/output
 
       # Long form with options
@@ -160,7 +160,7 @@ nodes:
     env:
       MY_VAR: "value"
       FROM_ENV:
-        __adora_env: HOST_VAR     # read from host environment
+        __dora_env: HOST_VAR     # read from host environment
     args: "--verbose"             # command-line arguments
 
     # --- Fault tolerance ---
@@ -193,9 +193,9 @@ Timers are virtual nodes that emit ticks at fixed intervals:
 
 ```yaml
 inputs:
-  tick: adora/timer/millis/100   # every 100ms
-  slow: adora/timer/millis/1000  # every 1s
-  fast: adora/timer/hz/30        # 30 Hz (~33ms)
+  tick: dora/timer/millis/100   # every 100ms
+  slow: dora/timer/millis/1000  # every 1s
+  fast: dora/timer/hz/30        # 30 Hz (~33ms)
 ```
 
 ### Operator Nodes
@@ -262,12 +262,12 @@ When nodes are on different machines, communication automatically switches from 
 
 ### Lifecycle Commands
 
-#### `adora run`
+#### `dora run`
 
 Run a dataflow locally without coordinator or daemon. Best for development and testing.
 
 ```
-adora run <PATH> [OPTIONS]
+dora run <PATH> [OPTIONS]
 ```
 
 | Argument/Flag | Default | Description |
@@ -285,30 +285,30 @@ adora run <PATH> [OPTIONS]
 
 ```bash
 # Basic run
-adora run dataflow.yml
+dora run dataflow.yml
 
 # Stop after 10 seconds, only show warnings
-adora run dataflow.yml --stop-after 10s --log-level warn
+dora run dataflow.yml --stop-after 10s --log-level warn
 
 # Python dataflow with uv
-adora run dataflow.yml --uv
+dora run dataflow.yml --uv
 
 # Debug one node, silence others
-adora run dataflow.yml --log-level warn --log-filter "sensor=debug"
+dora run dataflow.yml --log-level warn --log-filter "sensor=debug"
 
 # JSON output for CI pipelines
-adora run dataflow.yml --log-format json --stop-after 30s 2>test.json
+dora run dataflow.yml --log-format json --stop-after 30s 2>test.json
 ```
 
-#### `adora up`
+#### `dora up`
 
 Start coordinator and daemon in local mode.
 
 ```
-adora up
+dora up
 ```
 
-Spawns `adora coordinator` and `adora daemon` as background processes. Waits for both to be ready before returning. Idempotent: if already running, does nothing.
+Spawns `dora coordinator` and `dora daemon` as background processes. Waits for both to be ready before returning. Idempotent: if already running, does nothing.
 
 When running the daemon directly (e.g., for distributed deployments), additional flags are available:
 
@@ -319,12 +319,12 @@ When running the daemon directly (e.g., for distributed deployments), additional
 | `--machine-id <ID>` | | Unique machine identifier for distributed mode |
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
 
-#### `adora down` (alias: `adora destroy`)
+#### `dora down` (alias: `dora destroy`)
 
 Tear down coordinator and daemon. Stops all running dataflows first.
 
 ```
-adora down [OPTIONS]
+dora down [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -332,12 +332,12 @@ adora down [OPTIONS]
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-#### `adora build`
+#### `dora build`
 
 Run build commands defined in the dataflow descriptor.
 
 ```
-adora build <PATH> [OPTIONS]
+dora build <PATH> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -353,12 +353,12 @@ adora build <PATH> [OPTIONS]
 
 **Git sources:** Nodes with a `git:` field are cloned/updated before building. The build command runs from the git repository root.
 
-#### `adora start`
+#### `dora start`
 
 Start a dataflow on a running coordinator.
 
 ```
-adora start <PATH> [OPTIONS]
+dora start <PATH> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -379,12 +379,12 @@ If neither `--attach` nor `--detach` is specified: attaches if running in a TTY,
 
 **Hot reload:** Watches Python operator source files. On change, sends a reload request to the coordinator which propagates to the daemon.
 
-#### `adora stop`
+#### `dora stop`
 
 Stop a running dataflow.
 
 ```
-adora stop [UUID_OR_NAME] [OPTIONS]
+dora stop [UUID_OR_NAME] [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -400,12 +400,12 @@ If no identifier is given and running in a TTY, presents an interactive picker.
 
 **Stop sequence:** Send Event::Stop -> wait grace duration -> SIGTERM -> hard kill.
 
-#### `adora restart`
+#### `dora restart`
 
 Restart a running dataflow (stop + re-start with stored descriptor). No YAML path needed -- the coordinator retains the original descriptor.
 
 ```
-adora restart [UUID] [OPTIONS]
+dora restart [UUID] [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -421,18 +421,18 @@ adora restart [UUID] [OPTIONS]
 
 ```bash
 # Restart by name
-adora restart --name my-app
+dora restart --name my-app
 
 # Restart by UUID with forced stop
-adora restart a1b2c3d4-... --force
+dora restart a1b2c3d4-... --force
 ```
 
-#### `adora record`
+#### `dora record`
 
 Record dataflow messages to an `.adorec` file for offline replay. See [Debugging Guide](debugging.md#record-and-replay) for full workflows.
 
 ```
-adora record <DATAFLOW_YAML> [OPTIONS]
+dora record <DATAFLOW_YAML> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -445,12 +445,12 @@ adora record <DATAFLOW_YAML> [OPTIONS]
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `publish_all_messages_to_zenoh: true`.
 
-#### `adora replay`
+#### `dora replay`
 
 Replay a recorded `.adorec` file by replacing source nodes with replay nodes. See [Debugging Guide](debugging.md#replaying-a-recording) for full workflows.
 
 ```
-adora replay <FILE> [OPTIONS]
+dora replay <FILE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -465,12 +465,12 @@ adora replay <FILE> [OPTIONS]
 
 ### Monitoring Commands
 
-#### `adora list` (alias: `adora ps`)
+#### `dora list` (alias: `dora ps`)
 
 List running dataflows with metrics.
 
 ```
-adora list [OPTIONS]
+dora list [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -485,12 +485,12 @@ adora list [OPTIONS]
 
 **Output columns:** UUID, Name, Status, Nodes, CPU, Memory
 
-#### `adora logs`
+#### `dora logs`
 
 Show and follow logs of a dataflow and node.
 
 ```
-adora logs [UUID_OR_NAME] [NODE] [OPTIONS]
+dora logs [UUID_OR_NAME] [NODE] [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -516,30 +516,30 @@ adora logs [UUID_OR_NAME] [NODE] [OPTIONS]
 
 ```bash
 # Follow all nodes live
-adora logs my-dataflow --all-nodes --follow
+dora logs my-dataflow --all-nodes --follow
 
 # Last 50 errors from a specific node
-adora logs my-dataflow sensor --level error --tail 50
+dora logs my-dataflow sensor --level error --tail 50
 
 # Search logs from last 5 minutes
-adora logs my-dataflow --all-nodes --since 5m --grep "timeout"
+dora logs my-dataflow --all-nodes --since 5m --grep "timeout"
 
 # Read local files (no coordinator needed)
-adora logs --local --all-nodes --tail 100
+dora logs --local --all-nodes --tail 100
 
 # Post-mortem analysis: errors in time window
-adora logs --local sensor --since 1h --until 30m --level error
+dora logs --local sensor --since 1h --until 30m --level error
 ```
 
 **Duration formats:** `30` (seconds), `30s`, `5m`, `1h`, `2d`
 
-#### `adora inspect top` (alias: `adora top`)
+#### `dora inspect top` (alias: `dora top`)
 
 Real-time TUI monitor for node resource usage (like `top`).
 
 ```
-adora inspect top [OPTIONS]
-adora top [OPTIONS]
+dora inspect top [OPTIONS]
+dora top [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -574,15 +574,15 @@ CPU values are per-core (can exceed 100% with multiple cores). Metrics come from
 
 ```bash
 # JSON snapshot for CI/monitoring pipelines
-adora top --once | jq '.[].cpu_usage'
+dora top --once | jq '.[].cpu_usage'
 ```
 
-#### `adora topic list`
+#### `dora topic list`
 
 List all topics (outputs) in a running dataflow.
 
 ```
-adora topic list [OPTIONS]
+dora topic list [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -590,12 +590,12 @@ adora topic list [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--format <FMT>` | `table` | Output format: `table\|json` |
 
-#### `adora topic echo`
+#### `dora topic echo`
 
 Subscribe to topics and display messages in real-time.
 
 ```
-adora topic echo [OPTIONS] [DATA...]
+dora topic echo [OPTIONS] [DATA...]
 ```
 
 | Flag | Default | Description |
@@ -606,12 +606,12 @@ adora topic echo [OPTIONS] [DATA...]
 
 Requires `_unstable_debug.publish_all_messages_to_zenoh: true` in the descriptor.
 
-#### `adora topic hz`
+#### `dora topic hz`
 
 Measure topic publish frequency with a TUI dashboard.
 
 ```
-adora topic hz [OPTIONS] [DATA...]
+dora topic hz [OPTIONS] [DATA...]
 ```
 
 | Flag | Default | Description |
@@ -622,12 +622,12 @@ adora topic hz [OPTIONS] [DATA...]
 
 **Requires an interactive terminal.** Displays: Avg (ms), Avg (Hz), Min (ms), Max (ms), Std (ms), plus a rate sparkline and histogram for the selected topic.
 
-#### `adora topic info`
+#### `dora topic info`
 
 Show detailed metadata of a single topic.
 
 ```
-adora topic info [OPTIONS] DATA
+dora topic info [OPTIONS] DATA
 ```
 
 | Flag | Default | Description |
@@ -638,26 +638,26 @@ adora topic info [OPTIONS] DATA
 
 Subscribes to the topic for the specified duration and reports: type (Arrow schema), publisher, subscribers, message count, bandwidth.
 
-#### `adora node`
+#### `dora node`
 
 Manage and inspect dataflow nodes.
 
-##### `adora node list`
+##### `dora node list`
 
 ```
-adora node list [OPTIONS]
+dora node list [OPTIONS]
 ```
 
 Lists nodes in a running dataflow with their status, CPU, memory, and restart count.
 
 **Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW
 
-##### `adora node info`
+##### `dora node info`
 
 Show detailed information about a specific node including status, inputs, outputs, and metrics.
 
 ```
-adora node info <NODE> [OPTIONS]
+dora node info <NODE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -666,12 +666,12 @@ adora node info <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json` |
 
-##### `adora node restart`
+##### `dora node restart`
 
 Restart a single node within a running dataflow. The daemon stops the node process and respawns it.
 
 ```
-adora node restart <NODE> [OPTIONS]
+dora node restart <NODE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -680,12 +680,12 @@ adora node restart <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--grace <DURATION>` | | Grace period before force-killing the node |
 
-##### `adora node stop`
+##### `dora node stop`
 
 Stop a single node within a running dataflow without stopping the entire dataflow.
 
 ```
-adora node stop <NODE> [OPTIONS]
+dora node stop <NODE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -694,12 +694,12 @@ adora node stop <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--grace <DURATION>` | | Grace period before force-killing the node |
 
-##### `adora node add`
+##### `dora node add`
 
 Add a node to a running dataflow dynamically.
 
 ```
-adora node add --from-yaml <FILE> [OPTIONS]
+dora node add --from-yaml <FILE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -707,12 +707,12 @@ adora node add --from-yaml <FILE> [OPTIONS]
 | `--from-yaml <FILE>` | required | YAML file containing a single node definition |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 
-##### `adora node remove`
+##### `dora node remove`
 
 Remove a node from a running dataflow (stops the node and cleans up mappings).
 
 ```
-adora node remove <NODE> [OPTIONS]
+dora node remove <NODE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -721,28 +721,28 @@ adora node remove <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--grace <SECS>` | | Grace period in seconds before force-killing |
 
-##### `adora node connect`
+##### `dora node connect`
 
 Add a live mapping between two nodes in a running dataflow.
 
 ```
-adora node connect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
+dora node connect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
 ```
 
-##### `adora node disconnect`
+##### `dora node disconnect`
 
 Remove a live mapping between two nodes in a running dataflow.
 
 ```
-adora node disconnect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
+dora node disconnect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
 ```
 
-#### `adora topic pub`
+#### `dora topic pub`
 
 Publish JSON data to a topic in a running dataflow. Requires `publish_all_messages_to_zenoh: true`.
 
 ```
-adora topic pub <TOPIC> [DATA] [OPTIONS]
+dora topic pub <TOPIC> [DATA] [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -757,22 +757,22 @@ adora topic pub <TOPIC> [DATA] [OPTIONS]
 
 ```bash
 # Publish a single value
-adora topic pub -d my-app sensor/threshold '[42]'
+dora topic pub -d my-app sensor/threshold '[42]'
 
 # Publish from file, 10 times
-adora topic pub -d my-app sensor/config --file config.json --count 10
+dora topic pub -d my-app sensor/config --file config.json --count 10
 ```
 
-#### `adora param`
+#### `dora param`
 
 Manage runtime parameters for nodes. Parameters are persisted in the coordinator store and optionally forwarded to running nodes.
 
-##### `adora param list`
+##### `dora param list`
 
 List all runtime parameters for a node.
 
 ```
-adora param list <NODE> [OPTIONS]
+dora param list <NODE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -781,12 +781,12 @@ adora param list <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--format <FMT>` | `table` | Output format: `table\|json` |
 
-##### `adora param get`
+##### `dora param get`
 
 Get a single runtime parameter value.
 
 ```
-adora param get <NODE> <KEY> [OPTIONS]
+dora param get <NODE> <KEY> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -795,12 +795,12 @@ adora param get <NODE> <KEY> [OPTIONS]
 | `<KEY>` | required | Parameter key |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 
-##### `adora param set`
+##### `dora param set`
 
 Set a runtime parameter. The value is JSON. The parameter is stored in the coordinator and forwarded to the node if it is running.
 
 ```
-adora param set <NODE> <KEY> <VALUE> [OPTIONS]
+dora param set <NODE> <KEY> <VALUE> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -814,21 +814,21 @@ adora param set <NODE> <KEY> <VALUE> [OPTIONS]
 
 ```bash
 # Set a numeric parameter
-adora param set -d my-app sensor threshold 42
+dora param set -d my-app sensor threshold 42
 
 # Set a string parameter
-adora param set -d my-app camera resolution '"1080p"'
+dora param set -d my-app camera resolution '"1080p"'
 
 # Set a complex parameter
-adora param set -d my-app detector config '{"confidence": 0.8, "nms": 0.5}'
+dora param set -d my-app detector config '{"confidence": 0.8, "nms": 0.5}'
 ```
 
-##### `adora param delete`
+##### `dora param delete`
 
 Delete a runtime parameter.
 
 ```
-adora param delete <NODE> <KEY> [OPTIONS]
+dora param delete <NODE> <KEY> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -837,12 +837,12 @@ adora param delete <NODE> <KEY> [OPTIONS]
 | `<KEY>` | required | Parameter key |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 
-#### `adora doctor`
+#### `dora doctor`
 
 Diagnose environment, coordinator/daemon connectivity, and optionally validate a dataflow YAML.
 
 ```
-adora doctor [OPTIONS]
+dora doctor [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -859,18 +859,18 @@ Checks performed:
 
 ```bash
 # Basic health check
-adora doctor
+dora doctor
 
 # Check environment + validate a dataflow
-adora doctor --dataflow dataflow.yml
+dora doctor --dataflow dataflow.yml
 ```
 
-#### `adora trace list`
+#### `dora trace list`
 
-List recent traces captured by the coordinator. The coordinator captures spans from `adora_coordinator` and `adora_core` crates in-memory (up to 4096 spans). No external tracing infrastructure required.
+List recent traces captured by the coordinator. The coordinator captures spans from `dora_coordinator` and `dora_core` crates in-memory (up to 4096 spans). No external tracing infrastructure required.
 
 ```
-adora trace list [OPTIONS]
+dora trace list [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -883,7 +883,7 @@ adora trace list [OPTIONS]
 **Example:**
 
 ```bash
-adora trace list
+dora trace list
 ```
 
 ```
@@ -892,12 +892,12 @@ a1b2c3d4e5f6  spawn_dataflow     12     2026-03-01 10:30:05  1.234s
 f8e7d6c5b4a3  build_dataflow     5      2026-03-01 10:29:58  0.500s
 ```
 
-#### `adora trace view`
+#### `dora trace view`
 
 View spans for a specific trace as an indented tree. Supports prefix matching on trace IDs.
 
 ```
-adora trace view <TRACE_ID> [OPTIONS]
+dora trace view <TRACE_ID> [OPTIONS]
 ```
 
 | Argument/Flag | Default | Description |
@@ -909,7 +909,7 @@ adora trace view <TRACE_ID> [OPTIONS]
 **Example:**
 
 ```bash
-adora trace view a1b2c3d4
+dora trace view a1b2c3d4
 ```
 
 ```
@@ -927,22 +927,22 @@ Trace IDs are prefix-matched: if the prefix uniquely identifies a trace, it reso
 
 ### Setup Commands
 
-#### `adora status` (alias: `adora check`)
+#### `dora status` (alias: `dora check`)
 
 Check system health and connectivity.
 
 ```
-adora status [OPTIONS]
+dora status [OPTIONS]
 ```
 
 Reports coordinator connectivity, daemon status, and active dataflow count.
 
-#### `adora new`
+#### `dora new`
 
 Generate a new project or node from templates.
 
 ```
-adora new <NAME> [OPTIONS]
+dora new <NAME> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -951,12 +951,12 @@ adora new <NAME> [OPTIONS]
 | `--kind <KIND>` | `dataflow` | `dataflow\|node` |
 | `--lang <LANG>` | `rust` | `rust\|python\|c\|cxx` |
 
-#### `adora expand`
+#### `dora expand`
 
 Expand module references in a dataflow and print the resulting flat YAML. Useful for debugging module composition.
 
 ```
-adora expand <PATH> [OPTIONS]
+dora expand <PATH> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -968,20 +968,20 @@ adora expand <PATH> [OPTIONS]
 
 ```bash
 # Expand a dataflow with modules
-adora expand dataflow.yml
+dora expand dataflow.yml
 
 # Validate a module file
-adora expand --module modules/navigation.module.yml
+dora expand --module modules/navigation.module.yml
 ```
 
 See the [Modules Guide](modules.md) for full documentation on module composition.
 
-#### `adora graph`
+#### `dora graph`
 
 Visualize a dataflow as a graph.
 
 ```
-adora graph <PATH> [OPTIONS]
+dora graph <PATH> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -994,18 +994,18 @@ Without `--mermaid`, generates an interactive HTML file using mermaid.js. When o
 
 ```bash
 # Generate HTML
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 
 # Generate Mermaid for GitHub markdown
-adora graph dataflow.yml --mermaid
+dora graph dataflow.yml --mermaid
 ```
 
-#### `adora validate`
+#### `dora validate`
 
 Validate a dataflow YAML file and check type annotations.
 
 ```
-adora validate <PATH> [OPTIONS]
+dora validate <PATH> [OPTIONS]
 ```
 
 | Flag | Default | Description |
@@ -1027,10 +1027,10 @@ User-defined types in a `types/` directory next to the dataflow are loaded autom
 
 ```bash
 # Validate with warnings
-adora validate dataflow.yml
+dora validate dataflow.yml
 
 # Strict mode for CI (exit 1 on warnings)
-adora validate --strict-types dataflow.yml
+dora validate --strict-types dataflow.yml
 ```
 
 See the [Type Annotations Guide](types.md) for the full type library and usage details.
@@ -1039,59 +1039,59 @@ See the [Type Annotations Guide](types.md) for the full type library and usage d
 
 ### Utility Commands
 
-#### `adora completion`
+#### `dora completion`
 
 Generate shell completion scripts.
 
 ```
-adora completion [SHELL]
+dora completion [SHELL]
 ```
 
 Shell is auto-detected if omitted. Supported: bash, zsh, fish, elvish, powershell.
 
 ```bash
 # Bash
-eval "$(adora completion bash)"
-echo 'eval "$(adora completion bash)"' >> ~/.bashrc
+eval "$(dora completion bash)"
+echo 'eval "$(dora completion bash)"' >> ~/.bashrc
 
 # Zsh
-eval "$(adora completion zsh)"
-echo 'eval "$(adora completion zsh)"' >> ~/.zshrc
+eval "$(dora completion zsh)"
+echo 'eval "$(dora completion zsh)"' >> ~/.zshrc
 
 # Fish
-adora completion fish > ~/.config/fish/completions/adora.fish
+dora completion fish > ~/.config/fish/completions/dora.fish
 ```
 
-#### `adora system`
+#### `dora system`
 
 System management commands.
 
 ```
-adora system status [OPTIONS]
+dora system status [OPTIONS]
 ```
 
-Currently provides `status` as a subcommand (equivalent to `adora status`).
+Currently provides `status` as a subcommand (equivalent to `dora status`).
 
 ---
 
 ### Self-Management Commands
 
-#### `adora self update`
+#### `dora self update`
 
 Check for and install CLI updates.
 
 ```
-adora self update [--check-only]
+dora self update [--check-only]
 ```
 
-Downloads from GitHub releases (`dora-rs/adora`).
+Downloads from GitHub releases (`dora-rs/dora`).
 
-#### `adora self uninstall`
+#### `dora self uninstall`
 
 Remove the CLI from the system.
 
 ```
-adora self uninstall [--force]
+dora self uninstall [--force]
 ```
 
 Without `--force`, prompts for confirmation (requires a TTY). Tries `uv pip uninstall` first, then `pip uninstall`, then binary self-delete.
@@ -1104,19 +1104,19 @@ All environment variables serve as fallbacks. CLI flags always take precedence.
 
 | Variable | Default | Commands | Description |
 |----------|---------|----------|-------------|
-| `ADORA_COORDINATOR_ADDR` | `127.0.0.1` | All coordinator commands | Coordinator IP address |
-| `ADORA_COORDINATOR_PORT` | `6013` | All coordinator commands | Coordinator WebSocket port |
-| `ADORA_LOG_LEVEL` | `stdout` | `run`, `logs` | Default minimum log level |
-| `ADORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
-| `ADORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
-| `ADORA_ALLOW_SHELL_NODES` | | `run` | Enable shell node execution |
-| `ADORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](types.md#runtime-type-checking) |
+| `DORA_COORDINATOR_ADDR` | `127.0.0.1` | All coordinator commands | Coordinator IP address |
+| `DORA_COORDINATOR_PORT` | `6013` | All coordinator commands | Coordinator WebSocket port |
+| `DORA_LOG_LEVEL` | `stdout` | `run`, `logs` | Default minimum log level |
+| `DORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
+| `DORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
+| `DORA_ALLOW_SHELL_NODES` | | `run` | Enable shell node execution |
+| `DORA_RUNTIME_TYPE_CHECK` | | `run`, `start` | Runtime type checking: `warn` (log mismatches) or `error` (fail on mismatch). See [Type Annotations](types.md#runtime-type-checking) |
 
 ```bash
 # Set defaults for a development session
-export ADORA_COORDINATOR_ADDR=192.168.1.10
-export ADORA_LOG_LEVEL=info
-export ADORA_LOG_FORMAT=compact
+export DORA_COORDINATOR_ADDR=192.168.1.10
+export DORA_LOG_LEVEL=info
+export DORA_LOG_FORMAT=compact
 ```
 
 ---
@@ -1129,7 +1129,7 @@ This section is for developers who want to understand the framework internals, e
 
 ```
                     ┌─────────────────────────────────────┐
-                    │           CLI (adora)                │
+                    │           CLI (dora)                │
                     │   WebSocket (JSON request/reply)     │
                     └─────────────┬───────────────────────┘
                                   │
@@ -1202,11 +1202,11 @@ trait CoordinatorStore: Send + Sync {
 
 **Store backends:**
 - `memory` (default): In-memory, lost on restart.
-- `redb`: Persistent to disk (`~/.adora/coordinator.redb`). Survives crashes. Requires `redb-backend` feature.
+- `redb`: Persistent to disk (`~/.dora/coordinator.redb`). Survives crashes. Requires `redb-backend` feature.
 
 ```bash
-adora coordinator --store redb
-adora coordinator --store redb:/custom/path.redb
+dora coordinator --store redb
+dora coordinator --store redb:/custom/path.redb
 ```
 
 ### Daemon Internals
@@ -1216,7 +1216,7 @@ The daemon manages node processes on a single machine:
 ```
 Per Node:
   1. Build (if build command specified)
-  2. Spawn process with ADORA_NODE_CONFIG env var
+  2. Spawn process with DORA_NODE_CONFIG env var
   3. Node registers via TCP/shmem handshake
   4. Route inputs/outputs between nodes
   5. Collect metrics (CPU, memory, I/O)
@@ -1275,7 +1275,7 @@ enum NodeEvent {
 
 ### Timestamping
 
-Adora uses a **Unified Hybrid Logical Clock** (UHLC) for distributed causality. Every message carries a `uhlc::Timestamp` that preserves causal ordering across machines without synchronized clocks.
+Dora uses a **Unified Hybrid Logical Clock** (UHLC) for distributed causality. Every message carries a `uhlc::Timestamp` that preserves causal ordering across machines without synchronized clocks.
 
 ### Zero-Copy Shared Memory
 
@@ -1297,11 +1297,11 @@ This achieves 10-17x lower latency than ROS2 for large payloads.
 ### Rust Node
 
 ```rust
-use adora_node_api::{AdoraNode, Event, IntoArrow};
-use adora_core::config::DataId;
+use dora_node_api::{DoraNode, Event, IntoArrow};
+use dora_core::config::DataId;
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     let output = DataId::from("result".to_owned());
 
@@ -1334,7 +1334,7 @@ fn main() -> eyre::Result<()> {
 
 ```toml
 [dependencies]
-adora-node-api = { workspace = true }
+dora-node-api = { workspace = true }
 eyre = "0.6"
 ```
 
@@ -1342,7 +1342,7 @@ eyre = "0.6"
 
 ```python
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 node = Node()
 
@@ -1362,9 +1362,9 @@ for event in node:
 #include "node_api.h"
 
 int main() {
-    void *ctx = init_adora_context_from_env();
-    // ... event loop using adora_next_event / adora_send_output
-    free_adora_context(ctx);
+    void *ctx = init_dora_context_from_env();
+    // ... event loop using dora_next_event / dora_send_output
+    free_dora_context(ctx);
     return 0;
 }
 ```
@@ -1403,7 +1403,7 @@ Operators run in-process inside a shared runtime, avoiding process spawn overhea
 ### Rust Operator
 
 ```rust
-use adora_operator_api::{register_operator, AdoraOperator, AdoraOutputSender, AdoraStatus, Event};
+use dora_operator_api::{register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event};
 
 #[register_operator]
 #[derive(Default)]
@@ -1411,12 +1411,12 @@ pub struct MyOperator {
     counter: u32,
 }
 
-impl AdoraOperator for MyOperator {
+impl DoraOperator for MyOperator {
     fn on_event(
         &mut self,
         event: &Event,
-        output_sender: &mut AdoraOutputSender,
-    ) -> Result<AdoraStatus, String> {
+        output_sender: &mut DoraOutputSender,
+    ) -> Result<DoraStatus, String> {
         match event {
             Event::Input { id, data } => {
                 self.counter += 1;
@@ -1424,10 +1424,10 @@ impl AdoraOperator for MyOperator {
                     "count".to_string(),
                     arrow::array::UInt32Array::from(vec![self.counter]),
                 )?;
-                Ok(AdoraStatus::Continue)
+                Ok(DoraStatus::Continue)
             }
-            Event::Stop => Ok(AdoraStatus::Stop),
-            _ => Ok(AdoraStatus::Continue),
+            Event::Stop => Ok(DoraStatus::Stop),
+            _ => Ok(DoraStatus::Continue),
         }
     }
 }
@@ -1440,7 +1440,7 @@ impl AdoraOperator for MyOperator {
 crate-type = ["cdylib"]
 
 [dependencies]
-adora-operator-api = { workspace = true }
+dora-operator-api = { workspace = true }
 arrow = "53"
 ```
 
@@ -1477,13 +1477,13 @@ class Operator:
 
 ```bash
 # Machine A (coordinator + daemon)
-adora up
+dora up
 
 # Machine B (daemon only, pointing to coordinator on Machine A)
-adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-adora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
 ```
 
 ### Dataflow with Machine Assignment
@@ -1518,21 +1518,21 @@ nodes:
 
 ```bash
 # From any machine with coordinator access
-adora build dataflow.yml       # distributed build on target machines
-adora start dataflow.yml --name my-robot --attach
+dora build dataflow.yml       # distributed build on target machines
+dora start dataflow.yml --name my-robot --attach
 ```
 
 ### Monitor
 
 ```bash
 # Resource usage across all machines
-adora top
+dora top
 
 # Logs from any node regardless of machine
-adora logs my-robot inference --follow
+dora logs my-robot inference --follow
 
 # List all dataflows
-adora list
+dora list
 ```
 
 ### Coordinator Persistence
@@ -1540,10 +1540,10 @@ adora list
 For production, use the redb store backend so the coordinator survives restarts:
 
 ```bash
-adora coordinator --store redb
+dora coordinator --store redb
 ```
 
-State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows are marked as failed and the coordinator resumes normal operation.
+State is persisted to `~/.dora/coordinator.redb`. On restart, stale dataflows are marked as failed and the coordinator resumes normal operation.
 
 > For managed cluster deployments (cluster.yml, SSH-based lifecycle, label scheduling, systemd services, rolling upgrades), see the [Distributed Deployment Guide](distributed-deployment.md).
 
@@ -1555,12 +1555,12 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 
 ### Common Issues
 
-**"Could not connect to adora-coordinator"**
-- Run `adora up` first, or check `ADORA_COORDINATOR_ADDR`/`ADORA_COORDINATOR_PORT`
-- Verify with `adora status`
+**"Could not connect to dora-coordinator"**
+- Run `dora up` first, or check `DORA_COORDINATOR_ADDR`/`DORA_COORDINATOR_PORT`
+- Verify with `dora status`
 
 **"publish_all_messages_to_zenoh not enabled"**
-- Use `--debug` flag: `adora start dataflow.yml --debug` or `adora run dataflow.yml --debug`
+- Use `--debug` flag: `dora start dataflow.yml --debug` or `dora run dataflow.yml --debug`
 - Or add to your dataflow YAML:
   ```yaml
   _unstable_debug:
@@ -1568,14 +1568,14 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
   ```
 - Required for `topic echo`, `topic hz`, `topic info`
 
-**"`adora top` requires an interactive terminal"**
+**"`dora top` requires an interactive terminal"**
 - These TUI commands need a real terminal (not piped output)
 - Same applies to `topic hz`
 
 **Node not receiving inputs**
 - Check that output names match: `source_node/output_id`
 - Verify the source node lists the output in its `outputs:` array
-- Check `adora topic list` for available topics
+- Check `dora topic list` for available topics
 
 **Logs not appearing**
 - Check `--log-level` setting (default `stdout` shows everything)
@@ -1591,42 +1591,42 @@ State is persisted to `~/.adora/coordinator.redb`. On restart, stale dataflows a
 
 ```bash
 # 1. Full environment diagnosis
-adora doctor --dataflow dataflow.yml
+dora doctor --dataflow dataflow.yml
 
 # 2. Start with verbose logging and debug topics
-adora run dataflow.yml --log-level trace --debug
+dora run dataflow.yml --log-level trace --debug
 
 # 3. Inspect a specific node
-adora node info -d my-dataflow problem-node
+dora node info -d my-dataflow problem-node
 
 # 4. Monitor specific node logs
-adora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow problem-node --follow --level debug
 
 # 5. Check resource usage
-adora top
+dora top
 
 # 6. Inspect topic data
-adora topic echo -d my-dataflow problem-node/output
+dora topic echo -d my-dataflow problem-node/output
 
 # 7. Publish test data to a topic
-adora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
+dora topic pub -d my-dataflow problem-node/input '[1, 2, 3]'
 
 # 8. Measure frequencies
-adora topic hz -d my-dataflow --window 5
+dora topic hz -d my-dataflow --window 5
 
 # 9. View/modify runtime parameters
-adora param list -d my-dataflow problem-node
-adora param set -d my-dataflow problem-node threshold 42
+dora param list -d my-dataflow problem-node
+dora param set -d my-dataflow problem-node threshold 42
 
 # 10. Restart a misbehaving node without stopping the dataflow
-adora node restart -d my-dataflow problem-node
+dora node restart -d my-dataflow problem-node
 
 # 11. View coordinator traces (no external infra needed)
-adora trace list
-adora trace view <trace-id-prefix>
+dora trace list
+dora trace view <trace-id-prefix>
 
 # 12. Visualize dataflow graph
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 ```
 
 ### Log File Locations
@@ -1642,6 +1642,6 @@ out/
 Read directly with:
 
 ```bash
-adora logs --local --all-nodes
-adora logs --local <node-name> --tail 50
+dora logs --local --all-nodes
+dora logs --local <node-name> --tail 50
 ```

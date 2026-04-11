@@ -1,6 +1,6 @@
 # Streaming Pattern Example
 
-Demonstrates token-by-token text generation using adora's streaming
+Demonstrates token-by-token text generation using dora's streaming
 pattern (session/segment/chunk metadata) with interruption support.
 
 ## Architecture
@@ -32,8 +32,8 @@ Prompt Source (0.5 Hz) --> Generator --> tokens (streamed) --> Sink
 ## Run
 
 ```bash
-pip install adora-rs pyarrow
-adora run examples/streaming-example/dataflow.yml --uv --stop-after 15s
+pip install dora-rs pyarrow
+dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s
 ```
 
 ## Expected Output

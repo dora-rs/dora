@@ -94,7 +94,7 @@ On startup:
 
 ### 3.2 Local mode
 
-Keep `InMemoryStore` for `adora run` — local mode is ephemeral by design.
+Keep `InMemoryStore` for `dora run` — local mode is ephemeral by design.
 
 ## Implementation Order
 

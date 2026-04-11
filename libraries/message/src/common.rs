@@ -160,7 +160,7 @@ impl std::fmt::Display for NodeError {
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
                     write!(
                         f,
-                        "node was killed by adora because it didn't react to a stop message in time ({signal_str})"
+                        "node was killed by dora because it didn't react to a stop message in time ({signal_str})"
                     )
                 } else {
                     write!(f, "exited because of signal {signal_str}")
@@ -173,7 +173,7 @@ impl std::fmt::Display for NodeError {
             NodeErrorCause::GraceDuration => {} // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
-                ". This error occurred because node `{caused_by_node}` exited before connecting to adora."
+                ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
             NodeErrorCause::FailedToSpawn(_) => unreachable!(), // handled above
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}

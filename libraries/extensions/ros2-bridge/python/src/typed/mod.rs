@@ -1,7 +1,7 @@
 // Re-export the Arrow<->ROS2 conversion types from the shared crate.
-// The actual logic lives in `adora-ros2-bridge-arrow` to be reusable
+// The actual logic lives in `dora-ros2-bridge-arrow` to be reusable
 // by the standalone bridge binary.
-pub use adora_ros2_bridge_arrow::*;
+pub use dora_ros2_bridge_arrow::*;
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Typed errors for the Adora node API.
+/// Typed errors for the Dora node API.
 #[derive(Debug, Error)]
 pub enum NodeError {
     /// Initialization failed (config parsing, env vars, daemon handshake).

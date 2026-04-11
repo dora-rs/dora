@@ -6,12 +6,12 @@ use crate::{
         RunningDataflow,
     },
 };
-use adora_core::{
+use dora_core::{
     config::{NodeId, OperatorId},
     descriptor::DescriptorExt,
     uhlc::{self, HLC},
 };
-use adora_message::{
+use dora_message::{
     BuildId, SessionId,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{DataflowResult, LogMessage},
@@ -104,13 +104,13 @@ pub(crate) async fn handle_destroy(
     daemon_connections: &mut DaemonConnections,
     abortable_events: &futures::stream::AbortHandle,
     clock: &HLC,
-    store: &dyn adora_coordinator_store::CoordinatorStore,
+    store: &dyn dora_coordinator_store::CoordinatorStore,
 ) -> Result<(), eyre::ErrReport> {
     abortable_events.abort();
     // Persist Stopping for all running dataflows before sending stop messages.
     for dataflow in running_dataflows.values_mut() {
         if let Err(e) = dataflow
-            .make_record(adora_coordinator_store::DataflowStatus::Stopping)
+            .make_record(dora_coordinator_store::DataflowStatus::Stopping)
             .and_then(|r| store.put_dataflow(&r))
         {
             tracing::warn!("failed to persist dataflow stopping on destroy: {e}");

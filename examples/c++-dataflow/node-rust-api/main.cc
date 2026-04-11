@@ -1,4 +1,4 @@
-#include "../build/adora-node-api.h"
+#include "../build/dora-node-api.h"
 
 #include <iostream>
 #include <vector>
@@ -8,19 +8,19 @@ int main()
     std::cout << "HELLO FROM C++" << std::endl;
     unsigned char counter = 0;
 
-    auto adora_node = init_adora_node();
+    auto dora_node = init_dora_node();
 
     for (int i = 0; i < 20; i++)
     {
 
-        auto event = adora_node.events->next();
+        auto event = dora_node.events->next();
         auto ty = event_type(event);
 
-        if (ty == AdoraEventType::AllInputsClosed)
+        if (ty == DoraEventType::AllInputsClosed)
         {
             break;
         }
-        else if (ty == AdoraEventType::Input)
+        else if (ty == DoraEventType::Input)
         {
             auto input = event_as_input(std::move(event));
 
@@ -30,7 +30,7 @@ int main()
 
             std::vector<unsigned char> out_vec{counter};
             rust::Slice<const uint8_t> out_slice{out_vec.data(), out_vec.size()};
-            auto result = send_output(adora_node.send_output, "counter", out_slice);
+            auto result = send_output(dora_node.send_output, "counter", out_slice);
             auto error = std::string(result.error);
             if (!error.empty())
             {

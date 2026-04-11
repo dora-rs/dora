@@ -1,6 +1,6 @@
 import numpy as np
 import pyarrow as pa
-from adora import Node
+from dora import Node
 import time
 
 def main():

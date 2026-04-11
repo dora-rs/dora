@@ -11,14 +11,14 @@
 #     OR run the companion dataflow-server.yml
 #
 # Usage:
-#   adora run dataflow-client.yml
+#   dora run dataflow-client.yml
 
 nodes:
   - id: requester
     build: cargo build -p yaml-bridge-service-requester
     path: ../../../target/debug/yaml-bridge-service-requester
     inputs:
-      tick: adora/timer/millis/1000
+      tick: dora/timer/millis/1000
       response: add_client/response
     outputs:
       - request

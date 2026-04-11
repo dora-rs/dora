@@ -84,11 +84,11 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
         let mut fields = vec![];
         for member in &message.members {
             let value = match &member.r#type {
-                adora_ros2_bridge_msg_gen::types::MemberType::NestableType(t) => match t {
-                    adora_ros2_bridge_msg_gen::types::primitives::NestableType::BasicType(t) => {
+                dora_ros2_bridge_msg_gen::types::MemberType::NestableType(t) => match t {
+                    dora_ros2_bridge_msg_gen::types::primitives::NestableType::BasicType(t) => {
                         data.next_element_seed(primitive::PrimitiveDeserializer(t))?
                     }
-                    adora_ros2_bridge_msg_gen::types::primitives::NestableType::NamedType(name) => {
+                    dora_ros2_bridge_msg_gen::types::primitives::NestableType::NamedType(name) => {
                         data.next_element_seed(StructDeserializer {
                             type_info: Cow::Owned(TypeInfo {
                                 package_name: Cow::Borrowed(&self.type_info.package_name),
@@ -97,7 +97,7 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
                             }),
                         })?
                     }
-                    adora_ros2_bridge_msg_gen::types::primitives::NestableType::NamespacedType(
+                    dora_ros2_bridge_msg_gen::types::primitives::NestableType::NamespacedType(
                         reference,
                     ) => {
                         if reference.namespace != "msg" {
@@ -114,24 +114,24 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
                             }),
                         })?
                     }
-                    adora_ros2_bridge_msg_gen::types::primitives::NestableType::GenericString(t) => {
+                    dora_ros2_bridge_msg_gen::types::primitives::NestableType::GenericString(t) => {
                         match t {
-                            adora_ros2_bridge_msg_gen::types::primitives::GenericString::String | adora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedString(_)=> {
+                            dora_ros2_bridge_msg_gen::types::primitives::GenericString::String | dora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedString(_)=> {
                                 data.next_element_seed(string::StringDeserializer)?
                             },
-                            adora_ros2_bridge_msg_gen::types::primitives::GenericString::WString | adora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedWString(_) => {
+                            dora_ros2_bridge_msg_gen::types::primitives::GenericString::WString | dora_ros2_bridge_msg_gen::types::primitives::GenericString::BoundedWString(_) => {
                                 data.next_element_seed(string::WStringDeserializer)?
                             },
                         }
                     }
                 },
-                adora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
+                dora_ros2_bridge_msg_gen::types::MemberType::Array(a) => {
                     data.next_element_seed(array::ArrayDeserializer{ array_type : a, type_info: self.type_info})?
                 },
-                adora_ros2_bridge_msg_gen::types::MemberType::Sequence(s) => {
+                dora_ros2_bridge_msg_gen::types::MemberType::Sequence(s) => {
                     data.next_element_seed(sequence::SequenceDeserializer{item_type: &s.value_type, type_info: self.type_info})?
                 },
-                adora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(s) => {
+                dora_ros2_bridge_msg_gen::types::MemberType::BoundedSequence(s) => {
                     data.next_element_seed(sequence::SequenceDeserializer{ item_type: &s.value_type, type_info: self.type_info})?
                 },
             };

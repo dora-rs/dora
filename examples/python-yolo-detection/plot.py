@@ -7,7 +7,7 @@ arrives before the next detection result (async frame/bbox streams).
 import os
 
 import cv2
-from adora import Node
+from dora import Node
 from utils import LABELS
 
 WINDOW_NAME = os.environ.get("WINDOW_NAME", "frame")

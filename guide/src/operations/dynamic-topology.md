@@ -6,16 +6,16 @@ Add and remove nodes from running dataflows without restarting.
 
 ```bash
 # Add a node from a YAML definition
-adora node add --from-yaml new-node.yml --dataflow my-app
+dora node add --from-yaml new-node.yml --dataflow my-app
 
 # Remove a node (stops process + cleans up mappings)
-adora node remove my-app filter-node
+dora node remove my-app filter-node
 
 # Connect two nodes (add a live mapping)
-adora node connect --dataflow my-app sender/value filter/input
+dora node connect --dataflow my-app sender/value filter/input
 
 # Disconnect two nodes (remove a mapping)
-adora node disconnect --dataflow my-app sender/value filter/input
+dora node disconnect --dataflow my-app sender/value filter/input
 ```
 
 ## Node YAML Definition
@@ -31,7 +31,7 @@ outputs:
   - output
 ```
 
-After adding, wire inputs explicitly with `adora node connect`.
+After adding, wire inputs explicitly with `dora node connect`.
 
 ## Examples
 

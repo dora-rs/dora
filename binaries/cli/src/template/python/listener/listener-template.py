@@ -1,6 +1,6 @@
 """Module to process node input events and print received messages."""
 
-from adora import Node
+from dora import Node
 
 
 def main():

@@ -5,8 +5,8 @@ use std::{
     time::Duration,
 };
 
-use adora_core::uhlc::HLC;
-use adora_message::{
+use dora_core::uhlc::HLC;
+use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{DataMessage, DropToken, LogMessage},
     daemon_to_node::{DaemonReply, NodeDropEvent, NodeEvent},
@@ -16,9 +16,9 @@ use adora_message::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-use adora_core::build::BuildInfo;
-use adora_message::common::{NodeError, NodeExitStatus};
-pub use adora_message::daemon_to_daemon::InterDaemonEvent;
+use dora_core::build::BuildInfo;
+use dora_message::common::{NodeError, NodeExitStatus};
+pub use dora_message::daemon_to_daemon::InterDaemonEvent;
 
 use crate::{
     coordinator::CoordinatorEvent, local_listener::DynamicNodeEventWrapper,
@@ -38,7 +38,7 @@ pub enum Event {
     },
     Coordinator(CoordinatorEvent),
     Daemon(InterDaemonEvent),
-    Adora(AdoraEvent),
+    Dora(DoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
     MetricsInterval,
@@ -68,9 +68,9 @@ pub enum Event {
     },
 }
 
-impl From<AdoraEvent> for Event {
-    fn from(event: AdoraEvent) -> Self {
-        Event::Adora(event)
+impl From<DoraEvent> for Event {
+    fn from(event: DoraEvent) -> Self {
+        Event::Dora(event)
     }
 }
 
@@ -80,7 +80,7 @@ impl Event {
             Event::Node { .. } => "Node",
             Event::Coordinator(_) => "Coordinator",
             Event::Daemon(_) => "Daemon",
-            Event::Adora(_) => "Adora",
+            Event::Dora(_) => "Dora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
             Event::MetricsInterval => "MetricsInterval",
@@ -130,7 +130,7 @@ pub enum DaemonNodeEvent {
 }
 
 #[derive(Debug)]
-pub enum AdoraEvent {
+pub enum DoraEvent {
     Timer {
         dataflow_id: DataflowId,
         interval: Duration,

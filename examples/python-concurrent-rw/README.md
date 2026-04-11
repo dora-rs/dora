@@ -22,7 +22,7 @@ The publisher runs as a daemon thread so it automatically terminates when the re
 ## Run
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ## What This Demonstrates

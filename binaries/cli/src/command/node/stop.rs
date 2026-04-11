@@ -4,7 +4,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::bail;
@@ -18,13 +18,13 @@ use eyre::bail;
 /// Examples:
 ///
 /// Stop a node:
-///   adora node stop camera_node
+///   dora node stop camera_node
 ///
 /// Stop with a custom grace period:
-///   adora node stop camera_node --grace 30s
+///   dora node stop camera_node --grace 30s
 ///
 /// Stop a node in a specific dataflow:
-///   adora node stop camera_node --dataflow my-dataflow
+///   dora node stop camera_node --dataflow my-dataflow
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Stop {

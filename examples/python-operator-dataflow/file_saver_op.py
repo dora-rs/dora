@@ -1,7 +1,7 @@
 """TODO: Add docstring."""
 
 import pyarrow as pa
-from adora import AdoraStatus
+from dora import DoraStatus
 
 
 class Operator:
@@ -15,17 +15,17 @@ class Operator:
 
     def on_event(
         self,
-        adora_event,
+        dora_event,
         send_output,
-    ) -> AdoraStatus:
+    ) -> DoraStatus:
         """TODO: Add docstring."""
-        if adora_event["type"] == "INPUT" and adora_event["id"] == "file":
-            input = adora_event["value"][0].as_py()
+        if dora_event["type"] == "INPUT" and dora_event["id"] == "file":
+            input = dora_event["value"][0].as_py()
 
             with open(input["path"]) as file:
                 self.last_file = file.read()
                 self.last_path = input["path"]
-                self.last_metadata = adora_event["metadata"]
+                self.last_metadata = dora_event["metadata"]
             with open(input["path"], "w") as file:
                 file.write(input["raw"])
 
@@ -36,10 +36,10 @@ class Operator:
                         {
                             "raw": input["raw"],
                             "path": input["path"],
-                            "origin": adora_event["id"],
+                            "origin": dora_event["id"],
                         },
                     ],
                 ),
-                adora_event["metadata"],
+                dora_event["metadata"],
             )
-        return AdoraStatus.CONTINUE
+        return DoraStatus.CONTINUE

@@ -2,7 +2,7 @@
 
 ## Context
 
-Adora achieves 10-17x lower latency than ROS2 via zero-copy shared memory and Apache Arrow. However, it provides **no soft real-time guarantees** — no CPU pinning, no memory locking, no thread priorities. The tokio runtime uses default OS scheduling (SCHED_OTHER/CFS on Linux), so a garbage collection pause, page fault, or CPU migration can cause 100+ microsecond jitter.
+Dora achieves 10-17x lower latency than ROS2 via zero-copy shared memory and Apache Arrow. However, it provides **no soft real-time guarantees** — no CPU pinning, no memory locking, no thread priorities. The tokio runtime uses default OS scheduling (SCHED_OTHER/CFS on Linux), so a garbage collection pause, page fault, or CPU migration can cause 100+ microsecond jitter.
 
 For robotics control loops requiring 1-10ms determinism (arm control, drone stabilization), this jitter is unacceptable.
 
@@ -49,13 +49,13 @@ echo never > /sys/kernel/mm/transparent_hugepage/enabled
 **Process-level:**
 ```bash
 # Pin daemon to cores 2-3 (avoid core 0 for IRQs)
-taskset -c 2,3 adora daemon
+taskset -c 2,3 dora daemon
 
 # Pin a specific node to core 4
-taskset -c 4 adora run dataflow.yml
+taskset -c 4 dora run dataflow.yml
 
 # Set real-time priority (requires CAP_SYS_NICE)
-chrt -f 50 adora daemon
+chrt -f 50 dora daemon
 
 # Lock memory to prevent page faults
 # (requires ulimit -l unlimited or CAP_IPC_LOCK)
@@ -107,7 +107,7 @@ Builder::new_multi_thread()
 Name worker threads for easier `top`/`htop` identification:
 ```rust
 Builder::new_multi_thread()
-    .thread_name("adora-daemon-worker")
+    .thread_name("dora-daemon-worker")
     .enable_all()
 ```
 
@@ -212,4 +212,4 @@ jemalloc has more predictable allocation patterns than the system allocator. Not
 
 - Hard real-time (POSIX RT, safety-certified) — use dedicated RT frameworks (ROS2 rclcpp with real-time executor)
 - Kernel bypass (DPDK, io_uring direct) — too specialized
-- Bare-metal / no-OS support — adora requires Linux/macOS/Windows
+- Bare-metal / no-OS support — dora requires Linux/macOS/Windows

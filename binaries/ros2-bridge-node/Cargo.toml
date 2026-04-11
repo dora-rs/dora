@@ -1,19 +1,19 @@
 [package]
-name = "adora-ros2-bridge-node"
+name = "dora-ros2-bridge-node"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "adora-ros2-bridge-node"
+name = "dora-ros2-bridge-node"
 path = "src/main.rs"
 
 [dependencies]
-adora-node-api = { workspace = true }
-adora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false }
-adora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
-adora-ros2-bridge-msg-gen = { workspace = true }
-adora-message = { workspace = true }
+dora-node-api = { workspace = true }
+dora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false }
+dora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
+dora-ros2-bridge-msg-gen = { workspace = true }
+dora-message = { workspace = true }
 arrow = { workspace = true }
 eyre = { workspace = true }
 flume = "0.11"

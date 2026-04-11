@@ -3,5 +3,5 @@ nodes:
       build: cargo build -p rust-ros2-example-node --bin rust-ros2-example-node-topic-sub --features ros2
       path: ../../../../target/debug/rust-ros2-example-node-topic-sub
       inputs:
-          tick: adora/timer/millis/500
+          tick: dora/timer/millis/500
       outputs:

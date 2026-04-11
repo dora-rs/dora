@@ -1,4 +1,4 @@
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, TraceSummary},
 };

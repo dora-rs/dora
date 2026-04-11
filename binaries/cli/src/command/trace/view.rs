@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
-use adora_message::{
+use clap::Args;
+use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, TraceSpan},
 };
-use clap::Args;
 use eyre::{Context, bail};
 
 use crate::{
@@ -19,7 +19,7 @@ use crate::{
 ///
 /// Examples:
 ///
-///   adora trace view a1b2c3d4
+///   dora trace view a1b2c3d4
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct View {

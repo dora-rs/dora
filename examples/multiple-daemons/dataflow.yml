@@ -5,7 +5,7 @@ nodes:
     build: cargo build -p multiple-daemons-example-node
     path: ../../target/debug/multiple-daemons-example-node
     inputs:
-      tick: adora/timer/millis/10
+      tick: dora/timer/millis/10
     outputs:
       - random
 
@@ -17,7 +17,7 @@ nodes:
         build: cargo build -p multiple-daemons-example-operator
         shared-library: ../../target/debug/multiple_daemons_example_operator
         inputs:
-          tick: adora/timer/millis/100
+          tick: dora/timer/millis/100
           random: rust-node/random
         outputs:
           - status

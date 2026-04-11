@@ -3,16 +3,16 @@
 ## From crates.io (recommended)
 
 ```bash
-cargo install adora-cli           # CLI (adora command)
-pip install adora-rs              # Python node/operator API
+cargo install dora-cli           # CLI (dora command)
+pip install dora-rs              # Python node/operator API
 ```
 
 ## From source
 
 ```bash
 git clone https://github.com/dora-rs/adora.git
-cd adora
-cargo build --release -p adora-cli
+cd dora
+cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
 
 # Python API (requires maturin >= 1.8: pip install maturin)
@@ -26,13 +26,13 @@ cd apis/python/node && maturin develop --uv && cd ../../..
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.sh | sh
+  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows:**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ## Build features
@@ -46,12 +46,12 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
 ```bash
-cargo install adora-cli --features redb-backend
+cargo install dora-cli --features redb-backend
 ```
 
 ## Verify
 
 ```bash
-adora --version
-adora status
+dora --version
+dora status
 ```

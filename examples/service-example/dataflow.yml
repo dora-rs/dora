@@ -3,7 +3,7 @@ nodes:
     build: cargo build -p service-example-client
     path: ../../target/debug/service-example-client
     inputs:
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
       response: service-server/response
     outputs:
       - request
@@ -12,7 +12,7 @@ nodes:
     build: cargo build -p service-example-client
     path: ../../target/debug/service-example-client
     inputs:
-      tick: adora/timer/millis/700
+      tick: dora/timer/millis/700
       response: service-server/response
     outputs:
       - request

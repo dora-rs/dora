@@ -1,11 +1,11 @@
 # Calculator tool — add dynamically with:
-#   adora node add --from-yaml calc-tool-node.yml --dataflow <name>
-#   adora node connect <dataflow> agent/tool-request calc-tool/request
-#   adora node connect <dataflow> calc-tool/response agent/tool-response
+#   dora node add --from-yaml calc-tool-node.yml --dataflow <name>
+#   dora node connect <dataflow> agent/tool-request calc-tool/request
+#   dora node connect <dataflow> calc-tool/response agent/tool-response
 
 id: calc-tool
 path: calc_tool.py
 # No inputs declared — wire explicitly after adding:
-#   adora node connect <dataflow> agent/tool-request calc-tool/request
+#   dora node connect <dataflow> agent/tool-request calc-tool/request
 outputs:
   - response

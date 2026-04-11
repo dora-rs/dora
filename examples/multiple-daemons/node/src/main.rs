@@ -1,11 +1,11 @@
-use adora_node_api::{self, AdoraNode, Event, IntoArrow, adora_core::config::DataId};
+use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
     println!("hello");
 
     let output = DataId::from("random".to_owned());
 
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     for i in 0..100 {
         let event = match events.recv() {

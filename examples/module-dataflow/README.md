@@ -1,6 +1,6 @@
 # Module Dataflow
 
-Demonstrates **reusable sub-graphs** (modules) — one of Adora's most
+Demonstrates **reusable sub-graphs** (modules) — one of Dora's most
 powerful features for composing large dataflows from smaller, self-contained
 pieces.
 
@@ -34,8 +34,8 @@ input.
 ## Run
 
 ```bash
-pip install adora-rs pyarrow
-adora run dataflow.yml
+pip install dora-rs pyarrow
+dora run dataflow.yml
 ```
 
 Expected output (abridged):
@@ -63,10 +63,10 @@ produces an even number — the filter never drops anything in this example.
 
 ## Inspect the Expansion
 
-Use `adora expand` to see the flat dataflow after module expansion:
+Use `dora expand` to see the flat dataflow after module expansion:
 
 ```bash
-adora expand dataflow.yml
+dora expand dataflow.yml
 ```
 
 The `pipeline` node disappears and is replaced by `pipeline.doubler` and
@@ -81,7 +81,7 @@ overhead.
 | `module:` field instead of `path:` | `dataflow.yml` |
 | Module input/output declarations | `modules/transform_module.yml` |
 | `_mod/port_name` to reference module inputs | `modules/transform_module.yml` |
-| Compile-time node ID prefixing (`pipeline.doubler`) | `adora expand dataflow.yml` |
+| Compile-time node ID prefixing (`pipeline.doubler`) | `dora expand dataflow.yml` |
 | Internal node wiring inside a module | `doubler → filter` |
 | Zero runtime overhead | modules expand before spawn |
 

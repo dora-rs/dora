@@ -34,26 +34,26 @@ The receiver has two inputs: raw `message` from sender and `transformed` from tr
 
 ## Prerequisites
 
-Install the Python node API (the PyPI package is `adora-rs`, **not** `adora`):
+Install the Python node API (the PyPI package is `dora-rs`, **not** `dora`):
 
 ```bash
-pip install adora-rs
+pip install dora-rs
 ```
 
-> **Note:** The Python import name is `adora` (`from adora import Node`), but the
-> PyPI package name is **`adora-rs`**. Running `pip install adora` installs an
+> **Note:** The Python import name is `dora` (`from dora import Node`), but the
+> PyPI package name is **`dora-rs`**. Running `pip install dora` installs an
 > unrelated package and will cause `ImportError: cannot import name 'Node'`.
 
 ## Run
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Or use `uv` to manage the Python environment automatically:
 
 ```bash
-adora run dataflow.yml --uv
+dora run dataflow.yml --uv
 ```
 
 Expected output (receiver logs):

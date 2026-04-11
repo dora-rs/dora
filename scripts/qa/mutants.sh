@@ -16,11 +16,11 @@ if ! command -v cargo-mutants >/dev/null; then
 fi
 
 CRITICAL_CRATES=(
-  --package adora-core
-  --package adora-daemon
-  --package adora-coordinator
-  --package adora-message
-  --package adora-coordinator-store
+  --package dora-core
+  --package dora-daemon
+  --package dora-coordinator
+  --package dora-message
+  --package dora-coordinator-store
   --package shared-memory-server
 )
 

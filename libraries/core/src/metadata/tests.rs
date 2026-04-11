@@ -11,12 +11,12 @@
 //! `docs/plan-agentic-qa-strategy.md`.
 
 use super::ArrowTypeInfoExt;
-use adora_message::{
+use arrow_buffer::Buffer;
+use dora_message::{
     arrow_data::{ArrayData, ArrayDataBuilder},
     arrow_schema::DataType,
     metadata::ArrowTypeInfo,
 };
-use arrow_buffer::Buffer;
 
 /// Build a UInt8 ArrayData backed by a Vec we control, returning both
 /// the array and the raw region (start pointer + length) so the caller

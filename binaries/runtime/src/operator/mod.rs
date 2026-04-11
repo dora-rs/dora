@@ -1,9 +1,9 @@
-use adora_core::{
+use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
 };
-use adora_message::metadata::ArrowTypeInfo;
-use adora_node_api::{DataSample, Event, MetadataParameters};
+use dora_message::metadata::ArrowTypeInfo;
+use dora_node_api::{DataSample, Event, MetadataParameters};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -59,7 +59,7 @@ pub fn run_operator(
             })?;
             #[cfg(not(feature = "python"))]
             tracing::error!(
-                "Adora runtime tried spawning Python Operator outside of python environment."
+                "Dora runtime tried spawning Python Operator outside of python environment."
             );
         }
         OperatorSource::Wasm(_) => {

@@ -1,8 +1,8 @@
 //! Utility functions for converting Arrow arrays to/from raw data.
 //!
-use adora_message::metadata::{ArrowTypeInfo, BufferOffset};
 use arrow::array::{ArrayData, BufferSpec};
 use arrow_schema::DataType;
+use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
 use eyre::Context;
 
 /// Maximum Arrow IPC payload size (256 MB).

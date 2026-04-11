@@ -1,6 +1,6 @@
 # Python Echo
 
-Minimal three-node pipeline demonstrating end-to-end data passing and validation in Adora.
+Minimal three-node pipeline demonstrating end-to-end data passing and validation in Dora.
 
 ## Architecture
 
@@ -18,20 +18,20 @@ timer (500ms) --> sender --> data --> echo --> data --> checker
 
 ## Prerequisites
 
-Install the Python node API (the PyPI package is `adora-rs`, **not** `adora`):
+Install the Python node API (the PyPI package is `dora-rs`, **not** `dora`):
 
 ```bash
-pip install adora-rs pyarrow
+pip install dora-rs pyarrow
 ```
 
-> **Note:** The Python import name is `adora` (`from adora import Node`), but the
-> PyPI package name is **`adora-rs`**. Running `pip install adora` installs an
+> **Note:** The Python import name is `dora` (`from dora import Node`), but the
+> PyPI package name is **`dora-rs`**. Running `pip install dora` installs an
 > unrelated package and will cause `ImportError: cannot import name 'Node'`.
 
 ## Run
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Expected output:
@@ -47,7 +47,7 @@ Total PASS: N
 
 | Feature | Where |
 |---------|-------|
-| Timer-triggered nodes (`adora/timer/millis/N`) | Sender |
+| Timer-triggered nodes (`dora/timer/millis/N`) | Sender |
 | `pa.array()` data serialization | Sender |
 | Metadata forwarding (`event["metadata"]`) | Sender, Echo |
 | Transparent relay node | Echo |

@@ -3,7 +3,7 @@ nodes:
     path: sensor.py
     min_log_level: info
     inputs:
-      tick: adora/timer/millis/200
+      tick: dora/timer/millis/200
     outputs:
       - reading
 
@@ -15,11 +15,11 @@ nodes:
       - result
 
   # This node receives ALL logs from ALL nodes automatically.
-  # No manual wiring needed -- adora/logs subscribes to the daemon's log stream.
+  # No manual wiring needed -- dora/logs subscribes to the daemon's log stream.
   - id: log-viewer
     path: log_viewer.py
     inputs:
-      logs: adora/logs           # all nodes, all levels
+      logs: dora/logs           # all nodes, all levels
       # Alternative filters:
-      #   errors_only: adora/logs/error         # only error+ from all nodes
-      #   sensor_logs: adora/logs/info/sensor   # info+ from specific node
+      #   errors_only: dora/logs/error         # only error+ from all nodes
+      #   sensor_logs: dora/logs/info/sensor   # info+ from specific node

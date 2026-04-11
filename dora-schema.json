@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "adora-rs dataflow specification",
-  "description": "Defines an Adora dataflow: nodes, their connections, and execution parameters.\nSee https://adora-rs.ai/concepts/dataflow-yaml/ for the full guide.",
+  "title": "dora-rs dataflow specification",
+  "description": "Defines an Dora dataflow: nodes, their connections, and execution parameters.\nSee https://dora-rs.ai/concepts/dataflow-yaml/ for the full guide.",
   "type": "object",
   "properties": {
     "nodes": {
@@ -28,7 +28,7 @@
   "additionalProperties": false,
   "$defs": {
     "Node": {
-      "title": "Adora Node",
+      "title": "Dora Node",
       "description": "A computational unit in a dataflow. Runs as a separate process (or hosts operators in a shared runtime).",
       "type": "object",
       "properties": {
@@ -53,7 +53,7 @@
           "type": "string"
         },
         "git": {
-          "description": "Git repository URL. `adora build` clones the repo and uses it as the working directory for `build` and `path`.",
+          "description": "Git repository URL. `dora build` clones the repo and uses it as the working directory for `build` and `path`.",
           "type": "string"
         },
         "branch": {
@@ -69,7 +69,7 @@
           "type": "string"
         },
         "build": {
-          "description": "Build commands run during `adora build`. Each line runs as a separate command. `pip`/`pip3` lines are replaced by `uv pip` when `--uv` is passed.",
+          "description": "Build commands run during `dora build`. Each line runs as a separate command. `pip`/`pip3` lines are replaced by `uv pip` when `--uv` is passed.",
           "type": "string"
         },
         "inputs": {
@@ -94,7 +94,7 @@
           "additionalProperties": { "type": "string" }
         },
         "env": {
-          "description": "Environment variables for build and execution. Values can be strings, numbers, or booleans. Use `__adora_env` to read from host environment.",
+          "description": "Environment variables for build and execution. Values can be strings, numbers, or booleans. Use `__dora_env` to read from host environment.",
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/EnvValue" }
         },
@@ -176,11 +176,11 @@
       "additionalProperties": false
     },
     "Input": {
-      "description": "An input subscription. Either a short-form string (`node-id/output-id`, `adora/timer/millis/N`, or `adora/logs[/level[/node]]`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
+      "description": "An input subscription. Either a short-form string (`node-id/output-id`, `dora/timer/millis/N`, or `dora/logs[/level[/node]]`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
       "anyOf": [
         {
           "type": "string",
-          "description": "Short form: `<node-id>/<output-id>`, `adora/timer/millis/<N>`, `adora/timer/hz/<N>`, or `adora/logs[/<level>[/<node-id>]]`."
+          "description": "Short form: `<node-id>/<output-id>`, `dora/timer/millis/<N>`, `dora/timer/hz/<N>`, or `dora/logs[/<level>[/<node-id>]]`."
         },
         {
           "type": "object",
@@ -220,12 +220,12 @@
           "type": "object",
           "description": "Read value from host environment variable.",
           "properties": {
-            "__adora_env": {
+            "__dora_env": {
               "description": "Name of the host environment variable to read.",
               "type": "string"
             }
           },
-          "required": ["__adora_env"]
+          "required": ["__dora_env"]
         }
       ]
     },
@@ -426,7 +426,7 @@
           "type": "string"
         },
         "direction": {
-          "description": "subscribe (ROS2 -> Adora) or publish (Adora -> ROS2). Default: subscribe.",
+          "description": "subscribe (ROS2 -> Dora) or publish (Dora -> ROS2). Default: subscribe.",
           "type": "string",
           "enum": ["subscribe", "publish"],
           "default": "subscribe"
@@ -467,7 +467,7 @@
           "default": "/"
         },
         "node_name": {
-          "description": "ROS2 node name. Defaults to the adora node id.",
+          "description": "ROS2 node name. Defaults to the dora node id.",
           "type": "string"
         }
       },
@@ -492,11 +492,11 @@
           "default": "subscribe"
         },
         "output": {
-          "description": "Adora output id (for subscribe direction).",
+          "description": "Dora output id (for subscribe direction).",
           "type": "string"
         },
         "input": {
-          "description": "Adora input id (for publish direction).",
+          "description": "Dora input id (for publish direction).",
           "type": "string"
         },
         "qos": {
@@ -580,7 +580,7 @@
       "type": "object",
       "properties": {
         "publish_all_messages_to_zenoh": {
-          "description": "Publish all messages to Zenoh for debugging (required for `adora topic echo/hz/info`).",
+          "description": "Publish all messages to Zenoh for debugging (required for `dora topic echo/hz/info`).",
           "type": "boolean",
           "default": false
         }

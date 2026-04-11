@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 use std::sync::RwLock;
 
-use adora_message::common::DaemonId;
+use dora_message::common::DaemonId;
 use eyre::{Result, eyre};
 use uuid::Uuid;
 
-use adora_message::id::NodeId;
+use dora_message::id::NodeId;
 
 use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
 

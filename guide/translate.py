@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Translate zh-CN.po file for Adora User Guide.
+"""Translate zh-CN.po file for Dora User Guide.
 
 Usage: python3 translate.py
 Reads po/zh-CN.po, applies translations, writes po/zh-CN.po.
@@ -49,10 +49,10 @@ def parse_po(filepath):
 
 
 PO_HEADER_LINES = [
-    '"Project-Id-Version: Adora User Guide\\n"',
+    '"Project-Id-Version: Dora User Guide\\n"',
     '"POT-Creation-Date: 2026-03-03T12:08:31-06:00\\n"',
     '"PO-Revision-Date: 2026-03-03 00:00+0000\\n"',
-    '"Last-Translator: Adora Contributors\\n"',
+    '"Last-Translator: Dora Contributors\\n"',
     '"Language-Team: Chinese (Simplified)\\n"',
     '"MIME-Version: 1.0\\n"',
     '"Content-Type: text/plain; charset=UTF-8\\n"',
@@ -177,16 +177,16 @@ def build_translations():
     # =============================================
     # introduction.md
     # =============================================
-    t["Adora"] = "Adora"
+    t["Dora"] = "Dora"
     t["**Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications."] = \
         "**智能数据流导向机器人架构** (Agentic Dataflow-Oriented Robotic Architecture) -- 一个 100% Rust 的实时机器人与 AI 应用框架。"
-    t["Why Adora?"] = "为什么选择 Adora？"
+    t["Why Dora?"] = "为什么选择 Dora？"
     t["**10-17x faster than ROS2 Python** -- zero-copy shared memory IPC, flat latency from 4KB to 4MB payloads"] = \
         "**比 ROS2 Python 快 10-17 倍** -- 零拷贝共享内存 IPC，4KB 到 4MB 载荷延迟平坦"
     t["**Apache Arrow native** -- columnar memory format end-to-end with zero serialization overhead"] = \
         "**Apache Arrow 原生** -- 端到端列式内存格式，零序列化开销"
-    t["**Single CLI, full lifecycle** -- `adora run` for local dev, `adora up/start` for distributed prod, plus build, logs, monitoring, record/replay"] = \
-        "**单一 CLI，全生命周期** -- `adora run` 本地开发，`adora up/start` 分布式生产，加上构建、日志、监控、录制/回放"
+    t["**Single CLI, full lifecycle** -- `dora run` for local dev, `dora up/start` for distributed prod, plus build, logs, monitoring, record/replay"] = \
+        "**单一 CLI，全生命周期** -- `dora run` 本地开发，`dora up/start` 分布式生产，加上构建、日志、监控、录制/回放"
     t["**Declarative YAML dataflows** -- define pipelines as directed graphs, connect nodes through typed inputs/outputs"] = \
         "**声明式 YAML 数据流** -- 以有向图定义流水线，通过类型化输入/输出连接节点"
     t["**Multi-language nodes** -- write nodes in Rust, Python, C, or C++ with native APIs; mix languages freely"] = \
@@ -197,8 +197,8 @@ def build_translations():
         "**天然分布式** -- 同机节点间共享内存，跨机自动 Zenoh 发布/订阅"
     t["**Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed"] = \
         "**录制/回放** -- 将数据流消息捕获到 `.adorec` 文件，可以任意速度离线回放"
-    t["**Built-in observability** -- `adora top` TUI, topic inspection, trace viewing, structured logging with rotation"] = \
-        "**内置可观测性** -- `adora top` TUI 监控、主题检查、追踪查看、结构化日志轮转"
+    t["**Built-in observability** -- `dora top` TUI, topic inspection, trace viewing, structured logging with rotation"] = \
+        "**内置可观测性** -- `dora top` TUI 监控、主题检查、追踪查看、结构化日志轮转"
     # v0.2 additions to introduction
     t["**Zenoh SHM data plane** -- nodes publish directly via Zenoh shared memory for zero-copy data transfer; automatic network fallback for cross-machine"] = \
         "**Zenoh SHM 数据面** -- 节点通过 Zenoh 共享内存直接发布，零拷贝数据传输；跨机自动网络回退"
@@ -226,8 +226,8 @@ def build_translations():
     t["Per-Node CPU Affinity"] = "每节点 CPU 亲和性"
 
     t["Next Steps"] = "下一步"
-    t["[Install Adora](getting-started/installation.md)"] = \
-        "[安装 Adora](getting-started/installation.md)"
+    t["[Install Dora](getting-started/installation.md)"] = \
+        "[安装 Dora](getting-started/installation.md)"
     t["[Quick Start tutorial](getting-started/quickstart.md)"] = \
         "[快速入门教程](getting-started/quickstart.md)"
     t["[Architecture overview](concepts/architecture.md)"] = \
@@ -254,20 +254,20 @@ def build_translations():
     t["No"] = "否"
     t["**macOS / Linux:**"] = "**macOS / Linux：**"
     t["**Windows:**"] = "**Windows：**"
-    t["# CLI (adora command)\\n"] = "# CLI（adora 命令）\\n"
+    t["# CLI (dora command)\\n"] = "# CLI（dora 命令）\\n"
     t["# Python node/operator API\\n"] = "# Python 节点/算子 API\\n"
 
     # =============================================
     # getting-started/quickstart.md
     # =============================================
     t["Getting Started with Python"] = "Python 快速入门"
-    t["This guide walks you through writing Python nodes and operators for adora dataflows."] = \
-        "本指南将引导你使用 Python 编写 adora 数据流的节点和算子。"
+    t["This guide walks you through writing Python nodes and operators for dora dataflows."] = \
+        "本指南将引导你使用 Python 编写 dora 数据流的节点和算子。"
     t["Prerequisites"] = "前提条件"
-    t["The `adora-rs` package includes `pyarrow` as a dependency."] = \
-        "`adora-rs` 包已包含 `pyarrow` 作为依赖。"
-    t["**Building from source** (instead of `pip install adora-rs`):"] = \
-        "**从源码构建**（替代 `pip install adora-rs`）："
+    t["The `dora-rs` package includes `pyarrow` as a dependency."] = \
+        "`dora-rs` 包已包含 `pyarrow` 作为依赖。"
+    t["**Building from source** (instead of `pip install dora-rs`):"] = \
+        "**从源码构建**（替代 `pip install dora-rs`）："
     t["Your First Dataflow"] = "你的第一个数据流"
     t["Step 1: Define the dataflow"] = "第 1 步：定义数据流"
     t["Create `dataflow.yml`:"] = "创建 `dataflow.yml`："
@@ -304,8 +304,8 @@ def build_translations():
         "背压仍然通过节点的输入队列工作"
     t["Logging in nodes works via Python's `logging` module or direct `print()`:"] = \
         "节点中的日志通过 Python 的 `logging` 模块或直接 `print()` 工作："
-    t["Log messages are captured and routed by the adora daemon according to the logging configuration in your dataflow descriptor."] = \
-        "日志消息由 adora 守护进程根据数据流描述符中的日志配置捕获和路由。"
+    t["Log messages are captured and routed by the dora daemon according to the logging configuration in your dataflow descriptor."] = \
+        "日志消息由 dora 守护进程根据数据流描述符中的日志配置捕获和路由。"
     t["Dataflow Builder (Programmatic API)"] = "数据流构建器（编程 API）"
     t["As an alternative to YAML, you can build dataflows in Python:"] = \
         "作为 YAML 的替代方案，你可以用 Python 构建数据流："
@@ -322,8 +322,8 @@ def build_translations():
         "[通信模式](../concepts/patterns.md) -- 服务（请求/应答）和动作（目标/反馈/结果）模式"
     t["[Examples](../../../examples/) -- python-dataflow, python-async, python-drain, python-concurrent-rw, python-multiple-arrays"] = \
         "[示例](../../../examples/) -- python-dataflow、python-async、python-drain、python-concurrent-rw、python-multiple-arrays"
-    t["[Distributed Deployment](../operations/distributed.md) -- running across multiple machines with `adora up`"] = \
-        "[分布式部署](../operations/distributed.md) -- 使用 `adora up` 跨多台机器运行"
+    t["[Distributed Deployment](../operations/distributed.md) -- running across multiple machines with `dora up`"] = \
+        "[分布式部署](../operations/distributed.md) -- 使用 `dora up` 跨多台机器运行"
 
     # =============================================
     # concepts/architecture.md
@@ -384,8 +384,8 @@ def build_translations():
     # =============================================
     # concepts/patterns.md
     # =============================================
-    t["Adora is a dataflow framework based on pub/sub message passing. On top of basic topics, the framework provides two higher-level communication patterns using well-known metadata keys. These patterns require **no daemon or YAML changes** -- they work over normal dataflow connections."] = \
-        "Adora 是一个基于发布/订阅消息传递的数据流框架。在基本主题之上，框架使用预定义的元数据键提供了两种高级通信模式。这些模式**不需要修改守护进程或 YAML** -- 它们在普通数据流连接上运行。"
+    t["Dora is a dataflow framework based on pub/sub message passing. On top of basic topics, the framework provides two higher-level communication patterns using well-known metadata keys. These patterns require **no daemon or YAML changes** -- they work over normal dataflow connections."] = \
+        "Dora 是一个基于发布/订阅消息传递的数据流框架。在基本主题之上，框架使用预定义的元数据键提供了两种高级通信模式。这些模式**不需要修改守护进程或 YAML** -- 它们在普通数据流连接上运行。"
     t["1. Topic (pub/sub)"] = "1. 主题（发布/订阅）"
     t["The default pattern. A node publishes data on an output, and any node that subscribes to that output receives it. No metadata keys required."] = \
         "默认模式。节点在输出上发布数据，任何订阅该输出的节点都会接收到。不需要元数据键。"
@@ -462,9 +462,9 @@ def build_translations():
     # =============================================
     # operations/cli.md - Key prose
     # =============================================
-    t["Adora CLI Reference"] = "Adora CLI 参考"
-    t["Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. This document covers the `adora` CLI from both an end-user and developer perspective."] = \
-        "Adora（AI-Dora，数据流导向机器人架构）是一个 100% Rust 的实时机器人与 AI 应用框架。本文档从终端用户和开发者两个角度介绍 `adora` CLI。"
+    t["Dora CLI Reference"] = "Dora CLI 参考"
+    t["Dora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust framework for building real-time robotics and AI applications. This document covers the `dora` CLI from both an end-user and developer perspective."] = \
+        "Dora（AI-Dora，数据流导向机器人架构）是一个 100% Rust 的实时机器人与 AI 应用框架。本文档从终端用户和开发者两个角度介绍 `dora` CLI。"
     t["Core Concepts"] = "核心概念"
     t["Dataflow"] = "数据流"
     t["Execution Modes"] = "执行模式"
@@ -548,8 +548,8 @@ def build_translations():
     # =============================================
     # operations/logging.md - Key terms
     # =============================================
-    t["Adora provides a structured logging system for real-time robotics and AI dataflows. Logs are captured by daemons, routed to the coordinator, and viewable through the CLI."] = \
-        "Adora 提供了一个用于实时机器人和 AI 数据流的结构化日志系统。日志由守护进程捕获、路由到协调器，并可通过 CLI 查看。"
+    t["Dora provides a structured logging system for real-time robotics and AI dataflows. Logs are captured by daemons, routed to the coordinator, and viewable through the CLI."] = \
+        "Dora 提供了一个用于实时机器人和 AI 数据流的结构化日志系统。日志由守护进程捕获、路由到协调器，并可通过 CLI 查看。"
     t["Features at a Glance"] = "功能一览"
     t["Scope"] = "范围"
     t["Config"] = "配置"
@@ -572,8 +572,8 @@ def build_translations():
     # operations/debugging.md - Key terms
     # =============================================
     t["Debugging and Observability Guide"] = "调试与可观测性指南"
-    t["This guide covers how to debug, record, replay, and monitor adora dataflows. It is written for new users who need to understand what's happening inside their dataflows."] = \
-        "本指南介绍如何调试、录制、回放和监控 adora 数据流。面向需要了解数据流内部运行情况的新用户。"
+    t["This guide covers how to debug, record, replay, and monitor dora dataflows. It is written for new users who need to understand what's happening inside their dataflows."] = \
+        "本指南介绍如何调试、录制、回放和监控 dora 数据流。面向需要了解数据流内部运行情况的新用户。"
     t["Quick Debugging Checklist"] = "快速调试清单"
     t["Record and Replay"] = "录制和回放"
     t["Topic Inspection"] = "主题检查"
@@ -593,8 +593,8 @@ def build_translations():
     # =============================================
     # operations/fault-tolerance.md - Key terms
     # =============================================
-    t["Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, inputs can detect upstream problems, and the coordinator persists state across crashes."] = \
-        "Adora 为机器人和 AI 数据流提供内置容错。节点可以在故障时自动重启，输入可以检测上游问题，协调器可以跨崩溃持久化状态。"
+    t["Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes can automatically restart on failure, inputs can detect upstream problems, and the coordinator persists state across crashes."] = \
+        "Dora 为机器人和 AI 数据流提供内置容错。节点可以在故障时自动重启，输入可以检测上游问题，协调器可以跨崩溃持久化状态。"
     t["Restart policies"] = "重启策略"
     t["Restart Policies"] = "重启策略"
     t["Health Monitoring"] = "健康监测"
@@ -608,8 +608,8 @@ def build_translations():
     # operations/distributed.md - Key terms
     # =============================================
     t["Distributed Deployment Guide"] = "分布式部署指南"
-    t["Adora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and cloud-robot hybrid architectures."] = \
-        "Adora 支持将数据流部署到多台机器上，用于多机器人集群、边缘 AI 流水线和云-机器人混合架构。"
+    t["Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and cloud-robot hybrid architectures."] = \
+        "Dora 支持将数据流部署到多台机器上，用于多机器人集群、边缘 AI 流水线和云-机器人混合架构。"
     t["Cluster Configuration Reference"] = "集群配置参考"
     t["Cluster Lifecycle"] = "集群生命周期"
     t["Label Scheduling"] = "标签调度"
@@ -622,8 +622,8 @@ def build_translations():
     # =============================================
     # advanced/ros2-bridge.md - Key terms
     # =============================================
-    t["Adora provides a declarative YAML-based ROS2 bridge that lets any Adora node communicate with ROS2 topics, services, and actions without modifying application code."] = \
-        "Adora 提供了一个基于 YAML 声明式的 ROS2 桥接，让任何 Adora 节点无需修改应用代码即可与 ROS2 的主题、服务和动作通信。"
+    t["Dora provides a declarative YAML-based ROS2 bridge that lets any Dora node communicate with ROS2 topics, services, and actions without modifying application code."] = \
+        "Dora 提供了一个基于 YAML 声明式的 ROS2 桥接，让任何 Dora 节点无需修改应用代码即可与 ROS2 的主题、服务和动作通信。"
     t["Topic subscribe"] = "主题订阅"
     t["Topic publish"] = "主题发布"
     t["Service client"] = "服务客户端"
@@ -638,8 +638,8 @@ def build_translations():
     # =============================================
     # advanced/ws-control.md - Key terms
     # =============================================
-    t["Adora's control plane uses WebSocket connections for all communication between the CLI, coordinator, and daemons. This document describes the protocol."] = \
-        "Adora 的控制面使用 WebSocket 连接进行 CLI、协调器和守护进程之间的所有通信。本文档描述了该协议。"
+    t["Dora's control plane uses WebSocket connections for all communication between the CLI, coordinator, and daemons. This document describes the protocol."] = \
+        "Dora 的控制面使用 WebSocket 连接进行 CLI、协调器和守护进程之间的所有通信。本文档描述了该协议。"
     t["Detail"] = "详情"
     t["Routes"] = "路由"
     t["Wire format"] = "传输格式"
@@ -657,9 +657,9 @@ def build_translations():
     # =============================================
     # development/testing.md - Key terms
     # =============================================
-    t["Adora Testing Guide"] = "Adora 测试指南"
-    t["This guide covers how to run, write, and troubleshoot tests across the Adora workspace."] = \
-        "本指南介绍如何在 Adora 工作空间中运行、编写和排查测试。"
+    t["Dora Testing Guide"] = "Dora 测试指南"
+    t["This guide covers how to run, write, and troubleshoot tests across the Dora workspace."] = \
+        "本指南介绍如何在 Dora 工作空间中运行、编写和排查测试。"
     t["Quick Start (5-minute validation)"] = "快速开始（5 分钟验证）"
     t["Run these three commands to validate that the workspace is healthy:"] = \
         "运行这三个命令来验证工作空间是否健康："
@@ -676,19 +676,19 @@ def build_translations():
     # languages/rust.md - Key terms
     # =============================================
     t["Rust API Reference"] = "Rust API 参考"
-    t["This document covers the two main Rust crates for building Adora dataflow components:"] = \
-        "本文档介绍用于构建 Adora 数据流组件的两个主要 Rust crate："
-    t["**`adora-node-api`** -- for standalone node executables"] = \
-        "**`adora-node-api`** -- 用于独立节点可执行文件"
-    t["**`adora-operator-api`** -- for in-process operators managed by the Adora runtime"] = \
-        "**`adora-operator-api`** -- 用于由 Adora 运行时管理的进程内算子"
-    t["Node API (`adora-node-api`)"] = "节点 API (`adora-node-api`)"
+    t["This document covers the two main Rust crates for building Dora dataflow components:"] = \
+        "本文档介绍用于构建 Dora 数据流组件的两个主要 Rust crate："
+    t["**`dora-node-api`** -- for standalone node executables"] = \
+        "**`dora-node-api`** -- 用于独立节点可执行文件"
+    t["**`dora-operator-api`** -- for in-process operators managed by the Dora runtime"] = \
+        "**`dora-operator-api`** -- 用于由 Dora 运行时管理的进程内算子"
+    t["Node API (`dora-node-api`)"] = "节点 API (`dora-node-api`)"
     t["Initialization"] = "初始化"
     t["Event Loop"] = "事件循环"
     t["Sending Output"] = "发送输出"
     t["Service and Action Helpers"] = "服务与动作辅助方法"
     t["Data Allocation"] = "数据分配"
-    t["Operator API (`adora-operator-api`)"] = "算子 API (`adora-operator-api`)"
+    t["Operator API (`dora-operator-api`)"] = "算子 API (`dora-operator-api`)"
     t["Metadata"] = "元数据"
     t["Error Handling"] = "错误处理"
 
@@ -708,10 +708,10 @@ def build_translations():
     # languages/c.md - Key terms
     # =============================================
     t["C API Reference"] = "C API 参考"
-    t["This document covers the two C APIs provided by the Adora framework: the **Node API** for standalone nodes and the **Operator API** for in-process operators."] = \
-        "本文档介绍 Adora 框架提供的两个 C API：用于独立节点的**节点 API** 和用于进程内算子的**算子 API**。"
-    t["Node API (adora-node-api-c)"] = "节点 API (adora-node-api-c)"
-    t["Operator API (adora-operator-api-c)"] = "算子 API (adora-operator-api-c)"
+    t["This document covers the two C APIs provided by the Dora framework: the **Node API** for standalone nodes and the **Operator API** for in-process operators."] = \
+        "本文档介绍 Dora 框架提供的两个 C API：用于独立节点的**节点 API** 和用于进程内算子的**算子 API**。"
+    t["Node API (dora-node-api-c)"] = "节点 API (dora-node-api-c)"
+    t["Operator API (dora-operator-api-c)"] = "算子 API (dora-operator-api-c)"
     t["Memory Management"] = "内存管理"
     t["Thread Safety"] = "线程安全"
 

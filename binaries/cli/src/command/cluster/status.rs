@@ -17,7 +17,7 @@ use super::query_connected_daemons;
 ///
 /// Examples:
 ///
-///   adora cluster status
+///   dora cluster status
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Status {

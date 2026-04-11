@@ -2,13 +2,13 @@ use crate::{
     events::{DaemonRequest, DataflowEvent, Event},
     state::DaemonConnection,
 };
-use adora_core::uhlc::HLC;
-use adora_message::{
+use axum::extract::ws::{Message, WebSocket};
+use dora_core::uhlc::HLC;
+use dora_message::{
     common::DaemonId,
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
     ws_protocol::WsResponse,
 };
-use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -101,8 +101,8 @@ pub(crate) async fn handle_daemon_ws(
 /// `u128` numbers (used by `uhlc::ID(NonZeroU128)` in uhlc 0.5.x).
 #[derive(serde::Deserialize)]
 struct DaemonWsRequestRaw {
-    params: adora_message::daemon_to_coordinator::Timestamped<
-        adora_message::daemon_to_coordinator::CoordinatorRequest,
+    params: dora_message::daemon_to_coordinator::Timestamped<
+        dora_message::daemon_to_coordinator::CoordinatorRequest,
     >,
 }
 

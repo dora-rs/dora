@@ -2,7 +2,7 @@ nodes:
   - id: sender
     path: sender.py
     inputs:
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
     outputs:
       - data
 

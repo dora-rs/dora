@@ -1,8 +1,8 @@
-# Zenoh Shared Memory: Should Adora Adopt It?
+# Zenoh Shared Memory: Should Dora Adopt It?
 
 ## Context
 
-dora-rs/dora PR #1378 replaces the custom shared memory implementation with Zenoh's native shared memory. Adora (our fork) currently uses the custom implementation. This document analyzes whether we should adopt the Zenoh SHM approach.
+dora-rs/dora PR #1378 replaces the custom shared memory implementation with Zenoh's native shared memory. Dora (our fork) currently uses the custom implementation. This document analyzes whether we should adopt the Zenoh SHM approach.
 
 ## Current Implementation (Custom SHM)
 
@@ -75,7 +75,7 @@ Node B → [zenoh subscribe] → [receive ZShm zero-copy ref]
 
 3. **Recording broken** — the PR skips ZenohShmInput events to avoid copying SHM data. We'd need to add a recording path that copies data before forwarding, or record at the daemon level (data-less notifications still flow through daemon).
 
-4. **memlock requirement** — deployment environments need `ulimit -l unlimited` or `CAP_IPC_LOCK`. This is already recommended in our `plan-soft-realtime.md` for RT deployments. For `adora run` (local dev), we can handle this gracefully with fallback.
+4. **memlock requirement** — deployment environments need `ulimit -l unlimited` or `CAP_IPC_LOCK`. This is already recommended in our `plan-soft-realtime.md` for RT deployments. For `dora run` (local dev), we can handle this gracefully with fallback.
 
 5. **First-message latency spike** — 16x on first message due to zenoh session init. Can be mitigated by pre-warming the session during node startup.
 
@@ -96,7 +96,7 @@ The performance gains are compelling (35% lower latency, 3-10x throughput for ro
 
 **Scope:** Replace the data-plane shmem path. Keep the 4 control channels (control, events, drop, close) on the existing shmem for now — they carry small messages and work fine.
 
-1. **Node API:** Add zenoh session + ShmProvider to `AdoraNode`
+1. **Node API:** Add zenoh session + ShmProvider to `DoraNode`
 2. **Send path:** `send_output` publishes via zenoh when data >= threshold
 3. **Receive path:** Node subscribes to zenoh topics for each input; receives `ZShm` zero-copy
 4. **Daemon:** Remove DropToken tracking. Daemon receives data-less notifications for routing awareness.
@@ -138,6 +138,6 @@ Replace the 4 per-node shmem control channels with zenoh too:
 
 ## References
 
-- PR: https://github.com/dora-rs/dora/pull/1378
+- PR: https://github.com/dora-rs/adora/pull/1378
 - Zenoh SHM docs: https://zenoh.io/docs/manual/shmem/
 - Benchmarks: In PR comments by phil-opp

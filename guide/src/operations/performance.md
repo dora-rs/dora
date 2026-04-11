@@ -1,10 +1,10 @@
 # Performance
 
-Adora achieves 10-17x lower latency than ROS2 Python through zero-copy shared memory IPC, Apache Arrow columnar format, and 100% Rust internals. This document covers methodology, reproduction, and tuning.
+Dora achieves 10-17x lower latency than ROS2 Python through zero-copy shared memory IPC, Apache Arrow columnar format, and 100% Rust internals. This document covers methodology, reproduction, and tuning.
 
 ## Architecture Advantages
 
-| Layer | Adora | ROS2 (rclpy) |
+| Layer | Dora | ROS2 (rclpy) |
 |-------|-------|---------------|
 | Runtime | Rust async (tokio) | Python + C++ middleware |
 | IPC (>4KB) | Zenoh SHM zero-copy | DDS serialization + copy |
@@ -17,7 +17,7 @@ Adora achieves 10-17x lower latency than ROS2 Python through zero-copy shared me
 
 ### Internal benchmarks (`examples/benchmark/`)
 
-Measures Adora's own latency and throughput across 10 payload sizes (0B to 4MB).
+Measures Dora's own latency and throughput across 10 payload sizes (0B to 4MB).
 
 ```bash
 cd examples/benchmark
@@ -43,10 +43,10 @@ Isolated benchmarks for internal hot paths:
 
 ```bash
 # Daemon message routing (fan-out x payload size matrix)
-cargo bench -p adora-daemon
+cargo bench -p dora-daemon
 
 # Message serialization/deserialization
-cargo bench -p adora-message
+cargo bench -p dora-message
 ```
 
 CI tracks these via `benchmark-action/github-action-benchmark` with 120% alert threshold.
@@ -62,7 +62,7 @@ CI tracks these via `benchmark-action/github-action-benchmark` with 120% alert t
 
 ### Steps
 
-1. Build Adora:
+1. Build Dora:
    ```bash
    cargo install --path binaries/cli --locked
    ```
@@ -70,7 +70,7 @@ CI tracks these via `benchmark-action/github-action-benchmark` with 120% alert t
 2. Run internal benchmark:
    ```bash
    cd examples/benchmark
-   BENCH_CSV=results/rust.csv adora run dataflow.yml
+   BENCH_CSV=results/rust.csv dora run dataflow.yml
    ```
 
 3. Run ROS2 comparison:
@@ -101,7 +101,7 @@ inputs:
 
 ### Payload size
 
-Adora automatically uses shared memory for messages >4KB, avoiding copies. Structure data to exceed this threshold when low latency matters.
+Dora automatically uses shared memory for messages >4KB, avoiding copies. Structure data to exceed this threshold when low latency matters.
 
 ### Arrow format
 
@@ -121,7 +121,7 @@ Operators run in-process with the runtime (zero IPC overhead) but share the GIL 
 
 ### Distributed deployment
 
-For cross-machine communication, Adora uses Zenoh pub-sub. Latency depends on network quality. Use local deployment (single-machine) when sub-millisecond latency is required.
+For cross-machine communication, Dora uses Zenoh pub-sub. Latency depends on network quality. Use local deployment (single-machine) when sub-millisecond latency is required.
 
 ## CSV Output Format
 

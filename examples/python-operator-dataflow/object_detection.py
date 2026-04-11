@@ -2,7 +2,7 @@
 
 import numpy as np
 import pyarrow as pa
-from adora import AdoraStatus
+from dora import DoraStatus
 from ultralytics import YOLO
 
 CAMERA_WIDTH = 640
@@ -17,13 +17,13 @@ class Operator:
 
     def on_event(
         self,
-        adora_event,
+        dora_event,
         send_output,
-    ) -> AdoraStatus:
+    ) -> DoraStatus:
         """TODO: Add docstring."""
-        if adora_event["type"] == "INPUT":
+        if dora_event["type"] == "INPUT":
             frame = (
-                adora_event["value"].to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
+                dora_event["value"].to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))
             )
             frame = frame[:, :, ::-1]  # OpenCV image (BGR to RGB)
             results = model(frame, verbose=False)  # includes NMS
@@ -34,6 +34,6 @@ class Operator:
             # concatenate them together
             arrays = np.concatenate((boxes, conf[:, None], label[:, None]), axis=1)
 
-            send_output("bbox", pa.array(arrays.ravel()), adora_event["metadata"])
+            send_output("bbox", pa.array(arrays.ravel()), dora_event["metadata"])
 
-        return AdoraStatus.CONTINUE
+        return DoraStatus.CONTINUE

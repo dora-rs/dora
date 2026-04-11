@@ -1,4 +1,4 @@
-use adora_node_api::{AdoraNode, Event};
+use dora_node_api::{DoraNode, Event};
 use eyre::{Context, Result, bail};
 use std::{
     env,
@@ -8,7 +8,7 @@ use std::{
 };
 
 fn main() -> Result<()> {
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
     let raw = env::var("LOG_FILE").unwrap_or_else(|_| "./combined.jsonl".to_string());
     let path = validate_log_path(&raw)?;
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
                 metadata: _,
                 data,
             } => {
-                let log = match adora_log_utils::parse_log_from_arrow(&data) {
+                let log = match dora_log_utils::parse_log_from_arrow(&data) {
                     Ok(log) => log,
                     Err(e) => {
                         eprintln!("failed to parse log entry: {e}");
@@ -38,7 +38,7 @@ fn main() -> Result<()> {
                     }
                 };
 
-                let line = format!("{}\n", adora_log_utils::format_json(&log));
+                let line = format!("{}\n", dora_log_utils::format_json(&log));
                 writer
                     .write_all(line.as_bytes())
                     .wrap_err("failed to write to log file")?;

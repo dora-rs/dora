@@ -1,8 +1,8 @@
-use adora_node_api::{AdoraNode, Event, IntoArrow, adora_core::config::DataId, arrow};
+use dora_node_api::{DoraNode, Event, IntoArrow, arrow, dora_core::config::DataId};
 use eyre::{ContextCompat, bail};
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
     let output = DataId::from("doubled".to_owned());
 
     while let Some(event) = events.recv() {

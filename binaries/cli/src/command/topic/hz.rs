@@ -1,5 +1,5 @@
-use adora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use crossterm::event::{Event, KeyCode, KeyModifiers};
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
@@ -32,13 +32,13 @@ use crate::{
 /// Examples:
 ///
 /// Measure a single topic:
-///   adora topic hz -d my-dataflow robot1/pose
+///   dora topic hz -d my-dataflow robot1/pose
 ///
 /// Measure multiple topics with a short window:
-///   adora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
+///   dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 ///
 /// Measure all topics:
-///   adora topic hz -d my-dataflow --window 10
+///   dora topic hz -d my-dataflow --window 10
 ///
 /// Note: The dataflow descriptor must include the following snippet so that
 /// runtime messages can be inspected:
@@ -72,7 +72,7 @@ pub struct Hz {
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
         if !io::stdout().is_terminal() {
-            eyre::bail!("`adora topic hz` requires an interactive terminal");
+            eyre::bail!("`dora topic hz` requires an interactive terminal");
         }
 
         let session = self.coordinator.connect()?;

@@ -92,14 +92,14 @@ pub enum NodeEvent {
     AllInputsClosed,
     /// A runtime parameter has been updated.
     ///
-    /// Sent when `adora param set` changes a parameter for this node.
+    /// Sent when `dora param set` changes a parameter for this node.
     ParamUpdate {
         key: String,
         value: serde_json::Value,
     },
     /// A runtime parameter has been deleted.
     ///
-    /// Sent when `adora param delete` removes a parameter for this node.
+    /// Sent when `dora param delete` removes a parameter for this node.
     ParamDeleted {
         key: String,
     },

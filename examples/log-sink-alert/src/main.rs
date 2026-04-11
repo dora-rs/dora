@@ -1,10 +1,10 @@
-use adora_arrow_convert::IntoArrow;
-use adora_message::common::{LogLevel, LogLevelOrStdout};
-use adora_node_api::{AdoraNode, Event};
+use dora_arrow_convert::IntoArrow;
+use dora_message::common::{LogLevel, LogLevelOrStdout};
+use dora_node_api::{DoraNode, Event};
 use eyre::Result;
 
 fn main() -> Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     while let Some(event) = events.recv() {
         match event {
@@ -13,7 +13,7 @@ fn main() -> Result<()> {
                 metadata: _,
                 data,
             } => {
-                let log = match adora_log_utils::parse_log_from_arrow(&data) {
+                let log = match dora_log_utils::parse_log_from_arrow(&data) {
                     Ok(log) => log,
                     Err(e) => {
                         eprintln!("failed to parse log entry: {e}");
@@ -21,7 +21,7 @@ fn main() -> Result<()> {
                     }
                 };
 
-                let json = adora_log_utils::format_json(&log);
+                let json = dora_log_utils::format_json(&log);
                 let arrow = json.as_str().into_arrow();
 
                 // Forward error/warn logs to the "alerts" output first to avoid clone.

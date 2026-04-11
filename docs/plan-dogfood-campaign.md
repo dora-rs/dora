@@ -3,7 +3,7 @@
 **Status**: Draft design, ready to execute
 **Date**: 2026-04-08
 **Owner**: heyong4725 + contractor on-call rotation
-**Scope**: Design and operational plan for running a realistic adora workload continuously for 7 days as pre-release evidence for any 1.0 release claim. Referenced by `plan-agentic-qa-strategy.md` Section 7.3 and `plan-dora-1.0-consolidation.md` Appendix D.
+**Scope**: Design and operational plan for running a realistic dora workload continuously for 7 days as pre-release evidence for any 1.0 release claim. Referenced by `plan-agentic-qa-strategy.md` Section 7.3 and `plan-dora-1.0-consolidation.md` Appendix D.
 
 ---
 
@@ -93,12 +93,12 @@ Alternative if only one machine is available: run both daemons on the same host 
 
 ### 4.1 Metrics to collect
 
-**Per-node metrics** (exposed via adora's prometheus endpoint or logged by each node):
+**Per-node metrics** (exposed via dora's prometheus endpoint or logged by each node):
 - RSS memory every 10 s
 - CPU time every 10 s
 - Open file descriptors every 60 s
 - Network bytes in/out every 10 s
-- adora-specific: message count, shared-memory region count, dropped count
+- dora-specific: message count, shared-memory region count, dropped count
 
 **Dataflow-level metrics** (from the coordinator):
 - Connected daemon count
@@ -127,7 +127,7 @@ Dashboard JSON lives at `scripts/dogfood/grafana-dashboard.json` (to be created 
 
 ### 4.3 Log aggregation
 
-All node stdout/stderr + adora's structured logs forwarded to a central log store (Loki or similar). Searchable by node name, log level, and time range. Retained for 14 days post-campaign for post-mortem.
+All node stdout/stderr + dora's structured logs forwarded to a central log store (Loki or similar). Searchable by node name, log level, and time range. Retained for 14 days post-campaign for post-mortem.
 
 ## 5. Operational plan
 
@@ -136,7 +136,7 @@ All node stdout/stderr + adora's structured logs forwarded to a central log stor
 - [ ] Reference workload written and committed under `scripts/dogfood/workload/`
 - [ ] Dashboard deployed
 - [ ] Log aggregation live
-- [ ] Both target machines provisioned with the target adora version
+- [ ] Both target machines provisioned with the target dora version
 - [ ] `ulimit -n` and `ulimit -l` set appropriately
 - [ ] `memlock` unlimited if using Zenoh SHM (post-Phase 3b)
 - [ ] Disk space checked: >= 20 GB free on each machine for logs + recordings
@@ -146,16 +146,16 @@ All node stdout/stderr + adora's structured logs forwarded to a central log stor
 
 ```bash
 # On machine A
-adora up --port 6013
-adora start dogfood.yml --detach
+dora up --port 6013
+dora start dogfood.yml --detach
 
 # On machine B
-adora up --port 6013 --join-coordinator <machine-A>:6013
+dora up --port 6013 --join-coordinator <machine-A>:6013
 # (nodes auto-spawn based on the dataflow spec)
 
 # Verify
-adora list
-adora logs --follow
+dora list
+dora logs --follow
 ```
 
 ### 5.3 Daily checks (operational cadence)
@@ -171,7 +171,7 @@ Every 24 hours the on-call:
 At t+168 hours:
 1. Capture final metrics snapshot
 2. Generate comparison report: day-0 baseline vs. day-7 final
-3. Graceful shutdown: `adora stop dogfood` then `adora down`
+3. Graceful shutdown: `dora stop dogfood` then `dora down`
 4. Collect all logs, dashboard exports, and snapshots
 5. Produce a `docs/dogfood-evidence-<version>.md` one-pager summarizing:
    - What workload ran
@@ -233,7 +233,7 @@ The campaign produces, and we keep in the repo:
 
 ## 10. Initial rollout
 
-For the POC on adora:
+For the POC on dora:
 
 1. **Design phase (this doc)**: done 2026-04-08.
 2. **Workload implementation**: deferred to when the project is ready for a 1.0 push. Estimate 1-2 days when prioritized.

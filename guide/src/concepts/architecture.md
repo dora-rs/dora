@@ -1,10 +1,10 @@
-# Adora Architecture
+# Dora Architecture
 
-Comprehensive architecture reference for Adora (AI-Dora, Agentic Dataflow-Oriented Robotic Architecture) — a 100% Rust framework for real-time robotics and AI applications.
+Comprehensive architecture reference for Dora (AI-Dora, Agentic Dataflow-Oriented Robotic Architecture) — a 100% Rust framework for real-time robotics and AI applications.
 
 ## Overview and Design Philosophy
 
-Adora is built on four core principles:
+Dora is built on four core principles:
 
 1. **Dataflow-oriented**: Applications are directed graphs of nodes connected by typed data channels. Nodes declare inputs and outputs; the framework handles routing, scheduling, and lifecycle.
 2. **Zero-copy performance**: Messages above 4 KiB use shared memory with 128-byte aligned buffers and atomic coordination, achieving 10-17x lower latency than ROS2.
@@ -15,13 +15,13 @@ Adora is built on four core principles:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  CLI (adora)          Coordinator (orchestrator) │  Layer 4: Orchestration
+│  CLI (dora)          Coordinator (orchestrator) │  Layer 4: Orchestration
 ├─────────────────────────────────────────────────┤
 │  Daemon (per-machine)    Runtime (operators)     │  Layer 3: Execution
 ├─────────────────────────────────────────────────┤
-│  adora-core    shared-memory-server    Node API  │  Layer 2: Core Libraries
+│  dora-core    shared-memory-server    Node API  │  Layer 2: Core Libraries
 ├─────────────────────────────────────────────────┤
-│  adora-message (protocol + Arrow types)          │  Layer 1: Protocol
+│  dora-message (protocol + Arrow types)          │  Layer 1: Protocol
 └─────────────────────────────────────────────────┘
 ```
 
@@ -34,61 +34,61 @@ All crates share the workspace version.
 
 | Path | Crate | Role |
 |------|-------|------|
-| `binaries/cli` | adora-cli | CLI binary (`adora` command) — build, run, stop dataflows |
-| `binaries/coordinator` | adora-coordinator | Orchestrates distributed multi-daemon deployments; WebSocket server |
-| `binaries/daemon` | adora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
-| `binaries/runtime` | adora-runtime | In-process operator execution (Python/C/C++ via dlopen/PyO3) |
-| `binaries/ros2-bridge-node` | adora-ros2-bridge-node | ROS2 integration node |
-| `binaries/record-node` | adora-record-node | Records dataflow messages to `.adorec` format |
-| `binaries/replay-node` | adora-replay-node | Replays recorded messages from `.adorec` files |
+| `binaries/cli` | dora-cli | CLI binary (`dora` command) — build, run, stop dataflows |
+| `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments; WebSocket server |
+| `binaries/daemon` | dora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
+| `binaries/runtime` | dora-runtime | In-process operator execution (Python/C/C++ via dlopen/PyO3) |
+| `binaries/ros2-bridge-node` | dora-ros2-bridge-node | ROS2 integration node |
+| `binaries/record-node` | dora-record-node | Records dataflow messages to `.adorec` format |
+| `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.adorec` files |
 
 ### Core Libraries (6)
 
 | Path | Crate | Role |
 |------|-------|------|
-| `libraries/message` | adora-message | All inter-component message types, protocol definitions, Arrow metadata |
-| `libraries/core` | adora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
+| `libraries/message` | dora-message | All inter-component message types, protocol definitions, Arrow metadata |
+| `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for messages >= 4 KiB |
-| `libraries/recording` | adora-recording | Recording format (.adorec): bincode header + entries + footer |
-| `libraries/arrow-convert` | adora-arrow-convert | Arrow type conversions (numeric, datetime) |
-| `libraries/coordinator-store` | adora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |
+| `libraries/recording` | dora-recording | Recording format (.adorec): bincode header + entries + footer |
+| `libraries/arrow-convert` | dora-arrow-convert | Arrow type conversions (numeric, datetime) |
+| `libraries/coordinator-store` | dora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |
 
 ### Extension Libraries (5)
 
 | Path | Crate | Role |
 |------|-------|------|
-| `libraries/extensions/telemetry/tracing` | adora-tracing | OpenTelemetry distributed tracing (OTLP exporter) |
-| `libraries/extensions/telemetry/metrics` | adora-metrics | System metrics collection (CPU, memory, disk) |
-| `libraries/extensions/download` | adora-download | HTTP file download utility for operator/node binaries |
-| `libraries/extensions/ros2-bridge` | adora-ros2-bridge | ROS2 integration: topic pub/sub, services, actions |
-| `libraries/log-utils` | adora-log-utils | Log parsing, merging, filtering, formatting |
+| `libraries/extensions/telemetry/tracing` | dora-tracing | OpenTelemetry distributed tracing (OTLP exporter) |
+| `libraries/extensions/telemetry/metrics` | dora-metrics | System metrics collection (CPU, memory, disk) |
+| `libraries/extensions/download` | dora-download | HTTP file download utility for operator/node binaries |
+| `libraries/extensions/ros2-bridge` | dora-ros2-bridge | ROS2 integration: topic pub/sub, services, actions |
+| `libraries/log-utils` | dora-log-utils | Log parsing, merging, filtering, formatting |
 
 ### API Crates (9)
 
 | Path | Crate | Language |
 |------|-------|----------|
-| `apis/rust/node` | adora-node-api | Rust |
-| `apis/rust/operator` | adora-operator-api | Rust |
-| `apis/rust/operator/macros` | adora-operator-api-macros | Rust (proc-macro) |
-| `apis/rust/operator/types` | adora-operator-api-types | Rust (FFI-safe types) |
-| `apis/python/node` | adora-node-api-python | Python (PyO3) -- builds the `adora` module |
-| `apis/python/operator` | adora-operator-api-python | Python (PyO3) -- compiled into adora-node-api-python |
-| `apis/c/node` | adora-node-api-c | C |
-| `apis/c/operator` | adora-operator-api-c | C/C++ |
+| `apis/rust/node` | dora-node-api | Rust |
+| `apis/rust/operator` | dora-operator-api | Rust |
+| `apis/rust/operator/macros` | dora-operator-api-macros | Rust (proc-macro) |
+| `apis/rust/operator/types` | dora-operator-api-types | Rust (FFI-safe types) |
+| `apis/python/node` | dora-node-api-python | Python (PyO3) -- builds the `dora` module |
+| `apis/python/operator` | dora-operator-api-python | Python (PyO3) -- compiled into dora-node-api-python |
+| `apis/c/node` | dora-node-api-c | C |
+| `apis/c/operator` | dora-operator-api-c | C/C++ |
 
 ## Component Architecture
 
 ### CLI
 
-The `adora` command provides three command groups:
+The `dora` command provides three command groups:
 
 **Lifecycle** (run, up, down, build, start, stop, restart):
-- `adora run` executes a dataflow locally without coordinator/daemon (single-machine shortcut)
-- `adora up` / `adora down` manage coordinator + daemon infrastructure
-- `adora start` / `adora stop` control dataflows on a running coordinator
+- `dora run` executes a dataflow locally without coordinator/daemon (single-machine shortcut)
+- `dora up` / `dora down` manage coordinator + daemon infrastructure
+- `dora start` / `dora stop` control dataflows on a running coordinator
 
 **Monitoring** (list, logs, inspect, topic, node, record, replay, trace):
-- Real-time inspection with `adora inspect top`
+- Real-time inspection with `dora inspect top`
 - Topic subscription and data inspection
 - Recording and replay via `.adorec` files
 
@@ -277,7 +277,7 @@ Three transport options, configured via `LocalCommunicationConfig`:
 
 **Topic pattern:**
 ```
-adora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
+dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
 ```
 
 Default `network_id` is `"default"`.
@@ -475,7 +475,7 @@ nodes:
     build: cargo build --release
     path: target/release/my-node
     inputs:
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
       data: other-node/output
     outputs:
       - result
@@ -544,8 +544,8 @@ pub struct Descriptor {
 ### Timer Nodes
 
 Built-in timer nodes generate periodic ticks:
-- `adora/timer/millis/<N>` — every N milliseconds
-- `adora/timer/secs/<N>` — every N seconds
+- `dora/timer/millis/<N>` — every N milliseconds
+- `dora/timer/secs/<N>` — every N seconds
 
 ### Operator Sources
 
@@ -624,7 +624,7 @@ pub struct FaultToleranceSnapshot {
 }
 ```
 
-Reported per daemon via heartbeat events. Visible via `adora inspect top`.
+Reported per daemon via heartbeat events. Visible via `dora inspect top`.
 
 ## Distributed Deployment
 
@@ -650,10 +650,10 @@ Reported per daemon via heartbeat events. Visible via `adora inspect top`.
 ### Zenoh Topic Naming
 
 ```
-adora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
+dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}
 ```
 
-- `network_id` isolates separate Adora clusters (default: `"default"`)
+- `network_id` isolates separate Dora clusters (default: `"default"`)
 - Zenoh router port: 7447, peer port: 5456
 - Routing mode: `linkstate`
 
@@ -726,12 +726,12 @@ impl<R: Read> RecordingReader<R> {
 
 ### Telemetry
 
-**Distributed Tracing** (`adora-tracing`):
+**Distributed Tracing** (`dora-tracing`):
 - OpenTelemetry with OTLP exporter (compatible with Jaeger, Zipkin, Tempo)
 - Context propagation across nodes
 - Setup: `set_up_tracing(name: &str)`
 
-**Metrics** (`adora-metrics`):
+**Metrics** (`dora-metrics`):
 - System metrics via `sysinfo` (CPU, memory, disk)
 - OpenTelemetry meter with OTLP exporter
 - Async process observer: `run_metrics_monitor(meter_id)`
@@ -740,7 +740,7 @@ impl<R: Read> RecordingReader<R> {
 
 Declarative YAML-based ROS2 integration supporting:
 
-**Topics** — subscribe (ROS2 → Adora) or publish (Adora → ROS2):
+**Topics** — subscribe (ROS2 → Dora) or publish (Dora → ROS2):
 ```yaml
 ros2:
   topic: /camera/image
@@ -780,8 +780,8 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| `ADORA_COORDINATOR_PORT_WS_DEFAULT` | 6013 | Coordinator WebSocket port |
-| `ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` | 53291 | Daemon TCP listener port |
+| `DORA_COORDINATOR_PORT_WS_DEFAULT` | 6013 | Coordinator WebSocket port |
+| `DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` | 53291 | Daemon TCP listener port |
 | `ZERO_COPY_THRESHOLD` | 4096 bytes | Shared memory activation |
 | `MAX_MESSAGE_BYTES` | 64 MiB | Max TCP/bincode message |
 | `MAX_CONTROL_MESSAGE_BYTES` | 1 MiB | Max control plane JSON message |
@@ -822,7 +822,7 @@ pub struct AuthToken(String);  // 64 hex chars (32 bytes)
 ```
 
 - Generated via cryptographically random bytes
-- Stored at `<working_dir>/.adora-token`
+- Stored at `<working_dir>/.dora-token`
 - Constant-time comparison to prevent timing attacks
 - Applied to all WebSocket routes
 

@@ -4,12 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use adora_core::{
+use dora_core::{
     build::{BuildLogger, LogLevelOrStdout},
     config::NodeId,
     uhlc,
 };
-use adora_message::{
+use dora_message::{
     BuildId,
     common::{DaemonId, LogLevel, LogMessage, Timestamped},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
@@ -423,7 +423,7 @@ impl Logger {
         match sender
             .send_event(&msg)
             .await
-            .wrap_err("failed to send log message to adora-coordinator")
+            .wrap_err("failed to send log message to dora-coordinator")
         {
             Ok(()) => (),
             Err(err) => tracing::warn!("{err:?}"),

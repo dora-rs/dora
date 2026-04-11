@@ -1,6 +1,6 @@
 # CI Workflow Templates
 
-Ready-to-use GitHub Actions workflows for adora application projects.
+Ready-to-use GitHub Actions workflows for dora application projects.
 
 ## Usage
 
@@ -16,8 +16,8 @@ cp ci-templates/rust-node-ci.yml .github/workflows/
 | Template | What it does |
 |----------|-------------|
 | `rust-node-ci.yml` | `cargo fmt` + `cargo clippy` + `cargo test` for Rust node crates |
-| `python-node-ci.yml` | `pytest` for Python nodes (works with `MockNode` from `adora.testing`) |
-| `dataflow-smoke.yml` | Installs adora CLI, builds nodes, runs dataflow with `--stop-after` |
+| `python-node-ci.yml` | `pytest` for Python nodes (works with `MockNode` from `dora.testing`) |
+| `dataflow-smoke.yml` | Installs dora CLI, builds nodes, runs dataflow with `--stop-after` |
 
 ## Customization
 

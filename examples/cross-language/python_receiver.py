@@ -2,7 +2,7 @@
 
 import sys
 
-from adora import Node
+from dora import Node
 
 
 VALID_VALUES = {i * 10 for i in range(10)}  # {0, 10, 20, ..., 90}

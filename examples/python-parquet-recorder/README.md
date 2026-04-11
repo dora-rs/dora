@@ -20,10 +20,10 @@ The recorder starts first and sends a `"ready"` status message. The camera waits
 ## Prerequisites
 
 ```bash
-pip install adora-rs numpy opencv-python pyarrow pandas
+pip install dora-rs numpy opencv-python pyarrow pandas
 ```
 
-> **Note:** The PyPI package is `adora-rs`, not `adora`.
+> **Note:** The PyPI package is `dora-rs`, not `dora`.
 
 ## Configuration
 
@@ -36,7 +36,7 @@ pip install adora-rs numpy opencv-python pyarrow pandas
 ## Run
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Recorded files appear in `logs/`:
@@ -66,5 +66,5 @@ Each Parquet file has the schema:
 | Metadata alongside data payloads | Camera |
 | Batch buffering before disk write | Recorder |
 | Parquet serialization with pandas | Recorder |
-| `restart_policy: on-failure` (Adora-specific) | Both nodes |
+| `restart_policy: on-failure` (Dora-specific) | Both nodes |
 | Environment variable configuration | Both nodes |

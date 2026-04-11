@@ -21,7 +21,7 @@ rust-node --> latency    --> rust-sink (records timestamps, computes percentiles
 
 ```bash
 cargo build --release -p benchmark-example-node -p benchmark-example-sink
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 ### CSV output
@@ -29,7 +29,7 @@ adora run dataflow.yml
 Set `BENCH_CSV` to write machine-readable results:
 
 ```bash
-BENCH_CSV=results.csv adora run dataflow.yml
+BENCH_CSV=results.csv dora run dataflow.yml
 ```
 
 CSV columns: `mode,bytes,size_label,n,avg_or_msgps,p50,p95,p99,p999,min,max` (nanos for latency, 0 for throughput percentiles).

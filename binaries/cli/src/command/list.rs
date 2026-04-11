@@ -6,8 +6,8 @@ use crate::{
     formatting::OutputFormat,
     ws_client::WsSession,
 };
-use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DataflowStatus};
 use clap::Args;
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DataflowStatus};
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;

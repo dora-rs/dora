@@ -10,7 +10,7 @@ nodes:
   - id: agent
     path: agent.py
     inputs:
-      tick: adora/timer/hz/1
+      tick: dora/timer/hz/1
       tool-response: echo-tool/response
     outputs:
       - tool-request

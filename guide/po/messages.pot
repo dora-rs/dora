@@ -1,7 +1,7 @@
 
 msgid ""
 msgstr ""
-"Project-Id-Version: Adora User Guide\n"
+"Project-Id-Version: Dora User Guide\n"
 "POT-Creation-Date: 2026-03-25T20:50:26-05:00\n"
 "PO-Revision-Date: \n"
 "Last-Translator: \n"
@@ -150,7 +150,7 @@ msgid "Testing Guide"
 msgstr ""
 
 #: src/introduction.md:1 src/operations/performance.md:7
-msgid "Adora"
+msgid "Dora"
 msgstr ""
 
 #: src/introduction.md:3
@@ -160,7 +160,7 @@ msgid ""
 msgstr ""
 
 #: src/introduction.md:5
-msgid "Why Adora?"
+msgid "Why Dora?"
 msgstr ""
 
 #: src/introduction.md:9
@@ -193,7 +193,7 @@ msgstr ""
 
 #: src/introduction.md:16
 msgid ""
-"**Single CLI, full lifecycle** -- `adora run` for local dev, `adora "
+"**Single CLI, full lifecycle** -- `dora run` for local dev, `dora "
 "up/start` for distributed prod, plus build, logs, monitoring, record/replay "
 "all from one tool"
 msgstr ""
@@ -290,13 +290,13 @@ msgstr ""
 
 #: src/introduction.md:36
 msgid ""
-"**Resource monitoring** -- `adora top` TUI showing per-node CPU, memory, "
+"**Resource monitoring** -- `dora top` TUI showing per-node CPU, memory, "
 "queue depth, network I/O across all machines"
 msgstr ""
 
 #: src/introduction.md:37
 msgid ""
-"**Log aggregation** -- subscribe to `adora/logs` to receive structured log "
+"**Log aggregation** -- subscribe to `dora/logs` to receive structured log "
 "messages from all nodes without extra wiring"
 msgstr ""
 
@@ -336,7 +336,7 @@ msgid "Next Steps"
 msgstr ""
 
 #: src/introduction.md:48
-msgid "[Install Adora](getting-started/installation.md)"
+msgid "[Install Dora](getting-started/installation.md)"
 msgstr ""
 
 #: src/introduction.md:49
@@ -364,7 +364,7 @@ msgid "From crates.io (recommended)"
 msgstr ""
 
 #: src/getting-started/installation.md:6 src/getting-started/quickstart.md:8
-msgid "# CLI (adora command)\n"
+msgid "# CLI (dora command)\n"
 msgstr ""
 
 #: src/getting-started/installation.md:7 src/getting-started/quickstart.md:9
@@ -403,7 +403,7 @@ msgstr ""
 msgid ""
 "```powershell\n"
 "powershell -ExecutionPolicy ByPass -c \"irm "
-"https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 "
+"https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 "
 "| iex\"\n"
 "```"
 msgstr ""
@@ -562,7 +562,7 @@ msgstr ""
 
 #: src/getting-started/quickstart.md:3
 msgid ""
-"This guide walks you through writing Python nodes and operators for adora "
+"This guide walks you through writing Python nodes and operators for dora "
 "dataflows."
 msgstr ""
 
@@ -573,11 +573,11 @@ msgid "Prerequisites"
 msgstr ""
 
 #: src/getting-started/quickstart.md:12
-msgid "The `adora-rs` package includes `pyarrow` as a dependency."
+msgid "The `dora-rs` package includes `pyarrow` as a dependency."
 msgstr ""
 
 #: src/getting-started/quickstart.md:14
-msgid "**Building from source** (instead of `pip install adora-rs`):"
+msgid "**Building from source** (instead of `pip install dora-rs`):"
 msgstr ""
 
 #: src/getting-started/quickstart.md:17
@@ -1135,7 +1135,7 @@ msgid "Working with Arrow Data"
 msgstr ""
 
 #: src/getting-started/quickstart.md:97
-msgid "All data flows through adora as Apache Arrow arrays. Common patterns:"
+msgid "All data flows through dora as Apache Arrow arrays. Common patterns:"
 msgstr ""
 
 #: src/getting-started/quickstart.md:101
@@ -1204,7 +1204,7 @@ msgstr ""
 
 #: src/getting-started/quickstart.md:122
 msgid ""
-"Operators are lightweight alternatives to nodes. They run inside the adora "
+"Operators are lightweight alternatives to nodes. They run inside the dora "
 "runtime process (no separate OS process), making them faster for simple "
 "transformations."
 msgstr ""
@@ -1240,7 +1240,7 @@ msgstr ""
 
 #: src/getting-started/quickstart.md:144 src/concepts/patterns.md:44
 #: src/languages/rust.md:757 src/operations/logging.md:736
-msgid "adora/timer/millis/500"
+msgid "dora/timer/millis/500"
 msgstr ""
 
 #: src/getting-started/quickstart.md:146 src/getting-started/quickstart.md:152
@@ -1385,7 +1385,7 @@ msgstr ""
 
 #: src/getting-started/quickstart.md:191
 msgid ""
-"Use `node.log()` for structured logging that integrates with `adora logs`:"
+"Use `node.log()` for structured logging that integrates with `dora logs`:"
 msgstr ""
 
 #: src/getting-started/quickstart.md:194 src/languages/python.md:247
@@ -1405,7 +1405,7 @@ msgstr ""
 
 #: src/getting-started/quickstart.md:197
 msgid ""
-"Or use Python's standard `logging` module -- adora captures stdout/stderr "
+"Or use Python's standard `logging` module -- dora captures stdout/stderr "
 "automatically:"
 msgstr ""
 
@@ -1432,7 +1432,7 @@ msgid "tick-source"
 msgstr ""
 
 #: src/getting-started/quickstart.md:213
-msgid "adora/timer/millis/100    # tick every 100ms\n    outputs"
+msgid "dora/timer/millis/100    # tick every 100ms\n    outputs"
 msgstr ""
 
 #: src/getting-started/quickstart.md:217 src/concepts/architecture.md:479
@@ -1453,7 +1453,7 @@ msgid "tick-source/tick"
 msgstr ""
 
 #: src/getting-started/quickstart.md:223
-msgid "Also available: `adora/timer/hz/30` for 30 Hz."
+msgid "Also available: `dora/timer/hz/30` for 30 Hz."
 msgstr ""
 
 #: src/getting-started/quickstart.md:227
@@ -1477,16 +1477,16 @@ msgstr ""
 #: src/getting-started/quickstart.md:230
 msgid ""
 "[Distributed Deployment](../operations/distributed.md) -- running across "
-"multiple machines with `adora up`"
+"multiple machines with `dora up`"
 msgstr ""
 
 #: src/concepts/architecture.md:1
-msgid "Adora Architecture"
+msgid "Dora Architecture"
 msgstr ""
 
 #: src/concepts/architecture.md:3
 msgid ""
-"Comprehensive architecture reference for Adora (AI-Dora, Agentic "
+"Comprehensive architecture reference for Dora (AI-Dora, Agentic "
 "Dataflow-Oriented Robotic Architecture) — a 100% Rust framework for "
 "real-time robotics and AI applications."
 msgstr ""
@@ -1496,7 +1496,7 @@ msgid "Overview and Design Philosophy"
 msgstr ""
 
 #: src/concepts/architecture.md:7
-msgid "Adora is built on four core principles:"
+msgid "Dora is built on four core principles:"
 msgstr ""
 
 #: src/concepts/architecture.md:9
@@ -1565,11 +1565,11 @@ msgid "`binaries/cli`"
 msgstr ""
 
 #: src/concepts/architecture.md:37 src/development/testing.md:52
-msgid "adora-cli"
+msgid "dora-cli"
 msgstr ""
 
 #: src/concepts/architecture.md:37
-msgid "CLI binary (`adora` command) — build, run, stop dataflows"
+msgid "CLI binary (`dora` command) — build, run, stop dataflows"
 msgstr ""
 
 #: src/concepts/architecture.md:38
@@ -1577,7 +1577,7 @@ msgid "`binaries/coordinator`"
 msgstr ""
 
 #: src/concepts/architecture.md:38 src/development/testing.md:53
-msgid "adora-coordinator"
+msgid "dora-coordinator"
 msgstr ""
 
 #: src/concepts/architecture.md:38
@@ -1589,7 +1589,7 @@ msgid "`binaries/daemon`"
 msgstr ""
 
 #: src/concepts/architecture.md:39 src/development/testing.md:56
-msgid "adora-daemon"
+msgid "dora-daemon"
 msgstr ""
 
 #: src/concepts/architecture.md:39
@@ -1601,7 +1601,7 @@ msgid "`binaries/runtime`"
 msgstr ""
 
 #: src/concepts/architecture.md:40
-msgid "adora-runtime"
+msgid "dora-runtime"
 msgstr ""
 
 #: src/concepts/architecture.md:40
@@ -1613,7 +1613,7 @@ msgid "`binaries/ros2-bridge-node`"
 msgstr ""
 
 #: src/concepts/architecture.md:41
-msgid "adora-ros2-bridge-node"
+msgid "dora-ros2-bridge-node"
 msgstr ""
 
 #: src/concepts/architecture.md:41
@@ -1625,7 +1625,7 @@ msgid "`binaries/record-node`"
 msgstr ""
 
 #: src/concepts/architecture.md:42
-msgid "adora-record-node"
+msgid "dora-record-node"
 msgstr ""
 
 #: src/concepts/architecture.md:42
@@ -1637,7 +1637,7 @@ msgid "`binaries/replay-node`"
 msgstr ""
 
 #: src/concepts/architecture.md:43
-msgid "adora-replay-node"
+msgid "dora-replay-node"
 msgstr ""
 
 #: src/concepts/architecture.md:43
@@ -1653,7 +1653,7 @@ msgid "`libraries/message`"
 msgstr ""
 
 #: src/concepts/architecture.md:49 src/development/testing.md:59
-msgid "adora-message"
+msgid "dora-message"
 msgstr ""
 
 #: src/concepts/architecture.md:49
@@ -1665,7 +1665,7 @@ msgid "`libraries/core`"
 msgstr ""
 
 #: src/concepts/architecture.md:50 src/development/testing.md:55
-msgid "adora-core"
+msgid "dora-core"
 msgstr ""
 
 #: src/concepts/architecture.md:50
@@ -1689,7 +1689,7 @@ msgid "`libraries/recording`"
 msgstr ""
 
 #: src/concepts/architecture.md:52
-msgid "adora-recording"
+msgid "dora-recording"
 msgstr ""
 
 #: src/concepts/architecture.md:52
@@ -1701,7 +1701,7 @@ msgid "`libraries/arrow-convert`"
 msgstr ""
 
 #: src/concepts/architecture.md:53 src/development/testing.md:51
-msgid "adora-arrow-convert"
+msgid "dora-arrow-convert"
 msgstr ""
 
 #: src/concepts/architecture.md:53
@@ -1713,7 +1713,7 @@ msgid "`libraries/coordinator-store`"
 msgstr ""
 
 #: src/concepts/architecture.md:54 src/development/testing.md:54
-msgid "adora-coordinator-store"
+msgid "dora-coordinator-store"
 msgstr ""
 
 #: src/concepts/architecture.md:54
@@ -1729,7 +1729,7 @@ msgid "`libraries/extensions/telemetry/tracing`"
 msgstr ""
 
 #: src/concepts/architecture.md:60
-msgid "adora-tracing"
+msgid "dora-tracing"
 msgstr ""
 
 #: src/concepts/architecture.md:60
@@ -1741,7 +1741,7 @@ msgid "`libraries/extensions/telemetry/metrics`"
 msgstr ""
 
 #: src/concepts/architecture.md:61
-msgid "adora-metrics"
+msgid "dora-metrics"
 msgstr ""
 
 #: src/concepts/architecture.md:61
@@ -1753,7 +1753,7 @@ msgid "`libraries/extensions/download`"
 msgstr ""
 
 #: src/concepts/architecture.md:62
-msgid "adora-download"
+msgid "dora-download"
 msgstr ""
 
 #: src/concepts/architecture.md:62
@@ -1765,7 +1765,7 @@ msgid "`libraries/extensions/ros2-bridge`"
 msgstr ""
 
 #: src/concepts/architecture.md:63
-msgid "adora-ros2-bridge"
+msgid "dora-ros2-bridge"
 msgstr ""
 
 #: src/concepts/architecture.md:63
@@ -1777,7 +1777,7 @@ msgid "`libraries/log-utils`"
 msgstr ""
 
 #: src/concepts/architecture.md:64 src/development/testing.md:58
-msgid "adora-log-utils"
+msgid "dora-log-utils"
 msgstr ""
 
 #: src/concepts/architecture.md:64
@@ -1797,7 +1797,7 @@ msgid "`apis/rust/node`"
 msgstr ""
 
 #: src/concepts/architecture.md:70 src/development/testing.md:57
-msgid "adora-node-api"
+msgid "dora-node-api"
 msgstr ""
 
 #: src/concepts/architecture.md:71
@@ -1805,7 +1805,7 @@ msgid "`apis/rust/operator`"
 msgstr ""
 
 #: src/concepts/architecture.md:71
-msgid "adora-operator-api"
+msgid "dora-operator-api"
 msgstr ""
 
 #: src/concepts/architecture.md:72
@@ -1813,7 +1813,7 @@ msgid "`apis/rust/operator/macros`"
 msgstr ""
 
 #: src/concepts/architecture.md:72
-msgid "adora-operator-api-macros"
+msgid "dora-operator-api-macros"
 msgstr ""
 
 #: src/concepts/architecture.md:72
@@ -1825,7 +1825,7 @@ msgid "`apis/rust/operator/types`"
 msgstr ""
 
 #: src/concepts/architecture.md:73
-msgid "adora-operator-api-types"
+msgid "dora-operator-api-types"
 msgstr ""
 
 #: src/concepts/architecture.md:73
@@ -1837,11 +1837,11 @@ msgid "`apis/python/node`"
 msgstr ""
 
 #: src/concepts/architecture.md:74
-msgid "adora-node-api-python"
+msgid "dora-node-api-python"
 msgstr ""
 
 #: src/concepts/architecture.md:74
-msgid "Python (PyO3) -- builds the `adora` module"
+msgid "Python (PyO3) -- builds the `dora` module"
 msgstr ""
 
 #: src/concepts/architecture.md:75
@@ -1849,11 +1849,11 @@ msgid "`apis/python/operator`"
 msgstr ""
 
 #: src/concepts/architecture.md:75
-msgid "adora-operator-api-python"
+msgid "dora-operator-api-python"
 msgstr ""
 
 #: src/concepts/architecture.md:75
-msgid "Python (PyO3) -- compiled into adora-node-api-python"
+msgid "Python (PyO3) -- compiled into dora-node-api-python"
 msgstr ""
 
 #: src/concepts/architecture.md:76
@@ -1861,7 +1861,7 @@ msgid "`apis/c/node`"
 msgstr ""
 
 #: src/concepts/architecture.md:76
-msgid "adora-node-api-c"
+msgid "dora-node-api-c"
 msgstr ""
 
 #: src/concepts/architecture.md:77
@@ -1869,7 +1869,7 @@ msgid "`apis/c/operator`"
 msgstr ""
 
 #: src/concepts/architecture.md:77
-msgid "adora-operator-api-c"
+msgid "dora-operator-api-c"
 msgstr ""
 
 #: src/concepts/architecture.md:77
@@ -1885,7 +1885,7 @@ msgid "CLI"
 msgstr ""
 
 #: src/concepts/architecture.md:83
-msgid "The `adora` command provides three command groups:"
+msgid "The `dora` command provides three command groups:"
 msgstr ""
 
 #: src/concepts/architecture.md:85
@@ -1894,16 +1894,16 @@ msgstr ""
 
 #: src/concepts/architecture.md:86
 msgid ""
-"`adora run` executes a dataflow locally without coordinator/daemon "
+"`dora run` executes a dataflow locally without coordinator/daemon "
 "(single-machine shortcut)"
 msgstr ""
 
 #: src/concepts/architecture.md:87
-msgid "`adora up` / `adora down` manage coordinator + daemon infrastructure"
+msgid "`dora up` / `dora down` manage coordinator + daemon infrastructure"
 msgstr ""
 
 #: src/concepts/architecture.md:88
-msgid "`adora start` / `adora stop` control dataflows on a running coordinator"
+msgid "`dora start` / `dora stop` control dataflows on a running coordinator"
 msgstr ""
 
 #: src/concepts/architecture.md:90
@@ -1911,7 +1911,7 @@ msgid "**Monitoring** (list, logs, inspect, topic, node, record, replay, trace):
 msgstr ""
 
 #: src/concepts/architecture.md:91
-msgid "Real-time inspection with `adora inspect top`"
+msgid "Real-time inspection with `dora inspect top`"
 msgstr ""
 
 #: src/concepts/architecture.md:92
@@ -2733,7 +2733,7 @@ msgstr ""
 #: src/languages/c.md:450 src/operations/cli.md:144
 #: src/operations/logging.md:904 src/operations/fault-tolerance.md:513
 #: src/advanced/ros2-bridge.md:644 src/advanced/ros2-bridge.md:726
-msgid "adora/timer/millis/100"
+msgid "dora/timer/millis/100"
 msgstr ""
 
 #: src/concepts/architecture.md:484 src/concepts/architecture.md:508
@@ -3039,11 +3039,11 @@ msgid "Built-in timer nodes generate periodic ticks:"
 msgstr ""
 
 #: src/concepts/architecture.md:552
-msgid "`adora/timer/millis/<N>` — every N milliseconds"
+msgid "`dora/timer/millis/<N>` — every N milliseconds"
 msgstr ""
 
 #: src/concepts/architecture.md:553
-msgid "`adora/timer/secs/<N>` — every N seconds"
+msgid "`dora/timer/secs/<N>` — every N seconds"
 msgstr ""
 
 #: src/concepts/architecture.md:555
@@ -3174,7 +3174,7 @@ msgstr ""
 
 #: src/concepts/architecture.md:632
 msgid ""
-"Reported per daemon via heartbeat events. Visible via `adora inspect top`."
+"Reported per daemon via heartbeat events. Visible via `dora inspect top`."
 msgstr ""
 
 #: src/concepts/architecture.md:636
@@ -3186,7 +3186,7 @@ msgid "Zenoh Topic Naming"
 msgstr ""
 
 #: src/concepts/architecture.md:661
-msgid "`network_id` isolates separate Adora clusters (default: `\"default\"`)"
+msgid "`network_id` isolates separate Dora clusters (default: `\"default\"`)"
 msgstr ""
 
 #: src/concepts/architecture.md:662
@@ -3330,7 +3330,7 @@ msgid "Telemetry"
 msgstr ""
 
 #: src/concepts/architecture.md:734
-msgid "**Distributed Tracing** (`adora-tracing`):"
+msgid "**Distributed Tracing** (`dora-tracing`):"
 msgstr ""
 
 #: src/concepts/architecture.md:735
@@ -3346,7 +3346,7 @@ msgid "Setup: `set_up_tracing(name: &str)`"
 msgstr ""
 
 #: src/concepts/architecture.md:739
-msgid "**Metrics** (`adora-metrics`):"
+msgid "**Metrics** (`dora-metrics`):"
 msgstr ""
 
 #: src/concepts/architecture.md:740
@@ -3366,7 +3366,7 @@ msgid "Declarative YAML-based ROS2 integration supporting:"
 msgstr ""
 
 #: src/concepts/architecture.md:748
-msgid "**Topics** — subscribe (ROS2 → Adora) or publish (Adora → ROS2):"
+msgid "**Topics** — subscribe (ROS2 → Dora) or publish (Dora → ROS2):"
 msgstr ""
 
 #: src/concepts/architecture.md:751
@@ -3812,7 +3812,7 @@ msgid "Generated via cryptographically random bytes"
 msgstr ""
 
 #: src/concepts/architecture.md:830
-msgid "Stored at `<working_dir>/.adora-token`"
+msgid "Stored at `<working_dir>/.dora-token`"
 msgstr ""
 
 #: src/concepts/architecture.md:831
@@ -3939,13 +3939,13 @@ msgstr ""
 
 #: src/concepts/dataflow-yaml.md:5
 msgid ""
-"A JSON Schema is available at the repo root (`adora-schema.json`) for editor "
+"A JSON Schema is available at the repo root (`dora-schema.json`) for editor "
 "autocompletion and validation."
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:22
 msgid ""
-"Run with `adora run dataflow.yml` (local mode) or `adora up && adora start "
+"Run with `dora run dataflow.yml` (local mode) or `dora up && dora start "
 "dataflow.yml` (networked mode)."
 msgstr ""
 
@@ -3963,7 +3963,7 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:29
 msgid ""
 "# yaml-language-server: "
-"$schema=https://raw.githubusercontent.com/dora-rs/adora/main/adora-schema.json\n"
+"$schema=https://raw.githubusercontent.com/dora-rs/dora/main/dora-schema.json\n"
 "nodes"
 msgstr ""
 
@@ -4189,7 +4189,7 @@ msgstr ""
 
 #: src/concepts/dataflow-yaml.md:66
 msgid ""
-"Git repo URL. `adora build` clones it and uses the clone dir as working "
+"Git repo URL. `dora build` clones it and uses the clone dir as working "
 "directory"
 msgstr ""
 
@@ -4225,7 +4225,7 @@ msgstr ""
 
 #: src/concepts/dataflow-yaml.md:70
 msgid ""
-"Build commands run during `adora build`. Each line runs separately. "
+"Build commands run during `dora build`. Each line runs separately. "
 "`pip`/`pip3` lines use `uv` when `--uv` is passed"
 msgstr ""
 
@@ -4410,15 +4410,15 @@ msgid "Timers are virtual nodes that emit ticks at fixed intervals:"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:122 src/operations/cli.md:196
-msgid "adora/timer/millis/100   # every 100ms\n  slow"
+msgid "dora/timer/millis/100   # every 100ms\n  slow"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:123 src/operations/cli.md:197
-msgid "adora/timer/millis/1000  # every 1s\n  fast"
+msgid "dora/timer/millis/1000  # every 1s\n  fast"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:124 src/operations/cli.md:198
-msgid "adora/timer/hz/30        # 30 Hz (~33ms)\n"
+msgid "dora/timer/hz/30        # 30 Hz (~33ms)\n"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:127
@@ -4434,21 +4434,21 @@ msgid "all_logs"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:133
-msgid "adora/logs               # all nodes, all levels\n  errors"
+msgid "dora/logs               # all nodes, all levels\n  errors"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:134
-msgid "adora/logs/error         # error+ from all nodes\n  sensor"
+msgid "dora/logs/error         # error+ from all nodes\n  sensor"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:135
-msgid "adora/logs/info/sensor   # info+ from specific node\n"
+msgid "dora/logs/info/sensor   # info+ from specific node\n"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:138
 msgid ""
 "Each message arrives as a JSON-encoded `LogMessage` string. See "
-"[Logging](logging.md#adoralogs----automatic-log-aggregation) for details."
+"[Logging](logging.md#doralogs----automatic-log-aggregation) for details."
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:140
@@ -4584,7 +4584,7 @@ msgstr ""
 
 #: src/concepts/dataflow-yaml.md:185
 msgid ""
-"Run `adora validate <file>` to check type annotations statically. For "
+"Run `dora validate <file>` to check type annotations statically. For "
 "runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:"
 msgstr ""
 
@@ -4593,7 +4593,7 @@ msgid "warn"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:192
-msgid "Types also appear on `adora graph` edge labels when annotated."
+msgid "Types also appear on `dora graph` edge labels when annotated."
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:194
@@ -4722,7 +4722,7 @@ msgid "# float\n  FROM_HOST"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:236 src/operations/cli.md:163
-msgid "__adora_env"
+msgid "__dora_env"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:236
@@ -5223,7 +5223,7 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:399
 msgid ""
 "Declare a node as a ROS2 bridge to automatically convert between ROS2 DDS "
-"messages and Adora's Arrow format. No custom code needed."
+"messages and Dora's Arrow format. No custom code needed."
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:401
@@ -5502,12 +5502,12 @@ msgstr ""
 
 #: src/concepts/dataflow-yaml.md:492
 msgid ""
-"Required for `adora topic echo`, `adora topic hz`, and `adora topic info` "
+"Required for `dora topic echo`, `dora topic hz`, and `dora topic info` "
 "commands."
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:496
-msgid "Adora supports four communication patterns built on top of the dataflow:"
+msgid "Dora supports four communication patterns built on top of the dataflow:"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:498
@@ -5998,7 +5998,7 @@ msgid "Validation Rules"
 msgstr ""
 
 #: src/concepts/types.md:139
-msgid "`adora validate` and `adora build` check:"
+msgid "`dora validate` and `dora build` check:"
 msgstr ""
 
 #: src/concepts/types.md:141
@@ -6021,7 +6021,7 @@ msgstr ""
 
 #: src/concepts/types.md:144
 msgid ""
-"**Timer auto-typing**: Timer inputs (`adora/timer/*`) are automatically "
+"**Timer auto-typing**: Timer inputs (`dora/timer/*`) are automatically "
 "typed as `std/core/v1/UInt64`"
 msgstr ""
 
@@ -6267,7 +6267,7 @@ msgstr ""
 
 #: src/concepts/types.md:256
 msgid ""
-"User types are loaded automatically by `adora validate` and `adora build` "
+"User types are loaded automatically by `dora validate` and `dora build` "
 "when a `types/` directory exists."
 msgstr ""
 
@@ -6277,7 +6277,7 @@ msgstr ""
 
 #: src/concepts/types.md:260
 msgid ""
-"In addition to static validation, Adora supports optional runtime type "
+"In addition to static validation, Dora supports optional runtime type "
 "checking on `send_output()`. When enabled, the actual Arrow data type is "
 "compared against the declared `output_types` at send time."
 msgstr ""
@@ -6307,7 +6307,7 @@ msgstr ""
 #: src/concepts/types.md:275
 msgid ""
 "Validates `output_types` on the sender side (`send_output()` calls). "
-"`input_types` are checked statically by `adora validate` but not enforced at "
+"`input_types` are checked statically by `dora validate` but not enforced at "
 "runtime"
 msgstr ""
 
@@ -6333,7 +6333,7 @@ msgstr ""
 
 #: src/concepts/types.md:282
 msgid ""
-"When outputs have type annotations, `adora graph` shows the type on edge "
+"When outputs have type annotations, `dora graph` shows the type on edge "
 "labels:"
 msgstr ""
 
@@ -6637,7 +6637,7 @@ msgid "Substitute `params:` values in `args:` fields and inject as env vars"
 msgstr ""
 
 #: src/concepts/modules.md:158
-msgid "Use `adora expand` to see the result:"
+msgid "Use `dora expand` to see the result:"
 msgstr ""
 
 #: src/concepts/modules.md:164
@@ -6724,7 +6724,7 @@ msgstr ""
 
 #: src/concepts/modules.md:216
 msgid ""
-"`adora graph` renders module boundaries as Mermaid subgraphs, making it easy "
+"`dora graph` renders module boundaries as Mermaid subgraphs, making it easy "
 "to see which nodes came from which module:"
 msgstr ""
 
@@ -6796,7 +6796,7 @@ msgstr ""
 
 #: src/concepts/patterns.md:3
 msgid ""
-"Adora is a dataflow framework based on pub/sub message passing. On top of "
+"Dora is a dataflow framework based on pub/sub message passing. On top of "
 "basic topics, the framework supports **service** (request/reply), **action** "
 "(goal/feedback/result), and **streaming** (session/segment/chunk) patterns "
 "using well-known metadata keys. No changes to the daemon, coordinator, or "
@@ -6847,7 +6847,7 @@ msgid "Well-known metadata keys"
 msgstr ""
 
 #: src/concepts/patterns.md:36
-msgid "`adora_node_api::REQUEST_ID`"
+msgid "`dora_node_api::REQUEST_ID`"
 msgstr ""
 
 #: src/concepts/patterns.md:36
@@ -6912,7 +6912,7 @@ msgid ""
 msgstr ""
 
 #: src/concepts/patterns.md:81
-msgid "`adora_node_api::GOAL_ID`"
+msgid "`dora_node_api::GOAL_ID`"
 msgstr ""
 
 #: src/concepts/patterns.md:81
@@ -6920,7 +6920,7 @@ msgid "UUID v7 identifying the goal"
 msgstr ""
 
 #: src/concepts/patterns.md:82
-msgid "`adora_node_api::GOAL_STATUS`"
+msgid "`dora_node_api::GOAL_STATUS`"
 msgstr ""
 
 #: src/concepts/patterns.md:82
@@ -6974,7 +6974,7 @@ msgid "Goal canceled by client"
 msgstr ""
 
 #: src/concepts/patterns.md:98
-msgid "adora/timer/millis/2000"
+msgid "dora/timer/millis/2000"
 msgstr ""
 
 #: src/concepts/patterns.md:99
@@ -7284,22 +7284,22 @@ msgstr ""
 
 #: src/languages/rust.md:3
 msgid ""
-"This document covers the two main Rust crates for building Adora dataflow "
+"This document covers the two main Rust crates for building Dora dataflow "
 "components:"
 msgstr ""
 
 #: src/languages/rust.md:5
-msgid "**`adora-node-api`** -- for standalone node executables"
+msgid "**`dora-node-api`** -- for standalone node executables"
 msgstr ""
 
 #: src/languages/rust.md:6
 msgid ""
-"**`adora-operator-api`** -- for in-process operators managed by the Adora "
+"**`dora-operator-api`** -- for in-process operators managed by the Dora "
 "runtime"
 msgstr ""
 
 #: src/languages/rust.md:10
-msgid "Node API (`adora-node-api`)"
+msgid "Node API (`dora-node-api`)"
 msgstr ""
 
 #: src/languages/rust.md:12 src/languages/rust.md:564
@@ -7307,7 +7307,7 @@ msgid "Add to your `Cargo.toml`:"
 msgstr ""
 
 #: src/languages/rust.md:19 src/languages/cpp.md:29
-msgid "AdoraNode"
+msgid "DoraNode"
 msgstr ""
 
 #: src/languages/rust.md:21
@@ -7536,7 +7536,7 @@ msgstr ""
 msgid ""
 "All log methods emit structured JSONL to stdout, which the daemon parses "
 "automatically. Works with `min_log_level` filtering, `send_logs_as` routing, "
-"and `adora/logs` subscribers."
+"and `dora/logs` subscribers."
 msgstr ""
 
 #: src/languages/rust.md:221
@@ -7559,7 +7559,7 @@ msgstr ""
 
 #: src/languages/rust.md:243
 msgid ""
-"When adora's tracing subscriber is initialized (via `init_tracing()` or the "
+"When dora's tracing subscriber is initialized (via `init_tracing()` or the "
 "default feature), `tracing::info!()` etc. output structured JSON to stdout "
 "that the daemon parses identically:"
 msgstr ""
@@ -7778,7 +7778,7 @@ msgstr ""
 
 #: src/languages/rust.md:340
 msgid ""
-"// Explicit stop via `adora stop` or Ctrl-C. Exit promptly or be killed.\n"
+"// Explicit stop via `dora stop` or Ctrl-C. Exit promptly or be killed.\n"
 msgstr ""
 
 #: src/languages/rust.md:343
@@ -7920,7 +7920,7 @@ msgid "`\"flush\"`"
 msgstr ""
 
 #: src/languages/rust.md:400
-msgid "All constants are re-exported from `adora_node_api`."
+msgid "All constants are re-exported from `dora_node_api`."
 msgstr ""
 
 #: src/languages/rust.md:402
@@ -8060,7 +8060,7 @@ msgstr ""
 #: src/languages/rust.md:501
 msgid ""
 "Sets up thread-local state so that the next call to "
-"`AdoraNode::init_from_env` on the same thread initializes in test mode."
+"`DoraNode::init_from_env` on the same thread initializes in test mode."
 msgstr ""
 
 #: src/languages/rust.md:511
@@ -8140,12 +8140,12 @@ msgid "If set, omit time offsets for deterministic outputs"
 msgstr ""
 
 #: src/languages/rust.md:560
-msgid "Operator API (`adora-operator-api`)"
+msgid "Operator API (`dora-operator-api`)"
 msgstr ""
 
 #: src/languages/rust.md:562
 msgid ""
-"Operators are in-process components managed by the Adora runtime. They are "
+"Operators are in-process components managed by the Dora runtime. They are "
 "compiled as shared libraries (`.so`/`.dylib`/`.dll`) and loaded by the "
 "runtime."
 msgstr ""
@@ -8154,7 +8154,7 @@ msgstr ""
 msgid ""
 "```toml\n"
 "[dependencies]\n"
-"adora-operator-api = { workspace = true }\n"
+"dora-operator-api = { workspace = true }\n"
 "\n"
 "[lib]\n"
 "crate-type = [\"cdylib\"]\n"
@@ -8162,13 +8162,13 @@ msgid ""
 msgstr ""
 
 #: src/languages/rust.md:574
-msgid "AdoraOperator Trait"
+msgid "DoraOperator Trait"
 msgstr ""
 
 #: src/languages/rust.md:586
 msgid ""
 "Implement this trait to define your operator's behavior. The runtime calls "
-"`on_event` for each incoming event. Return `AdoraStatus` to control "
+"`on_event` for each incoming event. Return `DoraStatus` to control "
 "execution flow."
 msgstr ""
 
@@ -8199,7 +8199,7 @@ msgid "// The operator should stop.\n"
 msgstr ""
 
 #: src/languages/rust.md:609
-msgid "AdoraOutputSender"
+msgid "DoraOutputSender"
 msgstr ""
 
 #: src/languages/rust.md:615
@@ -8207,7 +8207,7 @@ msgid "// Send an output. `id` is the output ID from your dataflow YAML.\n"
 msgstr ""
 
 #: src/languages/rust.md:620
-msgid "AdoraStatus"
+msgid "DoraStatus"
 msgstr ""
 
 #: src/languages/rust.md:622
@@ -8232,14 +8232,14 @@ msgstr ""
 
 #: src/languages/rust.md:634
 msgid ""
-"Generates the FFI entry points required by the Adora runtime to load and "
+"Generates the FFI entry points required by the Dora runtime to load and "
 "call your operator."
 msgstr ""
 
 #: src/languages/rust.md:642
 msgid ""
 "This must be called exactly once per crate, at the top level, with the type "
-"that implements `AdoraOperator`."
+"that implements `DoraOperator`."
 msgstr ""
 
 #: src/languages/rust.md:646
@@ -8330,7 +8330,7 @@ msgstr ""
 
 #: src/languages/python.md:3
 msgid ""
-"This document covers the Python APIs for building adora nodes, operators, "
+"This document covers the Python APIs for building dora nodes, operators, "
 "and dataflows. Install with:"
 msgstr ""
 
@@ -8352,7 +8352,7 @@ msgid "[Event dictionary](#event-dictionary)"
 msgstr ""
 
 #: src/languages/python.md:16
-msgid "[AdoraStatus enum](#adorastatus-enum)"
+msgid "[DoraStatus enum](#dorastatus-enum)"
 msgstr ""
 
 #: src/languages/python.md:17
@@ -8445,7 +8445,7 @@ msgstr ""
 msgid ""
 "`node_id` (str, optional) -- Explicit node ID for dynamic nodes. When "
 "omitted, the node reads its identity from environment variables set by the "
-"adora daemon."
+"dora daemon."
 msgstr ""
 
 #: src/languages/python.md:56
@@ -8708,7 +8708,7 @@ msgstr ""
 #: src/languages/python.md:223
 msgid ""
 "When `Node()` is created, it automatically installs a handler that routes "
-"Python's `logging` module through the adora daemon. No configuration needed:"
+"Python's `logging` module through the dora daemon. No configuration needed:"
 msgstr ""
 
 #: src/languages/python.md:229
@@ -8739,7 +8739,7 @@ msgstr ""
 msgid ""
 "These log entries are captured with full metadata (level, message, file "
 "path, line number) and work with `min_log_level` filtering, `send_logs_as` "
-"routing, and `adora/logs` subscribers."
+"routing, and `dora/logs` subscribers."
 msgstr ""
 
 #: src/languages/python.md:238
@@ -8814,7 +8814,7 @@ msgstr ""
 #: src/languages/python.md:257
 msgid ""
 "Works with the daemon's `min_log_level` filtering, `send_logs_as` routing, "
-"and `adora/logs` subscribers."
+"and `dora/logs` subscribers."
 msgstr ""
 
 #: src/languages/python.md:261
@@ -8991,13 +8991,13 @@ msgid "\"ROS2:\""
 msgstr ""
 
 #: src/languages/python.md:368
-msgid "\"Adora:\""
+msgid "\"Dora:\""
 msgstr ""
 
 #: src/languages/python.md:372
 msgid ""
-"`subscription` (`adora.Ros2Subscription`) -- A ROS2 subscription created via "
-"the adora ROS2 bridge."
+"`subscription` (`dora.Ros2Subscription`) -- A ROS2 subscription created via "
+"the dora ROS2 bridge."
 msgstr ""
 
 #: src/languages/python.md:376
@@ -9044,11 +9044,11 @@ msgstr ""
 
 #: src/languages/python.md:405 src/languages/python.md:429
 #: src/languages/python.md:441 src/languages/python.md:453
-msgid "\"adora\""
+msgid "\"dora\""
 msgstr ""
 
 #: src/languages/python.md:405
-msgid "# \"adora\" for dataflow events, \"external\" for ROS2\n    \"value\""
+msgid "# \"dora\" for dataflow events, \"external\" for ROS2\n    \"value\""
 msgstr ""
 
 #: src/languages/python.md:406
@@ -9145,7 +9145,7 @@ msgid "# the ROS2 message as an Arrow array\n"
 msgstr ""
 
 #: src/languages/python.md:470
-msgid "AdoraStatus enum"
+msgid "DoraStatus enum"
 msgstr ""
 
 #: src/languages/python.md:472
@@ -9155,7 +9155,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/python.md:480
-msgid "`AdoraStatus.CONTINUE`"
+msgid "`DoraStatus.CONTINUE`"
 msgstr ""
 
 #: src/languages/python.md:480
@@ -9163,7 +9163,7 @@ msgid "Continue processing events (value `0`)"
 msgstr ""
 
 #: src/languages/python.md:481
-msgid "`AdoraStatus.STOP`"
+msgid "`DoraStatus.STOP`"
 msgstr ""
 
 #: src/languages/python.md:481
@@ -9171,7 +9171,7 @@ msgid "Stop this operator (value `1`)"
 msgstr ""
 
 #: src/languages/python.md:482
-msgid "`AdoraStatus.STOP_ALL`"
+msgid "`DoraStatus.STOP_ALL`"
 msgstr ""
 
 #: src/languages/python.md:482
@@ -9184,7 +9184,7 @@ msgstr ""
 
 #: src/languages/python.md:488
 msgid ""
-"Operators run inside the adora runtime process (no separate OS process). "
+"Operators run inside the dora runtime process (no separate OS process). "
 "They are defined as a Python class named `Operator` with an `on_event` "
 "method."
 msgstr ""
@@ -9221,8 +9221,8 @@ msgstr ""
 
 #: src/languages/python.md:512
 msgid ""
-"`on_event(self, adora_event, send_output) -> AdoraStatus` -- Called for "
-"every incoming event. Must return an `AdoraStatus` value."
+"`on_event(self, dora_event, send_output) -> DoraStatus` -- Called for "
+"every incoming event. Must return an `DoraStatus` value."
 msgstr ""
 
 #: src/languages/python.md:514
@@ -9230,7 +9230,7 @@ msgid "**Parameters of `on_event`:**"
 msgstr ""
 
 #: src/languages/python.md:515
-msgid "`adora_event` (dict) -- An [event dictionary](#event-dictionary)."
+msgid "`dora_event` (dict) -- An [event dictionary](#event-dictionary)."
 msgstr ""
 
 #: src/languages/python.md:516
@@ -9260,7 +9260,7 @@ msgstr ""
 #: src/languages/python.md:531
 msgid ""
 "`metadata` (dict, optional) -- Metadata to attach. Pass "
-"`adora_event[\"metadata\"]` to propagate tracing context."
+"`dora_event[\"metadata\"]` to propagate tracing context."
 msgstr ""
 
 #: src/languages/python.md:533 src/operations/cli.md:831
@@ -9287,7 +9287,7 @@ msgid "DataflowBuilder class"
 msgstr ""
 
 #: src/languages/python.md:559
-msgid "`__init__(name=\"adora-dataflow\")`"
+msgid "`__init__(name=\"dora-dataflow\")`"
 msgstr ""
 
 #: src/languages/python.md:561
@@ -9301,7 +9301,7 @@ msgstr ""
 #: src/languages/python.md:568
 msgid ""
 "`name` (str, optional) -- Name of the dataflow. Defaults to "
-"`\"adora-dataflow\"`."
+"`\"dora-dataflow\"`."
 msgstr ""
 
 #: src/languages/python.md:570
@@ -9507,7 +9507,7 @@ msgid "# Using a string reference\n"
 msgstr ""
 
 #: src/languages/python.md:684 src/languages/python.md:896
-msgid "\"adora/timer/millis/100\""
+msgid "\"dora/timer/millis/100\""
 msgstr ""
 
 #: src/languages/python.md:685
@@ -9834,13 +9834,13 @@ msgstr ""
 
 #: src/languages/c.md:3
 msgid ""
-"This document covers the two C APIs provided by the Adora framework: the "
+"This document covers the two C APIs provided by the Dora framework: the "
 "**Node API** for standalone C processes and the **Operator API** for "
-"shared-library operators loaded by the Adora runtime."
+"shared-library operators loaded by the Dora runtime."
 msgstr ""
 
 #: src/languages/c.md:7
-msgid "[Node API (adora-node-api-c)](#node-api-adora-node-api-c)"
+msgid "[Node API (dora-node-api-c)](#node-api-dora-node-api-c)"
 msgstr ""
 
 #: src/languages/c.md:8
@@ -9868,7 +9868,7 @@ msgid "[Enums](#enums)"
 msgstr ""
 
 #: src/languages/c.md:14
-msgid "[Operator API (adora-operator-api-c)](#operator-api-adora-operator-api-c)"
+msgid "[Operator API (dora-operator-api-c)](#operator-api-dora-operator-api-c)"
 msgstr ""
 
 #: src/languages/c.md:15
@@ -9912,29 +9912,29 @@ msgid "[Building and Linking](#building-and-linking)"
 msgstr ""
 
 #: src/languages/c.md:28
-msgid "Node API (adora-node-api-c)"
+msgid "Node API (dora-node-api-c)"
 msgstr ""
 
 #: src/languages/c.md:30
 msgid ""
 "Header: [`apis/c/node/node_api.h`](../apis/c/node/node_api.h) Crate: "
-"`adora-node-api-c` (builds as `staticlib`)"
+"`dora-node-api-c` (builds as `staticlib`)"
 msgstr ""
 
 #: src/languages/c.md:33
 msgid ""
 "The Node API is used by standalone C executables that participate in an "
-"Adora dataflow as external processes. The daemon spawns the process and sets "
+"Dora dataflow as external processes. The daemon spawns the process and sets "
 "environment variables that the node reads during initialization."
 msgstr ""
 
 #: src/languages/c.md:37
-msgid "`init_adora_context_from_env`"
+msgid "`init_dora_context_from_env`"
 msgstr ""
 
 #: src/languages/c.md:43
 msgid ""
-"Initializes an Adora node context from environment variables set by the "
+"Initializes an Dora node context from environment variables set by the "
 "daemon. Returns an opaque pointer to the context on success, or `NULL` on "
 "failure."
 msgstr ""
@@ -9943,16 +9943,16 @@ msgstr ""
 msgid ""
 "The returned pointer must be passed to all subsequent Node API calls that "
 "expect a context argument. When the node is finished, free it with "
-"`free_adora_context`."
+"`free_dora_context`."
 msgstr ""
 
 #: src/languages/c.md:47
-msgid "`free_adora_context`"
+msgid "`free_dora_context`"
 msgstr ""
 
 #: src/languages/c.md:53
 msgid ""
-"Frees a context previously created by `init_adora_context_from_env`. Each "
+"Frees a context previously created by `init_dora_context_from_env`. Each "
 "context must be freed exactly once. After freeing, the pointer must not be "
 "used again."
 msgstr ""
@@ -9962,7 +9962,7 @@ msgid "Event Loop"
 msgstr ""
 
 #: src/languages/c.md:57
-msgid "`adora_next_event`"
+msgid "`dora_next_event`"
 msgstr ""
 
 #: src/languages/c.md:63
@@ -9975,19 +9975,19 @@ msgstr ""
 #: src/languages/c.md:65
 msgid ""
 "The returned pointer must not be dereferenced directly. Use the "
-"`read_adora_*` functions to extract the event type and payload. Free the "
-"event with `free_adora_event` when done."
+"`read_dora_*` functions to extract the event type and payload. Free the "
+"event with `free_dora_event` when done."
 msgstr ""
 
 #: src/languages/c.md:67
-msgid "`free_adora_event`"
+msgid "`free_dora_event`"
 msgstr ""
 
 #: src/languages/c.md:73
 msgid ""
-"Frees an event previously returned by `adora_next_event`. Each event must be "
+"Frees an event previously returned by `dora_next_event`. Each event must be "
 "freed exactly once. After freeing, the event pointer and all derived "
-"pointers (from `read_adora_input_id`, `read_adora_input_data`) become "
+"pointers (from `read_dora_input_id`, `read_dora_input_data`) become "
 "invalid."
 msgstr ""
 
@@ -9996,22 +9996,22 @@ msgid "Event Inspection"
 msgstr ""
 
 #: src/languages/c.md:77
-msgid "`read_adora_event_type`"
+msgid "`read_dora_event_type`"
 msgstr ""
 
 #: src/languages/c.md:83
 msgid ""
-"Returns the type of the given event. See [AdoraEventType](#adoraeventtype) "
+"Returns the type of the given event. See [DoraEventType](#doraeventtype) "
 "for possible values."
 msgstr ""
 
 #: src/languages/c.md:85
-msgid "`read_adora_input_id`"
+msgid "`read_dora_input_id`"
 msgstr ""
 
 #: src/languages/c.md:91
 msgid ""
-"Reads the input ID from an `AdoraEventType_Input` event. Writes the string "
+"Reads the input ID from an `DoraEventType_Input` event. Writes the string "
 "start pointer to `*out_ptr` and its byte length to `*out_len`. The string is "
 "valid UTF-8 but **not** null-terminated; use `out_len` to determine its "
 "bounds."
@@ -10026,16 +10026,16 @@ msgstr ""
 #: src/languages/c.md:95 src/languages/c.md:109
 msgid ""
 "The returned pointer borrows from the event. It becomes invalid after "
-"`free_adora_event` is called."
+"`free_dora_event` is called."
 msgstr ""
 
 #: src/languages/c.md:97
-msgid "`read_adora_input_data`"
+msgid "`read_dora_input_data`"
 msgstr ""
 
 #: src/languages/c.md:103
 msgid ""
-"Reads the raw data bytes from an `AdoraEventType_Input` event. Writes the "
+"Reads the raw data bytes from an `DoraEventType_Input` event. Writes the "
 "data start pointer to `*out_ptr` and its byte length to `*out_len`."
 msgstr ""
 
@@ -10053,7 +10053,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:111
-msgid "`read_adora_input_timestamp`"
+msgid "`read_dora_input_timestamp`"
 msgstr ""
 
 #: src/languages/c.md:117
@@ -10067,7 +10067,7 @@ msgid "Output"
 msgstr ""
 
 #: src/languages/c.md:121
-msgid "`adora_send_output`"
+msgid "`dora_send_output`"
 msgstr ""
 
 #: src/languages/c.md:133
@@ -10087,12 +10087,12 @@ msgid "Returns `-1` immediately if any pointer argument is `NULL`."
 msgstr ""
 
 #: src/languages/c.md:141
-msgid "`adora_log`"
+msgid "`dora_log`"
 msgstr ""
 
 #: src/languages/c.md:153
 msgid ""
-"Sends a structured log message through the Adora logging pipeline. Both "
+"Sends a structured log message through the Dora logging pipeline. Both "
 "`level` and `msg` must be valid UTF-8 strings."
 msgstr ""
 
@@ -10113,7 +10113,7 @@ msgid "Enums"
 msgstr ""
 
 #: src/languages/c.md:161
-msgid "`AdoraEventType`"
+msgid "`DoraEventType`"
 msgstr ""
 
 #: src/languages/c.md:165
@@ -10137,7 +10137,7 @@ msgid "// Unrecognized event type\n"
 msgstr ""
 
 #: src/languages/c.md:175
-msgid "Operator API (adora-operator-api-c)"
+msgid "Operator API (dora-operator-api-c)"
 msgstr ""
 
 #: src/languages/c.md:177
@@ -10145,13 +10145,13 @@ msgid ""
 "Headers: "
 "[`apis/c/operator/operator_api.h`](../apis/c/operator/operator_api.h), "
 "[`apis/c/operator/operator_types.h`](../apis/c/operator/operator_types.h) "
-"Crate: `adora-operator-api-c`"
+"Crate: `dora-operator-api-c`"
 msgstr ""
 
 #: src/languages/c.md:180
 msgid ""
 "The Operator API is used by shared libraries (`.so`/`.dylib`/`.dll`) loaded "
-"into the Adora runtime process. Unlike nodes, operators do not have their "
+"into the Dora runtime process. Unlike nodes, operators do not have their "
 "own `main` function. Instead, they export three functions that the runtime "
 "calls at the appropriate lifecycle points."
 msgstr ""
@@ -10167,7 +10167,7 @@ msgid "Lifecycle Functions"
 msgstr ""
 
 #: src/languages/c.md:186
-msgid "`adora_init_operator`"
+msgid "`dora_init_operator`"
 msgstr ""
 
 #: src/languages/c.md:192
@@ -10178,11 +10178,11 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:194
-msgid "Return an `AdoraInitResult_t` with `.result.error = NULL` on success."
+msgid "Return an `DoraInitResult_t` with `.result.error = NULL` on success."
 msgstr ""
 
 #: src/languages/c.md:196
-msgid "`adora_drop_operator`"
+msgid "`dora_drop_operator`"
 msgstr ""
 
 #: src/languages/c.md:202
@@ -10192,7 +10192,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:204
-msgid "Return an `AdoraResult_t` with `.error = NULL` on success."
+msgid "Return an `DoraResult_t` with `.error = NULL` on success."
 msgstr ""
 
 #: src/languages/c.md:206
@@ -10200,7 +10200,7 @@ msgid "Event Handling"
 msgstr ""
 
 #: src/languages/c.md:208
-msgid "`adora_on_event`"
+msgid "`dora_on_event`"
 msgstr ""
 
 #: src/languages/c.md:218
@@ -10245,8 +10245,8 @@ msgstr ""
 #: src/languages/c.md:227
 msgid ""
 "Use `send_output` to emit data to downstream nodes (see "
-"`adora_send_operator_output`). Return an `OnEventResult_t` with the "
-"appropriate `AdoraStatus_t` to control the operator lifecycle."
+"`dora_send_operator_output`). Return an `OnEventResult_t` with the "
+"appropriate `DoraStatus_t` to control the operator lifecycle."
 msgstr ""
 
 #: src/languages/c.md:229
@@ -10254,17 +10254,17 @@ msgid "Input Reading"
 msgstr ""
 
 #: src/languages/c.md:231 src/languages/c.md:272
-msgid "`adora_read_input_id`"
+msgid "`dora_read_input_id`"
 msgstr ""
 
 #: src/languages/c.md:237
 msgid ""
 "Returns a newly allocated null-terminated string containing the input ID. "
-"The caller must free it with `adora_free_input_id`."
+"The caller must free it with `dora_free_input_id`."
 msgstr ""
 
 #: src/languages/c.md:239 src/languages/c.md:273
-msgid "`adora_read_data`"
+msgid "`dora_read_data`"
 msgstr ""
 
 #: src/languages/c.md:245
@@ -10276,7 +10276,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:247
-msgid "The caller must free the returned data with `adora_free_data`."
+msgid "The caller must free the returned data with `dora_free_data`."
 msgstr ""
 
 #: src/languages/c.md:249
@@ -10284,7 +10284,7 @@ msgid "Output Sending"
 msgstr ""
 
 #: src/languages/c.md:251
-msgid "`adora_send_operator_output`"
+msgid "`dora_send_operator_output`"
 msgstr ""
 
 #: src/languages/c.md:262
@@ -10295,7 +10295,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:264
-msgid "Returns an `AdoraResult_t` with `.error = NULL` on success."
+msgid "Returns an `DoraResult_t` with `.error = NULL` on success."
 msgstr ""
 
 #: src/languages/c.md:266
@@ -10317,11 +10317,11 @@ msgid "Free function"
 msgstr ""
 
 #: src/languages/c.md:272
-msgid "`adora_free_input_id`"
+msgid "`dora_free_input_id`"
 msgstr ""
 
 #: src/languages/c.md:273
-msgid "`adora_free_data`"
+msgid "`dora_free_data`"
 msgstr ""
 
 #: src/languages/c.md:280
@@ -10342,11 +10342,11 @@ msgstr ""
 #: src/languages/c.md:294
 msgid ""
 "A Rust-allocated byte vector. Access `len` bytes starting at `ptr`. Do not "
-"modify `cap`. Free with `adora_free_data`."
+"modify `cap`. Free with `dora_free_data`."
 msgstr ""
 
 #: src/languages/c.md:296
-msgid "`AdoraResult_t`"
+msgid "`DoraResult_t`"
 msgstr ""
 
 #: src/languages/c.md:300
@@ -10360,7 +10360,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/c.md:306
-msgid "`AdoraInitResult_t`"
+msgid "`DoraInitResult_t`"
 msgstr ""
 
 #: src/languages/c.md:311
@@ -10369,7 +10369,7 @@ msgstr ""
 
 #: src/languages/c.md:315
 msgid ""
-"Returned by `adora_init_operator`. On success, `result.error` is `NULL` and "
+"Returned by `dora_init_operator`. On success, `result.error` is `NULL` and "
 "`operator_context` holds the operator state pointer."
 msgstr ""
 
@@ -10379,7 +10379,7 @@ msgstr ""
 
 #: src/languages/c.md:326
 msgid ""
-"Returned by `adora_on_event`. Contains both an error/success result and a "
+"Returned by `dora_on_event`. Contains both an error/success result and a "
 "status code controlling the operator lifecycle."
 msgstr ""
 
@@ -10419,8 +10419,8 @@ msgstr ""
 
 #: src/languages/c.md:347
 msgid ""
-"Opaque type representing an input event's data. Use `adora_read_input_id` "
-"and `adora_read_data` to extract its contents."
+"Opaque type representing an input event's data. Use `dora_read_input_id` "
+"and `dora_read_data` to extract its contents."
 msgstr ""
 
 #: src/languages/c.md:349
@@ -10429,7 +10429,7 @@ msgstr ""
 
 #: src/languages/c.md:355
 msgid ""
-"Opaque type used internally by `adora_send_operator_output`. Not created "
+"Opaque type used internally by `dora_send_operator_output`. Not created "
 "directly by user code."
 msgstr ""
 
@@ -10439,9 +10439,9 @@ msgstr ""
 
 #: src/languages/c.md:365
 msgid ""
-"Callback handle passed to `adora_on_event`. Pass it to "
-"`adora_send_operator_output` to emit data. Do not store it beyond the scope "
-"of the current `adora_on_event` call."
+"Callback handle passed to `dora_on_event`. Pass it to "
+"`dora_send_operator_output` to emit data. Do not store it beyond the scope "
+"of the current `dora_on_event` call."
 msgstr ""
 
 #: src/languages/c.md:367
@@ -10457,7 +10457,7 @@ msgid "Operator Enums"
 msgstr ""
 
 #: src/languages/c.md:379
-msgid "`AdoraStatus_t`"
+msgid "`DoraStatus_t`"
 msgstr ""
 
 #: src/languages/c.md:383
@@ -10496,7 +10496,7 @@ msgid "\"node_api.h\""
 msgstr ""
 
 #: src/languages/c.md:406
-msgid "\"failed to init adora context\\n\""
+msgid "\"failed to init dora context\\n\""
 msgstr ""
 
 #: src/languages/c.md:413
@@ -10586,7 +10586,7 @@ msgstr ""
 
 #: src/languages/c.md:535
 msgid ""
-"C nodes link against `adora-node-api-c`, which builds as a static library."
+"C nodes link against `dora-node-api-c`, which builds as a static library."
 msgstr ""
 
 #: src/languages/c.md:537
@@ -10595,7 +10595,7 @@ msgstr ""
 
 #: src/languages/c.md:543
 msgid ""
-"This produces `target/release/libadora_node_api_c.a` (or `.lib` on Windows)."
+"This produces `target/release/libdora_node_api_c.a` (or `.lib` on Windows)."
 msgstr ""
 
 #: src/languages/c.md:545
@@ -10656,7 +10656,7 @@ msgstr ""
 
 #: src/languages/c.md:563
 msgid ""
-"C operators are compiled into shared libraries that the Adora runtime loads "
+"C operators are compiled into shared libraries that the Dora runtime loads "
 "at startup."
 msgstr ""
 
@@ -10735,7 +10735,7 @@ msgstr ""
 
 #: src/languages/cpp.md:3
 msgid ""
-"Adora provides C++ bindings for both standalone nodes and in-process "
+"Dora provides C++ bindings for both standalone nodes and in-process "
 "operators via [CXX](https://cxx.rs/) (Rust-C++ interop). The CXX bridge "
 "generates type-safe C++ headers from Rust definitions -- no raw FFI or "
 "manual `extern \"C\"` declarations are needed."
@@ -10755,11 +10755,11 @@ msgid "Use case"
 msgstr ""
 
 #: src/languages/cpp.md:9
-msgid "`adora-node-api-cxx`"
+msgid "`dora-node-api-cxx`"
 msgstr ""
 
 #: src/languages/cpp.md:9
-msgid "`libadora_node_api_cxx.a`"
+msgid "`libdora_node_api_cxx.a`"
 msgstr ""
 
 #: src/languages/cpp.md:9
@@ -10767,11 +10767,11 @@ msgid "Standalone node executable"
 msgstr ""
 
 #: src/languages/cpp.md:10
-msgid "`adora-operator-api-cxx`"
+msgid "`dora-operator-api-cxx`"
 msgstr ""
 
 #: src/languages/cpp.md:10
-msgid "`libadora_operator_api_cxx.a`"
+msgid "`libdora_operator_api_cxx.a`"
 msgstr ""
 
 #: src/languages/cpp.md:10
@@ -10779,28 +10779,28 @@ msgid "Shared-library operator loaded by the runtime"
 msgstr ""
 
 #: src/languages/cpp.md:12
-msgid "Generated headers: `adora-node-api.h` and `adora-operator-api.h`."
+msgid "Generated headers: `dora-node-api.h` and `dora-operator-api.h`."
 msgstr ""
 
 #: src/languages/cpp.md:16
-msgid "Node API (`adora-node-api-cxx`)"
+msgid "Node API (`dora-node-api-cxx`)"
 msgstr ""
 
 #: src/languages/cpp.md:21 src/languages/cpp.md:381 src/languages/cpp.md:438
-msgid "\"adora-node-api.h\""
+msgid "\"dora-node-api.h\""
 msgstr ""
 
 #: src/languages/cpp.md:22
 msgid ""
-"// Initialize a node from environment variables set by the Adora daemon.\n"
-"// Returns an AdoraNode struct containing the event stream and output "
+"// Initialize a node from environment variables set by the Dora daemon.\n"
+"// Returns an DoraNode struct containing the event stream and output "
 "sender.\n"
 "// Throws on failure.\n"
 msgstr ""
 
 #: src/languages/cpp.md:31
 msgid ""
-"Returned by `init_adora_node()`. Owns the event stream and the output sender "
+"Returned by `init_dora_node()`. Owns the event stream and the output sender "
 "for the lifetime of the node."
 msgstr ""
 
@@ -10829,11 +10829,11 @@ msgstr ""
 #: src/languages/cpp.md:52
 msgid ""
 "Both forms block until the next event arrives and return an owned "
-"`AdoraEvent`."
+"`DoraEvent`."
 msgstr ""
 
 #: src/languages/cpp.md:54
-msgid "AdoraEvent"
+msgid "DoraEvent"
 msgstr ""
 
 #: src/languages/cpp.md:56
@@ -10855,7 +10855,7 @@ msgid ""
 "// Downcast to an Arrow FFI input (writes Arrow C Data Interface structs).\n"
 "// out_array and out_schema must point to valid ArrowArray / ArrowSchema "
 "structs.\n"
-"// Returns AdoraResult with empty error on success.\n"
+"// Returns DoraResult with empty error on success.\n"
 msgstr ""
 
 #: src/languages/cpp.md:72
@@ -10863,7 +10863,7 @@ msgid "// Same as above, but also returns the input ID and metadata.\n"
 msgstr ""
 
 #: src/languages/cpp.md:80
-msgid "AdoraEventType"
+msgid "DoraEventType"
 msgstr ""
 
 #: src/languages/cpp.md:84
@@ -10891,7 +10891,7 @@ msgid "// all inputs closed (stream ended)\n"
 msgstr ""
 
 #: src/languages/cpp.md:93
-msgid "AdoraInput"
+msgid "DoraInput"
 msgstr ""
 
 #: src/languages/cpp.md:95
@@ -10929,7 +10929,7 @@ msgid "// empty on success\n"
 msgstr ""
 
 #: src/languages/cpp.md:116
-msgid "AdoraResult"
+msgid "DoraResult"
 msgstr ""
 
 #: src/languages/cpp.md:118
@@ -10949,7 +10949,7 @@ msgstr ""
 #: src/languages/cpp.md:128
 msgid ""
 "Opaque Rust type. All methods take `rust::Box<OutputSender>&` as the first "
-"argument (the sender from `AdoraNode::send_output`)."
+"argument (the sender from `DoraNode::send_output`)."
 msgstr ""
 
 #: src/languages/cpp.md:130
@@ -10988,7 +10988,7 @@ msgid "log_message"
 msgstr ""
 
 #: src/languages/cpp.md:175
-msgid "Send a log message through the Adora logging system."
+msgid "Send a log message through the Dora logging system."
 msgstr ""
 
 #: src/languages/cpp.md:180
@@ -11080,7 +11080,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/cpp.md:284
-msgid "// Convert Adora events into a combined stream.\n"
+msgid "// Convert Dora events into a combined stream.\n"
 msgstr ""
 
 #: src/languages/cpp.md:286
@@ -11100,12 +11100,12 @@ msgid "CombinedEvent struct"
 msgstr ""
 
 #: src/languages/cpp.md:307
-msgid "// true if this is a standard Adora event\n"
+msgid "// true if this is a standard Dora event\n"
 msgstr ""
 
 #: src/languages/cpp.md:309
 msgid ""
-"// Downcast a combined event back to an AdoraEvent. Throws if not an Adora "
+"// Downcast a combined event back to an DoraEvent. Throws if not an Dora "
 "event.\n"
 msgstr ""
 
@@ -11117,12 +11117,12 @@ msgid ""
 msgstr ""
 
 #: src/languages/cpp.md:318
-msgid "Operator API (`adora-operator-api-cxx`)"
+msgid "Operator API (`dora-operator-api-cxx`)"
 msgstr ""
 
 #: src/languages/cpp.md:320
 msgid ""
-"Operators are shared libraries loaded by the Adora runtime. The C++ side "
+"Operators are shared libraries loaded by the Dora runtime. The C++ side "
 "implements two functions that the CXX bridge calls into."
 msgstr ""
 
@@ -11141,7 +11141,7 @@ msgid "// operator.h\n"
 msgstr ""
 
 #: src/languages/cpp.md:330
-msgid "\"adora-operator-api.h\""
+msgid "\"dora-operator-api.h\""
 msgstr ""
 
 #: src/languages/cpp.md:335
@@ -11208,7 +11208,7 @@ msgid "build/my_node"
 msgstr ""
 
 #: src/languages/cpp.md:426
-msgid "adora/timer/millis/300"
+msgid "dora/timer/millis/300"
 msgstr ""
 
 #: src/languages/cpp.md:433
@@ -11309,22 +11309,22 @@ msgid ""
 "set(CMAKE_CXX_FLAGS \"-fPIC\")\n"
 "\n"
 "include(DoraTargets.cmake)\n"
-"link_directories(${adora_link_dirs})\n"
+"link_directories(${dora_link_dirs})\n"
 "\n"
 "# Standalone node (executable)\n"
 "add_executable(my_node node/main.cc ${node_bridge})\n"
-"add_dependencies(my_node Adora_cxx)\n"
-"target_include_directories(my_node PRIVATE ${adora_cxx_include_dir})\n"
-"target_link_libraries(my_node adora_node_api_cxx)\n"
+"add_dependencies(my_node Dora_cxx)\n"
+"target_include_directories(my_node PRIVATE ${dora_cxx_include_dir})\n"
+"target_link_libraries(my_node dora_node_api_cxx)\n"
 "\n"
 "# Operator (shared library)\n"
 "add_library(my_operator SHARED\n"
 "    operator/operator.cc ${operator_bridge})\n"
-"add_dependencies(my_operator Adora_cxx)\n"
+"add_dependencies(my_operator Dora_cxx)\n"
 "target_include_directories(my_operator PRIVATE\n"
-"    ${adora_cxx_include_dir} ${adora_c_include_dir}\n"
+"    ${dora_cxx_include_dir} ${dora_c_include_dir}\n"
 "    ${CMAKE_CURRENT_SOURCE_DIR}/operator)\n"
-"target_link_libraries(my_operator adora_operator_api_cxx)\n"
+"target_link_libraries(my_operator dora_operator_api_cxx)\n"
 "\n"
 "install(TARGETS my_node DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/bin)\n"
 "install(TARGETS my_operator DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/lib)\n"
@@ -11336,16 +11336,16 @@ msgid "What DoraTargets.cmake provides"
 msgstr ""
 
 #: src/languages/cpp.md:605
-msgid "`adora_cxx_include_dir`"
+msgid "`dora_cxx_include_dir`"
 msgstr ""
 
 #: src/languages/cpp.md:605
 msgid ""
-"Path to generated CXX headers (`adora-node-api.h`, `adora-operator-api.h`)"
+"Path to generated CXX headers (`dora-node-api.h`, `dora-operator-api.h`)"
 msgstr ""
 
 #: src/languages/cpp.md:606
-msgid "`adora_c_include_dir`"
+msgid "`dora_c_include_dir`"
 msgstr ""
 
 #: src/languages/cpp.md:606
@@ -11353,13 +11353,13 @@ msgid "Path to C API headers (for mixed C/C++ projects)"
 msgstr ""
 
 #: src/languages/cpp.md:607
-msgid "`adora_link_dirs`"
+msgid "`dora_link_dirs`"
 msgstr ""
 
 #: src/languages/cpp.md:607
 msgid ""
-"Library search path for `libadora_node_api_cxx.a` / "
-"`libadora_operator_api_cxx.a`"
+"Library search path for `libdora_node_api_cxx.a` / "
+"`libdora_operator_api_cxx.a`"
 msgstr ""
 
 #: src/languages/cpp.md:608
@@ -11379,7 +11379,7 @@ msgid "Generated CXX bridge source file for operators (`operator_bridge.cc`)"
 msgstr ""
 
 #: src/languages/cpp.md:610
-msgid "`Adora_cxx`"
+msgid "`Dora_cxx`"
 msgstr ""
 
 #: src/languages/cpp.md:610
@@ -11391,11 +11391,11 @@ msgid "Build steps"
 msgstr ""
 
 #: src/languages/cpp.md:615
-msgid "# Option A: Build against local Adora source\n"
+msgid "# Option A: Build against local Dora source\n"
 msgstr ""
 
 #: src/languages/cpp.md:619
-msgid "# Option B: Build against Adora from GitHub (cloned automatically)\n"
+msgid "# Option B: Build against Dora from GitHub (cloned automatically)\n"
 msgstr ""
 
 #: src/languages/cpp.md:626 src/operations/performance.md:56
@@ -11407,7 +11407,7 @@ msgid "C++20 compiler"
 msgstr ""
 
 #: src/languages/cpp.md:629
-msgid "Rust toolchain (for building the Adora static libraries via Cargo)"
+msgid "Rust toolchain (for building the Dora static libraries via Cargo)"
 msgstr ""
 
 #: src/languages/cpp.md:630
@@ -11424,8 +11424,8 @@ msgstr ""
 
 #: src/languages/cpp.md:637
 msgid ""
-"All Rust opaque types (`Events`, `OutputSender`, `AdoraEvent`, `Metadata`, "
-"`MergedEvents`, `MergedAdoraEvent`) are accessed through `rust::Box<T>`."
+"All Rust opaque types (`Events`, `OutputSender`, `DoraEvent`, `Metadata`, "
+"`MergedEvents`, `MergedDoraEvent`) are accessed through `rust::Box<T>`."
 msgstr ""
 
 #: src/languages/cpp.md:638
@@ -11451,24 +11451,24 @@ msgstr ""
 #: src/languages/cpp.md:641
 msgid ""
 "The node library is a static archive (`staticlib`). Link it into your "
-"executable with `-ladora_node_api_cxx`."
+"executable with `-ldora_node_api_cxx`."
 msgstr ""
 
 #: src/languages/cpp.md:642
 msgid ""
 "The operator library is also a static archive. Link it into your shared "
-"library with `-ladora_operator_api_cxx`."
+"library with `-ldora_operator_api_cxx`."
 msgstr ""
 
 #: src/operations/cli.md:1
-msgid "Adora CLI Reference"
+msgid "Dora CLI Reference"
 msgstr ""
 
 #: src/operations/cli.md:3
 msgid ""
-"Adora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust "
+"Dora (AI-Dora, Dataflow-Oriented Robotic Architecture) is a 100% Rust "
 "framework for building real-time robotics and AI applications. This document "
-"covers the `adora` CLI from both an end-user and developer perspective."
+"covers the `dora` CLI from both an end-user and developer perspective."
 msgstr ""
 
 #: src/operations/cli.md:7 src/operations/distributed.md:8
@@ -11610,7 +11610,7 @@ msgstr ""
 #: src/operations/cli.md:78 src/operations/cli.md:265
 #: src/operations/logging.md:331 src/operations/logging.md:332
 #: src/operations/logging.md:990
-msgid "`adora run`"
+msgid "`dora run`"
 msgstr ""
 
 #: src/operations/cli.md:78
@@ -11626,7 +11626,7 @@ msgid "**Distributed**"
 msgstr ""
 
 #: src/operations/cli.md:79
-msgid "`adora up` + `adora start`"
+msgid "`dora up` + `dora start`"
 msgstr ""
 
 #: src/operations/cli.md:79
@@ -12032,7 +12032,7 @@ msgid "# JSON output for CI pipelines\n"
 msgstr ""
 
 #: src/operations/cli.md:303
-msgid "`adora up`"
+msgid "`dora up`"
 msgstr ""
 
 #: src/operations/cli.md:305
@@ -12041,13 +12041,13 @@ msgstr ""
 
 #: src/operations/cli.md:311
 msgid ""
-"Spawns `adora coordinator` and `adora daemon` as background processes. Waits "
+"Spawns `dora coordinator` and `dora daemon` as background processes. Waits "
 "for both to be ready before returning. Idempotent: if already running, does "
 "nothing."
 msgstr ""
 
 #: src/operations/cli.md:313
-msgid "`adora down` (alias: `adora destroy`)"
+msgid "`dora down` (alias: `dora destroy`)"
 msgstr ""
 
 #: src/operations/cli.md:315
@@ -12125,7 +12125,7 @@ msgid "Coordinator port"
 msgstr ""
 
 #: src/operations/cli.md:326
-msgid "`adora build`"
+msgid "`dora build`"
 msgstr ""
 
 #: src/operations/cli.md:328
@@ -12181,7 +12181,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:347 src/operations/logging.md:990
-msgid "`adora start`"
+msgid "`dora start`"
 msgstr ""
 
 #: src/operations/cli.md:349
@@ -12248,7 +12248,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:373
-msgid "`adora stop`"
+msgid "`dora stop`"
 msgstr ""
 
 #: src/operations/cli.md:375
@@ -12310,7 +12310,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:394
-msgid "`adora restart`"
+msgid "`dora restart`"
 msgstr ""
 
 #: src/operations/cli.md:396
@@ -12348,7 +12348,7 @@ msgid "# Restart by UUID with forced stop\n"
 msgstr ""
 
 #: src/operations/cli.md:421
-msgid "`adora record`"
+msgid "`dora record`"
 msgstr ""
 
 #: src/operations/cli.md:423
@@ -12414,7 +12414,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:439
-msgid "`adora replay`"
+msgid "`dora replay`"
 msgstr ""
 
 #: src/operations/cli.md:441
@@ -12469,7 +12469,7 @@ msgid "Monitoring Commands"
 msgstr ""
 
 #: src/operations/cli.md:459
-msgid "`adora list` (alias: `adora ps`)"
+msgid "`dora list` (alias: `dora ps`)"
 msgstr ""
 
 #: src/operations/cli.md:461
@@ -12531,7 +12531,7 @@ msgstr ""
 #: src/operations/cli.md:479 src/operations/logging.md:99
 #: src/operations/logging.md:100 src/operations/logging.md:101
 #: src/operations/logging.md:102
-msgid "`adora logs`"
+msgid "`dora logs`"
 msgstr ""
 
 #: src/operations/cli.md:481
@@ -12650,7 +12650,7 @@ msgid "**Duration formats:** `30` (seconds), `30s`, `5m`, `1h`, `2d`"
 msgstr ""
 
 #: src/operations/cli.md:527
-msgid "`adora inspect top` (alias: `adora top`)"
+msgid "`dora inspect top` (alias: `dora top`)"
 msgstr ""
 
 #: src/operations/cli.md:529
@@ -12783,7 +12783,7 @@ msgid "'.[].cpu_usage'"
 msgstr ""
 
 #: src/operations/cli.md:571
-msgid "`adora topic list`"
+msgid "`dora topic list`"
 msgstr ""
 
 #: src/operations/cli.md:573
@@ -12805,7 +12805,7 @@ msgid "`--format <FMT>`"
 msgstr ""
 
 #: src/operations/cli.md:584 src/advanced/ws-topic.md:181
-msgid "`adora topic echo`"
+msgid "`dora topic echo`"
 msgstr ""
 
 #: src/operations/cli.md:586
@@ -12831,7 +12831,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:600 src/advanced/ws-topic.md:198
-msgid "`adora topic hz`"
+msgid "`dora topic hz`"
 msgstr ""
 
 #: src/operations/cli.md:602
@@ -12858,7 +12858,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:616 src/advanced/ws-topic.md:212
-msgid "`adora topic info`"
+msgid "`dora topic info`"
 msgstr ""
 
 #: src/operations/cli.md:618
@@ -12888,7 +12888,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:632
-msgid "`adora node`"
+msgid "`dora node`"
 msgstr ""
 
 #: src/operations/cli.md:634
@@ -12896,7 +12896,7 @@ msgid "Manage and inspect dataflow nodes."
 msgstr ""
 
 #: src/operations/cli.md:636
-msgid "`adora node list`"
+msgid "`dora node list`"
 msgstr ""
 
 #: src/operations/cli.md:642
@@ -12910,7 +12910,7 @@ msgid "**Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW"
 msgstr ""
 
 #: src/operations/cli.md:646
-msgid "`adora node info`"
+msgid "`dora node info`"
 msgstr ""
 
 #: src/operations/cli.md:648
@@ -12935,7 +12935,7 @@ msgid "`-f <FORMAT>`, `--format`"
 msgstr ""
 
 #: src/operations/cli.md:660
-msgid "`adora node restart`"
+msgid "`dora node restart`"
 msgstr ""
 
 #: src/operations/cli.md:662
@@ -12957,7 +12957,7 @@ msgid "Grace period before force-killing the node"
 msgstr ""
 
 #: src/operations/cli.md:674
-msgid "`adora node stop`"
+msgid "`dora node stop`"
 msgstr ""
 
 #: src/operations/cli.md:676
@@ -12971,7 +12971,7 @@ msgid "Node ID to stop"
 msgstr ""
 
 #: src/operations/cli.md:688
-msgid "`adora topic pub`"
+msgid "`dora topic pub`"
 msgstr ""
 
 #: src/operations/cli.md:690
@@ -13025,7 +13025,7 @@ msgid "# Publish from file, 10 times\n"
 msgstr ""
 
 #: src/operations/cli.md:714
-msgid "`adora param`"
+msgid "`dora param`"
 msgstr ""
 
 #: src/operations/cli.md:716
@@ -13035,7 +13035,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:718
-msgid "`adora param list`"
+msgid "`dora param list`"
 msgstr ""
 
 #: src/operations/cli.md:720
@@ -13049,7 +13049,7 @@ msgid "Node ID"
 msgstr ""
 
 #: src/operations/cli.md:732
-msgid "`adora param get`"
+msgid "`dora param get`"
 msgstr ""
 
 #: src/operations/cli.md:734
@@ -13066,7 +13066,7 @@ msgid "Parameter key"
 msgstr ""
 
 #: src/operations/cli.md:746
-msgid "`adora param set`"
+msgid "`dora param set`"
 msgstr ""
 
 #: src/operations/cli.md:748
@@ -13108,7 +13108,7 @@ msgid "'{\"confidence\": 0.8, \"nms\": 0.5}'"
 msgstr ""
 
 #: src/operations/cli.md:774
-msgid "`adora param delete`"
+msgid "`dora param delete`"
 msgstr ""
 
 #: src/operations/cli.md:776
@@ -13116,7 +13116,7 @@ msgid "Delete a runtime parameter."
 msgstr ""
 
 #: src/operations/cli.md:788
-msgid "`adora doctor`"
+msgid "`dora doctor`"
 msgstr ""
 
 #: src/operations/cli.md:790
@@ -13162,13 +13162,13 @@ msgid "# Check environment + validate a dataflow\n"
 msgstr ""
 
 #: src/operations/cli.md:816
-msgid "`adora trace list`"
+msgid "`dora trace list`"
 msgstr ""
 
 #: src/operations/cli.md:818
 msgid ""
 "List recent traces captured by the coordinator. The coordinator captures "
-"spans from `adora_coordinator` and `adora_core` crates in-memory (up to 4096 "
+"spans from `dora_coordinator` and `dora_core` crates in-memory (up to 4096 "
 "spans). No external tracing infrastructure required."
 msgstr ""
 
@@ -13179,7 +13179,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:843
-msgid "`adora trace view`"
+msgid "`dora trace view`"
 msgstr ""
 
 #: src/operations/cli.md:845
@@ -13220,7 +13220,7 @@ msgid "Setup Commands"
 msgstr ""
 
 #: src/operations/cli.md:878
-msgid "`adora status` (alias: `adora check`)"
+msgid "`dora status` (alias: `dora check`)"
 msgstr ""
 
 #: src/operations/cli.md:880
@@ -13233,7 +13233,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:888
-msgid "`adora new`"
+msgid "`dora new`"
 msgstr ""
 
 #: src/operations/cli.md:890
@@ -13273,7 +13273,7 @@ msgid "`rust\\|python\\|c\\|cxx`"
 msgstr ""
 
 #: src/operations/cli.md:902
-msgid "`adora expand`"
+msgid "`dora expand`"
 msgstr ""
 
 #: src/operations/cli.md:904
@@ -13309,7 +13309,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/cli.md:927
-msgid "`adora graph`"
+msgid "`dora graph`"
 msgstr ""
 
 #: src/operations/cli.md:929
@@ -13348,7 +13348,7 @@ msgid "# Generate Mermaid for GitHub markdown\n"
 msgstr ""
 
 #: src/operations/cli.md:951
-msgid "`adora validate`"
+msgid "`dora validate`"
 msgstr ""
 
 #: src/operations/cli.md:953
@@ -13436,7 +13436,7 @@ msgid "Utility Commands"
 msgstr ""
 
 #: src/operations/cli.md:990
-msgid "`adora completion`"
+msgid "`dora completion`"
 msgstr ""
 
 #: src/operations/cli.md:992
@@ -13454,11 +13454,11 @@ msgid "# Bash\n"
 msgstr ""
 
 #: src/operations/cli.md:1002
-msgid "\"$(adora completion bash)\""
+msgid "\"$(dora completion bash)\""
 msgstr ""
 
 #: src/operations/cli.md:1003
-msgid "'eval \"$(adora completion bash)\"'"
+msgid "'eval \"$(dora completion bash)\"'"
 msgstr ""
 
 #: src/operations/cli.md:1004
@@ -13466,11 +13466,11 @@ msgid "# Zsh\n"
 msgstr ""
 
 #: src/operations/cli.md:1006
-msgid "\"$(adora completion zsh)\""
+msgid "\"$(dora completion zsh)\""
 msgstr ""
 
 #: src/operations/cli.md:1007
-msgid "'eval \"$(adora completion zsh)\"'"
+msgid "'eval \"$(dora completion zsh)\"'"
 msgstr ""
 
 #: src/operations/cli.md:1008
@@ -13478,7 +13478,7 @@ msgid "# Fish\n"
 msgstr ""
 
 #: src/operations/cli.md:1013
-msgid "`adora system`"
+msgid "`dora system`"
 msgstr ""
 
 #: src/operations/cli.md:1015
@@ -13487,7 +13487,7 @@ msgstr ""
 
 #: src/operations/cli.md:1021
 msgid ""
-"Currently provides `status` as a subcommand (equivalent to `adora status`)."
+"Currently provides `status` as a subcommand (equivalent to `dora status`)."
 msgstr ""
 
 #: src/operations/cli.md:1025
@@ -13495,7 +13495,7 @@ msgid "Self-Management Commands"
 msgstr ""
 
 #: src/operations/cli.md:1027
-msgid "`adora self update`"
+msgid "`dora self update`"
 msgstr ""
 
 #: src/operations/cli.md:1029
@@ -13503,11 +13503,11 @@ msgid "Check for and install CLI updates."
 msgstr ""
 
 #: src/operations/cli.md:1035
-msgid "Downloads from GitHub releases (`dora-rs/adora`)."
+msgid "Downloads from GitHub releases (`dora-rs/dora`)."
 msgstr ""
 
 #: src/operations/cli.md:1037
-msgid "`adora self uninstall`"
+msgid "`dora self uninstall`"
 msgstr ""
 
 #: src/operations/cli.md:1039
@@ -13756,7 +13756,7 @@ msgstr ""
 
 #: src/operations/cli.md:1153
 msgid ""
-"`redb`: Persistent to disk (`~/.adora/coordinator.redb`). Survives crashes. "
+"`redb`: Persistent to disk (`~/.dora/coordinator.redb`). Survives crashes. "
 "Requires `redb-backend` feature."
 msgstr ""
 
@@ -13822,7 +13822,7 @@ msgstr ""
 
 #: src/operations/cli.md:1226
 msgid ""
-"Adora uses a **Unified Hybrid Logical Clock** (UHLC) for distributed "
+"Dora uses a **Unified Hybrid Logical Clock** (UHLC) for distributed "
 "causality. Every message carries a `uhlc::Timestamp` that preserves causal "
 "ordering across machines without synchronized clocks."
 msgstr ""
@@ -13887,7 +13887,7 @@ msgstr ""
 msgid ""
 "```toml\n"
 "[dependencies]\n"
-"adora-node-api = { workspace = true }\n"
+"dora-node-api = { workspace = true }\n"
 "eyre = \"0.6\"\n"
 "```"
 msgstr ""
@@ -13905,7 +13905,7 @@ msgid "C Node"
 msgstr ""
 
 #: src/operations/cli.md:1314
-msgid "// ... event loop using adora_next_event / adora_send_output\n"
+msgid "// ... event loop using dora_next_event / dora_send_output\n"
 msgstr ""
 
 #: src/operations/cli.md:1320
@@ -13974,7 +13974,7 @@ msgid ""
 "crate-type = [\"cdylib\"]\n"
 "\n"
 "[dependencies]\n"
-"adora-operator-api = { workspace = true }\n"
+"dora-operator-api = { workspace = true }\n"
 "arrow = \"53\"\n"
 "```"
 msgstr ""
@@ -14094,7 +14094,7 @@ msgstr ""
 
 #: src/operations/cli.md:1494
 msgid ""
-"State is persisted to `~/.adora/coordinator.redb`. On restart, stale "
+"State is persisted to `~/.dora/coordinator.redb`. On restart, stale "
 "dataflows are marked as failed and the coordinator resumes normal operation."
 msgstr ""
 
@@ -14122,17 +14122,17 @@ msgid "Common Issues"
 msgstr ""
 
 #: src/operations/cli.md:1506
-msgid "**\"Could not connect to adora-coordinator\"**"
+msgid "**\"Could not connect to dora-coordinator\"**"
 msgstr ""
 
 #: src/operations/cli.md:1507
 msgid ""
-"Run `adora up` first, or check "
+"Run `dora up` first, or check "
 "`ADORA_COORDINATOR_ADDR`/`ADORA_COORDINATOR_PORT`"
 msgstr ""
 
 #: src/operations/cli.md:1508
-msgid "Verify with `adora status`"
+msgid "Verify with `dora status`"
 msgstr ""
 
 #: src/operations/cli.md:1510
@@ -14141,7 +14141,7 @@ msgstr ""
 
 #: src/operations/cli.md:1511
 msgid ""
-"Use `--debug` flag: `adora start dataflow.yml --debug` or `adora run "
+"Use `--debug` flag: `dora start dataflow.yml --debug` or `dora run "
 "dataflow.yml --debug`"
 msgstr ""
 
@@ -14154,7 +14154,7 @@ msgid "Required for `topic echo`, `topic hz`, `topic info`"
 msgstr ""
 
 #: src/operations/cli.md:1519
-msgid "**\"`adora top` requires an interactive terminal\"**"
+msgid "**\"`dora top` requires an interactive terminal\"**"
 msgstr ""
 
 #: src/operations/cli.md:1520
@@ -14178,7 +14178,7 @@ msgid "Verify the source node lists the output in its `outputs:` array"
 msgstr ""
 
 #: src/operations/cli.md:1526
-msgid "Check `adora topic list` for available topics"
+msgid "Check `dora topic list` for available topics"
 msgstr ""
 
 #: src/operations/cli.md:1528
@@ -14275,7 +14275,7 @@ msgstr ""
 
 #: src/operations/logging.md:3
 msgid ""
-"Adora provides a structured logging system for real-time robotics and AI "
+"Dora provides a structured logging system for real-time robotics and AI "
 "dataflows. Logs are captured per-node as structured JSONL files, forwarded "
 "to the coordinator for live streaming, and optionally routed through the "
 "dataflow graph as data messages."
@@ -14331,7 +14331,7 @@ msgid "**Log from C/C++**"
 msgstr ""
 
 #: src/operations/logging.md:13
-msgid "Use `adora_log()` / `log_message()`"
+msgid "Use `dora_log()` / `log_message()`"
 msgstr ""
 
 #: src/operations/logging.md:14
@@ -14351,11 +14351,11 @@ msgid "**Watch all logs in one place**"
 msgstr ""
 
 #: src/operations/logging.md:15
-msgid "Subscribe to `adora/logs` virtual input"
+msgid "Subscribe to `dora/logs` virtual input"
 msgstr ""
 
 #: src/operations/logging.md:15
-msgid "`inputs: logs: adora/logs`"
+msgid "`inputs: logs: dora/logs`"
 msgstr ""
 
 #: src/operations/logging.md:16
@@ -14383,7 +14383,7 @@ msgid "**Build a custom log sink**"
 msgstr ""
 
 #: src/operations/logging.md:18
-msgid "Use `adora-log-utils` crate"
+msgid "Use `dora-log-utils` crate"
 msgstr ""
 
 #: src/operations/logging.md:18
@@ -14411,7 +14411,7 @@ msgid "**Python** -- the simplest path is Python's built-in `logging` module:"
 msgstr ""
 
 #: src/operations/logging.md:29
-msgid "# Automatically bridges Python logging -> adora\n"
+msgid "# Automatically bridges Python logging -> dora\n"
 msgstr ""
 
 #: src/operations/logging.md:31
@@ -14470,7 +14470,7 @@ msgstr ""
 
 #: src/operations/logging.md:60
 msgid ""
-"Alternatively, Rust nodes can use the `tracing` crate. When adora's tracing "
+"Alternatively, Rust nodes can use the `tracing` crate. When dora's tracing "
 "subscriber is initialized (via `init_tracing()`), `tracing::info!()` etc. "
 "output structured JSON to stdout, which the daemon parses automatically:"
 msgstr ""
@@ -14487,7 +14487,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/logging.md:70
-msgid "**C** -- use the `adora_log()` function:"
+msgid "**C** -- use the `dora_log()` function:"
 msgstr ""
 
 #: src/operations/logging.md:76
@@ -14565,7 +14565,7 @@ msgid "Rust/Python/C/C++ node"
 msgstr ""
 
 #: src/operations/logging.md:96
-msgid "`node.log()`, `adora_log()`, etc."
+msgid "`node.log()`, `dora_log()`, etc."
 msgstr ""
 
 #: src/operations/logging.md:97
@@ -14577,7 +14577,7 @@ msgid "Rust crate"
 msgstr ""
 
 #: src/operations/logging.md:97
-msgid "`adora-log-utils`"
+msgid "`dora-log-utils`"
 msgstr ""
 
 #: src/operations/logging.md:98
@@ -14589,7 +14589,7 @@ msgid "**Dataflow input**"
 msgstr ""
 
 #: src/operations/logging.md:98
-msgid "**`adora/logs` virtual input**"
+msgid "**`dora/logs` virtual input**"
 msgstr ""
 
 #: src/operations/logging.md:99
@@ -14749,12 +14749,12 @@ msgid ""
 msgstr ""
 
 #: src/operations/logging.md:144
-msgid "Viewing Logs: `adora run`"
+msgid "Viewing Logs: `dora run`"
 msgstr ""
 
 #: src/operations/logging.md:146
 msgid ""
-"When running a dataflow with `adora run`, logs from all nodes are displayed "
+"When running a dataflow with `dora run`, logs from all nodes are displayed "
 "in real-time on the terminal."
 msgstr ""
 
@@ -14905,7 +14905,7 @@ msgid "Node name in bold with a unique color based on the name"
 msgstr ""
 
 #: src/operations/logging.md:215
-msgid "System messages prefixed with `[adora]`"
+msgid "System messages prefixed with `[dora]`"
 msgstr ""
 
 #: src/operations/logging.md:216
@@ -14956,7 +14956,7 @@ msgid "Useful for CI/CD environments and log files."
 msgstr ""
 
 #: src/operations/logging.md:234
-msgid "Viewing Logs: `adora logs`"
+msgid "Viewing Logs: `dora logs`"
 msgstr ""
 
 #: src/operations/logging.md:236
@@ -15172,7 +15172,7 @@ msgid "Values"
 msgstr ""
 
 #: src/operations/logging.md:330
-msgid "`adora run`, `adora logs`"
+msgid "`dora run`, `dora logs`"
 msgstr ""
 
 #: src/operations/logging.md:330
@@ -15322,7 +15322,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/logging.md:414
-msgid "`adora/logs` -- Automatic Log Aggregation"
+msgid "`dora/logs` -- Automatic Log Aggregation"
 msgstr ""
 
 #: src/operations/logging.md:416
@@ -15338,7 +15338,7 @@ msgstr ""
 
 #: src/operations/logging.md:423 src/operations/logging.md:701
 #: src/operations/logging.md:761
-msgid "adora/timer/millis/200"
+msgid "dora/timer/millis/200"
 msgstr ""
 
 #: src/operations/logging.md:425 src/operations/logging.md:430
@@ -15362,20 +15362,20 @@ msgid "log_viewer.py"
 msgstr ""
 
 #: src/operations/logging.md:437
-msgid "adora/logs              # all nodes, all levels\n      errors"
+msgid "dora/logs              # all nodes, all levels\n      errors"
 msgstr ""
 
 #: src/operations/logging.md:438
-msgid "adora/logs/error      # only error+ from all nodes\n      sensor"
+msgid "dora/logs/error      # only error+ from all nodes\n      sensor"
 msgstr ""
 
 #: src/operations/logging.md:439
-msgid "adora/logs/info/sensor  # info+ from one node\n"
+msgid "dora/logs/info/sensor  # info+ from one node\n"
 msgstr ""
 
 #: src/operations/logging.md:442
 msgid ""
-"The `adora/logs` virtual input works like `adora/timer` -- the daemon "
+"The `dora/logs` virtual input works like `dora/timer` -- the daemon "
 "handles subscription internally. Each log message arrives as a JSON-encoded "
 "`LogMessage` string in an Arrow array. To prevent infinite loops, a node "
 "never receives its own log messages."
@@ -15390,7 +15390,7 @@ msgid "Input"
 msgstr ""
 
 #: src/operations/logging.md:448 src/operations/logging.md:456
-msgid "`adora/logs`"
+msgid "`dora/logs`"
 msgstr ""
 
 #: src/operations/logging.md:448
@@ -15398,7 +15398,7 @@ msgid "All logs from all nodes"
 msgstr ""
 
 #: src/operations/logging.md:449
-msgid "`adora/logs/<level>`"
+msgid "`dora/logs/<level>`"
 msgstr ""
 
 #: src/operations/logging.md:449
@@ -15406,7 +15406,7 @@ msgid "Logs at `<level>` or above from all nodes"
 msgstr ""
 
 #: src/operations/logging.md:450
-msgid "`adora/logs/<level>/<node-id>`"
+msgid "`dora/logs/<level>/<node-id>`"
 msgstr ""
 
 #: src/operations/logging.md:450
@@ -15418,7 +15418,7 @@ msgid "Levels: `stdout`, `error`, `warn`, `info`, `debug`, `trace`."
 msgstr ""
 
 #: src/operations/logging.md:454
-msgid "**When to use `adora/logs` vs `send_logs_as`:**"
+msgid "**When to use `dora/logs` vs `send_logs_as`:**"
 msgstr ""
 
 #: src/operations/logging.md:458
@@ -15556,7 +15556,7 @@ msgstr ""
 
 #: src/operations/logging.md:506
 msgid ""
-"The `adora logs --local` command automatically reads all rotated files for a "
+"The `dora logs --local` command automatically reads all rotated files for a "
 "node and merges them in chronological order (oldest rotated file first, "
 "current file last)."
 msgstr ""
@@ -15705,7 +15705,7 @@ msgid "\"raw bytes: %s\""
 msgstr ""
 
 #: src/operations/logging.md:597
-msgid "# Option 2: Explicit adora API with level string\n"
+msgid "# Option 2: Explicit dora API with level string\n"
 msgstr ""
 
 #: src/operations/logging.md:599
@@ -15766,12 +15766,12 @@ msgid "// Via the cxx bridge\n"
 msgstr ""
 
 #: src/operations/logging.md:645
-msgid "Log Utilities Library (`adora-log-utils`)"
+msgid "Log Utilities Library (`dora-log-utils`)"
 msgstr ""
 
 #: src/operations/logging.md:647
 msgid ""
-"The `adora-log-utils` crate provides parsing, merging, filtering, and "
+"The `dora-log-utils` crate provides parsing, merging, filtering, and "
 "formatting utilities for working with `LogMessage` entries in custom sink "
 "nodes. Use it when building nodes that consume log data via `send_logs_as`."
 msgstr ""
@@ -15866,7 +15866,7 @@ msgstr ""
 msgid ""
 "The file sink reads `LOG_FILE` from the environment (default "
 "`./combined.jsonl`), parses each incoming Arrow message with "
-"`adora_log_utils::parse_log_from_arrow()`, formats it as JSON, and appends "
+"`dora_log_utils::parse_log_from_arrow()`, formats it as JSON, and appends "
 "it to the file."
 msgstr ""
 
@@ -15940,7 +15940,7 @@ msgstr ""
 msgid ""
 "The source node uses `send_stdout_as` to route its stdout lines as Arrow "
 "string data. The router parses each log entry with "
-"`adora_log_utils::parse_log_from_arrow()`, checks the level, and uses "
+"`dora_log_utils::parse_log_from_arrow()`, checks the level, and uses "
 "`node.send_output()` to forward data to the appropriate outputs. Nodes using "
 "the node API can alternatively use `send_logs_as` to route structured logs "
 "from `node.log()`."
@@ -15997,7 +15997,7 @@ msgstr ""
 
 #: src/operations/logging.md:844
 msgid ""
-"**Step 8** sends to either a flume channel (`adora run` direct mode) or the "
+"**Step 8** sends to either a flume channel (`dora run` direct mode) or the "
 "coordinator (distributed mode)"
 msgstr ""
 
@@ -16174,7 +16174,7 @@ msgid "\"1KB\"       # small for demo (triggers rotation quickly)\n    inputs"
 msgstr ""
 
 #: src/operations/logging.md:926
-msgid "adora/timer/millis/50"
+msgid "dora/timer/millis/50"
 msgstr ""
 
 #: src/operations/logging.md:932
@@ -16215,7 +16215,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/logging.md:952
-msgid "**Direct mode** (`adora run` -- single process, good for quick testing):"
+msgid "**Direct mode** (`dora run` -- single process, good for quick testing):"
 msgstr ""
 
 #: src/operations/logging.md:957
@@ -16240,7 +16240,7 @@ msgstr ""
 
 #: src/operations/logging.md:971
 msgid ""
-"**Distributed mode** (`adora up` + `adora start` -- coordinator/daemon "
+"**Distributed mode** (`dora up` + `dora start` -- coordinator/daemon "
 "architecture, required for multi-machine deployments):"
 msgstr ""
 
@@ -16290,7 +16290,7 @@ msgid "`--log-level`, `--log-format`, `--log-filter`"
 msgstr ""
 
 #: src/operations/logging.md:992
-msgid "`--level` on `adora logs`"
+msgid "`--level` on `dora logs`"
 msgstr ""
 
 #: src/operations/logging.md:993
@@ -16302,7 +16302,7 @@ msgid "`--log-filter \"sensor=debug\"`"
 msgstr ""
 
 #: src/operations/logging.md:993
-msgid "Separate `adora logs` per node"
+msgid "Separate `dora logs` per node"
 msgstr ""
 
 #: src/operations/logging.md:994
@@ -16318,7 +16318,7 @@ msgid "Always attached"
 msgstr ""
 
 #: src/operations/logging.md:995
-msgid "`--attach` or `adora logs --follow`"
+msgid "`--attach` or `dora logs --follow`"
 msgstr ""
 
 #: src/operations/logging.md:997
@@ -16447,7 +16447,7 @@ msgid "detector/logs"
 msgstr ""
 
 #: src/operations/logging.md:1075
-msgid "**Node-side handling in the log monitor (using `adora-log-utils`):**"
+msgid "**Node-side handling in the log monitor (using `dora-log-utils`):**"
 msgstr ""
 
 #: src/operations/logging.md:1091
@@ -16532,7 +16532,7 @@ msgstr ""
 
 #: src/operations/logging.md:1139 src/operations/fault-tolerance.md:740
 #: src/advanced/ros2-bridge.md:738
-msgid "adora/timer/millis/1000"
+msgid "dora/timer/millis/1000"
 msgstr ""
 
 #: src/operations/logging.md:1144 src/operations/fault-tolerance.md:518
@@ -16739,7 +16739,7 @@ msgstr ""
 
 #: src/operations/logging.md:1239
 msgid ""
-"**`adora/logs` subscribers share a single serialization.** The daemon "
+"**`dora/logs` subscribers share a single serialization.** The daemon "
 "converts each log line to Arrow once and clones the result for each "
 "subscriber. The cost scales linearly with subscriber count, not log volume x "
 "subscriber count. For most dataflows (1-3 log subscribers), this is "
@@ -16821,7 +16821,7 @@ msgstr ""
 msgid ""
 "**Use `send_logs_as` for operational monitoring.** Build monitoring nodes "
 "that watch for error patterns, compute error rates, or forward alerts. This "
-"keeps monitoring logic within the dataflow graph. Use `adora-log-utils` to "
+"keeps monitoring logic within the dataflow graph. Use `dora-log-utils` to "
 "parse and format log entries in custom sink nodes (see "
 "`examples/log-sink-file/` and `examples/log-sink-tcp/`)."
 msgstr ""
@@ -16836,7 +16836,7 @@ msgstr ""
 
 #: src/operations/logging.md:1272
 msgid ""
-"**Use `--local` for post-mortem debugging.** After a crash, `adora logs "
+"**Use `--local` for post-mortem debugging.** After a crash, `dora logs "
 "--local --all-nodes` works without a running coordinator and merges all node "
 "logs chronologically."
 msgstr ""
@@ -16844,7 +16844,7 @@ msgstr ""
 #: src/operations/logging.md:1274
 msgid ""
 "**Combine `--since` with `--grep` for targeted debugging.** Instead of "
-"scrolling through thousands of lines, narrow the window: `adora logs --local "
+"scrolling through thousands of lines, narrow the window: `dora logs --local "
 "sensor --since 5m --grep \"error\"`."
 msgstr ""
 
@@ -16861,7 +16861,7 @@ msgstr ""
 
 #: src/operations/debugging.md:3
 msgid ""
-"This guide covers how to debug, record, replay, and monitor adora dataflows. "
+"This guide covers how to debug, record, replay, and monitor dora dataflows. "
 "It is written for new users who want to understand what went wrong in a "
 "dataflow, measure performance, or reproduce issues offline."
 msgstr ""
@@ -17094,9 +17094,9 @@ msgstr ""
 
 #: src/operations/debugging.md:130
 msgid ""
-"This injects a hidden `__adora_record__` node into the dataflow that "
+"This injects a hidden `__dora_record__` node into the dataflow that "
 "subscribes to all node outputs and writes them to an `.adorec` file. The "
-"record node binary (`adora-record-node`) is auto-built on first use."
+"record node binary (`dora-record-node`) is auto-built on first use."
 msgstr ""
 
 #: src/operations/debugging.md:132
@@ -17114,7 +17114,7 @@ msgstr ""
 #: src/operations/debugging.md:141
 msgid ""
 "Topic names use the format `node_id/output_id`. Available topics can be "
-"discovered with `adora topic list -d <dataflow>`."
+"discovered with `dora topic list -d <dataflow>`."
 msgstr ""
 
 #: src/operations/debugging.md:143
@@ -17144,7 +17144,7 @@ msgid "How proxy mode works:"
 msgstr ""
 
 #: src/operations/debugging.md:159
-msgid "The dataflow must already be running (`adora start --detach`)"
+msgid "The dataflow must already be running (`dora start --detach`)"
 msgstr ""
 
 #: src/operations/debugging.md:160
@@ -17228,7 +17228,7 @@ msgid "Identifying which nodes produced the recorded data"
 msgstr ""
 
 #: src/operations/debugging.md:193
-msgid "Replacing those source nodes with `adora-replay-node` instances"
+msgid "Replacing those source nodes with `dora-replay-node` instances"
 msgstr ""
 
 #: src/operations/debugging.md:194
@@ -17238,7 +17238,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/debugging.md:196
-msgid "The replay node binary (`adora-replay-node`) is auto-built on first use."
+msgid "The replay node binary (`dora-replay-node`) is auto-built on first use."
 msgstr ""
 
 #: src/operations/debugging.md:198
@@ -17614,7 +17614,7 @@ msgid "Environment Diagnosis"
 msgstr ""
 
 #: src/operations/debugging.md:433
-msgid "`adora doctor` performs a comprehensive health check of your environment:"
+msgid "`dora doctor` performs a comprehensive health check of your environment:"
 msgstr ""
 
 #: src/operations/debugging.md:436
@@ -17645,8 +17645,8 @@ msgstr ""
 
 #: src/operations/debugging.md:455
 msgid ""
-"The coordinator captures tracing spans in-memory from `adora_coordinator` "
-"and `adora_core` crates (up to 4096 spans in a ring buffer). You can view "
+"The coordinator captures tracing spans in-memory from `dora_coordinator` "
+"and `dora_core` crates (up to 4096 spans in a ring buffer). You can view "
 "these traces without any external tracing infrastructure (no Jaeger, Tempo, "
 "etc. required)."
 msgstr ""
@@ -17713,7 +17713,7 @@ msgstr ""
 
 #: src/operations/debugging.md:504
 msgid ""
-"`adora top` (also `adora inspect top`) provides a real-time TUI showing "
+"`dora top` (also `dora inspect top`) provides a real-time TUI showing "
 "per-node resource usage:"
 msgstr ""
 
@@ -17965,7 +17965,7 @@ msgstr ""
 
 #: src/operations/debugging.md:644
 msgid ""
-"`adora list` shows each dataflow's UUID, name, status, and node count. Use "
+"`dora list` shows each dataflow's UUID, name, status, and node count. Use "
 "`-d <name>` with other commands to target a specific dataflow."
 msgstr ""
 
@@ -18087,7 +18087,7 @@ msgstr ""
 
 #: src/operations/fault-tolerance.md:3
 msgid ""
-"Adora provides built-in fault tolerance for robotic and AI dataflows. Nodes "
+"Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes "
 "can automatically restart on failure, detect stale upstream connections, "
 "gracefully degrade when inputs are unavailable, and the coordinator can "
 "persist state to disk so it survives crashes and restarts."
@@ -18155,7 +18155,7 @@ msgid "Rust nodes"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:14
-msgid "`adora_node_api::InputTracker`"
+msgid "`dora_node_api::InputTracker`"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:15 src/operations/fault-tolerance.md:302
@@ -18239,7 +18239,7 @@ msgid "**`always`** -- Restart on any exit, except:"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:45
-msgid "The dataflow was stopped by the user (`adora stop` or Ctrl-C)"
+msgid "The dataflow was stopped by the user (`dora stop` or Ctrl-C)"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:46
@@ -19020,7 +19020,7 @@ msgid "Enabling Persistence"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:393
-msgid "# Use default path (~/.adora/coordinator.redb)\n"
+msgid "# Use default path (~/.dora/coordinator.redb)\n"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:395
@@ -19262,7 +19262,7 @@ msgstr ""
 #: src/operations/fault-tolerance.md:475
 msgid ""
 "This prevents silent data corruption when the serialization format of stored "
-"records changes between Adora versions. The current schema version is `1`."
+"records changes between Dora versions. The current schema version is `1`."
 msgstr ""
 
 #: src/operations/fault-tolerance.md:477
@@ -19278,7 +19278,7 @@ msgid "The database file is set to `0600` (owner read/write only) after creation
 msgstr ""
 
 #: src/operations/fault-tolerance.md:481
-msgid "The default directory (`~/.adora/`) is set to `0700` (owner only)"
+msgid "The default directory (`~/.dora/`) is set to `0700` (owner only)"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:482
@@ -19378,7 +19378,7 @@ msgid "# wait for USB to re-enumerate\n    max_restart_delay"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:556
-msgid "adora/timer/millis/33  # ~30 FPS\n    outputs"
+msgid "dora/timer/millis/33  # ~30 FPS\n    outputs"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:560
@@ -19779,7 +19779,7 @@ msgstr ""
 
 #: src/operations/fault-tolerance.md:817
 msgid ""
-"Coordinator opens `~/.adora/coordinator.redb` and reads persisted dataflow "
+"Coordinator opens `~/.dora/coordinator.redb` and reads persisted dataflow "
 "records"
 msgstr ""
 
@@ -19800,7 +19800,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/fault-tolerance.md:821
-msgid "`adora list` now shows `my-pipeline` with its final status and timestamps"
+msgid "`dora list` now shows `my-pipeline` with its final status and timestamps"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:822
@@ -19855,7 +19855,7 @@ msgid "trigger"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:840
-msgid "adora/timer/millis/1  # immediate first trigger\n    outputs"
+msgid "dora/timer/millis/1  # immediate first trigger\n    outputs"
 msgstr ""
 
 #: src/operations/fault-tolerance.md:842
@@ -19969,7 +19969,7 @@ msgstr ""
 
 #: src/operations/distributed.md:3
 msgid ""
-"Adora supports deploying dataflows across multiple machines for multi-robot "
+"Dora supports deploying dataflows across multiple machines for multi-robot "
 "fleets, edge AI pipelines, and distributed robotics systems. This guide "
 "covers cluster management, node scheduling, binary distribution, "
 "auto-recovery, and operational best practices."
@@ -19992,31 +19992,31 @@ msgid "[Cluster Commands Reference](#cluster-commands-reference)"
 msgstr ""
 
 #: src/operations/distributed.md:12
-msgid "[adora cluster up](#adora-cluster-up)"
+msgid "[dora cluster up](#dora-cluster-up)"
 msgstr ""
 
 #: src/operations/distributed.md:13
-msgid "[adora cluster status](#adora-cluster-status)"
+msgid "[dora cluster status](#dora-cluster-status)"
 msgstr ""
 
 #: src/operations/distributed.md:14
-msgid "[adora cluster down](#adora-cluster-down)"
+msgid "[dora cluster down](#dora-cluster-down)"
 msgstr ""
 
 #: src/operations/distributed.md:15
-msgid "[adora cluster install](#adora-cluster-install)"
+msgid "[dora cluster install](#dora-cluster-install)"
 msgstr ""
 
 #: src/operations/distributed.md:16
-msgid "[adora cluster uninstall](#adora-cluster-uninstall)"
+msgid "[dora cluster uninstall](#dora-cluster-uninstall)"
 msgstr ""
 
 #: src/operations/distributed.md:17
-msgid "[adora cluster upgrade](#adora-cluster-upgrade)"
+msgid "[dora cluster upgrade](#dora-cluster-upgrade)"
 msgstr ""
 
 #: src/operations/distributed.md:18
-msgid "[adora cluster restart](#adora-cluster-restart)"
+msgid "[dora cluster restart](#dora-cluster-restart)"
 msgstr ""
 
 #: src/operations/distributed.md:19
@@ -20073,7 +20073,7 @@ msgid "Overview"
 msgstr ""
 
 #: src/operations/distributed.md:36
-msgid "Adora's distributed architecture has three tiers:"
+msgid "Dora's distributed architecture has three tiers:"
 msgstr ""
 
 #: src/operations/distributed.md:43
@@ -20102,7 +20102,7 @@ msgstr ""
 
 #: src/operations/distributed.md:50
 msgid ""
-"**Ad-hoc** -- manually start `adora daemon` on each machine, then use the "
+"**Ad-hoc** -- manually start `dora daemon` on each machine, then use the "
 "coordinator for control. Good for development and testing. See [Distributed "
 "Deployments in the CLI reference](cli.md#distributed-deployments)."
 msgstr ""
@@ -20110,7 +20110,7 @@ msgstr ""
 #: src/operations/distributed.md:52
 msgid ""
 "**Managed (cluster.yml)** -- define your cluster topology in a YAML file, "
-"then use `adora cluster` commands for SSH-based lifecycle management. This "
+"then use `dora cluster` commands for SSH-based lifecycle management. This "
 "guide focuses on the managed path."
 msgstr ""
 
@@ -20183,7 +20183,7 @@ msgid "Cluster lifecycle"
 msgstr ""
 
 #: src/operations/distributed.md:102
-msgid "`adora cluster up/status/down`"
+msgid "`dora cluster up/status/down`"
 msgstr ""
 
 #: src/operations/distributed.md:102
@@ -20219,7 +20219,7 @@ msgid "systemd services"
 msgstr ""
 
 #: src/operations/distributed.md:105
-msgid "`adora cluster install/uninstall`"
+msgid "`dora cluster install/uninstall`"
 msgstr ""
 
 #: src/operations/distributed.md:105
@@ -20239,7 +20239,7 @@ msgid "Rolling upgrade"
 msgstr ""
 
 #: src/operations/distributed.md:107
-msgid "`adora cluster upgrade`"
+msgid "`dora cluster upgrade`"
 msgstr ""
 
 #: src/operations/distributed.md:107
@@ -20251,7 +20251,7 @@ msgid "Dataflow restart"
 msgstr ""
 
 #: src/operations/distributed.md:108
-msgid "`adora cluster restart`"
+msgid "`dora cluster restart`"
 msgstr ""
 
 #: src/operations/distributed.md:108
@@ -20434,7 +20434,7 @@ msgstr ""
 
 #: src/operations/distributed.md:193
 msgid ""
-"All `adora cluster` commands operate on a `cluster.yml` file and use SSH to "
+"All `dora cluster` commands operate on a `cluster.yml` file and use SSH to "
 "manage remote machines."
 msgstr ""
 
@@ -20445,7 +20445,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/distributed.md:197
-msgid "adora cluster up"
+msgid "dora cluster up"
 msgstr ""
 
 #: src/operations/distributed.md:199
@@ -20482,7 +20482,7 @@ msgstr ""
 
 #: src/operations/distributed.md:215
 msgid ""
-"For each machine, SSH-es in and runs `nohup adora daemon --machine-id <id> "
+"For each machine, SSH-es in and runs `nohup dora daemon --machine-id <id> "
 "--coordinator-addr <addr> --coordinator-port <port> [--labels k1=v1,k2=v2] "
 "--quiet`."
 msgstr ""
@@ -20493,7 +20493,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/distributed.md:228
-msgid "adora cluster status"
+msgid "dora cluster status"
 msgstr ""
 
 #: src/operations/distributed.md:230
@@ -20523,7 +20523,7 @@ msgid "`--coordinator-port`"
 msgstr ""
 
 #: src/operations/distributed.md:254
-msgid "adora cluster down"
+msgid "dora cluster down"
 msgstr ""
 
 #: src/operations/distributed.md:256
@@ -20535,28 +20535,28 @@ msgid "Terminates all daemons and the coordinator process."
 msgstr ""
 
 #: src/operations/distributed.md:264
-msgid "adora cluster install"
+msgid "dora cluster install"
 msgstr ""
 
 #: src/operations/distributed.md:266
 msgid ""
-"Install `adora-daemon` as a systemd service on each machine. SSH-es into "
+"Install `dora-daemon` as a systemd service on each machine. SSH-es into "
 "each machine, writes a systemd unit file, and enables the service."
 msgstr ""
 
 #: src/operations/distributed.md:280
 msgid ""
 "For each machine, creates and enables a systemd service named "
-"`adora-daemon-<id>`. The unit file:"
+"`dora-daemon-<id>`. The unit file:"
 msgstr ""
 
 #: src/operations/distributed.md:306
-msgid "adora cluster uninstall"
+msgid "dora cluster uninstall"
 msgstr ""
 
 #: src/operations/distributed.md:308
 msgid ""
-"Uninstall adora-daemon systemd services from each machine. Stops, disables, "
+"Uninstall dora-daemon systemd services from each machine. Stops, disables, "
 "and removes the systemd unit."
 msgstr ""
 
@@ -20565,12 +20565,12 @@ msgid "For each machine, runs:"
 msgstr ""
 
 #: src/operations/distributed.md:325
-msgid "adora cluster upgrade"
+msgid "dora cluster upgrade"
 msgstr ""
 
 #: src/operations/distributed.md:327
 msgid ""
-"Rolling upgrade: SCP the local `adora` binary to each machine and restart "
+"Rolling upgrade: SCP the local `dora` binary to each machine and restart "
 "daemons. Processes machines sequentially to maintain availability."
 msgstr ""
 
@@ -20580,12 +20580,12 @@ msgstr ""
 
 #: src/operations/distributed.md:337
 msgid ""
-"SCP the local `adora` binary to `/usr/local/bin/adora` on the target machine."
+"SCP the local `dora` binary to `/usr/local/bin/dora` on the target machine."
 msgstr ""
 
 #: src/operations/distributed.md:338
 msgid ""
-"Restart the systemd service via `sudo systemctl restart adora-daemon-<id>`."
+"Restart the systemd service via `sudo systemctl restart dora-daemon-<id>`."
 msgstr ""
 
 #: src/operations/distributed.md:339
@@ -20601,7 +20601,7 @@ msgid ""
 msgstr ""
 
 #: src/operations/distributed.md:358
-msgid "adora cluster restart"
+msgid "dora cluster restart"
 msgstr ""
 
 #: src/operations/distributed.md:360
@@ -20808,8 +20808,8 @@ msgstr ""
 
 #: src/operations/distributed.md:508
 msgid ""
-"Creates a systemd unit file on each machine (see [adora cluster "
-"install](#adora-cluster-install) for the full unit template). Key properties:"
+"Creates a systemd unit file on each machine (see [dora cluster "
+"install](#dora-cluster-install) for the full unit template). Key properties:"
 msgstr ""
 
 #: src/operations/distributed.md:510
@@ -20914,8 +20914,8 @@ msgstr ""
 
 #: src/operations/distributed.md:554
 msgid ""
-"Auto-recovery only applies to dataflows started via `adora start` "
-"(coordinator-managed). Local `adora run` dataflows are not tracked by the "
+"Auto-recovery only applies to dataflows started via `dora start` "
+"(coordinator-managed). Local `dora run` dataflows are not tracked by the "
 "coordinator."
 msgstr ""
 
@@ -20932,7 +20932,7 @@ msgstr ""
 
 #: src/operations/distributed.md:561
 msgid ""
-"Upgrade the `adora` binary on all cluster machines with zero downtime using "
+"Upgrade the `dora` binary on all cluster machines with zero downtime using "
 "sequential per-machine upgrades."
 msgstr ""
 
@@ -20945,11 +20945,11 @@ msgid "For each machine, sequentially:"
 msgstr ""
 
 #: src/operations/distributed.md:571
-msgid "**SCP** the local `adora` binary to `/usr/local/bin/adora` on the target."
+msgid "**SCP** the local `dora` binary to `/usr/local/bin/dora` on the target."
 msgstr ""
 
 #: src/operations/distributed.md:572
-msgid "**Restart** the systemd service (`systemctl restart adora-daemon-<id>`)."
+msgid "**Restart** the systemd service (`systemctl restart dora-daemon-<id>`)."
 msgstr ""
 
 #: src/operations/distributed.md:573
@@ -20964,12 +20964,12 @@ msgid ""
 msgstr ""
 
 #: src/operations/distributed.md:579
-msgid "Daemons must be installed as systemd services (`adora cluster install`)."
+msgid "Daemons must be installed as systemd services (`dora cluster install`)."
 msgstr ""
 
 #: src/operations/distributed.md:580
 msgid ""
-"The local `adora` binary must be compatible with the cluster's coordinator "
+"The local `dora` binary must be compatible with the cluster's coordinator "
 "version."
 msgstr ""
 
@@ -21103,7 +21103,7 @@ msgid "Single-process, no coordinator"
 msgstr ""
 
 #: src/operations/distributed.md:722
-msgid "`adora run dataflow.yml`"
+msgid "`dora run dataflow.yml`"
 msgstr ""
 
 #: src/operations/distributed.md:723
@@ -21115,7 +21115,7 @@ msgid "Ad-hoc daemons, manual setup"
 msgstr ""
 
 #: src/operations/distributed.md:723
-msgid "`adora up` + `adora daemon` on each machine"
+msgid "`dora up` + `dora daemon` on each machine"
 msgstr ""
 
 #: src/operations/distributed.md:724
@@ -21127,7 +21127,7 @@ msgid "Managed cluster, systemd services"
 msgstr ""
 
 #: src/operations/distributed.md:724
-msgid "`adora cluster install cluster.yml`"
+msgid "`dora cluster install cluster.yml`"
 msgstr ""
 
 #: src/operations/distributed.md:728
@@ -21146,7 +21146,7 @@ msgstr ""
 
 #: src/operations/distributed.md:733
 msgid ""
-"**Adora binary**: Install the `adora` binary on all machines (same version)."
+"**Dora binary**: Install the `dora` binary on all machines (same version)."
 msgstr ""
 
 #: src/operations/distributed.md:734
@@ -21195,15 +21195,15 @@ msgid "Upgrading"
 msgstr ""
 
 #: src/operations/distributed.md:761
-msgid "Build or download the new `adora` binary locally."
+msgid "Build or download the new `dora` binary locally."
 msgstr ""
 
 #: src/operations/distributed.md:762
-msgid "Run `adora cluster upgrade cluster.yml`."
+msgid "Run `dora cluster upgrade cluster.yml`."
 msgstr ""
 
 #: src/operations/distributed.md:763
-msgid "Verify with `adora cluster status` that all daemons reconnected."
+msgid "Verify with `dora cluster status` that all daemons reconnected."
 msgstr ""
 
 #: src/operations/distributed.md:764
@@ -21222,7 +21222,7 @@ msgstr ""
 
 #: src/operations/distributed.md:771
 msgid ""
-"Check daemon logs: `journalctl -u adora-daemon-<id> -f` (systemd) or the "
+"Check daemon logs: `journalctl -u dora-daemon-<id> -f` (systemd) or the "
 "daemon's stderr output (ad-hoc)."
 msgstr ""
 
@@ -21268,7 +21268,7 @@ msgstr ""
 
 #: src/operations/distributed.md:784
 msgid ""
-"Run `adora cluster status` to see connected daemons. Labels are set at "
+"Run `dora cluster status` to see connected daemons. Labels are set at "
 "daemon startup from `cluster.yml` and cannot be changed at runtime."
 msgstr ""
 
@@ -21278,8 +21278,8 @@ msgstr ""
 
 #: src/operations/distributed.md:788
 msgid ""
-"Auto-recovery only applies to coordinator-managed dataflows (`adora start`), "
-"not `adora run`."
+"Auto-recovery only applies to coordinator-managed dataflows (`dora start`), "
+"not `dora run`."
 msgstr ""
 
 #: src/operations/distributed.md:789
@@ -21371,7 +21371,7 @@ msgstr ""
 
 #: src/operations/distributed.md:832
 msgid ""
-"**Use coordinator persistence** (`adora coordinator --store redb`) with "
+"**Use coordinator persistence** (`dora coordinator --store redb`) with "
 "clusters so the coordinator survives restarts. See [Coordinator State "
 "Persistence](fault-tolerance.md#coordinator-state-persistence)."
 msgstr ""
@@ -21385,20 +21385,20 @@ msgstr ""
 
 #: src/operations/distributed.md:834
 msgid ""
-"**Monitor with multiple tools**: `adora cluster status` for daemon health, "
-"`adora top` for resource usage, `adora logs` for node output."
+"**Monitor with multiple tools**: `dora cluster status` for daemon health, "
+"`dora top` for resource usage, `dora logs` for node output."
 msgstr ""
 
 #: src/operations/distributed.md:835
 msgid ""
-"**Test locally first**. Develop with `adora run dataflow.yml`, then deploy "
+"**Test locally first**. Develop with `dora run dataflow.yml`, then deploy "
 "to a cluster. The same dataflow YAML works in both modes -- "
 "`_unstable_deploy` fields are ignored in local mode."
 msgstr ""
 
 #: src/operations/distributed.md:836
 msgid ""
-"**Use rolling upgrades** instead of stopping the entire cluster. `adora "
+"**Use rolling upgrades** instead of stopping the entire cluster. `dora "
 "cluster upgrade` processes one machine at a time to maintain availability."
 msgstr ""
 
@@ -21409,7 +21409,7 @@ msgstr ""
 
 #: src/operations/performance.md:3
 msgid ""
-"Adora achieves 10-17x lower latency than ROS2 Python through zero-copy "
+"Dora achieves 10-17x lower latency than ROS2 Python through zero-copy "
 "shared memory IPC, Apache Arrow columnar format, and 100% Rust internals. "
 "This document covers methodology, reproduction, and tuning."
 msgstr ""
@@ -21496,7 +21496,7 @@ msgstr ""
 
 #: src/operations/performance.md:20
 msgid ""
-"Measures Adora's own latency and throughput across 10 payload sizes (0B to "
+"Measures Dora's own latency and throughput across 10 payload sizes (0B to "
 "4MB)."
 msgstr ""
 
@@ -21578,7 +21578,7 @@ msgid "Steps"
 msgstr ""
 
 #: src/operations/performance.md:65
-msgid "Build Adora:"
+msgid "Build Dora:"
 msgstr ""
 
 #: src/operations/performance.md:70
@@ -21635,7 +21635,7 @@ msgstr ""
 
 #: src/operations/performance.md:104
 msgid ""
-"Adora automatically uses shared memory for messages >4KB, avoiding copies. "
+"Dora automatically uses shared memory for messages >4KB, avoiding copies. "
 "Structure data to exceed this threshold when low latency matters."
 msgstr ""
 
@@ -21676,7 +21676,7 @@ msgstr ""
 
 #: src/operations/performance.md:124
 msgid ""
-"For cross-machine communication, Adora uses Zenoh pub-sub. Latency depends "
+"For cross-machine communication, Dora uses Zenoh pub-sub. Latency depends "
 "on network quality. Use local deployment (single-machine) when "
 "sub-millisecond latency is required."
 msgstr ""
@@ -21693,7 +21693,7 @@ msgstr ""
 
 #: src/operations/realtime-tuning.md:3
 msgid ""
-"Adora provides optional real-time features for latency-sensitive robotics "
+"Dora provides optional real-time features for latency-sensitive robotics "
 "deployments."
 msgstr ""
 
@@ -21827,7 +21827,7 @@ msgid "filter.py"
 msgstr ""
 
 #: src/operations/dynamic-topology.md:34
-msgid "After adding, wire inputs explicitly with `adora node connect`."
+msgid "After adding, wire inputs explicitly with `dora node connect`."
 msgstr ""
 
 #: src/operations/dynamic-topology.md:36
@@ -21872,11 +21872,11 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:3
 msgid ""
-"Adora provides a declarative YAML-based ROS2 bridge that lets any Adora node "
+"Dora provides a declarative YAML-based ROS2 bridge that lets any Dora node "
 "communicate with ROS2 topics, services, and actions without importing ROS2 "
 "libraries. You define the bridge in your dataflow YAML using the `ros2:` "
 "key, and the framework automatically spawns a bridge binary that converts "
-"between Apache Arrow (Adora's native format) and ROS2 CDR/DDS. Your user "
+"between Apache Arrow (Dora's native format) and ROS2 CDR/DDS. Your user "
 "nodes stay ROS2-free -- they send and receive pure Arrow `StructArray` data."
 msgstr ""
 
@@ -21986,8 +21986,8 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:23
 msgid ""
-"When the Adora descriptor resolver encounters a `ros2:` key on a node, it "
-"converts it into a `Custom` node pointing to the `adora-ros2-bridge-node` "
+"When the Dora descriptor resolver encounters a `ros2:` key on a node, it "
+"converts it into a `Custom` node pointing to the `dora-ros2-bridge-node` "
 "binary. The bridge config is serialized as JSON into the "
 "`ADORA_ROS2_BRIDGE_CONFIG` environment variable."
 msgstr ""
@@ -22069,7 +22069,7 @@ msgstr ""
 #: src/advanced/ros2-bridge.md:55
 msgid ""
 "Subscribe to a ROS2 topic and forward messages as Arrow data to downstream "
-"Adora nodes."
+"Dora nodes."
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:59 src/advanced/ros2-bridge.md:612
@@ -22109,7 +22109,7 @@ msgid "Single Topic (Publish)"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:72
-msgid "Receive Arrow data from Adora nodes and publish to a ROS2 topic."
+msgid "Receive Arrow data from Dora nodes and publish to a ROS2 topic."
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:76 src/advanced/ros2-bridge.md:648
@@ -22156,7 +22156,7 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:117
 msgid ""
-"By default, topic names are converted to Adora IDs by stripping the leading "
+"By default, topic names are converted to Dora IDs by stripping the leading "
 "`/` and replacing remaining `/` with `_`:"
 msgstr ""
 
@@ -22165,7 +22165,7 @@ msgid "ROS2 Topic"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:119
-msgid "Default Adora ID"
+msgid "Default Dora ID"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:121
@@ -22197,7 +22197,7 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:132
 msgid ""
-"Send requests from Adora to an external ROS2 service and receive responses."
+"Send requests from Dora to an external ROS2 service and receive responses."
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:136 src/advanced/ros2-bridge.md:743
@@ -22237,7 +22237,7 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:156
 msgid ""
-"Expose an Adora handler node as a ROS2 service that external ROS2 clients "
+"Expose an Dora handler node as a ROS2 service that external ROS2 clients "
 "can call."
 msgstr ""
 
@@ -22246,7 +22246,7 @@ msgid "add_server"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:162
-msgid "/adora_add_two_ints"
+msgid "/dora_add_two_ints"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:166 src/advanced/ros2-bridge.md:266
@@ -22335,7 +22335,7 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:210
 msgid ""
-"Send goals from Adora to an external ROS2 action server, receiving feedback "
+"Send goals from Dora to an external ROS2 action server, receiving feedback "
 "and results."
 msgstr ""
 
@@ -22433,7 +22433,7 @@ msgstr ""
 
 #: src/advanced/ros2-bridge.md:255
 msgid ""
-"Expose an Adora handler node as a ROS2 action server that external ROS2 "
+"Expose an Dora handler node as a ROS2 action server that external ROS2 "
 "clients can call."
 msgstr ""
 
@@ -23135,11 +23135,11 @@ msgid "/                     # ROS2 namespace (default: \"/\")\n      node_name"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:595
-msgid "my_ros_node           # ROS2 node name (default: adora node id)\n"
+msgid "my_ros_node           # ROS2 node name (default: dora node id)\n"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:597
-msgid "# --- Standard Adora node fields ---\n    inputs"
+msgid "# --- Standard Dora node fields ---\n    inputs"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:599
@@ -23241,7 +23241,7 @@ msgid "Prerequisites: run a ROS2 service first:"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:759
-msgid "5. Service Server: Expose an Adora Handler as ROS2 Service"
+msgid "5. Service Server: Expose an Dora Handler as ROS2 Service"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:769
@@ -23275,7 +23275,7 @@ msgid "./target/debug/goal-sender"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:793
-msgid "adora/timer/millis/5000"
+msgid "dora/timer/millis/5000"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:794
@@ -23297,7 +23297,7 @@ msgid ""
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:818
-msgid "7. Action Server: Expose an Adora Handler as ROS2 Action"
+msgid "7. Action Server: Expose an Dora Handler as ROS2 Action"
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:842
@@ -23426,7 +23426,7 @@ msgstr ""
 
 #: src/advanced/ws-control.md:3
 msgid ""
-"Adora's control plane uses WebSocket connections for all communication "
+"Dora's control plane uses WebSocket connections for all communication "
 "between the CLI, coordinator, and daemons. A single Axum server exposes "
 "three routes on one port, replacing the previous multi-port TCP design. JSON "
 "text frames carry a UUID-correlated request-reply protocol with "
@@ -24530,7 +24530,7 @@ msgstr ""
 #: src/advanced/ws-control.md:428
 msgid ""
 "**Test coordinator setup**: Both integration and E2E tests use "
-"`adora_coordinator::start_testing()` which binds to port 0 (OS-assigned) and "
+"`dora_coordinator::start_testing()` which binds to port 0 (OS-assigned) and "
 "accepts an empty external event stream."
 msgstr ""
 
@@ -25013,7 +25013,7 @@ msgid ""
 msgstr ""
 
 #: src/advanced/ws-topic.md:222
-msgid "`adora record --proxy`"
+msgid "`dora record --proxy`"
 msgstr ""
 
 #: src/advanced/ws-topic.md:224
@@ -25052,7 +25052,7 @@ msgstr ""
 #: src/advanced/ws-topic.md:245
 msgid ""
 "The coordinator subscribes to Zenoh topics using the format from "
-"`adora_core::topics::zenoh_output_publish_topic()`:"
+"`dora_core::topics::zenoh_output_publish_topic()`:"
 msgstr ""
 
 #: src/advanced/ws-topic.md:251
@@ -25208,12 +25208,12 @@ msgid ""
 msgstr ""
 
 #: src/development/testing.md:1
-msgid "Adora Testing Guide"
+msgid "Dora Testing Guide"
 msgstr ""
 
 #: src/development/testing.md:3
 msgid ""
-"This guide covers how to run, write, and troubleshoot tests across the Adora "
+"This guide covers how to run, write, and troubleshoot tests across the Dora "
 "workspace."
 msgstr ""
 
@@ -25308,7 +25308,7 @@ msgid "Command parsing, validation"
 msgstr ""
 
 #: src/development/testing.md:36
-msgid "`cargo test -p adora-cli`"
+msgid "`cargo test -p dora-cli`"
 msgstr ""
 
 #: src/development/testing.md:37
@@ -25617,13 +25617,13 @@ msgstr ""
 
 #: src/development/testing.md:116
 msgid ""
-"**Networked** (`adora up` + `adora start --detach` + poll + `adora stop` + "
-"`adora down`): exercises the full coordinator/daemon WS control plane."
+"**Networked** (`dora up` + `dora start --detach` + poll + `dora stop` + "
+"`dora down`): exercises the full coordinator/daemon WS control plane."
 msgstr ""
 
 #: src/development/testing.md:117
 msgid ""
-"**Local** (`adora run --stop-after`): runs everything in-process, testing "
+"**Local** (`dora run --stop-after`): runs everything in-process, testing "
 "the single-process dataflow path."
 msgstr ""
 
@@ -25906,7 +25906,7 @@ msgid "`cli_multiple_requests_same_session` -- session reuse"
 msgstr ""
 
 #: src/development/testing.md:189
-msgid "**Ignored (full stack):** Use `adora up` with real nodes:"
+msgid "**Ignored (full stack):** Use `dora up` with real nodes:"
 msgstr ""
 
 #: src/development/testing.md:193
@@ -26023,7 +26023,7 @@ msgid "**test**"
 msgstr ""
 
 #: src/development/testing.md:242
-msgid "`cargo test --all ...` (excl. Python + adora-examples)"
+msgid "`cargo test --all ...` (excl. Python + dora-examples)"
 msgstr ""
 
 #: src/development/testing.md:243
@@ -26069,7 +26069,7 @@ msgstr ""
 
 #: src/development/testing.md:269
 msgid ""
-"Use the integration testing framework in `adora-node-api`. Three approaches:"
+"Use the integration testing framework in `dora-node-api`. Three approaches:"
 msgstr ""
 
 #: src/development/testing.md:271
@@ -26094,7 +26094,7 @@ msgid "path/to/inputs.json"
 msgstr ""
 
 #: src/development/testing.md:319
-msgid "**3. `AdoraNode::init_testing`**"
+msgid "**3. `DoraNode::init_testing`**"
 msgstr ""
 
 #: src/development/testing.md:321
@@ -26138,23 +26138,23 @@ msgid "Build nodes with `Once` guards (avoid rebuilding per test)"
 msgstr ""
 
 #: src/development/testing.md:343
-msgid "Clean up stale processes with `adora down`"
+msgid "Clean up stale processes with `dora down`"
 msgstr ""
 
 #: src/development/testing.md:344
-msgid "Start cluster with `adora up`"
+msgid "Start cluster with `dora up`"
 msgstr ""
 
 #: src/development/testing.md:345
-msgid "Run dataflow with `adora start --detach`"
+msgid "Run dataflow with `dora start --detach`"
 msgstr ""
 
 #: src/development/testing.md:346
-msgid "Poll `adora list --json` for completion"
+msgid "Poll `dora list --json` for completion"
 msgstr ""
 
 #: src/development/testing.md:347
-msgid "Clean up with `adora stop --all` and `adora down`"
+msgid "Clean up with `dora stop --all` and `dora down`"
 msgstr ""
 
 #: src/development/testing.md:349
@@ -26166,7 +26166,7 @@ msgid "Build CLI with `Once` guard"
 msgstr ""
 
 #: src/development/testing.md:351
-msgid "Run `adora run <yaml> --stop-after <duration>`"
+msgid "Run `dora run <yaml> --stop-after <duration>`"
 msgstr ""
 
 #: src/development/testing.md:352

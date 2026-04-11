@@ -1,12 +1,12 @@
 use std::{any::type_name, borrow::Cow, marker::PhantomData, sync::Arc};
 
-use adora_ros2_bridge_msg_gen::types::{
-    primitives::{BasicType, GenericString, NestableType},
-    sequences,
-};
 use arrow::{
     array::{Array, ArrayRef, AsArray, OffsetSizeTrait, PrimitiveArray},
     datatypes::{self, ArrowPrimitiveType},
+};
+use dora_ros2_bridge_msg_gen::types::{
+    primitives::{BasicType, GenericString, NestableType},
+    sequences,
 };
 use serde::ser::SerializeTuple;
 

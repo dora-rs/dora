@@ -1,3 +1,0 @@
-# Ignore all runtime artifacts (log files, UUID dirs)
-*
-!.gitignore

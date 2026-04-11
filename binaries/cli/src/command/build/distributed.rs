@@ -1,5 +1,5 @@
-use adora_core::descriptor::Descriptor;
-use adora_message::{
+use dora_core::descriptor::Descriptor;
+use dora_message::{
     BuildId,
     cli_to_coordinator::ControlRequest,
     common::{GitSource, LogMessage},

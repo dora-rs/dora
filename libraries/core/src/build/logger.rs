@@ -1,6 +1,6 @@
 use std::future::Future;
 
-pub use adora_message::common::LogLevelOrStdout;
+pub use dora_message::common::LogLevelOrStdout;
 
 pub trait BuildLogger: Send {
     type Clone: BuildLogger + 'static;

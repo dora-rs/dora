@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use adora_core::build::LogLevelOrStdout;
-use adora_message::common::LogMessage;
 use chrono::Local;
 use colored::{Color, Colorize};
+use dora_core::build::LogLevelOrStdout;
+use dora_message::common::LogMessage;
 
 #[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
 pub enum LogFormat {
@@ -115,7 +115,7 @@ fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
             format!("{colored_id}{padding}{daemon}{colon} ")
         }
         None => {
-            let prefix = "[adora]".dimmed();
+            let prefix = "[dora]".dimmed();
             if daemon.is_empty() {
                 format!("{prefix}{colon} ")
             } else {
@@ -168,7 +168,7 @@ fn print_compact(log_message: &LogMessage) {
         .node_id
         .as_ref()
         .map(|n| n.to_string())
-        .unwrap_or_else(|| "adora".to_string());
+        .unwrap_or_else(|| "dora".to_string());
     println!("{time} {level} {node}: {}", log_message.message);
 }
 
@@ -195,7 +195,7 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
     let node_id = v
         .get("node")
         .and_then(|n| n.as_str())
-        .map(|s| adora_message::id::NodeId::from(s.to_string()));
+        .map(|s| dora_message::id::NodeId::from(s.to_string()));
     let message = v
         .get("msg")
         .and_then(|m| m.as_str())

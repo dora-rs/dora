@@ -1,10 +1,10 @@
 [package]
-name = "adora-recording"
+name = "dora-recording"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 documentation.workspace = true
-description = "Recording format for adora dataflow message capture and replay"
+description = "Recording format for dora dataflow message capture and replay"
 license.workspace = true
 repository.workspace = true
 

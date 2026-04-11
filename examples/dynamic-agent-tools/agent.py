@@ -1,7 +1,7 @@
 """Agent node — sends tool requests and processes responses.
 
 Simulates an AI agent that dispatches tasks to tools. The set of
-available tools can grow dynamically via `adora node add`.
+available tools can grow dynamically via `dora node add`.
 """
 
 import json
@@ -9,7 +9,7 @@ import logging
 import random
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 TASKS = [
     {"tool": "echo", "message": "Hello, world!"},

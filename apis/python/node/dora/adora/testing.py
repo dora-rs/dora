@@ -1,11 +1,11 @@
-"""Test utilities for adora Python nodes.
+"""Test utilities for dora Python nodes.
 
-Provides MockNode, a drop-in replacement for adora.Node that works
+Provides MockNode, a drop-in replacement for dora.Node that works
 without a running daemon. Use it to unit test node logic with
 deterministic inputs and captured outputs.
 
 Usage:
-    from adora.testing import MockNode
+    from dora.testing import MockNode
     import pyarrow as pa
 
     def test_my_node():
@@ -26,7 +26,7 @@ __all__ = ["MockNode"]
 
 
 class MockNode:
-    """Drop-in replacement for adora.Node usable in unit tests.
+    """Drop-in replacement for dora.Node usable in unit tests.
 
     Args:
         inputs: List of (input_id, data) tuples. Each becomes an
@@ -64,7 +64,7 @@ class MockNode:
         """Return the next event, or None if exhausted.
 
         Args:
-            timeout: Ignored. Accepted for API compatibility with adora.Node.
+            timeout: Ignored. Accepted for API compatibility with dora.Node.
         """
         try:
             return next(self._events)
@@ -75,7 +75,7 @@ class MockNode:
         """Async version of next(). Returns immediately.
 
         Args:
-            timeout: Ignored. Accepted for API compatibility with adora.Node.
+            timeout: Ignored. Accepted for API compatibility with dora.Node.
         """
         return self.next(timeout=timeout)
 

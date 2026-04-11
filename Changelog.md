@@ -2,7 +2,7 @@
 
 ## 0.1.0 (2026-03-13)
 
-First official release of Adora (AI-Dora) -- a 100% Rust framework for building real-time robotics and AI applications.
+First official release of Dora (AI-Dora) -- a 100% Rust framework for building real-time robotics and AI applications.
 
 ### Highlights
 
@@ -35,21 +35,21 @@ First official release of Adora (AI-Dora) -- a 100% Rust framework for building 
 
 ### Logging and Observability
 
-- Unified logging with `adora/logs` virtual input and OTel propagation
+- Unified logging with `dora/logs` virtual input and OTel propagation
 - Structured output with filtering, rotation, and log routing
-- `adora top` TUI for per-node CPU, memory, queue depth, network I/O
+- `dora top` TUI for per-node CPU, memory, queue depth, network I/O
 - `topic echo/hz/info` for live data inspection
 - `trace list/view` for coordinator span inspection
 - Record/replay to `.adorec` files with node substitution
 
 ### CLI
 
-- `adora run` for local dev, `adora up/start` for distributed prod
-- `adora record/replay` for dataflow debugging
-- `adora cluster up/status/down` for SSH-based fleet management
-- `adora node info/restart/stop`, `adora topic pub`
-- `adora doctor` for environment diagnostics
-- `adora status --json` for programmatic access
+- `dora run` for local dev, `dora up/start` for distributed prod
+- `dora record/replay` for dataflow debugging
+- `dora cluster up/status/down` for SSH-based fleet management
+- `dora node info/restart/stop`, `dora topic pub`
+- `dora doctor` for environment diagnostics
+- `dora status --json` for programmatic access
 - Configurable queue policies (`drop_oldest` / `backpressure`) per input
 
 ### Module System

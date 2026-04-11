@@ -1,6 +1,6 @@
-//! The `adora start` command is used to spawn a dataflow in a pre-existing _adora network_. To create a adora network, spawn a `adora coordinator` and one or multiple `adora daemon` instances.
+//! The `dora start` command is used to spawn a dataflow in a pre-existing _dora network_. To create a dora network, spawn a `dora coordinator` and one or multiple `dora daemon` instances.
 //!
-//! The `adora start` command does not run any build commands, nor update git dependencies or similar. Use `adora build` for that.
+//! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
 use super::{Executable, default_tracing};
 use crate::{
@@ -13,8 +13,8 @@ use crate::{
     session::DataflowSession,
     ws_client::WsSession,
 };
-use adora_core::descriptor::{Descriptor, DescriptorExt};
-use adora_message::{
+use dora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use eyre::{Context, bail};
@@ -214,7 +214,7 @@ fn wait_until_dataflow_started(
         }
         ControlRequestReply::Error(err) => bail!(
             "dataflow failed to start: {err}\n\n  \
-             hint: if nodes require building, run `adora build <dataflow.yml>` first"
+             hint: if nodes require building, run `dora build <dataflow.yml>` first"
         ),
         other => bail!("unexpected start dataflow reply: {other:?}"),
     }

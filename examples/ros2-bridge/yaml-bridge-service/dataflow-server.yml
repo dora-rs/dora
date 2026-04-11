@@ -11,7 +11,7 @@
 #     OR run the companion dataflow-client.yml
 #
 # Usage:
-#   adora run dataflow-server.yml
+#   dora run dataflow-server.yml
 
 nodes:
   - id: add_server

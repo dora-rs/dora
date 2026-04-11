@@ -1,6 +1,6 @@
 [book]
-title = "Adora User Guide"
-authors = ["Adora Contributors"]
+title = "Dora User Guide"
+authors = ["Dora Contributors"]
 language = "en"
 src = "src"
 
@@ -12,5 +12,5 @@ create-missing = false
 after = ["links"]
 
 [output.html]
-git-repository-url = "https://github.com/dora-rs/adora"
+git-repository-url = "https://github.com/dora-rs/dora"
 edit-url-template = "https://github.com/dora-rs/adora/edit/main/guide/{path}"

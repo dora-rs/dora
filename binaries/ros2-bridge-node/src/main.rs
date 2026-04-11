@@ -9,21 +9,21 @@ use std::{
     time::Duration,
 };
 
-use adora_message::{
+use arrow::array::{ArrayData, StructArray};
+use dora_message::{
     descriptor::{Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2Role, Ros2TopicConfig},
     metadata::{Parameter, get_string_param},
 };
-use adora_node_api::{
-    AdoraNode, Event,
+use dora_node_api::{
+    DoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
-use adora_ros2_bridge::{ros2_client, rustdds};
-use adora_ros2_bridge_arrow::{
+use dora_ros2_bridge::{ros2_client, rustdds};
+use dora_ros2_bridge_arrow::{
     BridgeActionType, BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
     deserialize::StructDeserializer,
 };
-use adora_ros2_bridge_msg_gen::types::Message;
-use arrow::array::{ArrayData, StructArray};
+use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, eyre};
 use futures::{StreamExt, task::SpawnExt};
 
@@ -33,7 +33,7 @@ const MAX_CONCURRENT_GOALS: usize = 8;
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
-use adora_message::metadata::{
+use dora_message::metadata::{
     GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     REQUEST_ID,
 };
@@ -41,8 +41,8 @@ use adora_message::metadata::{
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
-    let config_json = std::env::var("ADORA_ROS2_BRIDGE_CONFIG")
-        .context("missing ADORA_ROS2_BRIDGE_CONFIG env var")?;
+    let config_json = std::env::var("DORA_ROS2_BRIDGE_CONFIG")
+        .context("missing DORA_ROS2_BRIDGE_CONFIG env var")?;
     let config: Ros2BridgeConfig =
         serde_json::from_str(&config_json).context("failed to parse ROS2 bridge config")?;
 
@@ -131,15 +131,15 @@ fn run_topic_mode(
         }
     }
 
-    let (node, adora_events) = AdoraNode::init_from_env()?;
+    let (node, dora_events) = DoraNode::init_from_env()?;
 
     if subscribers.is_empty() {
-        run_publish_only(node, adora_events, publishers, &messages)?;
+        run_publish_only(node, dora_events, publishers, &messages)?;
     } else if subscribers.len() == 1 {
         let (output_id, sub) = subscribers.into_iter().next().unwrap();
-        run_single_subscriber(node, adora_events, output_id, sub, publishers, &messages)?;
+        run_single_subscriber(node, dora_events, output_id, sub, publishers, &messages)?;
     } else {
-        run_multi_subscriber(node, adora_events, subscribers, publishers, &messages)?;
+        run_multi_subscriber(node, dora_events, subscribers, publishers, &messages)?;
     }
 
     Ok(())
@@ -231,9 +231,9 @@ fn run_service_client(
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
-    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let (mut node, dora_events) = DoraNode::init_from_env()?;
 
-    for event in futures::executor::block_on_stream(adora_events) {
+    for event in futures::executor::block_on_stream(dora_events) {
         match event {
             Event::Input {
                 id: _,
@@ -287,7 +287,7 @@ fn run_service_server(
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
-    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let (mut node, dora_events) = DoraNode::init_from_env()?;
 
     // receive_request_stream() borrows &server immutably;
     // async_send_response() also takes &self. Both are shared borrows, so
@@ -302,7 +302,7 @@ fn run_service_server(
             }
         }
     });
-    let merged = adora_events.merge_external(Box::pin(request_stream));
+    let merged = dora_events.merge_external(Box::pin(request_stream));
 
     // Map from request_id -> (ROS2 RmwRequestId, insertion time).
     // Handler responses carry the request_id in metadata, allowing out-of-order replies.
@@ -315,7 +315,7 @@ fn run_service_server(
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
-            MergedEvent::Adora(Event::Input {
+            MergedEvent::Dora(Event::Input {
                 id: _,
                 metadata,
                 data,
@@ -338,8 +338,8 @@ fn run_service_server(
                     tracing::warn!("response input missing request_id metadata parameter");
                 }
             }
-            MergedEvent::Adora(Event::Stop(_)) => break,
-            MergedEvent::Adora(_) => {}
+            MergedEvent::Dora(Event::Stop(_)) => break,
+            MergedEvent::Dora(_) => {}
             MergedEvent::External((rmw_id, data)) => {
                 // Evict stale entries that never received a response.
                 // Skip the O(n) scan when no entry could have expired yet.
@@ -362,12 +362,12 @@ fn run_service_server(
                     );
                     continue;
                 }
-                let request_id = AdoraNode::new_request_id();
+                let request_id = DoraNode::new_request_id();
                 if oldest_insert.is_none() {
                     oldest_insert = Some(now);
                 }
                 pending_requests.insert(request_id.clone(), (rmw_id, now));
-                let mut params = adora_message::metadata::MetadataParameters::default();
+                let mut params = dora_message::metadata::MetadataParameters::default();
                 params.insert(REQUEST_ID.to_string(), Parameter::String(request_id));
                 node.send_output("request".into(), params, StructArray::from(data))?;
             }
@@ -434,7 +434,7 @@ fn run_action_mode(
             // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
             // action server is not yet available. Start the action server
             // before this dataflow for reliable operation.
-            tracing::info!("action client created, waiting for goals from Adora inputs");
+            tracing::info!("action client created, waiting for goals from Dora inputs");
 
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
@@ -475,7 +475,7 @@ fn run_action_client(
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
-    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let (mut node, dora_events) = DoraNode::init_from_env()?;
     let client = Arc::new(client);
     let in_flight = Arc::new(AtomicUsize::new(0));
 
@@ -487,11 +487,11 @@ fn run_action_client(
     let (tx, rx) = flume::bounded::<ActionEvent>(MAX_CONCURRENT_GOALS * 2);
 
     let rx_stream = rx.into_stream();
-    let merged = adora_events.merge_external(Box::pin(rx_stream));
+    let merged = dora_events.merge_external(Box::pin(rx_stream));
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
-            MergedEvent::Adora(Event::Input {
+            MergedEvent::Dora(Event::Input {
                 id: _,
                 metadata: _,
                 data,
@@ -588,8 +588,8 @@ fn run_action_client(
                     in_flight_ref.fetch_sub(1, Ordering::Relaxed);
                 });
             }
-            MergedEvent::Adora(Event::Stop(_)) => break,
-            MergedEvent::Adora(_) => {}
+            MergedEvent::Dora(Event::Stop(_)) => break,
+            MergedEvent::Dora(_) => {}
             MergedEvent::External(action_event) => match action_event {
                 ActionEvent::Feedback(data) => {
                     node.send_output(
@@ -632,7 +632,7 @@ fn run_action_server(
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
 ) -> eyre::Result<()> {
-    let (mut node, adora_events) = AdoraNode::init_from_env()?;
+    let (mut node, dora_events) = DoraNode::init_from_env()?;
     let server = Arc::new(server);
 
     // Map goal_id -> ExecutingGoalHandle for dispatching feedback/result
@@ -708,11 +708,11 @@ fn run_action_server(
     });
 
     let rx_stream = rx.into_stream();
-    let merged = adora_events.merge_external(Box::pin(rx_stream));
+    let merged = dora_events.merge_external(Box::pin(rx_stream));
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
-            MergedEvent::Adora(Event::Input { id, metadata, data }) => {
+            MergedEvent::Dora(Event::Input { id, metadata, data }) => {
                 let goal_id = match get_string_param(&metadata.parameters, GOAL_ID) {
                     Some(s) => s.to_owned(),
                     None => {
@@ -796,8 +796,8 @@ fn run_action_server(
                     }
                 }
             }
-            MergedEvent::Adora(Event::Stop(_)) => break,
-            MergedEvent::Adora(_) => {}
+            MergedEvent::Dora(Event::Stop(_)) => break,
+            MergedEvent::Dora(_) => {}
             MergedEvent::External(server_event) => match server_event {
                 ServerEvent::AbortGoal { goal_id, handle } => {
                     abort_executing_goal(&server, &result_type_info, handle, &goal_id);
@@ -858,8 +858,8 @@ fn abort_executing_goal(
 // ---------------------------------------------------------------------------
 
 fn run_publish_only(
-    _node: AdoraNode,
-    adora_events: adora_node_api::EventStream,
+    _node: DoraNode,
+    dora_events: dora_node_api::EventStream,
     publishers: Vec<(
         String,
         TypeInfo<'static>,
@@ -867,7 +867,7 @@ fn run_publish_only(
     )>,
     messages: &Arc<HashMap<String, HashMap<String, Message>>>,
 ) -> eyre::Result<()> {
-    for event in futures::executor::block_on_stream(adora_events) {
+    for event in futures::executor::block_on_stream(dora_events) {
         match event {
             Event::Input {
                 id,
@@ -884,8 +884,8 @@ fn run_publish_only(
 }
 
 fn run_single_subscriber(
-    mut node: AdoraNode,
-    adora_events: adora_node_api::EventStream,
+    mut node: DoraNode,
+    dora_events: dora_node_api::EventStream,
     output_id: String,
     sub: SubscriptionStream,
     publishers: Vec<(
@@ -907,19 +907,19 @@ fn run_single_subscriber(
                 }
             }
         });
-    let merged = adora_events.merge_external(Box::pin(ros_stream));
+    let merged = dora_events.merge_external(Box::pin(ros_stream));
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
-            MergedEvent::Adora(Event::Input {
+            MergedEvent::Dora(Event::Input {
                 id,
                 metadata: _,
                 data,
             }) => {
                 handle_publish_input(&id, &data, &publishers, messages)?;
             }
-            MergedEvent::Adora(Event::Stop(_)) => break,
-            MergedEvent::Adora(_) => {}
+            MergedEvent::Dora(Event::Stop(_)) => break,
+            MergedEvent::Dora(_) => {}
             MergedEvent::External(data) => {
                 node.send_output(
                     output_id.clone().into(),
@@ -933,8 +933,8 @@ fn run_single_subscriber(
 }
 
 fn run_multi_subscriber(
-    mut node: AdoraNode,
-    adora_events: adora_node_api::EventStream,
+    mut node: DoraNode,
+    dora_events: dora_node_api::EventStream,
     subscribers: Vec<(String, SubscriptionStream)>,
     publishers: Vec<(
         String,
@@ -972,19 +972,19 @@ fn run_multi_subscriber(
     drop(tx);
 
     let rx_stream = rx.into_stream();
-    let merged = adora_events.merge_external(Box::pin(rx_stream));
+    let merged = dora_events.merge_external(Box::pin(rx_stream));
 
     for event in futures::executor::block_on_stream(merged) {
         match event {
-            MergedEvent::Adora(Event::Input {
+            MergedEvent::Dora(Event::Input {
                 id,
                 metadata: _,
                 data,
             }) => {
                 handle_publish_input(&id, &data, &publishers, messages)?;
             }
-            MergedEvent::Adora(Event::Stop(_)) => break,
-            MergedEvent::Adora(_) => {}
+            MergedEvent::Dora(Event::Stop(_)) => break,
+            MergedEvent::Dora(_) => {}
             MergedEvent::External((output_id, data)) => {
                 node.send_output(
                     output_id.into(),
@@ -1044,7 +1044,7 @@ fn create_ros_node(
     let node_name = config
         .node_name
         .clone()
-        .unwrap_or_else(|| "adora_ros2_bridge".to_string());
+        .unwrap_or_else(|| "dora_ros2_bridge".to_string());
     let namespace = &config.namespace;
     let mut ros_node = ros_context
         .new_node(
@@ -1070,7 +1070,7 @@ fn create_ros_node(
 
 /// Wait for a ROS2 service to become available.
 ///
-/// NOTE: This blocks the main thread and does not respond to Adora Stop events.
+/// NOTE: This blocks the main thread and does not respond to Dora Stop events.
 /// If the service never appears, the loop will exhaust its 10 retries and bail.
 fn wait_for_service(
     client: &ros2_client::Client<BridgeServiceType>,
@@ -1105,7 +1105,7 @@ fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>
     };
     let path_refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
 
-    let packages = adora_ros2_bridge_msg_gen::get_packages(&path_refs)
+    let packages = dora_ros2_bridge_msg_gen::get_packages(&path_refs)
         .map_err(|e| eyre!("failed to parse ROS2 message definitions: {e:?}"))?;
 
     let mut messages: HashMap<String, HashMap<String, Message>> = HashMap::new();

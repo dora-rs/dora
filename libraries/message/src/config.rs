@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
 
-/// Filter for the `adora/logs` virtual input.
+/// Filter for the `dora/logs` virtual input.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct LogSubscriptionFilter {
     /// Minimum log level to receive. `None` means all levels (including stdout).
@@ -193,19 +193,19 @@ pub enum InputMapping {
     },
     /// Subscribe to log messages from all (or filtered) nodes in the dataflow.
     ///
-    /// Syntax: `adora/logs`, `adora/logs/{level}`, `adora/logs/{level}/{node_id}`
+    /// Syntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`
     Logs(LogSubscriptionFilter),
     User(UserInputMapping),
 }
 
 impl InputMapping {
     pub fn source(&self) -> &NodeId {
-        static ADORA_NODE_ID: OnceLock<NodeId> = OnceLock::new();
+        static DORA_NODE_ID: OnceLock<NodeId> = OnceLock::new();
 
         match self {
             InputMapping::User(mapping) => &mapping.source,
             InputMapping::Timer { .. } | InputMapping::Logs(_) => {
-                ADORA_NODE_ID.get_or_init(|| NodeId("adora".to_string()))
+                DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string()))
             }
         }
     }
@@ -216,10 +216,10 @@ impl fmt::Display for InputMapping {
         match self {
             InputMapping::Timer { interval } => {
                 let duration = format_duration(*interval);
-                write!(f, "adora/timer/{duration}")
+                write!(f, "dora/timer/{duration}")
             }
             InputMapping::Logs(filter) => {
-                write!(f, "adora/logs")?;
+                write!(f, "dora/logs")?;
                 if let Some(level) = &filter.min_level {
                     write!(f, "/{}", format_log_level(level))?;
                     if let Some(node) = &filter.node_filter {
@@ -244,7 +244,7 @@ impl FromStr for InputMapping {
             .ok_or("input must start with `<source>/`")?;
 
         let mapping = match source {
-            "adora" => match output.split_once('/') {
+            "dora" => match output.split_once('/') {
                 Some(("timer", output)) => {
                     let (unit, value) = output.split_once('/').ok_or(
                         "timer input must specify unit and value (e.g. `secs/5`, `millis/100`, or `hz/30`)",
@@ -282,7 +282,7 @@ impl FromStr for InputMapping {
                     Self::Timer { interval }
                 }
                 Some(("logs", rest)) => {
-                    // adora/logs/{level} or adora/logs/{level}/{node_id}
+                    // dora/logs/{level} or dora/logs/{level}/{node_id}
                     let (level_str, node_filter) = match rest.split_once('/') {
                         Some((level, node)) => (Some(level), Some(NodeId(node.to_owned()))),
                         None => {
@@ -300,14 +300,14 @@ impl FromStr for InputMapping {
                     })
                 }
                 Some((other, _)) => {
-                    return Err(format!("unknown adora input `{other}`"));
+                    return Err(format!("unknown dora input `{other}`"));
                 }
-                // "adora/logs" with no sub-path
+                // "dora/logs" with no sub-path
                 None if output == "logs" => Self::Logs(LogSubscriptionFilter {
                     min_level: None,
                     node_filter: None,
                 }),
-                None => return Err("adora input has invalid format".into()),
+                None => return Err("dora input has invalid format".into()),
             },
             _ => Self::User(UserInputMapping {
                 source: source.to_owned().into(),
@@ -471,13 +471,13 @@ mod tests {
         assert_eq!(input, parsed);
     }
 
-    /// Regression tests for dora-rs/adora#144: `adora/timer/hz/N` is
+    /// Regression tests for dora-rs/adora#144: `dora/timer/hz/N` is
     /// documented across README, guide, schema, and real examples
     /// (`streaming-example`, `dynamic-agent-tools`) but the parser
     /// previously only accepted `secs` / `millis`.
     #[test]
     fn parse_timer_hz_integer() {
-        let mapping: InputMapping = "adora/timer/hz/30".parse().unwrap();
+        let mapping: InputMapping = "dora/timer/hz/30".parse().unwrap();
         match mapping {
             InputMapping::Timer { interval } => {
                 // 1 / 30 Hz ≈ 33.333 ms
@@ -490,7 +490,7 @@ mod tests {
     #[test]
     fn parse_timer_hz_fractional() {
         // Used in examples/streaming-example/dataflow.yml
-        let mapping: InputMapping = "adora/timer/hz/0.5".parse().unwrap();
+        let mapping: InputMapping = "dora/timer/hz/0.5".parse().unwrap();
         match mapping {
             InputMapping::Timer { interval } => {
                 assert_eq!(interval, Duration::from_secs(2));
@@ -501,19 +501,19 @@ mod tests {
 
     #[test]
     fn parse_timer_hz_rejects_zero() {
-        let err = "adora/timer/hz/0".parse::<InputMapping>().unwrap_err();
+        let err = "dora/timer/hz/0".parse::<InputMapping>().unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
     }
 
     #[test]
     fn parse_timer_hz_rejects_negative() {
-        let err = "adora/timer/hz/-1".parse::<InputMapping>().unwrap_err();
+        let err = "dora/timer/hz/-1".parse::<InputMapping>().unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
     }
 
     #[test]
     fn parse_timer_hz_rejects_non_numeric() {
-        let err = "adora/timer/hz/foo".parse::<InputMapping>().unwrap_err();
+        let err = "dora/timer/hz/foo".parse::<InputMapping>().unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
     }
 
@@ -539,7 +539,7 @@ mod tests {
 
     #[test]
     fn parse_logs_all() {
-        let mapping: InputMapping = "adora/logs".parse().unwrap();
+        let mapping: InputMapping = "dora/logs".parse().unwrap();
         assert!(matches!(
             mapping,
             InputMapping::Logs(LogSubscriptionFilter {
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn parse_logs_with_level() {
         use crate::common::{LogLevel, LogLevelOrStdout};
-        let mapping: InputMapping = "adora/logs/info".parse().unwrap();
+        let mapping: InputMapping = "dora/logs/info".parse().unwrap();
         match mapping {
             InputMapping::Logs(f) => {
                 assert_eq!(
@@ -568,7 +568,7 @@ mod tests {
     #[test]
     fn parse_logs_with_level_and_node() {
         use crate::common::{LogLevel, LogLevelOrStdout};
-        let mapping: InputMapping = "adora/logs/error/sensor".parse().unwrap();
+        let mapping: InputMapping = "dora/logs/error/sensor".parse().unwrap();
         match mapping {
             InputMapping::Logs(f) => {
                 assert_eq!(
@@ -583,37 +583,37 @@ mod tests {
 
     #[test]
     fn parse_logs_invalid_level() {
-        let result: Result<InputMapping, _> = "adora/logs/banana".parse();
+        let result: Result<InputMapping, _> = "dora/logs/banana".parse();
         assert!(result.is_err());
     }
 
     #[test]
     fn display_roundtrip_logs_all() {
-        let mapping: InputMapping = "adora/logs".parse().unwrap();
-        assert_eq!(mapping.to_string(), "adora/logs");
+        let mapping: InputMapping = "dora/logs".parse().unwrap();
+        assert_eq!(mapping.to_string(), "dora/logs");
     }
 
     #[test]
     fn display_roundtrip_logs_with_level() {
-        let mapping: InputMapping = "adora/logs/warn".parse().unwrap();
-        assert_eq!(mapping.to_string(), "adora/logs/warn");
+        let mapping: InputMapping = "dora/logs/warn".parse().unwrap();
+        assert_eq!(mapping.to_string(), "dora/logs/warn");
     }
 
     #[test]
     fn display_roundtrip_logs_with_level_and_node() {
-        let mapping: InputMapping = "adora/logs/debug/camera".parse().unwrap();
-        assert_eq!(mapping.to_string(), "adora/logs/debug/camera");
+        let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
+        assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
     }
 
     #[test]
-    fn logs_source_is_adora() {
-        let mapping: InputMapping = "adora/logs".parse().unwrap();
-        assert_eq!(mapping.source().to_string(), "adora");
+    fn logs_source_is_dora() {
+        let mapping: InputMapping = "dora/logs".parse().unwrap();
+        assert_eq!(mapping.source().to_string(), "dora");
     }
 
     #[test]
     fn parse_logs_trailing_slash() {
-        let mapping: InputMapping = "adora/logs/".parse().unwrap();
+        let mapping: InputMapping = "dora/logs/".parse().unwrap();
         assert!(matches!(
             mapping,
             InputMapping::Logs(LogSubscriptionFilter {

@@ -1,15 +1,15 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    AdoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
+    DoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
     pending::PendingNodes, send_drop_with_timestamp, send_with_timestamp,
 };
-use adora_core::{
+use dora_core::{
     config::{DataId, NodeId},
     descriptor::Descriptor,
     uhlc::HLC,
 };
-use adora_message::{
+use dora_message::{
     common::{DaemonId, DropToken},
     daemon_to_node::{NodeConfig, NodeDropEvent, NodeEvent},
     descriptor::RestartPolicy,
@@ -167,11 +167,11 @@ pub(crate) struct DropTokenInformation {
     pub pending_nodes: BTreeSet<NodeId>,
 }
 
-/// A subscriber to the `adora/logs` virtual input.
+/// A subscriber to the `dora/logs` virtual input.
 pub struct LogSubscriber {
     pub node_id: NodeId,
     pub input_id: DataId,
-    pub filter: adora_message::config::LogSubscriptionFilter,
+    pub filter: dora_message::config::LogSubscriptionFilter,
 }
 
 pub struct RunningDataflow {
@@ -185,7 +185,7 @@ pub struct RunningDataflow {
     pub(crate) drop_channels: HashMap<NodeId, mpsc::UnboundedSender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
-    /// Nodes subscribing to `adora/logs` virtual input.
+    /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
     pub(crate) open_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     pub(crate) input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
@@ -294,14 +294,14 @@ impl RunningDataflow {
                     // Use shared daemon clock (not per-timer HLC) for causality.
                     #[cfg(feature = "telemetry")]
                     let parameters = {
-                        let ctx = adora_tracing::telemetry::serialize_context(&span.context());
+                        let ctx = dora_tracing::telemetry::serialize_context(&span.context());
                         if ctx.is_empty() {
                             BTreeMap::new()
                         } else {
                             let mut m = BTreeMap::new();
                             m.insert(
                                 "open_telemetry_context".to_string(),
-                                adora_node_api::Parameter::String(ctx),
+                                dora_node_api::Parameter::String(ctx),
                             );
                             m
                         }
@@ -316,7 +316,7 @@ impl RunningDataflow {
                     );
 
                     let event = Timestamped {
-                        inner: AdoraEvent::Timer {
+                        inner: DoraEvent::Timer {
                             dataflow_id,
                             interval,
                             metadata,

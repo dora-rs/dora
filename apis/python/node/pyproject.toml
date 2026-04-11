@@ -3,9 +3,9 @@ requires = ["maturin>=0.13.2"]
 build-backend = "maturin"
 
 [project]
-name = "adora-rs"
+name = "dora-rs"
 dynamic = ["version"]
-# Install pyarrow at the same time of adora-rs
+# Install pyarrow at the same time of dora-rs
 requires-python = ">=3.8"
 license = { text = "MIT" }
 readme = "README.md"

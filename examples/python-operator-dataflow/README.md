@@ -1,6 +1,6 @@
 # Python Dataflow Example
 
-This examples shows how to create and connect adora operators and custom nodes in Python.
+This examples shows how to create and connect dora operators and custom nodes in Python.
 
 ## Overview
 
@@ -31,13 +31,13 @@ pip install -r requirements_llm.txt
 - Start the object detection dataflow alone:
 
 ```bash
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 - Start the llm dataflow (Only works on Windows and Linux):
 
 ```bash
-adora run dataflow_llm.yml
+dora run dataflow_llm.yml
 ```
 
 Within the window you can ask question such as:

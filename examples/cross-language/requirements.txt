@@ -1,2 +1,2 @@
 pyarrow
-adora-rs
+dora-rs

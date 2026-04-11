@@ -28,13 +28,13 @@ nodes:
 Validate with:
 
 ```bash
-adora validate dataflow.yml
+dora validate dataflow.yml
 
 # Fail with non-zero exit code on warnings (for CI)
-adora validate --strict-types dataflow.yml
+dora validate --strict-types dataflow.yml
 
 # Type checks also run during build
-adora build dataflow.yml --strict-types
+dora build dataflow.yml --strict-types
 ```
 
 You can also set `strict_types: true` at the top level of the YAML to enable strict mode without the CLI flag:
@@ -136,12 +136,12 @@ input_types:
 
 ## Validation Rules
 
-`adora validate` and `adora build` check:
+`dora validate` and `dora build` check:
 
 1. **Key existence**: `output_types` keys must appear in `outputs`, `input_types` keys must appear in `inputs`
 2. **URN resolution**: All type URNs must exist in the standard or user-defined type library. Typos get "did you mean?" suggestions.
 3. **Edge compatibility**: Connected edges must have compatible types (exact match, implicit widening, or user-defined rules)
-4. **Timer auto-typing**: Timer inputs (`adora/timer/*`) are automatically typed as `std/core/v1/UInt64`
+4. **Timer auto-typing**: Timer inputs (`dora/timer/*`) are automatically typed as `std/core/v1/UInt64`
 5. **Type inference**: When only the upstream side annotates a type, it is inferred on the downstream input and reported
 6. **Parameterized types**: Parameter mismatches are detected (see above)
 7. **Metadata patterns**: `output_metadata` keys and `pattern` shorthands are validated (see below)
@@ -253,26 +253,26 @@ This creates the URN `myproject/sensors/v1/MySensor`.
 
 The `std/` prefix is reserved and cannot be used for user types.
 
-User types are loaded automatically by `adora validate` and `adora build` when a `types/` directory exists.
+User types are loaded automatically by `dora validate` and `dora build` when a `types/` directory exists.
 
 ## Runtime Type Checking
 
-In addition to static validation, Adora supports optional runtime type checking on `send_output()`. When enabled, the actual Arrow data type is compared against the declared `output_types` at send time.
+In addition to static validation, Dora supports optional runtime type checking on `send_output()`. When enabled, the actual Arrow data type is compared against the declared `output_types` at send time.
 
 Enable via environment variable:
 
 ```bash
 # Warn on mismatches (log and continue)
-ADORA_RUNTIME_TYPE_CHECK=warn adora run dataflow.yml
+DORA_RUNTIME_TYPE_CHECK=warn dora run dataflow.yml
 
 # Error on mismatches (node returns error)
-ADORA_RUNTIME_TYPE_CHECK=error adora run dataflow.yml
+DORA_RUNTIME_TYPE_CHECK=error dora run dataflow.yml
 ```
 
 Valid values: `1`, `warn`, `true` (warn mode), `error` (error mode). Unset or any other value disables checking (zero overhead).
 
 **Scope:**
-- Validates `output_types` on the sender side (`send_output()` calls). `input_types` are checked statically by `adora validate` but not enforced at runtime
+- Validates `output_types` on the sender side (`send_output()` calls). `input_types` are checked statically by `dora validate` but not enforced at runtime
 - Covers all languages that send Arrow arrays (Rust, Python, C++ Arrow path)
 - Raw byte sends (`send_output_bytes`, C nodes) are untyped and skip checking
 - Complex types (Struct-based: Image, Vector3, etc.) are skipped -- only primitive types, String, Bytes, and Bool are validated at runtime
@@ -282,10 +282,10 @@ The same exemption applies to the receive-side first-message type check: if the 
 
 ## Graph Visualization
 
-When outputs have type annotations, `adora graph` shows the type on edge labels:
+When outputs have type annotations, `dora graph` shows the type on edge labels:
 
 ```bash
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 ```
 
 Edges display as `output_name [TypeName]` (e.g. `image [Image]`).

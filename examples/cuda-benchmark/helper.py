@@ -6,18 +6,18 @@ import platform
 from datetime import datetime
 
 import numpy as np
-from adora import __version__
+from dora import __version__
 
 LATENCY = True
 
 DATE = str(datetime.now())
 LANGUAGE = f"Python {platform.python_version()}"
 PLATFORM = platform.platform()
-ADORA_VERSION = __version__
+DORA_VERSION = __version__
 LOG_HEADER = [
     "Date",
     "Language",
-    "Adora Version",
+    "Dora Version",
     "Platform",
     "Name",
     "Size (bit)",
@@ -42,7 +42,7 @@ def record_results(name, current_size, latencies):
     log_row = [
         DATE,
         LANGUAGE,
-        ADORA_VERSION,
+        DORA_VERSION,
         PLATFORM,
         name,
         current_size,

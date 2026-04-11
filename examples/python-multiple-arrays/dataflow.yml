@@ -5,7 +5,7 @@ nodes:
     outputs:
       - multi_array_msg
     inputs:
-      tick: adora/timer/millis/1000
+      tick: dora/timer/millis/1000
 
   - id: receiver
     build: pip install numpy pyarrow

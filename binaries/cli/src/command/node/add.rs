@@ -2,7 +2,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, bail};
 use std::path::PathBuf;
 
@@ -26,7 +26,7 @@ impl Executable for Add {
 
         let yaml_content = std::fs::read_to_string(&self.from_yaml)
             .wrap_err_with(|| format!("failed to read {}", self.from_yaml.display()))?;
-        let node: adora_message::descriptor::Node =
+        let node: dora_message::descriptor::Node =
             serde_yaml::from_str(&yaml_content).wrap_err("failed to parse node YAML")?;
 
         let reply = send_control_request(&session, &ControlRequest::AddNode { dataflow_id, node })?;

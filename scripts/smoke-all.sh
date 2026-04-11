@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Smoke-test all safe example dataflows using the networked lifecycle:
-#   adora up -> adora start --detach -> poll adora list -> adora stop -> adora down
+#   dora up -> dora start --detach -> poll dora list -> dora stop -> dora down
 #
 # Usage:
 #   ./scripts/smoke-all.sh              # Run all examples
@@ -36,7 +36,7 @@ for arg in "$@"; do
     esac
 done
 
-ADORA="${ADORA_BIN:-$ROOT/target/debug/adora}"
+ADORA="${ADORA_BIN:-$ROOT/target/debug/dora}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -56,12 +56,12 @@ run_networked() {
     sleep 0.5
 
     if ! "$ADORA" up > /dev/null 2>&1; then
-        log_fail "$name (adora up failed)"
+        log_fail "$name (dora up failed)"
         return
     fi
 
     if ! "$ADORA" start "$ROOT/$yaml" --detach > /dev/null 2>&1; then
-        log_fail "$name (adora start failed)"
+        log_fail "$name (dora start failed)"
         "$ADORA" down > /dev/null 2>&1 || true
         return
     fi
@@ -99,7 +99,7 @@ run_networked() {
     fi
 }
 
-# Run a dataflow with adora run --stop-after (local/in-process mode).
+# Run a dataflow with dora run --stop-after (local/in-process mode).
 # Uses a hard kill timeout (2x stop-after) to prevent hangs.
 run_local() {
     local name="$1" yaml="$2" timeout="${3:-15}"
@@ -132,10 +132,10 @@ run_local() {
 # ---------------------------------------------------------------------------
 
 echo "Building CLI..."
-cargo build -p adora-cli 2>&1 | tail -1
+cargo build -p dora-cli 2>&1 | tail -1
 
 echo "Running CLI unit tests..."
-cargo test -p adora-cli 2>&1 | tail -3
+cargo test -p dora-cli 2>&1 | tail -3
 
 if [ "$RUN_RUST" = true ]; then
     echo "Building Rust example nodes..."

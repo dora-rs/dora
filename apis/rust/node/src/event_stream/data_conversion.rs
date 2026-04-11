@@ -1,8 +1,8 @@
 use std::{ptr::NonNull, sync::Arc};
 
-use adora_arrow_convert::IntoArrow;
-use adora_message::metadata::ArrowTypeInfo;
 use aligned_vec::{AVec, ConstAlign};
+use dora_arrow_convert::IntoArrow;
+use dora_message::metadata::ArrowTypeInfo;
 use eyre::Context;
 use shared_memory_server::{Shmem, ShmemConf};
 
@@ -102,7 +102,7 @@ impl std::ops::Deref for MappedInputData {
 //
 // 1. The region is opened with `writable(false)` in `map()` above, so this
 //    reader cannot write to the memory.
-// 2. The sender (daemon or another node) is required by adora's wire
+// 2. The sender (daemon or another node) is required by dora's wire
 //    protocol to finish writing and signal readiness BEFORE this reader
 //    maps the region, and not to reuse the region UNTIL this reader drops
 //    its `SharedMemoryData` (the drop token in the parent struct signals

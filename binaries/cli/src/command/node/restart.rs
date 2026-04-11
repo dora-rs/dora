@@ -4,7 +4,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::bail;
@@ -17,13 +17,13 @@ use eyre::bail;
 /// Examples:
 ///
 /// Restart a node:
-///   adora node restart camera_node
+///   dora node restart camera_node
 ///
 /// Restart with a custom grace period:
-///   adora node restart camera_node --grace 30s
+///   dora node restart camera_node --grace 30s
 ///
 /// Restart a node in a specific dataflow:
-///   adora node restart camera_node --dataflow my-dataflow
+///   dora node restart camera_node --dataflow my-dataflow
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Restart {

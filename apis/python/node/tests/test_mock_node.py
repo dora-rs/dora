@@ -1,10 +1,10 @@
-"""Tests for adora.testing.MockNode."""
+"""Tests for dora.testing.MockNode."""
 
 import asyncio
 
 import pyarrow as pa
 
-from adora.testing import MockNode
+from dora.testing import MockNode
 
 
 def test_mock_node_iterates_inputs_then_stop():

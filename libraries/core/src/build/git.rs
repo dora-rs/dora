@@ -1,5 +1,5 @@
 use crate::build::{BuildLogger, PrevGitSource};
-use adora_message::{DataflowId, SessionId, common::LogLevel};
+use dora_message::{DataflowId, SessionId, common::LogLevel};
 use eyre::{ContextCompat, WrapErr, bail};
 use git2::FetchOptions;
 use itertools::Itertools;

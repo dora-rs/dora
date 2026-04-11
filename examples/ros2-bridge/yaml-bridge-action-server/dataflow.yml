@@ -11,7 +11,7 @@
 #       ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
 #
 # Usage:
-#   adora run dataflow.yml
+#   dora run dataflow.yml
 
 nodes:
   - id: fib_server

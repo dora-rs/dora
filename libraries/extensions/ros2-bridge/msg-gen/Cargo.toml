@@ -1,5 +1,5 @@
 [package]
-name = "adora-ros2-bridge-msg-gen"
+name = "dora-ros2-bridge-msg-gen"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true

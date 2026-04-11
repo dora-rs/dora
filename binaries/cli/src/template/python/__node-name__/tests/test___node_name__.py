@@ -3,15 +3,15 @@
 import pyarrow as pa
 import pytest
 
-from adora.testing import MockNode
+from dora.testing import MockNode
 
 
 def test_import_main():
     """Test importing and running the main function."""
     from __node_name__.main import main
 
-    # Check that everything is working, and catch Adora RuntimeError
-    # as we're not running in a Adora dataflow.
+    # Check that everything is working, and catch Dora RuntimeError
+    # as we're not running in a Dora dataflow.
     with pytest.raises(RuntimeError):
         main()
 

@@ -5,7 +5,7 @@ import sys
 
 import pyarrow as pa
 import torch
-from adora import AdoraStatus
+from dora import DoraStatus
 from sentence_transformers import SentenceTransformer, util
 
 SHOULD_BE_INCLUDED = [
@@ -63,13 +63,13 @@ class Operator:
 
     def on_event(
         self,
-        adora_event,
+        dora_event,
         send_output,
-    ) -> AdoraStatus:
+    ) -> DoraStatus:
         """TODO: Add docstring."""
-        if adora_event["type"] == "INPUT":
-            if adora_event["id"] == "query":
-                values = adora_event["value"].to_pylist()
+        if dora_event["type"] == "INPUT":
+            if dora_event["id"] == "query":
+                values = dora_event["value"].to_pylist()
 
                 query_embeddings = self.model.encode(values)
                 output = search(
@@ -82,15 +82,15 @@ class Operator:
                 send_output(
                     "raw_file",
                     pa.array([{"raw": raw, "path": path, "user_message": values[0]}]),
-                    adora_event["metadata"],
+                    dora_event["metadata"],
                 )
             else:
-                input = adora_event["value"][0].as_py()
+                input = dora_event["value"][0].as_py()
                 index = self.path.index(input["path"])
                 self.raw[index] = input["raw"]
                 self.encoding[index] = self.model.encode([input["raw"]])[0]
 
-        return AdoraStatus.CONTINUE
+        return DoraStatus.CONTINUE
 
 
 if __name__ == "__main__":

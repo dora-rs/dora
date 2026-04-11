@@ -7,12 +7,12 @@
 
 use std::sync::Arc;
 
-use adora_node_api::{AdoraNode, Event, adora_core::config::DataId};
 use arrow::array::{Array, Int32Array, Int32Builder, ListBuilder, StructArray};
 use arrow::datatypes::Field;
+use dora_node_api::{DoraNode, Event, dora_core::config::DataId};
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
     let feedback_output = DataId::from("feedback".to_owned());
     let result_output = DataId::from("result".to_owned());
 

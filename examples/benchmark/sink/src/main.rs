@@ -1,8 +1,8 @@
-use adora_node_api::{self, AdoraNode, Event};
+use dora_node_api::{self, DoraNode, Event};
 use std::time::{Duration, Instant};
 
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = AdoraNode::init_from_env()?;
+    let (_node, mut events) = DoraNode::init_from_env()?;
 
     // latency is tested first
     let mut latency = true;

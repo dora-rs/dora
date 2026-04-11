@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use adora_message::{
+use dora_message::{
     common::GitSource,
     descriptor::{GitRepoRev, NodeSource},
     id::NodeId,
@@ -35,7 +35,7 @@ impl BuildLockfile {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("dataflow");
-            dataflow_path.with_file_name(format!("{file_stem}.adora-lock.yaml"))
+            dataflow_path.with_file_name(format!("{file_stem}.dora-lock.yaml"))
         })
     }
 
@@ -60,7 +60,7 @@ impl BuildLockfile {
         let mut canonical = String::new();
         // Intentional: include schema version in canonical content so lockfile format
         // bumps force regeneration even if descriptor sources are unchanged.
-        canonical.push_str(&format!("adora-lockfile-v{LOCKFILE_VERSION}\n"));
+        canonical.push_str(&format!("dora-lockfile-v{LOCKFILE_VERSION}\n"));
 
         for (node_id, source) in descriptor_git_sources {
             let NodeSource::GitBranch { repo, rev } = source else {
@@ -98,14 +98,14 @@ impl BuildLockfile {
         let Some(actual) = self.descriptor_fingerprint.as_deref() else {
             eyre::bail!(
                 "lockfile is missing `descriptor_fingerprint` (v1 format). \
-                 regenerate with `adora build --write-lockfile` before using `--locked`"
+                 regenerate with `dora build --write-lockfile` before using `--locked`"
             );
         };
         if actual != expected {
             eyre::bail!(
                 "lockfile descriptor/source fingerprint mismatch. \
                  the dataflow git source graph changed since lockfile generation; \
-                 regenerate with `adora build --write-lockfile`"
+                 regenerate with `dora build --write-lockfile`"
             );
         }
         Ok(())
@@ -159,13 +159,13 @@ mod tests {
     #[test]
     fn default_lockfile_path_uses_dataflow_stem() {
         let path = BuildLockfile::path_for_dataflow(Path::new("examples/demo.yml"), None);
-        assert_eq!(path, PathBuf::from("examples/demo.adora-lock.yaml"));
+        assert_eq!(path, PathBuf::from("examples/demo.dora-lock.yaml"));
     }
 
     #[test]
     fn read_write_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let lockfile_path = tmp.path().join("demo.adora-lock.yaml");
+        let lockfile_path = tmp.path().join("demo.dora-lock.yaml");
         let mut git_sources = BTreeMap::new();
         let mut descriptor_git_sources = BTreeMap::new();
         git_sources.insert(

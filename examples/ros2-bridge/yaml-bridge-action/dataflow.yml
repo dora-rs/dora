@@ -15,14 +15,14 @@
 # so the first goal will time out if the server is not yet available.
 #
 # Usage:
-#   adora run dataflow.yml
+#   dora run dataflow.yml
 
 nodes:
   - id: goal_sender
     build: cargo build -p yaml-bridge-action-goal
     path: ../../../target/debug/yaml-bridge-action-goal
     inputs:
-      tick: adora/timer/millis/5000
+      tick: dora/timer/millis/5000
       feedback: fib_client/feedback
       result: fib_client/result
     outputs:

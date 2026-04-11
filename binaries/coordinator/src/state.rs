@@ -1,7 +1,7 @@
 use crate::log_subscriber::LogSubscriber;
-use adora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
-use adora_core::config::NodeId;
-use adora_message::{
+use dora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
+use dora_core::config::NodeId;
+use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{ControlRequestReply, LogMessage},
     coordinator_to_daemon::{StateCatchUpEntry, StateCatchUpOperation},
@@ -131,7 +131,7 @@ impl DaemonConnection {
             .map_err(|_| eyre!("WS daemon send channel closed"))?;
 
         let response_json =
-            match tokio::time::timeout(adora_message::TCP_READ_TIMEOUT, reply_rx).await {
+            match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, reply_rx).await {
                 Ok(result) => result.map_err(|_| eyre!("daemon WS reply channel dropped"))?,
                 Err(_) => {
                     self.pending_replies.lock().await.remove(&id);
@@ -183,7 +183,7 @@ pub(crate) struct RunningDataflow {
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
-    pub(crate) network_metrics: Option<adora_message::daemon_to_coordinator::NetworkMetrics>,
+    pub(crate) network_metrics: Option<dora_message::daemon_to_coordinator::NetworkMetrics>,
 
     pub(crate) spawn_result: CachedResult,
     pub(crate) stop_reply_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
@@ -226,9 +226,9 @@ pub(crate) enum ParamTarget {
 }
 
 pub(crate) fn resolve_param_target(
-    running_dataflows: &HashMap<adora_message::DataflowId, RunningDataflow>,
+    running_dataflows: &HashMap<dora_message::DataflowId, RunningDataflow>,
     store: &dyn CoordinatorStore,
-    dataflow_id: &adora_message::DataflowId,
+    dataflow_id: &dora_message::DataflowId,
     node_id: &NodeId,
 ) -> eyre::Result<ParamTarget> {
     if let Some(dataflow) = running_dataflows.get(dataflow_id) {
@@ -247,7 +247,7 @@ pub(crate) fn resolve_param_target(
         );
     };
 
-    let descriptor: adora_message::descriptor::Descriptor =
+    let descriptor: dora_message::descriptor::Descriptor =
         serde_json::from_str(&record.descriptor_json).map_err(|e| {
             eyre::eyre!("failed to parse persisted descriptor for `{dataflow_id}`: {e}")
         })?;

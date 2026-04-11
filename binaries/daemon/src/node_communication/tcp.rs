@@ -8,8 +8,8 @@ use crate::{
     Event,
     socket_stream_utils::{socket_stream_receive, socket_stream_send},
 };
-use adora_core::uhlc::HLC;
-use adora_message::{
+use dora_core::uhlc::HLC;
+use dora_message::{
     common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
 };
 use eyre::Context;

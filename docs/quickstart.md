@@ -6,24 +6,24 @@ Get a dataflow running in 5 minutes.
 
 **CLI** (Rust):
 ```bash
-cargo install adora-cli --locked
+cargo install dora-cli --locked
 ```
 
 Or download a prebuilt binary from [GitHub Releases](https://github.com/dora-rs/adora/releases).
 
 **Python node API** (optional):
 ```bash
-pip install adora-rs
+pip install dora-rs
 ```
 
 ## Create a Project
 
 ```bash
 # Rust project
-adora new my-project --lang rust
+dora new my-project --lang rust
 
 # Python project
-adora new my-project --lang python
+dora new my-project --lang python
 ```
 
 This scaffolds a complete dataflow with a talker/listener pair, `Cargo.toml` or `pyproject.toml`, and a `dataflow.yml`.
@@ -34,17 +34,17 @@ This scaffolds a complete dataflow with a talker/listener pair, `Cargo.toml` or 
 cd my-project
 
 # Build all nodes
-adora build dataflow.yml
+dora build dataflow.yml
 
 # Run the dataflow (embedded coordinator + daemon)
-adora run dataflow.yml
+dora run dataflow.yml
 ```
 
 Press `Ctrl+C` to stop.
 
 ## What Just Happened?
 
-`adora run` starts an embedded coordinator and daemon, builds your nodes, and runs the dataflow defined in `dataflow.yml`:
+`dora run` starts an embedded coordinator and daemon, builds your nodes, and runs the dataflow defined in `dataflow.yml`:
 
 ```
 Timer (1Hz) --> Talker --> Listener
@@ -60,20 +60,20 @@ For production or multi-machine deployments, use the coordinator/daemon architec
 
 ```bash
 # Terminal 1: start coordinator + daemon
-adora up
+dora up
 
 # Terminal 2: build and run
-adora build dataflow.yml
-adora start dataflow.yml
+dora build dataflow.yml
+dora start dataflow.yml
 
 # Monitor
-adora list          # show running dataflows
-adora logs my-node  # stream node logs
-adora top           # resource usage
+dora list          # show running dataflows
+dora logs my-node  # stream node logs
+dora top           # resource usage
 
 # Stop
-adora stop --all
-adora down
+dora stop --all
+dora down
 ```
 
 ## Next Steps
@@ -89,11 +89,11 @@ adora down
 
 ```bash
 # Check system health
-adora doctor
+dora doctor
 
 # Validate a dataflow without running it
-adora validate dataflow.yml
+dora validate dataflow.yml
 
 # Check type compatibility
-adora validate --strict-types dataflow.yml
+dora validate --strict-types dataflow.yml
 ```

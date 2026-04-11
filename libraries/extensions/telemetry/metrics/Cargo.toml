@@ -1,5 +1,5 @@
 [package]
-name = "adora-metrics"
+name = "dora-metrics"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

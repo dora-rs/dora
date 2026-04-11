@@ -1,6 +1,7 @@
 use crate::{Event, control::ControlEvent};
-use adora_core::topics::zenoh_output_publish_topic;
-use adora_message::{
+use axum::extract::ws::{Message, WebSocket};
+use dora_core::topics::zenoh_output_publish_topic;
+use dora_message::{
     cli_to_coordinator::{ControlRequest, check_cli_version},
     common::Timestamped,
     coordinator_to_cli::ControlRequestReply,
@@ -9,7 +10,6 @@ use adora_message::{
     metadata::{ArrowTypeInfo, BufferOffset, Metadata},
     ws_protocol::{WsRequest, WsResponse},
 };
-use axum::extract::ws::{Message, WebSocket};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,7 +66,7 @@ async fn get_or_init_zenoh(
     if let Some(session) = zenoh_session.as_ref() {
         return Ok(session.clone());
     }
-    match adora_core::topics::open_zenoh_session(None).await {
+    match dora_core::topics::open_zenoh_session(None).await {
         Ok(session) => {
             *zenoh_session = Some(session.clone());
             Ok(session)
@@ -88,7 +88,7 @@ async fn get_or_init_zenoh(
 pub(crate) async fn handle_control_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
-    clock: Arc<adora_core::uhlc::HLC>,
+    clock: Arc<dora_core::uhlc::HLC>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
     // Channel for log events to push back on same WS connection
@@ -139,15 +139,15 @@ pub(crate) async fn handle_control_ws(
 
                 // Handle Hello / LogSubscribe / BuildLogSubscribe / TopicSubscribe / TopicUnsubscribe specially
                 match &control_request {
-                    ControlRequest::Hello { adora_version } => {
+                    ControlRequest::Hello { dora_version } => {
                         // Protocol version handshake — reply directly from
                         // this loop rather than forwarding to the event
                         // loop, so mismatched CLIs fail fast before any
                         // stateful interaction (dora-rs/adora#151).
-                        let resp = match check_cli_version(adora_version) {
+                        let resp = match check_cli_version(dora_version) {
                             Ok(()) => {
                                 let reply = ControlRequestReply::HelloOk {
-                                    adora_version: current_crate_version(),
+                                    dora_version: current_crate_version(),
                                 };
                                 match serde_json::to_value(&reply) {
                                     Ok(val) => WsResponse::ok(req.id, val),
@@ -447,20 +447,20 @@ pub(crate) async fn handle_control_ws(
 async fn publish_topic(
     zenoh_session: &mut Option<zenoh::Session>,
     dataflow_id: Uuid,
-    node_id: &adora_message::id::NodeId,
-    output_id: &adora_message::id::DataId,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
     data_json: &str,
-    clock: &adora_core::uhlc::HLC,
+    clock: &dora_core::uhlc::HLC,
 ) -> Result<(), String> {
     let session = get_or_init_zenoh(zenoh_session).await?;
     let topic = zenoh_output_publish_topic(dataflow_id, node_id, output_id);
 
     // Store JSON as raw UTF-8 bytes in a UInt8 array
     let data_bytes = data_json.as_bytes();
-    let data = adora_message::aligned_vec::AVec::from_slice(128, data_bytes);
+    let data = dora_message::aligned_vec::AVec::from_slice(128, data_bytes);
 
     let type_info = ArrowTypeInfo {
-        data_type: adora_message::arrow_schema::DataType::UInt8,
+        data_type: dora_message::arrow_schema::DataType::UInt8,
         len: data_bytes.len(),
         null_count: 0,
         validity: None,

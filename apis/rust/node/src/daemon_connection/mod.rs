@@ -1,6 +1,6 @@
 use crate::daemon_connection::interactive::InteractiveEvents;
-use adora_core::{config::NodeId, uhlc::Timestamp};
-use adora_message::{
+use dora_core::{config::NodeId, uhlc::Timestamp};
+use dora_message::{
     DataflowId,
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, NodeRegisterRequest, Timestamped},
@@ -45,7 +45,7 @@ impl DaemonChannel {
         let daemon_events_region = ShmemConf::new()
             .os_id(daemon_control_region_id)
             .open()
-            .wrap_err("failed to connect to adora-daemon")?;
+            .wrap_err("failed to connect to dora-daemon")?;
         let channel = DaemonChannel::Shmem(
             unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
                 .wrap_err("failed to create ShmemChannel")?,
@@ -65,12 +65,12 @@ impl DaemonChannel {
         };
         let reply = self
             .request(&msg)
-            .wrap_err("failed to send register request to adora-daemon")?;
+            .wrap_err("failed to send register request to dora-daemon")?;
 
         match reply {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
-                .wrap_err("failed to register node with adora-daemon")?,
+                .wrap_err("failed to register node with dora-daemon")?,
             other => bail!("unexpected register reply: {other:?}"),
         }
         Ok(())

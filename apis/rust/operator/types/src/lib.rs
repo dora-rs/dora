@@ -2,8 +2,8 @@
 #![allow(improper_ctypes_definitions)]
 #![allow(clippy::missing_safety_doc)]
 
-use adora_arrow_convert::{ArrowData, IntoArrow};
 pub use arrow;
+use dora_arrow_convert::{ArrowData, IntoArrow};
 pub use safer_ffi;
 
 use arrow::{
@@ -21,34 +21,34 @@ use std::{ops::Deref, path::Path};
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct AdoraInitOperator {
-    pub init_operator: unsafe extern "C" fn() -> AdoraInitResult,
+pub struct DoraInitOperator {
+    pub init_operator: unsafe extern "C" fn() -> DoraInitResult,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct AdoraInitResult {
-    pub result: AdoraResult,
+pub struct DoraInitResult {
+    pub result: DoraResult,
     pub operator_context: *mut std::ffi::c_void,
 }
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct AdoraDropOperator {
-    pub drop_operator: unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> AdoraResult,
+pub struct DoraDropOperator {
+    pub drop_operator: unsafe extern "C" fn(operator_context: *mut std::ffi::c_void) -> DoraResult,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
 #[derive(Debug)]
-pub struct AdoraResult {
+pub struct DoraResult {
     pub error: Option<safer_ffi::boxed::Box<safer_ffi::String>>,
 }
 
-impl AdoraResult {
+impl DoraResult {
     pub const SUCCESS: Self = Self { error: None };
 
     pub fn from_error(error: String) -> Self {
@@ -75,7 +75,7 @@ impl AdoraResult {
 #[derive_ReprC]
 #[ffi_export]
 #[repr(C)]
-pub struct AdoraOnEvent {
+pub struct DoraOnEvent {
     pub on_event: OnEventFn,
 }
 
@@ -123,7 +123,7 @@ pub struct Metadata {
 #[ffi_export]
 #[repr(C)]
 pub struct SendOutput {
-    pub send_output: ArcDynFn1<AdoraResult, Output>,
+    pub send_output: ArcDynFn1<DoraResult, Output>,
 }
 
 #[derive_ReprC]
@@ -141,30 +141,30 @@ pub struct Output {
 #[repr(C)]
 #[derive(Debug)]
 pub struct OnEventResult {
-    pub result: AdoraResult,
-    pub status: AdoraStatus,
+    pub result: DoraResult,
+    pub status: DoraStatus,
 }
 
 #[derive_ReprC]
 #[ffi_export]
 #[derive(Debug)]
 #[repr(u8)]
-pub enum AdoraStatus {
+pub enum DoraStatus {
     Continue = 0,
     Stop = 1,
     StopAll = 2,
 }
 
 #[ffi_export]
-pub fn adora_read_input_id(input: &Input) -> char_p_boxed {
+pub fn dora_read_input_id(input: &Input) -> char_p_boxed {
     char_p::new(&*input.id)
 }
 
 #[ffi_export]
-pub fn adora_free_input_id(_input_id: char_p_boxed) {}
+pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 
 #[ffi_export]
-pub fn adora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
+pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     let data_array = input.data_array.take()?;
     let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
     let array = ArrowData(arrow::array::make_array(data));
@@ -173,7 +173,7 @@ pub fn adora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
 }
 
 #[ffi_export]
-pub fn adora_free_data(_data: safer_ffi::Vec<u8>) {}
+pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
 
 /// Send an output from a C/C++ operator.
 ///
@@ -188,17 +188,17 @@ pub fn adora_free_data(_data: safer_ffi::Vec<u8>) {}
 ///   case is handled explicitly to match the C idiom of passing
 ///   `(NULL, 0)` for zero-length messages.
 ///
-/// This function parallels `adora_send_output` in `apis/c/node/src/lib.rs`,
+/// This function parallels `dora_send_output` in `apis/c/node/src/lib.rs`,
 /// which has had a null check since its introduction. Adding the
 /// equivalent here closes the gap found during the 2026-04-08 unsafe
 /// audit.
 #[ffi_export]
-pub unsafe fn adora_send_operator_output(
+pub unsafe fn dora_send_operator_output(
     send_output: &SendOutput,
     id: safer_ffi::char_p::char_p_ref<'_>,
     data_ptr: *const u8,
     data_len: usize,
-) -> AdoraResult {
+) -> DoraResult {
     let result = || {
         // Handle the C convention (NULL, 0) for empty messages without UB.
         // `slice::from_raw_parts(null, 0)` is UB in Rust even though the
@@ -208,7 +208,7 @@ pub unsafe fn adora_send_operator_output(
             &[]
         } else if data_ptr.is_null() {
             return Err(
-                "adora_send_operator_output: data_ptr is null with non-zero data_len".to_string(),
+                "dora_send_operator_output: data_ptr is null with non-zero data_len".to_string(),
             );
         } else {
             // SAFETY: caller-provided per the function's #[safety] contract above.
@@ -229,7 +229,7 @@ pub unsafe fn adora_send_operator_output(
     };
     match result() {
         Ok(output) => send_output.send_output.call(output),
-        Err(error) => AdoraResult {
+        Err(error) => DoraResult {
             error: Some(Box::new(safer_ffi::String::from(error)).into()),
         },
     }

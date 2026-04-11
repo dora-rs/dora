@@ -10,6 +10,6 @@ nodes:
     path: ./control_node.py
     inputs:
       turtle_pose: turtle/turtle_pose
-      tick: adora/timer/millis/500
+      tick: dora/timer/millis/500
     outputs:
       - direction

@@ -4,7 +4,7 @@ use crate::{
     command::{Executable, default_tracing},
     common::{CoordinatorOptions, resolve_dataflow_identifier_interactive, send_control_request},
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
 use eyre::{Context, bail};
@@ -17,13 +17,13 @@ use eyre::{Context, bail};
 /// Examples:
 ///
 /// Set a numeric parameter:
-///   adora param set camera_node fps 60
+///   dora param set camera_node fps 60
 ///
 /// Set a string parameter:
-///   adora param set camera_node mode '"high-res"'
+///   dora param set camera_node mode '"high-res"'
 ///
 /// Set a JSON object:
-///   adora param set camera_node config '{"width": 1920, "height": 1080}'
+///   dora param set camera_node config '{"width": 1920, "height": 1080}'
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Set {

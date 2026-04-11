@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use adora_message::{
+use dora_message::{
     config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
     daemon_to_node::NodeEvent,
     id::DataId,
@@ -83,7 +83,7 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
          `queue_policy: backpressure`."
     );
 }
-pub(crate) const NON_INPUT_EVENT: &str = "adora.non_input_event";
+pub(crate) const NON_INPUT_EVENT: &str = "dora.non_input_event";
 
 /// This scheduler will make sure that there is fairness between inputs.
 ///
@@ -198,16 +198,16 @@ impl Scheduler {
                 event: NodeEvent::Input { id, metadata, .. },
                 ..
             } => {
-                let flush = adora_message::metadata::get_bool_param(
+                let flush = dora_message::metadata::get_bool_param(
                     &metadata.parameters,
-                    adora_message::metadata::FLUSH,
+                    dora_message::metadata::FLUSH,
                 ) == Some(true);
                 (id, flush)
             }
             EventItem::ZenohInput { id, metadata, .. } => {
-                let flush = adora_message::metadata::get_bool_param(
+                let flush = dora_message::metadata::get_bool_param(
                     &metadata.parameters,
-                    adora_message::metadata::FLUSH,
+                    dora_message::metadata::FLUSH,
                 ) == Some(true);
                 (id, flush)
             }
@@ -324,11 +324,11 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::uhlc;
-    use adora_message::{
+    use arrow_schema::DataType;
+    use dora_message::{
         daemon_to_node::NodeEvent,
         metadata::{ArrowTypeInfo, FLUSH, Metadata, MetadataParameters, Parameter},
     };
-    use arrow_schema::DataType;
 
     fn make_input(id: &str, params: MetadataParameters) -> EventItem {
         let type_info = ArrowTypeInfo {

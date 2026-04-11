@@ -1,8 +1,8 @@
-use adora_core::{
+use dora_core::{
     config::NodeId,
     uhlc::{self, Timestamp},
 };
-use adora_message::{
+use dora_message::{
     daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
@@ -41,8 +41,8 @@ pub enum EventItem {
     /// `Buffer::from_custom_allocation` for zero-copy
     /// (dora-rs/adora#132).
     ZenohInput {
-        id: adora_core::config::DataId,
-        metadata: std::sync::Arc<adora_message::metadata::Metadata>,
+        id: dora_core::config::DataId,
+        metadata: std::sync::Arc<dora_message::metadata::Metadata>,
         payload: zenoh::bytes::ZBytes,
     },
     FatalError(eyre::Report),

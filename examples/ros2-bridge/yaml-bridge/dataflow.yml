@@ -46,7 +46,7 @@ nodes:
     path: path/to/planner-node
     inputs:
       pose: turtle_bridge/pose
-      tick: adora/timer/millis/100
+      tick: dora/timer/millis/100
     outputs:
       - cmd_vel
 
@@ -54,7 +54,7 @@ nodes:
   # Service bridges (request / response)
   # =============================================
 
-  # Service Client: Adora sends request to an external ROS2 service, receives response
+  # Service Client: Dora sends request to an external ROS2 service, receives response
   - id: add_client
     ros2:
       service: /add_two_ints
@@ -65,11 +65,11 @@ nodes:
     outputs:
       - response
 
-  # Service Server: Adora exposes a ROS2 service for external ROS2 clients to call
+  # Service Server: Dora exposes a ROS2 service for external ROS2 clients to call
   # NOTE: Uses a different service name than add_client above -- they are independent.
   - id: add_server
     ros2:
-      service: /adora_add_two_ints
+      service: /dora_add_two_ints
       service_type: example_interfaces/AddTwoInts
       role: server
     inputs:
@@ -81,7 +81,7 @@ nodes:
   # Action bridges (goal / feedback / result)
   # =============================================
 
-  # Action Client: Adora sends goal, receives feedback + result from ROS2
+  # Action Client: Dora sends goal, receives feedback + result from ROS2
   # Uses the standard Fibonacci action from example_interfaces.
   # See yaml-bridge-action/ for a runnable example with a concrete goal node.
   - id: fib_client

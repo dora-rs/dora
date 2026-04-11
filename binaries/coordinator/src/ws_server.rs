@@ -2,8 +2,6 @@ use crate::{
     artifacts::ArtifactStore, events::Event, ws_control::handle_control_ws,
     ws_daemon::handle_daemon_ws,
 };
-use adora_core::uhlc::HLC;
-use adora_message::auth::AuthToken;
 use axum::{
     Router,
     extract::{ConnectInfo, Path, Query, State, ws::WebSocketUpgrade},
@@ -11,6 +9,8 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use dora_core::uhlc::HLC;
+use dora_message::auth::AuthToken;
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -109,10 +109,7 @@ pub(crate) fn validate_token(
     };
     match provided {
         Some(t)
-            if adora_message::auth::constant_time_eq(
-                t.as_bytes(),
-                expected.as_hex().as_bytes(),
-            ) =>
+            if dora_message::auth::constant_time_eq(t.as_bytes(), expected.as_hex().as_bytes()) =>
         {
             Ok(())
         }

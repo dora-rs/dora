@@ -1,23 +1,23 @@
-# Install the Adora CLI binary from GitHub Releases.
-# Usage: powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/adora-cli-installer.ps1 | iex"
+# Install the Dora CLI binary from GitHub Releases.
+# Usage: powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
 
 $ErrorActionPreference = "Stop"
 
-$repo = "dora-rs/adora"
-$dest = "$HOME\.adora\bin"
+$repo = "dora-rs/dora"
+$dest = "$HOME\.dora\bin"
 
 # Resolve latest tag
 $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
 $tag = $release.tag_name
 
 $target = "x86_64-pc-windows-msvc"
-$archive = "https://github.com/$repo/releases/download/$tag/adora-$target.zip"
-Write-Host "Installing adora $tag ($target) to $dest"
+$archive = "https://github.com/$repo/releases/download/$tag/dora-$target.zip"
+Write-Host "Installing dora $tag ($target) to $dest"
 
 # Download and extract
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
-$zip = "$tmp\adora.zip"
+$zip = "$tmp\dora.zip"
 Invoke-WebRequest -Uri $archive -OutFile $zip
 
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
@@ -33,4 +33,4 @@ if ($userPath -notlike "*$dest*") {
     Write-Host "$dest is already in PATH."
 }
 
-Write-Host "Done! Run 'adora --version' to verify."
+Write-Host "Done! Run 'dora --version' to verify."

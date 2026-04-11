@@ -8,7 +8,7 @@ publish = false
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-adora-node-api = { workspace = true, features = ["tracing", "metrics"] }
+dora-node-api = { workspace = true, features = ["tracing", "metrics"] }
 eyre = { workspace = true }
 futures = { workspace = true }
 fastrand = "2.3.0"

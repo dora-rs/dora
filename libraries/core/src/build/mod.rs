@@ -4,7 +4,7 @@ pub use logger::{BuildLogger, LogLevelOrStdout};
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
 use crate::descriptor::ResolvedNode;
-use adora_message::{
+use dora_message::{
     SessionId,
     common::{GitSource, LogLevel},
     descriptor::{CoreNodeKind, EnvValue},

@@ -2,7 +2,7 @@ nodes:
   - id: c_node
     path: build/c_node
     inputs:
-      timer: adora/timer/millis/50
+      timer: dora/timer/millis/50
     outputs:
       - message
 

@@ -1,6 +1,6 @@
 # WebSocket Control Plane
 
-Adora's control plane uses WebSocket connections for all communication between the CLI, coordinator, and daemons. A single Axum server exposes three routes on one port, replacing the previous multi-port TCP design. JSON text frames carry a UUID-correlated request-reply protocol with fire-and-forget events for log streaming.
+Dora's control plane uses WebSocket connections for all communication between the CLI, coordinator, and daemons. A single Axum server exposes three routes on one port, replacing the previous multi-port TCP design. JSON text frames carry a UUID-correlated request-reply protocol with fire-and-forget events for log streaming.
 
 ## Features at a Glance
 
@@ -425,7 +425,7 @@ CLI                    WsSession              Coordinator
 
 **u128 workaround in tests**: Daemon test helpers construct WsRequest JSON strings manually via `format!()` + `serde_json::to_string()` (not `serde_json::to_value()`) to preserve `uhlc::ID` u128 values on the wire.
 
-**Test coordinator setup**: Both integration and E2E tests use `adora_coordinator::start_testing()` which binds to port 0 (OS-assigned) and accepts an empty external event stream.
+**Test coordinator setup**: Both integration and E2E tests use `dora_coordinator::start_testing()` which binds to port 0 (OS-assigned) and accepts an empty external event stream.
 
 ---
 
@@ -452,7 +452,7 @@ shutdown.shutdown(); // graceful stop
 
 ```rust
 // Binds to port 0, returns (port, future)
-let (port, future) = adora_coordinator::start_testing(
+let (port, future) = dora_coordinator::start_testing(
     "127.0.0.1:0".parse().unwrap(),
     futures::stream::empty(),
 ).await?;

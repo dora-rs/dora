@@ -1,4 +1,4 @@
-use adora_message::{
+use dora_message::{
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
@@ -67,13 +67,13 @@ fn receive_reply(
 }
 
 fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::Result<()> {
-    if message.len() > adora_message::MAX_MESSAGE_BYTES {
+    if message.len() > dora_message::MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
                 "outgoing message size {} exceeds maximum {}",
                 message.len(),
-                adora_message::MAX_MESSAGE_BYTES
+                dora_message::MAX_MESSAGE_BYTES
             ),
         ));
     }
@@ -95,12 +95,12 @@ fn tcp_receive(connection: &mut (impl Read + Unpin)) -> std::io::Result<Vec<u8>>
             )
         })?
     };
-    if reply_len > adora_message::MAX_MESSAGE_BYTES {
+    if reply_len > dora_message::MAX_MESSAGE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
                 "message size {reply_len} exceeds maximum {}",
-                adora_message::MAX_MESSAGE_BYTES
+                dora_message::MAX_MESSAGE_BYTES
             ),
         ));
     }

@@ -1,16 +1,16 @@
-# Octos + Adora Integration Report
+# Octos + Dora Integration Report
 
 **Date**: 2026-03-30
 **Author**: Research by Claude Code
-**Purpose**: Evaluate Octos as Adora's agentic brain/orchestration layer
+**Purpose**: Evaluate Octos as Dora's agentic brain/orchestration layer
 
 ---
 
 ## Executive Summary
 
-[Octos](https://github.com/octos-org/octos) (Open Cognitive Tasks Orchestration System) is a Rust-native agentic OS that can serve as Adora's "brain" — handling thinking, planning, and orchestration while Adora handles real-time execution. Both projects share the same Rust toolchain (edition 2024, MSRV 1.85.0) and Apache-2.0 license, making them a natural pairing.
+[Octos](https://github.com/octos-org/octos) (Open Cognitive Tasks Orchestration System) is a Rust-native agentic OS that can serve as Dora's "brain" — handling thinking, planning, and orchestration while Dora handles real-time execution. Both projects share the same Rust toolchain (edition 2024, MSRV 1.85.0) and Apache-2.0 license, making them a natural pairing.
 
-**Key finding**: The integration is viable today via Octos's `ShellTool` + Adora's JSON CLI output. A dedicated Octos skill or MCP server would make it production-grade.
+**Key finding**: The integration is viable today via Octos's `ShellTool` + Dora's JSON CLI output. A dedicated Octos skill or MCP server would make it production-grade.
 
 ---
 
@@ -100,9 +100,9 @@ Extensions are called **Skills** = standalone executable + manifest.json + SKILL
 
 ---
 
-## Adora CLI as Octos's Execution Interface
+## Dora CLI as Octos's Execution Interface
 
-Adora's CLI is well-suited for AI agent control:
+Dora's CLI is well-suited for AI agent control:
 
 ### Available Commands (~30)
 
@@ -116,24 +116,24 @@ Adora's CLI is well-suited for AI agent control:
 ### Machine-Readable Output
 
 ```bash
-adora list -f json          # JSON dataflow list
-adora status --format json  # JSON system status
-adora inspect top --once    # Single JSON metrics snapshot
-adora list --quiet          # UUIDs only, one per line
+dora list -f json          # JSON dataflow list
+dora status --format json  # JSON system status
+dora inspect top --once    # Single JSON metrics snapshot
+dora list --quiet          # UUIDs only, one per line
 ```
 
 ### Composability
 
 ```bash
-UUID=$(adora list -q | head -1)
-adora logs $UUID
-adora stop $UUID --grace 10s
-adora param set $UUID node_name param_key value
+UUID=$(dora list -q | head -1)
+dora logs $UUID
+dora stop $UUID --grace 10s
+dora param set $UUID node_name param_key value
 ```
 
 ---
 
-## Architecture: Octos + Adora
+## Architecture: Octos + Dora
 
 ```
                     ┌─────────────────────────────┐
@@ -144,15 +144,15 @@ adora param set $UUID node_name param_key value
                     │  15 LLM backends             │
                     │  MCP + Skills ecosystem      │
                     └──────────┬──────────────────┘
-                               │ ShellTool / Adora skill
+                               │ ShellTool / Dora skill
                                ▼
                     ┌─────────────────────────────┐
                     │      ADORA CLI (Executor)    │
-                    │  adora run/start/stop        │
-                    │  adora node add/remove       │
-                    │  adora param set/get         │
-                    │  adora topic pub/echo        │
-                    │  adora inspect top --once    │
+                    │  dora run/start/stop        │
+                    │  dora node add/remove       │
+                    │  dora param set/get         │
+                    │  dora topic pub/echo        │
+                    │  dora inspect top --once    │
                     │  JSON output mode (-f json)  │
                     └──────────┬──────────────────┘
                                │ WebSocket
@@ -170,11 +170,11 @@ adora param set $UUID node_name param_key value
 |-----------|--------------|
 | Language | Both 100% Rust, same edition/MSRV |
 | License | Both Apache-2.0 |
-| CLI interface | Adora has JSON output (`-f json`), composable commands |
+| CLI interface | Dora has JSON output (`-f json`), composable commands |
 | Tool execution | Octos's `ShellTool` shells out to CLIs |
-| Plugin model | Octos skills are stdin/stdout JSON — easy to write an Adora skill |
+| Plugin model | Octos skills are stdin/stdout JSON — easy to write an Dora skill |
 | Sandbox | Octos sandboxes tool execution (bwrap/sandbox-exec) |
-| MCP | Octos has full MCP support — Adora could expose an MCP server |
+| MCP | Octos has full MCP support — Dora could expose an MCP server |
 
 ### Separation of Concerns
 
@@ -186,7 +186,7 @@ Octos (deliberative layer, 100ms-5s cycle)
   ├── Human-in-the-loop approvals (via Telegram/Discord/Slack)
   └── Memory and learning
 
-Adora (reactive layer, microsecond cycle)
+Dora (reactive layer, microsecond cycle)
   ├── Sensor data processing
   ├── Real-time control loops
   ├── Zero-copy message passing
@@ -201,10 +201,10 @@ Adora (reactive layer, microsecond cycle)
 
 ### Approach 1: Direct ShellTool (Start Here)
 
-The agent's system prompt instructs it to use Adora CLI directly:
+The agent's system prompt instructs it to use Dora CLI directly:
 
 ```
-You are a robotics controller. You manage Adora dataflows using the adora CLI.
+You are a robotics controller. You manage Dora dataflows using the dora CLI.
 Always use -f json for machine-readable output.
 Never start dangerous operations without confirmation.
 ```
@@ -217,18 +217,18 @@ Never start dangerous operations without confirmation.
 
 ### Approach 2: Dedicated Octos Skill (Recommended)
 
-Write an `octos-adora` skill with typed tool definitions:
+Write an `octos-dora` skill with typed tool definitions:
 
 ```json
 {
-  "name": "adora",
+  "name": "dora",
   "tools": [
-    {"name": "adora_run", "description": "Run a dataflow", "input": {"dataflow": "string"}},
-    {"name": "adora_list", "description": "List running dataflows"},
-    {"name": "adora_stop", "description": "Stop a dataflow", "input": {"uuid": "string"}},
-    {"name": "adora_node_info", "description": "Get node status"},
-    {"name": "adora_param_set", "description": "Set runtime parameter"},
-    {"name": "adora_topic_pub", "description": "Publish to a topic"}
+    {"name": "dora_run", "description": "Run a dataflow", "input": {"dataflow": "string"}},
+    {"name": "dora_list", "description": "List running dataflows"},
+    {"name": "dora_stop", "description": "Stop a dataflow", "input": {"uuid": "string"}},
+    {"name": "dora_node_info", "description": "Get node status"},
+    {"name": "dora_param_set", "description": "Set runtime parameter"},
+    {"name": "dora_topic_pub", "description": "Publish to a topic"}
   ]
 }
 ```
@@ -239,13 +239,13 @@ Write an `octos-adora` skill with typed tool definitions:
 | **Pros** | Clean abstraction, typed interface, installable via `octos skills install`, benefits from tool policy/approval |
 | **Cons** | Extra layer to maintain |
 
-### Approach 3: Adora MCP Server (Medium-term)
+### Approach 3: Dora MCP Server (Medium-term)
 
-Expose Adora's coordinator API as an MCP server. Octos connects natively.
+Expose Dora's coordinator API as an MCP server. Octos connects natively.
 
 | | |
 |---|---|
-| **Effort** | Medium-high (new MCP server for Adora) |
+| **Effort** | Medium-high (new MCP server for Dora) |
 | **Pros** | Tightest integration, real-time streaming, no CLI overhead, framework-agnostic |
 | **Cons** | New development required |
 
@@ -255,9 +255,9 @@ Use DOT-graph pipelines for multi-step robotics workflows:
 
 ```dot
 digraph {
-  sense [model="claude-haiku-4-5" handler="shell" cmd="adora topic echo sensor/data --once"]
+  sense [model="claude-haiku-4-5" handler="shell" cmd="dora topic echo sensor/data --once"]
   plan  [model="claude-sonnet-4-6" handler="shell" cmd="..."]
-  act   [model="claude-haiku-4-5" handler="shell" cmd="adora param set robot arm/target ..."]
+  act   [model="claude-haiku-4-5" handler="shell" cmd="dora param set robot arm/target ..."]
   sense -> plan -> act -> sense
 }
 ```
@@ -278,7 +278,7 @@ digraph {
 
 ## Pros and Cons
 
-### Advantages of Octos as Adora's Brain
+### Advantages of Octos as Dora's Brain
 
 1. **Rust-Rust stack** — same toolchain, no Python runtime, single deployment
 2. **Sophisticated agent loop** — budget controls, loop detection, message repair, LRU tool deferral
@@ -297,7 +297,7 @@ digraph {
 2. **Unproven at scale** — no known production deployments
 3. **China-centric provider focus** — DashScope, MiniMax, ZhiPu, Moonshot (niche providers)
 4. **No robotics-specific features** — no safety interlocks, no real-time guarantees
-5. **LLM latency in control loop** — 100ms-5s per decision vs Adora's microsecond messaging
+5. **LLM latency in control loop** — 100ms-5s per decision vs Dora's microsecond messaging
 6. **Single maintainer risk** — appears to be primarily one team's project
 7. **No formal safety model** — robotics needs hard safety guarantees beyond sandbox
 
@@ -332,14 +332,14 @@ digraph {
 
 ## Safety Considerations for Robotics
 
-Neither Octos nor Adora alone provides robotics-grade safety. You need additional layers:
+Neither Octos nor Dora alone provides robotics-grade safety. You need additional layers:
 
 1. **Hardware E-stop** — bypasses all software, kills actuators immediately
 2. **Watchdog timer** — kills actuators if Octos stops responding within N ms
 3. **Parameter bounds checking** — validate motor/actuator values before Octos can set them
 4. **Human approval gates** — Octos has `GateHandler` in pipelines for this
 5. **Action classification** — categorize commands as safe/dangerous, require confirmation for dangerous ones
-6. **Audit logging** — record every command Octos sends to Adora with timestamps
+6. **Audit logging** — record every command Octos sends to Dora with timestamps
 
 ---
 
@@ -353,20 +353,20 @@ cargo install octos-cli
 octos config set default_provider anthropic
 octos config set anthropic_api_key $ANTHROPIC_API_KEY
 
-# 3. Create an Adora controller profile
-octos profile create adora-controller \
-  --system-prompt "You are a robotics controller. You manage Adora dataflows \
-using the adora CLI. Always use -f json for machine-readable output. \
+# 3. Create an Dora controller profile
+octos profile create dora-controller \
+  --system-prompt "You are a robotics controller. You manage Dora dataflows \
+using the dora CLI. Always use -f json for machine-readable output. \
 Never start dangerous operations without confirmation."
 
 # 4. Test the integration
-octos chat adora-controller "List all running dataflows and their health status"
-# Agent will call: adora list -f json && adora inspect top --once
+octos chat dora-controller "List all running dataflows and their health status"
+# Agent will call: dora list -f json && dora inspect top --once
 
 # 5. Run a dataflow
-octos chat adora-controller "Start the sensor fusion dataflow and monitor it"
-# Agent will call: adora run examples/sensor-fusion/dataflow.yml --detach
-# Then: adora inspect top --once (periodically)
+octos chat dora-controller "Start the sensor fusion dataflow and monitor it"
+# Agent will call: dora run examples/sensor-fusion/dataflow.yml --detach
+# Then: dora inspect top --once (periodically)
 ```
 
 ---
@@ -374,17 +374,17 @@ octos chat adora-controller "Start the sensor fusion dataflow and monitor it"
 ## Open Questions
 
 1. **Latency budget**: What's the acceptable decision latency for your use case? If sub-100ms, Octos may need to pre-compute decisions rather than query LLMs in real-time.
-2. **Failure mode**: When Octos's LLM call fails or times out, what should Adora do? Continue last command? Safe stop? This needs explicit design.
-3. **State sync**: How does Octos know the current state of the robot? Polling (`adora inspect`) vs push (topic subscription)?
-4. **Multi-robot**: If controlling multiple Adora instances, does Octos run one agent per robot or one agent for the fleet?
+2. **Failure mode**: When Octos's LLM call fails or times out, what should Dora do? Continue last command? Safe stop? This needs explicit design.
+3. **State sync**: How does Octos know the current state of the robot? Polling (`dora inspect`) vs push (topic subscription)?
+4. **Multi-robot**: If controlling multiple Dora instances, does Octos run one agent per robot or one agent for the fleet?
 5. **Cost**: LLM inference costs for continuous robot monitoring could be significant. What's the acceptable $/hour?
 
 ---
 
 ## Conclusion
 
-Octos is a technically impressive match for Adora — same language, same toolchain, complementary architectures. The deliberative/reactive split (Octos thinks, Adora executes) is a well-established pattern in robotics (cf. subsumption architecture, 3T architecture).
+Octos is a technically impressive match for Dora — same language, same toolchain, complementary architectures. The deliberative/reactive split (Octos thinks, Dora executes) is a well-established pattern in robotics (cf. subsumption architecture, 3T architecture).
 
 **The main risk is maturity.** Octos is 2 weeks old. Mitigate by: pinning to a specific release, keeping the integration layer thin (CLI-based), and having a fallback plan (direct Anthropic API + custom agent loop).
 
-**Recommended next step**: Try Approach 1 (Direct ShellTool) this week. If it works for your use case, invest in Approach 2 (dedicated skill) and propose an upstream MCP server for Adora.
+**Recommended next step**: Try Approach 1 (Direct ShellTool) this week. If it works for your use case, invest in Approach 2 (dedicated skill) and propose an upstream MCP server for Dora.

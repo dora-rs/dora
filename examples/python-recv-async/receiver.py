@@ -8,7 +8,7 @@ import asyncio
 import sys
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 
 async def main():

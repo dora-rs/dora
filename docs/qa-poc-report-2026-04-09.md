@@ -1,7 +1,7 @@
 # Agentic QA POC Report
 
 **Dates**: 2026-04-07 to 2026-04-09 (intensive session)
-**Repo**: `dora-rs/adora`
+**Repo**: `dora-rs/dora`
 **Author**: heyong4725, with AI pair-programming (Claude Opus 4.6)
 **Audience**: dora-rs maintainers, prospective contributors, anyone evaluating agentic-engineering practices for production codebases.
 
@@ -9,15 +9,15 @@
 
 ## 1. Executive summary
 
-Adora is a 100% Rust fork of dora where most of the non-dora code was authored by AI agents as a proof-of-concept for agentic engineering. The velocity was high — roughly 10× faster than human-authored equivalent work — but velocity without verification is a liability. This POC was the verification layer.
+Dora is a 100% Rust fork of dora where most of the non-dora code was authored by AI agents as a proof-of-concept for agentic engineering. The velocity was high — roughly 10× faster than human-authored equivalent work — but velocity without verification is a liability. This POC was the verification layer.
 
-Over three days, we built and validated a three-tier QA strategy designed specifically for AI-authored code, ran it against the existing adora codebase, and fixed what it found. Headline results:
+Over three days, we built and validated a three-tier QA strategy designed specifically for AI-authored code, ran it against the existing dora codebase, and fixed what it found. Headline results:
 
 - **Three production bugs fixed** that would have shipped silently under any of the gates that existed prior to the POC.
 - **Two major QA-tooling issues** surfaced: a `cargo-mutants` scoping artifact that reported the daemon at 5.8% mutation score when it's actually fine, and a misleading doc comment that pointed users at a non-existent "safe" API.
 - **Eight Tier 1 / Tier 2 gates wired and running**: format, clippy, test, supply-chain audit, unwrap ratchet, code coverage, SemVer check, mutation testing, property testing, miri (pure-Rust unsafe paths only), plus a local-first adversarial LLM review.
 - **Two Tier 3 gates designed but not implemented**: 7-day dogfood campaign and 8 chaos-engineering scenarios. Both have complete specs ready for a contractor to pick up.
-- **`adora-core` mutation score improved from 37.2% to ~43.4%** (+6.1pp) through 22 focused test additions on the highest-value hotspots.
+- **`dora-core` mutation score improved from 37.2% to ~43.4%** (+6.1pp) through 22 focused test additions on the highest-value hotspots.
 - **Unwrap budget** went from "624 apparent" to "188 real" after fixing a script that was counting test-code unwraps as production risk — the ratchet now reflects actual panic potential.
 
 The meta-lesson from the POC is more important than any individual finding: **the most valuable output of a new QA gate is often not what the gate directly flags, but what writing the code to run the gate forces you to notice.** Three of the three production bugs were caught by the author (human or AI) reading unsafe code closely while preparing to run miri or mutation tests — not by the tools themselves.
@@ -30,7 +30,7 @@ This report documents what we built, what we found, what works, what doesn't, an
 
 ### 2.1 The context
 
-Adora is a fork of `dora-rs/dora` that adds a superset of features (WebSocket control plane, persistent parameter store, coordinator HA, recording/replay, service/action patterns, ROS2 bridge improvements). Much of the new code was written by AI agents working in short sessions, which produces a characteristic failure mode we wanted to understand and defend against.
+Dora is a fork of `dora-rs/dora` that adds a superset of features (WebSocket control plane, persistent parameter store, coordinator HA, recording/replay, service/action patterns, ROS2 bridge improvements). Much of the new code was written by AI agents working in short sessions, which produces a characteristic failure mode we wanted to understand and defend against.
 
 ### 2.2 What AI-generated code fails at
 
@@ -121,12 +121,12 @@ Both run locally as part of `make qa-tier1`.
 |---|---|---|---|
 | Workspace crates | ~45 | ~45 | — |
 | Rust source files | 252 | 252 | — |
-| Line coverage (adora-core) | 33.85% | ~34% | unchanged (no re-run post-test-additions) |
-| **Mutation score adora-core** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp** |
-| Mutation score adora-message | — | 38.1% | baseline |
-| Mutation score adora-coordinator-store | — | 33.0% | baseline |
-| Mutation score adora-coordinator | — | 26.1% | baseline |
-| Mutation score adora-daemon | — | 5.8% misleading / validated per-file | see §6.2 |
+| Line coverage (dora-core) | 33.85% | ~34% | unchanged (no re-run post-test-additions) |
+| **Mutation score dora-core** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp** |
+| Mutation score dora-message | — | 38.1% | baseline |
+| Mutation score dora-coordinator-store | — | 33.0% | baseline |
+| Mutation score dora-coordinator | — | 26.1% | baseline |
+| Mutation score dora-daemon | — | 5.8% misleading / validated per-file | see §6.2 |
 | **Unwrap count (production)** | **reported 684** | **actual 188** | script fix + tracing refactor |
 | `cargo-audit` real findings | 2 | 0 | both fixed |
 | Tier 1 gates wired | 0 | 6 of 6 | — |
@@ -142,11 +142,11 @@ Ten findings surfaced during the POC. Three were production bugs, two were meta-
 |---|---|---|---|---|
 | 1 | `time 0.3.45` DoS (RUSTSEC-2026-0009) | `cargo-audit` | Medium 6.8 | `333cddb` |
 | 2 | `lru 0.12.5` unsoundness (RUSTSEC-2026-0002) | `cargo-audit` | Latent UB | `333cddb` |
-| 3 | `types_match` tautological tests in adora-core | `cargo-mutants` | Low | `98c6639` |
+| 3 | `types_match` tautological tests in dora-core | `cargo-mutants` | Low | `98c6639` |
 | 4 | `.cargo/mutants.toml` regex line-pin fragility | Adversarial LLM review | Low | `3ff3785` |
 | 5 | `WsResponse { result: Some(Value::Null) }` serde asymmetry | Property testing | Low | `28c99b3` |
 | **6** | **`metadata::from_array` double off-by-one** | **Unsafe audit during miri prep** | **High** | `d12e6b8` |
-| **7** | **`adora_send_operator_output` null pointer UB** | **Focused unsafe audit** | **High** | `5757e3b` |
+| **7** | **`dora_send_operator_output` null pointer UB** | **Focused unsafe audit** | **High** | `5757e3b` |
 | 8 | `MappedInputData` Send/Sync soundness doc gap | Focused unsafe audit | Low (doc) | `5757e3b` |
 | **9** | **`NodeId::TryFrom` misleading doc (panic trap)** | **redb_store test prep** | **High (doc)** | `b878e50` |
 | 10 | cargo-mutants package-scoping gives wrong scores | Workspace-scope experiment | Meta | `9e0c2c6` |
@@ -171,15 +171,15 @@ if ptr as usize + b.len() > region_start as usize + region_len {  // correct
 }
 ```
 
-Both `<=` and `>=` are wrong. A buffer at exactly the region's start — the most common case for the first buffer in any contiguous memory layout — was being silently rejected. Adora would have rejected valid Arrow data at runtime whenever the allocator happened to place a buffer at position 0 of the shmem region. Whether it manifested in production depended on allocator behavior.
+Both `<=` and `>=` are wrong. A buffer at exactly the region's start — the most common case for the first buffer in any contiguous memory layout — was being silently rejected. Dora would have rejected valid Arrow data at runtime whenever the allocator happened to place a buffer at position 0 of the shmem region. Whether it manifested in production depended on allocator behavior.
 
 Fix: collapsed to two correct checks (`ptr < region_start`, `ptr + len > region_end`). Added 5 focused unit tests including the regression case.
 
 **How it was caught**: the plan said "run miri on `shared-memory-server`". When that turned out to be impossible (see §6.1), we pivoted to `metadata.rs` instead. Writing unit tests to exercise the unsafe `offset_from` call was what forced me to read the function carefully enough to spot the bug. Miri ran cleanly on the fix — the tool itself didn't detect anything. **The discipline of preparing to run the tool was what caught the bug, not the tool.**
 
-**#7 — `adora_send_operator_output` null pointer UB** (`5757e3b`)
+**#7 — `dora_send_operator_output` null pointer UB** (`5757e3b`)
 
-`adora_send_operator_output` is called from user-written C/C++ operators (see `examples/c-dataflow/operator.c`). It calls:
+`dora_send_operator_output` is called from user-written C/C++ operators (see `examples/c-dataflow/operator.c`). It calls:
 
 ```rust
 let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
@@ -187,7 +187,7 @@ let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
 
 with no null check. In Rust, `slice::from_raw_parts(null, 0)` is **undefined behavior** even for zero-length slices — the pointer must be non-null and well-aligned regardless of length. A C caller using the common idiom of passing `(NULL, 0)` for an empty message would trigger UB.
 
-The parallel function in `apis/c/node/src/lib.rs` (`adora_send_output`) already had the null check. The operator version was missing it.
+The parallel function in `apis/c/node/src/lib.rs` (`dora_send_output`) already had the null check. The operator version was missing it.
 
 Fix: mirrored the node version's null-check logic — `(NULL, 0)` becomes an empty slice, `(NULL, non-zero)` returns an error, `(valid, any)` trusts the caller.
 
@@ -225,9 +225,9 @@ Fix: match on the mutation name only (`replace \|\| with && in types_match`), dr
 
 **#10 — cargo-mutants package-scoping gives wrong scores for binary crates**
 
-When we ran `cargo mutants --package adora-daemon` across all 503 mutations, the daemon scored **5.8% mutation score** (24 caught, 389 missed). That's an alarmingly low number for a critical code path.
+When we ran `cargo mutants --package dora-daemon` across all 503 mutations, the daemon scored **5.8% mutation score** (24 caught, 389 missed). That's an alarmingly low number for a critical code path.
 
-Investigation: `cargo mutants --package adora-daemon` only runs tests **inside the daemon package**. But the daemon's real test coverage comes from workspace-level E2E tests in `tests/` (`ws-cli-e2e.rs`, `fault-tolerance-e2e.rs`, `example-smoke.rs`) — these belong to the `adora-examples` workspace package, not to the daemon.
+Investigation: `cargo mutants --package dora-daemon` only runs tests **inside the daemon package**. But the daemon's real test coverage comes from workspace-level E2E tests in `tests/` (`ws-cli-e2e.rs`, `fault-tolerance-e2e.rs`, `example-smoke.rs`) — these belong to the `dora-examples` workspace package, not to the daemon.
 
 Experimental verification: we re-ran with `--test-workspace true` on just `fault_tolerance.rs`. **All 21 mutants that were "missed" under package scope were caught under workspace scope.**
 
@@ -296,7 +296,7 @@ Result: the "684 production unwraps" figure was actually ~~684~~ **188** once te
 - **The 3-tier architecture**: fast/full/tier1 modes give developers the right feedback loop for each scenario.
 - **Local-first with CI mirror**: same scripts everywhere; no "works on my machine" investigations.
 - **Unwrap ratchet with honest accounting**: 188 is a number anyone can act on. Top offenders visible and prioritized.
-- **Mutation testing on library crates**: `adora-core`, `adora-message`, `adora-coordinator-store` all have meaningful scores under package scope. These are the correctness-critical crates where mutation testing adds the most signal.
+- **Mutation testing on library crates**: `dora-core`, `dora-message`, `dora-coordinator-store` all have meaningful scores under package scope. These are the correctness-critical crates where mutation testing adds the most signal.
 - **Case study pattern**: every new gate gets validated with a specific bug found. Produces concrete evidence of value.
 - **Adversarial LLM review**: a different model reading the diff has caught things every other gate missed. Worth the cost per PR.
 
@@ -315,9 +315,9 @@ Result: the "684 production unwraps" figure was actually ~~684~~ **188** once te
 
 ### 7.4 Real gaps worth flagging
 
-- **`shared-memory-server` is a QA blind spot**. 30 unsafe blocks handling every local node↔daemon message (4 control channels per node + data regions ≥4KB). The 2026-03-21 audit already found 3 memory-safety issues here. We can't analyze it with miri (FFI), property testing (no pure-Rust entry points), or fuzzing (same reason). It's only covered by integration tests that spin up real shared memory. **Recommended fix**: adopt Zenoh's native shared memory feature as part of the dora 1.0 consolidation. Upstream dora already did this in `dora-rs/dora#1378`, deleting ~660 lines and ~11 unsafe blocks. Sequenced into the consolidation plan as Phase 3b.
+- **`shared-memory-server` is a QA blind spot**. 30 unsafe blocks handling every local node↔daemon message (4 control channels per node + data regions ≥4KB). The 2026-03-21 audit already found 3 memory-safety issues here. We can't analyze it with miri (FFI), property testing (no pure-Rust entry points), or fuzzing (same reason). It's only covered by integration tests that spin up real shared memory. **Recommended fix**: adopt Zenoh's native shared memory feature as part of the dora 1.0 consolidation. Upstream dora already did this in `dora-rs/adora#1378`, deleting ~660 lines and ~11 unsafe blocks. Sequenced into the consolidation plan as Phase 3b.
 - **Full mutation baselines for binary crates**: the daemon and coordinator need re-running with `test_workspace = true` (~8 hours background). Deferred as an operational task.
-- **`validate.rs` still has 69 missed mutants** after the `parse_byte_size` + `parse_log_level` fixes. Biggest remaining hotspot in `adora-core`. Good 1-day case study for the next session.
+- **`validate.rs` still has 69 missed mutants** after the `parse_byte_size` + `parse_log_level` fixes. Biggest remaining hotspot in `dora-core`. Good 1-day case study for the next session.
 - **`redb_store.rs` still has ~40 missed mutants** after the focused case study. Similarly addressable.
 - **Adversarial review has no audit trail in CI yet**. Each run goes to `/tmp/`; not archived. Fix requires the API key + a CI workflow addition.
 
@@ -332,7 +332,7 @@ Result: the "684 production unwraps" figure was actually ~~684~~ **188** once te
 | **Production bugs fixed** | 3 (metadata off-by-one, operator null UB, NodeId doc trap) |
 | **Meta-findings** | 4 (infrastructure-as-forcing-function, tool scoping matters, proptest scope discipline, unwrap ratchet honesty) |
 | **Security advisories resolved** | 2 (`time` DoS, `lru` unsoundness) |
-| **adora-core mutation score improvement** | 37.2% → 43.4% (+6.1pp, +24 caught mutants) |
+| **dora-core mutation score improvement** | 37.2% → 43.4% (+6.1pp, +24 caught mutants) |
 | **Production unwrap count** | 684 reported → 188 real (after script fix + tracing refactor) |
 | **Lines of documentation produced** | ~3500 lines across 4 new plan docs (dogfood, fault injection, strategy amendments, runbook, this report) |
 | **Tier 1 gates wired** | 6 / 6 |
@@ -359,7 +359,7 @@ Result: the "684 production unwraps" figure was actually ~~684~~ **188** once te
 
 ## 10. What this suggests for the wider dora ecosystem
 
-The POC was done on adora but the approach is general. For anyone maintaining a Rust codebase — especially one with AI-authored code — here's what we'd recommend based on what we learned:
+The POC was done on dora but the approach is general. For anyone maintaining a Rust codebase — especially one with AI-authored code — here's what we'd recommend based on what we learned:
 
 ### 10.1 Adopt these gates in this order
 
@@ -424,7 +424,7 @@ Run `git log --oneline b03901d..c833799` to see the full POC commit history. Key
 
 ```
 d12e6b8 fix(core): off-by-one in metadata::from_array region bounds check
-5757e3b fix(operator): null-pointer UB in adora_send_operator_output
+5757e3b fix(operator): null-pointer UB in dora_send_operator_output
 b878e50 test(coordinator-store): focused redb_store tests + NodeId doc fix
 4d2df85 test(core): close 100% of mutants in parse_byte_size and parse_log_level
 28c99b3 test(message): add property tests for ws_protocol + document Some(Null) invariant
@@ -458,4 +458,4 @@ That said, the **structure** of the approach — three tiers, case-study-driven 
 
 ---
 
-*Questions or feedback: file an issue on `dora-rs/adora` or message heyong4725 directly.*
+*Questions or feedback: file an issue on `dora-rs/dora` or message heyong4725 directly.*

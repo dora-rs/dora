@@ -1,13 +1,13 @@
-"""Adora benchmark sender for ROS2 comparison.
+"""Dora benchmark sender for ROS2 comparison.
 
-Same workload as ros2_sender.py but using Adora's Python API.
+Same workload as ros2_sender.py but using Dora's Python API.
 Embeds perf_counter_ns in first 8 bytes for comparable latency measurement.
 """
 
 import time
 
 import pyarrow as pa
-from adora import Node
+from dora import Node
 
 LATENCY_SAMPLES = 100
 THROUGHPUT_MESSAGES = 100

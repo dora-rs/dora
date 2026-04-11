@@ -1,6 +1,6 @@
 # QA Baseline — 2026-04-07
 
-Initial state of quality metrics for adora at commit `333cddb`, captured as
+Initial state of quality metrics for dora at commit `333cddb`, captured as
 the starting point for the QA strategy in
 [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md).
 
@@ -128,9 +128,9 @@ Waived unmaintained transitive dependencies (see `deny.toml`):
 
 ## Mutation testing (`cargo-mutants`)
 
-Command: `./scripts/qa/mutants.sh --full` (scoped to `adora-core` initially)
+Command: `./scripts/qa/mutants.sh --full` (scoped to `dora-core` initially)
 
-**Initial baseline on `adora-core`:**
+**Initial baseline on `dora-core`:**
 
 | Metric | Value |
 |---|---|
@@ -143,7 +143,7 @@ Command: `./scripts/qa/mutants.sh --full` (scoped to `adora-core` initially)
 | **Mutation score** | **37.2%** |
 
 **Interpretation:** A 37% mutation score is a low baseline but an honest one.
-It reflects the reality that much of `adora-core`'s code is either untested
+It reflects the reality that much of `dora-core`'s code is either untested
 (matching the coverage gaps) or tested by assertions that pass regardless of
 whether the implementation is correct.
 
@@ -183,22 +183,22 @@ Starting from this baseline:
 - **PR-scoped runs (`--in-diff`):** eventually gate PRs (T1.2). For now,
   run locally on touched files. Zero escaped mutants in diff is the target
   once tuning is done.
-- **Target by end of Q1 POC:** 70% mutation score on `adora-core`.
-- **Target for other critical crates** (next to run): `adora-daemon`,
-  `adora-coordinator`, `adora-message`, `adora-coordinator-store`,
+- **Target by end of Q1 POC:** 70% mutation score on `dora-core`.
+- **Target for other critical crates** (next to run): `dora-daemon`,
+  `dora-coordinator`, `dora-message`, `dora-coordinator-store`,
   `shared-memory-server`.
 
 ### Reproduce
 
 ```bash
-# Run once (2-3 hours for adora-core)
-cargo mutants --package adora-core --jobs 4 --timeout 120 --output /tmp/adora-core-mutants
+# Run once (2-3 hours for dora-core)
+cargo mutants --package dora-core --jobs 4 --timeout 120 --output /tmp/dora-core-mutants
 
 # Check scores
-wc -l /tmp/adora-core-mutants/mutants.out/{caught,missed,unviable,timeout}.txt
+wc -l /tmp/dora-core-mutants/mutants.out/{caught,missed,unviable,timeout}.txt
 
 # Check hotspots
-awk -F: '{print $1}' /tmp/adora-core-mutants/mutants.out/missed.txt | sort | uniq -c | sort -rn
+awk -F: '{print $1}' /tmp/dora-core-mutants/mutants.out/missed.txt | sort | uniq -c | sort -rn
 ```
 
 ---
@@ -207,18 +207,18 @@ awk -F: '{print $1}' /tmp/adora-core-mutants/mutants.out/missed.txt | sort | uni
 
 Command: `./scripts/qa/semver.sh`
 
-**Baseline: v0.2.1 git tag** (adora-* crates are not on crates.io, so we
+**Baseline: v0.2.1 git tag** (dora-* crates are not on crates.io, so we
 compare against the last git tag via `--baseline-rev`).
 
 **Result:** all 5 publishable crates PASS (no breaking changes detected).
 
 | Crate | Checks | Result |
 |---|---|---|
-| `adora-node-api` | 196 | pass |
-| `adora-operator-api` | 196 | pass |
-| `adora-core` | 196 | pass |
-| `adora-message` | 196 | pass |
-| `adora-arrow-convert` | 196 | pass |
+| `dora-node-api` | 196 | pass |
+| `dora-operator-api` | 196 | pass |
+| `dora-core` | 196 | pass |
+| `dora-message` | 196 | pass |
+| `dora-arrow-convert` | 196 | pass |
 
 Expected result since HEAD == v0.2.1 at baseline capture. Real signal will
 surface on subsequent PRs.
@@ -335,7 +335,7 @@ To regenerate just the coverage numbers in this file:
 
 ## Next steps
 
-**Update 2026-04-08**: Tier 1 is now fully wired (local + CI), plus T2.1 (property tests on `adora-message`) and T2.3 (miri on `adora-core::metadata`). The remaining work in priority order:
+**Update 2026-04-08**: Tier 1 is now fully wired (local + CI), plus T2.1 (property tests on `dora-message`) and T2.3 (miri on `dora-core::metadata`). The remaining work in priority order:
 
 1. **Audit remaining `unsafe` code for bugs similar to `metadata::from_array`** (~1-2 hrs) — the metadata.rs find suggests other unsafe boundaries may have similar issues. Focus on pure-Rust unsafe in `libraries/core`, `libraries/coordinator-store`, `libraries/message`, `apis/rust/node`.
 2. **`validate.rs` test improvements** (1-2 days) — biggest mutation score gain available (91 missed mutants at 67% coverage).
@@ -362,7 +362,7 @@ The first full POC pass produced six distinct findings. Summary table:
 | 5 | `WsResponse { Some(Null) }` serde asymmetry | Property testing | Low | `28c99b3` |
 | 6 | **`metadata::from_array` double off-by-one** | **Reading code while writing miri tests** | **High** | `d12e6b8` |
 
-**4 of 6 findings** would have been missed by every gate that existed in adora prior to this POC session. See [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) Section 10a for the full analysis and lessons learned, including:
+**4 of 6 findings** would have been missed by every gate that existed in dora prior to this POC session. See [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) Section 10a for the full analysis and lessons learned, including:
 - Miri/FFI limitation (shared-memory-server is not miri-runnable)
 - "Infrastructure as forcing function" meta-finding
 - Proptest scope discipline
@@ -372,17 +372,17 @@ The first full POC pass produced six distinct findings. Summary table:
 
 | Metric | Initial (2026-04-07) | End of POC session (2026-04-08) | Delta |
 |---|---|---|---|
-| Line coverage (adora-core) | 33.85% | — (unchanged, pending re-run) | — |
-| **Mutation score (adora-core)** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp, +24 caught** |
-| Mutation score (adora-message) | — | 38.1% (59/155) | new baseline |
-| Mutation score (adora-coordinator-store) | — | 33.0% (29/88) | new baseline |
-| Mutation score (adora-coordinator) | — | 26.1% (73/280) | new baseline |
-| Mutation score (adora-daemon) | — | **5.8% (24/413) — misleading, see note below** | new baseline (caveat) |
+| Line coverage (dora-core) | 33.85% | — (unchanged, pending re-run) | — |
+| **Mutation score (dora-core)** | **37.2% (149/400)** | **43.4% (173/399)** | **+6.1pp, +24 caught** |
+| Mutation score (dora-message) | — | 38.1% (59/155) | new baseline |
+| Mutation score (dora-coordinator-store) | — | 33.0% (29/88) | new baseline |
+| Mutation score (dora-coordinator) | — | 26.1% (73/280) | new baseline |
+| Mutation score (dora-daemon) | — | **5.8% (24/413) — misleading, see note below** | new baseline (caveat) |
 | Unwrap count (production code, corrected script) | 622 (reported) | **212 (true)** | 684→212 after script fix; old script counted test/bench code |
 | `cargo-audit` real findings | 2 (time DoS + lru unsoundness) | 0 | both fixed |
 | Open audit critical issues | per 2026-03-21 report | pending re-check | TBD |
 | Tier 1 gates wired | 0 | 6 of 6 | fmt, clippy, test, audit, unwrap, coverage, semver |
-| Tier 2 gates with baselines | 0 | 3 of 4 | proptest (ws_protocol), miri (metadata), mutation (adora-core + message + coordinator-store); fault injection planned but not implemented |
+| Tier 2 gates with baselines | 0 | 3 of 4 | proptest (ws_protocol), miri (metadata), mutation (dora-core + message + coordinator-store); fault injection planned but not implemented |
 | Adversarial review setup | no | yes (local; CI pending API secret) | — |
 | Case studies with fixes landed | 0 | 8 (+22 mutation-score tests) | — |
 | Diff coverage gate | no | yes (70% threshold on PRs) | — |
@@ -391,38 +391,38 @@ The first full POC pass produced six distinct findings. Summary table:
 
 ### Mutation-score hotspots by crate
 
-**adora-core** (173 caught / 226 missed / 46 unviable = 445 total):
+**dora-core** (173 caught / 226 missed / 46 unviable = 445 total):
 - Top remaining missed in `validate.rs` (now 69, was 91): `validate_ros2_qos`, `send_stdout_as`, `max_rotated_files`
 - `inference.rs`, `build/git.rs`, `descriptor/visualize.rs` — zero or near-zero coverage
 
-**adora-message** (59 caught / 96 missed / 47 unviable = 202 total):
+**dora-message** (59 caught / 96 missed / 47 unviable = 202 total):
 - `coordinator_to_cli.rs` Display impls, `DataflowList::get_active`
 - Worth a focused case study similar to `types_match` — likely 50+% gain possible
 
-**adora-coordinator-store** (29 caught / 59 missed / 7 unviable = 95 total):
+**dora-coordinator-store** (29 caught / 59 missed / 7 unviable = 95 total):
 - **52 of 59 missed mutants are in `redb_store.rs`** — the persistence layer
 - Critical code path with weak test coverage. Potential off-by-one / transaction-boundary bugs likely hiding here (same class as `metadata::from_array` finding)
 - Recommended follow-up: focused unsafe-audit-style read of `redb_store.rs` while writing tests for it
 
-**adora-coordinator** (73 caught / 207 missed / 54 unviable = 334 total, 26.1% score):
+**dora-coordinator** (73 caught / 207 missed / 54 unviable = 334 total, 26.1% score):
 - **115 of 207 missed mutants in `lib.rs`** — the monolithic main module (audit 2026-03-21 flagged this as a "daemon monolith" architectural concern that applies equally here)
 - 31 in `state.rs`, 19 in `handlers.rs`
 - Expected score, given the architecture: the coordinator is primarily tested via E2E tests that run the whole coordinator as a process. Those tests don't run under cargo-mutants scoped to the coordinator package (see meta-finding below).
 
-**adora-daemon** (24 caught / 389 missed / 90 unviable = 503 total, 5.8% score — **misleading, see meta-finding below**):
+**dora-daemon** (24 caught / 389 missed / 90 unviable = 503 total, 5.8% score — **misleading, see meta-finding below**):
 - 184 missed in `lib.rs`, 53 in `spawn/prepared.rs`, 21 in `fault_tolerance.rs`
 - 16 missed in `bench_support` helper code (unreachable by tests by design — should be excluded from mutation testing)
 
 ### Meta-finding: cargo-mutants package scoping loses cross-package E2E coverage
 
 **The low daemon and coordinator scores are misleading.** Running
-`cargo mutants --package adora-daemon` only executes tests that live
+`cargo mutants --package dora-daemon` only executes tests that live
 **inside** the daemon package (`binaries/daemon/tests/`, plus unit
 tests in the daemon's own source). The workspace-level E2E tests
 that actually exercise the daemon heavily — `tests/ws-cli-e2e.rs`,
 `tests/fault-tolerance-e2e.rs`, `tests/example-smoke.rs` — belong
-to the `adora-examples` workspace package, not the daemon package.
-`cargo test --package adora-daemon` does not run them, and therefore
+to the `dora-examples` workspace package, not the daemon package.
+`cargo test --package dora-daemon` does not run them, and therefore
 `cargo mutants` doesn't either.
 
 In practice the daemon is very well-tested by these workspace-level
@@ -433,15 +433,15 @@ mutation testing as currently invoked.
 
 **Implication for the QA plan:** `plan-agentic-qa-strategy.md`
 Section 5.2 should be amended. Running cargo-mutants at package
-scope is appropriate for pure-library crates (`adora-core`,
-`adora-message`, `adora-coordinator-store` — which are tested
+scope is appropriate for pure-library crates (`dora-core`,
+`dora-message`, `dora-coordinator-store` — which are tested
 primarily by their own unit tests). For the binary crates
-(`adora-daemon`, `adora-coordinator`), two options exist:
+(`dora-daemon`, `dora-coordinator`), two options exist:
 
 1. **Run cargo-mutants at workspace scope** with `--package
-   adora-daemon` as a filter for which files to mutate, but letting
+   dora-daemon` as a filter for which files to mutate, but letting
    `cargo test` discover and run all workspace tests. This is the
-   `cargo mutants --workspace --package adora-daemon` pattern (if
+   `cargo mutants --workspace --package dora-daemon` pattern (if
    cargo-mutants supports it — check docs).
 2. **Move E2E tests into the daemon package** as integration tests
    (`binaries/daemon/tests/*.rs`). Invasive but aligns mutation

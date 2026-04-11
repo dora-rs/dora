@@ -9,7 +9,7 @@ wiring mistakes at build time, before running anything.
 sensor --> reading (Float64) --> processor --> result (String) --> sink
 ```
 
-Each edge carries a declared type. `adora validate` checks that the type
+Each edge carries a declared type. `dora validate` checks that the type
 leaving one node matches the type expected by the next.
 
 ## Nodes
@@ -29,7 +29,7 @@ converts it to a human-readable `String` label:
 
 ```bash
 # Check for type mismatches (warnings only)
-adora validate dataflow.yml
+dora validate dataflow.yml
 ```
 
 Output when all types match:
@@ -42,7 +42,7 @@ All type annotations OK.
 For CI, treat any warning as a failure:
 
 ```bash
-adora validate --strict-types dataflow.yml
+dora validate --strict-types dataflow.yml
 ```
 
 ## See What a Mismatch Looks Like
@@ -57,7 +57,7 @@ Change `processor`'s `input_types` to the wrong type and run validate:
 ```
 
 ```bash
-adora validate dataflow.yml
+dora validate dataflow.yml
 ```
 
 You will see a type mismatch warning showing the declared upstream type
@@ -67,8 +67,8 @@ running.
 ## Run
 
 ```bash
-pip install adora-rs pyarrow
-adora run dataflow.yml
+pip install dora-rs pyarrow
+dora run dataflow.yml
 ```
 
 Expected output (values vary — readings are random):
@@ -90,7 +90,7 @@ Expected output (values vary — readings are random):
 ## Visualize the Graph With Type Labels
 
 ```bash
-adora graph dataflow.yml --open
+dora graph dataflow.yml --open
 ```
 
 Edges display the type name (e.g. `reading [Float64]`) when annotations
@@ -103,9 +103,9 @@ are present.
 | `output_types:` on a node | `sensor` in `dataflow.yml` |
 | `input_types:` on a node | `processor`, `sink` in `dataflow.yml` |
 | Standard type URNs (`std/core/v1/Float64`) | `dataflow.yml` |
-| `adora validate` for static checking | CLI |
-| `adora validate --strict-types` for CI | CLI |
-| Type labels on graph edges | `adora graph --open` |
+| `dora validate` for static checking | CLI |
+| `dora validate --strict-types` for CI | CLI |
+| Type labels on graph edges | `dora graph --open` |
 
 ## Key Concept: Type URNs
 

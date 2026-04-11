@@ -13,12 +13,12 @@ use crate::{
     },
     ws_client::WsSession,
 };
-use adora_message::{
+use chrono::{DateTime, Utc};
+use clap::Args;
+use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage,
     coordinator_to_cli::ControlRequestReply, id::NodeId,
 };
-use chrono::{DateTime, Utc};
-use clap::Args;
 use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
@@ -58,15 +58,15 @@ pub struct LogsArgs {
         long,
         value_name = "LEVEL",
         default_value = "stdout",
-        env = "ADORA_LOG_LEVEL"
+        env = "DORA_LOG_LEVEL"
     )]
     #[arg(value_parser = parse_log_level_str)]
-    pub level: adora_core::build::LogLevelOrStdout,
+    pub level: dora_core::build::LogLevelOrStdout,
     /// Output format for log messages
-    #[clap(long, default_value = "pretty", env = "ADORA_LOG_FORMAT")]
+    #[clap(long, default_value = "pretty", env = "DORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter (e.g. "sensor=debug,processor=warn")
-    #[clap(long, value_name = "FILTER", env = "ADORA_LOG_FILTER")]
+    #[clap(long, value_name = "FILTER", env = "DORA_LOG_FILTER")]
     pub log_filter: Option<String>,
     /// Filter logs by text pattern (case-insensitive substring match)
     #[clap(long, value_name = "PATTERN")]
@@ -154,8 +154,8 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
     if !out_dir.exists() {
         bail!(
             "no out/ directory found in current directory\n\n  \
-             hint: local logs are stored in ./out/ when running with `adora run`.\n  \
-             For remote dataflows, connect to the coordinator with `adora logs -d <DATAFLOW>`"
+             hint: local logs are stored in ./out/ when running with `dora run`.\n  \
+             For remote dataflows, connect to the coordinator with `dora logs -d <DATAFLOW>`"
         );
     }
 
@@ -199,8 +199,8 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     if !out_dir.exists() {
         bail!(
             "no out/ directory found in current directory\n\n  \
-             hint: local logs are stored in ./out/ when running with `adora run`.\n  \
-             For remote dataflows, connect to the coordinator with `adora logs -d <DATAFLOW>`"
+             hint: local logs are stored in ./out/ when running with `dora run`.\n  \
+             For remote dataflows, connect to the coordinator with `dora logs -d <DATAFLOW>`"
         );
     }
 
@@ -282,7 +282,7 @@ fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBu
         let canonical = dunce::canonicalize(&dir).wrap_err_with(|| {
             format!(
                 "dataflow directory not found: {}\n\n  \
-                     hint: use `adora list` to see running dataflows and their IDs",
+                     hint: use `dora list` to see running dataflows and their IDs",
                 dir.display()
             )
         })?;
@@ -304,7 +304,7 @@ fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBu
     if entries.is_empty() {
         bail!(
             "no dataflow directories found in out/\n\n  \
-             hint: run a dataflow first with `adora run <DATAFLOW.yml>`"
+             hint: run a dataflow first with `dora run <DATAFLOW.yml>`"
         );
     }
 
@@ -383,7 +383,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
         bail!(
             "no log file found for node '{node}' in {}\n\n  \
              hint: check the node name is correct. \
-             Use `adora node list` to see available nodes",
+             Use `dora node list` to see available nodes",
             dataflow_dir.display()
         );
     }
@@ -509,7 +509,7 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adora_message::common::LogLevelOrStdout;
+    use dora_message::common::LogLevelOrStdout;
     use std::path::PathBuf;
 
     fn make_msg(
@@ -717,7 +717,7 @@ mod tests {
     #[test]
     fn matches_grep_in_target() {
         let now = Utc::now();
-        let msg = make_msg("data", None, Some("adora::runtime"), now);
+        let msg = make_msg("data", None, Some("dora::runtime"), now);
         assert!(matches_grep(&msg, Some("runtime")));
     }
 
@@ -733,15 +733,15 @@ mod tests {
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
-    level: &adora_core::build::LogLevelOrStdout,
+    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     grep: Option<&str>,
     config: &LogOutputConfig,
 ) -> Result<()> {
     let log_level = match level {
-        adora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
-        adora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+        dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+        dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
     };
 
     let now = Utc::now();
@@ -801,7 +801,7 @@ pub fn logs(
     tail: Option<usize>,
     follow: bool,
     grep: Option<&str>,
-    level: &adora_core::build::LogLevelOrStdout,
+    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     config: &LogOutputConfig,

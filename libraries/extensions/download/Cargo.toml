@@ -1,5 +1,5 @@
 [package]
-name = "adora-download"
+name = "dora-download"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

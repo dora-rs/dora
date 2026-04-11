@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use adora_node_api::{
-    AdoraNode, Event, GOAL_ID, GOAL_STATUS, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
+use dora_node_api::{
+    DoraNode, Event, GOAL_ID, GOAL_STATUS, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     MetadataParameters, Parameter,
     arrow::array::{Array, Int64Array},
     get_string_param,
@@ -11,7 +11,7 @@ const MAX_ACTIVE_GOALS: usize = 64;
 const MAX_PENDING_CANCELS: usize = 128;
 
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = AdoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     // Active goals: goal_id -> remaining countdown value
     let mut active_goals: HashMap<String, i64> = HashMap::new();
@@ -93,7 +93,7 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn send_result(node: &mut AdoraNode, goal_id: &str, status: &str) -> eyre::Result<()> {
+fn send_result(node: &mut DoraNode, goal_id: &str, status: &str) -> eyre::Result<()> {
     let mut params = MetadataParameters::default();
     params.insert(GOAL_ID.to_string(), Parameter::String(goal_id.to_string()));
     params.insert(

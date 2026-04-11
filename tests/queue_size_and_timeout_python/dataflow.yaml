@@ -2,7 +2,7 @@ nodes:
   - id: send_data
     path: ./send_data.py
     inputs:
-      keepalive: adora/timer/millis/100000
+      keepalive: dora/timer/millis/100000
     outputs:
       - ts
 

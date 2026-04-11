@@ -1,11 +1,11 @@
 use super::Executable;
 use crate::LISTEN_DEFAULT;
-use adora_coordinator::Event;
-use adora_coordinator::{CoordinatorStore, InMemoryStore};
-use adora_core::topics::ADORA_COORDINATOR_PORT_WS_DEFAULT;
+use dora_coordinator::Event;
+use dora_coordinator::{CoordinatorStore, InMemoryStore};
+use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 
 #[cfg(feature = "tracing")]
-use adora_tracing::TracingBuilder;
+use dora_tracing::TracingBuilder;
 
 use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
@@ -17,10 +17,10 @@ use tracing::level_filters::LevelFilter;
 /// Run coordinator
 pub struct Coordinator {
     /// Network interface to bind to
-    #[clap(long, default_value_t = LISTEN_DEFAULT, env = "ADORA_COORDINATOR_INTERFACE")]
+    #[clap(long, default_value_t = LISTEN_DEFAULT, env = "DORA_COORDINATOR_INTERFACE")]
     interface: IpAddr,
     /// Port number to bind to
-    #[clap(long, default_value_t = ADORA_COORDINATOR_PORT_WS_DEFAULT, env = "ADORA_COORDINATOR_PORT")]
+    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_WS_DEFAULT, env = "DORA_COORDINATOR_PORT")]
     port: u16,
     /// Suppresses all log output to stdout.
     #[clap(long)]
@@ -33,7 +33,7 @@ pub struct Coordinator {
     /// Enable token authentication.
     ///
     /// When enabled, the coordinator generates a random token on startup
-    /// and writes it to ~/.config/adora/.adora-token. Clients must present
+    /// and writes it to ~/.config/dora/.dora-token. Clients must present
     /// this token to connect.
     #[clap(long)]
     auth: bool,
@@ -45,9 +45,9 @@ impl Executable for Coordinator {
         let span_store;
         #[cfg(feature = "tracing")]
         {
-            use adora_tracing::span_store::new_shared_store;
+            use dora_tracing::span_store::new_shared_store;
 
-            let name = "adora-coordinator";
+            let name = "dora-coordinator";
             let store = new_shared_store();
             span_store = Some(store.clone());
             let mut builder = TracingBuilder::new(name);
@@ -72,7 +72,7 @@ impl Executable for Coordinator {
         let auth = self.auth;
         rt.block_on(async {
             let bind = SocketAddr::new(self.interface, self.port);
-            let (port, task) = adora_coordinator::start_with_auth(
+            let (port, task) = dora_coordinator::start_with_auth(
                 bind,
                 futures::stream::empty::<Event>(),
                 store,
@@ -85,7 +85,7 @@ impl Executable for Coordinator {
             }
             task.await
         })
-        .context("failed to run adora-coordinator")
+        .context("failed to run dora-coordinator")
     }
 }
 
@@ -107,7 +107,7 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
         "redb" => {
             let path = default_redb_path()?;
             Ok(Arc::new(
-                adora_coordinator::adora_coordinator_store::RedbStore::open(&path)?,
+                dora_coordinator::dora_coordinator_store::RedbStore::open(&path)?,
             ))
         }
 
@@ -125,7 +125,7 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
                 eyre::bail!("redb path must not contain `..` components");
             }
             Ok(Arc::new(
-                adora_coordinator::adora_coordinator_store::RedbStore::open(&path)?,
+                dora_coordinator::dora_coordinator_store::RedbStore::open(&path)?,
             ))
         }
 
@@ -174,7 +174,7 @@ fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
-    let dir = std::path::PathBuf::from(home).join(".adora");
+    let dir = std::path::PathBuf::from(home).join(".dora");
     // Set restrictive umask before creating directory to close the TOCTOU window
     // between creation and set_permissions.
     #[cfg(unix)]

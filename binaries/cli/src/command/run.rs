@@ -1,6 +1,6 @@
-//! The `adora run` command runs a dataflow locally with an embedded
-//! coordinator and daemon so that CLI monitoring commands (`adora list`,
-//! `adora stop`, `adora logs`, etc.) work during execution.
+//! The `dora run` command runs a dataflow locally with an embedded
+//! coordinator and daemon so that CLI monitoring commands (`dora list`,
+//! `dora stop`, `dora logs`, etc.) work during execution.
 
 use super::{Executable, system::status::daemon_running};
 use crate::{
@@ -11,13 +11,13 @@ use crate::{
     },
     session::DataflowSession,
 };
-use adora_coordinator::{CoordinatorStore, InMemoryStore, SpanStore};
-use adora_core::{
+use dora_coordinator::{CoordinatorStore, InMemoryStore, SpanStore};
+use dora_core::{
     build::LogLevelOrStdout,
     descriptor::{Descriptor, DescriptorExt},
-    topics::ADORA_COORDINATOR_PORT_WS_DEFAULT,
+    topics::DORA_COORDINATOR_PORT_WS_DEFAULT,
 };
-use adora_message::{
+use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use duration_str::parse as parse_duration_str;
@@ -29,7 +29,7 @@ use tokio::runtime::Builder;
 /// Run a dataflow locally.
 ///
 /// Runs the given dataflow with an embedded coordinator and daemon so that
-/// CLI commands like `adora list`, `adora stop`, and `adora logs` work.
+/// CLI commands like `dora list`, `dora stop`, and `dora logs` work.
 pub struct Run {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
@@ -53,11 +53,11 @@ pub struct Run {
     ///
     /// Levels: error, warn, info, debug, trace, stdout (default).
     /// "stdout" shows everything including raw stdout from nodes.
-    #[clap(long, default_value = "stdout", env = "ADORA_LOG_LEVEL")]
+    #[clap(long, default_value = "stdout", env = "DORA_LOG_LEVEL")]
     #[arg(value_parser = parse_log_level_str)]
     pub log_level: LogLevelOrStdout,
     /// Output format for log messages
-    #[clap(long, default_value = "pretty", env = "ADORA_LOG_FORMAT")]
+    #[clap(long, default_value = "pretty", env = "DORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter
     ///
@@ -68,14 +68,14 @@ pub struct Run {
     #[clap(
         long,
         value_name = "FILTER",
-        env = "ADORA_LOG_FILTER",
+        env = "DORA_LOG_FILTER",
         verbatim_doc_comment
     )]
     pub log_filter: Option<String>,
     /// Allow shell nodes to execute arbitrary commands.
     ///
     /// Shell nodes are disabled by default for security reasons. This flag
-    /// sets the ADORA_ALLOW_SHELL_NODES environment variable.
+    /// sets the DORA_ALLOW_SHELL_NODES environment variable.
     #[clap(long)]
     pub allow_shell_nodes: bool,
     /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
@@ -87,7 +87,7 @@ pub struct Run {
     /// Write resolved git source commits to a lockfile during pre-run build.
     #[clap(long, action)]
     pub write_lockfile: bool,
-    /// Path to build lockfile (defaults to `<dataflow-stem>.adora-lock.yaml`).
+    /// Path to build lockfile (defaults to `<dataflow-stem>.dora-lock.yaml`).
     #[clap(long, value_name = "PATH")]
     pub lockfile: Option<PathBuf>,
 }
@@ -127,7 +127,7 @@ impl Executable for Run {
         if self.allow_shell_nodes {
             // SAFETY: Called before spawning any threads (tokio runtime not yet built),
             // so there are no concurrent reads of environment variables.
-            unsafe { std::env::set_var("ADORA_ALLOW_SHELL_NODES", "true") };
+            unsafe { std::env::set_var("DORA_ALLOW_SHELL_NODES", "true") };
         }
 
         // Register ctrlc handler FIRST (before tokio runtime) so the daemon's
@@ -148,8 +148,8 @@ impl Executable for Run {
         let _guard = {
             let _enter = rt.enter();
             let env_log = std::env::var("RUST_LOG").unwrap_or("info".to_string());
-            adora_tracing::init_tracing_subscriber(
-                "adora-run",
+            dora_tracing::init_tracing_subscriber(
+                "dora-run",
                 Some(&env_log),
                 None,
                 tracing::metadata::LevelFilter::INFO,
@@ -169,7 +169,7 @@ impl Executable for Run {
             self.locked,
             self.write_lockfile,
             self.lockfile.clone(),
-            false, // sequential build for `adora run`
+            false, // sequential build for `dora run`
         )
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
@@ -192,16 +192,16 @@ impl Executable for Run {
             dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
         }
 
-        // Validate: adora run doesn't support deploy keys
+        // Validate: dora run doesn't support deploy keys
         if let Some(node) = dataflow_descriptor
             .nodes
             .iter()
             .find(|n| n.deploy.is_some())
         {
             bail!(
-                "node {} has a `deploy` section, which is not supported in `adora run`\n\n\
-                 Instead, you need to spawn a `adora coordinator` and one or more `adora daemon`\n\
-                 instances and then use `adora start`.",
+                "node {} has a `deploy` section, which is not supported in `dora run`\n\n\
+                 Instead, you need to spawn a `dora coordinator` and one or more `dora daemon`\n\
+                 instances and then use `dora start`.",
                 node.id
             );
         }
@@ -210,9 +210,9 @@ impl Executable for Run {
         log::warn!(
             "embedded coordinator has no authentication enabled; \
              any local process can connect and control dataflows. \
-             For production use, run `adora up --auth` instead."
+             For production use, run `dora up --auth` instead."
         );
-        let bind_addr: SocketAddr = (LOCALHOST, ADORA_COORDINATOR_PORT_WS_DEFAULT).into();
+        let bind_addr: SocketAddr = (LOCALHOST, DORA_COORDINATOR_PORT_WS_DEFAULT).into();
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         #[cfg(feature = "tracing")]
         let span_store: SpanStore = None;
@@ -220,7 +220,7 @@ impl Executable for Run {
         let span_store: SpanStore = ();
 
         let (coordinator_port, coordinator_handle) = rt.block_on(async {
-            let (port, future) = adora_coordinator::start_embedded(
+            let (port, future) = dora_coordinator::start_embedded(
                 bind_addr,
                 futures::stream::empty(),
                 store,
@@ -236,7 +236,7 @@ impl Executable for Run {
         let coordinator_addr: SocketAddr = (LOCALHOST, coordinator_port).into();
 
         // --- Spawn embedded daemon ---
-        let daemon_handle = rt.spawn(adora_daemon::Daemon::run(
+        let daemon_handle = rt.spawn(dora_daemon::Daemon::run(
             coordinator_addr,
             None,
             BTreeMap::new(),
@@ -311,7 +311,7 @@ impl Executable for Run {
                 ControlRequestReply::DataflowSpawned { uuid: _ } => {}
                 ControlRequestReply::Error(err) => bail!(
                     "dataflow failed to start: {err}\n\n  \
-                     hint: if nodes require building, run `adora build <dataflow.yml>` first"
+                     hint: if nodes require building, run `dora build <dataflow.yml>` first"
                 ),
                 other => bail!("unexpected WaitForSpawn reply: {other:?}"),
             }
