@@ -36,7 +36,7 @@ for arg in "$@"; do
     esac
 done
 
-ADORA="${ADORA_BIN:-$ROOT/target/debug/dora}"
+DORA="${DORA_BIN:-$ROOT/target/debug/dora}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -52,17 +52,17 @@ run_networked() {
     echo "=> $name (networked, ${timeout}s)"
 
     # Clean up any stale processes
-    "$ADORA" down > /dev/null 2>&1 || true
+    "$DORA" down > /dev/null 2>&1 || true
     sleep 0.5
 
-    if ! "$ADORA" up > /dev/null 2>&1; then
+    if ! "$DORA" up > /dev/null 2>&1; then
         log_fail "$name (dora up failed)"
         return
     fi
 
-    if ! "$ADORA" start "$ROOT/$yaml" --detach > /dev/null 2>&1; then
+    if ! "$DORA" start "$ROOT/$yaml" --detach > /dev/null 2>&1; then
         log_fail "$name (dora start failed)"
-        "$ADORA" down > /dev/null 2>&1 || true
+        "$DORA" down > /dev/null 2>&1 || true
         return
     fi
 
@@ -74,7 +74,7 @@ run_networked() {
         sleep 2
         elapsed=$((elapsed + 2))
         local list_out
-        list_out=$("$ADORA" list --json 2>/dev/null || echo "")
+        list_out=$("$DORA" list --json 2>/dev/null || echo "")
         if [ -z "$list_out" ]; then
             break
         fi
@@ -88,9 +88,9 @@ run_networked() {
     done
 
     # Cleanup
-    "$ADORA" stop --all > /dev/null 2>&1 || true
+    "$DORA" stop --all > /dev/null 2>&1 || true
     sleep 0.5
-    "$ADORA" down > /dev/null 2>&1 || true
+    "$DORA" down > /dev/null 2>&1 || true
 
     if [ "$failed" = true ]; then
         log_fail "$name"
@@ -105,7 +105,7 @@ run_local() {
     local name="$1" yaml="$2" timeout="${3:-15}"
     local hard_timeout=$((timeout * 2 + 5))
     echo "=> $name (local, ${timeout}s, hard-kill ${hard_timeout}s)"
-    "$ADORA" run "$ROOT/$yaml" --stop-after "${timeout}s" \
+    "$DORA" run "$ROOT/$yaml" --stop-after "${timeout}s" \
         > /dev/null 2>&1 &
     local pid=$!
     local elapsed=0

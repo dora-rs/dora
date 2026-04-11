@@ -4,15 +4,15 @@ project(cxx-dataflow LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_FLAGS "-fPIC")
 
-set(ADORA_ROOT_DIR "__ADORA_PATH__" CACHE FILEPATH "Path to the root of dora")
+set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")
 
 set(dora_cxx_include_dir "${CMAKE_CURRENT_BINARY_DIR}/include/cxx")
 set(node_bridge "${CMAKE_CURRENT_BINARY_DIR}/node_bridge.cc")
 
-if(ADORA_ROOT_DIR)
+if(DORA_ROOT_DIR)
     include(ExternalProject)
     ExternalProject_Add(Dora
-        SOURCE_DIR ${ADORA_ROOT_DIR}
+        SOURCE_DIR ${DORA_ROOT_DIR}
         BUILD_IN_SOURCE True
         CONFIGURE_COMMAND ""
         BUILD_COMMAND
@@ -22,7 +22,7 @@ if(ADORA_ROOT_DIR)
     )
 
     add_custom_command(OUTPUT ${node_bridge} ${dora_cxx_include_dir} ${operator_bridge} ${dora_c_include_dir}
-        WORKING_DIRECTORY ${ADORA_ROOT_DIR}
+        WORKING_DIRECTORY ${DORA_ROOT_DIR}
         DEPENDS Dora
         COMMAND
             mkdir ${dora_cxx_include_dir} -p
@@ -33,7 +33,7 @@ if(ADORA_ROOT_DIR)
     )
     
     add_custom_target(Dora_cxx DEPENDS ${node_bridge} ${dora_cxx_include_dir})
-    set(dora_link_dirs ${ADORA_ROOT_DIR}/target/debug)
+    set(dora_link_dirs ${DORA_ROOT_DIR}/target/debug)
 else()
     include(ExternalProject)
     ExternalProject_Add(Dora

@@ -147,7 +147,7 @@ dora param set $UUID node_name param_key value
                                │ ShellTool / Dora skill
                                ▼
                     ┌─────────────────────────────┐
-                    │      ADORA CLI (Executor)    │
+                    │      DORA CLI (Executor)    │
                     │  dora run/start/stop        │
                     │  dora node add/remove       │
                     │  dora param set/get         │
