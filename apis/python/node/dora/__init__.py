@@ -1,38 +1,49 @@
-"""Backward-compatible shim: ``from dora import Node`` works for dora-hub nodes.
+"""
+# dora-rs.
 
-This package re-exports the dora Python API under the ``dora`` namespace so
-that existing dora-hub nodes and operators work without modification.
+This is the dora python client for interacting with dora dataflow.
+You can install it via:
+```bash
+pip install dora-rs
+```.
 """
 
-from dora import (  # noqa: F401
-    DoraStatus,
+from enum import Enum
+
+from .dora import *
+from .dora import (
     Node,
-    build,
-    run,
+    Ros2Context,
+    Ros2Durability,
+    Ros2Liveliness,
+    Ros2Node,
+    Ros2NodeOptions,
+    Ros2Publisher,
+    Ros2QosPolicies,
+    Ros2Subscription,
+    Ros2Topic,
+    __author__,
+    __version__,
 )
 
-# ROS2 types are optional — dora may be built without ROS2 support.
-# Wrap in try/except so `from dora import Node` works for everyone.
-try:
-    from dora import (  # noqa: F401
-        Ros2Context,
-        Ros2Durability,
-        Ros2Liveliness,
-        Ros2Node,
-        Ros2NodeOptions,
-        Ros2Publisher,
-        Ros2QosPolicies,
-        Ros2Subscription,
-        Ros2Topic,
-    )
-except ImportError:
-    pass
-
 # start_runtime is provided by the dora-cli package, not the node API.
+# Import it conditionally so that `from dora import Node` works without
+# requiring the full CLI to be installed.
 try:
-    from dora import start_runtime  # noqa: F401
+    from .dora import start_runtime
 except ImportError:
     pass
 
-# Backward-compatible alias used by dora-hub operators.
-DoraStatus = DoraStatus
+
+class DoraStatus(Enum):
+    """Dora status to indicate if operator `on_input` loop should be stopped.
+
+    Args:
+        Enum (u8): Status signaling to dora operator to
+        stop or continue the operator.
+
+    """
+
+    CONTINUE = 0
+    STOP = 1
+    STOP_ALL = 2
