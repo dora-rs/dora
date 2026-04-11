@@ -1,16 +1,33 @@
-# CI workflow — superset of upstream dora-rs/dora CI (issue #180).
+# CI workflow — covers upstream dora-rs/dora CI with additions (issue #180, #191).
 #
-# Intentional divergences from upstream:
-# - No Windows in examples/CLI jobs (upstream has it; deferred until
-#   Windows-specific bugs are triaged — tracked in issue #180)
-# - Bench is Ubuntu-only (criterion regression, not cross-platform example)
-# - ROS2 bridge Python test skipped (pyo3 0.28 auto-initialize removed)
-# - No cargo-release/pip-release/docker-image workflows (not publishing yet)
-# - No labeler/bot workflows (not needed for this fork)
+# Extra jobs not in upstream: e2e, audit, unwrap-budget, criterion bench regression.
 #
 # Matches upstream on: test (3 platforms), fmt, clippy, typos,
-# cross-check (8 targets), examples, CLI, ROS2 bridge examples,
+# cross-check (8 targets), CLI, ROS2 bridge examples,
 # MSRV, license check, workflow_dispatch support.
+#
+# Known gaps vs upstream (documented, not bugs):
+#
+# ci.yml gaps:
+# - examples: no Windows (upstream has it; deferred — Windows-specific
+#   bugs need triage first)
+# - examples: rust-dataflow-git skipped (pre-existing session-handling
+#   bug with git sources in `dora run`)
+# - cli: no Windows (same reason as examples)
+# - cli: no "Error Event Example" step (example doesn't exist in this repo)
+# - bench: Ubuntu-only (we run criterion regression, not cross-platform
+#   example; the benchmark example runs in the examples job on ubuntu+macos)
+# - ros2-bridge: cargo test skipped (pyo3 0.28 removed auto-initialize;
+#   the bridge examples still run end-to-end)
+#
+# Missing repo-wide workflows (intentional — not publishing yet):
+# - cargo-release.yml (crates.io publishing)
+# - pip-release.yml (PyPI publishing)
+# - docker-image.yml (Docker Hub)
+# - cargo-update.yml (automated dep updates)
+# - regenerate-schemas.yml (JSON schema regen)
+# - labeler.yml (PR auto-labeling)
+# - claude-code.yml (AI code review bot)
 name: CI
 
 on:
