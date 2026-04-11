@@ -3418,7 +3418,7 @@ msgstr ""
 msgid ""
 "```\n"
 "[HEADER]\n"
-"├─ MAGIC: 8 bytes (\"ADORAREC\")\n"
+"├─ MAGIC: 8 bytes (\"DORAREC\")\n"
 "├─ version: u16 LE (currently 1)\n"
 "├─ start_nanos: u64 LE (Unix epoch nanoseconds)\n"
 "├─ dataflow_id: 16 bytes (UUID)\n"
@@ -3436,7 +3436,7 @@ msgid ""
 "└─ event_bytes: [u8; event_bytes_len]    (bincode InterDaemonEvent)\n"
 "\n"
 "[FOOTER] (optional, written on clean finish)\n"
-"├─ FOOTER_MAGIC: 8 bytes (\"ADORAEND\")\n"
+"├─ FOOTER_MAGIC: 8 bytes (\"DORAEND\")\n"
 "├─ total_messages: u64 LE\n"
 "└─ total_bytes: u64 LE\n"
 "```"
@@ -3634,7 +3634,7 @@ msgid "Location"
 msgstr ""
 
 #: src/concepts/architecture.md:788
-msgid "`ADORA_COORDINATOR_PORT_WS_DEFAULT`"
+msgid "`DORA_COORDINATOR_PORT_WS_DEFAULT`"
 msgstr ""
 
 #: src/concepts/architecture.md:788 src/operations/cli.md:1056
@@ -3643,7 +3643,7 @@ msgid "Coordinator WebSocket port"
 msgstr ""
 
 #: src/concepts/architecture.md:789
-msgid "`ADORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT`"
+msgid "`DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT`"
 msgstr ""
 
 #: src/concepts/architecture.md:789
@@ -4804,7 +4804,7 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:185
 msgid ""
 "Run `dora validate <file>` to check type annotations statically. For "
-"runtime checking, set `ADORA_RUNTIME_TYPE_CHECK=warn` or `error`:"
+"runtime checking, set `DORA_RUNTIME_TYPE_CHECK=warn` or `error`:"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:189 src/concepts/types.md:266
@@ -7694,12 +7694,12 @@ msgid "Thread-local testing state set by `setup_integration_testing`"
 msgstr ""
 
 #: src/languages/rust.md:52
-msgid "`ADORA_NODE_CONFIG` environment variable (set by the daemon)"
+msgid "`DORA_NODE_CONFIG` environment variable (set by the daemon)"
 msgstr ""
 
 #: src/languages/rust.md:53
 msgid ""
-"`ADORA_TEST_WITH_INPUTS` environment variable (file-based integration "
+"`DORA_TEST_WITH_INPUTS` environment variable (file-based integration "
 "testing)"
 msgstr ""
 
@@ -8475,7 +8475,7 @@ msgid "Variable"
 msgstr "变量"
 
 #: src/languages/rust.md:554
-msgid "`ADORA_TEST_WITH_INPUTS`"
+msgid "`DORA_TEST_WITH_INPUTS`"
 msgstr ""
 
 #: src/languages/rust.md:554
@@ -8483,7 +8483,7 @@ msgid "Path to a JSON input file (`IntegrationTestInput` format)"
 msgstr ""
 
 #: src/languages/rust.md:555
-msgid "`ADORA_TEST_WRITE_OUTPUTS_TO`"
+msgid "`DORA_TEST_WRITE_OUTPUTS_TO`"
 msgstr ""
 
 #: src/languages/rust.md:555
@@ -8492,7 +8492,7 @@ msgid ""
 msgstr ""
 
 #: src/languages/rust.md:556
-msgid "`ADORA_TEST_NO_OUTPUT_TIME_OFFSET`"
+msgid "`DORA_TEST_NO_OUTPUT_TIME_OFFSET`"
 msgstr ""
 
 #: src/languages/rust.md:556
@@ -14017,7 +14017,7 @@ msgid "Commands"
 msgstr "命令"
 
 #: src/operations/cli.md:1055
-msgid "`ADORA_COORDINATOR_ADDR`"
+msgid "`DORA_COORDINATOR_ADDR`"
 msgstr ""
 
 #: src/operations/cli.md:1055 src/operations/cli.md:1056
@@ -14029,12 +14029,12 @@ msgid "Coordinator IP address"
 msgstr ""
 
 #: src/operations/cli.md:1056
-msgid "`ADORA_COORDINATOR_PORT`"
+msgid "`DORA_COORDINATOR_PORT`"
 msgstr ""
 
 #: src/operations/cli.md:1057 src/operations/logging.md:156
 #: src/operations/logging.md:330
-msgid "`ADORA_LOG_LEVEL`"
+msgid "`DORA_LOG_LEVEL`"
 msgstr ""
 
 #: src/operations/cli.md:1057 src/operations/cli.md:1058
@@ -14048,7 +14048,7 @@ msgstr ""
 
 #: src/operations/cli.md:1058 src/operations/logging.md:157
 #: src/operations/logging.md:331
-msgid "`ADORA_LOG_FORMAT`"
+msgid "`DORA_LOG_FORMAT`"
 msgstr ""
 
 #: src/operations/cli.md:1058 src/operations/logging.md:331
@@ -14057,7 +14057,7 @@ msgstr ""
 
 #: src/operations/cli.md:1059 src/operations/logging.md:158
 #: src/operations/logging.md:332
-msgid "`ADORA_LOG_FILTER`"
+msgid "`DORA_LOG_FILTER`"
 msgstr ""
 
 #: src/operations/cli.md:1059
@@ -14065,7 +14065,7 @@ msgid "Default per-node level overrides"
 msgstr ""
 
 #: src/operations/cli.md:1060
-msgid "`ADORA_ALLOW_SHELL_NODES`"
+msgid "`DORA_ALLOW_SHELL_NODES`"
 msgstr ""
 
 #: src/operations/cli.md:1060
@@ -14077,7 +14077,7 @@ msgid "Enable shell node execution"
 msgstr ""
 
 #: src/operations/cli.md:1061
-msgid "`ADORA_RUNTIME_TYPE_CHECK`"
+msgid "`DORA_RUNTIME_TYPE_CHECK`"
 msgstr ""
 
 #: src/operations/cli.md:1061
@@ -14611,8 +14611,8 @@ msgstr ""
 
 #: src/operations/cli.md:1507
 msgid ""
-"Run `dora up` first, or check `ADORA_COORDINATOR_ADDR`/"
-"`ADORA_COORDINATOR_PORT`"
+"Run `dora up` first, or check `DORA_COORDINATOR_ADDR`/"
+"`DORA_COORDINATOR_PORT`"
 msgstr ""
 
 #: src/operations/cli.md:1508
@@ -15011,7 +15011,7 @@ msgid "CLI display"
 msgstr ""
 
 #: src/operations/logging.md:88
-msgid "`--log-level`, `ADORA_LOG_LEVEL`"
+msgid "`--log-level`, `DORA_LOG_LEVEL`"
 msgstr ""
 
 #: src/operations/logging.md:89
@@ -15019,11 +15019,11 @@ msgid "Output formats"
 msgstr ""
 
 #: src/operations/logging.md:89
-msgid "`--log-format`, `ADORA_LOG_FORMAT`"
+msgid "`--log-format`, `DORA_LOG_FORMAT`"
 msgstr ""
 
 #: src/operations/logging.md:90
-msgid "`--log-filter`, `ADORA_LOG_FILTER`"
+msgid "`--log-filter`, `DORA_LOG_FILTER`"
 msgstr ""
 
 #: src/operations/logging.md:91
@@ -15526,7 +15526,7 @@ msgid "`--level LEVEL`"
 msgstr ""
 
 #: src/operations/logging.md:263
-msgid "Minimum log level (env: `ADORA_LOG_LEVEL`)"
+msgid "Minimum log level (env: `DORA_LOG_LEVEL`)"
 msgstr ""
 
 #: src/operations/logging.md:264
@@ -15690,7 +15690,7 @@ msgid "Default per-node overrides"
 msgstr ""
 
 #: src/operations/logging.md:333
-msgid "`ADORA_QUIET`"
+msgid "`DORA_QUIET`"
 msgstr ""
 
 #: src/operations/logging.md:333
@@ -15718,7 +15718,7 @@ msgid "# CLI flag overrides env var:\n"
 msgstr ""
 
 #: src/operations/logging.md:348
-msgid "# overrides ADORA_LOG_LEVEL=info\n"
+msgid "# overrides DORA_LOG_LEVEL=info\n"
 msgstr ""
 
 #: src/operations/logging.md:353
@@ -17356,8 +17356,8 @@ msgstr ""
 
 #: src/operations/logging.md:1264
 msgid ""
-"**Use environment variables for team defaults.** Set `ADORA_LOG_LEVEL` and "
-"`ADORA_LOG_FORMAT` in your shell profile or CI configuration. Individual "
+"**Use environment variables for team defaults.** Set `DORA_LOG_LEVEL` and "
+"`DORA_LOG_FORMAT` in your shell profile or CI configuration. Individual "
 "developers can override with CLI flags."
 msgstr ""
 
@@ -18281,7 +18281,7 @@ msgstr ""
 #: src/operations/debugging.md:498
 msgid ""
 "For full distributed tracing across daemons and nodes, set "
-"`ADORA_OTLP_ENDPOINT` and use an OTLP-compatible backend."
+"`DORA_OTLP_ENDPOINT` and use an OTLP-compatible backend."
 msgstr ""
 
 #: src/operations/debugging.md:502
@@ -18473,15 +18473,15 @@ msgid "Environment variables:"
 msgstr ""
 
 #: src/operations/debugging.md:589
-msgid "`ADORA_LOG_LEVEL` -- default log level"
+msgid "`DORA_LOG_LEVEL` -- default log level"
 msgstr ""
 
 #: src/operations/debugging.md:590
-msgid "`ADORA_LOG_FORMAT` -- default log format"
+msgid "`DORA_LOG_FORMAT` -- default log format"
 msgstr ""
 
 #: src/operations/debugging.md:591
-msgid "`ADORA_LOG_FILTER` -- default per-node filter"
+msgid "`DORA_LOG_FILTER` -- default per-node filter"
 msgstr ""
 
 #: src/operations/debugging.md:595
@@ -22673,7 +22673,7 @@ msgid ""
 "When the Dora descriptor resolver encounters a `ros2:` key on a node, it "
 "converts it into a `Custom` node pointing to the `dora-ros2-bridge-node` "
 "binary. The bridge config is serialized as JSON into the "
-"`ADORA_ROS2_BRIDGE_CONFIG` environment variable."
+"`DORA_ROS2_BRIDGE_CONFIG` environment variable."
 msgstr ""
 
 #: src/advanced/ros2-bridge.md:29
@@ -26323,11 +26323,11 @@ msgid "Builds and runs a node crate (e.g., `rust-dataflow-example-node`)"
 msgstr ""
 
 #: src/development/testing.md:104
-msgid "Sets `ADORA_TEST_WITH_INPUTS` to a JSON file with timed events"
+msgid "Sets `DORA_TEST_WITH_INPUTS` to a JSON file with timed events"
 msgstr ""
 
 #: src/development/testing.md:105
-msgid "Sets `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` for deterministic output"
+msgid "Sets `DORA_TEST_NO_OUTPUT_TIME_OFFSET=1` for deterministic output"
 msgstr ""
 
 #: src/development/testing.md:106
@@ -26842,7 +26842,7 @@ msgid "Generating test input files"
 msgstr ""
 
 #: src/development/testing.md:329
-msgid "Record real dataflow events by setting `ADORA_WRITE_EVENTS_TO`:"
+msgid "Record real dataflow events by setting `DORA_WRITE_EVENTS_TO`:"
 msgstr ""
 
 #: src/development/testing.md:332
@@ -26852,7 +26852,7 @@ msgstr ""
 #: src/development/testing.md:335
 msgid ""
 "This writes `inputs-{node_id}.json` files that can be used directly with "
-"`ADORA_TEST_WITH_INPUTS`."
+"`DORA_TEST_WITH_INPUTS`."
 msgstr ""
 
 #: src/development/testing.md:337
@@ -26993,7 +26993,7 @@ msgstr ""
 
 #: src/development/testing.md:407
 msgid ""
-"Check that `ADORA_TEST_NO_OUTPUT_TIME_OFFSET=1` is set (time offsets vary "
+"Check that `DORA_TEST_NO_OUTPUT_TIME_OFFSET=1` is set (time offsets vary "
 "per machine)"
 msgstr ""
 

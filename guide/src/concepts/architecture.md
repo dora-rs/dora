@@ -681,7 +681,7 @@ _unstable_deploy:
 
 ```
 [HEADER]
-├─ MAGIC: 8 bytes ("ADORAREC")
+├─ MAGIC: 8 bytes ("DORAREC")
 ├─ version: u16 LE (currently 1)
 ├─ start_nanos: u64 LE (Unix epoch nanoseconds)
 ├─ dataflow_id: 16 bytes (UUID)
@@ -699,7 +699,7 @@ _unstable_deploy:
 └─ event_bytes: [u8; event_bytes_len]    (bincode InterDaemonEvent)
 
 [FOOTER] (optional, written on clean finish)
-├─ FOOTER_MAGIC: 8 bytes ("ADORAEND")
+├─ FOOTER_MAGIC: 8 bytes ("DORAEND")
 ├─ total_messages: u64 LE
 └─ total_bytes: u64 LE
 ```
