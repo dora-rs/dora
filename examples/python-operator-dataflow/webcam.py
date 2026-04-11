@@ -1,5 +1,5 @@
+
 import os
-import time
 import numpy as np
 import pyarrow as pa
 from dora import DoraStatus
@@ -20,13 +20,29 @@ class Operator:
     """Captures and streams webcam frames."""
 
     def __init__(self):
+        """Initializes the webcam capture at the specified camera index."""
         self.video_capture = cv2.VideoCapture(CAMERA_INDEX)
         self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
         self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.failure_count = 0
 
-    def on_event(self, dora_event, send_output) -> DoraStatus:
-        if dora_event["type"] == "INPUT":
+    def on_event(
+        self,
+        dora_event: str,
+        send_output,
+    ) -> DoraStatus:
+        """Capture a frame from the webcam and push it to the dataflow.
+
+        Args:
+            dora_event (dict): The event from dora-rs.
+            send_output (Callable): Callback to emit the captured image frame.
+
+        Returns:
+            DoraStatus: CONTINUE to keep capturing, or STOP if the runtime
+                signals a shutdown.
+        """
+        event_type = dora_event["type"]
+        if event_type == "INPUT":
             ret, frame = self.video_capture.read()
             if ret:
                 frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT))
@@ -39,14 +55,12 @@ class Operator:
             else:
                 self.failure_count += 1
                 return DoraStatus.CONTINUE
-
             # Clean metadata {} fixes the 'could not convert type' error
             send_output("image", pa.array(frame.ravel()), {})
-
         elif dora_event["type"] == "STOP":
             return DoraStatus.STOP
-
         return DoraStatus.CONTINUE
 
     def __del__(self):
+        """Releases the webcam resources upon operator destruction."""
         self.video_capture.release()

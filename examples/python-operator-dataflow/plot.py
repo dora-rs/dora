@@ -1,3 +1,4 @@
+
 import os
 import time
 import numpy as np
@@ -21,13 +22,30 @@ CAMERA_WIDTH = 640
 
 class Operator:
     def __init__(self):
+        """Initializes the Plot operator with empty state."""
         # Initialize as numpy array not list — safe to iterate always
         self.bboxs = np.zeros((0, 6))
         self.inference_latency = 0
         self.last_time = time.time()
         self.fps = 0
 
-    def on_event(self, dora_event, send_output):
+    def on_event(
+        self,
+        dora_event,
+        send_output,
+    ):
+        """Process incoming events and update the visualization.
+
+        Handles "image", "bbox", and "latency" inputs. Images are decorated
+        with bounding boxes and performance overlays before being displayed.
+
+        Args:
+            dora_event (dict): The event from dora-rs.
+            send_output (Callable): Callback (part of the operator interface).
+
+        Returns:
+            DoraStatus: CONTINUE to keep plotting, or STOP if quit is pressed.
+        """
         try:
             if dora_event["type"] == "INPUT":
                 event_id = dora_event["id"]

@@ -6,7 +6,9 @@ use crate::{
 use dora_core::descriptor::DescriptorExt;
 use dora_core::{descriptor::Descriptor, topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT};
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
+    cli_to_coordinator::CoordinatorControlClient,
+    coordinator_to_cli::{DaemonInfo, DataflowStatus},
+    tarpc,
 };
 use eyre::{Context, bail};
 use std::{
@@ -63,6 +65,21 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
         write!(stdout, "✓ ")?;
         let _ = stdout.reset();
         writeln!(stdout, "Daemon: Running")?;
+
+        // Show per-daemon Zenoh session info
+        if let Some(ref c) = client {
+            if let Ok(daemons) = list_daemons(c).await {
+                for d in &daemons {
+                    let zenoh_mark = if d.zenoh_ready { "✓" } else { "✗" };
+                    let peer = d.zenoh_peer_id.as_deref().unwrap_or("—");
+                    writeln!(
+                        stdout,
+                        "  Daemon {}  Zenoh: {} (peer: {})",
+                        d.daemon_id, zenoh_mark, peer
+                    )?;
+                }
+            }
+        }
     } else if client.is_some() {
         let _ = stdout.set_color(ColorSpec::new().set_fg(Some(Color::Red)));
         write!(stdout, "✗ ")?;
@@ -91,7 +108,7 @@ pub async fn check_environment(coordinator_addr: SocketAddr) -> eyre::Result<()>
     Ok(())
 }
 
-pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::ErrReport> {
+pub async fn daemon_running(client: &CoordinatorControlClient) -> Result<bool, eyre::ErrReport> {
     rpc(
         "check daemon connection",
         client.daemon_connected(tarpc::context::current()),
@@ -99,7 +116,19 @@ pub async fn daemon_running(client: &CliControlClient) -> Result<bool, eyre::Err
     .await
 }
 
-async fn query_running_dataflow_count(client: &CliControlClient) -> Result<usize, eyre::ErrReport> {
+async fn list_daemons(
+    client: &CoordinatorControlClient,
+) -> Result<Vec<DaemonInfo>, eyre::ErrReport> {
+    rpc(
+        "list daemons",
+        client.list_daemons(tarpc::context::current()),
+    )
+    .await
+}
+
+async fn query_running_dataflow_count(
+    client: &CoordinatorControlClient,
+) -> Result<usize, eyre::ErrReport> {
     let list = rpc("list dataflows", client.list(tarpc::context::current())).await?;
     Ok(list
         .0

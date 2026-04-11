@@ -1,19 +1,15 @@
-use std::{io::Write, net::SocketAddr};
+use std::io::Write;
 
 use super::{Executable, default_tracing};
 use crate::{
     common::{
         connect_and_check_version, long_context, resolve_dataflow_identifier_interactive, rpc,
     },
-    output::print_log_message,
-    tcp::AsyncTcpConnection,
+    output::subscribe_to_logs,
 };
 use clap::Args;
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{
-    cli_to_coordinator::{CliControlClient, LegacyControlRequest},
-    common::LogMessage,
-};
+use dora_message::cli_to_coordinator::CoordinatorControlClient;
 use eyre::{Context, Result};
 use uuid::Uuid;
 
@@ -55,66 +51,56 @@ impl Executable for LogsArgs {
             self.node,
             self.tail,
             self.follow,
-            (self.coordinator_addr, self.coordinator_port).into(),
+            self.coordinator_addr,
         )
         .await
     }
 }
 
 pub async fn logs(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     uuid: Uuid,
     node: dora_message::id::NodeId,
     tail: Option<usize>,
     follow: bool,
-    coordinator_addr: SocketAddr,
+    coordinator_addr: std::net::IpAddr,
 ) -> Result<()> {
-    let logs = rpc(
+    // When following, subscribe to zenoh *before* fetching historical logs
+    // so that messages published during the RPC are buffered.  The printer
+    // is only started after the historical output is flushed, with a
+    // timestamp cutoff to deduplicate the overlap window.
+    let subscription = if follow {
+        let log_level = env_logger::Builder::new()
+            .filter_level(log::LevelFilter::Info)
+            .parse_default_env()
+            .build()
+            .filter();
+
+        let zenoh_session = dora_core::topics::open_zenoh_session(Some(coordinator_addr))
+            .await
+            .wrap_err("failed to open zenoh session for log subscription")?;
+        let base_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow_node(uuid, &node);
+        Some(subscribe_to_logs(&zenoh_session, &base_topic, log_level).await?)
+    } else {
+        None
+    };
+
+    let response = rpc(
         "retrieve logs",
         client.logs(long_context(), Some(uuid), None, node.to_string(), tail),
     )
     .await?;
 
     std::io::stdout()
-        .write_all(&logs)
+        .write_all(&response.content)
         .expect("failed to write logs to stdout");
 
-    if !follow {
-        return Ok(());
-    }
-    let log_level = env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Info)
-        .parse_default_env()
-        .build()
-        .filter();
-
-    // subscribe to log messages
-    let mut log_session = AsyncTcpConnection {
-        stream: tokio::net::TcpStream::connect(coordinator_addr)
-            .await
-            .wrap_err("failed to connect to dora coordinator")?,
-    };
-    log_session
-        .send(
-            &serde_json::to_vec(&LegacyControlRequest::LogSubscribe {
-                dataflow_id: uuid,
-                level: log_level,
-            })
-            .wrap_err("failed to serialize message")?,
-        )
-        .await
-        .wrap_err("failed to send log subscribe request to coordinator")?;
-    while let Ok(raw) = log_session.receive().await {
-        let parsed: eyre::Result<LogMessage> =
-            serde_json::from_slice(&raw).context("failed to parse log message");
-        match parsed {
-            Ok(log_message) => {
-                print_log_message(log_message, false, false);
-            }
-            Err(err) => {
-                tracing::warn!("failed to parse log message: {err:?}")
-            }
-        }
+    if let Some(subscription) = subscription {
+        // Use the daemon-side timestamp as the dedup cutoff: messages
+        // with an earlier timestamp are already in the historical output.
+        let log_task = subscription.spawn_printer(false, false, Some(response.daemon_timestamp));
+        // Block until the task ends (subscriber closes).
+        let _ = log_task.await;
     }
 
     Ok(())

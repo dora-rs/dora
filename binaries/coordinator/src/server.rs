@@ -3,11 +3,12 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use dora_core::config::{NodeId, OperatorId};
 use dora_message::{
     BuildId,
-    cli_to_coordinator::{BuildRequest, CliControl, StartRequest},
+    cli_to_coordinator::{BuildRequest, CoordinatorControl, StartRequest},
     common::DaemonId,
     coordinator_to_cli::{
-        CheckDataflowReply, DataflowIdAndName, DataflowInfo, DataflowList, DataflowListEntry,
-        DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo, StopDataflowReply, VersionInfo,
+        CheckDataflowReply, DaemonInfo, DataflowIdAndName, DataflowInfo, DataflowList,
+        DataflowListEntry, DataflowResult, DataflowStatus, NodeInfo, NodeMetricsInfo,
+        StopDataflowReply, VersionInfo,
     },
     tarpc::context::Context,
 };
@@ -46,7 +47,6 @@ async fn stop_dataflow_impl(
         &state.running_dataflows,
         dataflow_uuid,
         &state.daemon_connections,
-        state.clock.new_timestamp(),
         grace_duration,
         force,
     )
@@ -65,23 +65,23 @@ async fn stop_dataflow_impl(
 }
 
 #[derive(Clone)]
-pub(crate) struct ControlServer {
+pub(crate) struct CoordinatorControlServer {
     pub(crate) state: Arc<CoordinatorState>,
     pub(crate) client_ip: Option<std::net::IpAddr>,
 }
 
-impl CliControl for ControlServer {
+impl CoordinatorControl for CoordinatorControlServer {
     async fn build(self, _context: Context, request: BuildRequest) -> Result<BuildId, String> {
-        // assign a random build id
-        let build_id = BuildId::generate();
+        let build_id = request.build_id.unwrap_or_else(BuildId::generate);
 
-        let result = build_dataflow(
-            request,
-            build_id,
-            &self.state.clock,
-            &self.state.daemon_connections,
-        )
-        .await;
+        // Reject duplicate build IDs.
+        if self.state.running_builds.contains_key(&build_id)
+            || self.state.finished_builds.contains_key(&build_id)
+        {
+            return Err(format!("duplicate build id {build_id}"));
+        }
+
+        let result = build_dataflow(request, build_id, &self.state.daemon_connections).await;
         match result {
             Ok(build) => {
                 self.state.running_builds.insert(build_id, build);
@@ -110,6 +110,7 @@ impl CliControl for ControlServer {
 
     async fn start(self, _context: Context, request: StartRequest) -> Result<Uuid, String> {
         let StartRequest {
+            dataflow_id,
             build_id,
             session_id,
             dataflow,
@@ -117,6 +118,7 @@ impl CliControl for ControlServer {
             local_working_dir,
             uv,
             write_events_to,
+            hot_reload,
         } = request;
 
         let name = name.or_else(|| petname(2, "-"));
@@ -135,16 +137,17 @@ impl CliControl for ControlServer {
             }
         }
         let uuid = start_dataflow(
+            dataflow_id,
             build_id,
             session_id,
             dataflow,
             local_working_dir,
             name,
             &self.state.daemon_connections,
-            &self.state.clock,
             &self.state.running_dataflows,
             uv,
             write_events_to,
+            hot_reload,
         )
         .await
         .map_err(err_to_string)?;
@@ -180,7 +183,6 @@ impl CliControl for ControlServer {
             node_id,
             operator_id,
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
         )
         .await
         .map_err(err_to_string)?;
@@ -245,7 +247,7 @@ impl CliControl for ControlServer {
         name: Option<String>,
         node: String,
         tail: Option<usize>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<dora_message::common::LogsResponse, String> {
         let dataflow_uuid = if let Some(uuid) = uuid {
             Ok(uuid)
         } else if let Some(name) = name {
@@ -265,7 +267,6 @@ impl CliControl for ControlServer {
             dataflow_uuid,
             node.into(),
             &self.state.daemon_connections,
-            self.state.clock.new_timestamp(),
             tail,
         )
         .await
@@ -346,20 +347,27 @@ impl CliControl for ControlServer {
     async fn cli_and_default_daemon_on_same_machine(
         self,
         _context: Context,
+        machine_uid: Option<String>,
     ) -> Result<bool, String> {
-        let Some(cli_ip) = self.client_ip else {
-            return Ok(false);
-        };
         let Some(default_id) = self.state.daemon_connections.unnamed().next() else {
             return Ok(false);
         };
-        let Some(stream) = self.state.daemon_connections.get_stream(&default_id) else {
+        let Some(connection) = self.state.daemon_connections.get(&default_id) else {
             return Ok(false);
         };
-        let stream = stream.lock().await;
-        let same = stream
-            .peer_addr()
-            .ok()
+
+        // Prefer machine UID comparison — works correctly through NAT.
+        if let (Some(cli_uid), Some(daemon_uid)) = (&machine_uid, &connection.machine_uid) {
+            return Ok(cli_uid == daemon_uid);
+        }
+
+        // Fall back to IP address comparison for older daemons that don't
+        // report a machine UID yet.
+        let Some(cli_ip) = self.client_ip else {
+            return Ok(false);
+        };
+        let same = connection
+            .peer_addr
             .map(|addr| addr.ip() == cli_ip)
             .unwrap_or(false);
         Ok(same)
@@ -376,7 +384,7 @@ impl CliControl for ControlServer {
         let mut node_infos = Vec::new();
         for r in self.state.running_dataflows.iter() {
             let dataflow = r.value();
-            for (node_id, _node) in &dataflow.nodes {
+            for node_id in dataflow.nodes.keys() {
                 // Get the specific daemon this node is running on
                 if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
                     // Get metrics if available
@@ -402,5 +410,18 @@ impl CliControl for ControlServer {
             }
         }
         Ok(node_infos)
+    }
+
+    async fn list_daemons(self, _ctx: Context) -> Result<Vec<DaemonInfo>, String> {
+        Ok(self
+            .state
+            .daemon_connections
+            .iter()
+            .map(|r| DaemonInfo {
+                daemon_id: r.key().clone(),
+                zenoh_ready: r.value().zenoh_peer_id.is_some(),
+                zenoh_peer_id: r.value().zenoh_peer_id.clone(),
+            })
+            .collect())
     }
 }

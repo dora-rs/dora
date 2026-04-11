@@ -51,7 +51,7 @@ use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
     topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
 };
-use dora_message::{BuildId, cli_to_coordinator::CliControlClient, descriptor::NodeSource};
+use dora_message::{BuildId, cli_to_coordinator::CoordinatorControlClient, descriptor::NodeSource};
 use eyre::Context;
 use std::{collections::BTreeMap, net::IpAddr};
 
@@ -61,7 +61,7 @@ use crate::{
     session::DataflowSession,
 };
 
-use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
+use distributed::build_distributed_dataflow;
 use local::build_dataflow_locally;
 
 mod distributed;
@@ -156,13 +156,15 @@ pub async fn build_async(
     let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
-        log::info!("Building locally, as requested through `--force-local`");
+        tracing::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        log::info!("Building locally because dataflow does not contain any `deploy` sections");
+        tracing::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
-        log::info!("Building through coordinator, using the given coordinator socket information");
+        tracing::info!(
+            "Building through coordinator, using the given coordinator socket information"
+        );
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
             coordinator_client: session()
@@ -173,11 +175,13 @@ pub async fn build_async(
         match session().await {
             Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
-                log::info!("Found local dora coordinator instance -> building through coordinator");
+                tracing::info!(
+                    "Found local dora coordinator instance -> building through coordinator"
+                );
                 BuildKind::ThroughCoordinator { coordinator_client }
             }
             Err(_) => {
-                log::warn!("No dora coordinator instance found -> trying a local build");
+                tracing::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
@@ -186,7 +190,7 @@ pub async fn build_async(
 
     match build_kind {
         BuildKind::Local => {
-            log::info!("running local build");
+            tracing::info!("running local build");
             // use dataflow dir as base working dir
             let local_working_dir = dunce::canonicalize(&dataflow_path)
                 .context("failed to canonicalize dataflow path")?
@@ -211,7 +215,6 @@ pub async fn build_async(
                 .context("failed to write out dataflow session file")?;
         }
         BuildKind::ThroughCoordinator { coordinator_client } => {
-            let coord = coordinator_socket(coordinator_addr, coordinator_port);
             let local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
                     .await?;
@@ -222,24 +225,12 @@ pub async fn build_async(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            )
-            .await?;
-
-            dataflow_session.git_sources = git_sources;
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
-
-            // wait until dataflow build is finished
-
-            wait_until_dataflow_built(
-                build_id,
-                &coordinator_client,
-                coordinator_socket(coordinator_addr, coordinator_port),
+                coordinator_addr.unwrap_or(LOCALHOST),
                 log::LevelFilter::Info,
             )
             .await?;
 
+            dataflow_session.git_sources = git_sources;
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
             dataflow_session
@@ -254,24 +245,15 @@ pub async fn build_async(
 enum BuildKind {
     Local,
     ThroughCoordinator {
-        coordinator_client: CliControlClient,
+        coordinator_client: CoordinatorControlClient,
     },
 }
 
 async fn connect_to_coordinator_rpc_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> eyre::Result<CliControlClient> {
+) -> eyre::Result<CoordinatorControlClient> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     connect_and_check_version(addr, control_port).await
-}
-
-fn coordinator_socket(
-    coordinator_addr: Option<std::net::IpAddr>,
-    coordinator_port: Option<u16>,
-) -> std::net::SocketAddr {
-    let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
-    let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    (coordinator_addr, coordinator_port).into()
 }

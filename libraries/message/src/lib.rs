@@ -69,13 +69,30 @@ impl std::fmt::Display for BuildId {
     }
 }
 
-fn current_crate_version() -> semver::Version {
+/// Check whether a remote version string is compatible with this crate's version.
+pub fn check_version_compatibility(remote_version: &str) -> eyre::Result<()> {
+    let crate_version = current_crate_version();
+    let specified_version = semver::Version::parse(remote_version)
+        .map_err(|e| eyre::eyre!("failed to parse remote version `{remote_version}`: {e}"))?;
+    let compatible =
+        versions_compatible(&crate_version, &specified_version).map_err(|e| eyre::eyre!(e))?;
+    if compatible {
+        Ok(())
+    } else {
+        Err(eyre::eyre!(
+            "version mismatch: remote message format v{specified_version} is not compatible \
+            with local message format v{crate_version}"
+        ))
+    }
+}
+
+pub(crate) fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
 
     semver::Version::parse(crate_version_raw).unwrap()
 }
 
-fn versions_compatible(
+pub(crate) fn versions_compatible(
     crate_version: &semver::Version,
     specified_version: &semver::Version,
 ) -> Result<bool, String> {

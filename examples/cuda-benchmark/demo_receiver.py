@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""TODO: Add docstring."""
+"""CUDA benchmark demonstration receiver for dora-rs.
+
+This script compares the performance of receiving large data packets using
+standard dora-rs (CPU-based) versus the zero-copy CUDA-to-CUDA transfer mechanism.
+It measures and reports the communication latency and speedup.
+"""
 
 import os
 import time

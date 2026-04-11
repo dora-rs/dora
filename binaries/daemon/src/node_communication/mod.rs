@@ -1,26 +1,25 @@
 use crate::{DaemonNodeEvent, Event};
 use dora_core::{
-    config::{DataId, LocalCommunicationConfig, NodeId},
+    config::{DataId, NodeId},
     topics::LOCALHOST,
     uhlc,
 };
 use dora_message::{
     DataflowId,
     common::{DropToken, Timestamped},
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent},
+    daemon_to_node::{
+        DaemonCommunication, DaemonReply, NodeDropEvent, NodeEvent, NodeEventOrUnknown,
+    },
     node_to_daemon::DaemonRequest,
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
-use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::{BTreeMap, VecDeque},
     mem,
     sync::Arc,
     task::Poll,
 };
-#[cfg(unix)]
-use tokio::net::UnixListener;
 use tokio::{
     net::TcpListener,
     sync::{
@@ -29,160 +28,34 @@ use tokio::{
     },
 };
 
-// TODO unify and avoid duplication;
-pub mod shmem;
 pub mod tcp;
-#[cfg(unix)]
-pub mod unix_domain;
 
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Timestamped<Event>>,
-    config: LocalCommunicationConfig,
     queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<(DaemonCommunication, Option<tokio::task::AbortHandle>)> {
-    match config {
-        LocalCommunicationConfig::Tcp => {
-            let socket = match TcpListener::bind((LOCALHOST, 0)).await {
-                Ok(socket) => socket,
-                Err(err) => {
-                    return Err(
-                        eyre::Report::new(err).wrap_err("failed to create local TCP listener")
-                    );
-                }
-            };
-            let socket_addr = socket
-                .local_addr()
-                .wrap_err("failed to get local addr of socket")?;
-
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let daemon_tx = daemon_tx.clone();
-            let handle = tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
-                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-            });
-            let abort_handle = handle.abort_handle();
-
-            Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
+    let socket = match TcpListener::bind((LOCALHOST, 0)).await {
+        Ok(socket) => socket,
+        Err(err) => {
+            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
         }
-        LocalCommunicationConfig::Shmem => {
-            let daemon_control_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_control_region")?;
-            let daemon_events_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_events_region")?;
-            let daemon_drop_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_events_close_region = ShmemConf::new()
-                .size(4096)
-                .create()
-                .wrap_err("failed to allocate daemon_drop_region")?;
-            let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
-            let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-            let daemon_drop_region_id = daemon_drop_region.get_os_id().to_owned();
-            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
+    };
+    let socket_addr = socket
+        .local_addr()
+        .wrap_err("failed to get local addr of socket")?;
 
-            {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
-                    .wrap_err("failed to create control server")?;
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::spawn(shmem::listener_loop(server, daemon_tx, queue_sizes, clock));
-            }
+    let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+    let daemon_tx = daemon_tx.clone();
+    let handle = tokio::spawn(async move {
+        tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+        tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+    });
+    let abort_handle = handle.abort_handle();
 
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
-                    .wrap_err("failed to create events server")?;
-                let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_drop_region) }
-                    .wrap_err("failed to create drop server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let queue_sizes = queue_sizes.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!("drop listener loop finished for `{drop_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
-                    .wrap_err("failed to create events close server")?;
-                let drop_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, queue_sizes, clock).await;
-                    tracing::debug!(
-                        "events close listener loop finished for `{drop_loop_node_id}`"
-                    );
-                });
-            }
-
-            Ok((
-                DaemonCommunication::Shmem {
-                    daemon_control_region_id,
-                    daemon_events_region_id,
-                    daemon_drop_region_id,
-                    daemon_events_close_region_id,
-                },
-                None,
-            ))
-        }
-        #[cfg(unix)]
-        LocalCommunicationConfig::UnixDomain => {
-            use std::path::Path;
-            let tmpfile_dir = Path::new("/tmp");
-            let tmpfile_dir = tmpfile_dir.join(dataflow_id.to_string());
-            if !tmpfile_dir.exists() {
-                std::fs::create_dir_all(&tmpfile_dir).context("could not create tmp dir")?;
-            }
-            let socket_file = tmpfile_dir.join(format!("{node_id}.sock"));
-            let socket = match UnixListener::bind(&socket_file) {
-                Ok(socket) => socket,
-                Err(err) => {
-                    return Err(eyre::Report::new(err)
-                        .wrap_err("failed to create local Unix domain socket"));
-                }
-            };
-
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let daemon_tx = daemon_tx.clone();
-            let handle = tokio::spawn(async move {
-                unix_domain::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
-                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-            });
-            let abort_handle = handle.abort_handle();
-
-            Ok((
-                DaemonCommunication::UnixDomain { socket_file },
-                Some(abort_handle),
-            ))
-        }
-        #[cfg(not(unix))]
-        LocalCommunicationConfig::UnixDomain => {
-            eyre::bail!("Communication via UNIX domain sockets is only supported on UNIX systems")
-        }
-    }
+    Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
 }
 
 struct Listener {
@@ -191,7 +64,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<UnboundedReceiver<Timestamped<NodeEvent>>>,
     subscribed_drop_events: Option<UnboundedReceiver<Timestamped<NodeDropEvent>>>,
-    queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
+    queue: VecDeque<Box<Option<Timestamped<NodeEventOrUnknown>>>>,
     clock: Arc<uhlc::HLC>,
 }
 
@@ -288,7 +161,7 @@ impl Listener {
                     future::Either::Right((message, _)) => break message,
                 };
 
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(Box::new(Some(event.into())));
                 self.handle_events().await?;
             };
 
@@ -312,7 +185,7 @@ impl Listener {
     async fn handle_events(&mut self) -> eyre::Result<()> {
         if let Some(events) = &mut self.subscribed_events {
             while let Ok(event) = events.try_recv() {
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(Box::new(Some(event.into())));
             }
         }
         Ok(())
@@ -414,7 +287,7 @@ impl Listener {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
                         Some(events) => match events.recv().await {
-                            Some(event) => DaemonReply::NextEvents(vec![event]),
+                            Some(event) => DaemonReply::NextEvents(vec![event.into()]),
                             None => DaemonReply::NextEvents(vec![]),
                         },
                         None => {

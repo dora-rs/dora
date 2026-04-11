@@ -1,5 +1,11 @@
 #!/usr/bin/env python
-"""TODO: Add docstring."""
+"""ROS2 bridge example for turtlesim in dora-rs.
+
+This script demonstrates how to interface a dora-rs node with ROS2 using
+the ROS2 bridge. It publishes movement commands to '/turtle1/cmd_vel'
+and subscribes to '/turtle1/pose', blending dora-rs and ROS2 event loops
+using 'merge_external_events'.
+"""
 
 
 from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies

@@ -8,7 +8,7 @@ use crate::common::{resolve_dataflow_identifier_interactive, rpc};
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
-    cli_to_coordinator::CliControlClient,
+    cli_to_coordinator::CoordinatorControlClient,
     id::{DataId, NodeId},
     tarpc,
 };
@@ -23,7 +23,10 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub async fn resolve(&self, client: &CliControlClient) -> eyre::Result<(Uuid, Descriptor)> {
+    pub async fn resolve(
+        &self,
+        client: &CoordinatorControlClient,
+    ) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
             resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref()).await?;
         let info = rpc(
@@ -59,7 +62,7 @@ impl fmt::Display for TopicIdentifier {
 impl TopicSelector {
     pub async fn resolve(
         &self,
-        client: &CliControlClient,
+        client: &CoordinatorControlClient,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(client).await?;
         if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {

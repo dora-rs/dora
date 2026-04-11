@@ -3,7 +3,9 @@ use crate::common::{
     connect_and_check_version, handle_dataflow_result, long_context, query_running_dataflows, rpc,
 };
 use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{cli_to_coordinator::CliControlClient, coordinator_to_cli::StopDataflowReply};
+use dora_message::{
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::StopDataflowReply,
+};
 use duration_str::parse;
 use eyre::Context;
 use std::net::IpAddr;
@@ -66,7 +68,7 @@ impl Executable for Stop {
 async fn stop_dataflow_interactive(
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> eyre::Result<()> {
     let list = query_running_dataflows(client)
         .await
@@ -86,7 +88,7 @@ async fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } = rpc(
         "stop dataflow",
@@ -100,7 +102,7 @@ async fn stop_dataflow_by_name(
     name: String,
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
 ) -> Result<(), eyre::ErrReport> {
     let StopDataflowReply { uuid, result } = rpc(
         "stop dataflow by name",

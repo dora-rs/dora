@@ -8,7 +8,8 @@ use crate::{
     BuildId, SessionId,
     common::{DaemonId, GitSource},
     coordinator_to_cli::{
-        CheckDataflowReply, DataflowInfo, DataflowList, NodeInfo, StopDataflowReply, VersionInfo,
+        CheckDataflowReply, DaemonInfo, DataflowInfo, DataflowList, NodeInfo, StopDataflowReply,
+        VersionInfo,
     },
     descriptor::Descriptor,
     id::{NodeId, OperatorId},
@@ -16,6 +17,13 @@ use crate::{
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct BuildRequest {
+    /// Client-generated build ID. When provided, the CLI can subscribe
+    /// to the log topic *before* sending this RPC, avoiding a race
+    /// where early log messages are missed.
+    ///
+    /// When `None`, the coordinator generates the ID (backwards compat).
+    #[serde(default)]
+    pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub dataflow: Descriptor,
     pub git_sources: BTreeMap<NodeId, GitSource>,
@@ -33,6 +41,13 @@ pub struct BuildRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct StartRequest {
+    /// Client-generated dataflow ID. When provided, the CLI can subscribe
+    /// to the log topic *before* sending this RPC, avoiding a race
+    /// where early log messages are missed.
+    ///
+    /// When `None`, the coordinator generates the ID (backwards compat).
+    #[serde(default)]
+    pub dataflow_id: Option<Uuid>,
     pub build_id: Option<BuildId>,
     pub session_id: SessionId,
     pub dataflow: Descriptor,
@@ -47,24 +62,16 @@ pub struct StartRequest {
     pub local_working_dir: Option<PathBuf>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum LegacyControlRequest {
-    LogSubscribe {
-        dataflow_id: Uuid,
-        level: log::LevelFilter,
-    },
-    BuildLogSubscribe {
-        build_id: BuildId,
-        level: log::LevelFilter,
-    },
+    /// When true, the daemon watches node binaries for changes
+    /// and restarts nodes on hot-reload events.
+    #[serde(default)]
+    pub hot_reload: bool,
 }
 
 type Result<T> = std::result::Result<T, String>;
 
 #[tarpc::service]
-pub trait CliControl {
+pub trait CoordinatorControl {
     async fn build(request: BuildRequest) -> Result<BuildId>;
     async fn wait_for_build(build_id: BuildId) -> Result<()>;
     async fn start(request: StartRequest) -> Result<Uuid>;
@@ -90,13 +97,14 @@ pub trait CliControl {
         name: Option<String>,
         node: String,
         tail: Option<usize>,
-    ) -> Result<Vec<u8>>;
+    ) -> Result<crate::common::LogsResponse>;
     async fn destroy() -> Result<()>;
     async fn list() -> Result<DataflowList>;
     async fn info(dataflow_uuid: Uuid) -> Result<DataflowInfo>;
     async fn daemon_connected() -> Result<bool>;
     async fn connected_machines() -> Result<BTreeSet<DaemonId>>;
-    async fn cli_and_default_daemon_on_same_machine() -> Result<bool>;
+    async fn cli_and_default_daemon_on_same_machine(machine_uid: Option<String>) -> Result<bool>;
     async fn get_node_info() -> Result<Vec<NodeInfo>>;
     async fn get_version() -> VersionInfo;
+    async fn list_daemons() -> Result<Vec<DaemonInfo>>;
 }

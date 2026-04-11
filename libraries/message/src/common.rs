@@ -50,33 +50,37 @@ impl From<LogMessageHelper> for LogMessage {
         LogMessage {
             build_id: helper.build_id.or(fields
                 .and_then(|f| f.get("build_id").cloned())
-                .map(|id| BuildId(Uuid::parse_str(&id).unwrap()))),
+                .and_then(|id| Uuid::parse_str(&id).ok().map(BuildId))),
             dataflow_id: helper.dataflow_id.or(fields
                 .and_then(|f| f.get("dataflow_id").cloned())
-                .map(|id| DataflowId::from(Uuid::parse_str(&id).unwrap()))),
-            node_id: helper.node_id.or(fields
-                .and_then(|f| f.get("node_id").cloned())
-                .map(|id| NodeId(id))),
-            daemon_id: helper
-                .daemon_id
-                .or(fields.and_then(|f| f.get("daemon_id").cloned()).map(|id| {
+                .and_then(|id| Uuid::parse_str(&id).ok())),
+            node_id: helper
+                .node_id
+                .or(fields.and_then(|f| f.get("node_id").cloned()).map(NodeId)),
+            daemon_id: helper.daemon_id.or(fields
+                .and_then(|f| f.get("daemon_id").cloned())
+                .and_then(|id| {
                     let parts: Vec<&str> = id.splitn(2, '-').collect();
                     if parts.len() == 2 {
-                        DaemonId {
+                        Uuid::parse_str(parts[1]).ok().map(|uuid| DaemonId {
                             machine_id: Some(parts[0].to_string()),
-                            uuid: Uuid::parse_str(parts[1]).unwrap(),
-                        }
+                            uuid,
+                        })
                     } else {
-                        DaemonId {
+                        Uuid::parse_str(parts[0]).ok().map(|uuid| DaemonId {
                             machine_id: None,
-                            uuid: Uuid::parse_str(&parts[0]).unwrap(),
-                        }
+                            uuid,
+                        })
                     }
                 })),
             level: helper.level,
-            target: helper
-                .target
-                .or(fields.and_then(|f| f.get("target").cloned())),
+            target: {
+                match helper.target {
+                    Some(t) if !t.is_empty() => Some(t),
+                    // try to fall back to fields if target is None or the empty string
+                    _ => fields.and_then(|f| f.get("target").cloned()),
+                }
+            },
             module_path: helper
                 .module_path
                 .or(fields.and_then(|f| f.get("module_path").cloned())),
@@ -107,6 +111,19 @@ impl From<LogLevel> for LogLevelOrStdout {
     fn from(level: LogLevel) -> Self {
         Self::LogLevel(level)
     }
+}
+
+/// Response from the `logs` RPC, containing the raw log file contents and
+/// the timestamp of the last log entry read by the daemon.  The CLI uses
+/// `last_timestamp` as a dedup cutoff when switching from historical to
+/// live (zenoh) log output.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct LogsResponse {
+    pub content: Vec<u8>,
+    /// Timestamp captured on the daemon right after reading the log file.
+    /// Zenoh messages with an earlier timestamp are already covered by
+    /// `content`.
+    pub daemon_timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -335,6 +352,15 @@ impl std::fmt::Display for DaemonId {
         }
         write!(f, "{}", self.uuid)
     }
+}
+
+/// Returns a system-level unique machine identifier.
+///
+/// This is used to reliably determine whether two processes (e.g. CLI and
+/// daemon) are running on the same physical/virtual machine, even when a
+/// NAT maps multiple machines to the same public IP address.
+pub fn machine_uid() -> Option<String> {
+    machine_uid::get().ok()
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]

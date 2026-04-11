@@ -3,7 +3,7 @@ use dora_core::{
     uhlc::{self, Timestamp},
 };
 use dora_message::{
-    daemon_to_node::{DaemonReply, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{Context, eyre};
@@ -17,13 +17,13 @@ use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
     let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
-    Ok(EventStreamThreadHandle::new(node_id, join_handle))
+    Ok(EventStreamThreadHandle::new(join_handle))
 }
 
 #[derive(Debug)]
@@ -38,20 +38,16 @@ pub enum EventItem {
 }
 
 pub struct EventStreamThreadHandle {
-    node_id: NodeId,
     handle: flume::Receiver<std::thread::Result<()>>,
 }
 
 impl EventStreamThreadHandle {
-    fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
+    fn new(join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(join_handle.join());
         });
-        Self {
-            node_id,
-            handle: rx,
-        }
+        Self { handle: rx }
     }
 }
 
@@ -87,7 +83,7 @@ impl Drop for EventStreamThreadHandle {
 #[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) {
@@ -129,15 +125,19 @@ fn event_stream_loop(
             }
             Err(err) => {
                 let err = err.wrap_err("failed to receive incoming event");
-                tracing::warn!("{err:?}");
-                continue;
+                break 'outer Err(err);
             }
         };
         for Timestamped { inner, timestamp } in events {
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            let drop_token = match &inner {
+            let NodeEventOrUnknown::Known(inner) = inner else {
+                tracing::info!("received unknown event from daemon -> skipping it");
+                continue;
+            };
+
+            let drop_token = match inner.as_ref() {
                 NodeEvent::Input {
                     data: Some(data), ..
                 } => data.drop_token(),
@@ -151,13 +151,13 @@ fn event_stream_loop(
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
                 match tx.send(EventItem::NodeEvent {
-                    event: inner,
+                    event: *inner,
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}
                     Err(send_error) => {
-                        let event = send_error.into_inner();
-                        tracing::trace!(
+                        let event = send_error.0;
+                        tracing::warn!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
 
@@ -179,8 +179,8 @@ fn event_stream_loop(
     };
     if let Err(err) = result {
         if let Some(tx) = tx.as_ref() {
-            if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
-                let err = match item {
+            if let Err(send_error) = tx.send(EventItem::FatalError(err)) {
+                let err = match send_error.0 {
                     EventItem::FatalError(err) => err,
                     _ => unreachable!(),
                 };

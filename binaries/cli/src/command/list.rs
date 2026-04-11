@@ -9,9 +9,9 @@ use crate::{
 use clap::Args;
 use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
 use dora_message::{
-    cli_to_coordinator::CliControlClient, coordinator_to_cli::DataflowStatus, tarpc,
+    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::DataflowStatus, tarpc,
 };
-use eyre::{Context, eyre};
+use eyre::Context;
 use serde::Serialize;
 use tabwriter::TabWriter;
 use uuid::Uuid;
@@ -69,7 +69,7 @@ struct DataflowMetrics {
 }
 
 async fn list(
-    client: &CliControlClient,
+    client: &CoordinatorControlClient,
     format: OutputFormat,
     status_filter: Option<String>,
     name_filter: Option<String>,
@@ -89,9 +89,7 @@ async fn list(
         std::collections::BTreeMap::new();
 
     for node_info in node_infos {
-        let metrics = dataflow_metrics
-            .entry(node_info.dataflow_id)
-            .or_insert_with(DataflowMetrics::default);
+        let metrics = dataflow_metrics.entry(node_info.dataflow_id).or_default();
         metrics.node_count += 1;
 
         if let Some(node_metrics) = node_info.metrics {
@@ -182,7 +180,11 @@ async fn list(
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
             // Header
-            tw.write_all(format!("UUID\tName\tStatus\tNodes\tCPU\tMemory\n").as_bytes())?;
+            tw.write_all(
+                "UUID\tName\tStatus\tNodes\tCPU\tMemory\n"
+                    .to_string()
+                    .as_bytes(),
+            )?;
             for entry in entries {
                 let status = match entry.status {
                     DataflowStatus::Running => "Running",
@@ -192,13 +194,8 @@ async fn list(
 
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\t{}\t{}\n",
-                        entry.uuid,
-                        entry.name,
-                        status,
-                        entry.nodes,
-                        format!("{:.1}%", entry.cpu),
-                        format!("{:.1} GB", entry.memory)
+                        "{}\t{}\t{}\t{}\t{:.1}%\t{:.1} GB\n",
+                        entry.uuid, entry.name, status, entry.nodes, entry.cpu, entry.memory
                     )
                     .as_bytes(),
                 )?;

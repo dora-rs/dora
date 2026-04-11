@@ -1,3 +1,4 @@
+
 import os
 import time
 import numpy as np
@@ -13,10 +14,23 @@ IMGSZ = 320
 
 
 class Operator:
+    """Inferring object from images."""
+
     def __init__(self):
         self.model = YOLO(YOLO_MODEL_PATH)
 
     def on_event(self, dora_event, send_output) -> DoraStatus:
+        """Process incoming image frames and perform object detection.
+
+        Args:
+            dora_event (dict): The event from dora-rs, expected to contain
+                a raw image buffer.
+            send_output (Callable): Callback to emit detection results
+                (bounding boxes, scores, and labels).
+
+        Returns:
+            DoraStatus: CONTINUE to allow further image processing.
+        """
         if dora_event["type"] == "INPUT":
             if dora_event["id"] != "image":
                 return DoraStatus.CONTINUE
