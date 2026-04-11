@@ -10,7 +10,7 @@ This file provides guidance to Codex and other agentic coding tools working in t
 
 ## Project Overview
 
-Dora (AI-Dora, Agentic Dataflow-Oriented Robotic Architecture) is a Rust-first framework for real-time robotics and AI applications. It uses zero-copy shared memory, Apache Arrow data, and supports Rust, Python, C, and C++ nodes.
+Dora is a Rust-first framework for real-time robotics and AI applications. It uses zero-copy shared memory, Apache Arrow data, and supports Rust, Python, C, and C++ nodes.
 
 Primary architecture:
 
@@ -28,9 +28,10 @@ Key communication paths:
 ## Workspace Facts
 
 - Rust edition: 2024
-- MSRV: 1.85.0
+- MSRV: 1.88.0
 - Shared workspace versioning
 - Python packages are built with `maturin`, not normal `cargo` flows
+- The repository is in an `adora` -> `dora` consolidation transition. Prefer `dora` names for new code, but preserve documented compatibility paths unless the change is explicitly a breaking cleanup.
 
 Important packages:
 
@@ -44,6 +45,19 @@ Important packages:
 - `apis/rust/operator`: Rust operator API
 - `apis/python/node`: Python node API
 
+## Rename Transition Rules
+
+- Default to `dora` naming in code, docs, examples, and user-facing text.
+- Do not remove `adora` compatibility aliases lightly. If a path currently supports old `adora` prefixes, env vars, imports, or crate/package shims, assume that compatibility is intentional unless the task explicitly removes it.
+- When touching renamed surfaces, verify both:
+  - the new `dora` path works
+  - any documented transition compatibility still works
+- Treat these as compatibility-sensitive areas:
+  - `DORA_*` / `ADORA_*` environment variables
+  - `dora/...` / `adora/...` virtual YAML inputs
+  - public API aliases and shim crates/packages
+  - CLI binary/package/import names across Rust, Python, C, and C++
+
 ## Agent Working Rules
 
 - Do not make up architecture details. Read the affected crate(s) first.
@@ -53,6 +67,7 @@ Important packages:
 - Never revert user changes you did not author.
 - For non-trivial changes, keep behavior aligned with docs, examples, and tests.
 - When touching CLI, coordinator, daemon, dataflow parsing, or transport behavior, assume smoke or integration validation is needed.
+- For large mechanical rename or migration changes, review compatibility promises in issues/docs before changing behavior.
 
 ## Build And Test Commands
 
