@@ -354,7 +354,15 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
-        self.record_event(&event).unwrap();
+        // Event recording failure should not prevent event scheduling.
+        // If writing to the event log file fails, log a warning but continue
+        // processing events. Observability should never break the main logic.
+        if let Err(err) = self.record_event(&event) {
+            tracing::warn!(
+                "failed to record event for node {}: {err:?}",
+                self.node_id
+            );
+        }
         self.scheduler.add_event(event);
     }
 

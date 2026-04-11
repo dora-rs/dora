@@ -758,8 +758,14 @@ impl DoraNode {
             .map(|(i, _)| i);
         let memory = match cache_index {
             Some(i) => {
-                // we know that this index exists, so we can safely unwrap here
-                self.cache.remove(i).unwrap()
+                // Index was just found via self.cache.iter().enumerate(), so removal
+                // should succeed. Using expect() instead of unwrap() provides a clear
+                // diagnostic message if this invariant is ever violated due to a bug
+                // in cache management or concurrent modification.
+                self.cache.remove(i).expect(
+                    "shared memory cache index should exist: \
+                    found via iter() but missing on remove() indicates cache corruption",
+                )
             }
             None => ShmemHandle(Box::new(
                 ShmemConf::new()
@@ -973,25 +979,49 @@ pub fn init_tracing(
     let guard: Arc<Mutex<Option<OtelGuard>>> = Arc::new(Mutex::new(None));
     let clone = guard.clone();
     let tracing_monitor = async move {
-        let mut builder = TracingBuilder::new(node_id_str);
+        let mut builder = TracingBuilder::new(node_id_str.clone());
         // Only enable OTLP if environment variable is set
         if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
             || std::env::var("DORA_JAEGER_TRACING").is_ok()
         {
-            builder = builder
-                .with_otlp_tracing()
-                .context("failed to set up OTLP tracing")
-                .unwrap()
-                .with_stdout("info", true);
-            *clone.lock().unwrap() = builder.guard.take();
+            // with_otlp_tracing() consumes self, so we need to handle both
+            // success and failure cases. On failure, create a fresh builder.
+            builder = match builder.with_otlp_tracing() {
+                Ok(otlp_builder) => {
+                    otlp_builder.with_stdout("info", true)
+                }
+                Err(err) => {
+                    tracing::warn!("failed to set up OTLP tracing, falling back to stdout only: {err:?}");
+                    TracingBuilder::new(node_id_str).with_stdout("info", true)
+                }
+            };
         } else {
             builder = builder.with_stdout("info", true);
         }
 
-        builder
+        // Handle PoisonError gracefully: tracing setup failure should
+        // not crash the node. If the mutex is poisoned, recover the lock
+        // and continue (data is still valid).
+        match clone.lock() {
+            Ok(mut guard) => *guard = builder.guard.take(),
+            Err(poisoned) => {
+                tracing::warn!(
+                    "tracing guard mutex was poisoned, recovering: \
+                    another task may have panicked while holding the lock"
+                );
+                let mut guard = poisoned.into_inner();
+                *guard = builder.guard.take();
+            }
+        }
+
+        // Tracing subscriber setup failure should not crash the node.
+        // Log the error and continue with default logging.
+        if let Err(err) = builder
             .build()
             .wrap_err("failed to set up tracing subscriber")
-            .unwrap();
+        {
+            tracing::warn!("tracing subscriber setup failed, using default logging: {err:?}");
+        }
     };
 
     let rt = Handle::try_current().context("failed to get tokio runtime handle")?;
