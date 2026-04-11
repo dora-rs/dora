@@ -66,7 +66,7 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
                 .iter()
                 .map(|b| {
                     let ptr = b.as_ptr();
-                    if ptr as usize <= region_start as usize {
+                    if (ptr as usize) < (region_start as usize) {
                         eyre::bail!("ptr {ptr:p} starts before region {region_start:p}");
                     }
                     let region_end = (region_start as usize)
@@ -74,7 +74,7 @@ impl ArrowTypeInfoExt for ArrowTypeInfo {
                         .ok_or_else(|| eyre::eyre!("region length overflow"))?;
 
                     if (ptr as usize) >= region_end {
-                        eyre::bail!("ptr {ptr:p} starts after region {region_start:p}");
+                        eyre::bail!("ptr {ptr:p} starts after region {region_end}");
                     }
 
                     let end_ptr = (ptr as usize)
