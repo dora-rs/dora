@@ -1,3 +1,16 @@
+# CI workflow — superset of upstream dora-rs/dora CI (issue #180).
+#
+# Intentional divergences from upstream:
+# - No Windows in examples/CLI jobs (upstream has it; deferred until
+#   Windows-specific bugs are triaged — tracked in issue #180)
+# - Bench is Ubuntu-only (criterion regression, not cross-platform example)
+# - ROS2 bridge Python test skipped (pyo3 0.28 auto-initialize removed)
+# - No cargo-release/pip-release/docker-image workflows (not publishing yet)
+# - No labeler/bot workflows (not needed for this fork)
+#
+# Matches upstream on: test (3 platforms), fmt, clippy, typos,
+# cross-check (8 targets), examples, CLI, ROS2 bridge examples,
+# MSRV, license check, workflow_dispatch support.
 name: CI
 
 on:
@@ -5,6 +18,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -57,7 +71,16 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - run: >
+      - name: Check
+        run: cargo check --all
+      - name: Build (excluding Python packages)
+        run: >
+          cargo build --all
+          --exclude dora-node-api-python
+          --exclude dora-operator-api-python
+          --exclude dora-ros2-bridge-python
+      - name: Test
+        run: >
           cargo test --all
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
@@ -105,6 +128,9 @@ jobs:
       - name: Rust Dataflow example
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
+      - name: Rust Git Dataflow example
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow-git
       - name: Multiple Daemons example
         timeout-minutes: 30
         run: cargo run --example multiple-daemons
@@ -339,6 +365,11 @@ jobs:
           cargo test --test fault-tolerance-e2e -- --test-threads=1
         timeout-minutes: 15
 
+  # Benchmark regression check — Ubuntu only (intentional).
+  # Upstream dora runs bench on 3 platforms but only for the benchmark
+  # example (not criterion regression). Our `examples` job already runs
+  # the benchmark example on ubuntu + macos. This job runs criterion
+  # crate-level benchmarks with baseline caching, which is OS-specific.
   bench:
     name: Benchmark regression check
     runs-on: ubuntu-latest
