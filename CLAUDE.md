@@ -96,13 +96,19 @@ Internal transport:
 - **Zenoh**: pub-sub for remote/distributed nodes
 - **UHL Clock** (`uhlc`): hybrid logical clock for distributed causality
 
-## CI Checks
+## Pre-commit Quality Gates (MANDATORY)
 
-### Pre-commit local CI (MANDATORY)
+**Every commit MUST pass these gates before pushing.** This is a BLOCKING REQUIREMENT — do not skip any step. Remote CI is slower than your laptop and has limited capacity; catching failures locally saves 5-15 minutes per round-trip.
 
-**Remote CI runners are slower than your local machine and have limited capacity.** Every remote CI failure costs 5-15 minutes of wall-clock time, blocks other work, and wastes shared GitHub Actions minutes. **Always run the simple local CI below before pushing.** Catching a failure on your laptop is an order of magnitude cheaper than catching it on a GitHub runner.
+### Step 1: Run /review
 
-This is **the same simple CI we had before the larger QA system was added** — fmt, clippy, tests. Nothing fancy, nothing slow. Fast enough to run on every push without thinking about it.
+Run the `/review` skill on your changes before committing. This catches structural issues, security problems, and logic errors that tests and clippy miss.
+
+### Step 2: Run /simplify
+
+Run the `/simplify` skill to check for unnecessary complexity, code duplication, or inefficiency in the changed code.
+
+### Step 3: Local CI (fmt + clippy + tests)
 
 ```bash
 # 1. Format — CI rejects formatting diffs
@@ -130,6 +136,10 @@ cargo test --all \
 **Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
+
+### Enforcement
+
+All three steps are required for every commit. Do NOT push without completing them. If any step fails, fix the issue before proceeding. The order matters: /review and /simplify catch design-level issues that are cheaper to fix before running the full test suite.
 
 ### Do NOT run the full QA suite on every commit/push
 
