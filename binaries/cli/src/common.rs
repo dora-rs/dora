@@ -13,7 +13,6 @@ use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
     future::Future,
-    io::ErrorKind,
     net::IpAddr,
     path::{Path, PathBuf},
     time::Duration,
@@ -110,7 +109,7 @@ pub(crate) struct CoordinatorOptions {
 
 impl CoordinatorOptions {
     pub async fn connect_rpc(&self) -> eyre::Result<CoordinatorControlClient> {
-        connect_and_check_version(self.coordinator_addr, self.coordinator_port).await
+        Ok(connect_and_check_version(self.coordinator_addr, self.coordinator_port).await?)
     }
 }
 
@@ -185,22 +184,41 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+#[derive(Debug)]
+pub(crate) enum ConnectAndCheckVersionError {
+    ConnectionFailed(eyre::Report),
+    VersionCheckFailed(eyre::Report),
+}
+
+impl std::fmt::Display for ConnectAndCheckVersionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ConnectionFailed(_) => f.write_str("failed to connect to coordinator"),
+            Self::VersionCheckFailed(_) => f.write_str("failed to verify coordinator version"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectAndCheckVersionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ConnectionFailed(err) | Self::VersionCheckFailed(err) => Some(err.as_ref()),
+        }
+    }
+}
+
 /// Connect to the coordinator and check that the message format version is compatible.
 pub(crate) async fn connect_and_check_version(
     addr: IpAddr,
     control_port: u16,
-) -> eyre::Result<CoordinatorControlClient> {
-    let client = connect_to_coordinator_rpc(addr, control_port).await?;
-    check_coordinator_version(&client).await?;
+) -> Result<CoordinatorControlClient, ConnectAndCheckVersionError> {
+    let client = connect_to_coordinator_rpc(addr, control_port)
+        .await
+        .map_err(ConnectAndCheckVersionError::ConnectionFailed)?;
+    check_coordinator_version(&client)
+        .await
+        .map_err(ConnectAndCheckVersionError::VersionCheckFailed)?;
     Ok(client)
-}
-
-pub(crate) fn is_coordinator_unavailable_error(err: &eyre::Report) -> bool {
-    err.chain().any(|source| {
-        source
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == ErrorKind::ConnectionRefused)
-    })
 }
 
 /// Check that the coordinator's message format version matches this CLI's.
@@ -254,8 +272,7 @@ fn semver_compatible(a: &semver::Version, b: &semver::Version) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eyre::WrapErr;
-    use std::io;
+    use std::{error::Error as _, io};
 
     fn v(s: &str) -> semver::Version {
         semver::Version::parse(s).unwrap()
@@ -292,31 +309,28 @@ mod tests {
     }
 
     #[test]
-    fn detects_connection_refused_as_unavailable_coordinator() {
-        let err = eyre::Report::from(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            "coordinator not listening",
+    fn preserves_connection_error_sources() {
+        let err =
+            ConnectAndCheckVersionError::ConnectionFailed(eyre::Report::from(io::Error::new(
+                io::ErrorKind::ConnectionRefused,
+                "coordinator not listening",
+            )));
+
+        assert_eq!(
+            err.source().map(std::string::ToString::to_string),
+            Some("coordinator not listening".to_owned())
+        );
+    }
+
+    #[test]
+    fn preserves_version_check_error_sources() {
+        let err = ConnectAndCheckVersionError::VersionCheckFailed(eyre::eyre!(
+            "coordinator version mismatch"
         ));
 
-        assert!(is_coordinator_unavailable_error(&err));
-    }
-
-    #[test]
-    fn detects_wrapped_connection_refused_errors() {
-        let err = Err::<(), _>(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            "coordinator not listening",
-        ))
-        .wrap_err("failed to connect tarpc client to coordinator")
-        .unwrap_err();
-
-        assert!(is_coordinator_unavailable_error(&err));
-    }
-
-    #[test]
-    fn does_not_treat_version_errors_as_unavailable_coordinator() {
-        let err = eyre::eyre!("coordinator version mismatch");
-
-        assert!(!is_coordinator_unavailable_error(&err));
+        assert_eq!(
+            err.source().map(std::string::ToString::to_string),
+            Some("coordinator version mismatch".to_owned())
+        );
     }
 }
