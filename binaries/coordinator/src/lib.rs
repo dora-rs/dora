@@ -1170,72 +1170,60 @@ async fn start_inner(
                             key,
                             value,
                         } => {
-                            let reply = match resolve_param_target(
-                                &running_dataflows,
-                                store.as_ref(),
-                                &dataflow_id,
-                                &node_id,
-                            ) {
-                                Ok(target) => match serde_json::to_vec(&value) {
-                                    Ok(bytes) => {
-                                        match store.put_node_param(
-                                            &dataflow_id,
-                                            &node_id,
-                                            &key,
-                                            &bytes,
-                                        ) {
-                                            Ok(()) => {
-                                                if let ParamTarget::Running { daemon_id } = target {
-                                                    if let Some(df) =
-                                                        running_dataflows.get_mut(&dataflow_id)
-                                                    {
-                                                        df.append_state_log(
-                                                            StateCatchUpOperation::SetParam {
-                                                                node_id: node_id.clone(),
-                                                                key: key.clone(),
-                                                                value: value.clone(),
-                                                            },
-                                                        );
+                            let reply: eyre::Result<ControlRequestReply> = async {
+                                let target = resolve_param_target(
+                                    &running_dataflows,
+                                    store.as_ref(),
+                                    &dataflow_id,
+                                    &node_id,
+                                )?;
+                                let bytes = serde_json::to_vec(&value)
+                                    .map_err(|e| eyre!("failed to serialize param value: {e}"))?;
+                                store.put_node_param(&dataflow_id, &node_id, &key, &bytes)?;
 
-                                                        if let Ok(msg) =
-                                                            serde_json::to_vec(&Timestamped {
-                                                                inner: DaemonCoordinatorEvent::SetParam {
-                                                                    dataflow_id,
-                                                                    node_id: node_id.clone(),
-                                                                    key: key.clone(),
-                                                                    value: value.clone(),
-                                                                },
-                                                                timestamp: clock.new_timestamp(),
-                                                            })
-                                                            && let Some(conn) =
-                                                                daemon_connections.get_mut(&daemon_id)
-                                                                && let Err(e) =
-                                                                    conn.send_and_receive(&msg).await
-                                                                {
-                                                                    tracing::warn!(
-                                                                        %node_id,
-                                                                        %daemon_id,
-                                                                        "param persisted in store; runtime forwarding is best-effort and failed: {e}"
-                                                                    );
-                                                                }
-                                                    } else {
-                                                        // Dataflow may have been removed after target resolution.
-                                                        tracing::warn!(
-                                                            %dataflow_id,
-                                                            %node_id,
-                                                            "param persisted in store; running dataflow disappeared before runtime forwarding"
-                                                        );
-                                                    }
-                                                }
-                                                Ok(ControlRequestReply::ParamSet)
-                                            }
-                                            Err(e) => Err(e),
-                                        }
-                                    }
-                                    Err(e) => Err(eyre!("failed to serialize param value: {e}")),
-                                },
-                                Err(e) => Err(e),
-                            };
+                                if let ParamTarget::Running { daemon_id } = target {
+                                    let df = running_dataflows.get_mut(&dataflow_id).ok_or_else(
+                                        || {
+                                            eyre!(
+                                                "param persisted in store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
+                                            )
+                                        },
+                                    )?;
+                                    df.append_state_log(StateCatchUpOperation::SetParam {
+                                        node_id: node_id.clone(),
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    });
+
+                                    let msg = serde_json::to_vec(&Timestamped {
+                                        inner: DaemonCoordinatorEvent::SetParam {
+                                            dataflow_id,
+                                            node_id: node_id.clone(),
+                                            key: key.clone(),
+                                            value: value.clone(),
+                                        },
+                                        timestamp: clock.new_timestamp(),
+                                    })
+                                    .map_err(|e| {
+                                        eyre!("failed to serialize SetParam event for node `{node_id}`: {e}")
+                                    })?;
+
+                                    let conn =
+                                        daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
+                                            eyre!(
+                                                "param persisted in store but daemon `{daemon_id}` is not connected"
+                                            )
+                                        })?;
+                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                        eyre!(
+                                            "failed to forward SetParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
+                                        )
+                                    })?;
+                                    ensure_set_param_forward_applied(&reply_raw, &node_id)?;
+                                }
+                                Ok(ControlRequestReply::ParamSet)
+                            }
+                            .await;
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DeleteParam {
@@ -1243,62 +1231,58 @@ async fn start_inner(
                             node_id,
                             key,
                         } => {
-                            let reply = match resolve_param_target(
-                                &running_dataflows,
-                                store.as_ref(),
-                                &dataflow_id,
-                                &node_id,
-                            ) {
-                                Ok(target) => {
-                                    match store.delete_node_param(&dataflow_id, &node_id, &key) {
-                                        Ok(()) => {
-                                            if let ParamTarget::Running { daemon_id } = target {
-                                                if let Some(df) =
-                                                    running_dataflows.get_mut(&dataflow_id)
-                                                {
-                                                    df.append_state_log(
-                                                        StateCatchUpOperation::DeleteParam {
-                                                            node_id: node_id.clone(),
-                                                            key: key.clone(),
-                                                        },
-                                                    );
+                            let reply: eyre::Result<ControlRequestReply> = async {
+                                let target = resolve_param_target(
+                                    &running_dataflows,
+                                    store.as_ref(),
+                                    &dataflow_id,
+                                    &node_id,
+                                )?;
+                                store.delete_node_param(&dataflow_id, &node_id, &key)?;
 
-                                                    if let Ok(msg) =
-                                                        serde_json::to_vec(&Timestamped {
-                                                            inner: DaemonCoordinatorEvent::DeleteParam {
-                                                                dataflow_id,
-                                                                node_id: node_id.clone(),
-                                                                key: key.clone(),
-                                                            },
-                                                            timestamp: clock.new_timestamp(),
-                                                        })
-                                                        && let Some(conn) =
-                                                            daemon_connections.get_mut(&daemon_id)
-                                                            && let Err(e) =
-                                                                conn.send_and_receive(&msg).await
-                                                            {
-                                                                tracing::warn!(
-                                                                    %node_id,
-                                                                    %daemon_id,
-                                                                    "param deleted in store; runtime forwarding is best-effort and failed: {e}"
-                                                                );
-                                                            }
-                                                } else {
-                                                    // Dataflow may have been removed after target resolution.
-                                                    tracing::warn!(
-                                                        %dataflow_id,
-                                                        %node_id,
-                                                        "param deleted in store; running dataflow disappeared before runtime forwarding"
-                                                    );
-                                                }
-                                            }
-                                            Ok(ControlRequestReply::ParamDeleted)
-                                        }
-                                        Err(e) => Err(e),
-                                    }
+                                if let ParamTarget::Running { daemon_id } = target {
+                                    let df = running_dataflows.get_mut(&dataflow_id).ok_or_else(
+                                        || {
+                                            eyre!(
+                                                "param deleted in store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
+                                            )
+                                        },
+                                    )?;
+                                    df.append_state_log(StateCatchUpOperation::DeleteParam {
+                                        node_id: node_id.clone(),
+                                        key: key.clone(),
+                                    });
+
+                                    let msg = serde_json::to_vec(&Timestamped {
+                                        inner: DaemonCoordinatorEvent::DeleteParam {
+                                            dataflow_id,
+                                            node_id: node_id.clone(),
+                                            key: key.clone(),
+                                        },
+                                        timestamp: clock.new_timestamp(),
+                                    })
+                                    .map_err(|e| {
+                                        eyre!(
+                                            "failed to serialize DeleteParam event for node `{node_id}`: {e}"
+                                        )
+                                    })?;
+
+                                    let conn =
+                                        daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
+                                            eyre!(
+                                                "param deleted in store but daemon `{daemon_id}` is not connected"
+                                            )
+                                        })?;
+                                    let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
+                                        eyre!(
+                                            "failed to forward DeleteParam to daemon `{daemon_id}` for node `{node_id}`: {e}"
+                                        )
+                                    })?;
+                                    ensure_delete_param_forward_applied(&reply_raw, &node_id)?;
                                 }
-                                Err(e) => Err(e),
-                            };
+                                Ok(ControlRequestReply::ParamDeleted)
+                            }
+                            .await;
                             let _ = reply_sender.send(reply);
                         }
                         // --- Dynamic Topology ---
@@ -2683,6 +2667,36 @@ fn build_set_param_message_from_raw_json(
     .map_err(Into::into)
 }
 
+fn ensure_set_param_forward_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::SetParamResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::SetParamResult(Err(err)) => Err(eyre!(
+            "daemon failed to apply SetParam for node `{node_id}`: {err}"
+        )),
+        other => Err(eyre!(
+            "unexpected daemon reply for SetParam on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
+fn ensure_delete_param_forward_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::DeleteParamResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::DeleteParamResult(Err(err)) => Err(eyre!(
+            "daemon failed to apply DeleteParam for node `{node_id}`: {err}"
+        )),
+        other => Err(eyre!(
+            "unexpected daemon reply for DeleteParam on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
 fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
@@ -3761,6 +3775,29 @@ mod tests {
         // But a daemon at seq 7 can
         let delta = df.state_log_delta(7).expect("should succeed");
         assert_eq!(delta.len(), 3); // entries 8, 9, 10
+    }
+
+    #[test]
+    fn set_param_forward_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Err(
+            "node `camera` channel full".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let err = ensure_set_param_forward_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail strict forwarding");
+        assert!(err.to_string().contains("failed to apply SetParam"));
+    }
+
+    #[test]
+    fn delete_param_forward_reply_rejects_unexpected_reply_variant() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let err = ensure_delete_param_forward_applied(&reply, &node_id)
+            .expect_err("unexpected reply variant should fail strict forwarding");
+        assert!(err.to_string().contains("unexpected daemon reply"));
     }
 }
 

@@ -199,6 +199,47 @@ const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
 
+fn deliver_param_update_strict(
+    dataflow: &RunningDataflow,
+    node_id: &NodeId,
+    key: String,
+    value: serde_json::Value,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let channel = dataflow
+        .subscribe_channels
+        .get(node_id)
+        .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
+    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value }, clock) {
+        Ok(true) => {
+            dataflow.inc_pending(node_id);
+            Ok(())
+        }
+        Ok(false) => Err(eyre!("node `{node_id}` channel full")),
+        Err(_) => Err(eyre!("node `{node_id}` channel closed")),
+    }
+}
+
+fn deliver_param_delete_strict(
+    dataflow: &RunningDataflow,
+    node_id: &NodeId,
+    key: String,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let channel = dataflow
+        .subscribe_channels
+        .get(node_id)
+        .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
+    match send_with_timestamp(channel, NodeEvent::ParamDeleted { key }, clock) {
+        Ok(true) => {
+            dataflow.inc_pending(node_id);
+            Ok(())
+        }
+        Ok(false) => Err(eyre!("node `{node_id}` channel full")),
+        Err(_) => Err(eyre!("node `{node_id}` channel closed")),
+    }
+}
+
 /// The Daemon manages running dataflows, node communication, and inter-daemon
 /// message routing. Fields are `pub(crate)` to enable `impl Daemon` blocks in
 /// submodules (e.g., `node_events.rs`, `dataflow_lifecycle.rs`) as part of the
@@ -1399,26 +1440,7 @@ impl Daemon {
             } => {
                 let result = match self.running.get(&dataflow_id) {
                     Some(dataflow) => {
-                        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-                            match send_with_timestamp(
-                                channel,
-                                NodeEvent::ParamUpdate { key, value },
-                                &self.clock,
-                            ) {
-                                Ok(true) => {
-                                    dataflow.inc_pending(&node_id);
-                                    Ok(())
-                                }
-                                Ok(false) => Ok(()), // event dropped (channel full)
-                                Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
-                            }
-                        } else {
-                            tracing::debug!(
-                                %node_id,
-                                "param update not deliverable: node not yet connected"
-                            );
-                            Ok(())
-                        }
+                        deliver_param_update_strict(dataflow, &node_id, key, value, &self.clock)
                     }
                     None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
                 };
@@ -1437,26 +1459,7 @@ impl Daemon {
             } => {
                 let result = match self.running.get(&dataflow_id) {
                     Some(dataflow) => {
-                        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-                            match send_with_timestamp(
-                                channel,
-                                NodeEvent::ParamDeleted { key },
-                                &self.clock,
-                            ) {
-                                Ok(true) => {
-                                    dataflow.inc_pending(&node_id);
-                                    Ok(())
-                                }
-                                Ok(false) => Ok(()), // event dropped (channel full)
-                                Err(_) => Err(eyre::eyre!("node `{node_id}` channel closed")),
-                            }
-                        } else {
-                            tracing::debug!(
-                                %node_id,
-                                "param delete not deliverable: node not yet connected"
-                            );
-                            Ok(())
-                        }
+                        deliver_param_delete_strict(dataflow, &node_id, key, &self.clock)
                     }
                     None => Err(eyre::eyre!("no running dataflow with ID `{dataflow_id}`")),
                 };
@@ -4914,6 +4917,23 @@ mod fault_tolerance_tests {
     }
 
     #[test]
+    fn strict_param_update_fails_when_node_not_connected() {
+        let df = test_dataflow();
+        let clock = test_clock();
+        let node_id: NodeId = "node_missing".to_string().into();
+
+        let err = deliver_param_update_strict(
+            &df,
+            &node_id,
+            "threshold".into(),
+            serde_json::json!(1),
+            &clock,
+        )
+        .expect_err("strict delivery should fail when node channel is missing");
+        assert!(err.to_string().contains("not connected"));
+    }
+
+    #[test]
     fn param_delete_delivered_to_node() {
         let clock = test_clock();
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
@@ -5021,6 +5041,32 @@ mod fault_tolerance_tests {
         );
 
         assert_eq!(applied_through, 0);
+    }
+
+    #[test]
+    fn strict_param_delete_fails_when_channel_full() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_id: NodeId = "node_a".to_string().into();
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_id.clone(), tx.clone());
+
+        // Saturate channel so strict delivery observes a dropped send.
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+            let sent = send_with_timestamp(
+                &tx,
+                NodeEvent::ParamDeleted {
+                    key: "prefill".into(),
+                },
+                &clock,
+            )
+            .unwrap();
+            assert!(sent);
+        }
+
+        let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
+            .expect_err("strict delivery should fail when node channel is full");
+        assert!(err.to_string().contains("channel full"));
     }
 }
 
