@@ -185,9 +185,7 @@ impl PyEvent {
     fn value(&self, py: Python<'_>) -> PyResult<Option<PyObject>> {
         match &self.event {
             MergedEvent::Dora(Event::Input { data, .. }) => {
-                // TODO: Does this call leak data?&
-                let array_data = data.to_data().to_pyarrow(py)?;
-                Ok(Some(array_data))
+                Ok(Some(data.to_data().to_pyarrow(py)?))
             }
             _ => Ok(None),
         }
@@ -378,20 +376,25 @@ pub fn metadata_to_pydict<'a>(
 mod tests {
     use std::{ptr::NonNull, sync::Arc};
 
+    use crate::PyEvent;
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{
         array::{
-            ArrayData, ArrayRef, BooleanArray, Float64Array, Int8Array, Int32Array, Int64Array,
-            ListArray, StructArray,
+            Array, ArrayData, ArrayRef, BooleanArray, Float64Array, Int8Array, Int32Array,
+            Int64Array, ListArray, StructArray,
         },
         buffer::Buffer,
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::arrow_utils::{
-        buffer_into_arrow_array, copy_array_into_sample, required_data_size,
+    use dora_node_api::{
+        ArrowData, Event, Metadata,
+        arrow_utils::{buffer_into_arrow_array, copy_array_into_sample, required_data_size},
+        dora_core::metadata::ArrowTypeInfoExt,
+        merged::MergedEvent,
     };
     use eyre::{Context, Result};
+    use pyo3::{Python, types::PyAnyMethods};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
         let size = required_data_size(arrow_array);
@@ -467,6 +470,81 @@ mod tests {
         let list_array = ListArray::from(list_data).into();
         assert_roundtrip(&list_array).context("ListArray roundtrip failed")?;
 
+        Ok(())
+    }
+
+    fn shared_memory_backed_arrow_data(
+        source: &ArrayData,
+    ) -> Result<(ArrowData, Arc<AVec<u8, ConstAlign<128>>>)> {
+        let size = required_data_size(source);
+        let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, size);
+        let info = copy_array_into_sample(&mut sample, source);
+        let owner = Arc::new(sample);
+        let ptr = NonNull::new(owner.as_ptr() as *mut u8).expect("null pointer");
+        let raw_buffer = unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(
+                ptr,
+                owner.len(),
+                owner.clone() as Arc<dyn arrow::alloc::Allocation>,
+            )
+        };
+        let array_data = buffer_into_arrow_array(&raw_buffer, &info)?;
+        Ok((ArrowData(arrow::array::make_array(array_data)), owner))
+    }
+
+    #[test]
+    fn py_event_input_conversion_does_not_leak_shared_memory_owner() -> Result<()> {
+        pyo3::prepare_freethreaded_python();
+        const CYCLE_COUNT: usize = 8;
+
+        let source = Int32Array::from(vec![1, 2, 3, 4]).to_data();
+        let (shared_data, owner) = shared_memory_backed_arrow_data(&source)?;
+        let baseline_refcount = Arc::strong_count(&owner);
+
+        Python::with_gil(|py| -> Result<()> {
+            py.import("pyarrow")
+                .context("pyarrow is required for this ownership test")?;
+            let gc = pyo3::types::PyModule::import(py, "gc").context("failed to import gc")?;
+
+            // Run multiple conversion/use/drop cycles to ensure refcount stability
+            // across repeated Rust->Python FFI handoffs before explicit GC.
+            for _ in 0..CYCLE_COUNT {
+                let event = Event::Input {
+                    id: "in".into(),
+                    metadata: Metadata::new(
+                        dora_node_api::uhlc::HLC::default().new_timestamp(),
+                        ArrowTypeInfoExt::empty(),
+                    ),
+                    data: ArrowData(shared_data.0.clone()),
+                };
+                let py_event = PyEvent {
+                    event: MergedEvent::Dora(event),
+                };
+
+                let event_dict = py_event
+                    .to_py_dict(py)
+                    .context("failed to convert event to Python dict")?;
+                let value = event_dict
+                    .bind(py)
+                    .get_item("value")
+                    .context("failed to read `value` from event dict")?;
+                value
+                    .call_method0("to_pylist")
+                    .context("failed to materialize pyarrow value")?;
+                drop(value);
+                drop(event_dict);
+            }
+
+            gc.call_method0("collect")
+                .context("failed to run python gc.collect")?;
+            Ok(())
+        })?;
+
+        assert_eq!(
+            Arc::strong_count(&owner),
+            baseline_refcount,
+            "shared-memory owner refcount should return to baseline after full PyEvent lifecycle"
+        );
         Ok(())
     }
 }
