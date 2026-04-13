@@ -1,15 +1,18 @@
-use std::{collections::BTreeMap, io::ErrorKind, sync::Arc};
+use std::sync::Arc;
 
-use super::{Connection, Listener};
-use crate::{
-    Event,
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
-};
-use dora_core::{config::DataId, uhlc::HLC};
+use super::NodeControlServer;
+use crate::Event;
+use dora_core::uhlc::HLC;
 use dora_message::{
-    common::Timestamped, daemon_to_node::DaemonReply, node_to_daemon::DaemonRequest,
+    common::Timestamped,
+    node_to_daemon::{NodeControl, NodeControlRequest, NodeControlResponse},
+    tarpc::{
+        self,
+        server::{BaseChannel, Channel},
+        tokio_serde,
+    },
 };
-use eyre::Context;
+use futures::StreamExt;
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::mpsc,
@@ -19,23 +22,17 @@ use tokio::{
 pub async fn listener_loop(
     listener: TcpListener,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
     loop {
-        match listener
-            .accept()
-            .await
-            .wrap_err("failed to accept new connection")
-        {
+        match listener.accept().await {
             Err(err) => {
-                tracing::info!("{err}");
+                tracing::info!("failed to accept connection: {err}");
             }
             Ok((connection, _)) => {
-                tokio::spawn(handle_connection_loop(
+                tokio::spawn(handle_connection(
                     connection,
                     daemon_tx.clone(),
-                    queue_sizes.clone(),
                     clock.clone(),
                 ));
             }
@@ -44,51 +41,30 @@ pub async fn listener_loop(
 }
 
 #[tracing::instrument(skip(connection, daemon_tx, clock), level = "trace")]
-async fn handle_connection_loop(
+async fn handle_connection(
     connection: TcpStream,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<HLC>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, clock).await
-}
+    let codec = tokio_serde::formats::Bincode::<
+        tarpc::ClientMessage<NodeControlRequest>,
+        tarpc::Response<NodeControlResponse>,
+    >::default();
+    let transport = tarpc::serde_transport::Transport::from((connection, codec));
 
-struct TcpConnection(TcpStream);
+    let server = NodeControlServer::new(daemon_tx, clock);
+    let channel = BaseChannel::with_defaults(transport);
 
-#[async_trait::async_trait]
-impl Connection for TcpConnection {
-    async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-        let raw = match socket_stream_receive(&mut self.0).await {
-            Ok(raw) => raw,
-            Err(err) => match err.kind() {
-                ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::ConnectionReset => return Ok(None),
-                _other => {
-                    return Err(err)
-                        .context("unexpected I/O error while trying to receive DaemonRequest");
-                }
-            },
-        };
-        bincode::deserialize(&raw)
-            .wrap_err("failed to deserialize DaemonRequest")
-            .map(Some)
-    }
-
-    async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {
-        if matches!(message, DaemonReply::Empty) {
-            // don't send empty replies
-            return Ok(());
-        }
-        let serialized =
-            bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
-        socket_stream_send(&mut self.0, &serialized)
-            .await
-            .wrap_err("failed to send DaemonReply")?;
-        Ok(())
-    }
+    // Spawn each response handler concurrently so that long-blocking RPCs
+    // (next_event, next_finished_drop_tokens) don't prevent other requests.
+    channel
+        .execute(server.serve())
+        .for_each(|response_handler| async {
+            tokio::spawn(response_handler);
+        })
+        .await;
 }

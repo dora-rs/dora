@@ -3,10 +3,53 @@ pub use crate::common::{
 };
 use crate::{
     DataflowId, current_crate_version,
+    daemon_to_node::{NodeDropEvent, NodeEvent},
     id::{DataId, NodeId},
     metadata::Metadata,
     versions_compatible,
 };
+
+mod node_control_service {
+    use super::*;
+    type Result<T> = std::result::Result<T, String>;
+
+    #[tarpc::service]
+    pub trait NodeControl {
+        async fn register(timestamp: uhlc::Timestamp, request: NodeRegisterRequest) -> Result<()>;
+        async fn subscribe(timestamp: uhlc::Timestamp) -> Result<()>;
+        async fn subscribe_drop(timestamp: uhlc::Timestamp) -> Result<()>;
+        /// Returns `Some(events)` with actual events, or `None` as a keepalive
+        /// signal indicating the server is still alive but has no events yet.
+        async fn next_event(
+            timestamp: uhlc::Timestamp,
+            drop_tokens: Vec<DropToken>,
+        ) -> Option<Vec<Timestamped<NodeEvent>>>;
+        /// Returns `Some(events)` with actual drop events, or `None` as a keepalive.
+        async fn next_finished_drop_tokens(
+            timestamp: uhlc::Timestamp,
+        ) -> Option<Vec<Timestamped<NodeDropEvent>>>;
+        async fn send_message(
+            timestamp: uhlc::Timestamp,
+            output_id: DataId,
+            metadata: Metadata,
+            data: Option<DataMessage>,
+        ) -> Result<()>;
+        async fn close_outputs(timestamp: uhlc::Timestamp, outputs: Vec<DataId>) -> Result<()>;
+        async fn outputs_done(timestamp: uhlc::Timestamp) -> Result<()>;
+        async fn report_drop_tokens(
+            timestamp: uhlc::Timestamp,
+            drop_tokens: Vec<DropToken>,
+        ) -> Result<()>;
+        async fn event_stream_dropped(timestamp: uhlc::Timestamp) -> Result<()>;
+        /// Returns the node config as a YAML string.
+        ///
+        /// `NodeConfig` contains `serde_yaml::Value` which is incompatible with
+        /// Bincode (`deserialize_any` is not supported), so we pass it as a
+        /// pre-serialized YAML string instead.
+        async fn node_config(timestamp: uhlc::Timestamp, node_id: NodeId) -> Result<String>;
+    }
+}
+pub use node_control_service::*;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
@@ -33,42 +76,6 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
-}
-
-impl DaemonRequest {
-    pub fn expects_tcp_bincode_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::SendMessage { .. }
-            | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::ReportDropTokens { .. } => false,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::EventStreamDropped => true,
-        }
-    }
-
-    pub fn expects_tcp_json_reply(&self) -> bool {
-        #[allow(clippy::match_like_matches_macro)]
-        match self {
-            DaemonRequest::NodeConfig { .. } => true,
-            DaemonRequest::Register(NodeRegisterRequest { .. })
-            | DaemonRequest::Subscribe
-            | DaemonRequest::CloseOutputs(_)
-            | DaemonRequest::OutputsDone
-            | DaemonRequest::NextEvent { .. }
-            | DaemonRequest::SubscribeDrop
-            | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::ReportDropTokens { .. }
-            | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

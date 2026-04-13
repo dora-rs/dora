@@ -26,7 +26,7 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{ArrowTypeInfo, Metadata, MetadataParameters},
-    node_to_daemon::{DaemonRequest, DataMessage, DropToken, Timestamped},
+    node_to_daemon::{DataMessage, DropToken},
 };
 use eyre::{WrapErr, bail};
 use is_terminal::IsTerminal;
@@ -207,26 +207,22 @@ impl DoraNode {
         // Make sure that the node is initialized outside of dora start.
         let daemon_address = (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into();
 
-        let mut channel =
-            DaemonChannel::new_tcp(daemon_address).context("Could not connect to the daemon")?;
         let clock = Arc::new(uhlc::HLC::default());
+        let mut channel = DaemonChannel::new_tcp(daemon_address, clock.clone())
+            .context("Could not connect to the daemon")?;
 
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
+        let node_config = channel
+            .node_config_rpc(node_id)
             .wrap_err("failed to request node config from daemon")?;
 
-        match reply {
-            DaemonReply::NodeConfig {
-                result: Ok(node_config),
-            } => Self::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
-                bail!("failed to get node config from daemon: {error}")
-            }
-            _ => bail!("unexpected reply from daemon"),
-        }
+        // Drop the channel (and its clone of `clock`) before `init` creates a
+        // new HLC.  The synchronization that happened during `node_config_rpc`
+        // is on `clock`, but `init` currently builds its own HLC, so the
+        // benefit is limited.  Cloning above avoids *moving* the Arc so that
+        // callers who extend this path can reuse `clock` in the future.
+        drop(channel);
+
+        Self::init(node_config)
     }
 
     /// Dynamic initialization function for nodes that are sometimes used as dynamic nodes.
