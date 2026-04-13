@@ -99,6 +99,11 @@ mod ffi {
             id: String,
             data: &[u8],
         ) -> DoraResult;
+        fn log_message(
+            output_sender: &Box<OutputSender>,
+            level: String,
+            message: String,
+        ) -> DoraResult;
         fn send_output_with_metadata(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -659,6 +664,35 @@ fn dataflow_id(output_sender: &Box<OutputSender>) -> String {
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
     send_output_internal(sender, id, data, Default::default())
+}
+
+#[allow(clippy::borrowed_box)]
+fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::DoraResult {
+    let _ = sender; // context unused, logging goes through tracing
+    let error = match level.to_ascii_lowercase().as_str() {
+        "error" => {
+            tracing::error!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "warn" => {
+            tracing::warn!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "info" => {
+            tracing::info!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "debug" => {
+            tracing::debug!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "trace" => {
+            tracing::trace!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        other => format!("unknown log level: {other}"),
+    };
+    ffi::DoraResult { error }
 }
 
 fn send_output_with_metadata(
