@@ -21,6 +21,12 @@ int main()
         return -1;
     }
 
+    // Demonstrate try_next_event (non-blocking poll)
+    auto poll = try_next_event(dora_node.events);
+    if (event_type(poll) == DoraEventType::Timeout) {
+        std::cout << "No event ready yet (non-blocking)" << std::endl;
+    }
+
     for (int i = 0; i < 20; i++)
     {
 
@@ -48,6 +54,16 @@ int main()
                 std::cerr << "Error: " << error << std::endl;
                 return -1;
             }
+        }
+        else if (ty == DoraEventType::NodeFailed)
+        {
+            auto failed = event_as_node_failed(std::move(event));
+            std::cerr << "Node failed: source=" << std::string(failed.source_node_id)
+                      << " error=" << std::string(failed.error) << std::endl;
+        }
+        else if (ty == DoraEventType::Reload)
+        {
+            std::cout << "Reload event received" << std::endl;
         }
         else
         {
