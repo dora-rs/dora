@@ -1,0 +1,17 @@
+[package]
+name = "dora-test-source"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+dora-core = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+eyre = "0.6.8"
+
+[dev-dependencies]
+tempfile = "3.23.0"
+assert2 = "0.3.16"

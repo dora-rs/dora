@@ -1956,6 +1956,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-test-source"
+version = "0.0.0"
+dependencies = [
+ "assert2",
+ "dora-core",
+ "dora-node-api",
+ "eyre",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "dora-tracing"
 version = "0.5.0"
 dependencies = [
