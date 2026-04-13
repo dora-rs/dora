@@ -281,11 +281,11 @@ unsafe fn try_send_output(
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    Ok(context
+    context
         .node
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
-        })?)
+        })
 }
 
 /// Sends a structured log message from a C node.
