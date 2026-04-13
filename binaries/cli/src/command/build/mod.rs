@@ -86,6 +86,16 @@ pub struct Build {
     // Run build on local machine
     #[clap(long, action)]
     local: bool,
+    /// Build mode sequential or parallel. Defaults to sequential
+    #[clap(long, value_enum, default_value_t = BuildMode::Sequential)]
+    mode: BuildMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum BuildMode {
+    #[default]
+    Sequential,
+    Parallel,
 }
 
 impl Executable for Build {
@@ -97,6 +107,7 @@ impl Executable for Build {
             self.coordinator_port,
             self.uv,
             self.local,
+            self.mode,
         )
         .await
     }
@@ -108,6 +119,7 @@ pub fn build(
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
+    mode: BuildMode,
 ) -> eyre::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -119,6 +131,7 @@ pub fn build(
         coordinator_port,
         uv,
         force_local,
+        mode,
     ))
 }
 
@@ -128,6 +141,7 @@ pub async fn build_async(
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
+    mode: BuildMode,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow)
         .await
@@ -156,15 +170,13 @@ pub async fn build_async(
     let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
-        tracing::info!("Building locally, as requested through `--force-local`");
+        log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        tracing::info!("Building locally because dataflow does not contain any `deploy` sections");
+        log::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
-        tracing::info!(
-            "Building through coordinator, using the given coordinator socket information"
-        );
+        log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
             coordinator_client: session()
@@ -175,13 +187,11 @@ pub async fn build_async(
         match session().await {
             Ok(coordinator_client) => {
                 // we found a local coordinator instance at default port -> use it for building
-                tracing::info!(
-                    "Found local dora coordinator instance -> building through coordinator"
-                );
+                log::info!("Found local dora coordinator instance -> building through coordinator");
                 BuildKind::ThroughCoordinator { coordinator_client }
             }
             Err(_) => {
-                tracing::warn!("No dora coordinator instance found -> trying a local build");
+                log::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
@@ -190,7 +200,7 @@ pub async fn build_async(
 
     match build_kind {
         BuildKind::Local => {
-            tracing::info!("running local build");
+            log::info!("running local build");
             // use dataflow dir as base working dir
             let local_working_dir = dunce::canonicalize(&dataflow_path)
                 .context("failed to canonicalize dataflow path")?
@@ -203,6 +213,7 @@ pub async fn build_async(
                 &dataflow_session,
                 local_working_dir,
                 uv,
+                mode,
             )
             .await?;
 

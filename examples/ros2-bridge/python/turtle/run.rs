@@ -1,4 +1,4 @@
-use dora_cli::{build, run as dora_run};
+use dora_cli::{BuildMode, build, run as dora_run};
 use eyre::WrapErr;
 use std::path::Path;
 
@@ -9,7 +9,14 @@ fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build("dataflow.yml".to_string(), None, None, true, true)?;
+    build(
+        "dataflow.yml".to_string(),
+        None,
+        None,
+        true,
+        true,
+        BuildMode::Sequential,
+    )?;
 
     let dataflow_task = std::thread::spawn(|| {
         dora_run("dataflow.yml".to_string(), true).unwrap();

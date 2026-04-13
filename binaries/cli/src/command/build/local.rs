@@ -8,6 +8,7 @@ use dora_core::{
 use dora_message::{common::GitSource, id::NodeId};
 use eyre::Context;
 
+use crate::command::build::BuildMode;
 use crate::session::DataflowSession;
 
 pub async fn build_dataflow_locally(
@@ -16,8 +17,17 @@ pub async fn build_dataflow_locally(
     dataflow_session: &DataflowSession,
     working_dir: PathBuf,
     uv: bool,
+    mode: BuildMode,
 ) -> eyre::Result<BuildInfo> {
-    build_dataflow(dataflow, git_sources, dataflow_session, working_dir, uv).await
+    build_dataflow(
+        dataflow,
+        git_sources,
+        dataflow_session,
+        working_dir,
+        uv,
+        mode,
+    )
+    .await
 }
 
 async fn build_dataflow(
@@ -26,6 +36,7 @@ async fn build_dataflow(
     dataflow_session: &DataflowSession,
     base_working_dir: PathBuf,
     uv: bool,
+    mode: BuildMode,
 ) -> eyre::Result<BuildInfo> {
     let builder = Builder {
         session_id: dataflow_session.session_id,
@@ -68,12 +79,31 @@ async fn build_dataflow(
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
     };
-    for (node_id, task) in tasks {
-        let node = task
-            .await
-            .with_context(|| format!("failed to build node `{node_id}`"))?;
-        info.node_working_dirs
-            .insert(node_id, node.node_working_dir);
+
+    if mode == BuildMode::Parallel {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        let mut futures = FuturesUnordered::new();
+        for (node_id, task) in tasks {
+            futures.push(async move {
+                let node = task
+                    .await
+                    .with_context(|| format!("failed to build node `{node_id}`"))?;
+                Ok::<_, eyre::Report>((node_id, node))
+            });
+        }
+        while let Some(result) = futures.next().await {
+            let (node_id, node) = result?;
+            info.node_working_dirs
+                .insert(node_id, node.node_working_dir);
+        }
+    } else {
+        for (node_id, task) in tasks {
+            let node = task
+                .await
+                .with_context(|| format!("failed to build node `{node_id}`"))?;
+            info.node_working_dirs
+                .insert(node_id, node.node_working_dir);
+        }
     }
     Ok(info)
 }
