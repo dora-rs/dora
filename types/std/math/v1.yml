@@ -24,6 +24,16 @@ types:
   Pose:
     arrow: Struct
     description: "6-DOF pose (position Vector3 + orientation Quaternion)"
+    fields:
+      - name: position
+        type: Vector3
+      - name: orientation
+        type: Quaternion
   Transform:
     arrow: Struct
     description: "Coordinate transform (translation Vector3 + rotation Quaternion)"
+    fields:
+      - name: translation
+        type: Vector3
+      - name: rotation
+        type: Quaternion

@@ -1102,8 +1102,8 @@ fn check_schema_compat(
 ) -> Option<String> {
     let out_def = registry.resolve(out_urn)?;
     let in_def = registry.resolve(in_urn)?;
-    let out_schema = out_def.to_arrow_schema()?;
-    let in_schema = in_def.to_arrow_schema()?;
+    let out_schema = out_def.to_arrow_schema_with_registry(registry)?;
+    let in_schema = in_def.to_arrow_schema_with_registry(registry)?;
     // in_schema = expected (consumer), out_schema = actual (producer)
     match crate::types::schema_compatible(&in_schema, &out_schema) {
         Ok(()) => None,

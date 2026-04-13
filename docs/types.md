@@ -83,6 +83,42 @@ input_types:
   audio: std/media/v1/AudioFrame[sample_type=i16]
 ```
 
+### Nested Type References
+
+Struct field types can reference other defined types by short name or full URN:
+
+```yaml
+types:
+  MyPose:
+    arrow: Struct
+    fields:
+      - name: position
+        type: Vector3          # resolved to std/math/v1/Vector3
+      - name: orientation
+        type: Quaternion       # resolved to std/math/v1/Quaternion
+```
+
+Short names (e.g., `Vector3`) are resolved by unique suffix match across all registered types. If a short name is ambiguous (multiple types share it), use the full URN (e.g., `std/math/v1/Vector3`).
+
+### List Types
+
+Fields can use `List<T>` syntax to express typed lists. These are mapped to Arrow `LargeList`:
+
+```yaml
+types:
+  MyDetection:
+    arrow: Struct
+    fields:
+      - name: boxes
+        type: List<BoundingBox>   # LargeList of BoundingBox structs
+      - name: scores
+        type: List<Float32>       # LargeList of Float32
+      - name: labels
+        type: List<Utf8>          # LargeList of strings
+```
+
+`List<T>` supports any inner type: primitives, struct references, or nested lists.
+
 ## Standard Type Library
 
 ### `std/core/v1`
@@ -106,16 +142,16 @@ input_types:
 |------|-----------|--------|-------------|
 | `Vector3` | Struct | x, y, z (Float64) | 3D vector |
 | `Quaternion` | Struct | x, y, z, w (Float64) | Quaternion |
-| `Pose` | Struct | position, orientation | 6-DOF pose |
-| `Transform` | Struct | translation, rotation | Coordinate transform |
+| `Pose` | Struct | position (Vector3), orientation (Quaternion) | 6-DOF pose |
+| `Transform` | Struct | translation (Vector3), rotation (Quaternion) | Coordinate transform |
 
 ### `std/control/v1`
 
-| Type | Arrow Type | Description |
-|------|-----------|-------------|
-| `Twist` | Struct | Linear and angular velocity |
-| `JointState` | Struct | Joint positions, velocities, efforts |
-| `Odometry` | Struct | Pose + Twist in a reference frame |
+| Type | Arrow Type | Fields | Description |
+|------|-----------|--------|-------------|
+| `Twist` | Struct | linear (Vector3), angular (Vector3) | Linear and angular velocity |
+| `JointState` | Struct | names (List\<Utf8\>), positions/velocities/efforts (List\<Float64\>) | Joint state |
+| `Odometry` | Struct | pose (Pose), twist (Twist), frame_id (Utf8) | Pose + Twist in a reference frame |
 
 ### `std/media/v1`
 
@@ -123,16 +159,16 @@ input_types:
 |------|-----------|------------|-------------|
 | `Image` | Struct | `encoding` | Raw image (width, height, encoding, data) |
 | `CompressedImage` | LargeBinary | `format` | JPEG/PNG compressed image |
-| `PointCloud` | Struct | `point_type` | 3D point cloud |
-| `AudioFrame` | Struct | `sample_type` (default: f32) | Audio samples |
+| `PointCloud` | Struct | `point_type` | 3D point cloud (points, width, height) |
+| `AudioFrame` | Struct | `sample_type` (default: f32) | Audio samples (sample_rate, channels, data) |
 
 ### `std/vision/v1`
 
-| Type | Arrow Type | Description |
-|------|-----------|-------------|
-| `BoundingBox` | Struct | 2D bounding box with confidence and label |
-| `Detection` | Struct | Object detection result (list of BoundingBox) |
-| `Segmentation` | Struct | Pixel-level segmentation mask |
+| Type | Arrow Type | Fields | Description |
+|------|-----------|--------|-------------|
+| `BoundingBox` | Struct | x, y, width, height (Float32), confidence (Float32), label (Utf8) | 2D bounding box |
+| `Detection` | Struct | boxes (List\<BoundingBox\>) | Object detection result |
+| `Segmentation` | Struct | width, height, num_classes (UInt32), mask (LargeBinary), class_names (List\<Utf8\>) | Pixel-level segmentation mask |
 
 ## Validation Rules
 

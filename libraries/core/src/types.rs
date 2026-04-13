@@ -1,7 +1,8 @@
-use arrow_schema::{DataType, Field, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 /// A field definition within a struct type.
 #[derive(Debug, Clone, Deserialize)]
@@ -67,24 +68,35 @@ impl TypeDef {
         arrow_type_from_name(&self.arrow)
     }
 
-    /// Build an Arrow `Schema` from the field definitions.
+    /// Build an Arrow `Schema` from the field definitions (primitive types only).
     ///
     /// Returns `None` if the type has no field definitions.
+    /// For nested struct and list type resolution, use `to_arrow_schema_with_registry`.
     pub fn to_arrow_schema(&self) -> Option<Schema> {
+        self.build_schema(arrow_type_from_name)
+    }
+
+    /// Build an Arrow `Schema` resolving nested struct refs and `List<T>` via the registry.
+    ///
+    /// Returns `None` if the type has no field definitions or none could be resolved.
+    pub fn to_arrow_schema_with_registry(&self, registry: &TypeRegistry) -> Option<Schema> {
+        self.build_schema(|t| resolve_field_type(t, registry, 0))
+    }
+
+    /// Fail-closed: if any declared field cannot be resolved, returns `None`
+    /// rather than a partial schema that could mask type errors.
+    fn build_schema(&self, resolve: impl Fn(&str) -> Option<DataType>) -> Option<Schema> {
         if self.fields.is_empty() {
             return None;
         }
         let fields: Vec<Field> = self
             .fields
             .iter()
-            .filter_map(|f| {
-                let dt = arrow_type_from_name(&f.r#type)?;
+            .map(|f| {
+                let dt = resolve(&f.r#type)?;
                 Some(Field::new(&f.name, dt, f.nullable))
             })
-            .collect();
-        if fields.is_empty() {
-            return None;
-        }
+            .collect::<Option<Vec<_>>>()?;
         Some(Schema::new(fields))
     }
 }
@@ -104,6 +116,56 @@ fn arrow_type_from_name(name: &str) -> Option<DataType> {
         "Boolean" => Some(DataType::Boolean),
         _ => None, // Struct, FixedSizeBinary, etc. — skip runtime validation
     }
+}
+
+const MAX_TYPE_DEPTH: u8 = 8;
+
+/// Resolve a field type string to an Arrow `DataType`, supporting:
+/// - Primitive Arrow types (`Float64`, `Utf8`, etc.)
+/// - `List<T>` syntax (mapped to `LargeList`)
+/// - Struct type references by short name (`Vector3`) or full URN (`std/math/v1/Vector3`)
+fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Option<DataType> {
+    if depth > MAX_TYPE_DEPTH {
+        return None;
+    }
+
+    // 1. Try primitive Arrow type
+    if let Some(dt) = arrow_type_from_name(type_str) {
+        return Some(dt);
+    }
+
+    // 2. Try List<inner> syntax — match outermost brackets to support nesting
+    if let Some(inner) = type_str
+        .strip_prefix("List<")
+        .and_then(|s| s.strip_suffix('>'))
+        .map(str::trim)
+    {
+        let inner_dt = resolve_field_type(inner, registry, depth + 1)?;
+        return Some(DataType::LargeList(Arc::new(Field::new(
+            "item", inner_dt, true,
+        ))));
+    }
+
+    // 3. Try registry lookup (full URN or short name)
+    let def = registry
+        .resolve(type_str)
+        .or_else(|| registry.resolve_short_name(type_str))?;
+
+    if def.fields.is_empty() {
+        // Struct with no field definitions — can't build a DataType
+        return None;
+    }
+
+    let fields: Vec<Field> = def
+        .fields
+        .iter()
+        .map(|f| {
+            let dt = resolve_field_type(&f.r#type, registry, depth + 1)?;
+            Some(Field::new(&f.name, dt, f.nullable))
+        })
+        .collect::<Option<Vec<_>>>()?;
+
+    Some(DataType::Struct(Fields::from(fields)))
 }
 
 /// Parsed URN with optional type parameters.
@@ -451,6 +513,23 @@ impl TypeRegistry {
     /// Resolve a type URN to its Arrow DataType. Returns `None` if unknown or complex.
     pub fn resolve_arrow_type(&self, urn: &str) -> Option<DataType> {
         self.resolve(urn).and_then(|def| def.arrow_data_type())
+    }
+
+    /// Resolve a short type name (e.g., `Vector3`) by finding a unique URN suffix match.
+    ///
+    /// Returns `None` if the name is ambiguous (multiple matches) or not found.
+    pub fn resolve_short_name(&self, name: &str) -> Option<&TypeDef> {
+        let suffix = format!("/{name}");
+        let mut found = None;
+        for (urn, def) in &self.types {
+            if urn.ends_with(&suffix) {
+                if found.is_some() {
+                    return None; // ambiguous
+                }
+                found = Some(def);
+            }
+        }
+        found
     }
 
     /// Return all known URNs (sorted).
@@ -934,5 +1013,304 @@ mod tests {
         let def = reg.resolve("std/media/v1/AudioFrame[sample_type=f32]");
         assert!(def.is_some());
         assert_eq!(def.unwrap().arrow, "Struct");
+    }
+
+    // --- resolve_field_type tests ---
+
+    #[test]
+    fn resolve_field_type_primitive() {
+        let reg = TypeRegistry::new();
+        assert_eq!(
+            resolve_field_type("Float64", &reg, 0),
+            Some(DataType::Float64)
+        );
+        assert_eq!(resolve_field_type("Utf8", &reg, 0), Some(DataType::Utf8));
+    }
+
+    #[test]
+    fn resolve_field_type_list() {
+        let reg = TypeRegistry::new();
+        let dt = resolve_field_type("List<Float32>", &reg, 0).unwrap();
+        assert!(matches!(dt, DataType::LargeList(_)));
+        if let DataType::LargeList(field) = &dt {
+            assert_eq!(field.data_type(), &DataType::Float32);
+        }
+    }
+
+    #[test]
+    fn resolve_field_type_struct_ref() {
+        let reg = TypeRegistry::new();
+        let dt = resolve_field_type("Vector3", &reg, 0).unwrap();
+        if let DataType::Struct(fields) = &dt {
+            assert_eq!(fields.len(), 3);
+            assert_eq!(fields[0].name(), "x");
+            assert_eq!(fields[0].data_type(), &DataType::Float64);
+        } else {
+            panic!("expected Struct, got {dt:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_field_type_full_urn() {
+        let reg = TypeRegistry::new();
+        let dt = resolve_field_type("std/math/v1/Quaternion", &reg, 0).unwrap();
+        if let DataType::Struct(fields) = &dt {
+            assert_eq!(fields.len(), 4); // x, y, z, w
+        } else {
+            panic!("expected Struct");
+        }
+    }
+
+    #[test]
+    fn resolve_field_type_nested_list_struct() {
+        let reg = TypeRegistry::new();
+        let dt = resolve_field_type("List<BoundingBox>", &reg, 0).unwrap();
+        if let DataType::LargeList(field) = &dt {
+            if let DataType::Struct(fields) = field.data_type() {
+                assert_eq!(fields.len(), 6); // x, y, width, height, confidence, label
+            } else {
+                panic!("expected Struct inside LargeList");
+            }
+        } else {
+            panic!("expected LargeList");
+        }
+    }
+
+    #[test]
+    fn resolve_field_type_nested_list_of_list() {
+        let reg = TypeRegistry::new();
+        let dt = resolve_field_type("List<List<Float32>>", &reg, 0).unwrap();
+        if let DataType::LargeList(outer) = &dt {
+            if let DataType::LargeList(inner) = outer.data_type() {
+                assert_eq!(inner.data_type(), &DataType::Float32);
+            } else {
+                panic!("expected LargeList inside LargeList");
+            }
+        } else {
+            panic!("expected LargeList");
+        }
+    }
+
+    #[test]
+    fn resolve_field_type_unknown_returns_none() {
+        let reg = TypeRegistry::new();
+        assert!(resolve_field_type("CompletelyUnknown", &reg, 0).is_none());
+    }
+
+    #[test]
+    fn resolve_field_type_depth_limit() {
+        // Should return None, not panic
+        let reg = TypeRegistry::new();
+        assert!(resolve_field_type("Float64", &reg, MAX_TYPE_DEPTH + 1).is_none());
+    }
+
+    #[test]
+    fn resolve_short_name_unique() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve_short_name("Vector3");
+        assert!(def.is_some());
+        assert_eq!(def.unwrap().arrow, "Struct");
+    }
+
+    #[test]
+    fn resolve_short_name_ambiguous() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg_dir = dir.path().join("myproject").join("math");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("v1.yml"),
+            "types:\n  Vector3:\n    arrow: Struct\n    description: duplicate\n",
+        )
+        .unwrap();
+        let mut reg = TypeRegistry::new();
+        reg.load_from_dir(dir.path()).unwrap();
+        // Two types now end in /Vector3 — should return None
+        assert!(reg.resolve_short_name("Vector3").is_none());
+    }
+
+    #[test]
+    fn resolve_short_name_unknown() {
+        let reg = TypeRegistry::new();
+        assert!(reg.resolve_short_name("Nonexistent").is_none());
+    }
+
+    // --- schema_with_registry tests ---
+
+    #[test]
+    fn pose_schema_resolves_with_registry() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/math/v1/Pose").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.fields()[0].name(), "position");
+        assert_eq!(schema.fields()[1].name(), "orientation");
+        // position should be Struct with x, y, z
+        if let DataType::Struct(fields) = schema.fields()[0].data_type() {
+            assert_eq!(fields.len(), 3);
+        } else {
+            panic!("expected Struct for position field");
+        }
+    }
+
+    #[test]
+    fn twist_schema_resolves_with_registry() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/control/v1/Twist").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.fields()[0].name(), "linear");
+        assert_eq!(schema.fields()[1].name(), "angular");
+    }
+
+    #[test]
+    fn joint_state_schema_resolves_with_registry() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/control/v1/JointState").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 4);
+        // All fields should be LargeList
+        for field in schema.fields() {
+            assert!(
+                matches!(field.data_type(), DataType::LargeList(_)),
+                "expected LargeList for field {}, got {:?}",
+                field.name(),
+                field.data_type()
+            );
+        }
+    }
+
+    #[test]
+    fn odometry_schema_resolves_nested() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/control/v1/Odometry").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 3); // pose, twist, frame_id
+        // pose is Struct(position: Struct, orientation: Struct)
+        if let DataType::Struct(pose_fields) = schema.fields()[0].data_type() {
+            assert_eq!(pose_fields.len(), 2);
+        } else {
+            panic!("expected Struct for pose");
+        }
+        assert_eq!(schema.fields()[2].data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn detection_schema_resolves_with_registry() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/vision/v1/Detection").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 1); // boxes
+        assert_eq!(schema.fields()[0].name(), "boxes");
+        if let DataType::LargeList(inner) = schema.fields()[0].data_type() {
+            assert!(matches!(inner.data_type(), DataType::Struct(_)));
+        } else {
+            panic!("expected LargeList for boxes");
+        }
+    }
+
+    #[test]
+    fn segmentation_schema_resolves_with_registry() {
+        let reg = TypeRegistry::new();
+        let def = reg.resolve("std/vision/v1/Segmentation").unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 5);
+    }
+
+    #[test]
+    fn all_std_struct_types_have_schemas() {
+        let reg = TypeRegistry::new();
+        let struct_types = [
+            "std/math/v1/Vector3",
+            "std/math/v1/Quaternion",
+            "std/math/v1/Pose",
+            "std/math/v1/Transform",
+            "std/control/v1/Twist",
+            "std/control/v1/JointState",
+            "std/control/v1/Odometry",
+            "std/media/v1/Image",
+            "std/media/v1/PointCloud",
+            "std/media/v1/AudioFrame",
+            "std/vision/v1/BoundingBox",
+            "std/vision/v1/Detection",
+            "std/vision/v1/Segmentation",
+        ];
+        for urn in struct_types {
+            let def = reg.resolve(urn).unwrap_or_else(|| panic!("missing {urn}"));
+            assert!(
+                def.to_arrow_schema_with_registry(&reg).is_some(),
+                "{urn} has no resolvable schema"
+            );
+        }
+    }
+
+    #[test]
+    fn unresolvable_nested_field_returns_none() {
+        // A struct with an unknown nested type should fail closed (return None),
+        // not produce a partial schema.
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![
+                FieldDef {
+                    name: "good".to_string(),
+                    r#type: "Float64".to_string(),
+                    nullable: true,
+                },
+                FieldDef {
+                    name: "bad".to_string(),
+                    r#type: "Nonexistent".to_string(),
+                    nullable: true,
+                },
+            ],
+            metadata: vec![],
+        };
+        let reg = TypeRegistry::new();
+        assert!(
+            def.to_arrow_schema_with_registry(&reg).is_none(),
+            "schema with unresolvable field should return None"
+        );
+    }
+
+    #[test]
+    fn ambiguous_short_name_in_nested_field_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let pkg_dir = dir.path().join("myproject").join("math");
+        std::fs::create_dir_all(&pkg_dir).unwrap();
+        std::fs::write(
+            pkg_dir.join("v1.yml"),
+            "types:\n  Vector3:\n    arrow: Struct\n    description: dup\n    fields:\n      - name: a\n        type: Float64\n",
+        )
+        .unwrap();
+        let mut reg = TypeRegistry::new();
+        reg.load_from_dir(dir.path()).unwrap();
+
+        // A struct referencing the now-ambiguous "Vector3" short name
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![FieldDef {
+                name: "pos".to_string(),
+                r#type: "Vector3".to_string(),
+                nullable: true,
+            }],
+            metadata: vec![],
+        };
+        assert!(
+            def.to_arrow_schema_with_registry(&reg).is_none(),
+            "ambiguous short name should fail closed"
+        );
+    }
+
+    #[test]
+    fn parameterized_struct_schema_resolves() {
+        let reg = TypeRegistry::new();
+        // AudioFrame has fields + params; schema should resolve via registry
+        let def = reg
+            .resolve("std/media/v1/AudioFrame[sample_type=f32]")
+            .unwrap();
+        let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
+        assert_eq!(schema.fields().len(), 3); // sample_rate, channels, data
     }
 }
