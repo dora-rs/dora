@@ -103,6 +103,15 @@ pub enum NodeEvent {
     ParamDeleted {
         key: String,
     },
+    /// An upstream node has failed.
+    ///
+    /// Sent to downstream nodes when an upstream node exits with a
+    /// non-zero exit code.
+    NodeFailed {
+        affected_input_ids: Vec<DataId>,
+        error: String,
+        source_node_id: NodeId,
+    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

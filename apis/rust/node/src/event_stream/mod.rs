@@ -950,6 +950,15 @@ impl EventStream {
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
                 NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
                 NodeEvent::ParamDeleted { key } => Event::ParamDeleted { key },
+                NodeEvent::NodeFailed {
+                    affected_input_ids,
+                    error,
+                    source_node_id,
+                } => Event::NodeFailed {
+                    affected_input_ids,
+                    error,
+                    source_node_id,
+                },
                 other => {
                     tracing::warn!("ignoring unrecognized NodeEvent variant: {other:?}");
                     Event::Error(format!("unrecognized node event: {other:?}"))

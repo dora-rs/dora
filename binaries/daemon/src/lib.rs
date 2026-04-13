@@ -450,6 +450,23 @@ impl Daemon {
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
     ) -> eyre::Result<()> {
+        Self::run_with_builds(
+            coordinator_ws_addr,
+            machine_id,
+            labels,
+            local_listen_port,
+            Default::default(),
+        )
+        .await
+    }
+
+    pub async fn run_with_builds(
+        coordinator_ws_addr: SocketAddr,
+        machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
+        local_listen_port: u16,
+        initial_builds: BTreeMap<BuildId, BuildInfo>,
+    ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         let mut reconnect_attempt = 0u32;
@@ -495,7 +512,7 @@ impl Daemon {
                         None,
                         clock.clone(),
                         Some(remote_daemon_events_tx),
-                        Default::default(),
+                        initial_builds.clone(),
                         log_destination,
                         None,
                     );
@@ -3595,6 +3612,40 @@ impl Daemon {
                         }
                     }
                 } else {
+                    // Send NodeFailed events to downstream nodes when a
+                    // node exits with a non-zero exit code (matches
+                    // upstream dora behavior for error propagation).
+                    if let Err(e) = &node_result
+                        && let Some(dataflow) = self.running.get(&dataflow_id)
+                    {
+                        let error_msg = e.to_string();
+                        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> =
+                            BTreeMap::new();
+                        for (output_id, receivers) in &dataflow.mappings {
+                            if output_id.0 == node_id {
+                                for (recv_id, input_id) in receivers {
+                                    affected_by_receiver
+                                        .entry(recv_id.clone())
+                                        .or_default()
+                                        .push(input_id.clone());
+                                }
+                            }
+                        }
+                        for (recv_id, affected_ids) in affected_by_receiver {
+                            if let Some(channel) = dataflow.subscribe_channels.get(&recv_id) {
+                                let _ = send_with_timestamp(
+                                    channel,
+                                    NodeEvent::NodeFailed {
+                                        affected_input_ids: affected_ids,
+                                        error: error_msg.clone(),
+                                        source_node_id: node_id.clone(),
+                                    },
+                                    &self.clock,
+                                );
+                            }
+                        }
+                    }
+
                     self.dataflow_node_results
                         .entry(dataflow_id)
                         .or_default()

@@ -42,6 +42,8 @@ members = [
     "examples/validated-pipeline/source",
     "examples/validated-pipeline/transform",
     "examples/validated-pipeline/sink",
+    "examples/error-propagation/producer",
+    "examples/error-propagation/consumer",
     "libraries/arrow-convert",
     "libraries/log-utils",
     "libraries/coordinator-store",

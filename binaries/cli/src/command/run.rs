@@ -236,11 +236,24 @@ impl Executable for Run {
         let coordinator_addr: SocketAddr = (LOCALHOST, coordinator_port).into();
 
         // --- Spawn embedded daemon ---
-        let daemon_handle = rt.spawn(dora_daemon::Daemon::run(
+        // Pass build info from the session so git-source nodes can be found.
+        let initial_builds = match (
+            dataflow_session.build_id,
+            dataflow_session.local_build.clone(),
+        ) {
+            (Some(id), Some(info)) => {
+                let mut m = BTreeMap::new();
+                m.insert(id, info);
+                m
+            }
+            _ => BTreeMap::new(),
+        };
+        let daemon_handle = rt.spawn(dora_daemon::Daemon::run_with_builds(
             coordinator_addr,
             None,
             BTreeMap::new(),
             0,
+            initial_builds,
         ));
 
         // --- Wait for coordinator to accept connections ---

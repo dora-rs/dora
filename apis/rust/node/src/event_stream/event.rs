@@ -93,6 +93,19 @@ pub enum Event {
         /// The parameter key that was deleted.
         key: String,
     },
+    /// An upstream node has failed.
+    ///
+    /// Sent to downstream nodes when an upstream node exits with a
+    /// non-zero exit code. Downstream nodes can use this to handle
+    /// the failure gracefully (e.g. switch to cached data, log, retry).
+    NodeFailed {
+        /// The IDs of the inputs affected by the failure.
+        affected_input_ids: Vec<DataId>,
+        /// Human-readable error message from the failed node.
+        error: String,
+        /// The ID of the node that failed.
+        source_node_id: NodeId,
+    },
     /// Notifies the node about an unexpected error that happened inside Dora.
     ///
     /// It's a good idea to output or log this error for debugging.

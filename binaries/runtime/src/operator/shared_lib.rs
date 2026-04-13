@@ -178,21 +178,25 @@ impl SharedLibraryOperator<'_> {
                 ..
             } = &mut event
             {
-                use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                use tracing_opentelemetry::OpenTelemetrySpanExt;
                 span.record("input_id", input_id.as_str());
 
-                let otel = metadata.open_telemetry_context();
-                let cx = deserialize_context(&otel);
-                span.set_parent(cx)
-                    .context("failed to set parent span")
-                    .unwrap_or_default();
-                let cx = span.context();
-                let string_cx = serialize_context(&cx);
-                metadata.parameters.insert(
-                    "open_telemetry_context".to_string(),
-                    Parameter::String(string_cx),
-                );
+                #[cfg(feature = "telemetry")]
+                {
+                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
+                    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+                    let otel = metadata.open_telemetry_context();
+                    let cx = deserialize_context(&otel);
+                    span.set_parent(cx)
+                        .context("failed to set parent span")
+                        .unwrap_or_default();
+                    let cx = span.context();
+                    let string_cx = serialize_context(&cx);
+                    metadata.parameters.insert(
+                        "open_telemetry_context".to_string(),
+                        Parameter::String(string_cx),
+                    );
+                }
             }
 
             let mut operator_event = match event {

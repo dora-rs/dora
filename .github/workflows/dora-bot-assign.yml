@@ -1,0 +1,130 @@
+name: "Dora Bot"
+
+on:
+  issue_comment:
+    types: [created]
+  schedule:
+    - cron: "0 0 * * *" # Midnight(UTC)
+
+jobs:
+  assign-unassign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    if: github.event_name == 'issue_comment'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Parses comment then assign/unassign user
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: "${{ github.event.comment.body }}"
+          ISSUE_NUMBER: "${{ github.event.issue.number }}"
+          COMMENT_AUTHOR: "${{ github.event.comment.user.login }}"
+          AUTHOR_ASSOCIATION: "${{ github.event.comment.author_association }}"
+        run: |
+          # For assigning
+          if [[ "$COMMENT_BODY" == "@dora-bot assign me" ]]; then
+            echo "Assigning $COMMENT_AUTHOR to issue #$ISSUE_NUMBER"
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/assignees \
+              -d "{\"assignees\":[\"$COMMENT_AUTHOR\"]}"
+
+            # Returns a comment back 
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments \
+              -d "{\"body\":\"Hello @$COMMENT_AUTHOR, this issue is now assigned to you!\"}"
+
+          # for unassigning(self)
+          elif [[ "$COMMENT_BODY" == "@dora-bot unassign me" ]]; then
+            echo "Unassigning $COMMENT_AUTHOR from issue #$ISSUE_NUMBER"
+            curl -X DELETE \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/assignees \
+              -d "{\"assignees\":[\"$COMMENT_AUTHOR\"]}"
+
+            # Returns a comment back
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments \
+              -d "{\"body\":\"Hello @$COMMENT_AUTHOR, you have been unassigned from this issue.\"}"
+
+          # Command to help maintainers to unassign 
+          elif [[ "$COMMENT_BODY" =~ @dora-bot\ unassign\ [@]?([a-zA-Z0-9_-]+) ]]; then
+            TARGET_USER="${BASH_REMATCH[1]}"
+
+            # Checking that the comment author has proper permissions
+            if [[ "$AUTHOR_ASSOCIATION" == "NONE" || "$AUTHOR_ASSOCIATION" == "CONTRIBUTOR" ]]; then
+              echo "Unauthorized unassign command by $COMMENT_AUTHOR. Only maintainers or collaborators may unassign others."
+              exit 1
+            fi
+
+            echo "Maintainer $COMMENT_AUTHOR is unassigning $TARGET_USER from issue #$ISSUE_NUMBER"
+            curl -X DELETE \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/assignees \
+              -d "{\"assignees\":[\"$TARGET_USER\"]}"
+
+            curl -X POST \
+              -H "Authorization: Bearer $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              https://api.github.com/repos/${{ github.repository }}/issues/$ISSUE_NUMBER/comments \
+              -d "{\"body\":\"Hello @$TARGET_USER, you have been unassigned from this issue by @$COMMENT_AUTHOR.\"}"
+          else
+            echo "No matching command found in comment: $COMMENT_BODY"
+          fi
+
+  stale-unassign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    if: github.event_name == 'schedule'
+    steps:
+      - name: Unassign stale issues
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Calculate the timestamp for 14 days ago
+          TWO_WEEKS_AGO=$(date -d "14 days ago" +%s)
+          repo="${{ github.repository }}"
+          echo "Fetching open issues for $repo"
+          issues=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${repo}/issues?state=open&per_page=100")
+          
+          issue_count=$(echo "$issues" | jq '. | length')
+          echo "Found $issue_count open issues"
+          
+          for (( i=0; i<$issue_count; i++ )); do
+            issue_number=$(echo "$issues" | jq -r ".[$i].number")
+            updated_at=$(echo "$issues" | jq -r ".[$i].updated_at")
+            updated_ts=$(date -d "$updated_at" +%s)
+            
+            # If the issue hasn't been updated within 2 weeks, consider it stale.
+            if [[ $updated_ts -lt $TWO_WEEKS_AGO ]]; then
+              assignees=$(echo "$issues" | jq -r ".[$i].assignees | .[].login")
+              if [[ -n "$assignees" ]]; then
+                echo "Issue #$issue_number is stale. Unassigning users: $assignees"
+                for user in $assignees; do
+                  curl -X DELETE \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    https://api.github.com/repos/${repo}/issues/$issue_number/assignees \
+                    -d "{\"assignees\":[\"$user\"]}"
+                  curl -X POST \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    https://api.github.com/repos/${repo}/issues/$issue_number/comments \
+                    -d "{\"body\":\"@${user} has been automatically unassigned from this stale issue after 2 weeks of inactivity.\"}"
+                done
+              fi
+            fi
+          done

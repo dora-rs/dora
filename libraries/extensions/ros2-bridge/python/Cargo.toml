@@ -15,4 +15,5 @@ arrow = { workspace = true, features = ["pyarrow"] }
 futures = "0.3.28"
 
 [dev-dependencies]
+pyo3 = { workspace = true, features = ["auto-initialize"] }
 serde_assert = "0.7.1"

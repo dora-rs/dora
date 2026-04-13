@@ -21,6 +21,8 @@ async = ["pyo3/experimental-async"]
 dora-node-api = { workspace = true }
 dora-message = { workspace = true }
 dora-operator-api-python = { workspace = true }
+dora-runtime = { workspace = true, features = ["python"] }
+dora-cli = { workspace = true, features = ["python"] }
 chrono = { version = "0.4", features = ["serde"] }
 pyo3.workspace = true
 eyre = { workspace = true }

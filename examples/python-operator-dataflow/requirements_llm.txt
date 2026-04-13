@@ -1,0 +1,9 @@
+openai-whisper
+sounddevice
+pynput
+sentence-transformers
+transformers
+pylcs
+accelerate
+optimum
+auto-gptq>=0.7.1

@@ -166,6 +166,7 @@ impl PyEvent {
             Event::Reload { .. } => "RELOAD",
             Event::ParamUpdate { .. } => "PARAM_UPDATE",
             Event::ParamDeleted { .. } => "PARAM_DELETED",
+            Event::NodeFailed { .. } => "NODE_FAILED",
             Event::Error(_) => "ERROR",
             // `Event` is `#[non_exhaustive]`; surface genuinely new variants
             // as UNKNOWN rather than failing to build on future dora upgrades.
@@ -182,6 +183,7 @@ impl PyEvent {
             Event::Reload { operator_id } => operator_id.as_ref().map(|id| id.as_ref()),
             Event::ParamUpdate { key, .. } => Some(key.as_str()),
             Event::ParamDeleted { key } => Some(key.as_str()),
+            Event::NodeFailed { source_node_id, .. } => Some(source_node_id.as_ref()),
             Event::Stop(cause) => match cause {
                 StopCause::Manual => Some("MANUAL"),
                 StopCause::AllInputsClosed => Some("ALL_INPUTS_CLOSED"),
@@ -212,6 +214,18 @@ impl PyEvent {
                     .context("failed to convert ParamUpdate value to Python")?
                     .unbind();
                 Ok(Some(obj))
+            }
+            MergedEvent::Dora(Event::NodeFailed {
+                affected_input_ids,
+                error,
+                source_node_id,
+            }) => {
+                let dict = pyo3::types::PyDict::new(py);
+                dict.set_item("source_node_id", source_node_id.as_ref())?;
+                dict.set_item("error", error.as_str())?;
+                let ids: Vec<&str> = affected_input_ids.iter().map(|id| id.as_ref()).collect();
+                dict.set_item("affected_input_ids", ids)?;
+                Ok(Some(dict.unbind().into()))
             }
             _ => Ok(None),
         }

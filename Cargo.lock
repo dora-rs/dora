@@ -1969,10 +1969,12 @@ version = "0.2.1"
 dependencies = [
  "arrow",
  "chrono",
+ "dora-cli",
  "dora-message",
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
+ "dora-runtime",
  "eyre",
  "flume 0.10.14",
  "futures",
@@ -2345,6 +2347,22 @@ checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "error-propagation-consumer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "error-propagation-producer"
+version = "0.1.0"
+dependencies = [
+ "dora-node-api",
+ "eyre",
 ]
 
 [[package]]

@@ -6,7 +6,9 @@ use dora_core::{
     descriptor::{Descriptor, PythonSource, source_is_url},
 };
 use dora_download::download_file;
-use dora_node_api::{Event, Parameter, merged::MergedEvent};
+#[cfg(feature = "telemetry")]
+use dora_node_api::Parameter;
+use dora_node_api::{Event, merged::MergedEvent};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
 use eyre::{Context, Result, bail, eyre};
@@ -299,6 +301,7 @@ mod callback_impl {
         arrow_utils::{copy_array_into_sample, required_data_size},
     };
     use dora_operator_api_python::pydict_to_metadata;
+    #[cfg(feature = "telemetry")]
     use dora_tracing::telemetry::deserialize_context;
     use eyre::{Context, Result, eyre};
     use pyo3::{
@@ -307,6 +310,7 @@ mod callback_impl {
     };
     use tokio::sync::oneshot;
     use tracing::{field, span};
+    #[cfg(feature = "telemetry")]
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     /// Send an output from the operator:
@@ -331,18 +335,20 @@ mod callback_impl {
                 output_id = field::Empty
             );
             span.record("output_id", output);
-            let otel = if let Some(dora_node_api::Parameter::String(otel)) =
-                parameters.get("open_telemetry_context")
+            #[cfg(feature = "telemetry")]
             {
-                otel.to_string()
-            } else {
-                "".to_string()
-            };
-
-            let cx = deserialize_context(&otel);
-            span.set_parent(cx)
-                .context("failed to set parent span")
-                .unwrap_or_default();
+                let otel = if let Some(dora_node_api::Parameter::String(otel)) =
+                    parameters.get("open_telemetry_context")
+                {
+                    otel.to_string()
+                } else {
+                    String::new()
+                };
+                let cx = deserialize_context(&otel);
+                span.set_parent(cx)
+                    .context("failed to set parent span")
+                    .unwrap_or_default();
+            }
             let _ = span.enter();
 
             let allocate_sample = |data_len| {

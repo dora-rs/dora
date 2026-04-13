@@ -323,8 +323,14 @@ pub fn build(
             )?;
 
             dataflow_session.git_sources = git_sources;
-            // generate a random BuildId and store the associated build info
-            dataflow_session.build_id = Some(BuildId::generate());
+            // Reuse existing build_id if git sources are unchanged and
+            // a prior build already exists. This preserves the
+            // association between the build_id and the git clone
+            // directories so `dora run`'s internal rebuild doesn't
+            // orphan them.
+            if dataflow_session.build_id.is_none() {
+                dataflow_session.build_id = Some(BuildId::generate());
+            }
             dataflow_session.local_build = Some(build_info);
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
