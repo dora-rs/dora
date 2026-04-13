@@ -38,6 +38,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Reuse Rust cache from main branch (read-only)
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+
       - name: Install cross
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
