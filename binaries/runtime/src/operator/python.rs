@@ -16,6 +16,8 @@ use pyo3::{
     types::{IntoPyDict, PyAnyMethods, PyDict, PyDictMethods, PyTracebackMethods},
 };
 use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
 };
@@ -29,6 +31,97 @@ fn traceback(err: pyo3::PyErr) -> eyre::Report {
     } else {
         eyre::eyre!("{err}")
     }
+}
+
+fn operator_module_name(path: &Path) -> Result<String> {
+    let stem = path
+        .file_stem()
+        .ok_or_else(|| eyre!("module path has no file stem"))?
+        .to_str()
+        .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
+    let sanitized_stem = stem
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    Ok(format!(
+        "dora_operator_{sanitized_stem}_{:x}",
+        hasher.finish()
+    ))
+}
+
+fn append_parent_to_sys_path(py: Python, path: &Path) -> Result<()> {
+    let Some(parent_path) = path.parent() else {
+        return Ok(());
+    };
+    let parent_path = parent_path
+        .to_str()
+        .ok_or_else(|| eyre!("module path is not valid utf8"))?;
+    let sys = py.import("sys").wrap_err("failed to import `sys` module")?;
+    let sys_path = sys
+        .getattr("path")
+        .wrap_err("failed to import `sys.path` module")?;
+    let contains_parent = sys_path
+        .call_method1("__contains__", (parent_path,))
+        .wrap_err("failed to check if module path is on python search path")?
+        .extract::<bool>()
+        .wrap_err("failed to interpret python search path membership check")?;
+    if !contains_parent {
+        sys_path
+            .call_method1("append", (parent_path,))
+            .wrap_err("failed to append module path to python search path")?;
+    }
+    Ok(())
+}
+
+fn load_module_from_path<'py>(
+    py: Python<'py>,
+    module_name: &str,
+    path: &Path,
+) -> Result<pyo3::Bound<'py, PyAny>> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| eyre!("module path is not valid utf8"))?;
+    let importlib_util = py
+        .import("importlib.util")
+        .wrap_err("failed to import `importlib.util` module")?;
+    let spec = importlib_util
+        .call_method1("spec_from_file_location", (module_name, path_str))
+        .wrap_err("failed to build python module spec from operator path")?;
+    if spec.is_none() {
+        bail!(
+            "python could not create a module spec for `{}`",
+            path.display()
+        );
+    }
+    let loader = spec
+        .getattr("loader")
+        .wrap_err("python module spec is missing a loader")?;
+    if loader.is_none() {
+        bail!("python module spec for `{}` has no loader", path.display());
+    }
+
+    let module = importlib_util
+        .call_method1("module_from_spec", (&spec,))
+        .wrap_err("failed to create python module from spec")?;
+    let sys = py.import("sys").wrap_err("failed to import `sys` module")?;
+    let sys_modules = sys
+        .getattr("modules")
+        .wrap_err("failed to access `sys.modules`")?
+        .downcast_into::<PyDict>()
+        .map_err(|err| eyre!("failed to access `sys.modules` as a mapping: {err}"))?;
+    sys_modules
+        .set_item(module_name, &module)
+        .wrap_err("failed to register python operator module")?;
+
+    if let Err(err) = loader.call_method1("exec_module", (&module,)) {
+        let _ = sys_modules.del_item(module_name);
+        return Err(traceback(err))
+            .wrap_err_with(|| format!("failed to execute python module at {}", path.display()));
+    }
+
+    Ok(module)
 }
 
 #[tracing::instrument(skip(events_tx, incoming_events), level = "trace")]
@@ -59,35 +152,19 @@ pub fn run(
     let path = path
         .canonicalize()
         .wrap_err_with(|| format!("no file found at `{}`", path.display()))?;
-    let module_name = path
-        .file_stem()
-        .ok_or_else(|| eyre!("module path has no file stem"))?
-        .to_str()
-        .ok_or_else(|| eyre!("module file stem is not valid utf8"))?;
-    let path_parent = path.parent();
+    let module_name = operator_module_name(&path)?;
+    let init_path = path.clone();
+    let init_module_name = module_name.clone();
+    let reload_path = path.clone();
+    let reload_module_name = module_name.clone();
 
     let send_output = SendOutputCallback {
         events_tx: events_tx.clone(),
     };
 
     let init_operator = move |py: Python| {
-        if let Some(parent_path) = path_parent {
-            let parent_path = parent_path
-                .to_str()
-                .ok_or_else(|| eyre!("module path is not valid utf8"))?;
-            let sys = py.import("sys").wrap_err("failed to import `sys` module")?;
-            let sys_path = sys
-                .getattr("path")
-                .wrap_err("failed to import `sys.path` module")?;
-            let sys_path_append = sys_path
-                .getattr("append")
-                .wrap_err("`sys.path.append` was not found")?;
-            sys_path_append
-                .call1((parent_path,))
-                .wrap_err("failed to append module path to python search path")?;
-        }
-
-        let module = py.import(module_name).map_err(traceback)?;
+        append_parent_to_sys_path(py, &init_path)?;
+        let module = load_module_from_path(py, &init_module_name, &init_path)?;
         let operator_class = module
             .getattr("Operator")
             .wrap_err("no `Operator` class found in module")?;
@@ -140,16 +217,11 @@ pub fn run(
                             eyre!("could not extract operator state as a PyDict. Err: {}", err)
                         })?;
                     // Reload module
-                    let module = py
-                        .import(module_name)
-                        .map_err(traceback)
-                        .wrap_err(format!("Could not retrieve {module_name} while reloading"))?;
-                    let importlib = py
-                        .import("importlib")
-                        .wrap_err("failed to import `importlib` module")?;
-                    let module = importlib
-                        .call_method("reload", (module,), None)
-                        .wrap_err(format!("Could not reload {module_name} while reloading"))?;
+                    append_parent_to_sys_path(py, &reload_path)?;
+                    let module = load_module_from_path(py, &reload_module_name, &reload_path)
+                        .wrap_err_with(|| {
+                            format!("Could not reload {reload_module_name} from path")
+                        })?;
                     let reloaded_operator_class = module
                         .getattr("Operator")
                         .wrap_err("no `Operator` class found in module")?;
@@ -277,6 +349,89 @@ pub fn run(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{load_module_from_path, operator_module_name};
+    use pyo3::{Python, types::PyAnyMethods};
+    use std::{
+        env, fs,
+        path::PathBuf,
+        process,
+        sync::Once,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn init_python() {
+        static INIT: Once = Once::new();
+        INIT.call_once(pyo3::prepare_freethreaded_python);
+    }
+
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        fn new() -> Self {
+            let unique_suffix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let path = env::temp_dir().join(format!(
+                "dora-runtime-python-test-{}-{unique_suffix}",
+                process::id()
+            ));
+            fs::create_dir(&path).expect("failed to create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn loads_python_operator_from_exact_file_path() {
+        init_python();
+
+        let temp_dir = TempDir::new();
+        let operator_path = temp_dir.path().join("operator.py");
+        fs::write(
+            &operator_path,
+            "class Operator:\n    MARKER = 'loaded-from-temp-file'\n",
+        )
+        .expect("failed to write python operator");
+        let operator_path = operator_path
+            .canonicalize()
+            .expect("failed to canonicalize operator path");
+        let module_name =
+            operator_module_name(&operator_path).expect("failed to derive module name");
+
+        Python::with_gil(|py| {
+            py.import("operator")
+                .expect("expected stdlib operator module to import");
+
+            let module = load_module_from_path(py, &module_name, &operator_path)
+                .expect("failed to load operator from exact file path");
+
+            let module_file = module
+                .getattr("__file__")
+                .expect("module should expose __file__")
+                .extract::<PathBuf>()
+                .expect("module __file__ should be a valid path")
+                .canonicalize()
+                .expect("failed to canonicalize module file path");
+            assert_eq!(module_file, operator_path);
+            assert!(module.getattr("Operator").is_ok());
+        });
+    }
 }
 
 #[pyclass]
