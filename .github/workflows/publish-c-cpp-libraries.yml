@@ -10,30 +10,22 @@ permissions:
 
 jobs:
   build-c-cpp-libraries:
-    name: Build C/C++ Libraries (${{ matrix.platform }}-${{ matrix.arch }})
+    name: Build C/C++ Libraries (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
-            platform: linux
-            arch: x86_64
             target: x86_64-unknown-linux-gnu
             use_cross: false
           - os: ubuntu-22.04
-            platform: linux
-            arch: aarch64
             target: aarch64-unknown-linux-gnu
             use_cross: true
           - os: macos-latest
-            platform: macos
-            arch: aarch64
             target: aarch64-apple-darwin
             use_cross: false
           - os: windows-latest
-            platform: windows
-            arch: x86_64
             target: x86_64-pc-windows-msvc
             use_cross: false
 
@@ -66,7 +58,7 @@ jobs:
       - name: Package C libraries (Unix)
         if: runner.os != 'Windows'
         run: |
-          PREFIX="dora-c-libraries-${{ matrix.platform }}-${{ matrix.arch }}"
+          PREFIX="dora-c-libraries-${{ matrix.target }}"
           mkdir -p "$PREFIX/include" "$PREFIX/lib"
 
           cp target/${{ matrix.target }}/release/libdora_node_api_c.a "$PREFIX/lib/"
@@ -81,7 +73,7 @@ jobs:
       - name: Package C++ libraries (Unix)
         if: runner.os != 'Windows'
         run: |
-          PREFIX="dora-cpp-libraries-${{ matrix.platform }}-${{ matrix.arch }}"
+          PREFIX="dora-cpp-libraries-${{ matrix.target }}"
           mkdir -p "$PREFIX/include" "$PREFIX/lib" "$PREFIX/src"
 
           cp target/${{ matrix.target }}/release/libdora_node_api_cxx.a "$PREFIX/lib/"
@@ -101,7 +93,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prefix = "dora-c-libraries-${{ matrix.platform }}-${{ matrix.arch }}"
+          $prefix = "dora-c-libraries-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "$prefix/include", "$prefix/lib"
 
           Copy-Item "target/${{ matrix.target }}/release/dora_node_api_c.lib" "$prefix/lib/"
@@ -117,7 +109,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $prefix = "dora-cpp-libraries-${{ matrix.platform }}-${{ matrix.arch }}"
+          $prefix = "dora-cpp-libraries-${{ matrix.target }}"
           New-Item -ItemType Directory -Force -Path "$prefix/include", "$prefix/lib", "$prefix/src"
 
           Copy-Item "target/${{ matrix.target }}/release/dora_node_api_cxx.lib" "$prefix/lib/"
@@ -134,14 +126,14 @@ jobs:
       - name: Upload C libraries artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dora-c-libraries-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dora-c-libraries-${{ matrix.platform }}-${{ matrix.arch }}.*
+          name: dora-c-libraries-${{ matrix.target }}
+          path: dora-c-libraries-${{ matrix.target }}.*
 
       - name: Upload C++ libraries artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dora-cpp-libraries-${{ matrix.platform }}-${{ matrix.arch }}
-          path: dora-cpp-libraries-${{ matrix.platform }}-${{ matrix.arch }}.*
+          name: dora-cpp-libraries-${{ matrix.target }}
+          path: dora-cpp-libraries-${{ matrix.target }}.*
 
   publish-to-release:
     name: Publish to GitHub Release

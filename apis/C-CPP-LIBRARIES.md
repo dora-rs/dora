@@ -12,32 +12,32 @@ Pre-built C and C++ static libraries are published as GitHub release artifacts f
 - **dora-node-api-cxx** - C++ API for creating Dora nodes (cxx bridge)
 - **dora-operator-api-cxx** - C++ API for creating Dora operators (cxx bridge)
 
-## Supported Platforms
+## Supported Targets
 
-| Platform | Architecture | Archive |
+| Target Triple | Platform | Archive |
 |---|---|---|
-| Linux | x86_64 | `.tar.gz` |
-| Linux | aarch64 (ARM64) | `.tar.gz` |
-| macOS | aarch64 (Apple Silicon) | `.tar.gz` |
-| Windows | x86_64 | `.zip` |
+| `x86_64-unknown-linux-gnu` | Linux x86_64 (glibc) | `.tar.gz` |
+| `aarch64-unknown-linux-gnu` | Linux ARM64 (glibc) | `.tar.gz` |
+| `aarch64-apple-darwin` | macOS Apple Silicon | `.tar.gz` |
+| `x86_64-pc-windows-msvc` | Windows x86_64 | `.zip` |
 
 ## Download
 
 1. Go to the [Dora releases page](https://github.com/dora-rs/dora/releases)
-2. Download the archive for your platform:
-   - C API: `dora-c-libraries-<platform>-<arch>.tar.gz` (or `.zip` on Windows)
-   - C++ API: `dora-cpp-libraries-<platform>-<arch>.tar.gz` (or `.zip` on Windows)
+2. Download the archive for your target:
+   - C API: `dora-c-libraries-<target>.tar.gz` (or `.zip` on Windows)
+   - C++ API: `dora-cpp-libraries-<target>.tar.gz` (or `.zip` on Windows)
 
 ```bash
 # Example: download and extract C++ libraries for Linux x86_64
-tar xzf dora-cpp-libraries-linux-x86_64.tar.gz
+tar xzf dora-cpp-libraries-x86_64-unknown-linux-gnu.tar.gz
 ```
 
 ## Directory Structure
 
 **C libraries:**
 ```
-dora-c-libraries-<platform>-<arch>/
+dora-c-libraries-<target>/
 ├── include/
 │   ├── node_api.h
 │   ├── operator_api.h
@@ -50,7 +50,7 @@ dora-c-libraries-<platform>-<arch>/
 
 **C++ libraries:**
 ```
-dora-cpp-libraries-<platform>-<arch>/
+dora-cpp-libraries-<target>/
 ├── include/
 │   ├── dora-node-api.h
 │   └── dora-operator-api.h
@@ -72,20 +72,24 @@ dora-cpp-libraries-<platform>-<arch>/
 cmake_minimum_required(VERSION 3.15)
 project(my_dora_node C)
 
-# Detect platform for the correct library directory
+# Detect target triple for the correct library directory
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        set(DORA_PLATFORM "linux-aarch64")
+        set(DORA_TARGET "aarch64-unknown-linux-gnu")
     else()
-        set(DORA_PLATFORM "linux-x86_64")
+        set(DORA_TARGET "x86_64-unknown-linux-gnu")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(DORA_PLATFORM "macos-aarch64")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+        set(DORA_TARGET "aarch64-apple-darwin")
+    else()
+        set(DORA_TARGET "x86_64-apple-darwin")
+    endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(DORA_PLATFORM "windows-x86_64")
+    set(DORA_TARGET "x86_64-pc-windows-msvc")
 endif()
 
-set(DORA_C_DIR "${CMAKE_SOURCE_DIR}/dora-c-libraries-${DORA_PLATFORM}")
+set(DORA_C_DIR "${CMAKE_SOURCE_DIR}/dora-c-libraries-${DORA_TARGET}")
 
 add_executable(my_node main.c)
 target_include_directories(my_node PRIVATE ${DORA_C_DIR}/include)
@@ -114,7 +118,7 @@ set(CMAKE_CXX_STANDARD 20)
 
 # ... same platform detection as above ...
 
-set(DORA_CPP_DIR "${CMAKE_SOURCE_DIR}/dora-cpp-libraries-${DORA_PLATFORM}")
+set(DORA_CPP_DIR "${CMAKE_SOURCE_DIR}/dora-cpp-libraries-${DORA_TARGET}")
 
 # The bridge source file must be compiled with your code
 add_executable(my_node
@@ -145,14 +149,14 @@ endif()
 ```bash
 # C node
 gcc -o my_node main.c \
-    -Idora-c-libraries-linux-x86_64/include \
-    -Ldora-c-libraries-linux-x86_64/lib \
+    -Idora-c-libraries-x86_64-unknown-linux-gnu/include \
+    -Ldora-c-libraries-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_c -lpthread -ldl -lm -lrt
 
 # C++ node (must compile the bridge source too)
-g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-linux-x86_64/src/dora-node-api.cc \
-    -Idora-cpp-libraries-linux-x86_64/include \
-    -Ldora-cpp-libraries-linux-x86_64/lib \
+g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-x86_64-unknown-linux-gnu/src/dora-node-api.cc \
+    -Idora-cpp-libraries-x86_64-unknown-linux-gnu/include \
+    -Ldora-cpp-libraries-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_cxx -lpthread -ldl -lm -lrt
 ```
 
@@ -160,9 +164,9 @@ g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-linux-x86_64/src/dora-node
 
 ```bash
 # C++ node
-clang++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-macos-aarch64/src/dora-node-api.cc \
-    -Idora-cpp-libraries-macos-aarch64/include \
-    -Ldora-cpp-libraries-macos-aarch64/lib \
+clang++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-aarch64-apple-darwin/src/dora-node-api.cc \
+    -Idora-cpp-libraries-aarch64-apple-darwin/include \
+    -Ldora-cpp-libraries-aarch64-apple-darwin/lib \
     -ldora_node_api_cxx \
     -framework CoreServices -framework Security -lpthread -lm -lc -lresolv
 ```
