@@ -1760,6 +1760,7 @@ version = "0.5.0"
 dependencies = [
  "arrow-array",
  "dora-node-api",
+ "dora-tracing",
  "eyre",
  "tracing",
 ]
