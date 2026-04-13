@@ -325,6 +325,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrow-rs-cuda"
+version = "0.1.0"
+source = "git+https://github.com/haixuantao/arrow-rs-cuda#c0d403204fa219944f2d2888b06ad985c2ae2bf7"
+dependencies = [
+ "cxx",
+ "cxx-build",
+ "pkg-config",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "arrow-schema"
 version = "54.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5282,6 +5293,15 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "rust-cuda-dataflow-receiver"
+version = "0.5.0"
+dependencies = [
+ "arrow-rs-cuda",
+ "dora-node-api",
+ "eyre",
 ]
 
 [[package]]

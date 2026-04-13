@@ -1,0 +1,14 @@
+nodes:
+  - id: sender
+    path: sender.py
+    inputs:
+      next: receiver/next
+    outputs:
+      - cuda_data
+
+  - id: receiver
+    path: build/node
+    inputs:
+      cuda_data: sender/cuda_data
+    outputs:
+      - next

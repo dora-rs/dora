@@ -1,0 +1,15 @@
+nodes:
+  - id: sender
+    path: sender.py
+    inputs:
+      next: receiver/next
+    outputs:
+      - cuda_data
+
+  - id: receiver
+    build: cargo build -p rust-cuda-dataflow-receiver
+    path: ../../target/debug/rust-cuda-dataflow-receiver
+    inputs:
+      cuda_data: sender/cuda_data
+    outputs:
+      - next

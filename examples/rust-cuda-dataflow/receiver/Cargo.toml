@@ -1,0 +1,11 @@
+[package]
+name = "rust-cuda-dataflow-receiver"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+dora-node-api = { workspace = true }
+arrow-rs-cuda = { git = "https://github.com/haixuantao/arrow-rs-cuda" }
+eyre = "0.6.8"

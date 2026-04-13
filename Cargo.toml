@@ -35,6 +35,7 @@ members = [
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
     "tests/queue_size_latest_data_rust/receive_data",
+    "examples/rust-cuda-dataflow/receiver",
 ]
 
 [workspace.package]
