@@ -23,12 +23,6 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[unsafe(no_mangle)]
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
-    // Set up a tracing subscriber so that dora_log() calls are emitted.
-    // Ignore errors if a subscriber is already set.
-    let _ = dora_tracing::TracingBuilder::new("dora-c-node")
-        .with_stdout("info", true)
-        .build();
-
     let context = || {
         let (node, events) = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
@@ -280,56 +274,4 @@ unsafe fn try_send_output(
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
         })
-}
-
-/// Sends a structured log message from a C node.
-///
-/// The `level_ptr`/`level_len` fields must point to a UTF-8 string containing
-/// one of: "error", "warn", "info", "debug", "trace" (case-insensitive).
-///
-/// The `msg_ptr`/`msg_len` fields must point to a UTF-8 string with the log
-/// message.
-///
-/// Returns 0 on success, -1 on error.
-///
-/// ## Safety
-///
-/// - The pointer/length pairs must describe valid UTF-8 byte slices.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn dora_log(
-    _context: *mut c_void,
-    level_ptr: *const u8,
-    level_len: usize,
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> isize {
-    match unsafe { try_log(level_ptr, level_len, msg_ptr, msg_len) } {
-        Ok(()) => 0,
-        Err(err) => {
-            tracing::error!("{err:?}");
-            -1
-        }
-    }
-}
-
-unsafe fn try_log(
-    level_ptr: *const u8,
-    level_len: usize,
-    msg_ptr: *const u8,
-    msg_len: usize,
-) -> eyre::Result<()> {
-    if level_ptr.is_null() || msg_ptr.is_null() {
-        eyre::bail!("null pointer passed to dora_log");
-    }
-    let level = std::str::from_utf8(unsafe { slice::from_raw_parts(level_ptr, level_len) })?;
-    let message = std::str::from_utf8(unsafe { slice::from_raw_parts(msg_ptr, msg_len) })?;
-    match level.to_ascii_lowercase().as_str() {
-        "error" => tracing::error!(target: "dora.c.log", "{message}"),
-        "warn" => tracing::warn!(target: "dora.c.log", "{message}"),
-        "info" => tracing::info!(target: "dora.c.log", "{message}"),
-        "debug" => tracing::debug!(target: "dora.c.log", "{message}"),
-        "trace" => tracing::trace!(target: "dora.c.log", "{message}"),
-        other => eyre::bail!("unknown log level: {other}"),
-    }
-    Ok(())
 }
