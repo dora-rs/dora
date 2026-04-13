@@ -3,7 +3,10 @@
 use arrow_array::UInt8Array;
 use dora_node_api::{DoraNode, Event, EventStream, arrow::array::AsArray};
 use eyre::Context;
-use std::{ffi::c_void, ptr, slice};
+use std::{
+    ffi::{c_int, c_void},
+    ptr, slice,
+};
 
 pub const HEADER_NODE_API: &str = include_str!("../node_api.h");
 
@@ -248,7 +251,7 @@ pub unsafe extern "C" fn dora_send_output(
     id_len: usize,
     data_ptr: *const u8,
     data_len: usize,
-) -> isize {
+) -> c_int {
     match unsafe { try_send_output(context, id_ptr, id_len, data_ptr, data_len) } {
         Ok(()) => 0,
         Err(err) => {
@@ -265,13 +268,16 @@ unsafe fn try_send_output(
     data_ptr: *const u8,
     data_len: usize,
 ) -> eyre::Result<()> {
+    if context.is_null() || id_ptr.is_null() || data_ptr.is_null() {
+        eyre::bail!("null pointer passed to dora_send_output");
+    }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    context
+    Ok(context
         .node
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
-        })
+        })?)
 }
