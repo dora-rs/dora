@@ -62,7 +62,11 @@ pub fn main() -> eyre::Result<()> {
         event,
     });
 
-    let tokio_runtime = Builder::new_current_thread()
+    // Use multi-thread scheduler (with 1 worker) because Zenoh requires it
+    // for distributed cross-daemon communication. current_thread panics when
+    // Zenoh tries to spawn background tasks during session init.
+    let tokio_runtime = Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .wrap_err("Could not build a tokio runtime.")?;
