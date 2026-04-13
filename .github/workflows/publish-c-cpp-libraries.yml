@@ -84,13 +84,16 @@ jobs:
           cp target/${{ matrix.target }}/release/libdora_node_api_cxx.a "$PREFIX/lib/"
           cp target/${{ matrix.target }}/release/libdora_operator_api_cxx.a "$PREFIX/lib/"
 
+          # cxxbridge output may be at target/cxxbridge/ or target/<target>/cxxbridge/
+          CXX_BRIDGE=$(find target -path "*/cxxbridge/dora-node-api-cxx/src/lib.rs.h" -print -quit | xargs dirname)
+
           # Bridge headers
-          cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.h "$PREFIX/include/dora-node-api.h"
-          cp target/cxxbridge/dora-operator-api-cxx/src/lib.rs.h "$PREFIX/include/dora-operator-api.h"
+          cp "$CXX_BRIDGE/lib.rs.h" "$PREFIX/include/dora-node-api.h"
+          cp "${CXX_BRIDGE/node/operator}/lib.rs.h" "$PREFIX/include/dora-operator-api.h"
 
           # Bridge source files (users must compile these alongside their code)
-          cp target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc "$PREFIX/src/dora-node-api.cc"
-          cp target/cxxbridge/dora-operator-api-cxx/src/lib.rs.cc "$PREFIX/src/dora-operator-api.cc"
+          cp "$CXX_BRIDGE/lib.rs.cc" "$PREFIX/src/dora-node-api.cc"
+          cp "${CXX_BRIDGE/node/operator}/lib.rs.cc" "$PREFIX/src/dora-operator-api.cc"
 
           tar czf "$PREFIX.tar.gz" "$PREFIX"
 
@@ -120,11 +123,15 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/dora_node_api_cxx.lib" "$prefix/lib/"
           Copy-Item "target/${{ matrix.target }}/release/dora_operator_api_cxx.lib" "$prefix/lib/"
 
-          Copy-Item "target/cxxbridge/dora-node-api-cxx/src/lib.rs.h" "$prefix/include/dora-node-api.h"
-          Copy-Item "target/cxxbridge/dora-operator-api-cxx/src/lib.rs.h" "$prefix/include/dora-operator-api.h"
+          # cxxbridge output may be at target/cxxbridge/ or target/<target>/cxxbridge/
+          $nodeDir = Get-ChildItem -Path target -Recurse -Filter "lib.rs.h" | Where-Object { $_.FullName -match "dora-node-api-cxx" } | Select-Object -First 1 -ExpandProperty DirectoryName
+          $operatorDir = Get-ChildItem -Path target -Recurse -Filter "lib.rs.h" | Where-Object { $_.FullName -match "dora-operator-api-cxx" } | Select-Object -First 1 -ExpandProperty DirectoryName
 
-          Copy-Item "target/cxxbridge/dora-node-api-cxx/src/lib.rs.cc" "$prefix/src/dora-node-api.cc"
-          Copy-Item "target/cxxbridge/dora-operator-api-cxx/src/lib.rs.cc" "$prefix/src/dora-operator-api.cc"
+          Copy-Item "$nodeDir/lib.rs.h" "$prefix/include/dora-node-api.h"
+          Copy-Item "$operatorDir/lib.rs.h" "$prefix/include/dora-operator-api.h"
+
+          Copy-Item "$nodeDir/lib.rs.cc" "$prefix/src/dora-node-api.cc"
+          Copy-Item "$operatorDir/lib.rs.cc" "$prefix/src/dora-operator-api.cc"
 
           Compress-Archive -Path "$prefix" -DestinationPath "$prefix.zip"
 
