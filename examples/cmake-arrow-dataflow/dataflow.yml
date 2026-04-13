@@ -1,0 +1,14 @@
+nodes:
+  - id: sender
+    path: build/node
+    inputs:
+      tick: dora/timer/millis/500
+    outputs:
+      - typed_data
+
+  - id: receiver
+    path: build/node
+    inputs:
+      tick: sender/typed_data
+    outputs:
+      - typed_data
