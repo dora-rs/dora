@@ -325,7 +325,7 @@ unsafe fn event_as_arrow_input(
 
     let array_data = data.to_data();
 
-    match arrow::ffi::to_ffi(&array_data.clone()) {
+    match arrow::ffi::to_ffi(&array_data) {
         Ok((ffi_array, ffi_schema)) => {
             unsafe {
                 std::ptr::write(out_array, ffi_array);
