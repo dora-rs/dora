@@ -812,6 +812,87 @@ impl DoraNode {
             ),
         }
     }
+
+    /// Send a structured log message.
+    ///
+    /// Outputs a JSONL line to stdout that the daemon parses automatically.
+    /// Works with `min_log_level` filtering and `send_logs_as` routing.
+    ///
+    /// `level` should be one of: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
+    /// Unknown levels default to `"info"`.
+    pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
+        self.log_with_fields(level, message, target, None);
+    }
+
+    /// Maximum total size of log fields before they are dropped (60 KB).
+    const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
+
+    /// Send a structured log message with optional key-value fields.
+    ///
+    /// Like [`log`](Self::log), but accepts additional structured fields that
+    /// are included in the JSON payload and preserved through `send_logs_as`.
+    pub fn log_with_fields(
+        &self,
+        level: &str,
+        message: &str,
+        target: Option<&str>,
+        fields: Option<&std::collections::BTreeMap<String, String>>,
+    ) {
+        let level_str = match level.to_lowercase().as_str() {
+            "error" => "error",
+            "warn" | "warning" => "warn",
+            "info" => "info",
+            "debug" => "debug",
+            "trace" => "trace",
+            _ => "info",
+        };
+        let mut entry = serde_json::json!({
+            "level": level_str,
+            "node_id": self.id.to_string(),
+            "message": message,
+        });
+        if let Some(target) = target {
+            entry["target"] = serde_json::Value::String(target.to_string());
+        }
+        if let Some(fields) = fields {
+            let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
+            if total <= Self::MAX_LOG_FIELDS_BYTES {
+                entry["fields"] = serde_json::json!(fields);
+            } else {
+                eprintln!("dora log: fields too large ({total} bytes), dropping fields");
+                entry["fields_dropped"] = serde_json::Value::Bool(true);
+            }
+        }
+        match serde_json::to_string(&entry) {
+            Ok(json) => println!("{json}"),
+            Err(e) => eprintln!("dora log serialization error: {e}"),
+        }
+    }
+
+    /// Log an error message.
+    pub fn log_error(&self, message: &str) {
+        self.log("error", message, None);
+    }
+
+    /// Log a warning message.
+    pub fn log_warn(&self, message: &str) {
+        self.log("warn", message, None);
+    }
+
+    /// Log an info message.
+    pub fn log_info(&self, message: &str) {
+        self.log("info", message, None);
+    }
+
+    /// Log a debug message.
+    pub fn log_debug(&self, message: &str) {
+        self.log("debug", message, None);
+    }
+
+    /// Log a trace message.
+    pub fn log_trace(&self, message: &str) {
+        self.log("trace", message, None);
+    }
 }
 
 impl Drop for DoraNode {

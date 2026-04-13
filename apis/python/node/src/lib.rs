@@ -381,6 +381,89 @@ impl Node {
         Ok(())
     }
 
+    /// Send a structured log message.
+    ///
+    /// Outputs a JSONL line to stdout that the daemon parses automatically.
+    /// Works with ``min_log_level`` filtering and ``send_logs_as`` routing.
+    ///
+    /// :param level: Log level string (error, warn, info, debug, trace)
+    /// :type level: str
+    /// :param message: The log message
+    /// :type message: str
+    /// :param target: Optional target/module path
+    /// :type target: str, optional
+    /// :param fields: Optional key-value pairs for structured context
+    /// :type fields: dict[str, str], optional
+    /// :rtype: None
+    #[pyo3(signature = (level, message, target=None, fields=None))]
+    pub fn log(
+        &self,
+        level: &str,
+        message: &str,
+        target: Option<&str>,
+        fields: Option<std::collections::HashMap<String, String>>,
+    ) {
+        let ordered = fields.map(|f| f.into_iter().collect::<std::collections::BTreeMap<_, _>>());
+        self.node
+            .get_mut()
+            .log_with_fields(level, message, target, ordered.as_ref());
+    }
+
+    /// Log an error message.
+    ///
+    /// Shorthand for ``node.log("error", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_error(&self, message: &str) {
+        self.node.get_mut().log_error(message);
+    }
+
+    /// Log a warning message.
+    ///
+    /// Shorthand for ``node.log("warn", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_warn(&self, message: &str) {
+        self.node.get_mut().log_warn(message);
+    }
+
+    /// Log an info message.
+    ///
+    /// Shorthand for ``node.log("info", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_info(&self, message: &str) {
+        self.node.get_mut().log_info(message);
+    }
+
+    /// Log a debug message.
+    ///
+    /// Shorthand for ``node.log("debug", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_debug(&self, message: &str) {
+        self.node.get_mut().log_debug(message);
+    }
+
+    /// Log a trace message.
+    ///
+    /// Shorthand for ``node.log("trace", message)``.
+    ///
+    /// :param message: The log message
+    /// :type message: str
+    /// :rtype: None
+    pub fn log_trace(&self, message: &str) {
+        self.node.get_mut().log_trace(message);
+    }
+
     /// Returns the full dataflow descriptor that this node is part of.
     ///
     /// This method returns the parsed dataflow YAML file.
