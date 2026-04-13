@@ -196,6 +196,12 @@ pub mod ros2 {
 }
 
 fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
+    // Set up a tracing subscriber so that log_message() calls are emitted.
+    // Ignore errors if a subscriber is already set.
+    let _ = dora_tracing::TracingBuilder::new("dora-cxx-node")
+        .with_stdout("info", true)
+        .build();
+
     let (node, events) = dora_node_api::DoraNode::init_from_env()?;
     let events = Events(events);
     let send_output = OutputSender(node);

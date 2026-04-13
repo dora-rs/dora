@@ -26,6 +26,12 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[unsafe(no_mangle)]
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
+    // Set up a tracing subscriber so that dora_log() calls are emitted.
+    // Ignore errors if a subscriber is already set.
+    let _ = dora_tracing::TracingBuilder::new("dora-c-node")
+        .with_stdout("info", true)
+        .build();
+
     let context = || {
         let (node, events) = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));

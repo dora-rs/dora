@@ -1759,6 +1759,7 @@ version = "0.5.0"
 dependencies = [
  "arrow-array",
  "dora-node-api",
+ "dora-tracing",
  "eyre",
  "tracing",
 ]
@@ -1775,6 +1776,7 @@ dependencies = [
  "dora-node-api",
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",
+ "dora-tracing",
  "eyre",
  "futures-lite",
  "prettyplease 0.1.25",
