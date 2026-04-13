@@ -3,3 +3,7 @@
 DeviceNDArray = "DeviceNDArray"
 Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
 clonable_command = "clonable_command"
+
+[default.extend-words]
+# Windows system library name
+secur = "secur"
