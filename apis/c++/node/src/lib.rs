@@ -285,13 +285,9 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
         dora_node_api::arrow::datatypes::DataType::Null => {
             vec![]
         }
-        other => {
-            bail!(
-                "event_as_input() only supports UInt8 and Null arrow types, but received {:?}. \
-                 Use event_as_arrow_input_with_info() instead, which supports all arrow types \
-                 via the Arrow C FFI interface.",
-                other
-            )
+        _ => {
+            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8.
+                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
         }
     };
 
