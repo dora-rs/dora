@@ -32,15 +32,26 @@ the `nightly-regression` label but do not block PRs.
 |---|---|
 | Full smoke suite (`tests/example-smoke.rs`, 44 tests) | `smoke-suite` |
 | Log-sink examples (file, alert, tcp) | `log-sinks` |
-| Service / Action / Streaming communication patterns | `service-action-streaming` |
+| Service / Action patterns (Rust-only) | `service-action` |
+| Streaming example (Python nodes) | `streaming` |
 | Record / replay round-trip | `record-replay` |
 
 Run locally:
 ```bash
+# Smoke suite
 cargo test -p dora-examples --test example-smoke -- --test-threads=1
+
+# Rust-only examples (no Python setup needed)
 dora run examples/service-example/dataflow.yml --stop-after 15s
 dora run examples/action-example/dataflow.yml --stop-after 20s
-dora run examples/log-sink-file/dataflow.yml --stop-after 15s
+
+# Python-backed examples — need uv venv + local dora install first:
+#   uv venv --seed -p 3.12
+#   source .venv/bin/activate
+#   uv pip install pyarrow
+#   uv pip install -e apis/python/node
+dora run examples/log-sink-file/dataflow.yml --uv --stop-after 15s
+dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s
 ```
 
 ## Tier 2 — Laptop / manual
