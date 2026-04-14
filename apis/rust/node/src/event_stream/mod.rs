@@ -339,13 +339,19 @@ impl EventStream {
     /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
     /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
-        assert!(
-            !self.closed,
-            "receive function called after None was returned"
-        );
+        // Return None after Stop was delivered or stream was closed,
+        // rather than blocking forever when direct connection threads
+        // keep the mpsc channel alive.
+        if self.closed {
+            return None;
+        }
 
         if !self.use_scheduler {
-            return self.receiver.recv().await.map(Self::convert_event_item);
+            let event = self.receiver.recv().await.map(Self::convert_event_item);
+            if matches!(&event, Some(Event::Stop(_))) {
+                self.closed = true;
+            }
+            return event;
         }
         loop {
             if self.scheduler.is_empty() {
@@ -372,7 +378,11 @@ impl EventStream {
         if event.is_none() {
             self.closed = true;
         }
-        event.map(Self::convert_event_item)
+        let event = event.map(Self::convert_event_item);
+        if matches!(&event, Some(Event::Stop(_))) {
+            self.closed = true;
+        }
+        event
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.
