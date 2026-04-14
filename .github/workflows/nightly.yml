@@ -307,10 +307,103 @@ jobs:
             exit 1
           fi
 
+  topic-and-top-smoke:
+    # Smoke-tests the inspection commands: `dora top --once`, `dora topic
+    # list/info/pub`. Each has a non-interactive mode (--once / built-in
+    # exit / --duration / --count). `topic echo` and `topic hz` stream
+    # without bound — tracked separately, need --duration/--count flags.
+    #
+    # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
+    # indefinitely until stopped (rust-dataflow nodes hit tick limits).
+    # Runs without --uv: ambient venv has local dora-rs 0.2.1; --uv would
+    # spawn isolated per-script venvs that pull dora-rs 0.5.0 from PyPI.
+    name: Topic & top inspection smoke
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv with local dora-rs
+        # Required so the Python source nodes import dora-rs 0.2.1 (matching
+        # the daemon's message format), not the 0.5.0 from PyPI.
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Start coordinator + daemon
+        run: |
+          dora up
+          sleep 2
+      - name: dora top --once with no dataflow returns valid JSON
+        run: |
+          # No dataflow running yet: must produce '[]' (valid empty JSON).
+          out=$(dora top --once || true)
+          echo "$out"
+          echo "$out" | grep -qE '^\[' || { echo "ERROR: top --once didn't produce JSON array"; exit 1; }
+      - name: Start a debug-enabled dataflow
+        # The fixture uses Python source nodes (ticker.py / sink.py) so the
+        # dataflow runs forever (rust-dataflow-example-node hits a tick limit
+        # and exits, breaking subsequent topic queries). Runs without --uv:
+        # the ambient venv has local dora-rs (just installed above), and
+        # --uv would create a fresh venv that pulls dora-rs 0.5.0 from PyPI.
+        run: |
+          dora start tests/fixtures/zenoh-debug-dataflow.yml --name tui-smoke --detach
+          sleep 5  # let nodes register and start emitting messages
+          dora list  # surface status for the log
+      - name: dora topic list (NDJSON)
+        run: |
+          # `topic list --format json` emits NDJSON (one object per line),
+          # not a JSON array. Parse each line, assert at least one row
+          # describes the ticker/count topic.
+          out=$(dora topic list -d tui-smoke --format json)
+          echo "$out"
+          echo "$out" | python3 -c "
+          import json, sys
+          rows = [json.loads(line) for line in sys.stdin if line.strip()]
+          assert rows, 'no NDJSON rows produced'
+          assert any(r.get('node') == 'ticker' and r.get('name') == 'count' for r in rows), \
+              f'ticker/count not in topic list: {rows}'
+          "
+      - name: dora topic info on ticker/count (--duration 3)
+        run: |
+          dora topic info -d tui-smoke ticker/count --duration 3 2>&1 | tee info.out
+          grep -q 'ticker/count' info.out || { echo "ERROR: info output missing topic"; exit 1; }
+      - name: dora topic pub --count 3
+        run: |
+          dora topic pub -d tui-smoke ticker/count '42' --count 3 2>&1 | tee pub.out
+          # `topic pub` prints "Published message N/3" on success.
+          grep -q 'Published message 3/3' pub.out || { echo "ERROR: pub didn't emit all 3 messages"; exit 1; }
+      - name: Stop dataflow + tear down
+        if: always()
+        run: |
+          dora stop --name tui-smoke --grace-duration 5s 2>/dev/null || true
+          dora destroy 2>/dev/null || true
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -367,6 +460,7 @@ jobs:
           - streaming
           - record-replay
           - cluster-smoke
+          - topic-and-top-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close

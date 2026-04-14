@@ -37,6 +37,7 @@ the `nightly-regression` label but do not block PRs.
 | Streaming example (Python nodes) | `streaming` |
 | Record / replay round-trip | `record-replay` |
 | Cluster lifecycle (`cluster status`, `cluster down`) | `cluster-smoke` |
+| Inspection commands (`top --once`, `topic list/info/pub`) | `topic-and-top-smoke` |
 
 Run locally:
 ```bash
@@ -134,15 +135,23 @@ Not automated: requires two networked hosts.
 
 Tracked in issue #215. Selected items:
 
-- `dora topic echo/hz/info/pub` TUI interaction
-- `dora top` (TUI)
-- `dora graph` output validation (generates Mermaid; no golden file compare)
-- `dora param get/set/delete` interactive path (covered by `ws-cli-e2e` on the wire)
+- `dora topic echo` and `dora topic hz` — stream forever, need bounded modes
+  (filed as #233)
 - `dora trace list/view`
 - `dora self update`
 
-Most of these are interactive TUI commands that need an expect-style harness.
-Opening separate issues as we pick them up.
+Most of these are interactive TUI commands that need either non-interactive
+modes or an expect-style harness. Opening separate issues as we pick them
+up.
+
+### Already covered (despite earlier audit)
+
+These were on the gap list but now have nightly coverage in
+`topic-and-top-smoke`:
+- `dora top --once` (JSON snapshot)
+- `dora topic list --format json` (NDJSON parse)
+- `dora topic info --duration N`
+- `dora topic pub --count N`
 
 ## Promotion policy
 
