@@ -153,6 +153,26 @@ These were on the gap list but now have nightly coverage in
 - `dora topic info --duration N`
 - `dora topic pub --count N`
 
+## Platform parity
+
+C/C++ template CI coverage is intentionally scoped to Linux (see issue #230):
+
+| Test | Linux | macOS | Windows |
+|---|---|---|---|
+| `dora new --lang rust/python` scaffolding | Tier 0 (`cli` job) | Tier 0 (`cli` job) | Tier 0 (`cli` job) |
+| `dora new --lang c/cxx` scaffolding + CMake build + `dora run` | Tier 0 (`cli` job) | not covered | not covered |
+| `cxx-dataflow`, `c-dataflow` examples | Tier 0 (`examples` job) | Tier 0 | Tier 0 |
+| `cxx-arrow-dataflow` (needs Arrow C++ lib) | Tier 0 | Tier 0 (homebrew `apache-arrow`) | not covered |
+| `cmake-dataflow` example | Tier 0 | not covered | not covered |
+
+**Rationale.** Production C/C++ node users are Linux-heavy. macOS/Windows C/C++ CI
+would need vcpkg or homebrew-formula pinning per runner, and the cost/benefit is
+poor for the number of real-world users on those paths. Rust/Python coverage stays
+cross-platform because those are the primary audience. If a macOS or Windows C/C++
+regression is reported, the fix is to lift the `if: runner.os == 'Linux'` gate on
+the relevant step and add platform-specific install logic — not to keep shipping
+broken.
+
 ## Promotion policy
 
 If a nightly failure reproduces for **3 consecutive runs**, promote the

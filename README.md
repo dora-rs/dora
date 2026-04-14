@@ -411,12 +411,18 @@ examples/               # Example dataflows
 
 ### Platform support
 
-| Platform | Status |
-|----------|--------|
-| Linux (x86_64, ARM64, ARM32) | First-class |
-| macOS (ARM64) | First-class |
-| Windows (x86_64) | Best effort |
-| WSL (x86_64) | Best effort |
+| Platform | Rust / Python | C / C++ templates |
+|----------|---------------|-------------------|
+| Linux (x86_64, ARM64, ARM32) | First-class | First-class (CI-gated) |
+| macOS (ARM64) | First-class | Best effort (not CI-gated) |
+| Windows (x86_64) | Best effort | Best effort (not CI-gated) |
+| WSL (x86_64) | Best effort | Best effort (not CI-gated) |
+
+C/C++ template tests (`dora new --lang c/cxx` + CMake build) run in CI on Linux only.
+`dora new --lang rust/python` is smoke-tested on all three platforms, but the C/C++
+variants are not. macOS and Windows C/C++ regressions are caught by users rather
+than CI; report them via GitHub issues and we will promote the gate. See
+[`docs/testing-matrix.md`](docs/testing-matrix.md#platform-parity) for the full rationale.
 
 ## Examples
 
