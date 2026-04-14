@@ -89,8 +89,6 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-cli-api-python
           --exclude dora-examples
-          --exclude rust-dataflow-example-node
-          --exclude multiple-daemons-example-operator
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
@@ -205,10 +203,8 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 30
         run: cargo run --example cmake-dataflow
-      - name: Benchmark example
-        continue-on-error: true
-        timeout-minutes: 30
-        run: cargo run --example benchmark --release
+      # Benchmark example runs in the dedicated `bench-example` job below
+      # across all 3 platforms — no duplication here.
 
   # ===== CLI integration tests (cross-platform) =====
   # Restored from upstream dora CI — tests template creation, Python examples,
@@ -423,7 +419,6 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Benchmark example
-        continue-on-error: true
         timeout-minutes: 45
         run: cargo run --example benchmark --release
 
