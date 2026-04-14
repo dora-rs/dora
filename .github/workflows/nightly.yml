@@ -4,8 +4,9 @@ name: Nightly Regression
 #
 # Tier 1 gates per docs/testing-matrix.md:
 #   - Full example-smoke suite (~11 min)
-#   - Service/action/streaming communication patterns
-#   - Log-sink example dataflows
+#   - Service/action communication patterns (Rust-only)
+#   - Streaming example (Python)
+#   - Log-sink example dataflows (Python sources)
 #   - Record/replay round-trip
 #
 # Failures file issues with the `nightly-regression` label; they do not
@@ -69,9 +70,31 @@ jobs:
         if: steps.smoke.outputs.exit_code != '0'
         run: exit 1
 
+  # Build the dora CLI once and upload as artifact for downstream jobs.
+  # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
+  build-cli:
+    name: Build dora CLI (shared)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dora CLI to ./dist
+        run: cargo install --path binaries/cli --locked --root ./dist
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dora-cli
+          path: dist/bin/dora
+          retention-days: 1
+
   log-sinks:
     name: Log-sink examples (Python sources)
     runs-on: ubuntu-latest
+    needs: build-cli
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -94,8 +117,15 @@ jobs:
           source .venv/bin/activate
           uv pip install pyarrow
           uv pip install -e apis/python/node
-      - name: Build CLI
-        run: cargo install --path binaries/cli --locked
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
       - name: Build log-sink nodes
         run: cargo build -p log-sink-file -p log-sink-alert -p log-sink-tcp
       - name: log-sink-file
@@ -108,6 +138,7 @@ jobs:
   service-action:
     name: Service / Action patterns (Rust-only)
     runs-on: ubuntu-latest
+    needs: build-cli
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -115,8 +146,15 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build CLI
-        run: cargo install --path binaries/cli --locked
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
       - name: Build service / action example nodes
         run: >
           cargo build
@@ -132,13 +170,10 @@ jobs:
   streaming:
     name: Streaming example (Python)
     runs-on: ubuntu-latest
+    needs: build-cli
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -154,14 +189,22 @@ jobs:
           source .venv/bin/activate
           uv pip install pyarrow
           uv pip install -e apis/python/node
-      - name: Build CLI
-        run: cargo install --path binaries/cli --locked
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
       - name: streaming-example
         run: dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s
 
   record-replay:
     name: Record/replay round-trip
     runs-on: ubuntu-latest
+    needs: build-cli
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -169,8 +212,15 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build CLI
-        run: cargo install --path binaries/cli --locked
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
       - name: Build rust-dataflow example nodes
         run: >
           cargo build
@@ -190,8 +240,11 @@ jobs:
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [smoke-suite, log-sinks, service-action, streaming, record-replay]
-    if: failure() && github.event_name == 'schedule'
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay]
+    # `always() && contains(needs.*.result, 'failure')` covers both direct
+    # failures and the case where build-cli fails and downstream jobs get
+    # skipped (plain `failure()` would miss the skipped-cascade case).
+    if: always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
       - name: Create or update regression issue
