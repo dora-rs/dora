@@ -355,10 +355,16 @@ impl EventStream {
                     break;
                 }
             } else {
-                match self.receiver.try_recv() {
-                    Ok(event) => self.add_event(event),
-                    Err(_) => break, // no other ready events or closed
-                };
+                // Drain a bounded number of ready events so the scheduler
+                // can make fair decisions, but avoid spinning indefinitely
+                // when direct node-to-node connections keep the channel busy.
+                for _ in 0..100 {
+                    match self.receiver.try_recv() {
+                        Ok(event) => self.add_event(event),
+                        Err(_) => break,
+                    };
+                }
+                break;
             }
         }
         let event = self.scheduler.next();
