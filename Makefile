@@ -5,7 +5,7 @@
 
 .PHONY: qa qa-fast qa-full qa-tier1 \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
-        qa-install
+        qa-adversarial qa-install
 
 qa: qa-fast
 
@@ -52,6 +52,10 @@ qa-mutants:
 
 qa-semver:
 	@scripts/qa/semver.sh
+
+# Adversarial LLM review of current diff (requires codex or claude CLI)
+qa-adversarial:
+	@scripts/qa/adversarial.sh
 
 # One-shot tool installation
 

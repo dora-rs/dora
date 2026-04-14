@@ -50,6 +50,8 @@ elif [[ "$MODE" == "--full" || "$MODE" == "--tier1" ]]; then
     --exclude dora-cli-api-python \
     --exclude dora-examples
   run "coverage" scripts/qa/coverage.sh
+  # Adversarial LLM review skips cleanly on machines without codex/claude.
+  run "adversarial" scripts/qa/adversarial.sh --optional
 
   if [[ "$MODE" == "--tier1" ]]; then
     run "mutants" scripts/qa/mutants.sh

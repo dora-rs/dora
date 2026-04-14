@@ -17,11 +17,13 @@
 #   scripts/qa/adversarial.sh --base HEAD~3        # diff vs HEAD~3
 #   scripts/qa/adversarial.sh --diff mypatch.diff  # diff from a file
 #   scripts/qa/adversarial.sh --backend claude     # force claude CLI
+#   scripts/qa/adversarial.sh --optional           # skip cleanly if no CLI
 #
 # Environment overrides:
 #   ADVERSARIAL_BACKEND=codex|claude  — skip auto-detect
 #   ADVERSARIAL_BASE=<ref>            — base for diff (default: origin/main)
 #   ADVERSARIAL_MAX_DIFF_KB=200       — skip review if diff is larger
+#   ADVERSARIAL_OPTIONAL=1            — skip cleanly when no CLI available
 
 set -euo pipefail
 
@@ -32,14 +34,16 @@ BASE="${ADVERSARIAL_BASE:-origin/main}"
 DIFF_FILE=""
 BACKEND="${ADVERSARIAL_BACKEND:-}"
 MAX_DIFF_KB="${ADVERSARIAL_MAX_DIFF_KB:-200}"
+OPTIONAL="${ADVERSARIAL_OPTIONAL:-0}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --base) BASE="$2"; shift 2 ;;
     --diff) DIFF_FILE="$2"; shift 2 ;;
     --backend) BACKEND="$2"; shift 2 ;;
+    --optional) OPTIONAL=1; shift ;;
     --help|-h)
-      sed -n '2,25p' "$0"
+      sed -n '2,27p' "$0"
       exit 0
       ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
@@ -53,7 +57,13 @@ if [[ -z "$BACKEND" ]]; then
   elif command -v claude >/dev/null 2>&1; then
     BACKEND=claude
   else
+    if [[ "$OPTIONAL" == "1" ]]; then
+      echo "adversarial: neither 'codex' nor 'claude' CLI installed, skipping (optional)" >&2
+      exit 0
+    fi
     echo "error: neither 'codex' nor 'claude' CLI is installed." >&2
+    echo "  Install codex: https://github.com/openai/codex" >&2
+    echo "  Or run with --optional to skip cleanly when unavailable." >&2
     exit 2
   fi
 fi
