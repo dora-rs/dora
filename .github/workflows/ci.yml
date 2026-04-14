@@ -129,9 +129,9 @@ jobs:
           Remove-Item "C:\Android" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
-      - name: Build CLI
-        timeout-minutes: 45
-        run: cargo install --path binaries/cli --locked
+      # No `cargo install --path binaries/cli` here: every example in this
+      # job calls into `dora_cli` as a library (via `examples/*/run.rs`).
+      # The `dora` CLI binary is not on PATH and not required.
       - name: Build examples
         timeout-minutes: 30
         run: cargo build --examples
