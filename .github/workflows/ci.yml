@@ -92,6 +92,36 @@ jobs:
           --exclude rust-dataflow-example-node
           --exclude multiple-daemons-example-operator
 
+      # ===== Tier 0 CLI smoke gates =====
+      # Fast per-platform checks against the 80% CLI coverage gap in #215.
+      # Each invocation uses the workspace binary built above (target/debug),
+      # so runtime is <10s per platform. Catches argparse regressions,
+      # schema validation drift, and rendering breaks immediately.
+      - name: CLI smoke — argparse & help text
+        shell: bash
+        run: |
+          set -e
+          for sub in run up down build start stop restart list logs top \
+                     topic node param record replay trace doctor status \
+                     new graph expand validate; do
+            cargo run --quiet -p dora-cli -- "$sub" --help > /dev/null
+          done
+          cargo run --quiet -p dora-cli -- --help > /dev/null
+      - name: CLI smoke — dora validate
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- validate examples/rust-dataflow/dataflow.yml
+          cargo run --quiet -p dora-cli -- validate examples/multiple-daemons/dataflow.yml
+      - name: CLI smoke — dora expand
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml > /dev/null
+      - name: CLI smoke — dora graph (mermaid)
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid > /dev/null
+          cargo run --quiet -p dora-cli -- graph examples/multiple-daemons/dataflow.yml --mermaid > /dev/null
+
   # ===== Examples (cross-platform) =====
   # Restored from upstream dora CI — runs actual dataflows end-to-end.
   # Catches runtime issues that unit tests miss (e.g. #135, #136).

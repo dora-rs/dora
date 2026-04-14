@@ -14,6 +14,7 @@ Fast gates. Must pass for every PR.
 | Format | `.github/workflows/ci.yml` `fmt` | `cargo fmt --all -- --check` |
 | Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all -- -D warnings` |
 | Core tests | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) |
+| CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (3 platforms) |
 | Example dataflows (Rust/C/C++/Python) | `.github/workflows/ci.yml` `examples` | `cargo run --example ...` on 3 platforms |
 | CLI template + basic Python examples | `.github/workflows/ci.yml` `cli` | `dora new` + `dora run` on 3 platforms |
 | E2E WS control plane | `.github/workflows/ci.yml` `e2e` | `cargo test --test ws-cli-e2e` |
