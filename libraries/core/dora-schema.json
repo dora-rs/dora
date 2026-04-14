@@ -19,6 +19,20 @@
       "items": {
         "$ref": "#/$defs/Node"
       }
+    },
+    "strict_types": {
+      "description": "Enable strict type checking: type warnings become errors during build.\n\nCan also be enabled via `--strict-types` CLI flag on `dora build`.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "type_rules": {
+      "description": "Custom type compatibility rules.\n\nEach rule declares that a source type can be implicitly converted to\na target type. These supplement the built-in widening rules.\n\n## Example\n\n```yaml\ntype_rules:\n  - from: myproject/SensorV1\n    to: myproject/SensorV2\n```",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TypeRuleDef"
+      }
     }
   },
   "additionalProperties": true,
@@ -113,6 +127,13 @@
             "string",
             "null"
           ]
+        },
+        "output_framing": {
+          "description": "Per-output framing overrides (default: Raw for all).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/OutputFraming"
+          }
         },
         "output_types": {
           "description": "Optional type annotations for outputs",
@@ -272,6 +293,16 @@
               ],
               "format": "double"
             },
+            "queue_policy": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/QueuePolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "queue_size": {
               "type": [
                 "integer",
@@ -279,13 +310,6 @@
               ],
               "format": "uint",
               "minimum": 0
-            },
-            "queue_policy": {
-              "type": [
-                "string",
-                "null"
-              ],
-              "enum": ["drop_oldest", "backpressure", null]
             },
             "source": {
               "$ref": "#/$defs/InputMapping"
@@ -320,6 +344,19 @@
           ]
         },
         {
+          "description": "Subscribe to log messages from all (or filtered) nodes in the dataflow.\n\nSyntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`",
+          "type": "object",
+          "properties": {
+            "Logs": {
+              "$ref": "#/$defs/LogSubscriptionFilter"
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "Logs"
+          ]
+        },
+        {
           "type": "object",
           "properties": {
             "User": {
@@ -332,6 +369,30 @@
           ]
         }
       ]
+    },
+    "LogSubscriptionFilter": {
+      "description": "Filter for the `dora/logs` virtual input.",
+      "type": "object",
+      "properties": {
+        "min_level": {
+          "description": "Minimum log level to receive. `None` means all levels (including stdout).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "node_filter": {
+          "description": "Only receive logs from this specific node. `None` means all nodes.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NodeId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
     },
     "Node": {
       "title": "Dora Node Configuration",
@@ -358,6 +419,18 @@
             "string",
             "null"
           ]
+        },
+        "cpu_affinity": {
+          "description": "CPU cores to pin this node's process to (Linux only, ignored on other platforms).\n\n## Example\n\n```yaml\nnodes:\n  - id: fast_node\n    path: ./fast_node\n    cpu_affinity: [0, 1]\n```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
         },
         "custom": {
           "description": "Legacy node configuration (deprecated).\n\nPlease use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.",
@@ -495,6 +568,23 @@
             }
           ]
         },
+        "output_framing": {
+          "description": "Per-output framing overrides (default: Raw for all).\n\nMaps output identifiers to their wire framing mode.\nOutputs not listed here use the default `Raw` framing.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/OutputFraming"
+          }
+        },
+        "output_metadata": {
+          "description": "Required metadata keys per output.\n\nMaps output identifiers to lists of required metadata key names.\nThese are checked at build/validate time.\n\n## Example\n\n```yaml\noutput_metadata:\n  response: [request_id]\n```",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "output_types": {
           "description": "Optional type annotations for outputs.\n\nMaps output identifiers to type URNs (e.g. `std/media/v1/Image`).\nOnly annotated outputs are type-checked; unannotated outputs remain dynamic.",
           "type": "object",
@@ -520,6 +610,13 @@
         },
         "path": {
           "description": "Path to executable or script that should be run.\n\nSpecifies the path of the executable or script that Dora should run when starting the\ndataflow.\nThis can point to a normal executable (e.g. when using a compiled language such as Rust) or\na Python script.\n\nDora will automatically append a `.exe` extension on Windows systems when the specified\nfile name has no extension.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-example\n    path: target/release/rust-node\n  - id: python-example\n    path: ./receive_data.py\n```\n\n## URL as Path\n\nThe `path` field can also point to a URL instead of a local path.\nIn this case, Dora will download the given file when starting the dataflow.\n\nNote that this is quite an old feature and using this functionality is **not recommended**\nanymore. Instead, we recommend using a [`git`][Self::git] and/or [`build`](Self::build)\nkey.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "description": "Communication pattern shorthand (e.g. `service-server`).\n\nAutomatically implies required metadata keys on all outputs.\nSee `pattern_metadata_keys()` for supported patterns.",
           "type": [
             "string",
             "null"
@@ -579,7 +676,7 @@
           ]
         },
         "tag": {
-          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.3.0\n```",
+          "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.1.0\n```",
           "type": [
             "string",
             "null"
@@ -700,6 +797,23 @@
             "null"
           ]
         },
+        "output_framing": {
+          "description": "Per-output framing overrides (default: Raw for all).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/OutputFraming"
+          }
+        },
+        "output_metadata": {
+          "description": "Required metadata keys per output",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "output_types": {
           "description": "Optional type annotations for outputs",
           "type": "object",
@@ -715,6 +829,13 @@
             "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
+        },
+        "pattern": {
+          "description": "Communication pattern shorthand (e.g. `service-server`)",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "send_logs_as": {
           "description": "Redirect structured log entries to a data output as JSON strings",
@@ -762,6 +883,21 @@
     "OperatorId": {
       "type": "string"
     },
+    "OutputFraming": {
+      "description": "Wire framing mode for an output.",
+      "oneOf": [
+        {
+          "description": "Raw Arrow buffer layout (default, current behavior).",
+          "type": "string",
+          "const": "raw"
+        },
+        {
+          "description": "Arrow IPC stream format — self-describing, schema + record batches.",
+          "type": "string",
+          "const": "arrow-ipc"
+        }
+      ]
+    },
     "PythonSource": {
       "anyOf": [
         {
@@ -783,6 +919,21 @@
           "required": [
             "source"
           ]
+        }
+      ]
+    },
+    "QueuePolicy": {
+      "description": "Queue overflow policy for an input.",
+      "oneOf": [
+        {
+          "description": "Drop the oldest queued message when the queue is full (default).",
+          "type": "string",
+          "const": "drop_oldest"
+        },
+        {
+          "description": "Buffer up to 10x `queue_size` without dropping. Drops with ERROR log at hard cap.",
+          "type": "string",
+          "const": "backpressure"
         }
       ]
     },
@@ -1115,6 +1266,23 @@
             "null"
           ]
         },
+        "output_framing": {
+          "description": "Per-output framing overrides (default: Raw for all).",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/OutputFraming"
+          }
+        },
+        "output_metadata": {
+          "description": "Required metadata keys per output",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
         "output_types": {
           "description": "Optional type annotations for outputs",
           "type": "object",
@@ -1130,6 +1298,13 @@
             "$ref": "#/$defs/DataId"
           },
           "uniqueItems": true
+        },
+        "pattern": {
+          "description": "Communication pattern shorthand (e.g. `service-server`)",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "send_logs_as": {
           "description": "Redirect structured log entries to a data output as JSON strings",
@@ -1169,6 +1344,25 @@
             "python"
           ]
         }
+      ]
+    },
+    "TypeRuleDef": {
+      "description": "A type compatibility rule declared in the dataflow YAML.",
+      "type": "object",
+      "properties": {
+        "from": {
+          "description": "Source type URN",
+          "type": "string"
+        },
+        "to": {
+          "description": "Target type URN",
+          "type": "string"
+        }
+      },
+      "additionalProperties": true,
+      "required": [
+        "from",
+        "to"
       ]
     },
     "UserInputMapping": {
