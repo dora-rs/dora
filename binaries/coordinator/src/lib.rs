@@ -1179,6 +1179,9 @@ async fn start_inner(
                                 )?;
                                 let bytes = serde_json::to_vec(&value)
                                     .map_err(|e| eyre!("failed to serialize param value: {e}"))?;
+                                // Persist first (source of truth), then attempt synchronous
+                                // runtime forwarding. If forwarding fails, caller gets Error(...)
+                                // but persisted value will be replayed on catch-up/reconnect.
                                 store.put_node_param(&dataflow_id, &node_id, &key, &bytes)?;
 
                                 if let ParamTarget::Running { daemon_id } = target {
@@ -1238,6 +1241,9 @@ async fn start_inner(
                                     &dataflow_id,
                                     &node_id,
                                 )?;
+                                // Persist first (source of truth), then attempt synchronous
+                                // runtime forwarding. If forwarding fails, caller gets Error(...)
+                                // but delete is still reflected in persisted state/catch-up log.
                                 store.delete_node_param(&dataflow_id, &node_id, &key)?;
 
                                 if let ParamTarget::Running { daemon_id } = target {
