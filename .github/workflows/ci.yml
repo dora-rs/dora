@@ -110,15 +110,60 @@ jobs:
         run: |
           cargo run --quiet -p dora-cli -- validate examples/rust-dataflow/dataflow.yml
           cargo run --quiet -p dora-cli -- validate examples/multiple-daemons/dataflow.yml
+      # Semantic: strict-types must accept a well-typed dataflow and reject
+      # a mismatched one. Protects against the validator silently passing
+      # both cases (e.g. strict mode accidentally becoming a no-op).
+      - name: CLI semantic — dora validate --strict-types
+        shell: bash
+        run: |
+          set -e
+          cargo run --quiet -p dora-cli -- validate --strict-types examples/typed-dataflow/dataflow.yml
+          # Negative: must exit non-zero on intentional type mismatch
+          if cargo run --quiet -p dora-cli -- validate --strict-types tests/fixtures/type-mismatch.yml; then
+            echo "ERROR: --strict-types accepted tests/fixtures/type-mismatch.yml — validator regression"
+            exit 1
+          fi
       - name: CLI smoke — dora expand
         shell: bash
         run: |
           cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml > /dev/null
+      # Semantic: expand must flatten module references into named nodes
+      # (pipeline.doubler, pipeline.filter come from the pipeline module).
+      # If expand regresses and emits the `modules:` block without inlining,
+      # this catches it.
+      - name: CLI semantic — dora expand flattens modules
+        shell: bash
+        run: |
+          set -e
+          out=$(cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml)
+          for id in sender pipeline.doubler pipeline.filter receiver; do
+            echo "$out" | grep -q "^- id: $id" \
+              || { echo "ERROR: expand output missing node id '$id'"; exit 1; }
+          done
+          # The flattened output must not still contain a top-level modules: block
+          if echo "$out" | grep -q '^modules:'; then
+            echo "ERROR: expand output still contains 'modules:' block — not flattened"
+            exit 1
+          fi
       - name: CLI smoke — dora graph (mermaid)
         shell: bash
         run: |
           cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid > /dev/null
           cargo run --quiet -p dora-cli -- graph examples/multiple-daemons/dataflow.yml --mermaid > /dev/null
+      # Semantic: graph output must contain the dataflow's actual node IDs
+      # and mermaid flowchart syntax. Catches renderer regressions that
+      # silently produce empty or malformed diagrams.
+      - name: CLI semantic — dora graph contains expected nodes
+        shell: bash
+        run: |
+          set -e
+          out=$(cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid)
+          echo "$out" | grep -q '^flowchart ' \
+            || { echo "ERROR: graph output missing 'flowchart' header"; exit 1; }
+          for id in rust-node rust-sink rust-status-node; do
+            echo "$out" | grep -q "$id" \
+              || { echo "ERROR: graph output missing node '$id'"; exit 1; }
+          done
 
   # ===== Examples (cross-platform) =====
   # Restored from upstream dora CI — runs actual dataflows end-to-end.
