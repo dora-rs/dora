@@ -36,6 +36,7 @@ the `nightly-regression` label but do not block PRs.
 | Service / Action patterns (Rust-only) | `service-action` |
 | Streaming example (Python nodes) | `streaming` |
 | Record / replay round-trip | `record-replay` |
+| Cluster lifecycle (`cluster status`, `cluster down`) | `cluster-smoke` |
 
 Run locally:
 ```bash
@@ -73,17 +74,24 @@ Documented in `CLAUDE.md`. Invoke via `make`:
 | Semver check | `make qa-semver` | before publishing to crates.io |
 | Adversarial LLM review | `make qa-adversarial` | before merging AI-authored code (requires codex or claude CLI) |
 
-### Cluster mode
+### Cluster mode (SSH-backed `cluster up`)
 
 ```bash
-dora cluster up --size 3
+# cluster.yml describes coordinator + remote machines
+dora cluster up cluster.yml
 dora cluster status
 dora start examples/multiple-daemons/dataflow.yml
 dora cluster down
 ```
 
-Not automated: cluster up spawns multiple daemon processes and requires
-network orchestration that isn't stable in GitHub Actions runners.
+Not automated: `dora cluster up` SSH-es into each machine in cluster.yml,
+which requires real remote hosts or a configured localhost SSH setup
+that's not available on stock GHA runners.
+
+**What is automated** (Tier 1 nightly `cluster-smoke` job): `dora cluster
+status` and `dora cluster down` against a local `dora up` coordinator.
+Covers the coordinator-side wire protocol for those subcommands. The
+SSH-dependent `cluster up` path needs dedicated infra.
 
 ### Soft real-time
 

@@ -237,10 +237,80 @@ jobs:
       - name: Replay
         run: dora replay run.adorec
 
+  cluster-smoke:
+    # Smoke-tests the cluster lifecycle commands that don't require SSH:
+    # `dora cluster status` and `dora cluster down`. (`dora cluster up`
+    # needs SSH to each machine in cluster.yml — out of scope for a
+    # single-runner smoke; needs dedicated infra.)
+    #
+    # Strategy: use `dora up` to launch a local coordinator+daemon, then
+    # exercise the cluster CLI against it. Run a real dataflow to prove
+    # the cluster can execute work. Tear down with `dora cluster down`.
+    name: Cluster lifecycle smoke
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build rust-dataflow example nodes
+        run: >
+          cargo build
+          -p rust-dataflow-example-node
+          -p rust-dataflow-example-status-node
+          -p rust-dataflow-example-sink
+      - name: Start local cluster (coordinator + daemon)
+        run: |
+          dora up
+          sleep 2
+      - name: cluster status shows at least 1 daemon
+        run: |
+          out=$(dora cluster status)
+          echo "$out"
+          echo "$out" | grep -q 'DAEMON ID' || { echo "ERROR: status output missing header"; exit 1; }
+          # At least one non-header line = at least one daemon row
+          daemon_lines=$(echo "$out" | grep -E '^[0-9a-f]{8}-' | wc -l)
+          test "$daemon_lines" -ge 1 || { echo "ERROR: no daemons listed"; exit 1; }
+          echo "$out" | grep -q 'Active dataflows:' || { echo "ERROR: missing dataflow summary"; exit 1; }
+      - name: Run a dataflow through the cluster
+        run: dora run examples/rust-dataflow/dataflow.yml --stop-after 10s
+      - name: cluster down tears everything down cleanly
+        run: |
+          dora cluster down
+          sleep 1
+          # Verify coordinator is actually gone: cluster status must fail.
+          if dora cluster status 2>/dev/null; then
+            echo "ERROR: cluster status succeeded after 'cluster down'"
+            exit 1
+          fi
+          # Verify no leftover processes (race-tolerant). The actual
+          # invocations are `dora daemon --quiet` / `dora coordinator --quiet`
+          # — a single `dora` binary with subcommands, not separate
+          # `dora-daemon`/`dora-coordinator` binaries. Match the real
+          # command lines.
+          sleep 1
+          if pgrep -fa 'dora (daemon|coordinator)' > /dev/null; then
+            echo "ERROR: leftover dora processes after cluster down:"
+            pgrep -fa 'dora (daemon|coordinator)'
+            exit 1
+          fi
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -296,6 +366,7 @@ jobs:
           - service-action
           - streaming
           - record-replay
+          - cluster-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close
