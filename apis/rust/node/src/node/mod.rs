@@ -70,6 +70,12 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
 /// for retrieving the node configuration.
+/// A direct TCP connection to a receiver node for small message delivery.
+struct DirectConnection {
+    input_id: DataId,
+    stream: std::net::TcpStream,
+}
+
 pub struct DoraNode {
     id: NodeId,
     dataflow_id: DataflowId,
@@ -80,6 +86,9 @@ pub struct DoraNode {
     sent_out_shared_memory: HashMap<DropToken, ShmemHandle>,
     drop_stream: DropStream,
     cache: VecDeque<ShmemHandle>,
+
+    /// Direct TCP connections to receiver nodes, keyed by output_id.
+    direct_connections: HashMap<DataId, Vec<DirectConnection>>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -471,9 +480,46 @@ impl DoraNode {
         let drop_stream =
             DropStream::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init drop stream")?;
-        let control_channel =
+        let mut control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
+
+        // Query direct routes and establish connections to receiver nodes
+        let mut direct_connections: HashMap<DataId, Vec<DirectConnection>> = HashMap::new();
+        if !run_config.outputs.is_empty() {
+            match control_channel.query_direct_routes() {
+                Ok(routes) => {
+                    for route in routes {
+                        // Only use direct connections for local receivers
+                        if !route.receiver_addr.ip().is_loopback() {
+                            continue;
+                        }
+                        match std::net::TcpStream::connect(route.receiver_addr) {
+                            Ok(stream) => {
+                                let _ = stream.set_nodelay(true);
+                                direct_connections
+                                    .entry(route.output_id)
+                                    .or_default()
+                                    .push(DirectConnection {
+                                        input_id: route.input_id,
+                                        stream,
+                                    });
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to connect directly to receiver at {}: {err}",
+                                    route.receiver_addr
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("failed to query direct routes: {err}");
+                }
+            }
+        }
+
         let node = Self {
             id: node_id,
             dataflow_id,
@@ -483,6 +529,7 @@ impl DoraNode {
             sent_out_shared_memory: HashMap::new(),
             drop_stream,
             cache: VecDeque::new(),
+            direct_connections,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -677,9 +724,39 @@ impl DoraNode {
             None => (None, None),
         };
 
-        self.control_channel
-            .send_message(output_id.clone(), metadata, data)
-            .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        // For small Vec messages with direct connections, bypass the daemon
+        let sent_directly = if shmem.is_none() {
+            if let Some(DataMessage::Vec(ref vec_data)) = data {
+                if let Some(connections) = self.direct_connections.get_mut(&output_id) {
+                    let mut all_ok = true;
+                    for conn in connections.iter_mut() {
+                        let direct_msg = dora_message::DirectMessage {
+                            input_id: conn.input_id.clone(),
+                            metadata: metadata.clone(),
+                            data: vec_data.clone(),
+                        };
+                        if let Err(err) = send_direct_message(&mut conn.stream, &direct_msg) {
+                            tracing::warn!("direct send failed: {err}");
+                            all_ok = false;
+                            break;
+                        }
+                    }
+                    all_ok
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !sent_directly {
+            self.control_channel
+                .send_message(output_id.clone(), metadata, data)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        }
 
         if let Some((shared_memory, drop_token)) = shmem {
             self.sent_out_shared_memory
@@ -816,6 +893,17 @@ impl DoraNode {
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
+        // Shutdown direct connections (write side) and give receivers
+        // time to drain remaining data before signaling InputClosed.
+        for conns in self.direct_connections.values_mut() {
+            for conn in conns {
+                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
+            }
+        }
+        // Brief delay to let receivers process remaining buffered data
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        self.direct_connections.clear();
+
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
             .control_channel
@@ -960,6 +1048,19 @@ impl DerefMut for ShmemHandle {
 
 unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
+
+fn send_direct_message(
+    stream: &mut std::net::TcpStream,
+    msg: &dora_message::DirectMessage,
+) -> eyre::Result<()> {
+    use std::io::Write;
+    let serialized =
+        bincode::serialize(msg).wrap_err("failed to serialize DirectMessage")?;
+    let len_raw = (serialized.len() as u64).to_le_bytes();
+    stream.write_all(&len_raw)?;
+    stream.write_all(&serialized)?;
+    Ok(())
+}
 
 /// Init Opentelemetry Tracing
 ///

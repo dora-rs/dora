@@ -20,7 +20,15 @@ pub fn init(
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    direct_listener: Option<std::net::TcpListener>,
 ) -> eyre::Result<EventStreamThreadHandle> {
+    // Spawn direct listener thread if we have one
+    if let Some(listener) = direct_listener {
+        let tx_direct = tx.clone();
+        let clock_direct = clock.clone();
+        std::thread::spawn(move || direct_listener_loop(listener, tx_direct, clock_direct));
+    }
+
     let node_id_cloned = node_id.clone();
     let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
     Ok(EventStreamThreadHandle::new(join_handle))
@@ -284,5 +292,87 @@ fn report_drop_tokens(
     match channel.request(&daemon_request)? {
         DaemonReply::Empty => Ok(()),
         other => Err(eyre!("unexpected ReportDropTokens reply: {other:?}")),
+    }
+}
+
+/// Accepts direct TCP connections from sender nodes and injects events
+/// into the same channel used by the daemon event stream.
+fn direct_listener_loop(
+    listener: std::net::TcpListener,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
+    clock: Arc<uhlc::HLC>,
+) {
+    for connection in listener.incoming() {
+        match connection {
+            Ok(stream) => {
+                let _ = stream.set_nodelay(true);
+                let tx = tx.clone();
+                let clock = clock.clone();
+                std::thread::spawn(move || {
+                    direct_connection_loop(stream, tx, clock);
+                });
+            }
+            Err(err) => {
+                tracing::warn!("direct listener accept error: {err}");
+                break;
+            }
+        }
+    }
+}
+
+fn direct_connection_loop(
+    mut stream: std::net::TcpStream,
+    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
+    clock: Arc<uhlc::HLC>,
+) {
+    use std::io::Read;
+    loop {
+        // Read 8-byte length prefix
+        let len = {
+            let mut raw = [0u8; 8];
+            match stream.read_exact(&mut raw) {
+                Ok(()) => u64::from_le_bytes(raw) as usize,
+                Err(_) => break, // connection closed
+            }
+        };
+        // Read message body
+        let mut buf = vec![0u8; len];
+        if stream.read_exact(&mut buf).is_err() {
+            break;
+        }
+        // Deserialize DirectMessage
+        let msg: dora_message::DirectMessage = match bincode::deserialize(&buf) {
+            Ok(msg) => msg,
+            Err(err) => {
+                tracing::warn!("failed to deserialize direct message: {err}");
+                continue;
+            }
+        };
+        // Update HLC
+        if let Err(err) = clock.update_with_timestamp(&msg.metadata.timestamp()) {
+            tracing::warn!("failed to update HLC from direct message: {err}");
+        }
+        // Convert to NodeEvent and inject into event stream
+        let data = if msg.data.is_empty() {
+            None
+        } else {
+            Some(dora_message::daemon_to_node::DataMessage::Vec(msg.data))
+        };
+        let event = NodeEvent::Input {
+            id: msg.input_id,
+            metadata: msg.metadata,
+            data,
+        };
+        // No drop token tracking needed for small Vec messages
+        let (drop_tx, _drop_rx) = flume::bounded(0);
+        if tx
+            .send(EventItem::NodeEvent {
+                event,
+                ack_channel: drop_tx,
+            })
+            .is_err()
+        {
+            break; // event stream closed
+        }
     }
 }

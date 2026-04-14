@@ -122,6 +122,8 @@ impl IntegrationTestingEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            DaemonRequest::RegisterDirectListener { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::QueryDirectRoutes => DaemonReply::DirectRoutes(vec![]),
         };
         Ok(reply)
     }

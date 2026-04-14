@@ -187,6 +187,33 @@ impl EventStream {
         write_events_to: Option<WriteEventsTo>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
+
+        // Bind a direct listener for node-to-node small message delivery
+        let direct_listener = if matches!(channel, DaemonChannel::Tcp(_)) {
+            let listener = std::net::TcpListener::bind((dora_core::topics::LOCALHOST, 0))
+                .wrap_err("failed to bind direct listener")?;
+            let listen_addr = listener.local_addr()
+                .wrap_err("failed to get direct listener address")?;
+            // Register the direct listener with the daemon
+            let reply = channel
+                .request(&Timestamped {
+                    inner: DaemonRequest::RegisterDirectListener { listen_addr },
+                    timestamp: clock.new_timestamp(),
+                })
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to register direct listener with daemon")?;
+            match reply {
+                DaemonReply::Result(Ok(())) => {}
+                DaemonReply::Result(Err(err)) => {
+                    tracing::warn!("failed to register direct listener: {err}");
+                }
+                _ => {}
+            }
+            Some(listener)
+        } else {
+            None
+        };
+
         let reply = channel
             .request(&Timestamped {
                 inner: DaemonRequest::Subscribe,
@@ -220,7 +247,7 @@ impl EventStream {
             _ => true,
         };
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone(), direct_listener)?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
