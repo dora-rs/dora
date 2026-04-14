@@ -133,11 +133,29 @@ fn ensure_action_nodes_built() {
 /// Ensure no leftover coordinator/daemon from a previous test or manual run.
 fn cleanup_stale(dora: &str) {
     let _ = Command::new(dora)
+        .args(["stop", "--all"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new(dora)
+        .arg("destroy")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new(dora)
         .arg("down")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
-    std::thread::sleep(Duration::from_millis(500));
+    // Wait for port 6013 to be fully released (TCP TIME_WAIT)
+    std::thread::sleep(Duration::from_secs(1));
+}
+
+/// Detect whether a dataflow YAML uses Python nodes (needs --uv).
+fn needs_uv(yaml_path: &Path) -> bool {
+    std::fs::read_to_string(yaml_path)
+        .map(|content| content.contains(".py") || content.contains("pip install"))
+        .unwrap_or(false)
 }
 
 /// Run an example dataflow through the full WS control plane lifecycle.
@@ -159,6 +177,8 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
     cleanup_stale(&dora);
 
+    let uv = needs_uv(&full_yaml);
+
     // `dora up` starts coordinator + daemon and returns when both are ready.
     // Use Stdio::null() for all streams to prevent child processes from
     // keeping inherited pipe fds open.
@@ -171,9 +191,26 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
     assert!(up_status.success(), "{name}: dora up failed");
 
+    // Build first so start has resolved artifacts (required for Python/git/etc.)
+    let mut build_cmd = Command::new(&dora);
+    build_cmd.args(["build", full_yaml.to_str().unwrap()]);
+    if uv {
+        build_cmd.arg("--uv");
+    }
+    let build_status = build_cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
+    assert!(build_status.success(), "{name}: dora build failed");
+
     // Start dataflow (detach so we get control back immediately)
-    let start_status = Command::new(&dora)
-        .args(["start", full_yaml.to_str().unwrap(), "--detach"])
+    let mut start_cmd = Command::new(&dora);
+    start_cmd.args(["start", full_yaml.to_str().unwrap(), "--detach"]);
+    if uv {
+        start_cmd.arg("--uv");
+    }
+    let start_status = start_cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -216,17 +253,7 @@ fn run_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     }
 
     // Clean up: stop all dataflows and destroy coordinator+daemon
-    let _ = Command::new(&dora)
-        .args(["stop", "--all"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-    std::thread::sleep(Duration::from_millis(500));
-    let _ = Command::new(&dora)
-        .arg("down")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    cleanup_stale(&dora);
 }
 
 /// Run an example dataflow locally with `dora run --stop-after`.
@@ -245,13 +272,17 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
     );
 
     let stop_after = format!("{stop_after_secs}s");
-    let output = Command::new(&dora)
-        .args([
-            "run",
-            full_yaml.to_str().unwrap(),
-            "--stop-after",
-            &stop_after,
-        ])
+    let mut cmd = Command::new(&dora);
+    cmd.args([
+        "run",
+        full_yaml.to_str().unwrap(),
+        "--stop-after",
+        &stop_after,
+    ]);
+    if needs_uv(&full_yaml) {
+        cmd.arg("--uv");
+    }
+    let output = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()

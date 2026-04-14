@@ -14,7 +14,17 @@ print("=== Log Viewer Started (receiving all dataflow logs) ===")
 
 for event in node:
     if event["type"] == "INPUT" and event["id"] == "logs":
-        raw = bytes(event["value"]).decode("utf-8")
+        value = event["value"]
+        # `dora/logs` may deliver a StringScalar, an Array, or raw bytes
+        # depending on the emitter; handle all three.
+        if hasattr(value, "as_py"):
+            raw = value.as_py()
+            if isinstance(raw, list) and raw:
+                raw = raw[0]
+        elif isinstance(value, (bytes, bytearray)):
+            raw = value.decode("utf-8")
+        else:
+            raw = str(value)
         try:
             log = json.loads(raw)
             level = log.get("level", "?").upper()
