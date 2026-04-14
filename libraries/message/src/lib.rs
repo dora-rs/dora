@@ -33,6 +33,8 @@ pub mod daemon_to_daemon;
 
 pub mod daemon_to_node;
 pub mod node_to_daemon;
+/// Messages exchanged directly between nodes, bypassing the daemon.
+pub mod node_to_node;
 
 pub mod cli_to_coordinator;
 pub mod coordinator_to_cli;
@@ -44,6 +46,7 @@ pub mod integration_testing_format;
 pub use aligned_vec;
 pub use arrow_data;
 pub use arrow_schema;
+pub use node_to_node::{DirectMessage, DirectRouteInfo};
 use uuid::{Timestamp, Uuid};
 
 /// Unique identifier for a dataflow instance.

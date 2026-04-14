@@ -120,6 +120,13 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    RegisterDirectListener {
+        listen_addr: std::net::SocketAddr,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    QueryDirectRoutes {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
 }
 
 #[derive(Debug)]
