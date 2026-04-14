@@ -130,24 +130,13 @@ impl Scheduler {
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
-        // Check if there are any pending input events
-        let has_pending_inputs = self
+        // Retrieve message from the non input event first that have priority over input message.
+        if let Some((_size, queue)) = self
             .event_queues
-            .iter()
-            .any(|(id, (_size, queue))| id.as_str() != NON_INPUT_EVENT && !queue.is_empty());
-
-        // Only return non-input events (InputClosed, Stop, etc.) when
-        // there are no pending input events. This prevents InputClosed
-        // from being delivered before remaining Input events, which can
-        // happen with direct node-to-node connections.
-        if !has_pending_inputs {
-            if let Some((_size, queue)) = self
-                .event_queues
-                .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
-            {
-                if let Some(event) = queue.pop_front() {
-                    return Some(event);
-                }
+            .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
+        {
+            if let Some(event) = queue.pop_front() {
+                return Some(event);
             }
         }
 
