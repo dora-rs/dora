@@ -49,8 +49,8 @@ mod control;
 mod events;
 mod handlers;
 mod log_subscriber;
-#[cfg(feature = "prometheus")]
-mod prometheus_metrics;
+#[cfg(feature = "metrics")]
+mod otel_metrics;
 mod run;
 mod state;
 mod ws_control;
@@ -192,8 +192,14 @@ async fn start_with_events(
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Start WS server
-    #[cfg(feature = "prometheus")]
-    let prom_metrics = prometheus_metrics::new_shared();
+    #[cfg(feature = "metrics")]
+    let _meter_provider = {
+        let provider = dora_metrics::init_metrics();
+        opentelemetry::global::set_meter_provider(provider.clone());
+        provider
+    };
+    #[cfg(feature = "metrics")]
+    let otel_metrics = otel_metrics::new_shared();
 
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
@@ -201,8 +207,6 @@ async fn start_with_events(
         clock.clone(),
         auth_token,
         artifact_store,
-        #[cfg(feature = "prometheus")]
-        prom_metrics.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;
@@ -221,8 +225,8 @@ async fn start_with_events(
             clock,
             store,
             span_store,
-            #[cfg(feature = "prometheus")]
-            prom_metrics,
+            #[cfg(feature = "metrics")]
+            otel_metrics,
         )
         .await?;
 
@@ -246,7 +250,7 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
-    #[cfg(feature = "prometheus")] prom_metrics: prometheus_metrics::SharedMetrics,
+    #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
         tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(3)))
@@ -1790,10 +1794,6 @@ async fn start_inner(
             } => {
                 // Store metrics for this dataflow
                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    #[cfg(feature = "prometheus")]
-                    let df_name = dataflow.name.as_deref().unwrap_or("");
-                    #[cfg(feature = "prometheus")]
-                    let df_id = dataflow_id.to_string();
                     for (node_id, node_metrics) in &metrics {
                         dataflow
                             .node_metrics
@@ -1803,36 +1803,38 @@ async fn start_inner(
                         dataflow.network_metrics = Some(net);
                     }
 
-                    #[cfg(feature = "prometheus")]
+                    #[cfg(feature = "metrics")]
                     {
-                        use crate::prometheus_metrics::sanitize_prom_label;
-                        let m = prom_metrics.lock().unwrap_or_else(|e| e.into_inner());
+                        use crate::otel_metrics::node_attrs;
+                        use opentelemetry::KeyValue;
+                        let df_id = dataflow_id.to_string();
                         for (node_id, node_metrics) in &metrics {
-                            let nid = sanitize_prom_label(node_id.as_ref());
-                            let daemon = sanitize_prom_label(
-                                &dataflow
-                                    .node_to_daemon
-                                    .get(node_id)
-                                    .map(|d| d.to_string())
-                                    .unwrap_or_default(),
-                            );
-                            m.node_cpu
-                                .with_label_values(&[&df_id, &nid, &daemon])
-                                .set(node_metrics.cpu_usage as f64);
-                            m.node_memory
-                                .with_label_values(&[&df_id, &nid, &daemon])
-                                .set(node_metrics.memory_bytes as i64);
-                            m.node_pending
-                                .with_label_values(&[&df_id, &nid, &daemon])
-                                .set(node_metrics.pending_messages as i64);
-                            m.node_restarts
-                                .with_label_values(&[&df_id, &nid, &daemon])
-                                .set(node_metrics.restart_count as i64);
+                            let daemon = dataflow
+                                .node_to_daemon
+                                .get(node_id)
+                                .map(|d| d.to_string())
+                                .unwrap_or_default();
+                            let attrs = node_attrs(df_id.clone(), node_id.to_string(), daemon);
+                            otel_metrics
+                                .node_cpu
+                                .record(node_metrics.cpu_usage as f64, &attrs);
+                            otel_metrics
+                                .node_memory
+                                .record(node_metrics.memory_bytes as i64, &attrs);
+                            otel_metrics
+                                .node_pending
+                                .record(node_metrics.pending_messages as i64, &attrs);
+                            otel_metrics
+                                .node_restarts
+                                .record(node_metrics.restart_count as i64, &attrs);
                         }
-                        let df_name_s = sanitize_prom_label(df_name);
-                        m.dataflow_nodes
-                            .with_label_values(&[&df_id, &df_name_s])
-                            .set(dataflow.nodes.len() as i64);
+                        otel_metrics.dataflow_nodes.record(
+                            dataflow.nodes.len() as i64,
+                            &[
+                                KeyValue::new("dataflow", df_id),
+                                KeyValue::new("name", dataflow.name.clone().unwrap_or_default()),
+                            ],
+                        );
                     }
                 }
             }

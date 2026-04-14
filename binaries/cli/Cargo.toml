@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = ["tracing", "metrics", "redb-backend"]
 tracing = ["dep:dora-tracing"]
-metrics = ["dora-runtime/metrics", "dora-coordinator/prometheus"]
+metrics = ["dora-runtime/metrics", "dora-coordinator/metrics"]
 python = ["pyo3"]
 # Enable extension-module only when building the Python wheel via maturin.
 # This suppresses Python library linking, which is correct for cdylib targets

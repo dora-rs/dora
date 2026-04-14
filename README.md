@@ -111,7 +111,6 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/rele
 | `metrics` | OpenTelemetry metrics collection | Yes |
 | `python` | Python operator support (PyO3) | Yes |
 | `redb-backend` | Persistent coordinator state (redb) | Yes |
-| `prometheus` | Prometheus `/metrics` endpoint on coordinator | No |
 
 ```bash
 cargo install dora-cli --features redb-backend

@@ -14,7 +14,7 @@ repository.workspace = true
 default = ["tracing"]
 tracing = ["dep:dora-tracing"]
 redb-backend = ["dora-coordinator-store/redb-backend"]
-prometheus = ["dep:prometheus"]
+metrics = ["dep:opentelemetry", "dep:dora-metrics"]
 
 [dependencies]
 eyre = { workspace = true }
@@ -40,7 +40,8 @@ indexmap = "2"
 itertools = "0.14.0"
 zenoh = { workspace = true }
 bincode = { workspace = true }
-prometheus = { version = "0.14", optional = true }
+opentelemetry = { version = "0.31", features = ["metrics"], optional = true }
+dora-metrics = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
