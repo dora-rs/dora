@@ -65,16 +65,18 @@ pub struct Hz {
     #[clap(long, default_value_t = 10, value_parser = parse_window)]
     window: usize,
 
+    /// Run for this many seconds without TUI, print final stats, and exit.
+    /// Required when stdout is not a terminal (e.g. CI, scripting).
+    /// Must be at least 1.
+    #[clap(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    duration: Option<u64>,
+
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
 }
 
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
-        if !io::stdout().is_terminal() {
-            eyre::bail!("`dora topic hz` requires an interactive terminal");
-        }
-
         let session = self.coordinator.connect()?;
         let (dataflow_id, topics) = self.selector.resolve(&session)?;
 
@@ -85,11 +87,85 @@ impl Executable for Hz {
 
         let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
+        // Non-interactive path: collect for `--duration`, print final stats.
+        if let Some(secs) = self.duration {
+            return run_hz_oneshot(self.window, topics, data_rx, secs);
+        }
+
+        if !io::stdout().is_terminal() {
+            eyre::bail!(
+                "`dora topic hz` requires an interactive terminal. \
+                 Pass `--duration <SECONDS>` for non-interactive use."
+            );
+        }
+
         let terminal = ratatui::init();
         let result = run_hz(terminal, self.window, topics, data_rx);
         ratatui::restore();
         result
     }
+}
+
+/// Non-interactive sampler: subscribes for `seconds`, then prints
+/// per-topic stats as a plain table and exits.
+fn run_hz_oneshot(
+    window: usize,
+    outputs: BTreeSet<TopicIdentifier>,
+    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    seconds: u64,
+) -> eyre::Result<()> {
+    let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
+    stats.push((HzLabel::Aggregate, Arc::new(HzStats::new(window))));
+    for topic in &outputs {
+        stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
+    }
+
+    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
+        if let HzLabel::Topic(topic) = label {
+            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match data_rx.recv_timeout(remaining) {
+            Ok(Ok(payload)) => {
+                let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if let InterDaemonEvent::Output {
+                    node_id, output_id, ..
+                } = event.inner
+                {
+                    let now = Instant::now();
+                    stats[0].1.record(now); // aggregate
+                    let key = (node_id.to_string(), output_id.to_string());
+                    if let Some(&idx) = topic_index.get(&key) {
+                        stats[idx].1.record(now);
+                    }
+                }
+            }
+            Ok(Err(_)) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
+    for (label, hz_stats) in &stats {
+        let samples = hz_stats.timestamps.lock().unwrap().len();
+        match hz_stats.calculate() {
+            Some(s) => println!(
+                "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
+                label, s.avg_ms, s.avg_hz, s.min_ms, s.max_ms, s.std_ms, samples
+            ),
+            None => println!("{}\t-\t-\t-\t-\t-\t{}", label, samples),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

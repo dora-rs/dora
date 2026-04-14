@@ -49,6 +49,16 @@ pub struct Echo {
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
+    /// Exit after this many messages (default: stream until interrupted).
+    /// Must be at least 1.
+    #[clap(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..))]
+    pub count: Option<u64>,
+
+    /// Exit after this many seconds (default: stream until interrupted).
+    /// Must be at least 1.
+    #[clap(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    pub duration: Option<u64>,
+
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
 }
@@ -57,7 +67,13 @@ impl Executable for Echo {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        inspect(self.coordinator, self.selector, self.format)
+        inspect(
+            self.coordinator,
+            self.selector,
+            self.format,
+            self.count,
+            self.duration,
+        )
     }
 }
 
@@ -65,6 +81,8 @@ fn inspect(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
     format: OutputFormat,
+    count: Option<u64>,
+    duration: Option<u64>,
 ) -> eyre::Result<()> {
     let session = coordinator.connect()?;
     let (dataflow_id, topics) = selector.resolve(&session)?;
@@ -80,10 +98,33 @@ fn inspect(
     const HINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
     let mut hint_shown = false;
     let mut buf = Vec::with_capacity(1024);
+    let mut emitted: u64 = 0;
+    let deadline = duration.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
     loop {
-        let result = match data_rx.recv_timeout(HINT_TIMEOUT) {
+        // Stop conditions: --count reached or --duration elapsed.
+        if let Some(max) = count
+            && emitted >= max
+        {
+            break;
+        }
+        let recv_timeout = match deadline {
+            Some(d) => {
+                let remaining = d.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    break;
+                }
+                remaining.min(HINT_TIMEOUT)
+            }
+            None => HINT_TIMEOUT,
+        };
+        let result = match data_rx.recv_timeout(recv_timeout) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if let Some(d) = deadline
+                    && std::time::Instant::now() >= d
+                {
+                    break;
+                }
                 if !hint_shown {
                     eprintln!(
                         "{}: no topic data received. Ensure your dataflow was started with \
@@ -216,6 +257,7 @@ fn inspect(
                         );
                     }
                 }
+                emitted += 1;
             }
             InterDaemonEvent::OutputClosed {
                 node_id, output_id, ..
