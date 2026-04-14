@@ -497,13 +497,12 @@ impl DoraNode {
                         match std::net::TcpStream::connect(route.receiver_addr) {
                             Ok(stream) => {
                                 let _ = stream.set_nodelay(true);
-                                direct_connections
-                                    .entry(route.output_id)
-                                    .or_default()
-                                    .push(DirectConnection {
+                                direct_connections.entry(route.output_id).or_default().push(
+                                    DirectConnection {
                                         input_id: route.input_id,
                                         stream,
-                                    });
+                                    },
+                                );
                             }
                             Err(err) => {
                                 tracing::warn!(
@@ -1054,8 +1053,7 @@ fn send_direct_message(
     msg: &dora_message::DirectMessage,
 ) -> eyre::Result<()> {
     use std::io::Write;
-    let serialized =
-        bincode::serialize(msg).wrap_err("failed to serialize DirectMessage")?;
+    let serialized = bincode::serialize(msg).wrap_err("failed to serialize DirectMessage")?;
     let len_raw = (serialized.len() as u64).to_le_bytes();
     stream.write_all(&len_raw)?;
     stream.write_all(&serialized)?;

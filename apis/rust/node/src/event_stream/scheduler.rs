@@ -131,9 +131,10 @@ impl Scheduler {
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
         // Check if there are any pending input events
-        let has_pending_inputs = self.event_queues.iter().any(|(id, (_size, queue))| {
-            id.as_str() != NON_INPUT_EVENT && !queue.is_empty()
-        });
+        let has_pending_inputs = self
+            .event_queues
+            .iter()
+            .any(|(id, (_size, queue))| id.as_str() != NON_INPUT_EVENT && !queue.is_empty());
 
         // Only return non-input events (InputClosed, Stop, etc.) when
         // there are no pending input events. This prevents InputClosed

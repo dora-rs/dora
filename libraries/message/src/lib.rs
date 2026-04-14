@@ -30,9 +30,9 @@ pub mod coordinator_to_cli;
 
 pub mod integration_testing_format;
 
-pub use node_to_node::{DirectMessage, DirectRouteInfo};
 pub use arrow_data;
 pub use arrow_schema;
+pub use node_to_node::{DirectMessage, DirectRouteInfo};
 use uuid::{Timestamp, Uuid};
 
 /// Unique identifier for a dataflow instance.

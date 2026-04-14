@@ -1647,19 +1647,15 @@ impl Daemon {
                         }
                         // Now build routes and mark direct pairs
                         for (output_id, receiver_id, input_id) in route_entries {
-                            if let Some(addr) = dataflow.direct_listeners.get(&receiver_id)
-                            {
-                                routes.push(
-                                    dora_message::node_to_node::DirectRouteInfo {
-                                        output_id: output_id.clone(),
-                                        input_id,
-                                        receiver_addr: *addr,
-                                    },
-                                );
-                                dataflow.direct_pairs.insert((
-                                    OutputId(node_id.clone(), output_id),
-                                    receiver_id,
-                                ));
+                            if let Some(addr) = dataflow.direct_listeners.get(&receiver_id) {
+                                routes.push(dora_message::node_to_node::DirectRouteInfo {
+                                    output_id: output_id.clone(),
+                                    input_id,
+                                    receiver_addr: *addr,
+                                });
+                                dataflow
+                                    .direct_pairs
+                                    .insert((OutputId(node_id.clone(), output_id), receiver_id));
                             }
                         }
                         routes
