@@ -15,6 +15,14 @@ pub struct DirectMessage {
     pub data: AVec<u8, ConstAlign<128>>,
 }
 
+/// Address for a direct node-to-node listener.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum DirectListenerAddr {
+    Tcp(std::net::SocketAddr),
+    #[cfg(unix)]
+    Unix(std::path::PathBuf),
+}
+
 /// Routing information for a direct node-to-node connection.
 ///
 /// Returned by the daemon in response to a `QueryDirectRoutes` request,
@@ -23,5 +31,5 @@ pub struct DirectMessage {
 pub struct DirectRouteInfo {
     pub output_id: DataId,
     pub input_id: DataId,
-    pub receiver_addr: std::net::SocketAddr,
+    pub receiver_addr: DirectListenerAddr,
 }

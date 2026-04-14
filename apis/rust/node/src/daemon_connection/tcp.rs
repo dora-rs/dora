@@ -16,6 +16,13 @@ pub fn request(
     connection: &mut TcpStream,
     request: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<DaemonReply> {
+    request_generic(connection, request)
+}
+
+pub fn request_generic(
+    connection: &mut (impl Read + Write + Unpin),
+    request: &Timestamped<DaemonRequest>,
+) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
     if request.inner.expects_tcp_bincode_reply() {
         receive_reply(connection, Serializer::Bincode)
@@ -30,7 +37,7 @@ pub fn request(
 }
 
 fn send_message(
-    connection: &mut TcpStream,
+    connection: &mut (impl Write + Unpin),
     message: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<()> {
     let serialized = bincode::serialize(&message).wrap_err("failed to serialize DaemonRequest")?;
@@ -39,7 +46,7 @@ fn send_message(
 }
 
 fn receive_reply(
-    connection: &mut TcpStream,
+    connection: &mut (impl Read + Unpin),
     serializer: Serializer,
 ) -> eyre::Result<Option<DaemonReply>> {
     let raw =

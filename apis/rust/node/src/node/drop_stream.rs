@@ -31,6 +31,12 @@ impl DropStream {
                             format!("failed to connect drop stream for node `{node_id}`")
                         })?
                     }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix(socket_file).wrap_err_with(|| {
+                            format!("failed to connect drop stream for node `{node_id}`")
+                        })?
+                    }
                     DaemonCommunication::Interactive => {
                         DaemonChannel::Interactive(Default::default())
                     }

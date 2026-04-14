@@ -70,10 +70,16 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
 /// for retrieving the node configuration.
-/// A direct TCP connection to a receiver node for small message delivery.
+/// A direct connection to a receiver node for small message delivery.
+enum DirectStream {
+    Tcp(std::net::TcpStream),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
+}
+
 struct DirectConnection {
     input_id: DataId,
-    stream: std::net::TcpStream,
+    stream: DirectStream,
 }
 
 pub struct DoraNode {
@@ -490,27 +496,45 @@ impl DoraNode {
             match control_channel.query_direct_routes() {
                 Ok(routes) => {
                     for route in routes {
-                        // Only use direct connections for local receivers
-                        if !route.receiver_addr.ip().is_loopback() {
-                            continue;
-                        }
-                        match std::net::TcpStream::connect(route.receiver_addr) {
-                            Ok(stream) => {
-                                let _ = stream.set_nodelay(true);
-                                direct_connections.entry(route.output_id).or_default().push(
-                                    DirectConnection {
-                                        input_id: route.input_id,
-                                        stream,
-                                    },
-                                );
+                        use dora_message::node_to_node::DirectListenerAddr;
+                        let stream = match &route.receiver_addr {
+                            DirectListenerAddr::Tcp(addr) => {
+                                if !addr.ip().is_loopback() {
+                                    continue;
+                                }
+                                match std::net::TcpStream::connect(addr) {
+                                    Ok(stream) => {
+                                        let _ = stream.set_nodelay(true);
+                                        DirectStream::Tcp(stream)
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "failed to connect directly to receiver at {addr}: {err}"
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "failed to connect directly to receiver at {}: {err}",
-                                    route.receiver_addr
-                                );
+                            #[cfg(unix)]
+                            DirectListenerAddr::Unix(path) => {
+                                match std::os::unix::net::UnixStream::connect(path) {
+                                    Ok(stream) => DirectStream::Unix(stream),
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "failed to connect directly to receiver at {}: {err}",
+                                            path.display()
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
-                        }
+                        };
+                        direct_connections.entry(route.output_id).or_default().push(
+                            DirectConnection {
+                                input_id: route.input_id,
+                                stream,
+                            },
+                        );
                     }
                 }
                 Err(err) => {
@@ -896,7 +920,15 @@ impl Drop for DoraNode {
         // time to drain remaining data before signaling InputClosed.
         for conns in self.direct_connections.values_mut() {
             for conn in conns {
-                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
+                match &conn.stream {
+                    DirectStream::Tcp(s) => {
+                        let _ = s.shutdown(std::net::Shutdown::Write);
+                    }
+                    #[cfg(unix)]
+                    DirectStream::Unix(s) => {
+                        let _ = s.shutdown(std::net::Shutdown::Write);
+                    }
+                }
             }
         }
         // Brief delay to let receivers process remaining buffered data
@@ -1049,14 +1081,23 @@ unsafe impl Send for ShmemHandle {}
 unsafe impl Sync for ShmemHandle {}
 
 fn send_direct_message(
-    stream: &mut std::net::TcpStream,
+    stream: &mut DirectStream,
     msg: &dora_message::DirectMessage,
 ) -> eyre::Result<()> {
     use std::io::Write;
     let serialized = bincode::serialize(msg).wrap_err("failed to serialize DirectMessage")?;
     let len_raw = (serialized.len() as u64).to_le_bytes();
-    stream.write_all(&len_raw)?;
-    stream.write_all(&serialized)?;
+    match stream {
+        DirectStream::Tcp(s) => {
+            s.write_all(&len_raw)?;
+            s.write_all(&serialized)?;
+        }
+        #[cfg(unix)]
+        DirectStream::Unix(s) => {
+            s.write_all(&len_raw)?;
+            s.write_all(&serialized)?;
+        }
+    }
     Ok(())
 }
 

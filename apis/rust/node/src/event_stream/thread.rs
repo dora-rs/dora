@@ -15,12 +15,19 @@ use std::{
 
 use crate::daemon_connection::DaemonChannel;
 
+#[allow(dead_code)]
+pub enum DirectListener {
+    Tcp(std::net::TcpListener),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixListener),
+}
+
 pub fn init(
     node_id: NodeId,
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    direct_listener: Option<std::net::TcpListener>,
+    direct_listener: Option<DirectListener>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     // Spawn direct listener thread if we have one
     if let Some(listener) = direct_listener {
@@ -295,37 +302,58 @@ fn report_drop_tokens(
     }
 }
 
-/// Accepts direct TCP connections from sender nodes and injects events
+/// Accepts direct connections from sender nodes and injects events
 /// into the same channel used by the daemon event stream.
 fn direct_listener_loop(
-    listener: std::net::TcpListener,
+    listener: DirectListener,
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     clock: Arc<uhlc::HLC>,
 ) {
-    for connection in listener.incoming() {
-        match connection {
-            Ok(stream) => {
-                let _ = stream.set_nodelay(true);
-                let tx = tx.clone();
-                let clock = clock.clone();
-                std::thread::spawn(move || {
-                    direct_connection_loop(stream, tx, clock);
-                });
+    match listener {
+        DirectListener::Tcp(tcp_listener) => {
+            for connection in tcp_listener.incoming() {
+                match connection {
+                    Ok(stream) => {
+                        let _ = stream.set_nodelay(true);
+                        let tx = tx.clone();
+                        let clock = clock.clone();
+                        std::thread::spawn(move || {
+                            direct_connection_loop(stream, tx, clock);
+                        });
+                    }
+                    Err(err) => {
+                        tracing::warn!("direct listener accept error: {err}");
+                        break;
+                    }
+                }
             }
-            Err(err) => {
-                tracing::warn!("direct listener accept error: {err}");
-                break;
+        }
+        #[cfg(unix)]
+        DirectListener::Unix(unix_listener) => {
+            for connection in unix_listener.incoming() {
+                match connection {
+                    Ok(stream) => {
+                        let tx = tx.clone();
+                        let clock = clock.clone();
+                        std::thread::spawn(move || {
+                            direct_connection_loop(stream, tx, clock);
+                        });
+                    }
+                    Err(err) => {
+                        tracing::warn!("direct Unix listener accept error: {err}");
+                        break;
+                    }
+                }
             }
         }
     }
 }
 
 fn direct_connection_loop(
-    mut stream: std::net::TcpStream,
+    mut stream: impl std::io::Read,
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     clock: Arc<uhlc::HLC>,
 ) {
-    use std::io::Read;
     loop {
         // Read 8-byte length prefix
         let len = {

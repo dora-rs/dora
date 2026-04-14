@@ -91,6 +91,12 @@ impl EventStream {
                             format!("failed to connect event stream for node `{node_id}`")
                         })?
                     }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix(socket_file).wrap_err_with(|| {
+                            format!("failed to connect event stream for node `{node_id}`")
+                        })?
+                    }
                     DaemonCommunication::Interactive => {
                         DaemonChannel::Interactive(Default::default())
                     }
@@ -107,6 +113,12 @@ impl EventStream {
                 match daemon_communication {
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
+                            format!("failed to connect event close channel for node `{node_id}`")
+                        })?
+                    }
+                    #[cfg(unix)]
+                    DaemonCommunication::UnixDomain { socket_file } => {
+                        DaemonChannel::new_unix(socket_file).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
                         })?
                     }
@@ -189,12 +201,32 @@ impl EventStream {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         // Bind a direct listener for node-to-node small message delivery
-        let direct_listener = if matches!(channel, DaemonChannel::Tcp(_)) {
-            let listener = std::net::TcpListener::bind((dora_core::topics::LOCALHOST, 0))
-                .wrap_err("failed to bind direct listener")?;
-            let listen_addr = listener
-                .local_addr()
-                .wrap_err("failed to get direct listener address")?;
+        let direct_listener = if matches!(channel, DaemonChannel::Tcp(_) | DaemonChannel::Unix(..))
+        {
+            #[cfg(unix)]
+            let (listener, listen_addr) = {
+                let socket_dir = format!("/tmp/dora-{dataflow_id}");
+                std::fs::create_dir_all(&socket_dir)
+                    .wrap_err("failed to create direct listener socket directory")?;
+                let socket_path =
+                    std::path::PathBuf::from(format!("{socket_dir}/{node_id}-direct.sock"));
+                let _ = std::fs::remove_file(&socket_path);
+                let listener = std::os::unix::net::UnixListener::bind(&socket_path)
+                    .wrap_err("failed to bind direct Unix listener")?;
+                let addr = dora_message::node_to_node::DirectListenerAddr::Unix(socket_path);
+                (thread::DirectListener::Unix(listener), addr)
+            };
+            #[cfg(not(unix))]
+            let (listener, listen_addr) = {
+                let tcp_listener = std::net::TcpListener::bind((dora_core::topics::LOCALHOST, 0))
+                    .wrap_err("failed to bind direct listener")?;
+                let addr = dora_message::node_to_node::DirectListenerAddr::Tcp(
+                    tcp_listener
+                        .local_addr()
+                        .wrap_err("failed to get direct listener address")?,
+                );
+                (thread::DirectListener::Tcp(tcp_listener), addr)
+            };
             // Register the direct listener with the daemon
             let reply = channel
                 .request(&Timestamped {
@@ -339,13 +371,19 @@ impl EventStream {
     /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
     /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
-        assert!(
-            !self.closed,
-            "receive function called after None was returned"
-        );
+        // Return None after Stop was delivered or stream was closed,
+        // rather than blocking forever when direct connection threads
+        // keep the mpsc channel alive.
+        if self.closed {
+            return None;
+        }
 
         if !self.use_scheduler {
-            return self.receiver.recv().await.map(Self::convert_event_item);
+            let event = self.receiver.recv().await.map(Self::convert_event_item);
+            if matches!(&event, Some(Event::Stop(_))) {
+                self.closed = true;
+            }
+            return event;
         }
         loop {
             if self.scheduler.is_empty() {
@@ -372,7 +410,11 @@ impl EventStream {
         if event.is_none() {
             self.closed = true;
         }
-        event.map(Self::convert_event_item)
+        let event = event.map(Self::convert_event_item);
+        if matches!(&event, Some(Event::Stop(_))) {
+            self.closed = true;
+        }
+        event
     }
 
     /// Check if there are any buffered events in the scheduler or the receiver.

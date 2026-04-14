@@ -34,7 +34,7 @@ pub enum DaemonRequest {
         node_id: NodeId,
     },
     RegisterDirectListener {
-        listen_addr: std::net::SocketAddr,
+        listen_addr: crate::node_to_node::DirectListenerAddr,
     },
     QueryDirectRoutes,
 }

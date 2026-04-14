@@ -1651,7 +1651,7 @@ impl Daemon {
                                 routes.push(dora_message::node_to_node::DirectRouteInfo {
                                     output_id: output_id.clone(),
                                     input_id,
-                                    receiver_addr: *addr,
+                                    receiver_addr: addr.clone(),
                                 });
                                 dataflow
                                     .direct_pairs
@@ -2266,6 +2266,17 @@ impl Daemon {
             });
         }
         self.state.running.remove(&dataflow_id);
+
+        // Clean up Unix domain socket directory for this dataflow
+        #[cfg(unix)]
+        {
+            let socket_dir = format!("/tmp/dora-{dataflow_id}");
+            if let Err(err) = std::fs::remove_dir_all(&socket_dir) {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    tracing::warn!("failed to clean up socket directory {socket_dir}: {err}");
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3042,7 +3053,7 @@ pub struct RunningDataflow {
     publish_all_messages_to_zenoh: bool,
 
     /// Addresses of nodes that accept direct node-to-node connections.
-    direct_listeners: HashMap<NodeId, std::net::SocketAddr>,
+    direct_listeners: HashMap<NodeId, dora_message::node_to_node::DirectListenerAddr>,
     /// Output-receiver pairs using direct connections (daemon skips forwarding small Vec messages).
     direct_pairs: HashSet<(OutputId, NodeId)>,
 
@@ -3500,7 +3511,7 @@ pub enum DaemonNodeEvent {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     RegisterDirectListener {
-        listen_addr: std::net::SocketAddr,
+        listen_addr: dora_message::node_to_node::DirectListenerAddr,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     QueryDirectRoutes {

@@ -18,6 +18,8 @@ mod json_to_arrow;
 
 pub enum DaemonChannel {
     Tcp(TcpStream),
+    #[cfg(unix)]
+    Unix(std::os::unix::net::UnixStream),
     Interactive(InteractiveEvents),
     IntegrationTestChannel(
         tokio::sync::mpsc::Sender<(
@@ -33,6 +35,14 @@ impl DaemonChannel {
         let stream = TcpStream::connect(socket_addr).wrap_err("failed to open TCP connection")?;
         stream.set_nodelay(true).context("failed to set nodelay")?;
         Ok(DaemonChannel::Tcp(stream))
+    }
+
+    #[cfg(unix)]
+    #[tracing::instrument(level = "trace")]
+    pub fn new_unix(socket_file: &std::path::Path) -> eyre::Result<Self> {
+        let stream = std::os::unix::net::UnixStream::connect(socket_file)
+            .wrap_err("failed to open Unix domain socket connection")?;
+        Ok(DaemonChannel::Unix(stream))
     }
 
     pub fn register(
@@ -61,6 +71,8 @@ impl DaemonChannel {
     pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
         match self {
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
+            #[cfg(unix)]
+            DaemonChannel::Unix(stream) => tcp::request_generic(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
             DaemonChannel::IntegrationTestChannel(channel) => {
                 let (reply_tx, reply) = oneshot::channel();

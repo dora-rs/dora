@@ -1,7 +1,8 @@
 use crate::{DaemonNodeEvent, Event};
+#[cfg(not(unix))]
+use dora_core::topics::LOCALHOST;
 use dora_core::{
     config::{DataId, NodeId},
-    topics::LOCALHOST,
     uhlc,
 };
 use dora_message::{
@@ -20,42 +21,74 @@ use std::{
     sync::Arc,
     task::Poll,
 };
-use tokio::{
-    net::TcpListener,
-    sync::{
-        mpsc::{self, UnboundedReceiver},
-        oneshot,
-    },
+#[cfg(not(unix))]
+use tokio::net::TcpListener;
+use tokio::sync::{
+    mpsc::{self, UnboundedReceiver},
+    oneshot,
 };
 
+#[cfg(not(unix))]
 pub mod tcp;
+#[cfg(unix)]
+pub mod unix;
 
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
     daemon_tx: &mpsc::Sender<Timestamped<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
+    #[allow(unused_variables)] queue_sizes: BTreeMap<DataId, usize>,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<(DaemonCommunication, Option<tokio::task::AbortHandle>)> {
-    let socket = match TcpListener::bind((LOCALHOST, 0)).await {
-        Ok(socket) => socket,
-        Err(err) => {
-            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
-        }
-    };
-    let socket_addr = socket
-        .local_addr()
-        .wrap_err("failed to get local addr of socket")?;
+    #[cfg(unix)]
+    {
+        let socket_dir = std::path::PathBuf::from(format!("/tmp/dora-{dataflow_id}"));
+        tokio::fs::create_dir_all(&socket_dir)
+            .await
+            .wrap_err("failed to create socket directory")?;
+        let socket_path = socket_dir.join(format!("{node_id}.sock"));
+        // Remove stale socket file if it exists
+        let _ = tokio::fs::remove_file(&socket_path).await;
+        let listener = tokio::net::UnixListener::bind(&socket_path)
+            .wrap_err("failed to create local Unix domain socket")?;
 
-    let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-    let daemon_tx = daemon_tx.clone();
-    let handle = tokio::spawn(async move {
-        tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
-        tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-    });
-    let abort_handle = handle.abort_handle();
+        let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+        let daemon_tx = daemon_tx.clone();
+        let handle = tokio::spawn(async move {
+            unix::listener_loop(listener, daemon_tx, clock).await;
+            tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+        });
+        let abort_handle = handle.abort_handle();
 
-    Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
+        Ok((
+            DaemonCommunication::UnixDomain {
+                socket_file: socket_path,
+            },
+            Some(abort_handle),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let socket = match TcpListener::bind((LOCALHOST, 0)).await {
+            Ok(socket) => socket,
+            Err(err) => {
+                return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
+            }
+        };
+        let socket_addr = socket
+            .local_addr()
+            .wrap_err("failed to get local addr of socket")?;
+
+        let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+        let daemon_tx = daemon_tx.clone();
+        let handle = tokio::spawn(async move {
+            tcp::listener_loop(socket, daemon_tx, queue_sizes, clock).await;
+            tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+        });
+        let abort_handle = handle.abort_handle();
+
+        Ok((DaemonCommunication::Tcp { socket_addr }, Some(abort_handle)))
+    }
 }
 
 struct Listener {
