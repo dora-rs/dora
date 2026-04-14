@@ -247,7 +247,7 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
