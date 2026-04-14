@@ -1,0 +1,177 @@
+name: Nightly Regression
+
+# Deep regression coverage that runs outside the PR cycle.
+#
+# Tier 1 gates per docs/testing-matrix.md:
+#   - Full example-smoke suite (~11 min)
+#   - Service/action/streaming communication patterns
+#   - Log-sink example dataflows
+#   - Record/replay round-trip
+#
+# Failures file issues with the `nightly-regression` label; they do not
+# block PRs. If a failure reproduces for 3 consecutive nightly runs,
+# promote it to the fast CI gate.
+#
+# Triggers:
+#   - schedule: daily at 06:00 UTC
+#   - workflow_dispatch: manual run from Actions UI
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  smoke-suite:
+    name: Smoke suite (tests/example-smoke.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Run smoke suite
+        id: smoke
+        continue-on-error: true
+        run: |
+          cargo test -p dora-examples --test example-smoke -- --test-threads=1 2>&1 | tee smoke-output.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Upload smoke log
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-output
+          path: smoke-output.log
+          retention-days: 14
+      - name: Fail the job if smoke suite failed
+        if: steps.smoke.outputs.exit_code != '0'
+        run: exit 1
+
+  log-sinks:
+    name: Log-sink examples
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo install --path binaries/cli --locked
+      - name: Build log-sink nodes
+        run: cargo build -p log-sink-file -p log-sink-alert -p log-sink-tcp
+      - name: log-sink-file
+        run: dora run examples/log-sink-file/dataflow.yml --stop-after 15s
+      - name: log-sink-alert
+        run: dora run examples/log-sink-alert/dataflow.yml --stop-after 15s
+      - name: log-sink-tcp
+        run: dora run examples/log-sink-tcp/dataflow.yml --stop-after 15s
+
+  service-action-streaming:
+    name: Service / Action / Streaming patterns
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo install --path binaries/cli --locked
+      - name: Build service / action example nodes
+        run: >
+          cargo build
+          -p service-example-client
+          -p service-example-server
+          -p action-example-client
+          -p action-example-server
+      - name: service-example
+        run: dora run examples/service-example/dataflow.yml --stop-after 15s
+      - name: action-example
+        run: dora run examples/action-example/dataflow.yml --stop-after 20s
+      - name: streaming-example
+        run: dora run examples/streaming-example/dataflow.yml --stop-after 15s
+
+  record-replay:
+    name: Record/replay round-trip
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Build CLI
+        run: cargo install --path binaries/cli --locked
+      - name: Build rust-dataflow example nodes
+        run: >
+          cargo build
+          -p rust-dataflow-example-node
+          -p rust-dataflow-example-status-node
+          -p rust-dataflow-example-sink
+      - name: Record rust-dataflow
+        run: |
+          # `dora record <yaml>` instruments the dataflow and runs it;
+          # recording written to `recording_<timestamp>.adorec`.
+          timeout 20s dora record examples/rust-dataflow/dataflow.yml -o run.adorec || true
+          test -f run.adorec || { echo "record did not produce run.adorec"; exit 1; }
+          echo "recording size: $(wc -c < run.adorec) bytes"
+      - name: Replay
+        run: dora replay run.adorec
+
+  file-issue-on-failure:
+    name: File issue on nightly failure
+    runs-on: ubuntu-latest
+    needs: [smoke-suite, log-sinks, service-action-streaming, record-replay]
+    if: failure() && github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or update regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TITLE="Nightly regression on $(date -u +%Y-%m-%d)"
+          BODY=$(cat <<EOF
+          Nightly regression suite failed.
+
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Commit: ${{ github.sha }}
+
+          Jobs:
+          - smoke-suite
+          - log-sinks
+          - service-action-streaming
+          - record-replay
+
+          See the run for per-job status and logs. Reproduce locally with:
+          \`\`\`
+          cargo test -p dora-examples --test example-smoke -- --test-threads=1
+          \`\`\`
+          EOF
+          )
+          gh issue create --title "$TITLE" --body "$BODY" --label nightly-regression
