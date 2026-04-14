@@ -524,10 +524,16 @@ impl EventStream {
                         break;
                     }
                 } else {
-                    match self.receiver.try_recv() {
-                        Ok(event) => self.add_event(event),
-                        Err(_) => break, // empty or disconnected
-                    };
+                    // Drain a bounded number of ready events so the scheduler
+                    // can make fair decisions, but avoid spinning indefinitely
+                    // when direct node-to-node connections keep the channel busy.
+                    for _ in 0..100 {
+                        match self.receiver.try_recv() {
+                            Ok(event) => self.add_event(event),
+                            Err(_) => break, // empty or disconnected
+                        }
+                    }
+                    break;
                 }
             }
             self.scheduler.next().map(Self::convert_event_item)
