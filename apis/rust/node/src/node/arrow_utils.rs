@@ -149,7 +149,13 @@ fn buffer_into_arrow_array_inner(
 
     let mut buffers = Vec::new();
     for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        if offset + len > raw_buffer.len() {
+        // Use checked_add to guard against malicious/buggy peers sending
+        // `offset` or `len` values that would overflow `usize` on addition
+        // and bypass the bounds check below.
+        let end = offset
+            .checked_add(*len)
+            .ok_or_else(|| eyre::eyre!("buffer offset overflow: offset={offset}, len={len}"))?;
+        if end > raw_buffer.len() {
             eyre::bail!(
                 "buffer offset out of bounds: offset={offset}, len={len}, buffer_len={}",
                 raw_buffer.len()
@@ -298,6 +304,33 @@ mod tests {
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
         assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn buffer_into_arrow_array_rejects_overflow_offset() {
+        // A peer-controlled BufferOffset with offset = usize::MAX would overflow
+        // `offset + len` to a small value and bypass the bounds check, then panic
+        // inside arrow's slice_with_length. We must reject it with an error.
+        let info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::UInt8,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![BufferOffset {
+                offset: usize::MAX,
+                len: 1,
+            }],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        let buf = arrow::buffer::Buffer::from(vec![0u8; 1024]);
+        let err = buffer_into_arrow_array(&buf, &info).unwrap_err();
+        assert!(
+            err.to_string().contains("overflow"),
+            "expected overflow error, got: {err}"
+        );
     }
 
     #[test]
