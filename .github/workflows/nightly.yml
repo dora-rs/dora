@@ -309,9 +309,10 @@ jobs:
 
   topic-and-top-smoke:
     # Smoke-tests the inspection commands: `dora top --once`, `dora topic
-    # list/info/pub`. Each has a non-interactive mode (--once / built-in
-    # exit / --duration / --count). `topic echo` and `topic hz` stream
-    # without bound — tracked separately, need --duration/--count flags.
+    # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
+    # built-in exit / --duration / --count). Topic inspection (echo/hz/info)
+    # streams over the coordinator WebSocket (PR #238) — requires
+    # `_unstable_debug.publish_all_messages_to_zenoh: true` in the fixture.
     #
     # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
     # indefinitely until stopped (rust-dataflow nodes hit tick limits).
@@ -389,6 +390,38 @@ jobs:
         run: |
           dora topic info -d tui-smoke ticker/count --duration 3 2>&1 | tee info.out
           grep -q 'ticker/count' info.out || { echo "ERROR: info output missing topic"; exit 1; }
+          # Assert messages actually flowed. Pre-#238 this step passed with
+          # `Total messages: 0` because the zenoh late-subscribe path dropped
+          # frames silently. Guard against regression.
+          total=$(grep -oE 'Total messages: [0-9]+' info.out | grep -oE '[0-9]+' || echo 0)
+          if [ "$total" -lt 10 ]; then
+            echo "ERROR: info received $total messages in 3s on a 10Hz fixture; expected >= 10"
+            exit 1
+          fi
+      - name: dora topic echo --count 5 (JSON frames)
+        run: |
+          # Tests the CLI-side WebSocket subscription path end-to-end (#238).
+          # Fixture emits at 10 Hz, so 5 frames arrive in ~500ms — generous
+          # 15s timeout protects against daemon startup delay.
+          timeout 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
+            2>&1 | tee echo.out
+          lines=$(grep -c '"name":"ticker/count"' echo.out || echo 0)
+          if [ "$lines" -lt 5 ]; then
+            echo "ERROR: echo --count 5 produced $lines frames; expected 5"
+            exit 1
+          fi
+      - name: dora topic hz --duration 3 (non-TTY stats)
+        run: |
+          # --duration mode skips ratatui and prints a tab-separated stats
+          # table. The "ALL" row aggregates across all subscribed topics.
+          dora topic hz -d tui-smoke ticker/count --duration 3 2>&1 | tee hz.out
+          # Fixture is 10 Hz; expect ~30 samples in 3 seconds. Accept >= 10
+          # to absorb scheduler jitter on slow runners.
+          samples=$(awk -F'\t' '/^ticker\/count/ { print $NF }' hz.out)
+          if [ -z "$samples" ] || [ "$samples" -lt 10 ]; then
+            echo "ERROR: hz received ${samples:-0} samples in 3s on a 10Hz fixture; expected >= 10"
+            exit 1
+          fi
       - name: dora topic pub --count 3
         run: |
           dora topic pub -d tui-smoke ticker/count '42' --count 3 2>&1 | tee pub.out

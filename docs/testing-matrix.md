@@ -135,10 +135,9 @@ Not automated: requires two networked hosts.
 
 Tracked in issue #215. Selected items:
 
-- `dora topic echo` and `dora topic hz` — stream forever, need bounded modes
-  (filed as #233)
 - `dora trace list/view`
 - `dora self update`
+- `dora top` interactive mode (non-`--once`)
 
 Most of these are interactive TUI commands that need either non-interactive
 modes or an expect-style harness. Opening separate issues as we pick them
@@ -150,7 +149,9 @@ These were on the gap list but now have nightly coverage in
 `topic-and-top-smoke`:
 - `dora top --once` (JSON snapshot)
 - `dora topic list --format json` (NDJSON parse)
-- `dora topic info --duration N`
+- `dora topic info --duration N` (asserts `Total messages >= 10` on 10Hz fixture — regression guard for #236)
+- `dora topic echo --count N` (asserts N frames of correct topic name)
+- `dora topic hz --duration N` (asserts `samples >= 10` on 10Hz fixture)
 - `dora topic pub --count N`
 
 ## Platform parity
