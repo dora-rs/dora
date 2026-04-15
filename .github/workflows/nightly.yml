@@ -362,6 +362,35 @@ jobs:
           out=$(dora top --once || true)
           echo "$out"
           echo "$out" | grep -qE '^\[' || { echo "ERROR: top --once didn't produce JSON array"; exit 1; }
+      - name: dora trace list on empty coordinator
+        run: |
+          # With no dataflow run yet, the trace store is empty. The command
+          # must exit 0 and print the canonical empty-state message (not
+          # error, not hang).
+          out=$(dora trace list)
+          echo "$out"
+          echo "$out" | grep -q "No traces captured yet." \
+            || { echo "ERROR: trace list empty-state message missing"; exit 1; }
+      - name: dora trace view with known-absent UUID
+        run: |
+          # Valid UUID that the coordinator has no spans for. Must exit 0
+          # and report the empty-spans message.
+          out=$(dora trace view 00000000-0000-0000-0000-000000000000)
+          echo "$out"
+          echo "$out" | grep -q "No spans found for this trace." \
+            || { echo "ERROR: trace view absent-UUID empty-state message missing"; exit 1; }
+      - name: dora trace view with unresolvable prefix errors clearly
+        run: |
+          # Non-UUID prefix with no matches must exit non-zero and surface
+          # a clear "no trace found" message, not a generic protocol error.
+          if out=$(dora trace view definitely-not-a-trace 2>&1); then
+            echo "ERROR: expected non-zero exit for unresolvable prefix"
+            echo "$out"
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q "no trace found matching prefix" \
+            || { echo "ERROR: trace view missing prefix-error message"; exit 1; }
       - name: Start a debug-enabled dataflow
         # The fixture uses Python source nodes (ticker.py / sink.py) so the
         # dataflow runs forever (rust-dataflow-example-node hits a tick limit
