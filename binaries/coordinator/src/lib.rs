@@ -501,6 +501,11 @@ async fn start_inner(
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         coordinator_state.daemon_connections.remove(&machine_id);
+                        handle_daemon_disconnect(
+                            &coordinator_state,
+                            &machine_id,
+                            "watchdog timeout (no heartbeat)",
+                        );
                     }
                 }
             }
@@ -578,6 +583,43 @@ async fn handle_destroy(
 
     let _ = coordinator_state.daemon_events_tx.send(Event::Close).await;
     result
+}
+
+pub(crate) fn handle_daemon_disconnect(
+    coordinator_state: &state::CoordinatorState,
+    daemon_id: &DaemonId,
+    reason: &str,
+) {
+    // Fail pending builds that were waiting for this daemon.
+    let mut builds_to_fail = Vec::new();
+    for mut entry in coordinator_state.running_builds.iter_mut() {
+        if entry.pending_build_results.remove(daemon_id) {
+            entry.errors.push(format!(
+                "daemon `{daemon_id}` disconnected while building: {reason}"
+            ));
+            builds_to_fail.push(entry.key().clone());
+        }
+    }
+    for build_id in builds_to_fail {
+        if let Some((build_id, mut build)) = coordinator_state.running_builds.remove(&build_id) {
+            let result = Err(format!("build failed: {}", build.errors.join("\n\n")));
+            build
+                .build_result
+                .set_result(Ok(BuildFinishedResult { build_id, result }));
+            coordinator_state
+                .finished_builds
+                .insert(build_id, build.build_result);
+        }
+    }
+
+    // Fail pending spawn requests that were waiting for this daemon.
+    for mut dataflow in coordinator_state.running_dataflows.iter_mut() {
+        if dataflow.pending_spawn_results.remove(daemon_id) {
+            dataflow.spawn_result.set_result(Err(eyre!(
+                "daemon `{daemon_id}` disconnected while waiting for spawn result: {reason}"
+            )));
+        }
+    }
 }
 
 /// Result of a completed dataflow build.

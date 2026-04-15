@@ -236,6 +236,11 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
         self.coordinator_state
             .daemon_connections
             .remove(&self.daemon_id);
+        crate::handle_daemon_disconnect(
+            &self.coordinator_state,
+            &self.daemon_id,
+            "daemon exit notification",
+        );
     }
 
     async fn node_metrics(

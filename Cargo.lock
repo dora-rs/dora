@@ -1576,6 +1576,7 @@ dependencies = [
  "log",
  "petname",
  "serde_json",
+ "serde_yaml 0.9.34+deprecated",
  "tokio",
  "tokio-stream",
  "tracing",
