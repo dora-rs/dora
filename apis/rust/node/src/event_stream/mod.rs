@@ -326,11 +326,7 @@ impl EventStream {
                                                 metadata,
                                                 data: Some(DataMessage::Vec(data_vec)),
                                             };
-                                            let (drop_tx, _drop_rx) = flume::bounded(0);
-                                            EventItem::NodeEvent {
-                                                event,
-                                                ack_channel: drop_tx,
-                                            }
+                                            EventItem::NodeEvent { event }
                                         };
 
                                         if tx_clone.send(event_item).is_err() {
@@ -651,7 +647,7 @@ impl EventStream {
 
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event, ack_channel } => match event {
+            EventItem::NodeEvent { event } => match event {
                 NodeEvent::Stop { reason } => Event::Stop(reason.unwrap_or(StopCause::Manual)),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
@@ -665,7 +661,7 @@ impl EventStream {
                     source_node_id,
                 },
                 NodeEvent::Input { id, metadata, data } => {
-                    let data = data_to_arrow_array(data, &metadata, ack_channel);
+                    let data = data_to_arrow_array(data, &metadata);
                     match data {
                         Ok(data) => Event::Input {
                             id,
@@ -715,7 +711,6 @@ pub enum TryRecvError {
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
     metadata: &dora_message::metadata::Metadata,
-    _drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data = match data {
         None => Ok(None),

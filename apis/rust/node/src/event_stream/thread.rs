@@ -29,7 +29,6 @@ pub fn init(
 pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
-        ack_channel: flume::Sender<()>,
     },
     /// Zero-copy input delivered via zenoh SHM. The ZShm buffer references
     /// shared memory directly without copying the payload.
@@ -141,11 +140,7 @@ fn event_stream_loop(
             }
 
             if let Some(tx) = tx.as_ref() {
-                let (drop_tx, _drop_rx) = flume::bounded(0);
-                match tx.send(EventItem::NodeEvent {
-                    event: inner,
-                    ack_channel: drop_tx,
-                }) {
+                match tx.send(EventItem::NodeEvent { event: inner }) {
                     Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.0;

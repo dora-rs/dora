@@ -67,12 +67,7 @@ pub fn run_operator(
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub enum OperatorEvent {
-    AllocateOutputSample {
-        len: usize,
-        sample: oneshot::Sender<eyre::Result<DataSample>>,
-    },
     Output {
         output_id: DataId,
         type_info: ArrowTypeInfo,

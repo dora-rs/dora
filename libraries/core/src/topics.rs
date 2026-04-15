@@ -16,6 +16,10 @@ pub const MANUAL_STOP: &str = "dora/stop";
 /// Default port for the zenoh peer endpoint used by daemons.
 pub const DORA_ZENOH_PEER_PORT_DEFAULT: u16 = 5456;
 
+/// Network id prefix used in zenoh topic keys. Reserved for a future
+/// feature where multiple logical networks coexist on the same zenoh fabric.
+const NETWORK_ID: &str = "default";
+
 /// Build a zenoh config with common settings.
 ///
 /// When `listen_port` is `Some`, the session will bind on that port so that
@@ -167,24 +171,7 @@ pub fn open_zenoh_session_sync(coordinator_addr: Option<IpAddr>) -> eyre::Result
                 .context("failed to open zenoh session")?
         }
         Err(std::env::VarError::NotPresent) => {
-            let mut zenoh_config = zenoh::Config::default();
-            if cfg!(not(target_os = "windows")) {
-                zenoh_config
-                    .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                    .unwrap();
-            }
-
-            if let Some(addr) = coordinator_addr {
-                zenoh_config
-                    .insert_json5(
-                        "connect/endpoints",
-                        &format!(
-                            r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                            addr
-                        ),
-                    )
-                    .unwrap();
-            }
+            let zenoh_config = build_zenoh_config(coordinator_addr, None);
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).wait() {
                 zenoh_session
             } else {
@@ -210,8 +197,7 @@ pub fn zenoh_output_publish_topic(
     node_id: &dora_message::id::NodeId,
     output_id: &dora_message::id::DataId,
 ) -> String {
-    let network_id = "default";
-    format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
+    format!("dora/{NETWORK_ID}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
 /// Zenoh topic used by daemons for inter-daemon control messages
@@ -223,8 +209,7 @@ pub fn zenoh_daemon_control_topic(
     node_id: &dora_message::id::NodeId,
     output_id: &dora_message::id::DataId,
 ) -> String {
-    let network_id = "default";
-    format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
+    format!("dora/{NETWORK_ID}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
 /// Return the zenoh topic suffix for a given log level.

@@ -736,15 +736,8 @@ impl DoraNode {
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        // Normal path: publish the sample directly via zenoh with metadata as an
-        // attachment. Receivers get the data via their own zenoh subscribers, so
-        // no daemon round-trip is needed.
-        //
-        // Fallback path: when no zenoh publisher exists (Interactive or Testing
-        // mode — see `is_interactive` in `DoraNode::init`), the full payload is
-        // sent through the TCP control channel to the daemon, which forwards it
-        // to local receivers. This only happens in single-daemon scenarios with
-        // no remote receivers.
+        // Fallback through the control channel below is only used in
+        // Interactive/Testing mode (no zenoh publishers declared).
         if let Some(publisher) = self.publishers.get(&output_id) {
             let Some(sample) = sample else {
                 return Ok(());

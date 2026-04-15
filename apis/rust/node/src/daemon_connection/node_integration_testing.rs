@@ -221,11 +221,8 @@ pub fn convert_output_to_json(
         output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
     }
     if data.is_some() {
-        let (drop_tx, drop_rx) = flume::unbounded();
-        let data_array = data_to_arrow_array(data.clone(), metadata, drop_tx)
+        let data_array = data_to_arrow_array(data.clone(), metadata)
             .context("failed to convert output to arrow array")?;
-        // integration testing doesn't use shared memory -> no drop tokens
-        let _ = drop_rx;
 
         let data_type_json = serde_json::to_value(data_array.data_type())
             .context("failed to serialize data type as JSON")?;

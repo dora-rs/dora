@@ -3,7 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow_schema::DataType;
 use clap::Args;
 use dora_core::{
     config::InputMapping,
@@ -197,7 +196,7 @@ async fn info(
 
     // Type
     if let Some(type_info) = &data_type {
-        println!("Type: {}", format_arrow_type(&type_info.data_type));
+        println!("Type: {}", type_info.data_type);
     } else {
         println!("Type: <unknown> (no messages received)");
     }
@@ -234,89 +233,4 @@ async fn info(
     }
 
     Ok(())
-}
-
-fn format_arrow_type(data_type: &DataType) -> String {
-    match data_type {
-        DataType::Null => "Null".to_string(),
-        DataType::Boolean => "Boolean".to_string(),
-        DataType::Int8 => "Int8".to_string(),
-        DataType::Int16 => "Int16".to_string(),
-        DataType::Int32 => "Int32".to_string(),
-        DataType::Int64 => "Int64".to_string(),
-        DataType::UInt8 => "UInt8".to_string(),
-        DataType::UInt16 => "UInt16".to_string(),
-        DataType::UInt32 => "UInt32".to_string(),
-        DataType::UInt64 => "UInt64".to_string(),
-        DataType::Float16 => "Float16".to_string(),
-        DataType::Float32 => "Float32".to_string(),
-        DataType::Float64 => "Float64".to_string(),
-        DataType::Timestamp(unit, tz) => {
-            format!("Timestamp({:?}, {:?})", unit, tz)
-        }
-        DataType::Date32 => "Date32".to_string(),
-        DataType::Date64 => "Date64".to_string(),
-        DataType::Time32(unit) => format!("Time32({:?})", unit),
-        DataType::Time64(unit) => format!("Time64({:?})", unit),
-        DataType::Duration(unit) => format!("Duration({:?})", unit),
-        DataType::Interval(unit) => format!("Interval({:?})", unit),
-        DataType::Binary => "Binary".to_string(),
-        DataType::FixedSizeBinary(size) => {
-            format!("FixedSizeBinary({})", size)
-        }
-        DataType::LargeBinary => "LargeBinary".to_string(),
-        DataType::Utf8 => "String".to_string(),
-        DataType::LargeUtf8 => "LargeString".to_string(),
-        DataType::List(field) => {
-            format!("List<{}>", format_arrow_type(field.data_type()))
-        }
-        DataType::LargeList(field) => {
-            format!("LargeList<{}>", format_arrow_type(field.data_type()))
-        }
-        DataType::FixedSizeList(field, size) => {
-            format!(
-                "FixedSizeList<{}>({})",
-                format_arrow_type(field.data_type()),
-                size
-            )
-        }
-        DataType::Struct(fields) => {
-            let field_strs: Vec<String> = fields
-                .iter()
-                .map(|f| format!("{}: {}", f.name(), format_arrow_type(f.data_type())))
-                .collect();
-            format!("Struct{{{}}}", field_strs.join(", "))
-        }
-        DataType::Union(_fields, mode) => {
-            format!("Union({:?})", mode)
-        }
-        DataType::Dictionary(key_type, value_type) => {
-            format!(
-                "Dictionary<{}, {}>",
-                format_arrow_type(key_type),
-                format_arrow_type(value_type)
-            )
-        }
-        DataType::Decimal128(precision, scale) => {
-            format!("Decimal128({}, {})", precision, scale)
-        }
-        DataType::Decimal256(precision, scale) => {
-            format!("Decimal256({}, {})", precision, scale)
-        }
-        DataType::Map(field, sorted) => {
-            format!(
-                "Map<{}>(sorted={})",
-                format_arrow_type(field.data_type()),
-                sorted
-            )
-        }
-        DataType::RunEndEncoded(run_ends, values) => {
-            format!(
-                "RunEndEncoded<{}, {}>",
-                format_arrow_type(run_ends.data_type()),
-                format_arrow_type(values.data_type())
-            )
-        }
-        _ => format!("{:?}", data_type),
-    }
 }

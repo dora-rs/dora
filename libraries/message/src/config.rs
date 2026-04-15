@@ -237,11 +237,6 @@ pub struct CommunicationConfig {
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
 pub enum RemoteCommunicationConfig {
     Tcp,
-    // TODO:a
-    // Zenoh {
-    //     config: Option<serde_yaml::Value>,
-    //     prefix: String,
-    // },
 }
 
 impl Default for RemoteCommunicationConfig {

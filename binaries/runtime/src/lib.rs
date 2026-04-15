@@ -209,14 +209,6 @@ async fn run(
                             break;
                         }
                     }
-                    OperatorEvent::AllocateOutputSample { len, sample: tx } => {
-                        let sample = node.allocate_data_sample(len);
-                        if tx.send(sample).is_err() {
-                            tracing::warn!(
-                                "output sample requested, but operator {operator_id} exited already"
-                            );
-                        }
-                    }
                     OperatorEvent::Output {
                         output_id,
                         type_info,
