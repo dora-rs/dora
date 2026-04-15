@@ -39,6 +39,7 @@ the `nightly-regression` label but do not block PRs.
 | Cluster lifecycle (`cluster status`, `cluster down`) | `cluster-smoke` |
 | Inspection commands (`top --once`, `topic list/info/pub`) | `topic-and-top-smoke` |
 | `cpu_affinity` end-to-end (mask actually applied) | `cpu-affinity-smoke` (Linux only) |
+| redb coordinator store survives restart | `redb-backend-smoke` |
 
 Run locally:
 ```bash

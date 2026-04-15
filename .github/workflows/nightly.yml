@@ -528,10 +528,87 @@ jobs:
           fi
           echo "OK: probe ran with the expected affinity mask: $mask"
 
+  redb-backend-smoke:
+    # Regression test for #253. Proves the redb coordinator store survives
+    # a coord restart: writes during normal operation, reads cleanly on
+    # startup. The load signal is a tracing line the restarted coord prints
+    # after reading stored daemon records — see binaries/coordinator/src/lib.rs
+    # `"cleared N stale daemon records"`.
+    name: redb backend end-to-end
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Session 1 — write state to redb
+        run: |
+          STORE=/tmp/dora-redb-smoke.db
+          rm -f "$STORE"
+          # Start coord with persistent redb store + daemon.
+          dora coordinator --store "redb:$STORE" > /tmp/coord1.log 2>&1 &
+          sleep 2
+          dora daemon > /tmp/daemon1.log 2>&1 &
+          sleep 2
+          # Run a short dataflow so the coord writes dataflow + daemon records
+          # to the store.
+          dora start examples/cpu-affinity-probe/dataflow.yml --name redb-smoke --detach
+          sleep 6
+          # Verify the store file exists and contains the dataflow name as
+          # evidence of actual writes (not just preallocation).
+          test -f "$STORE" || { echo "ERROR: redb store not created"; exit 1; }
+          if ! strings "$STORE" | grep -q "redb-smoke"; then
+            echo "ERROR: redb store does not contain the dataflow name — writes missing"
+            exit 1
+          fi
+          echo "OK: redb store contains dataflow record"
+          # Kill coord only, leave daemon orphaned (simulates a coord crash).
+          pkill -TERM -f "dora coordinator" || true
+          # Give the coord ~1s to shut down gracefully.
+          sleep 2
+      - name: Session 2 — restart coord, read state from redb
+        run: |
+          STORE=/tmp/dora-redb-smoke.db
+          # Restart coord against the same store.
+          dora coordinator --store "redb:$STORE" > /tmp/coord2.log 2>&1 &
+          sleep 4
+          echo "=== coord2 log ==="
+          cat /tmp/coord2.log
+          # The stale-daemon-cleanup path only runs if the coord successfully
+          # read at least one daemon record from redb. This is the round-trip
+          # proof: writes in session 1 were persisted AND session 2 read them.
+          if ! grep -q "cleared.*stale daemon records" /tmp/coord2.log; then
+            echo "ERROR: session 2 coord did not emit the stale-daemon cleanup log"
+            echo "(expected a line matching 'cleared N stale daemon records')"
+            exit 1
+          fi
+          # Also assert clean startup — no corruption, no panic.
+          if grep -qE "corrupt|panicked|ERROR" /tmp/coord2.log; then
+            echo "ERROR: session 2 coord log contains corruption or panic markers"
+            exit 1
+          fi
+          echo "OK: redb store read cleanly on restart"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -590,6 +667,7 @@ jobs:
           - cluster-smoke
           - topic-and-top-smoke
           - cpu-affinity-smoke
+          - redb-backend-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close
