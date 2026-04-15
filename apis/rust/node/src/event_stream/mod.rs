@@ -14,7 +14,7 @@ use dora_message::{
 };
 pub use event::{Event, StopCause};
 use futures::{
-    FutureExt, Stream, StreamExt,
+    FutureExt, Stream,
     future::{Either, select},
 };
 use futures_timer::Delay;
@@ -65,7 +65,11 @@ pub struct EventStream {
     // Drop order: Rust drops fields in declaration order (top to bottom).
     // receiver must drop FIRST so tx_clone.send() in subscriber threads
     // returns Err, causing threads to exit before JoinHandles are dropped.
-    receiver: flume::r#async::RecvStream<'static, EventItem>,
+    // Using `tokio::sync::mpsc::Receiver` — instead of `flume` — avoids the
+    // AB-BA deadlock between flume 0.10's spinlock and pyo3's GIL-acquiring
+    // waker when a Python coroutine polls this stream
+    // (upstream dora-rs/dora#1603).
+    receiver: tokio::sync::mpsc::Receiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
     _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
@@ -292,7 +296,7 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let (tx, rx) = flume::bounded(channel_capacity);
+        let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -386,8 +390,13 @@ impl EventStream {
                                     // buffer (dora-rs/adora#132).
                                     let payload = sample.payload().clone();
 
+                                    // blocking_send: this thread is a plain
+                                    // std::thread (synchronous subscriber.recv
+                                    // loop), so calling the async Sender::send
+                                    // would require an executor. blocking_send
+                                    // is the documented primitive for this.
                                     if tx_clone
-                                        .send(EventItem::ZenohInput {
+                                        .blocking_send(EventItem::ZenohInput {
                                             id: input_id.clone(),
                                             metadata: std::sync::Arc::new(metadata),
                                             payload,
@@ -415,7 +424,7 @@ impl EventStream {
 
         Ok(EventStream {
             node_id: node_id.clone(),
-            receiver: rx.into_stream(),
+            receiver: rx,
             _thread_handle: thread_handle,
             _zenoh_thread_handles: zenoh_thread_handles,
             close_channel,
@@ -495,19 +504,19 @@ impl EventStream {
             return Some(event);
         }
         let event = if !self.use_scheduler {
-            self.receiver.next().await.map(Self::convert_event_item)
+            self.receiver.recv().await.map(Self::convert_event_item)
         } else {
             loop {
                 if self.scheduler.is_empty() {
-                    if let Some(event) = self.receiver.next().await {
+                    if let Some(event) = self.receiver.recv().await {
                         self.add_event(event);
                     } else {
                         break;
                     }
                 } else {
-                    match self.receiver.next().now_or_never().flatten() {
-                        Some(event) => self.add_event(event),
-                        None => break, // no other ready events
+                    match self.receiver.try_recv() {
+                        Ok(event) => self.add_event(event),
+                        Err(_) => break, // empty or disconnected
                     };
                 }
             }
@@ -1136,7 +1145,7 @@ impl Stream for EventStream {
 
         let poll = self
             .receiver
-            .poll_next_unpin(cx)
+            .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item));
 
         // Run first-message type check on the Stream path too.

@@ -12,12 +12,13 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 
 use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: mpsc::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
@@ -99,7 +100,7 @@ impl Drop for EventStreamThreadHandle {
 #[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
-    tx: flume::Sender<EventItem>,
+    tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) {
@@ -165,13 +166,18 @@ fn event_stream_loop(
 
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
-                match tx.send(EventItem::NodeEvent {
+                // `blocking_send` is used because this function runs on a
+                // dedicated `std::thread` (not a tokio worker). Using
+                // `tokio::sync::mpsc` here — instead of `flume` — avoids the
+                // AB-BA deadlock between flume 0.10's spinlock and pyo3's
+                // GIL-acquiring waker (upstream dora-rs/dora#1603).
+                match tx.blocking_send(EventItem::NodeEvent {
                     event: inner,
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}
                     Err(send_error) => {
-                        let event = send_error.into_inner();
+                        let event = send_error.0;
                         tracing::trace!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
@@ -194,7 +200,8 @@ fn event_stream_loop(
     };
     if let Err(err) = result {
         if let Some(tx) = tx.as_ref() {
-            if let Err(flume::SendError(item)) = tx.send(EventItem::FatalError(err)) {
+            if let Err(mpsc::error::SendError(item)) = tx.blocking_send(EventItem::FatalError(err))
+            {
                 let err = match item {
                     EventItem::FatalError(err) => err,
                     _ => unreachable!(),

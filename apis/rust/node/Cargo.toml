@@ -35,7 +35,7 @@ futures-timer = "3.0.2"
 dora-arrow-convert = { workspace = true }
 aligned-vec = "0.5.0"
 serde_json = { workspace = true, features = ["preserve_order"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 inquire = { workspace = true, features = ["console"] }
 arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
