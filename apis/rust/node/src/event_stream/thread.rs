@@ -7,7 +7,7 @@ use dora_message::{
 };
 use eyre::eyre;
 use flume::RecvTimeoutError;
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use zenoh::shm::ZShm;
 
 use crate::daemon_connection::DaemonChannel;
@@ -17,12 +17,10 @@ pub fn init(
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(move || {
-        event_stream_loop(node_id_cloned, tx, channel, clock, zenoh_input_ids)
-    });
+    let join_handle =
+        std::thread::spawn(move || event_stream_loop(node_id_cloned, tx, channel, clock));
     Ok(EventStreamThreadHandle::new(join_handle))
 }
 
@@ -87,13 +85,12 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock, zenoh_input_ids))]
+#[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    zenoh_input_ids: Arc<BTreeSet<DataId>>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -138,22 +135,6 @@ fn event_stream_loop(
             };
 
             let inner = *inner;
-
-            // Skip daemon Input events with data: None for zenoh-subscribed inputs,
-            // because the data will arrive via zenoh subscribers instead.
-            if let NodeEvent::Input {
-                id: ref input_id,
-                data: None,
-                ..
-            } = inner
-            {
-                if zenoh_input_ids.contains(input_id) {
-                    tracing::trace!(
-                        "skipping daemon Input event with data: None for zenoh-subscribed input `{input_id}`"
-                    );
-                    continue;
-                }
-            }
 
             if matches!(&inner, NodeEvent::AllInputsClosed) {
                 close_tx = true;

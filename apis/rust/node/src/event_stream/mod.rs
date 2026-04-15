@@ -73,10 +73,6 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
-    /// Set of input IDs that have zenoh subscriptions.
-    /// When a daemon event arrives with `data: None` for one of these inputs,
-    /// we skip it because the data will arrive via zenoh.
-    zenoh_input_ids: Arc<std::collections::BTreeSet<DataId>>,
     /// Dropping this sender disconnects the channel, causing zenoh subscriber
     /// threads to exit via the async select on the shutdown receiver.
     _zenoh_shutdown_tx: flume::Sender<()>,
@@ -239,15 +235,12 @@ impl EventStream {
         };
 
         // Set up zenoh subscribers for user inputs
-        let mut zenoh_input_ids = std::collections::BTreeSet::new();
         let (zenoh_shutdown_tx, zenoh_shutdown_rx) = flume::bounded::<()>(0);
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
 
             for (input_id, input) in input_config {
                 if let InputMapping::User(mapping) = &input.mapping {
-                    zenoh_input_ids.insert(input_id.clone());
-
                     let topic = dora_core::topics::zenoh_output_publish_topic(
                         dataflow_id,
                         &mapping.source,
@@ -355,15 +348,7 @@ impl EventStream {
             }
         }
 
-        let zenoh_input_ids = Arc::new(zenoh_input_ids);
-
-        let thread_handle = thread::init(
-            node_id.clone(),
-            tx,
-            channel,
-            clock.clone(),
-            zenoh_input_ids.clone(),
-        )?;
+        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -375,7 +360,6 @@ impl EventStream {
             scheduler,
             write_events_to,
             use_scheduler,
-            zenoh_input_ids,
             _zenoh_shutdown_tx: zenoh_shutdown_tx,
             stop_received: false,
         })

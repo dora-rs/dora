@@ -734,51 +734,48 @@ impl DoraNode {
     ) -> eyre::Result<()> {
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        // Normal path: publish data directly via zenoh to subscribing nodes,
-        // then send a data-less notification to the daemon so it can track the
-        // output for bookkeeping (e.g. knowing when to close downstream inputs).
+        // Normal path: publish the sample directly via zenoh with metadata as an
+        // attachment. Receivers get the data via their own zenoh subscribers, so
+        // no daemon round-trip is needed.
         //
         // Fallback path: when no zenoh publisher exists (Interactive or Testing
         // mode — see `is_interactive` in `DoraNode::init`), the full payload is
-        // sent through the TCP control channel to the daemon instead. This only
-        // happens in single-daemon scenarios where there are no remote receivers,
-        // so the daemon never needs to forward the data to another daemon.
-        let data = if let Some(publisher) = self.publishers.get(&output_id) {
-            if let Some(sample) = sample {
-                use zenoh::Wait;
+        // sent through the TCP control channel to the daemon, which forwards it
+        // to local receivers. This only happens in single-daemon scenarios with
+        // no remote receivers.
+        if let Some(publisher) = self.publishers.get(&output_id) {
+            let Some(sample) = sample else {
+                return Ok(());
+            };
+            use zenoh::Wait;
 
-                // Serialize metadata as a zenoh attachment so receivers get both
-                // the data payload (zero-copy via SHM) and the metadata.
-                let metadata_bytes = bincode::serialize(&metadata)
-                    .wrap_err("failed to serialize metadata for zenoh attachment")?;
+            let metadata_bytes = bincode::serialize(&metadata)
+                .wrap_err("failed to serialize metadata for zenoh attachment")?;
 
-                match sample.inner {
-                    DataSampleInner::ZenohShm(sbuf) => {
-                        publisher
-                            .put(sbuf)
-                            .attachment(&metadata_bytes[..])
-                            .wait()
-                            .map_err(|e| eyre::eyre!("{e}"))
-                            .wrap_err("zenoh SHM publish failed")?;
-                    }
-                    DataSampleInner::Vec(v) => {
-                        publisher
-                            .put(v.as_slice())
-                            .attachment(&metadata_bytes[..])
-                            .wait()
-                            .map_err(|e| eyre::eyre!("{e}"))
-                            .wrap_err("zenoh publish failed")?;
-                    }
+            match sample.inner {
+                DataSampleInner::ZenohShm(sbuf) => {
+                    publisher
+                        .put(sbuf)
+                        .attachment(&metadata_bytes[..])
+                        .wait()
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err("zenoh SHM publish failed")?;
+                }
+                DataSampleInner::Vec(v) => {
+                    publisher
+                        .put(v.as_slice())
+                        .attachment(&metadata_bytes[..])
+                        .wait()
+                        .map_err(|e| eyre::eyre!("{e}"))
+                        .wrap_err("zenoh publish failed")?;
                 }
             }
-            None
         } else {
-            sample.map(|s| s.finalize())
-        };
-
-        self.control_channel
-            .send_message(output_id.clone(), metadata, data)
-            .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+            let data = sample.map(|s| s.finalize());
+            self.control_channel
+                .send_message(output_id.clone(), metadata, data)
+                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        }
 
         Ok(())
     }

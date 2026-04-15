@@ -1667,7 +1667,6 @@ dependencies = [
  "process-wrap",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
- "shared_memory_extended",
  "shellexpand 3.1.2",
  "sysinfo 0.36.1",
  "tokio",
@@ -3890,17 +3889,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.26.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
-dependencies = [
- "bitflags 1.3.2",
- "cfg-if 1.0.4",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
@@ -5990,19 +5978,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shared_memory_extended"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "004d7ece9a3be64f85471d50967710b0a146144225bed5f0abd0514a3bed086f"
-dependencies = [
- "cfg-if 1.0.4",
- "libc",
- "nix 0.26.4",
- "rand 0.8.5",
- "win-sys",
 ]
 
 [[package]]
