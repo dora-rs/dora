@@ -54,6 +54,8 @@ mod server;
 mod state;
 mod tcp_utils;
 
+const SPAWN_RESULT_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Start the coordinator with a TCP listener for control messages. Returns the daemon port and
 /// a future that resolves when the coordinator finishes.
 pub async fn start(
@@ -503,6 +505,7 @@ async fn start_inner(
                         coordinator_state.daemon_connections.remove(&machine_id);
                     }
                 }
+                handle_spawn_result_timeouts(&coordinator_state).await;
             }
             Event::CtrlC => {
                 tracing::info!("Destroying coordinator after receiving Ctrl-C signal");
@@ -614,6 +617,7 @@ pub(crate) struct RunningDataflow {
         Vec<tokio::sync::oneshot::Sender<eyre::Result<StopDataflowReply>>>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
+    pub(crate) spawn_started_at: Instant,
 }
 
 pub enum CachedResult<T> {
@@ -1006,6 +1010,7 @@ async fn start_dataflow(
             spawn_result: CachedResult::default(),
             stop_reply_senders: Vec::new(),
             pending_spawn_results: daemons,
+            spawn_started_at: Instant::now(),
         },
     );
 
@@ -1019,6 +1024,239 @@ async fn start_dataflow(
     }
 
     Ok(uuid)
+}
+
+async fn handle_spawn_result_timeouts(coordinator_state: &state::CoordinatorState) {
+    // Collect candidate IDs without holding locks across async work.
+    let candidates: Vec<Uuid> = coordinator_state
+        .running_dataflows
+        .iter()
+        .filter_map(|entry| {
+            let dataflow = entry.value();
+            let timed_out = matches!(dataflow.spawn_result, CachedResult::Pending { .. })
+                && !dataflow.pending_spawn_results.is_empty()
+                && dataflow.spawn_started_at.elapsed() > SPAWN_RESULT_TIMEOUT;
+            timed_out.then_some(*entry.key())
+        })
+        .collect();
+
+    for dataflow_id in candidates {
+        let Some(mut dataflow) = coordinator_state.running_dataflows.get_mut(&dataflow_id) else {
+            continue;
+        };
+
+        if !matches!(dataflow.spawn_result, CachedResult::Pending { .. })
+            || dataflow.pending_spawn_results.is_empty()
+            || dataflow.spawn_started_at.elapsed() <= SPAWN_RESULT_TIMEOUT
+        {
+            continue;
+        }
+
+        let elapsed = dataflow.spawn_started_at.elapsed();
+        let timed_out_daemons: Vec<DaemonId> =
+            dataflow.pending_spawn_results.iter().cloned().collect();
+        let started_daemons: Vec<DaemonId> = dataflow
+            .daemons
+            .iter()
+            .filter(|d| !dataflow.pending_spawn_results.contains(*d))
+            .cloned()
+            .collect();
+        let rollback_daemons: Vec<DaemonId> = dataflow.daemons.iter().cloned().collect();
+
+        let error = eyre!(
+            "spawn timed out after {:?} (timeout {:?}) for dataflow `{}`; \
+             pending daemons: {:?}; daemons that reported spawn success: {:?}",
+            elapsed,
+            SPAWN_RESULT_TIMEOUT,
+            dataflow_id,
+            timed_out_daemons,
+            started_daemons
+        );
+        dataflow.spawn_result.set_result(Err(error));
+        drop(dataflow);
+
+        let rollback_errors = rollback_assigned_daemons(
+            dataflow_id,
+            &rollback_daemons,
+            &coordinator_state.daemon_connections,
+        )
+        .await;
+        if rollback_errors.is_empty() {
+            tracing::warn!(
+                "spawn timeout for dataflow `{dataflow_id}`; rollback stop sent to {} daemon(s)",
+                rollback_daemons.len()
+            );
+        } else {
+            tracing::warn!(
+                "spawn timeout for dataflow `{dataflow_id}`; rollback attempted on {} daemon(s) with errors: {}",
+                rollback_daemons.len(),
+                rollback_errors.join("; ")
+            );
+        }
+    }
+}
+
+async fn rollback_assigned_daemons(
+    dataflow_id: Uuid,
+    daemon_ids: &[DaemonId],
+    daemon_connections: &DaemonConnections,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for daemon_id in daemon_ids {
+        let Some(connection) = daemon_connections.get(daemon_id) else {
+            errors.push(format!(
+                "missing daemon connection for `{daemon_id}` during rollback"
+            ));
+            continue;
+        };
+        let client = connection.client.clone();
+        drop(connection);
+
+        let result = client
+            .stop_dataflow(tarpc::context::current(), dataflow_id, None, false)
+            .await
+            .map_err(|e| eyre!(e))
+            .and_then(|r| r.map_err(|e: String| eyre!(e)));
+
+        if let Err(err) = result {
+            errors.push(format!(
+                "failed to stop dataflow `{dataflow_id}` on daemon `{daemon_id}`: {err:?}"
+            ));
+        }
+    }
+
+    errors
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_core::descriptor::DescriptorExt;
+
+    fn test_descriptor_single_node() -> Descriptor {
+        let descriptor_yaml = r#"
+nodes:
+  - id: node-a
+    path: /bin/echo
+"#;
+        let path = std::env::temp_dir().join(format!(
+            "dora-coordinator-timeout-test-{}.yml",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, descriptor_yaml).expect("descriptor yaml should be written");
+        let descriptor = Descriptor::blocking_read(&path).expect("descriptor should parse");
+        let _ = std::fs::remove_file(path);
+        descriptor
+    }
+
+    fn test_state() -> state::CoordinatorState {
+        let (_tx, rx) = tokio::sync::mpsc::channel::<Event>(1);
+        let (_abortable, abort_handle) =
+            futures::stream::abortable(tokio_stream::wrappers::ReceiverStream::new(rx));
+        let (daemon_events_tx, _daemon_events_rx) = tokio::sync::mpsc::channel(1);
+        state::CoordinatorState {
+            clock: Arc::new(HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            daemon_connections: Default::default(),
+            daemon_events_tx,
+            abort_handle,
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_timeout_sets_spawn_result_error() {
+        let state = test_state();
+        let descriptor = test_descriptor_single_node();
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("descriptor should resolve");
+
+        let daemon_id = DaemonId::new(None);
+        let dataflow_id = Uuid::new_v4();
+        state.running_dataflows.insert(
+            dataflow_id,
+            RunningDataflow {
+                name: None,
+                uuid: dataflow_id,
+                descriptor,
+                daemons: std::iter::once(daemon_id.clone()).collect(),
+                pending_daemons: BTreeSet::new(),
+                exited_before_subscribe: Vec::new(),
+                nodes,
+                node_to_daemon: BTreeMap::new(),
+                node_metrics: BTreeMap::new(),
+                spawn_result: CachedResult::default(),
+                stop_reply_senders: Vec::new(),
+                pending_spawn_results: std::iter::once(daemon_id).collect(),
+                spawn_started_at: Instant::now() - (SPAWN_RESULT_TIMEOUT + Duration::from_secs(1)),
+            },
+        );
+
+        handle_spawn_result_timeouts(&state).await;
+
+        let dataflow = state
+            .running_dataflows
+            .get(&dataflow_id)
+            .expect("dataflow should still exist");
+        match &dataflow.spawn_result {
+            CachedResult::Cached { result } => {
+                let msg = format!("{result:?}");
+                assert!(
+                    msg.contains("spawn timed out"),
+                    "expected timeout error message, got: {msg}"
+                );
+            }
+            CachedResult::Pending { .. } => {
+                panic!("spawn result should be cached as error after timeout");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_timeout_does_not_trigger_before_deadline() {
+        let state = test_state();
+        let descriptor = test_descriptor_single_node();
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("descriptor should resolve");
+
+        let daemon_id = DaemonId::new(None);
+        let dataflow_id = Uuid::new_v4();
+        state.running_dataflows.insert(
+            dataflow_id,
+            RunningDataflow {
+                name: None,
+                uuid: dataflow_id,
+                descriptor,
+                daemons: std::iter::once(daemon_id.clone()).collect(),
+                pending_daemons: BTreeSet::new(),
+                exited_before_subscribe: Vec::new(),
+                nodes,
+                node_to_daemon: BTreeMap::new(),
+                node_metrics: BTreeMap::new(),
+                spawn_result: CachedResult::default(),
+                stop_reply_senders: Vec::new(),
+                pending_spawn_results: std::iter::once(daemon_id).collect(),
+                spawn_started_at: Instant::now(),
+            },
+        );
+
+        handle_spawn_result_timeouts(&state).await;
+
+        let dataflow = state
+            .running_dataflows
+            .get(&dataflow_id)
+            .expect("dataflow should still exist");
+        assert!(
+            matches!(dataflow.spawn_result, CachedResult::Pending { .. }),
+            "spawn result should still be pending before timeout"
+        );
+    }
 }
 
 async fn destroy_daemon(daemon_id: DaemonId, client: DaemonControlClient) -> Result<()> {
