@@ -481,9 +481,7 @@ async fn start_inner(
                                     archived_dataflows.shift_remove_index(0);
                                 }
                                 let mut finished_dataflow = entry.remove();
-                                for subscriber in finished_dataflow.topic_subscribers.values_mut() {
-                                    subscriber.close();
-                                }
+                                close_topic_subscribers_on_finish(&mut finished_dataflow);
                                 let dataflow_id = finished_dataflow.uuid;
                                 send_log_message(
                                     &mut finished_dataflow.log_subscribers,
@@ -2448,6 +2446,20 @@ async fn stop_topic_debug_stream(
     Ok(())
 }
 
+/// Close every CLI topic-subscriber channel on a finished dataflow so the
+/// corresponding `dora topic echo/hz/info` client sees EOF on its receiver
+/// instead of hanging forever.
+///
+/// Called from the `DataflowFinishedOnDaemon` arm of the event loop when the
+/// last daemon has finished. Pulling this out of the inline match arm gives
+/// the behavior a named call site: removing it from the event loop shows up
+/// in a code review as "no more callers of close_topic_subscribers_on_finish".
+fn close_topic_subscribers_on_finish(dataflow: &mut RunningDataflow) {
+    for subscriber in dataflow.topic_subscribers.values_mut() {
+        subscriber.close();
+    }
+}
+
 async fn restore_topic_debug_streams_for_daemon(
     running_dataflows: &HashMap<DataflowId, RunningDataflow>,
     daemon_connections: &mut DaemonConnections,
@@ -3434,6 +3446,211 @@ mod tests {
         for task in daemon_tasks {
             task.abort();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn restore_topic_debug_streams_re_issues_start_after_reconnect() {
+        // Regression test for the daemon-reconnect lifecycle fix (#238 / #242):
+        // when a daemon reconnects, every active subscriber with outputs on
+        // that daemon must receive a fresh StartTopicDebugStream.
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let data_id: dora_core::config::DataId = "message".to_string().into();
+        let subscription_id = Uuid::new_v4();
+
+        // Stand up a connection whose rx we can inspect after the reconnect path runs.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        // Pre-populate a dataflow with an already-registered subscriber. This
+        // simulates a subscriber that was set up before the daemon dropped.
+        let mut running_dataflows = HashMap::new();
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        let (frame_tx, _frame_rx) =
+            tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+        let mut outputs_by_daemon = BTreeMap::new();
+        outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id.clone(), data_id.clone())]);
+        dataflow.topic_subscribers.insert(
+            subscription_id,
+            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+        );
+        running_dataflows.insert(dataflow_id, dataflow);
+
+        // Task that responds as the reconnected daemon would.
+        let seen = Arc::new(tokio::sync::Mutex::new(None::<(Uuid, DataflowId)>));
+        let seen_task = seen.clone();
+        let daemon_task = tokio::spawn(async move {
+            let outbound = rx
+                .recv()
+                .await
+                .expect("reconnected daemon should receive restore message");
+            let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+            if let DaemonCoordinatorEvent::StartTopicDebugStream {
+                dataflow_id: restore_df,
+                subscription_id: restore_sub,
+                ..
+            } = outbound_raw.params.inner
+            {
+                *seen_task.lock().await = Some((restore_sub, restore_df));
+            } else {
+                panic!(
+                    "unexpected event on reconnect: {:?}",
+                    outbound_raw.params.inner
+                );
+            }
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())))
+                    .unwrap();
+            let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+            let reply_tx = pending_replies
+                .lock()
+                .await
+                .remove(&request_id)
+                .expect("pending reply sender should exist");
+            let _ = reply_tx.send(reply);
+        });
+
+        let mut reported = BTreeSet::new();
+        reported.insert(dataflow_id);
+
+        restore_topic_debug_streams_for_daemon(
+            &running_dataflows,
+            &mut daemon_connections,
+            &daemon_id,
+            &reported,
+            &HLC::default(),
+        )
+        .await;
+
+        daemon_task.await.unwrap();
+        assert_eq!(
+            *seen.lock().await,
+            Some((subscription_id, dataflow_id)),
+            "restore should re-issue StartTopicDebugStream for the existing subscription"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn restore_topic_debug_streams_skips_unreported_dataflows() {
+        // If the daemon did not report this dataflow on reconnect, we must
+        // not re-issue subscriptions for it (the dataflow is no longer on
+        // that daemon).
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let data_id: dora_core::config::DataId = "message".to_string().into();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        let mut running_dataflows = HashMap::new();
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        let (frame_tx, _frame_rx) =
+            tokio::sync::mpsc::channel::<crate::topic_subscriber::TopicFrame>(4);
+        let mut outputs_by_daemon = BTreeMap::new();
+        outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id, data_id)]);
+        dataflow.topic_subscribers.insert(
+            Uuid::new_v4(),
+            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+        );
+        running_dataflows.insert(dataflow_id, dataflow);
+
+        // Empty reported set: daemon did not acknowledge this dataflow.
+        let reported = BTreeSet::new();
+        restore_topic_debug_streams_for_daemon(
+            &running_dataflows,
+            &mut daemon_connections,
+            &daemon_id,
+            &reported,
+            &HLC::default(),
+        )
+        .await;
+
+        // No message should have been sent.
+        assert!(
+            rx.try_recv().is_err(),
+            "restore must not message the daemon for unreported dataflows"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_topic_subscribers_on_finish_drains_all_subscribers() {
+        // Regression test for the CRITICAL dataflow-finish leak (#242 root cause).
+        // Directly exercises the helper called from the DataflowFinishedOnDaemon
+        // arm of the event loop (lib.rs: `close_topic_subscribers_on_finish`).
+        // CLI must observe EOF on its data_rx (no silent hang).
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        let (tx1, mut rx1) = tokio::sync::mpsc::channel(4);
+        let (tx2, mut rx2) = tokio::sync::mpsc::channel(4);
+        dataflow.topic_subscribers.insert(
+            Uuid::new_v4(),
+            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx1),
+        );
+        dataflow.topic_subscribers.insert(
+            Uuid::new_v4(),
+            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx2),
+        );
+
+        // Call the real helper, not a mirror of it. If the helper is renamed
+        // or its semantics change, this test must be updated or fails loudly.
+        super::close_topic_subscribers_on_finish(&mut dataflow);
+
+        // Wrap recv in a short timeout so a future regression where close()
+        // silently drops the sender without closing fails loudly instead of
+        // hanging CI indefinitely.
+        let timeout = std::time::Duration::from_secs(1);
+        let got1 = tokio::time::timeout(timeout, rx1.recv())
+            .await
+            .expect("subscriber 1 must not hang after dataflow finish");
+        assert!(got1.is_none(), "subscriber 1 must see EOF");
+        let got2 = tokio::time::timeout(timeout, rx2.recv())
+            .await
+            .expect("subscriber 2 must not hang after dataflow finish");
+        assert!(got2.is_none(), "subscriber 2 must see EOF");
+    }
+
+    /// Source-level guard that the DataflowFinishedOnDaemon dispatch still
+    /// calls the cleanup helper. A refactor that moves the branch but forgets
+    /// to keep the call wired up would leave the helper unreferenced from
+    /// `lib.rs` and fail this check.
+    ///
+    /// This is a second-line guard — the primary protection is that
+    /// `close_topic_subscribers_on_finish` has no other callers, so removal
+    /// also produces a `dead_code` lint. This test hard-fails the case a
+    /// reviewer might waive.
+    #[test]
+    fn dataflow_finish_dispatch_calls_close_helper() {
+        // Runtime read (not include_str!) so we don't embed ~100KB of source
+        // into every test binary. The file is always present when `cargo test`
+        // runs from the crate root.
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        )
+        .expect("lib.rs must be readable at CARGO_MANIFEST_DIR/src/lib.rs");
+        assert!(
+            src.contains("close_topic_subscribers_on_finish(&mut finished_dataflow)"),
+            "DataflowFinishedOnDaemon arm must still call close_topic_subscribers_on_finish; \
+             if you moved the cleanup, update this guard to point at the new call site"
+        );
     }
 
     #[test]

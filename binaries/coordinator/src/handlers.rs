@@ -667,3 +667,70 @@ async fn destroy_daemons(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::topic_subscriber::TopicSubscriber;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn send_topic_frames_resets_timeout_streak_on_successful_send() {
+        let subscription_id = Uuid::new_v4();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
+        // Prime the counter: simulate 3 prior timeouts.
+        assert_eq!(subscriber.record_timeout(), 1);
+        assert_eq!(subscriber.record_timeout(), 2);
+        assert_eq!(subscriber.record_timeout(), 3);
+
+        let mut subscribers = BTreeMap::new();
+        subscribers.insert(subscription_id, subscriber);
+
+        // A real send should succeed (channel has capacity) and reset the streak.
+        send_topic_frames(&mut subscribers, vec![subscription_id], vec![1, 2, 3]).await;
+
+        let frame = rx.try_recv().expect("subscriber should receive frame");
+        assert_eq!(&*frame.payload, &[1u8, 2, 3]);
+        // Streak must be back to 0 after a successful send.
+        assert_eq!(
+            subscribers
+                .get_mut(&subscription_id)
+                .unwrap()
+                .record_timeout(),
+            1
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn send_topic_frames_closes_subscriber_after_100_consecutive_timeouts() {
+        // Capacity 1 + pre-filled + rx never drained = every send_frame times out.
+        // `start_paused = true` makes tokio auto-advance through the 100 × 100ms
+        // timeouts without real wall-clock delay.
+        let subscription_id = Uuid::new_v4();
+        let (tx, _rx_never_drained) = tokio::sync::mpsc::channel(1);
+        tx.send(crate::topic_subscriber::TopicFrame {
+            subscription_id,
+            payload: std::sync::Arc::from(vec![].into_boxed_slice()),
+        })
+        .await
+        .unwrap();
+
+        let subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
+        let mut subscribers = BTreeMap::new();
+        subscribers.insert(subscription_id, subscriber);
+
+        for i in 1..=99 {
+            send_topic_frames(&mut subscribers, vec![subscription_id], vec![0]).await;
+            assert!(
+                subscribers.contains_key(&subscription_id),
+                "subscriber evicted prematurely at iteration {i}"
+            );
+        }
+        // 100th consecutive timeout triggers the close + retain eviction.
+        send_topic_frames(&mut subscribers, vec![subscription_id], vec![0]).await;
+        assert!(
+            !subscribers.contains_key(&subscription_id),
+            "subscriber should be evicted after 100 consecutive timeouts"
+        );
+    }
+}

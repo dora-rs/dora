@@ -70,3 +70,49 @@ impl TopicSubscriber {
         self.sender = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn new_subscriber(
+        capacity: usize,
+    ) -> (TopicSubscriber, tokio::sync::mpsc::Receiver<TopicFrame>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        (TopicSubscriber::new(BTreeMap::new(), tx), rx)
+    }
+
+    #[tokio::test]
+    async fn close_signals_eof_to_receiver() {
+        // Regression test for #236 fix (PR #238): when a dataflow finishes,
+        // the coordinator calls close() on each subscriber and the CLI must
+        // see EOF on data_rx rather than hanging.
+        let (mut sub, mut rx) = new_subscriber(4);
+        assert!(!sub.is_closed());
+        sub.close();
+        assert!(sub.is_closed());
+        assert!(rx.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn send_frame_fails_after_close() {
+        let (mut sub, _rx) = new_subscriber(4);
+        sub.close();
+        let frame = TopicFrame {
+            subscription_id: uuid::Uuid::new_v4(),
+            payload: std::sync::Arc::from(vec![].into_boxed_slice()),
+        };
+        assert!(sub.send_frame(frame).await.is_err());
+    }
+
+    #[test]
+    fn record_timeout_is_monotonic() {
+        let (mut sub, _rx) = new_subscriber(1);
+        assert_eq!(sub.record_timeout(), 1);
+        assert_eq!(sub.record_timeout(), 2);
+        assert_eq!(sub.record_timeout(), 3);
+        sub.reset_timeout_streak();
+        assert_eq!(sub.record_timeout(), 1);
+    }
+}
