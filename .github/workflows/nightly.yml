@@ -485,10 +485,53 @@ jobs:
           dora stop --name tui-smoke --grace-duration 5s 2>/dev/null || true
           dora destroy 2>/dev/null || true
 
+  cpu-affinity-smoke:
+    # Regression test for #252. Spawns `cpu-affinity-probe` pinned to cores
+    # [0, 1] via the dataflow YAML; the probe reads its own affinity mask
+    # via sched_getaffinity and prints it. Test asserts the mask matches
+    # the requested set. Linux-only (sched_{get,set}affinity are Linux APIs).
+    name: cpu_affinity end-to-end (Linux)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Run cpu-affinity-probe fixture (cpu_affinity: [0, 1])
+        run: |
+          cd examples/cpu-affinity-probe
+          out=$(dora run dataflow.yml --stop-after 3s 2>&1)
+          echo "$out"
+          # The probe prints exactly one `AFFINITY_MASK:<csv>` line from stdout.
+          # `dora run` prefixes node stdout with "stdout probe:" so extract the
+          # csv tail.
+          mask=$(echo "$out" | grep -oE 'AFFINITY_MASK:[^[:space:]]+' | head -1 | cut -d: -f2)
+          if [ -z "$mask" ]; then
+            echo "ERROR: probe did not print AFFINITY_MASK — cpu-affinity-probe failed to run"
+            exit 1
+          fi
+          if [ "$mask" != "0,1" ]; then
+            echo "ERROR: expected AFFINITY_MASK:0,1, got: $mask"
+            exit 1
+          fi
+          echo "OK: probe ran with the expected affinity mask: $mask"
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -546,6 +589,7 @@ jobs:
           - record-replay
           - cluster-smoke
           - topic-and-top-smoke
+          - cpu-affinity-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close

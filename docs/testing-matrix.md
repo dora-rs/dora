@@ -38,6 +38,7 @@ the `nightly-regression` label but do not block PRs.
 | Record / replay round-trip | `record-replay` |
 | Cluster lifecycle (`cluster status`, `cluster down`) | `cluster-smoke` |
 | Inspection commands (`top --once`, `topic list/info/pub`) | `topic-and-top-smoke` |
+| `cpu_affinity` end-to-end (mask actually applied) | `cpu-affinity-smoke` (Linux only) |
 
 Run locally:
 ```bash
