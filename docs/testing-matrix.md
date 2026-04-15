@@ -40,6 +40,7 @@ the `nightly-regression` label but do not block PRs.
 | Inspection commands (`top --once`, `topic list/info/pub`) | `topic-and-top-smoke` |
 | `cpu_affinity` end-to-end (mask actually applied) | `cpu-affinity-smoke` (Linux only) |
 | redb coordinator store survives restart | `redb-backend-smoke` |
+| Daemon auto-reconnect (SIGSTOP past heartbeat → SIGCONT → re-register) | `daemon-reconnect-smoke` (Linux only) |
 
 Run locally:
 ```bash

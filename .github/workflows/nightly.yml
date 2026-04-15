@@ -605,10 +605,96 @@ jobs:
         run: |
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
 
+  daemon-reconnect-smoke:
+    # Regression test for #254. Proves the daemon auto-reconnect loop works
+    # end-to-end by SIGSTOPping the daemon long enough for the coord's
+    # heartbeat watchdog to disconnect it (30s timeout in coord/src/lib.rs:1664),
+    # then SIGCONTing and asserting the daemon rediscovers + re-registers.
+    # Linux-only: relies on SIGSTOP/SIGCONT semantics for freezing the process.
+    name: daemon auto-reconnect end-to-end (Linux)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Start coord + daemon, capture PID
+        run: |
+          dora coordinator > /tmp/coord.log 2>&1 &
+          echo "COORD_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+          dora daemon > /tmp/daemon.log 2>&1 &
+          echo "DAEMON_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+          # Sanity: daemon registered and emitted its first status report.
+          if ! grep -q "daemon.*reports.*running dataflow" /tmp/coord.log; then
+            echo "ERROR: daemon did not register — no 'daemon X reports' line in coord log"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: initial daemon registration confirmed"
+      - name: Freeze daemon with SIGSTOP, wait past heartbeat timeout
+        run: |
+          kill -STOP "$DAEMON_PID"
+          echo "daemon frozen at $(date +%s)"
+          # Coord's watchdog: 30s timeout (binaries/coordinator/src/lib.rs:1664).
+          # Wait 35s to give the watchdog 5s of margin.
+          sleep 35
+          if ! grep -q "Disconnecting daemons that failed watchdog" /tmp/coord.log; then
+            echo "ERROR: coord did not log watchdog disconnect after 35s pause"
+            echo "--- coord log ---"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: coord timed out the frozen daemon"
+      - name: Resume daemon with SIGCONT, wait for reconnect
+        run: |
+          kill -CONT "$DAEMON_PID"
+          echo "daemon resumed at $(date +%s)"
+          # Daemon reconnect loop: 1s backoff on first retry. 30s is very
+          # generous but absorbs scheduler jitter on slow runners.
+          sleep 30
+          # Daemon should have noticed the disconnect and retried.
+          if ! grep -q "daemon disconnected from coordinator" /tmp/daemon.log; then
+            echo "ERROR: daemon did not detect disconnect post-resume"
+            echo "--- daemon log ---"
+            cat /tmp/daemon.log
+            exit 1
+          fi
+          echo "OK: daemon detected disconnect"
+          # Coord should show at least two 'daemon X reports' lines — initial
+          # registration and post-reconnect registration.
+          report_count=$(grep -c "daemon.*reports.*running dataflow" /tmp/coord.log || true)
+          echo "coord saw $report_count daemon status reports total"
+          if [ "$report_count" -lt 2 ]; then
+            echo "ERROR: expected >= 2 daemon reports (initial + post-reconnect), got $report_count"
+            echo "--- coord log ---"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: daemon reconnected and re-registered"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -CONT -f "dora daemon" 2>/dev/null || true
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -668,6 +754,7 @@ jobs:
           - topic-and-top-smoke
           - cpu-affinity-smoke
           - redb-backend-smoke
+          - daemon-reconnect-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close
