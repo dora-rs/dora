@@ -1,8 +1,8 @@
 //! End-to-end tests: coordinator + CLI WsSession over real WebSocket connections.
 //!
-//! `WsSession` creates its own tokio runtime internally (`block_on`), so these
-//! tests run the coordinator on a background thread and use `WsSession` from
-//! the main test thread (no nested runtimes).
+//! `WsSession` creates its own tokio runtime internally, so these tests run the
+//! coordinator on a background thread and use `WsSession` from the main test
+//! thread (no nested runtimes).
 //!
 //! Tests in the `real_dataflow` module use full coordinator+daemon+node stack
 //! via `dora up` CLI to test the complete lifecycle.
@@ -10,8 +10,14 @@
 use dora_cli::WsSession;
 use dora_coordinator::dora_coordinator_store::{DataflowRecord, DataflowStatus};
 use dora_coordinator::{CoordinatorStore, InMemoryStore};
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
+    current_crate_version, ws_protocol::WsRequest,
+};
+use futures::{SinkExt, StreamExt};
 use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use tokio_tungstenite::accept_async;
+use uuid::Uuid;
 
 /// Start a coordinator on a background tokio runtime. Returns the bound port.
 fn start_coordinator_background() -> u16 {
@@ -73,6 +79,99 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, n
         updated_at: 0,
     };
     store.put_dataflow(&record).expect("seed dataflow record");
+}
+
+/// Start a minimal control websocket server that acks `TopicSubscribe` and
+/// later pushes a binary frame on the same connection.
+fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
+    async fn handle_mock_control_ws<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
+        socket: tokio_tungstenite::WebSocketStream<S>,
+        subscription_id: Uuid,
+        payload: Vec<u8>,
+    ) {
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (mut ws_tx, mut ws_rx) = socket.split();
+        while let Some(message) = ws_rx.next().await {
+            let Ok(Message::Text(text)) = message else {
+                continue;
+            };
+            let request: WsRequest = serde_json::from_str(&text).expect("parse WsRequest");
+            let control_request: ControlRequest =
+                serde_json::from_value(request.params).expect("parse control request");
+            match control_request {
+                ControlRequest::Hello { .. } => {
+                    let reply = ControlRequestReply::HelloOk {
+                        dora_version: current_crate_version(),
+                    };
+                    let response = serde_json::json!({
+                        "id": request.id,
+                        "result": reply,
+                    });
+                    ws_tx
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .expect("send hello reply");
+                }
+                ControlRequest::TopicSubscribe { .. } => {
+                    let reply = ControlRequestReply::TopicSubscribed { subscription_id };
+                    let response = serde_json::json!({
+                        "id": request.id,
+                        "result": reply,
+                    });
+                    ws_tx
+                        .send(Message::Text(response.to_string().into()))
+                        .await
+                        .expect("send topic subscribe reply");
+                    let mut frame = subscription_id.as_bytes().to_vec();
+                    frame.extend_from_slice(&payload);
+                    ws_tx
+                        .send(Message::Binary(frame.into()))
+                        .await
+                        .expect("send binary frame");
+                    break;
+                }
+                other => panic!("unexpected control request: {other:?}"),
+            }
+        }
+    }
+
+    let (port_tx, port_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to create mock topic runtime");
+
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind mock topic server");
+            let port = listener.local_addr().expect("mock local addr").port();
+            port_tx.send(port).expect("send mock server port");
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept mock topic client");
+                let payload = payload.clone();
+                tokio::spawn(async move {
+                    let ws_stream = accept_async(stream).await.expect("accept websocket");
+                    handle_mock_control_ws(ws_stream, subscription_id, payload).await;
+                });
+            }
+        });
+    });
+
+    let port = port_rx.recv().expect("receive mock topic port");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+            break;
+        }
+        if std::time::Instant::now() > deadline {
+            panic!("mock topic server did not become ready within 2s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    port
 }
 
 /// Helper: send a ControlRequest via WsSession and deserialize the reply.
@@ -168,6 +267,29 @@ fn cli_multiple_requests_same_session() {
         }
         other => panic!("expected ConnectedDaemons, got {other:?}"),
     }
+}
+
+#[test]
+fn cli_topic_subscription_receives_binary_frames_immediately_after_subscribe_ack() {
+    let subscription_id = Uuid::new_v4();
+    let expected_payload = b"topic-payload".to_vec();
+    let port = start_mock_topic_server(subscription_id, expected_payload.clone());
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let (received_subscription_id, data_rx) = session
+        .subscribe_topics(
+            Uuid::new_v4(),
+            vec![("node".to_string().into(), "output".to_string().into())],
+        )
+        .expect("subscribe topics");
+
+    assert_eq!(received_subscription_id, subscription_id);
+    let payload = data_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("receive topic payload")
+        .expect("topic payload should be ok");
+    assert_eq!(payload, expected_payload);
 }
 
 // -- Phase 2: Node control error paths via WsSession --

@@ -5,6 +5,7 @@ use crate::{
         self, ArchivedDataflow, CachedResult, DaemonConnection, DaemonConnections, RunningBuild,
         RunningDataflow,
     },
+    topic_subscriber::TopicSubscriber,
 };
 use dora_core::{
     config::{NodeId, OperatorId},
@@ -27,6 +28,8 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
+
+const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 // Resolve the dataflow name.
 pub(crate) fn resolve_name(
@@ -77,6 +80,60 @@ pub(crate) async fn send_log_message(
         }
     }
     log_subscribers.retain(|s| !s.is_closed());
+}
+
+pub(crate) async fn send_topic_frames(
+    topic_subscribers: &mut BTreeMap<Uuid, TopicSubscriber>,
+    subscription_ids: Vec<Uuid>,
+    payload: Vec<u8>,
+) {
+    if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
+        tracing::warn!(
+            "dropping oversized topic debug payload ({} bytes) for {} subscription(s)",
+            payload.len(),
+            subscription_ids.len()
+        );
+        return;
+    }
+    let shared_payload: std::sync::Arc<[u8]> = payload.into();
+    const MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS: usize = 100;
+    for subscription_id in subscription_ids {
+        if let Some(subscriber) = topic_subscribers.get_mut(&subscription_id) {
+            let frame = crate::topic_subscriber::TopicFrame {
+                subscription_id,
+                payload: shared_payload.clone(),
+            };
+            let send_result =
+                tokio::time::timeout(Duration::from_millis(100), subscriber.send_frame(frame))
+                    .await;
+            match send_result {
+                Ok(Ok(())) => {
+                    subscriber.reset_timeout_streak();
+                }
+                Ok(Err(_)) => {
+                    subscriber.close();
+                }
+                Err(_) => {
+                    let timeouts = subscriber.record_timeout();
+                    if timeouts >= MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS {
+                        tracing::warn!(
+                            %subscription_id,
+                            timeouts,
+                            "closing slow topic debug subscriber after repeated send timeouts"
+                        );
+                        subscriber.close();
+                    } else {
+                        tracing::warn!(
+                            %subscription_id,
+                            timeouts,
+                            "timed out sending topic debug frame to CLI subscriber; keeping subscription active"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    topic_subscribers.retain(|_, s| !s.is_closed());
 }
 
 pub(crate) fn dataflow_result(
@@ -551,6 +608,7 @@ pub(crate) async fn start_dataflow(
         stop_reply_senders: Vec::new(),
         buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
+        topic_subscribers: BTreeMap::new(),
         daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
         pending_spawn_results: daemons,
         created_at: state::now_millis(),

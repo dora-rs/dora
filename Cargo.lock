@@ -1844,6 +1844,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite",
  "tracing",
  "uuid",
 ]

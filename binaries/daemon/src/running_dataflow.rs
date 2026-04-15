@@ -201,6 +201,8 @@ pub struct RunningDataflow {
     pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    pub(crate) debug_topic_subscriptions: BTreeMap<uuid::Uuid, BTreeSet<OutputId>>,
+    pub(crate) debug_topic_watchers: BTreeMap<OutputId, BTreeSet<uuid::Uuid>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
@@ -256,6 +258,8 @@ impl RunningDataflow {
             grace_duration_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
+            debug_topic_subscriptions: Default::default(),
+            debug_topic_watchers: Default::default(),
             finished_tx,
             listener_shutdown_tx,
             listener_shutdown_rx,

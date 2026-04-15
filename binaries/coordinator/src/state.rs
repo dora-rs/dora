@@ -1,4 +1,4 @@
-use crate::log_subscriber::LogSubscriber;
+use crate::{log_subscriber::LogSubscriber, topic_subscriber::TopicSubscriber};
 use dora_coordinator_store::{CoordinatorStore, DataflowRecord, DataflowStatus};
 use dora_core::config::NodeId;
 use dora_message::{
@@ -191,6 +191,7 @@ pub(crate) struct RunningDataflow {
     /// Buffer for log messages that were sent before there were any subscribers.
     pub(crate) buffered_log_messages: Vec<LogMessage>,
     pub(crate) log_subscribers: Vec<LogSubscriber>,
+    pub(crate) topic_subscribers: BTreeMap<Uuid, TopicSubscriber>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
 

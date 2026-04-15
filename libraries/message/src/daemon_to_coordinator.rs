@@ -92,6 +92,15 @@ pub enum DaemonEvent {
         #[serde(default)]
         network: Option<NetworkMetrics>,
     },
+    /// Topic debug payload destined for one or more active CLI subscriptions.
+    ///
+    /// Daemon and coordinator are co-deployed from the same build, so this
+    /// multi-subscriber shape is safe to evolve within the repository.
+    TopicDebugData {
+        dataflow_id: DataflowId,
+        subscription_ids: Vec<uuid::Uuid>,
+        payload: Vec<u8>,
+    },
     /// Daemon acknowledges state catch-up through a given sequence number.
     StateCatchUpAck {
         dataflow_id: DataflowId,
@@ -197,4 +206,6 @@ pub enum DaemonCoordinatorReply {
     StopNodeResult(Result<(), String>),
     SetParamResult(Result<(), String>),
     DeleteParamResult(Result<(), String>),
+    StartTopicDebugStreamResult(Result<(), String>),
+    StopTopicDebugStreamResult(Result<(), String>),
 }

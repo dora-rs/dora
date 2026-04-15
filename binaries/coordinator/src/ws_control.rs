@@ -1,6 +1,5 @@
 use crate::{Event, control::ControlEvent};
 use axum::extract::ws::{Message, WebSocket};
-use dora_core::topics::zenoh_output_publish_topic;
 use dora_message::{
     cli_to_coordinator::{ControlRequest, check_cli_version},
     common::Timestamped,
@@ -11,10 +10,8 @@ use dora_message::{
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 /// Maximum topics allowed in a single TopicSubscribe request.
@@ -23,8 +20,12 @@ const MAX_TOPICS_PER_SUBSCRIBE: usize = 64;
 /// Maximum concurrent topic subscriptions per WebSocket connection.
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 16;
 
-/// Maximum binary payload size forwarded from Zenoh (64 MiB).
-const MAX_BINARY_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
+#[derive(Clone)]
+struct ActiveTopicSubscription {
+    subscription_id: Uuid,
+    dataflow_id: Uuid,
+    topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+}
 
 /// Serialize a `WsResponse` and send it over the WS connection.
 /// Returns `Err` if the WS send fails (connection closed).
@@ -59,22 +60,6 @@ fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     }
 }
 
-/// Lazily-initialized Zenoh session shared across topic subscriptions.
-async fn get_or_init_zenoh(
-    zenoh_session: &mut Option<zenoh::Session>,
-) -> Result<zenoh::Session, String> {
-    if let Some(session) = zenoh_session.as_ref() {
-        return Ok(session.clone());
-    }
-    match dora_core::topics::open_zenoh_session(None).await {
-        Ok(session) => {
-            *zenoh_session = Some(session.clone());
-            Ok(session)
-        }
-        Err(e) => Err(format!("failed to open zenoh session: {e}")),
-    }
-}
-
 /// Handle a single CLI WebSocket connection on `/api/control`.
 ///
 /// For normal requests: deserialize ControlRequest from WsRequest.params,
@@ -83,8 +68,8 @@ async fn get_or_init_zenoh(
 /// For LogSubscribe/BuildLogSubscribe: ack via WsResponse, then push WsEvent{event:"log"}
 /// on the same connection.
 ///
-/// For TopicSubscribe: validate via coordinator, open Zenoh subscribers, forward as binary
-/// WS frames with `subscription_id ++ payload` format.
+/// For TopicSubscribe: register a daemon-backed debug stream via coordinator
+/// and forward binary frames with `subscription_id ++ payload` format.
 pub(crate) async fn handle_control_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
@@ -94,11 +79,9 @@ pub(crate) async fn handle_control_ws(
     // Channel for log events to push back on same WS connection
     let (log_tx, mut log_rx) = mpsc::channel::<String>(64);
     // Channel for binary topic data frames
-    let (binary_tx, mut binary_rx) = mpsc::channel::<Vec<u8>>(64);
-    // Active topic subscription tasks, keyed by subscription_id
-    let mut topic_tasks: HashMap<Uuid, Vec<JoinHandle<()>>> = HashMap::new();
-    // Lazily initialized Zenoh session
-    let mut zenoh_session: Option<zenoh::Session> = None;
+    let (binary_tx, mut binary_rx) = mpsc::channel::<crate::topic_subscriber::TopicFrame>(64);
+    let mut topic_subscriptions: Vec<ActiveTopicSubscription> = Vec::new();
+    let mut publish_session: Option<zenoh::Session> = None;
 
     loop {
         tokio::select! {
@@ -202,6 +185,23 @@ pub(crate) async fn handle_control_ws(
                         continue;
                     }
                     ControlRequest::TopicSubscribe { dataflow_id, topics } => {
+                        let mut normalized_topics = topics.clone();
+                        normalized_topics.sort();
+
+                        if let Some(existing) = topic_subscriptions.iter().find(|subscription| {
+                            subscription.dataflow_id == *dataflow_id
+                                && subscription.topics == normalized_topics
+                        }) {
+                            let reply = ControlRequestReply::TopicSubscribed {
+                                subscription_id: existing.subscription_id,
+                            };
+                            let resp_json = format_response_json(req.id, &reply);
+                            if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+
                         // Validate topic count
                         if topics.len() > MAX_TOPICS_PER_SUBSCRIBE {
                             let resp = WsResponse::err(
@@ -217,12 +217,12 @@ pub(crate) async fn handle_control_ws(
                         }
 
                         // Validate subscription count
-                        if topic_tasks.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+                        if topic_subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
                                     "too many active subscriptions ({}, max {})",
-                                    topic_tasks.len(),
+                                    topic_subscriptions.len(),
                                     MAX_SUBSCRIPTIONS_PER_CONNECTION
                                 ),
                             );
@@ -230,83 +230,37 @@ pub(crate) async fn handle_control_ws(
                             continue;
                         }
 
-                        let (found_tx, found_rx) = oneshot::channel();
+                        let (done_tx, done_rx) = oneshot::channel();
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
                             dataflow_id: *dataflow_id,
                             topics: topics.clone(),
-                            found_tx,
+                            sender: binary_tx.clone(),
+                            done_tx,
                         })).await;
 
-                        let found = found_rx.await.unwrap_or(false);
-                        if !found {
-                            let resp = WsResponse::err(
-                                req.id,
-                                format!(
-                                    "dataflow {dataflow_id} not found or publish_all_messages_to_zenoh not enabled"
-                                ),
-                            );
-                            let _ = send_ws_response(&mut ws_tx, &resp).await;
-                            continue;
-                        }
-
-                        // Open Zenoh session lazily
-                        let session = match get_or_init_zenoh(&mut zenoh_session).await {
-                            Ok(s) => s,
-                            Err(e) => {
-                                let resp = WsResponse::err(req.id, e);
+                        let subscription_id = match done_rx.await {
+                            Ok(Ok(subscription_id)) => {
+                                topic_subscriptions.push(ActiveTopicSubscription {
+                                    subscription_id,
+                                    dataflow_id: *dataflow_id,
+                                    topics: normalized_topics,
+                                });
+                                subscription_id
+                            }
+                            Ok(Err(err)) => {
+                                let resp = WsResponse::err(req.id, err);
+                                let _ = send_ws_response(&mut ws_tx, &resp).await;
+                                continue;
+                            }
+                            Err(_) => {
+                                let resp = WsResponse::err(
+                                    req.id,
+                                    "topic subscribe request dropped before completion".to_string(),
+                                );
                                 let _ = send_ws_response(&mut ws_tx, &resp).await;
                                 continue;
                             }
                         };
-
-                        let subscription_id = Uuid::new_v4();
-                        let mut handles = Vec::with_capacity(topics.len());
-
-                        for (node_id, data_id) in topics {
-                            let topic = zenoh_output_publish_topic(
-                                *dataflow_id,
-                                node_id,
-                                data_id,
-                            );
-                            let session = session.clone();
-                            let binary_tx = binary_tx.clone();
-                            let sub_id_bytes = subscription_id.into_bytes();
-
-                            handles.push(tokio::spawn(async move {
-                                let subscriber = match session.declare_subscriber(&topic).await {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        tracing::warn!("failed to subscribe to zenoh topic {topic}: {e}");
-                                        return;
-                                    }
-                                };
-
-                                let mut dropped: u64 = 0;
-                                while let Ok(sample) = subscriber.recv_async().await {
-                                    let payload = sample.payload().to_bytes();
-                                    if payload.len() > MAX_BINARY_PAYLOAD_BYTES {
-                                        tracing::warn!(
-                                            "dropping oversized payload ({} bytes) on {topic}",
-                                            payload.len()
-                                        );
-                                        continue;
-                                    }
-                                    let mut frame = Vec::with_capacity(16 + payload.len());
-                                    frame.extend_from_slice(&sub_id_bytes);
-                                    frame.extend_from_slice(&payload);
-                                    if binary_tx.try_send(frame).is_err() {
-                                        dropped += 1;
-                                        if dropped == 1 || dropped.is_multiple_of(100) {
-                                            tracing::warn!(
-                                                "backpressure: dropped {dropped} frame(s) on {topic} (channel full)"
-                                            );
-                                        }
-                                    }
-                                }
-                            }));
-                        }
-
-                        topic_tasks.insert(subscription_id, handles);
 
                         let reply = ControlRequestReply::TopicSubscribed { subscription_id };
                         let resp_json = format_response_json(req.id, &reply);
@@ -316,11 +270,16 @@ pub(crate) async fn handle_control_ws(
                         continue;
                     }
                     ControlRequest::TopicUnsubscribe { subscription_id } => {
-                        if let Some(handles) = topic_tasks.remove(subscription_id) {
-                            for h in handles {
-                                h.abort();
-                            }
-                        }
+                        topic_subscriptions
+                            .retain(|active| active.subscription_id != *subscription_id);
+                        let (done_tx, done_rx) = oneshot::channel();
+                        let _ = event_tx
+                            .send(Event::Control(ControlEvent::TopicUnsubscribe {
+                                subscription_id: *subscription_id,
+                                done_tx,
+                            }))
+                            .await;
+                        let _ = done_rx.await;
                         let resp = WsResponse::ok(
                             req.id,
                             serde_json::json!({"unsubscribed": true, "subscription_id": subscription_id}),
@@ -336,7 +295,7 @@ pub(crate) async fn handle_control_ws(
                     } => {
                         // Validate that the dataflow has debug publishing enabled
                         let (found_tx, found_rx) = oneshot::channel();
-                        let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
+                        let _ = event_tx.send(Event::Control(ControlEvent::TopicCheck {
                             dataflow_id: *dataflow_id,
                             topics: vec![(node_id.clone(), output_id.clone())],
                             found_tx,
@@ -346,7 +305,7 @@ pub(crate) async fn handle_control_ws(
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "dataflow {dataflow_id} not found or publish_all_messages_to_zenoh not enabled"
+                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.publish_all_messages_to_zenoh: true`"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
@@ -354,12 +313,12 @@ pub(crate) async fn handle_control_ws(
                         }
 
                         let resp = match publish_topic(
-                            &mut zenoh_session,
                             *dataflow_id,
                             node_id,
                             output_id,
                             data_json,
                             &clock,
+                            &mut publish_session,
                         )
                         .await
                         {
@@ -425,7 +384,10 @@ pub(crate) async fn handle_control_ws(
                 }
             }
             // Binary topic data to push to CLI
-            Some(data) = binary_rx.recv() => {
+            Some(frame) = binary_rx.recv() => {
+                let mut data = Vec::with_capacity(16 + frame.payload.len());
+                data.extend_from_slice(&frame.subscription_id.into_bytes());
+                data.extend_from_slice(&frame.payload);
                 if ws_tx.send(Message::Binary(data.into())).await.is_err() {
                     break;
                 }
@@ -433,11 +395,18 @@ pub(crate) async fn handle_control_ws(
         }
     }
 
-    // Clean up: abort all topic subscription tasks
-    for (_, handles) in topic_tasks {
-        for h in handles {
-            h.abort();
-        }
+    for subscription_id in topic_subscriptions
+        .into_iter()
+        .map(|active| active.subscription_id)
+    {
+        let (done_tx, done_rx) = oneshot::channel();
+        let _ = event_tx
+            .send(Event::Control(ControlEvent::TopicUnsubscribe {
+                subscription_id,
+                done_tx,
+            }))
+            .await;
+        let _ = done_rx.await;
     }
 }
 
@@ -445,15 +414,14 @@ pub(crate) async fn handle_control_ws(
 ///
 /// The JSON string is stored as raw UTF-8 bytes in a UInt8 Arrow array.
 async fn publish_topic(
-    zenoh_session: &mut Option<zenoh::Session>,
     dataflow_id: Uuid,
     node_id: &dora_message::id::NodeId,
     output_id: &dora_message::id::DataId,
     data_json: &str,
     clock: &dora_core::uhlc::HLC,
+    session: &mut Option<zenoh::Session>,
 ) -> Result<(), String> {
-    let session = get_or_init_zenoh(zenoh_session).await?;
-    let topic = zenoh_output_publish_topic(dataflow_id, node_id, output_id);
+    let topic = dora_core::topics::zenoh_output_publish_topic(dataflow_id, node_id, output_id);
 
     // Store JSON as raw UTF-8 bytes in a UInt8 array
     let data_bytes = data_json.as_bytes();
@@ -492,7 +460,17 @@ async fn publish_topic(
         .serialize()
         .map_err(|e| format!("failed to serialize event: {e}"))?;
 
+    if session.is_none() {
+        *session = Some(
+            dora_core::topics::open_zenoh_session(None)
+                .await
+                .map_err(|e| format!("failed to open zenoh session: {e}"))?,
+        );
+    }
+
     session
+        .as_mut()
+        .expect("zenoh publish session initialized")
         .put(&topic, payload)
         .await
         .map_err(|e| format!("failed to publish to zenoh: {e}"))?;

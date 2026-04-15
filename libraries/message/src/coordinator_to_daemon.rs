@@ -136,6 +136,19 @@ pub enum DaemonCoordinatorEvent {
         target_node: NodeId,
         target_input: DataId,
     },
+    /// Start forwarding matching output frames back to the coordinator over
+    /// the daemon control channel for CLI topic inspection.
+    StartTopicDebugStream {
+        dataflow_id: DataflowId,
+        outputs: Vec<(NodeId, DataId)>,
+        subscription_id: uuid::Uuid,
+    },
+    /// Stop forwarding output frames for a previously registered CLI topic
+    /// inspection subscription.
+    StopTopicDebugStream {
+        dataflow_id: DataflowId,
+        subscription_id: uuid::Uuid,
+    },
     /// Incremental state catch-up: replays missed state mutations to a
     /// reconnecting daemon.
     StateCatchUp {

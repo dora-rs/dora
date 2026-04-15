@@ -49,6 +49,11 @@ pub enum Event {
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     },
+    TopicDebugData {
+        dataflow_id: Uuid,
+        subscription_ids: Vec<Uuid>,
+        payload: Vec<u8>,
+    },
     DaemonStatusReport {
         daemon_id: DaemonId,
         running_dataflows: Vec<dora_message::daemon_to_coordinator::DataflowStatusEntry>,
@@ -83,6 +88,7 @@ impl Event {
             Event::DataflowBuildResult { .. } => "DataflowBuildResult",
             Event::DataflowSpawnResult { .. } => "DataflowSpawnResult",
             Event::NodeMetrics { .. } => "NodeMetrics",
+            Event::TopicDebugData { .. } => "TopicDebugData",
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
             Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
         }

@@ -79,7 +79,7 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: Uuid, node_id
     store.put_dataflow(&record).expect("seed dataflow record");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn connect_and_health_check() {
     let (port, _handle) = common::start_test_coordinator().await;
 
@@ -99,7 +99,7 @@ async fn connect_and_health_check() {
     assert!(response.ends_with("ok") || response.contains("\r\n\r\nok"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_list_empty() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -120,7 +120,7 @@ async fn control_list_empty() {
     assert!(list.as_array().unwrap().is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_invalid_json() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -139,7 +139,7 @@ async fn control_invalid_json() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_invalid_params() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -149,7 +149,7 @@ async fn control_invalid_params() {
     assert!(resp.error.unwrap().contains("invalid params"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_destroy_nonexistent() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -163,7 +163,7 @@ async fn control_destroy_nonexistent() {
     assert_eq!(result, json!("DestroyOk"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_status() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -178,7 +178,7 @@ async fn control_status() {
     assert_eq!(connected, &json!(false));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_ping_pong() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -192,7 +192,7 @@ async fn control_ping_pong() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_concurrent_requests() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -233,7 +233,7 @@ async fn control_concurrent_requests() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_connection_close() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -256,7 +256,7 @@ async fn control_connection_close() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn log_subscribe_nonexistent() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -277,7 +277,7 @@ async fn log_subscribe_nonexistent() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn control_error_does_not_leak_internal_chain() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -304,7 +304,7 @@ async fn control_error_does_not_leak_internal_chain() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn build_log_subscribe_nonexistent() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -324,7 +324,7 @@ async fn build_log_subscribe_nonexistent() {
 
 // -- Phase 2: Node restart/stop error paths --
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn restart_node_nonexistent_dataflow() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -352,7 +352,7 @@ async fn restart_node_nonexistent_dataflow() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn stop_node_nonexistent_dataflow() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -372,7 +372,7 @@ async fn stop_node_nonexistent_dataflow() {
 
 // -- Phase 3: Parameter CRUD via coordinator --
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_list_empty() {
     let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let dataflow_id = Uuid::new_v4();
@@ -395,7 +395,7 @@ async fn param_list_empty() {
     assert!(params_arr.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_set_then_get() {
     let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let df_id = Uuid::new_v4();
@@ -431,7 +431,7 @@ async fn param_set_then_get() {
     assert_eq!(pv.get("value").unwrap(), &json!(42));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_set_list_delete() {
     let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let df_id = Uuid::new_v4();
@@ -504,7 +504,7 @@ async fn param_set_list_delete() {
     assert_eq!(arr[0].as_array().unwrap()[0], "resolution");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_set_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -522,7 +522,7 @@ async fn param_set_rejects_unknown_target() {
     assert!(result.get("Error").is_some());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_delete_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -539,7 +539,7 @@ async fn param_delete_rejects_unknown_target() {
     assert!(result.get("Error").is_some());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_get_nonexistent() {
     let store_impl = Arc::new(dora_coordinator::InMemoryStore::new());
     let dataflow_id = Uuid::new_v4();
@@ -563,7 +563,7 @@ async fn param_get_nonexistent() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_get_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;
@@ -583,7 +583,7 @@ async fn param_get_rejects_unknown_target() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn param_list_rejects_unknown_target() {
     let (port, _handle) = common::start_test_coordinator().await;
     let mut ws = connect_control(port).await;

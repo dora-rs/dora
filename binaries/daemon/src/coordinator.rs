@@ -32,20 +32,52 @@ pub struct CoordinatorSender {
     sender: mpsc::Sender<String>,
 }
 
+#[derive(Debug)]
+pub enum TrySendEventError {
+    InvalidUtf8(std::str::Utf8Error),
+    Full,
+    Closed,
+}
+
+impl std::fmt::Display for TrySendEventError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUtf8(err) => write!(f, "event message not UTF-8: {err}"),
+            Self::Full => write!(f, "WS send channel full"),
+            Self::Closed => write!(f, "WS send channel closed"),
+        }
+    }
+}
+
+impl std::error::Error for TrySendEventError {}
+
 impl CoordinatorSender {
+    fn format_event_message(message: &[u8]) -> Result<String, TrySendEventError> {
+        let params_str = std::str::from_utf8(message).map_err(TrySendEventError::InvalidUtf8)?;
+        let id = Uuid::new_v4();
+        Ok(format!(
+            r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#
+        ))
+    }
+
     /// Send a serialized event message to the coordinator (fire-and-forget).
     ///
     /// Embeds the raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
     pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
-        let params_str =
-            std::str::from_utf8(message).map_err(|e| eyre!("event message not UTF-8: {e}"))?;
-        let id = Uuid::new_v4();
-        let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#);
+        let json = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
         self.sender
             .send(json)
             .await
             .map_err(|_| eyre!("WS send channel closed"))
+    }
+
+    pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
+        let json = Self::format_event_message(message)?;
+        self.sender.try_send(json).map_err(|err| match err {
+            mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
+            mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
+        })
     }
 }
 

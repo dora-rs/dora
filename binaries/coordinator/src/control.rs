@@ -30,8 +30,17 @@ pub enum ControlEvent {
     TopicSubscribe {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
-        /// Sends `true` if the dataflow exists and has publish_all_messages_to_zenoh enabled.
+        sender: mpsc::Sender<crate::topic_subscriber::TopicFrame>,
+        done_tx: oneshot::Sender<Result<Uuid, String>>,
+    },
+    TopicCheck {
+        dataflow_id: Uuid,
+        topics: Vec<(NodeId, DataId)>,
         found_tx: oneshot::Sender<bool>,
+    },
+    TopicUnsubscribe {
+        subscription_id: Uuid,
+        done_tx: oneshot::Sender<()>,
     },
     Error(eyre::Report),
 }

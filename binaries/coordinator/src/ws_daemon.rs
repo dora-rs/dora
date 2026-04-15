@@ -220,6 +220,15 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             metrics,
             network,
         }),
+        DaemonEvent::TopicDebugData {
+            dataflow_id,
+            subscription_ids,
+            payload,
+        } => Some(Event::TopicDebugData {
+            dataflow_id,
+            subscription_ids,
+            payload,
+        }),
         DaemonEvent::BuildResult { build_id, result } => Some(Event::DataflowBuildResult {
             build_id,
             daemon_id,

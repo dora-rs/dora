@@ -1817,6 +1817,62 @@ impl Daemon {
                 let _ = reply_tx.send(None);
                 RunStatus::Continue
             }
+            DaemonCoordinatorEvent::StartTopicDebugStream {
+                dataflow_id,
+                outputs,
+                subscription_id,
+            } => {
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    for (node_id, data_id) in outputs {
+                        let output_id = OutputId(node_id.clone(), data_id.clone());
+                        dataflow
+                            .debug_topic_subscriptions
+                            .entry(subscription_id)
+                            .or_default()
+                            .insert(output_id.clone());
+                        dataflow
+                            .debug_topic_watchers
+                            .entry(output_id)
+                            .or_default()
+                            .insert(subscription_id);
+                    }
+                    Ok(())
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::StartTopicDebugStreamResult(
+                    result,
+                )));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::StopTopicDebugStream {
+                dataflow_id,
+                subscription_id,
+            } => {
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    if let Some(outputs) =
+                        dataflow.debug_topic_subscriptions.remove(&subscription_id)
+                    {
+                        for output_id in outputs {
+                            if let Some(watchers) =
+                                dataflow.debug_topic_watchers.get_mut(&output_id)
+                            {
+                                watchers.remove(&subscription_id);
+                                if watchers.is_empty() {
+                                    dataflow.debug_topic_watchers.remove(&output_id);
+                                }
+                            }
+                        }
+                    }
+                    Ok(())
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::StopTopicDebugStreamResult(
+                    result,
+                )));
+                RunStatus::Continue
+            }
             DaemonCoordinatorEvent::StateCatchUp {
                 dataflow_id,
                 entries,
@@ -2876,6 +2932,7 @@ impl Daemon {
         let output_id_key = OutputId(node_id.clone(), output_id.clone());
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.publish_all_messages_to_zenoh;
+        let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let data_bytes = send_output_to_local_receivers(
             node_id.clone(),
             output_id.clone(),
@@ -2888,16 +2945,38 @@ impl Daemon {
         )
         .await?;
 
+        if !remote_receivers && !has_debug_watchers {
+            return Ok(());
+        }
+
         let output_id = output_id_key;
+        let event = InterDaemonEvent::Output {
+            dataflow_id,
+            node_id: output_id.0.clone(),
+            output_id: output_id.1.clone(),
+            metadata,
+            data: data_bytes,
+        };
+        let serialized_event = Timestamped {
+            inner: event,
+            timestamp: self.clock.new_timestamp(),
+        }
+        .serialize()
+        .wrap_err("failed to serialize inter-daemon event")?;
+
+        if has_debug_watchers {
+            if remote_receivers {
+                self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event.clone())
+                    .await?;
+            } else {
+                self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event)
+                    .await?;
+                return Ok(());
+            }
+        }
+
         if remote_receivers {
-            let event = InterDaemonEvent::Output {
-                dataflow_id,
-                node_id: output_id.0.clone(),
-                output_id: output_id.1.clone(),
-                metadata,
-                data: data_bytes,
-            };
-            self.send_to_remote_receivers(dataflow_id, &output_id, event)
+            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
                 .await?;
         }
 
@@ -2908,7 +2987,7 @@ impl Daemon {
         &mut self,
         dataflow_id: Uuid,
         output_id: &OutputId,
-        event: InterDaemonEvent,
+        serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
@@ -2932,13 +3011,6 @@ impl Daemon {
                 arc
             }
         };
-
-        let serialized_event = Timestamped {
-            inner: event,
-            timestamp: self.clock.new_timestamp(),
-        }
-        .serialize()
-        .wrap_err("failed to serialize inter-daemon event")?;
         let payload_len = serialized_event.len() as u64;
 
         // Offload Zenoh I/O to the drain task — never blocks the event loop.
@@ -2960,6 +3032,63 @@ impl Daemon {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!("zenoh drain task is gone — inter-daemon publish channel closed");
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn send_topic_debug_frames(
+        &self,
+        dataflow_id: Uuid,
+        output_id: &OutputId,
+        serialized_event: Vec<u8>,
+    ) -> Result<(), eyre::Error> {
+        let Some(sender) = &self.coordinator_sender else {
+            return Ok(());
+        };
+        let Some(dataflow) = self.running.get(&dataflow_id) else {
+            return Ok(());
+        };
+        let Some(subscription_ids) = dataflow.debug_topic_watchers.get(output_id) else {
+            return Ok(());
+        };
+        let subscription_ids: Vec<_> = subscription_ids.iter().copied().collect();
+        let subscription_count = subscription_ids.len();
+
+        let message = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: self.daemon_id.clone(),
+                event: DaemonEvent::TopicDebugData {
+                    dataflow_id,
+                    subscription_ids,
+                    payload: serialized_event,
+                },
+            },
+            timestamp: self.clock.new_timestamp(),
+        })?;
+        match sender.try_send_event(&message) {
+            Ok(()) => {}
+            Err(crate::coordinator::TrySendEventError::Full) => {
+                tracing::warn!(
+                    %dataflow_id,
+                    output = %format!("{}/{}", output_id.0, output_id.1),
+                    subscriptions = subscription_count,
+                    "dropping topic debug frame because coordinator WS send channel is full"
+                );
+            }
+            Err(crate::coordinator::TrySendEventError::Closed) => {
+                tracing::warn!(
+                    %dataflow_id,
+                    output = %format!("{}/{}", output_id.0, output_id.1),
+                    subscriptions = subscription_count,
+                    "dropping topic debug frame because coordinator WS send channel is closed"
+                );
+            }
+            Err(crate::coordinator::TrySendEventError::InvalidUtf8(err)) => {
+                return Err(eyre!(
+                    "failed to encode topic debug frame for coordinator: {err}"
+                ));
             }
         }
 
@@ -2995,12 +3124,17 @@ impl Daemon {
         }
 
         for output_id in closed {
-            let event = InterDaemonEvent::OutputClosed {
-                dataflow_id,
-                node_id: output_id.0.clone(),
-                output_id: output_id.1.clone(),
-            };
-            self.send_to_remote_receivers(dataflow_id, &output_id, event)
+            let serialized_event = Timestamped {
+                inner: InterDaemonEvent::OutputClosed {
+                    dataflow_id,
+                    node_id: output_id.0.clone(),
+                    output_id: output_id.1.clone(),
+                },
+                timestamp: self.clock.new_timestamp(),
+            }
+            .serialize()
+            .wrap_err("failed to serialize inter-daemon output-closed event")?;
+            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
                 .await?;
         }
 

@@ -157,6 +157,7 @@ futures = { workspace = true }
 tokio-stream = "0.1.11"
 tempfile = { workspace = true }
 assert2 = "0.3.16"
+tokio-tungstenite = "0.28"
 
 [[example]]
 name = "c-dataflow"

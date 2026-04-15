@@ -61,7 +61,8 @@ impl WsSession {
     /// Connect to the coordinator via WebSocket.
     ///
     /// If called from within an existing tokio runtime, uses that runtime.
-    /// Otherwise creates a new single-threaded runtime.
+    /// Otherwise creates a dedicated runtime with one worker thread so the WS
+    /// receive loop keeps running after synchronous API calls return.
     pub fn connect(addr: SocketAddr) -> eyre::Result<Self> {
         if tokio::runtime::Handle::try_current().is_ok() {
             eyre::bail!(
@@ -69,7 +70,8 @@ impl WsSession {
                  use an async-native client instead"
             );
         }
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
             .enable_all()
             .build()
             .context("failed to create tokio runtime for WS session")?;
@@ -188,7 +190,7 @@ impl WsSession {
             .map_err(|_| eyre!("WS session dropped reply"))?
     }
 
-    /// Subscribe to topic data via the coordinator's Zenoh proxy.
+    /// Subscribe to topic data via the coordinator's topic inspection stream.
     ///
     /// Sends a `TopicSubscribe` request, waits for the ack, then returns
     /// a `(subscription_id, receiver)` pair. Binary WS frames with matching

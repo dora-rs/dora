@@ -20,19 +20,18 @@ use crate::{
 /// Shows topic type, publisher, subscribers, and statistics (message count,
 /// bandwidth, publishing frequency).
 ///
-/// Examples:
-///
-/// Get info for a single topic:
-///   dora topic info -d my-dataflow camera_node/image
-///
-/// Note: The dataflow descriptor must include the following snippet so that
-/// runtime messages can be inspected (or messages must cross machine
-/// boundaries so they are forwarded through zenoh):
+/// Topic inspection requires debug mode on the dataflow:
 ///
 /// ```yaml
 /// _unstable_debug:
 ///   publish_all_messages_to_zenoh: true
 /// ```
+///
+/// Examples:
+///
+/// Get info for a single topic:
+///   dora topic info -d my-dataflow camera_node/image
+///
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Info {
