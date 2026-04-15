@@ -91,6 +91,8 @@ pub(super) async fn execute_dataflow_plan(
     daemon_spawn_commands: Vec<(DaemonId, SpawnDataflowNodes)>,
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<()> {
+    let mut started_daemons = Vec::new();
+
     for (daemon_id, spawn_command) in daemon_spawn_commands {
         let client = daemon_connections
             .get(&daemon_id)
@@ -98,17 +100,75 @@ pub(super) async fn execute_dataflow_plan(
             .client
             .clone();
         // DashMap lock is dropped — safe to do async I/O.
-        client
+        let spawn_result = client
             .spawn(tarpc::context::current(), spawn_command)
             .await
-            .wrap_err("RPC transport error")?
-            .map_err(|e: String| eyre!(e))
-            .wrap_err("daemon returned an error")?;
+            .wrap_err("RPC transport error")
+            .and_then(|result| {
+                result
+                    .map_err(|e: String| eyre!(e))
+                    .wrap_err("daemon returned an error")
+            });
+
+        match spawn_result {
+            Ok(()) => started_daemons.push(daemon_id),
+            Err(spawn_error) => {
+                let rollback_errors =
+                    rollback_spawned_daemons(uuid, &started_daemons, daemon_connections).await;
+                if rollback_errors.is_empty() {
+                    return Err(spawn_error.wrap_err(format!(
+                        "spawn failed while starting dataflow `{uuid}`; \
+                         rollback succeeded on {} daemon(s)",
+                        started_daemons.len()
+                    )));
+                }
+
+                let rollback_summary = rollback_errors.join("; ");
+                return Err(spawn_error.wrap_err(format!(
+                    "spawn failed while starting dataflow `{uuid}`; \
+                     rollback attempted on {} daemon(s) but encountered errors: {rollback_summary}",
+                    started_daemons.len()
+                )));
+            }
+        }
     }
 
     tracing::info!("successfully triggered dataflow spawn `{uuid}`",);
 
     Ok(())
+}
+
+async fn rollback_spawned_daemons(
+    dataflow_id: Uuid,
+    started_daemons: &[DaemonId],
+    daemon_connections: &DaemonConnections,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for daemon_id in started_daemons {
+        let Some(connection) = daemon_connections.get(daemon_id) else {
+            errors.push(format!(
+                "missing daemon connection for `{daemon_id}` during rollback"
+            ));
+            continue;
+        };
+        let client = connection.client.clone();
+        drop(connection);
+
+        let result = client
+            .stop_dataflow(tarpc::context::current(), dataflow_id, None, false)
+            .await
+            .map_err(|e| eyre!(e))
+            .and_then(|r| r.map_err(|e: String| eyre!(e)));
+
+        if let Err(err) = result {
+            errors.push(format!(
+                "failed to stop dataflow `{dataflow_id}` on daemon `{daemon_id}`: {err:?}"
+            ));
+        }
+    }
+
+    errors
 }
 
 fn resolve_daemon_for_machine(
