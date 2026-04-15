@@ -1,6 +1,5 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
@@ -311,28 +310,11 @@ async fn subscribe_output(
         .map_err(|e| eyre!(e))
         .wrap_err_with(|| format!("failed to subscribe to {topic}"))?;
 
-    while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-        {
-            Ok(event) => event,
-            Err(_) => continue,
-        };
-
-        match event.inner {
-            InterDaemonEvent::Output { .. } => {
-                let now = Instant::now();
-                hz_stats.record(now);
-                if let Some(all) = &aggregate {
-                    all.record(now);
-                }
-            }
-            InterDaemonEvent::OutputClosed { .. } => {
-                break;
-            }
-            InterDaemonEvent::NodeFailed { .. } => {
-                // NodeFailed events are not relevant for topic hz
-                continue;
-            }
+    while let Ok(_sample) = subscriber.recv_async().await {
+        let now = Instant::now();
+        hz_stats.record(now);
+        if let Some(all) = &aggregate {
+            all.record(now);
         }
     }
 

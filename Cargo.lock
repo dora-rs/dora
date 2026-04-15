@@ -1537,6 +1537,7 @@ dependencies = [
  "arrow",
  "arrow-json",
  "arrow-schema",
+ "bincode",
  "chrono",
  "clap",
  "clap_complete",

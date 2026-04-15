@@ -9,9 +9,7 @@ use dora_core::{
     config::InputMapping,
     topics::{open_zenoh_session, zenoh_output_publish_topic},
 };
-use dora_message::{
-    common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
-};
+use dora_message::metadata::{ArrowTypeInfo, Metadata};
 use eyre::{Context, eyre};
 
 use crate::{
@@ -162,7 +160,11 @@ async fn info(
     let end_time = start_time + duration;
     let deadline = tokio::time::Instant::from_std(end_time);
 
-    // Collect messages for the specified duration
+    // Collect messages for the specified duration.
+    //
+    // Wire format (matches DoraNode::send_output_sample): the zenoh payload
+    // carries the raw arrow buffer and the attachment carries the bincode-
+    // serialized Metadata.
     while Instant::now() < end_time {
         let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await else {
             break;
@@ -170,27 +172,15 @@ async fn info(
 
         match sample {
             Ok(sample) => {
-                let event =
-                    match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-                    {
-                        Ok(event) => event,
-                        Err(_) => continue,
-                    };
-
-                match event.inner {
-                    InterDaemonEvent::Output { metadata, data, .. } => {
-                        let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                        let now = Instant::now();
-                        stats.record(data_size, &metadata.type_info, now);
-                    }
-                    InterDaemonEvent::OutputClosed { .. } => {
-                        break;
-                    }
-                    InterDaemonEvent::NodeFailed { .. } => {
-                        // Node failed, stop collecting statistics
-                        break;
-                    }
-                }
+                let Some(attachment) = sample.attachment() else {
+                    continue;
+                };
+                let metadata: Metadata = match bincode::deserialize(&attachment.to_bytes()) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                let data_size = sample.payload().len();
+                stats.record(data_size, &metadata.type_info, Instant::now());
             }
             Err(_) => break,
         }

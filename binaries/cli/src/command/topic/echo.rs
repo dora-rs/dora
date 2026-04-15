@@ -5,10 +5,8 @@ use clap::Args;
 use colored::Colorize;
 use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use dora_message::{
-    common::Timestamped,
-    daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
-    metadata::{ArrowTypeInfo, BufferOffset, Parameter},
+    metadata::{ArrowTypeInfo, BufferOffset, Metadata, Parameter},
 };
 use eyre::{Context, eyre};
 use tokio::task::JoinSet;
@@ -158,116 +156,109 @@ async fn log_to_terminal(
     };
     let mut buf = Vec::with_capacity(1024);
     while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-        {
-            Ok(event) => event,
-            Err(_) => {
-                eprintln!("Received invalid event");
+        use std::fmt::Write;
+
+        // Wire format (matches DoraNode::send_output_sample): the zenoh
+        // payload carries the raw arrow buffer and the attachment carries
+        // the bincode-serialized Metadata.
+        let Some(attachment) = sample.attachment() else {
+            eprintln!("Received sample without metadata attachment");
+            continue;
+        };
+        let metadata: Metadata = match bincode::deserialize(&attachment.to_bytes()) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("failed to deserialize metadata attachment: {e}");
                 continue;
             }
         };
-        match event.inner {
-            InterDaemonEvent::Output { metadata, data, .. } => {
-                use std::fmt::Write;
+        let payload_bytes = sample.payload().to_bytes();
 
-                let timestamp = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis();
+        let timestamp = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
 
-                let data_str = if let Some(data) = data {
-                    let ptr = NonNull::new(data.as_ptr() as *mut u8).unwrap();
-                    let len = data.len();
-                    let buffer = unsafe {
-                        arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data))
-                    };
-                    let array = match buffer_into_arrow_array(&buffer, &metadata.type_info) {
-                        Ok(array) => array,
-                        Err(e) => {
-                            eprintln!("invalid data: {e}");
-                            continue;
-                        }
-                    };
-
-                    let offsets = OffsetBuffer::new(vec![0, array.len() as _].into());
-                    let field = Arc::new(Field::new_list_field(array.data_type().clone(), true));
-                    let list_array = arrow::array::ListArray::new(
-                        field,
-                        offsets,
-                        arrow::array::make_array(array),
-                        None,
-                    );
-                    let batch =
-                        arrow::array::RecordBatch::try_from_iter([("", Arc::new(list_array) as _)])
-                            .unwrap();
-                    let mut writer = arrow_json::LineDelimitedWriter::new(&mut buf);
-                    writer.write(&batch).unwrap();
-                    writer.finish().unwrap();
-                    // The output looks like {"":[...]}\n
-                    std::str::from_utf8(&buf[4..buf.len() - 2]).ok()
-                } else {
-                    None
-                };
-
-                let metadata_str = if !metadata.parameters.is_empty() {
-                    let mut output = "{".to_string();
-                    for (i, (k, v)) in metadata.parameters.iter().enumerate() {
-                        if i > 0 {
-                            write!(output, ",").unwrap();
-                        }
-                        let value = match v {
-                            Parameter::Bool(value) => value.to_string(),
-                            Parameter::Integer(value) => value.to_string(),
-                            Parameter::String(value) => serde_json::to_string(value).unwrap(),
-                            Parameter::ListInt(value) => serde_json::to_string(value).unwrap(),
-                            Parameter::Float(value) => serde_json::to_string(value).unwrap(),
-                            Parameter::ListFloat(value) => serde_json::to_string(value).unwrap(),
-                            Parameter::ListString(value) => serde_json::to_string(value).unwrap(),
-                            Parameter::Timestamp(dt) => serde_json::to_string(dt).unwrap(),
-                        };
-                        write!(output, "{}:{value}", serde_json::Value::String(k.clone()),)
-                            .unwrap();
-                    }
-                    write!(output, "}}").unwrap();
-                    Some(output)
-                } else {
-                    None
-                };
-
-                match format {
-                    OutputFormat::Table => {
-                        let mut output = format!("{output_name}\t");
-                        if let Some(s) = data_str {
-                            write!(output, " {}={s}", "data".bold()).unwrap();
-                        }
-                        if let Some(s) = metadata_str {
-                            write!(output, " {}={s}", "metadata".bold()).unwrap();
-                        }
-                        println!("{output}");
-                    }
-                    OutputFormat::Json => {
-                        println!(
-                            r#"{{"timestamp":{},"name":{},"data":{},"metadata":{}}}"#,
-                            timestamp,
-                            output_name,
-                            data_str.unwrap_or("null"),
-                            metadata_str.as_deref().unwrap_or("null")
-                        );
-                    }
+        let data_str = if !payload_bytes.is_empty() {
+            let owned: Vec<u8> = payload_bytes.to_vec();
+            let ptr = NonNull::new(owned.as_ptr() as *mut u8).unwrap();
+            let len = owned.len();
+            let buffer =
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(owned)) };
+            let array = match buffer_into_arrow_array(&buffer, &metadata.type_info) {
+                Ok(array) => array,
+                Err(e) => {
+                    eprintln!("invalid data: {e}");
+                    continue;
                 }
+            };
 
-                buf.clear();
+            let offsets = OffsetBuffer::new(vec![0, array.len() as _].into());
+            let field = Arc::new(Field::new_list_field(array.data_type().clone(), true));
+            let list_array =
+                arrow::array::ListArray::new(field, offsets, arrow::array::make_array(array), None);
+            let batch = arrow::array::RecordBatch::try_from_iter([("", Arc::new(list_array) as _)])
+                .unwrap();
+            let mut writer = arrow_json::LineDelimitedWriter::new(&mut buf);
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+            // The output looks like {"":[...]}\n
+            std::str::from_utf8(&buf[4..buf.len() - 2])
+                .ok()
+                .map(|s| s.to_string())
+        } else {
+            None
+        };
+
+        let metadata_str = if !metadata.parameters.is_empty() {
+            let mut output = "{".to_string();
+            for (i, (k, v)) in metadata.parameters.iter().enumerate() {
+                if i > 0 {
+                    write!(output, ",").unwrap();
+                }
+                let value = match v {
+                    Parameter::Bool(value) => value.to_string(),
+                    Parameter::Integer(value) => value.to_string(),
+                    Parameter::String(value) => serde_json::to_string(value).unwrap(),
+                    Parameter::ListInt(value) => serde_json::to_string(value).unwrap(),
+                    Parameter::Float(value) => serde_json::to_string(value).unwrap(),
+                    Parameter::ListFloat(value) => serde_json::to_string(value).unwrap(),
+                    Parameter::ListString(value) => serde_json::to_string(value).unwrap(),
+                    Parameter::Timestamp(dt) => serde_json::to_string(dt).unwrap(),
+                };
+                write!(output, "{}:{value}", serde_json::Value::String(k.clone()),).unwrap();
             }
-            InterDaemonEvent::OutputClosed { .. } => {
-                eprintln!("Output {node_id}/{output_id} closed");
-                break;
+            write!(output, "}}").unwrap();
+            Some(output)
+        } else {
+            None
+        };
+
+        match format {
+            OutputFormat::Table => {
+                let mut output = format!("{output_name}\t");
+                if let Some(s) = &data_str {
+                    write!(output, " {}={s}", "data".bold()).unwrap();
+                }
+                if let Some(s) = &metadata_str {
+                    write!(output, " {}={s}", "metadata".bold()).unwrap();
+                }
+                println!("{output}");
             }
-            InterDaemonEvent::NodeFailed { .. } => {
-                // NodeFailed events are not relevant for topic echo
-                continue;
+            OutputFormat::Json => {
+                println!(
+                    r#"{{"timestamp":{},"name":{},"data":{},"metadata":{}}}"#,
+                    timestamp,
+                    output_name,
+                    data_str.as_deref().unwrap_or("null"),
+                    metadata_str.as_deref().unwrap_or("null")
+                );
             }
         }
+
+        buf.clear();
     }
 
+    eprintln!("Output {node_id}/{output_id} stream ended");
     Ok(())
 }
