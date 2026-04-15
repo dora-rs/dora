@@ -691,10 +691,95 @@ jobs:
           pkill -CONT -f "dora daemon" 2>/dev/null || true
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
 
+  state-reconstruction-smoke:
+    # Partial regression test for #255. Validates what the current redb
+    # backend + recovery path actually delivers on coord restart: store
+    # records survive, and the coord transitions previously-Running
+    # dataflows to Recovering on startup.
+    #
+    # NOT tested here: daemons keeping running dataflows alive across
+    # coord disconnect. That part of the README claim ('dataflow state
+    # reconstruction on coordinator restart') is aspirational — see the
+    # follow-up issue for the implementation gap. When the daemon side
+    # lands, this job should be extended to assert the Recovering -> Running
+    # reconciliation path at binaries/coordinator/src/lib.rs:1996.
+    name: state reconstruction end-to-end (partial)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Pre-build example nodes
+        run: |
+          cargo build -p rust-dataflow-example-node
+      - name: Session 1 — run long-lived dataflow, kill coord
+        run: |
+          STORE=/tmp/state-reconstruct.db
+          rm -f "$STORE"
+          # 500ms timer × 100-tick source node → ~50s runtime, long enough
+          # for the record to be persisted as Running before we kill coord.
+          cat > examples/rust-dataflow/long-running.yml <<'EOF'
+          nodes:
+            - id: source
+              path: ../../target/debug/rust-dataflow-example-node
+              inputs:
+                tick: dora/timer/millis/500
+              outputs:
+                - random
+          EOF
+          dora coordinator --store "redb:$STORE" > /tmp/sr-c1.log 2>&1 &
+          sleep 2
+          dora daemon > /tmp/sr-d1.log 2>&1 &
+          sleep 2
+          dora start examples/rust-dataflow/long-running.yml --name sr-test --detach
+          sleep 4
+          # The dataflow name must appear in the store as evidence of
+          # a Running record being persisted.
+          if ! strings "$STORE" | grep -q "sr-test"; then
+            echo "ERROR: dataflow name not in store — writes missing"
+            exit 1
+          fi
+          echo "OK: Running dataflow persisted to store"
+          pkill -TERM -f "dora coordinator" || true
+          sleep 2
+      - name: Session 2 — restart coord, assert Recovering transition
+        run: |
+          STORE=/tmp/state-reconstruct.db
+          dora coordinator --store "redb:$STORE" > /tmp/sr-c2.log 2>&1 &
+          sleep 4
+          echo "=== sr-c2 log ==="
+          cat /tmp/sr-c2.log
+          # The startup code at binaries/coordinator/src/lib.rs:302 reads
+          # persisted Running records and transitions them to Recovering.
+          # This log line is the observable proof.
+          if ! grep -q "coordinator restarted:.*-> Recovering" /tmp/sr-c2.log; then
+            echo "ERROR: coord did not mark previously-Running dataflow as Recovering"
+            exit 1
+          fi
+          echo "OK: coord hydrated Running record as Recovering on startup"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+          rm -f examples/rust-dataflow/long-running.yml
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke]
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke, state-reconstruction-smoke]
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
@@ -755,6 +840,7 @@ jobs:
           - cpu-affinity-smoke
           - redb-backend-smoke
           - daemon-reconnect-smoke
+          - state-reconstruction-smoke
 
           See the run for per-job status and logs. Subsequent failures
           will comment on this issue instead of opening new ones. Close

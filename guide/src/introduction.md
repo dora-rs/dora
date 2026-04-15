@@ -23,7 +23,7 @@
 
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based cluster management with label scheduling
-- **Coordinator HA** -- persistent redb state store, daemon auto-reconnect, dataflow state reconstruction on coordinator restart
+- **Coordinator HA** -- persistent redb state store, daemon auto-reconnect, dataflow records survive coordinator restart (full running-dataflow reclaim across restart is partial; see open tracker)
 - **Dynamic topology** -- add and remove nodes from running dataflows via CLI without restarting
 - **Configurable queue policies** -- `drop_oldest` (default) or `backpressure` per input, with metrics on dropped messages
 - **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning

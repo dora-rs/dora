@@ -41,6 +41,7 @@ the `nightly-regression` label but do not block PRs.
 | `cpu_affinity` end-to-end (mask actually applied) | `cpu-affinity-smoke` (Linux only) |
 | redb coordinator store survives restart | `redb-backend-smoke` |
 | Daemon auto-reconnect (SIGSTOP past heartbeat → SIGCONT → re-register) | `daemon-reconnect-smoke` (Linux only) |
+| State reconstruction (partial: store hydrate + Running → Recovering) | `state-reconstruction-smoke` |
 
 Run locally:
 ```bash

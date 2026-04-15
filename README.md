@@ -46,7 +46,7 @@
 
 - **Fault tolerance** -- per-node restart policies (never/on-failure/always), exponential backoff, health monitoring, circuit breakers with configurable input timeouts
 - **Distributed by default** -- local shared memory between co-located nodes, automatic [Zenoh](https://zenoh.io/) pub-sub for cross-machine communication, SSH-based [cluster management](docs/distributed-deployment.md) with label scheduling, rolling upgrades, and auto-recovery
-- **Coordinator HA** -- persistent redb-backed state store (default), daemon auto-reconnect with exponential backoff, dataflow state reconstruction on coordinator restart
+- **Coordinator HA** -- persistent redb-backed state store (default), daemon auto-reconnect with exponential backoff, dataflow records survive coordinator restart (running dataflow reclaim-across-restart is partial, see the open issue tracker)
 - **Dynamic topology** -- add and remove nodes from running dataflows via CLI (`dora node add/remove/connect/disconnect`) without restarting
 - **Soft real-time** -- optional `--rt` flag for mlockall + SCHED_FIFO; per-node `cpu_affinity` pinning in YAML; comprehensive [tuning guide](docs/realtime-tuning.md) for memory locking, kernel params, and container deployment
 - **OpenTelemetry** -- built-in structured logging with rotation/routing, metrics, distributed tracing, and zero-setup trace viewing via CLI
