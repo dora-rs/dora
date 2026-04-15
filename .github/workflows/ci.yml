@@ -230,11 +230,6 @@ jobs:
         run: |
           sudo prlimit --memlock=unlimited --pid $$
           cargo run --example cmake-dataflow
-      - name: "Unix Domain Socket example"
-        if: runner.os == 'Linux'
-        run: |
-          sudo prlimit --memlock=unlimited --pid $$
-          cargo run --example rust-dataflow -- dataflow_socket.yml
 
   # ROS2 bridge examples
   ros2-bridge-examples:
@@ -545,6 +540,9 @@ jobs:
           RUST_LOG: debug
         run: |
           if [ "$RUNNER_OS" == "Linux" ]; then sudo prlimit --memlock=unlimited --pid $$; elif [ "$RUNNER_OS" == "macOS" ]; then ulimit -l unlimited; fi
+          # Ensure uv execution does not leak to parent `.python-version` / global interpreters.
+          echo "3.11.14" > .python-version
+          trap 'rm -f .python-version' EXIT
           dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
       - name: "Test Python Example: Drain"
         timeout-minutes: 30

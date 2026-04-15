@@ -150,6 +150,7 @@ async fn start_dataflow(dataflow: &Path, client: &CoordinatorControlClient) -> e
                 name: None,
                 uv: false,
                 write_events_to: None,
+                hot_reload: false,
             },
         )
         .await

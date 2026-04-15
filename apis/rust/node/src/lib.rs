@@ -104,7 +104,7 @@ pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
-pub use node::{DataSample, DoraNode, arrow_utils};
+pub use node::{DataSample, DoraNode, DoraNodeBuilder, arrow_utils};
 
 pub use serde_json;
 use tokio::sync::oneshot;

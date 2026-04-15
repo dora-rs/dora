@@ -99,6 +99,11 @@ mod ffi {
             id: String,
             data: &[u8],
         ) -> DoraResult;
+        fn log_message(
+            output_sender: &Box<OutputSender>,
+            level: String,
+            message: String,
+        ) -> DoraResult;
         fn send_output_with_metadata(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -191,6 +196,12 @@ pub mod ros2 {
 }
 
 fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
+    // Set up a tracing subscriber so that log_message() calls are emitted.
+    // Ignore errors if a subscriber is already set.
+    let _ = dora_tracing::TracingBuilder::new("dora-cxx-node")
+        .with_stdout("info", true)
+        .build();
+
     let (node, events) = dora_node_api::DoraNode::init_from_env()?;
     let events = Events(events);
     let send_output = OutputSender(node);
@@ -661,6 +672,35 @@ fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::
     send_output_internal(sender, id, data, Default::default())
 }
 
+#[allow(clippy::borrowed_box)]
+fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::DoraResult {
+    let _ = sender; // context unused, logging goes through tracing
+    let error = match level.to_ascii_lowercase().as_str() {
+        "error" => {
+            tracing::error!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "warn" => {
+            tracing::warn!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "info" => {
+            tracing::info!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "debug" => {
+            tracing::debug!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        "trace" => {
+            tracing::trace!(target: "dora.cxx.log", "{message}");
+            String::new()
+        }
+        other => format!("unknown log level: {other}"),
+    };
+    ffi::DoraResult { error }
+}
+
 fn send_output_with_metadata(
     sender: &mut Box<OutputSender>,
     id: String,
@@ -868,11 +908,11 @@ impl MergedEvents {
         let events = Box::pin(events.map(move |event| ExternalEvent { event, id }));
 
         let inner = self.events.take().unwrap();
-        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
-            Box::new(inner.merge_external(events).map(|event| match event {
-                MergedEvent::Dora(event) => MergedEvent::Dora(event),
-                MergedEvent::External(event) => MergedEvent::External(event.flatten()),
-            }));
+        let merged_stream = inner.merge_external(events).map(|event| match event {
+            MergedEvent::Dora(event) => MergedEvent::Dora(event),
+            MergedEvent::External(event) => MergedEvent::External(event.flatten()),
+        });
+        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> = Box::new(merged_stream);
         self.events = Some(merged);
 
         id

@@ -118,6 +118,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             local_working_dir,
             uv,
             write_events_to,
+            hot_reload,
         } = request;
 
         let name = name.or_else(|| petname(2, "-"));
@@ -146,6 +147,7 @@ impl CoordinatorControl for CoordinatorControlServer {
             &self.state.running_dataflows,
             uv,
             write_events_to,
+            hot_reload,
         )
         .await
         .map_err(err_to_string)?;
@@ -382,7 +384,7 @@ impl CoordinatorControl for CoordinatorControlServer {
         let mut node_infos = Vec::new();
         for r in self.state.running_dataflows.iter() {
             let dataflow = r.value();
-            for (node_id, _node) in &dataflow.nodes {
+            for node_id in dataflow.nodes.keys() {
                 // Get the specific daemon this node is running on
                 if let Some(daemon_id) = dataflow.node_to_daemon.get(node_id) {
                     // Get metrics if available

@@ -14,7 +14,6 @@ use dora_message::{
     tarpc,
 };
 use tokio::sync::{Mutex, mpsc};
-use uuid::Uuid;
 
 use crate::{Event, InterDaemonEvent, RunningDataflow};
 

@@ -28,7 +28,7 @@
   ],
   "$defs": {
     "CustomNode": {
-      "description": "Contains the input and output configuration of the node.",
+      "description": "A custom node running as its own process.\n\nCustom nodes are standalone executables or scripts that communicate\nwith other nodes through inputs and outputs. They can be written\nin any language (Rust, Python, C++, etc.).\n\nThis type represents the resolved form of a custom node configuration.",
       "type": "object",
       "properties": {
         "args": {
@@ -39,20 +39,22 @@
           ]
         },
         "build": {
+          "description": "Build commands executed during `dora build`.",
           "type": [
             "string",
             "null"
           ]
         },
         "envs": {
-          "description": "Environment variables for the custom nodes\n\nDeprecated, use outer-level `env` field instead.",
+          "description": "Environment variables for the custom nodes.",
           "type": [
             "object",
             "null"
           ],
           "additionalProperties": {
             "$ref": "#/$defs/EnvValue"
-          }
+          },
+          "deprecated": true
         },
         "inputs": {
           "description": "Inputs for the nodes as a map from input ID to `node_id/output_id`.\n\ne.g.\n\ninputs:\n\n  example_input: example_node/example_output1",
@@ -76,6 +78,7 @@
           "type": "string"
         },
         "restart_policy": {
+          "description": "Restart policy for this node.",
           "$ref": "#/$defs/RestartPolicy",
           "default": "never"
         },
@@ -87,6 +90,7 @@
           ]
         },
         "source": {
+          "description": "Source type for the custom node (local or git).",
           "$ref": "#/$defs/NodeSource"
         }
       },
@@ -118,26 +122,33 @@
       ]
     },
     "EnvValue": {
+      "description": "A value for environment variables.\n\nSupports multiple types to allow flexible environment variable configuration:\n- Boolean values\n- Integer values\n- Floating-point values\n- String values\n\nValues are automatically expanded from environment variable references\n(e.g., `$HOME` or `${USER}`) during deserialization.",
       "anyOf": [
         {
+          "description": "Boolean value.",
           "type": "boolean"
         },
         {
+          "description": "Integer value.",
           "type": "integer",
           "format": "int64"
         },
         {
+          "description": "Floating-point value.",
           "type": "number",
           "format": "double"
         },
         {
+          "description": "String value.",
           "type": "string"
         }
       ]
     },
     "GitRepoRev": {
+      "description": "A specific git revision specification.\n\nCan be one of:\n- A branch name\n- A tag name\n- A specific commit hash",
       "oneOf": [
         {
+          "description": "Git branch name.",
           "type": "object",
           "properties": {
             "Branch": {
@@ -150,6 +161,7 @@
           ]
         },
         {
+          "description": "Git tag name.",
           "type": "object",
           "properties": {
             "Tag": {
@@ -162,6 +174,7 @@
           ]
         },
         {
+          "description": "Specific commit hash.",
           "type": "object",
           "properties": {
             "Rev": {
@@ -264,7 +277,7 @@
           ]
         },
         "custom": {
-          "description": "Legacy node configuration (deprecated).\n\nPlease use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.",
+          "description": "Legacy node configuration.",
           "anyOf": [
             {
               "$ref": "#/$defs/CustomNode"
@@ -272,7 +285,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "deprecated": true
         },
         "description": {
           "description": "Detailed description of the node's functionality.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n    description: \"Captures video frames from webcam\"\n```",
@@ -391,23 +405,26 @@
       "type": "string"
     },
     "NodeSource": {
+      "description": "The source location for a custom node's code.\n\nSpecifies where the node's source code comes from:\n- A local file or directory\n- A git repository with optional branch/tag/revision",
       "oneOf": [
         {
+          "description": "Local file or directory.",
           "type": "string",
-          "enum": [
-            "Local"
-          ]
+          "const": "Local"
         },
         {
+          "description": "Git repository with optional revision specification.",
           "type": "object",
           "properties": {
             "GitBranch": {
               "type": "object",
               "properties": {
                 "repo": {
+                  "description": "Git repository URL.",
                   "type": "string"
                 },
                 "rev": {
+                  "description": "Optional revision (branch, tag, or commit hash).",
                   "anyOf": [
                     {
                       "$ref": "#/$defs/GitRepoRev"
@@ -431,28 +448,29 @@
       ]
     },
     "OperatorDefinition": {
+      "description": "A complete operator definition within a runtime node.\n\nOperators are lightweight alternatives to full nodes, running within\na shared runtime process. They are ideal for simple transformations\nor when multiple processing steps need tight coupling.\n\n## YAML Example\n\n```yaml\noperators:\n  - id: image-processor\n    python: process.py\n    inputs:\n      image: camera/image\n    outputs:\n      - processed\n```",
       "type": "object",
       "properties": {
         "build": {
-          "description": "Build commands for this operator",
+          "description": "Build commands executed during `dora build`.",
           "type": [
             "string",
             "null"
           ]
         },
         "description": {
-          "description": "Detailed description of the operator",
+          "description": "Detailed description of the operator's functionality.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Unique operator identifier within the runtime",
+          "description": "Unique identifier for this operator within the runtime.",
           "$ref": "#/$defs/OperatorId"
         },
         "inputs": {
-          "description": "Input data connections",
+          "description": "Input data connections from other nodes or operators.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Input"
@@ -460,14 +478,14 @@
           "default": {}
         },
         "name": {
-          "description": "Human-readable operator name",
+          "description": "Human-readable operator name for documentation.",
           "type": [
             "string",
             "null"
           ]
         },
         "outputs": {
-          "description": "Output data identifiers",
+          "description": "Output data identifiers produced by this operator.",
           "type": "array",
           "default": [],
           "items": {
@@ -476,7 +494,7 @@
           "uniqueItems": true
         },
         "send_stdout_as": {
-          "description": "Redirect stdout to data output",
+          "description": "Redirect stdout to a data output.",
           "type": [
             "string",
             "null"
@@ -485,6 +503,7 @@
       },
       "oneOf": [
         {
+          "description": "A compiled shared library (.so, .dll, .dylib).\n\nThe path points to the shared library file. Dora will automatically\nload it as a dynamic library.",
           "type": "object",
           "properties": {
             "shared-library": {
@@ -496,6 +515,7 @@
           ]
         },
         {
+          "description": "A Python script or module.",
           "type": "object",
           "properties": {
             "python": {
@@ -515,20 +535,25 @@
       "type": "string"
     },
     "PythonSource": {
+      "description": "Configuration for a Python-based operator.\n\nSpecifies the Python source file and optional conda environment.\n\n## YAML Examples\n\nSimple form (just the path):\n```yaml\npython: process.py\n```\n\nWith options:\n```yaml\npython:\n  source: process.py\n  conda_env: my-env\n```",
       "anyOf": [
         {
+          "description": "Simple form: just the source path as a string.",
           "type": "string"
         },
         {
+          "description": "Extended form: an object with source and optional conda_env.",
           "type": "object",
           "properties": {
             "conda_env": {
+              "description": "Optional conda environment name.",
               "type": [
                 "string",
                 "null"
               ]
             },
             "source": {
+              "description": "Path to the Python source file.",
               "type": "string"
             }
           },
@@ -559,31 +584,32 @@
       ]
     },
     "RuntimeNode": {
-      "description": "List of operators running in this runtime",
+      "description": "A runtime node containing one or more operators.\n\nRuntime nodes allow multiple operators to run in a single process,\nsharing memory and reducing inter-process communication overhead.\n\n## YAML Example\n\n```yaml\nnodes:\n  - id: my-runtime\n    operators:\n      - id: processor\n        python: process.py\n      - id: filter\n        python: filter.py\n```",
       "type": "array",
       "items": {
         "$ref": "#/$defs/OperatorDefinition"
       }
     },
     "SingleOperatorDefinition": {
+      "description": "Configuration for a runtime node with a single operator.\n\nThis is a convenience type for the common case of defining a runtime\nnode with only one operator. It allows omitting the operator ID since\nthere's only one operator in the runtime.\n\n## YAML Example\n\n```yaml\nnodes:\n  - id: single-op-node\n    operator:\n      id: processor\n      python: process.py\n```",
       "type": "object",
       "properties": {
         "build": {
-          "description": "Build commands for this operator",
+          "description": "Build commands executed during `dora build`.",
           "type": [
             "string",
             "null"
           ]
         },
         "description": {
-          "description": "Detailed description of the operator",
+          "description": "Detailed description of the operator's functionality.",
           "type": [
             "string",
             "null"
           ]
         },
         "id": {
-          "description": "Operator identifier (optional for single operators)",
+          "description": "Operator identifier (optional for single operators).\n\nIf not specified, defaults to `\"op\"`.",
           "anyOf": [
             {
               "$ref": "#/$defs/OperatorId"
@@ -594,7 +620,7 @@
           ]
         },
         "inputs": {
-          "description": "Input data connections",
+          "description": "Input data connections from other nodes or operators.",
           "type": "object",
           "additionalProperties": {
             "$ref": "#/$defs/Input"
@@ -602,14 +628,14 @@
           "default": {}
         },
         "name": {
-          "description": "Human-readable operator name",
+          "description": "Human-readable operator name for documentation.",
           "type": [
             "string",
             "null"
           ]
         },
         "outputs": {
-          "description": "Output data identifiers",
+          "description": "Output data identifiers produced by this operator.",
           "type": "array",
           "default": [],
           "items": {
@@ -618,7 +644,7 @@
           "uniqueItems": true
         },
         "send_stdout_as": {
-          "description": "Redirect stdout to data output",
+          "description": "Redirect stdout to a data output.",
           "type": [
             "string",
             "null"
@@ -627,6 +653,7 @@
       },
       "oneOf": [
         {
+          "description": "A compiled shared library (.so, .dll, .dylib).\n\nThe path points to the shared library file. Dora will automatically\nload it as a dynamic library.",
           "type": "object",
           "properties": {
             "shared-library": {
@@ -638,6 +665,7 @@
           ]
         },
         {
+          "description": "A Python script or module.",
           "type": "object",
           "properties": {
             "python": {

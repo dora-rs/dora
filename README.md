@@ -129,6 +129,8 @@ The node hub is available in the [**`dora-rs/dora-hub`**](https://github.com/dor
 pip install dora-rs-cli
 ```
 
+Note for Ubuntu users: If you encounter an 'externally-managed-environment' error during installation, try installing inside a virtual environment (python3 -m venv venv).
+
 <details close>
 <summary><b>Additional installation methods</b></summary>
 

@@ -57,7 +57,9 @@ use std::{collections::BTreeMap, net::IpAddr};
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_and_check_version, local_working_dir, resolve_dataflow},
+    common::{
+        ConnectAndCheckVersionError, connect_and_check_version, local_working_dir, resolve_dataflow,
+    },
     session::DataflowSession,
 };
 
@@ -180,11 +182,12 @@ pub async fn build_async(
                 );
                 BuildKind::ThroughCoordinator { coordinator_client }
             }
-            Err(_) => {
+            Err(ConnectAndCheckVersionError::ConnectionFailed(_)) => {
                 tracing::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
+            Err(err) => return Err(err).context("failed to connect to coordinator"),
         }
     };
 
@@ -252,7 +255,7 @@ enum BuildKind {
 async fn connect_to_coordinator_rpc_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> eyre::Result<CoordinatorControlClient> {
+) -> Result<CoordinatorControlClient, ConnectAndCheckVersionError> {
     let addr = coordinator_addr.unwrap_or(LOCALHOST);
     let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
     connect_and_check_version(addr, control_port).await

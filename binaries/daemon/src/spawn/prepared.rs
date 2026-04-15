@@ -31,6 +31,7 @@ use std::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32},
     },
+    time::Duration,
 };
 use tokio::{
     fs::File,
@@ -49,6 +50,8 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
+    /// Flag set before sending Stop(HotReload) to force restart regardless of policy.
+    pub(super) pending_hot_reload: Arc<AtomicBool>,
     /// Abort handle for the node's listener task. Cloned into `RunningNode` so
     /// the dataflow can cancel the listener when it finishes.
     /// `AbortHandle` is `Clone`, so `#[derive(Clone)]` continues to work.
@@ -82,6 +85,7 @@ impl PreparedNode {
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
+            pending_hot_reload: self.pending_hot_reload.clone(),
             pid: match kind {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { pid: new_pid } => {
@@ -111,6 +115,7 @@ impl PreparedNode {
         disable_restart: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
     ) {
+        let mut last_spawn = std::time::Instant::now();
         loop {
             let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
                 logger
@@ -123,11 +128,18 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = match self.restart_policy() {
-                RestartPolicy::Always => true,
-                RestartPolicy::OnFailure if exit_status.is_success() => false,
-                RestartPolicy::OnFailure => true,
-                RestartPolicy::Never => false,
+            let restart = if self
+                .pending_hot_reload
+                .swap(false, atomic::Ordering::AcqRel)
+            {
+                true // Hot-reload requested: always restart regardless of policy
+            } else {
+                match self.restart_policy() {
+                    RestartPolicy::Always => true,
+                    RestartPolicy::OnFailure if exit_status.is_success() => false,
+                    RestartPolicy::OnFailure => true,
+                    RestartPolicy::Never => false,
+                }
             };
 
             let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
@@ -185,6 +197,28 @@ impl PreparedNode {
                         )
                         .await;
                 }
+                // Drain buffered operations from previous run
+                while op_rx.try_recv().is_ok() {}
+
+                // Cooldown to avoid rapid crash-restart loops
+                let min_restart_interval = Duration::from_secs(2);
+                let elapsed = last_spawn.elapsed();
+                if elapsed < min_restart_interval {
+                    let wait = min_restart_interval - elapsed;
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            format!(
+                                "node crashed quickly, waiting {:.1}s before restarting",
+                                wait.as_secs_f64()
+                            ),
+                        )
+                        .await;
+                    tokio::time::sleep(wait).await;
+                }
+
+                last_spawn = std::time::Instant::now();
                 let (finished_tx, finished_rx_new) = oneshot::channel();
                 let result = self
                     .clone()
@@ -296,9 +330,9 @@ impl PreparedNode {
             &self.node.id,
         ))
         .await
-        .expect("Failed to create log file");
+        .context("failed to create log file")?;
         let mut child_stdout =
-            tokio::io::BufReader::new(child.stdout().take().expect("failed to take stdout"));
+            tokio::io::BufReader::new(child.stdout().take().context("failed to take stdout")?);
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         let mut logger_c = logger.try_clone().await?;
@@ -352,7 +386,7 @@ impl PreparedNode {
         });
 
         let mut child_stderr =
-            tokio::io::BufReader::new(child.stderr().take().expect("failed to take stderr"));
+            tokio::io::BufReader::new(child.stderr().take().context("failed to take stderr")?);
 
         // Stderr listener stream
         let stderr_tx = tx.clone();

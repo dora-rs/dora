@@ -227,29 +227,10 @@ pub struct CommunicationConfig {
     #[serde(
         default,
         with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_local"
-    )]
-    #[schemars(with = "String")]
-    pub local: LocalCommunicationConfig,
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
         rename = "_unstable_remote"
     )]
     #[schemars(with = "String")]
     pub remote: RemoteCommunicationConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum LocalCommunicationConfig {
-    Tcp,
-    UnixDomain,
-}
-
-impl Default for LocalCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

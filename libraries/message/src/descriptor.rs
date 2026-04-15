@@ -13,6 +13,20 @@ use std::{
     path::PathBuf,
 };
 
+/// Node path value for executing commands directly in the shell.
+///
+/// When a node's [`path`](Node::path) is set to this value, Dora will execute
+/// the command specified in [`args`](Node::args) directly in the system shell
+/// rather than running an executable file.
+///
+/// ## Example
+///
+/// ```yaml
+/// nodes:
+///   - id: shell-example
+///     path: shell
+///     args: echo "Hello from shell node"
+/// ```
 pub const SHELL_SOURCE: &str = "shell";
 /// Set the [`Node::path`] field to this value to treat the node as a
 /// [_dynamic node_](https://docs.rs/dora-node-api/latest/dora_node_api/).
@@ -129,18 +143,59 @@ pub enum RestartPolicy {
     Always,
 }
 
+/// Deployment configuration for targeting specific machines in distributed dataflows.
+///
+/// This struct is part of the unstable deployment configuration, prefixed with
+/// `_unstable_deploy` in YAML files. It allows specifying which machine a node
+/// should run on in a multi-machine setup.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// _unstable_deploy:
+///   machine: "robot-arm-controller"
+///   working_dir: "/home/dora/projects"
+/// ```
+///
+/// ## Stability
+///
+/// ⚠️ **Unstable**: This API may change in future versions.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
-    /// Target machine for deployment
+    /// Target machine identifier for deployment.
+    ///
+    /// Must match one of the daemon machine IDs in the distributed setup.
     pub machine: Option<String>,
-    /// Working directory for the deployment
+    /// Working directory on the target machine.
+    ///
+    /// If not specified, defaults to the daemon's working directory.
     pub working_dir: Option<PathBuf>,
 }
 
+/// Debug and development options for dataflow execution.
+///
+/// This struct is part of the unstable debug configuration, prefixed with
+/// `_unstable_debug` in YAML files. It provides options useful for
+/// development and troubleshooting.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// _unstable_debug:
+///   publish_all_messages_to_zenoh: true
+/// ```
+///
+/// ## Stability
+///
+/// ⚠️ **Unstable**: This API may change in future versions.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Debug {
-    /// Whether to publish all messages to Zenoh for debugging
+    /// Whether to publish all messages to Zenoh for debugging.
+    ///
+    /// When enabled, all inter-node messages are also published to the
+    /// Zenoh network, allowing external tools to monitor dataflow activity.
+    /// This is useful for debugging but adds overhead.
     #[serde(default)]
     pub publish_all_messages_to_zenoh: bool,
 }
@@ -304,9 +359,11 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator: Option<SingleOperatorDefinition>,
 
-    /// Legacy node configuration (deprecated).
-    ///
-    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
+    /// Legacy node configuration.
+    #[deprecated(
+        since = "0.3.5",
+        note = "Use top-level `path`, `args`, etc fields instead"
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomNode>,
 
@@ -528,21 +585,44 @@ pub struct Node {
     pub deploy: Option<Deploy>,
 }
 
+/// A fully resolved node with all aliases expanded and defaults applied.
+///
+/// This type represents a node after the [`Descriptor`] has been processed
+/// by [`resolve_aliases_and_set_defaults`](crate::descriptor::DescriptorExt::resolve_aliases_and_set_defaults).
+/// It contains the complete configuration ready for execution.
+///
+/// Unlike [`Node`], which may contain shortcuts and aliases, `ResolvedNode`
+/// has all fields fully expanded.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedNode {
+    /// Unique node identifier.
+    ///
+    /// Must not contain `/` characters.
     pub id: NodeId,
+    /// Human-readable node name (if specified).
     pub name: Option<String>,
+    /// Detailed description of the node's functionality (if specified).
     pub description: Option<String>,
+    /// Environment variables for the node.
+    ///
+    /// Merged from global and node-level environment variables,
+    /// with node-level taking precedence.
     pub env: Option<BTreeMap<String, EnvValue>>,
 
+    /// Deployment configuration (if specified).
     #[serde(default)]
     pub deploy: Option<Deploy>,
 
+    /// The kind of this node, determining its execution model.
     #[serde(flatten)]
     pub kind: CoreNodeKind,
 }
 
 impl ResolvedNode {
+    /// Returns `true` if this node has a git source.
+    ///
+    /// This is useful for determining whether the node's source code
+    /// needs to be cloned from a repository before execution.
     pub fn has_git_source(&self) -> bool {
         self.kind
             .as_custom()
@@ -551,17 +631,32 @@ impl ResolvedNode {
     }
 }
 
+/// The execution model for a resolved node.
+///
+/// Determines how the node's code is executed:
+/// - [`Runtime`](CoreNodeKind::Runtime): Operators running in a shared runtime process
+/// - [`Custom`](CoreNodeKind::Custom): A standalone custom node process
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 #[allow(clippy::large_enum_variant)]
 pub enum CoreNodeKind {
-    /// Dora runtime node
+    /// One or more operators running in a shared runtime process.
+    ///
+    /// Operators share an address space, allowing efficient communication
+    /// between them. Serialized as `"operators"` in YAML.
     #[serde(rename = "operators")]
     Runtime(RuntimeNode),
+    /// A standalone custom node running as its own process.
+    ///
+    /// Custom nodes are isolated from other nodes and can be
+    /// any executable (Rust binary, Python script, etc.).
     Custom(CustomNode),
 }
 
 impl CoreNodeKind {
+    /// Returns a reference to the [`CustomNode`] if this is a custom node.
+    ///
+    /// Returns `None` if this is a runtime node.
     pub fn as_custom(&self) -> Option<&CustomNode> {
         match self {
             CoreNodeKind::Runtime(_) => None,
@@ -570,74 +665,185 @@ impl CoreNodeKind {
     }
 }
 
+/// A runtime node containing one or more operators.
+///
+/// Runtime nodes allow multiple operators to run in a single process,
+/// sharing memory and reducing inter-process communication overhead.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// nodes:
+///   - id: my-runtime
+///     operators:
+///       - id: processor
+///         python: process.py
+///       - id: filter
+///         python: filter.py
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RuntimeNode {
-    /// List of operators running in this runtime
+    /// List of operator definitions within this runtime.
     pub operators: Vec<OperatorDefinition>,
 }
 
+/// A complete operator definition within a runtime node.
+///
+/// Operators are lightweight alternatives to full nodes, running within
+/// a shared runtime process. They are ideal for simple transformations
+/// or when multiple processing steps need tight coupling.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// operators:
+///   - id: image-processor
+///     python: process.py
+///     inputs:
+///       image: camera/image
+///     outputs:
+///       - processed
+/// ```
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorDefinition {
-    /// Unique operator identifier within the runtime
+    /// Unique identifier for this operator within the runtime.
     pub id: OperatorId,
+    /// The operator's complete configuration.
     #[serde(flatten)]
     pub config: OperatorConfig,
 }
 
+/// Configuration for a runtime node with a single operator.
+///
+/// This is a convenience type for the common case of defining a runtime
+/// node with only one operator. It allows omitting the operator ID since
+/// there's only one operator in the runtime.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// nodes:
+///   - id: single-op-node
+///     operator:
+///       id: processor
+///       python: process.py
+/// ```
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SingleOperatorDefinition {
-    /// Operator identifier (optional for single operators)
+    /// Operator identifier (optional for single operators).
+    ///
+    /// If not specified, defaults to `"op"`.
     pub id: Option<OperatorId>,
+    /// The operator's complete configuration.
     #[serde(flatten)]
     pub config: OperatorConfig,
 }
 
+/// Configuration for an operator within a runtime node.
+///
+/// Defines the operator's source, inputs, outputs, and build settings.
+/// Similar to [`Node`] but simplified for the runtime context.
+///
+/// ## YAML Example
+///
+/// ```yaml
+/// operators:
+///   - id: processor
+///     name: "Image Processor"
+///     python: process.py
+///     inputs:
+///       image: camera/image
+///     outputs:
+///       - result
+///     build: pip install -r requirements.txt
+/// ```
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 pub struct OperatorConfig {
-    /// Human-readable operator name
+    /// Human-readable operator name for documentation.
     pub name: Option<String>,
-    /// Detailed description of the operator
+    /// Detailed description of the operator's functionality.
     pub description: Option<String>,
 
-    /// Input data connections
+    /// Input data connections from other nodes or operators.
     #[serde(default)]
     pub inputs: BTreeMap<DataId, Input>,
-    /// Output data identifiers
+    /// Output data identifiers produced by this operator.
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 
-    /// Operator source configuration (Python, shared library, etc.)
+    /// Operator source configuration (Python script or shared library).
     #[serde(flatten)]
     pub source: OperatorSource,
 
-    /// Build commands for this operator
+    /// Build commands executed during `dora build`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
-    /// Redirect stdout to data output
+    /// Redirect stdout to a data output.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 }
 
+/// The source type for an operator's implementation.
+///
+/// Operators can be implemented as either:
+/// - A Python script (recommended for rapid development)
+/// - A compiled shared library (for performance-critical code)
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub enum OperatorSource {
+    /// A compiled shared library (.so, .dll, .dylib).
+    ///
+    /// The path points to the shared library file. Dora will automatically
+    /// load it as a dynamic library.
     SharedLibrary(String),
+    /// A Python script or module.
     Python(PythonSource),
 }
+/// Configuration for a Python-based operator.
+///
+/// Specifies the Python source file and optional conda environment.
+///
+/// ## YAML Examples
+///
+/// Simple form (just the path):
+/// ```yaml
+/// python: process.py
+/// ```
+///
+/// With options:
+/// ```yaml
+/// python:
+///   source: process.py
+///   conda_env: my-env
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "PythonSourceDef", into = "PythonSourceDef")]
 pub struct PythonSource {
+    /// Path to the Python source file.
     pub source: String,
+    /// Optional conda environment name.
+    ///
+    /// If specified, Dora will activate this conda environment
+    /// before running the Python script.
     pub conda_env: Option<String>,
 }
 
+/// Internal representation for Python source configuration.
+///
+/// This enum is used for serde serialization/deserialization and allows
+/// the Python source to be specified as either a simple string or
+/// an object with options.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum PythonSourceDef {
+    /// Simple form: just the source path as a string.
     SourceOnly(String),
+    /// Extended form: an object with source and optional conda_env.
     WithOptions {
+        /// Path to the Python source file.
         source: String,
+        /// Optional conda environment name.
         conda_env: Option<String>,
     },
 }
@@ -666,16 +872,30 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+/// Configuration for a Python operator (legacy format).
+///
+/// This struct is used for Python operators in the legacy configuration
+/// format. For new configurations, use [`OperatorConfig`] instead.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct PythonOperatorConfig {
+    /// Path to the Python script.
     pub path: PathBuf,
+    /// Input data connections.
     #[serde(default)]
     pub inputs: BTreeMap<DataId, InputMapping>,
+    /// Output data identifiers.
     #[serde(default)]
     pub outputs: BTreeSet<DataId>,
 }
 
+/// A custom node running as its own process.
+///
+/// Custom nodes are standalone executables or scripts that communicate
+/// with other nodes through inputs and outputs. They can be written
+/// in any language (Rust, Python, C++, etc.).
+///
+/// This type represents the resolved form of a custom node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     /// Path of the source code
@@ -689,64 +909,111 @@ pub struct CustomNode {
     ///
     /// Source can match any executable in PATH.
     pub path: String,
+    /// Source type for the custom node (local or git).
     pub source: NodeSource,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
-    ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Environment variables for the custom nodes.
+    #[deprecated(note = "Use the outer-level `env` field on `Node` instead")]
     pub envs: Option<BTreeMap<String, EnvValue>>,
+    /// Build commands executed during `dora build`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
     /// Send stdout and stderr to another node
     #[serde(skip_serializing_if = "Option::is_none")]
     pub send_stdout_as: Option<String>,
 
+    /// Restart policy for this node.
     #[serde(default)]
     pub restart_policy: RestartPolicy,
 
+    /// Input and output configuration for this node.
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
 }
 
+/// The source location for a custom node's code.
+///
+/// Specifies where the node's source code comes from:
+/// - A local file or directory
+/// - A git repository with optional branch/tag/revision
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum NodeSource {
+    /// Local file or directory.
     Local,
+    /// Git repository with optional revision specification.
     GitBranch {
+        /// Git repository URL.
         repo: String,
+        /// Optional revision (branch, tag, or commit hash).
         rev: Option<GitRepoRev>,
     },
 }
 
 impl NodeSource {
+    /// Returns `true` if this source is a git repository.
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
 }
 
+/// The resolved source location for a custom node's code.
+///
+/// This type represents a node source after git resolution, where
+/// branch/tag names have been converted to specific commit hashes.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum ResolvedNodeSource {
+    /// Local file or directory.
     Local,
-    GitCommit { repo: String, commit_hash: String },
+    /// Git repository with resolved commit hash.
+    GitCommit {
+        /// Git repository URL.
+        repo: String,
+        /// Resolved commit hash.
+        commit_hash: String,
+    },
 }
 
+/// A specific git revision specification.
+///
+/// Can be one of:
+/// - A branch name
+/// - A tag name
+/// - A specific commit hash
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum GitRepoRev {
+    /// Git branch name.
     Branch(String),
+    /// Git tag name.
     Tag(String),
+    /// Specific commit hash.
     Rev(String),
 }
 
+/// A value for environment variables.
+///
+/// Supports multiple types to allow flexible environment variable configuration:
+/// - Boolean values
+/// - Integer values
+/// - Floating-point values
+/// - String values
+///
+/// Values are automatically expanded from environment variable references
+/// (e.g., `$HOME` or `${USER}`) during deserialization.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum EnvValue {
+    /// Boolean value.
     #[serde(deserialize_with = "with_expand_envs")]
     Bool(bool),
+    /// Integer value.
     #[serde(deserialize_with = "with_expand_envs")]
     Integer(i64),
+    /// Floating-point value.
     #[serde(deserialize_with = "with_expand_envs")]
     Float(f64),
+    /// String value.
     #[serde(deserialize_with = "with_expand_envs")]
     String(String),
 }
