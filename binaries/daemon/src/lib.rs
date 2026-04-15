@@ -869,40 +869,6 @@ impl Daemon {
 
     async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
         match event {
-            InterDaemonEvent::Output {
-                dataflow_id,
-                node_id,
-                output_id,
-                metadata,
-                data,
-            } => {
-                let inner = async {
-                    let mut dataflow =
-                        self.state.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-                        })?;
-                    send_output_to_local_receivers(
-                        node_id.clone(),
-                        output_id.clone(),
-                        &mut dataflow,
-                        &metadata,
-                        data.map(DataMessage::Vec),
-                        &self.state.clock,
-                    )
-                    .await?;
-                    Result::<_, eyre::Report>::Ok(())
-                };
-                if let Err(err) = inner
-                    .await
-                    .wrap_err("failed to forward remote output to local receivers")
-                {
-                    let mut logger = self.logger.for_dataflow(dataflow_id).for_node(node_id);
-                    logger
-                        .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
-                        .await;
-                }
-                Ok(())
-            }
             InterDaemonEvent::OutputClosed {
                 dataflow_id,
                 node_id,
@@ -984,6 +950,10 @@ impl Daemon {
                 }
                 Ok(())
             }
+            // Data is routed directly via zenoh; the daemon never forwards
+            // remote output payloads anymore. If this variant still reaches
+            // the daemon, it was produced by an outdated peer — ignore it.
+            InterDaemonEvent::Output { .. } => Ok(()),
         }
     }
 
@@ -1564,6 +1534,9 @@ impl Daemon {
         Ok(())
     }
 
+    // Only reached on the fallback path (Interactive/Testing mode where the
+    // node has no zenoh publisher). Nodes using zenoh publish data directly,
+    // so the daemon never forwards output data to remote daemons.
     async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -1575,26 +1548,15 @@ impl Daemon {
         let mut dataflow = self.state.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        let data_bytes = send_output_to_local_receivers(
-            node_id.clone(),
-            output_id.clone(),
+        send_output_to_local_receivers(
+            node_id,
+            output_id,
             &mut dataflow,
             &metadata,
             data,
             &self.state.clock,
         )
         .await?;
-
-        let output_id = OutputId(node_id, output_id);
-        let remote_receivers = dataflow.open_external_mappings.contains(&output_id)
-            || dataflow.publish_all_messages_to_zenoh;
-        drop(dataflow);
-        // Nodes publish data directly via zenoh; the daemon does not forward
-        // output data to remote daemons. In the fallback path (Interactive /
-        // Testing mode), `data` is Some but there are no remote receivers, so
-        // no forwarding is needed either.
-        let _ = (remote_receivers, data_bytes);
-
         Ok(())
     }
 
@@ -2643,7 +2605,7 @@ async fn send_output_to_local_receivers(
     metadata: &metadata::Metadata,
     data: Option<DataMessage>,
     _clock: &HLC,
-) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
+) -> Result<(), eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
@@ -2670,11 +2632,7 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    let data_bytes = match data {
-        None => None,
-        Some(DataMessage::Vec(v)) => Some(v),
-    };
-    Ok(data_bytes)
+    Ok(())
 }
 
 fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
@@ -2877,8 +2835,6 @@ pub struct RunningDataflow {
 
     finished_tx: broadcast::Sender<()>,
 
-    publish_all_messages_to_zenoh: bool,
-
     /// Tracks nodes that were stopped via hot-reload (`stop_single_node`).
     /// Their exit is expected, so normal cleanup is skipped.
     hot_reload_stopped_nodes: BTreeSet<NodeId>,
@@ -2925,7 +2881,6 @@ impl RunningDataflow {
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             finished_tx,
-            publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
             descriptor: dataflow_descriptor,
             hot_reload_stopped_nodes: BTreeSet::new(),
             _hot_reload_watcher: None,
