@@ -1,4 +1,4 @@
-pub use crate::common::{DataMessage, LogLevel, LogMessage, SharedMemoryId, Timestamped};
+pub use crate::common::{DataMessage, LogLevel, LogMessage, Timestamped};
 use crate::{
     DataflowId, current_crate_version,
     id::{DataId, NodeId},

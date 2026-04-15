@@ -264,8 +264,6 @@ impl Timestamped<InterDaemonEvent> {
     }
 }
 
-pub type SharedMemoryId = String;
-
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
     Vec(AVec<u8, ConstAlign<128>>),

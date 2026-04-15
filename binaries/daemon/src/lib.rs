@@ -1,4 +1,3 @@
-use aligned_vec::{AVec, ConstAlign};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::{self, BuildInfo, PrevGitSource},
@@ -1751,7 +1750,7 @@ impl Daemon {
         node_id: NodeId,
         outputs: Vec<DataId>,
     ) -> eyre::Result<()> {
-        let (local_node_inputs, closed) = {
+        let closed = {
             let mut dataflow = self
                 .state
                 .running
@@ -1774,7 +1773,7 @@ impl Daemon {
                     closed.push(output_id.clone());
                 }
             }
-            (local_node_inputs, closed)
+            closed
         };
 
         for output_id in closed {

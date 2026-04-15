@@ -61,7 +61,9 @@ pub struct DoraNode {
     warned_unknown_output: BTreeSet<DataId>,
     interactive: bool,
 
-    zenoh_session: Option<zenoh::Session>,
+    /// Kept alive so the zenoh session outlives all derived publishers /
+    /// subscribers; not read directly.
+    _zenoh_session: Option<zenoh::Session>,
     shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
     publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
     /// Messages smaller than this threshold are sent as plain bytes through
@@ -548,7 +550,7 @@ impl DoraNode {
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
-            zenoh_session,
+            _zenoh_session: zenoh_session,
             shm_provider,
             publishers,
             zero_copy_threshold,

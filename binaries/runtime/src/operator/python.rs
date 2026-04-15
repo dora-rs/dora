@@ -303,7 +303,6 @@ mod callback_impl {
         Bound, PyObject, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
     };
-    use tokio::sync::oneshot;
     use tracing::{field, span};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 

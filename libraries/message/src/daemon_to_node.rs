@@ -8,7 +8,7 @@ use crate::{
     metadata::Metadata,
 };
 
-pub use crate::common::{DataMessage, SharedMemoryId, Timestamped};
+pub use crate::common::{DataMessage, Timestamped};
 
 // Passed via env variable
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
