@@ -14,7 +14,7 @@ use dora_message::{
         BuildRequest, CoordinatorControl, CoordinatorControlClient, CoordinatorControlRequest,
         CoordinatorControlResponse,
     },
-    common::DaemonId,
+    common::{DaemonId, NodeError, NodeErrorCause, NodeExitStatus},
     coordinator_to_cli::{DataflowResult, StopDataflowReply},
     coordinator_to_daemon::{
         BuildDataflowNodes, DaemonControlClient, DaemonControlRequest, DaemonControlResponse,
@@ -501,6 +501,7 @@ async fn start_inner(
                     tracing::error!("Disconnecting daemons that failed watchdog: {disconnected:?}");
                     for machine_id in disconnected {
                         coordinator_state.daemon_connections.remove(&machine_id);
+                        handle_daemon_disconnect(&coordinator_state, &machine_id).await;
                     }
                 }
             }
@@ -525,6 +526,134 @@ async fn start_inner(
     Ok(())
 }
 
+pub(crate) async fn handle_daemon_disconnect(
+    coordinator_state: &state::CoordinatorState,
+    daemon_id: &DaemonId,
+) {
+    let mut affected_dataflows = Vec::new();
+    let mut dataflows_to_finalize = Vec::new();
+    for mut dataflow in coordinator_state.running_dataflows.iter_mut() {
+        let removed = dataflow.daemons.remove(daemon_id);
+        if !removed {
+            continue;
+        }
+
+        dataflow.pending_daemons.remove(daemon_id);
+        dataflow.pending_spawn_results.remove(daemon_id);
+
+        tracing::info!(
+            "removed disconnected daemon `{daemon_id}` from running dataflow `{}`",
+            dataflow.uuid
+        );
+
+        let error = eyre!(
+            "daemon `{daemon_id}` disconnected while dataflow `{}` was active",
+            dataflow.uuid
+        );
+        dataflow.spawn_result.set_result(Err(error));
+
+        let failed_nodes: Vec<NodeId> = dataflow
+            .node_to_daemon
+            .iter()
+            .filter(|(_, assigned_daemon)| *assigned_daemon == daemon_id)
+            .map(|(node_id, _)| node_id.clone())
+            .collect();
+
+        let failed_node_results: BTreeMap<NodeId, Result<(), NodeError>> = failed_nodes
+            .iter()
+            .map(|node_id| {
+                let node_error = NodeError {
+                    timestamp: coordinator_state.clock.new_timestamp(),
+                    cause: NodeErrorCause::Other {
+                        stderr: format!("daemon `{daemon_id}` disconnected"),
+                    },
+                    exit_status: NodeExitStatus::Unknown,
+                };
+                (node_id.clone(), Err(node_error))
+            })
+            .collect();
+
+        if !failed_node_results.is_empty() {
+            coordinator_state
+                .dataflow_results
+                .entry(dataflow.uuid)
+                .or_default()
+                .insert(
+                    daemon_id.clone(),
+                    DataflowDaemonResult {
+                        timestamp: coordinator_state.clock.new_timestamp(),
+                        node_results: failed_node_results,
+                    },
+                );
+        }
+
+        let remaining_daemons = dataflow.daemons.iter().cloned().collect::<Vec<_>>();
+        affected_dataflows.push((dataflow.uuid, remaining_daemons, failed_nodes));
+        if dataflow.daemons.is_empty() {
+            dataflows_to_finalize.push(dataflow.uuid);
+        }
+    }
+
+    // Notify surviving daemons so they can emit local NodeFailed events for impacted inputs.
+    for (dataflow_id, remaining_daemons, failed_nodes) in affected_dataflows {
+        for remaining_daemon in remaining_daemons {
+            let Some(connection) = coordinator_state.daemon_connections.get(&remaining_daemon)
+            else {
+                tracing::warn!(
+                    "failed to notify daemon `{remaining_daemon}` about disconnect in dataflow `{dataflow_id}`: no daemon connection"
+                );
+                continue;
+            };
+            let client = connection.client.clone();
+            drop(connection);
+            if let Err(err) = client
+                .daemon_disconnected(
+                    tarpc::context::current(),
+                    dataflow_id,
+                    daemon_id.clone(),
+                    failed_nodes.clone(),
+                )
+                .await
+            {
+                tracing::warn!(
+                    "failed to notify daemon `{remaining_daemon}` about disconnect in dataflow `{dataflow_id}`: {err}"
+                );
+            }
+        }
+    }
+
+    for dataflow_id in dataflows_to_finalize {
+        finalize_dataflow(coordinator_state, dataflow_id);
+    }
+}
+
+pub(crate) fn finalize_dataflow(coordinator_state: &state::CoordinatorState, dataflow_id: Uuid) {
+    let Some((_, mut finished_dataflow)) = coordinator_state.running_dataflows.remove(&dataflow_id)
+    else {
+        return;
+    };
+
+    coordinator_state
+        .archived_dataflows
+        .entry(dataflow_id)
+        .or_insert_with(|| ArchivedDataflow::from(&finished_dataflow));
+
+    let clock = &coordinator_state.clock;
+    let reply = StopDataflowReply {
+        uuid: dataflow_id,
+        result: coordinator_state
+            .dataflow_results
+            .get(&dataflow_id)
+            .map(|r| dataflow_result(r.value(), dataflow_id, clock))
+            .unwrap_or_else(|| DataflowResult::ok_empty(dataflow_id, clock.new_timestamp())),
+    };
+    for sender in finished_dataflow.stop_reply_senders.drain(..) {
+        let _ = sender.send(Ok(reply.clone()));
+    }
+    if !matches!(finished_dataflow.spawn_result, CachedResult::Cached { .. }) {
+        log::error!("pending spawn result on dataflow finish");
+    }
+}
 pub(crate) fn dataflow_result(
     results: &BTreeMap<DaemonId, DataflowDaemonResult>,
     dataflow_uuid: Uuid,

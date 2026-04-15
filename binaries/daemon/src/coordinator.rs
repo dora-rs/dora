@@ -322,6 +322,34 @@ impl DaemonControl for DaemonControlServer {
         }
     }
 
+    async fn daemon_disconnected(
+        self,
+        _ctx: tarpc::context::Context,
+        dataflow_id: DataflowId,
+        disconnected_daemon_id: DaemonId,
+        failed_nodes: Vec<NodeId>,
+    ) {
+        let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) else {
+            tracing::warn!(
+                "received daemon_disconnected for unknown dataflow `{dataflow_id}` (daemon `{disconnected_daemon_id}`)"
+            );
+            return;
+        };
+
+        let error_message = format!("daemon `{disconnected_daemon_id}` disconnected");
+        for source_node_id in failed_nodes {
+            // Deduplicate in case multiple notifications reference the same failed node.
+            if dataflow.handled_node_failed.insert(source_node_id.clone()) {
+                let (_outputs, _remote_receivers) = crate::Daemon::find_and_notify_local_receivers(
+                    &mut dataflow,
+                    &source_node_id,
+                    &error_message,
+                    &self.state.clock,
+                );
+            }
+        }
+    }
+
     async fn stop_dataflow(
         self,
         _ctx: tarpc::context::Context,

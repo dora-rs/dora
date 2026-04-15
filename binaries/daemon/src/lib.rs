@@ -1653,7 +1653,7 @@ impl Daemon {
     /// Find all receivers affected by a node failure and send NodeFailed events to local ones.
     ///
     /// Returns the list of outputs and a set of remote receiver node IDs (nodes not on this daemon).
-    fn find_and_notify_local_receivers(
+    pub(crate) fn find_and_notify_local_receivers(
         dataflow: &mut RunningDataflow,
         source_node_id: &NodeId,
         error_message: &str,
