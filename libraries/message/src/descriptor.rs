@@ -191,9 +191,16 @@ pub enum DistributeStrategy {
 /// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Debug {
-    /// Whether to publish all messages to Zenoh for debugging
-    #[serde(default)]
-    pub publish_all_messages_to_zenoh: bool,
+    /// When true, daemons mirror every node output to the coordinator WebSocket
+    /// so that `dora topic echo`, `dora topic hz`, and `dora topic info` can
+    /// inspect runtime messages.
+    ///
+    /// The field was previously named `publish_all_messages_to_zenoh` (from
+    /// before the CLI inspection path moved off zenoh in PR #238). Serde still
+    /// accepts the old name as an alias for backward compatibility with
+    /// existing dataflow YAML; the alias will be removed in a future release.
+    #[serde(default, alias = "publish_all_messages_to_zenoh")]
+    pub enable_debug_inspection: bool,
 }
 
 /// # Dora Node Configuration
@@ -1328,5 +1335,34 @@ nodes:
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(desc.nodes[0].cpu_affinity, None);
+    }
+
+    #[test]
+    fn debug_flag_accepts_new_name() {
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+_unstable_debug:
+  enable_debug_inspection: true
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert!(desc.debug.enable_debug_inspection);
+    }
+
+    #[test]
+    fn debug_flag_accepts_legacy_alias() {
+        // Backward-compat regression guard (#240): dataflow YAML in the wild
+        // still uses `publish_all_messages_to_zenoh`. The serde alias must
+        // keep deserializing that into the renamed field.
+        let yaml = r#"
+nodes:
+  - id: test
+    path: test.py
+_unstable_debug:
+  publish_all_messages_to_zenoh: true
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        assert!(desc.debug.enable_debug_inspection);
     }
 }

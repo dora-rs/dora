@@ -55,7 +55,7 @@ dora run dataflow.yml --debug
 
 ```yaml
 _unstable_debug:
-  publish_all_messages_to_zenoh: true
+  enable_debug_inspection: true
 ```
 
 This tells the daemon to publish all inter-node messages to Zenoh, where the coordinator can proxy them to CLI clients via WebSocket. Without this flag, topic inspection commands will return an error.
@@ -162,7 +162,7 @@ How proxy mode works:
 4. Message data streams through WebSocket binary frames to the CLI
 5. The CLI writes the `.adorec` file locally
 
-This requires `publish_all_messages_to_zenoh: true` in the descriptor.
+This requires `enable_debug_inspection: true` in the descriptor.
 
 **When to use `--proxy`:**
 - Embedded targets with no local disk
@@ -172,7 +172,7 @@ This requires `publish_all_messages_to_zenoh: true` in the descriptor.
 **When to use default mode (no `--proxy`):**
 - Same machine or shared filesystem
 - High-throughput scenarios (no WebSocket overhead)
-- No need for `publish_all_messages_to_zenoh`
+- No need for `enable_debug_inspection`
 
 ### Replaying a Recording
 
@@ -304,7 +304,7 @@ dora node stop -d my-dataflow camera --grace 5s
 
 ## Topic Inspection
 
-Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `--debug` flag or `publish_all_messages_to_zenoh: true`.
+Topic inspection commands subscribe to live dataflow messages via the coordinator's WebSocket proxy. They require `--debug` flag or `enable_debug_inspection: true`.
 
 ### Listing Topics
 
@@ -316,7 +316,7 @@ dora topic list -d my-dataflow
 dora topic list -d my-dataflow --format json
 ```
 
-Shows each output, which node publishes it, and which nodes subscribe to it. This command reads from the descriptor and does **not** require `publish_all_messages_to_zenoh`.
+Shows each output, which node publishes it, and which nodes subscribe to it. This command reads from the descriptor and does **not** require `enable_debug_inspection`.
 
 ### Echoing Topic Data
 
@@ -364,7 +364,7 @@ Press `q` or Ctrl-C to exit. Requires an interactive terminal.
 
 ### Publishing Test Data
 
-Inject data into a running dataflow for testing. Requires `publish_all_messages_to_zenoh: true`.
+Inject data into a running dataflow for testing. Requires `enable_debug_inspection: true`.
 
 ```bash
 # Publish a single Arrow array

@@ -305,7 +305,7 @@ pub(crate) async fn handle_control_ws(
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.publish_all_messages_to_zenoh: true`"
+                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.enable_debug_inspection: true` (previously named `publish_all_messages_to_zenoh`; old name is still accepted)"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;

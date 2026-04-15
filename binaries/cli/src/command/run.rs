@@ -189,7 +189,7 @@ impl Executable for Run {
             .expand(working_dir)
             .wrap_err("failed to expand modules in dataflow descriptor")?;
         if self.debug {
-            dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
+            dataflow_descriptor.debug.enable_debug_inspection = true;
         }
 
         // Validate: dora run doesn't support deploy keys

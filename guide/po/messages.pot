@@ -5497,7 +5497,7 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:489 src/concepts/dataflow-yaml.md:511
 #: src/operations/cli.md:187 src/operations/cli.md:1515
 #: src/operations/debugging.md:58 src/advanced/ws-topic.md:169
-msgid "publish_all_messages_to_zenoh"
+msgid "enable_debug_inspection"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:492
@@ -11952,7 +11952,7 @@ msgid "`--debug`"
 msgstr ""
 
 #: src/operations/cli.md:278 src/operations/cli.md:361
-msgid "Enable debug topics (equivalent to `publish_all_messages_to_zenoh: true`)"
+msgid "Enable debug topics (equivalent to `enable_debug_inspection: true`)"
 msgstr ""
 
 #: src/operations/cli.md:279
@@ -12410,7 +12410,7 @@ msgstr ""
 #: src/operations/cli.md:437
 msgid ""
 "Default mode injects a record node into the dataflow. `--proxy` mode "
-"requires a running dataflow and `publish_all_messages_to_zenoh: true`."
+"requires a running dataflow and `enable_debug_inspection: true`."
 msgstr ""
 
 #: src/operations/cli.md:439
@@ -12826,7 +12826,7 @@ msgstr ""
 
 #: src/operations/cli.md:598
 msgid ""
-"Requires `_unstable_debug.publish_all_messages_to_zenoh: true` in the "
+"Requires `_unstable_debug.enable_debug_inspection: true` in the "
 "descriptor."
 msgstr ""
 
@@ -12977,7 +12977,7 @@ msgstr ""
 #: src/operations/cli.md:690
 msgid ""
 "Publish JSON data to a topic in a running dataflow. Requires "
-"`publish_all_messages_to_zenoh: true`."
+"`enable_debug_inspection: true`."
 msgstr ""
 
 #: src/operations/cli.md:698
@@ -14136,7 +14136,7 @@ msgid "Verify with `dora status`"
 msgstr ""
 
 #: src/operations/cli.md:1510
-msgid "**\"publish_all_messages_to_zenoh not enabled\"**"
+msgid "**\"enable_debug_inspection not enabled\"**"
 msgstr ""
 
 #: src/operations/cli.md:1511
@@ -17164,7 +17164,7 @@ msgid "The CLI writes the `.adorec` file locally"
 msgstr ""
 
 #: src/operations/debugging.md:165
-msgid "This requires `publish_all_messages_to_zenoh: true` in the descriptor."
+msgid "This requires `enable_debug_inspection: true` in the descriptor."
 msgstr ""
 
 #: src/operations/debugging.md:167
@@ -17196,7 +17196,7 @@ msgid "High-throughput scenarios (no WebSocket overhead)"
 msgstr ""
 
 #: src/operations/debugging.md:175
-msgid "No need for `publish_all_messages_to_zenoh`"
+msgid "No need for `enable_debug_inspection`"
 msgstr ""
 
 #: src/operations/debugging.md:177
@@ -17389,7 +17389,7 @@ msgstr ""
 msgid ""
 "Topic inspection commands subscribe to live dataflow messages via the "
 "coordinator's WebSocket proxy. They require `--debug` flag or "
-"`publish_all_messages_to_zenoh: true`."
+"`enable_debug_inspection: true`."
 msgstr ""
 
 #: src/operations/debugging.md:309
@@ -17404,7 +17404,7 @@ msgstr ""
 msgid ""
 "Shows each output, which node publishes it, and which nodes subscribe to it. "
 "This command reads from the descriptor and does **not** require "
-"`publish_all_messages_to_zenoh`."
+"`enable_debug_inspection`."
 msgstr ""
 
 #: src/operations/debugging.md:321
@@ -17492,7 +17492,7 @@ msgstr ""
 #: src/operations/debugging.md:367
 msgid ""
 "Inject data into a running dataflow for testing. Requires "
-"`publish_all_messages_to_zenoh: true`."
+"`enable_debug_inspection: true`."
 msgstr ""
 
 #: src/operations/debugging.md:370
@@ -24883,7 +24883,7 @@ msgstr ""
 msgid ""
 "**Validation**: `ControlEvent::TopicSubscribe` is sent to the coordinator "
 "event loop, which checks that the dataflow exists and has "
-"`publish_all_messages_to_zenoh: true` enabled"
+"`enable_debug_inspection: true` enabled"
 msgstr ""
 
 #: src/advanced/ws-topic.md:142
@@ -25135,7 +25135,7 @@ msgid "WsResponse with error message"
 msgstr ""
 
 #: src/advanced/ws-topic.md:272
-msgid "`publish_all_messages_to_zenoh` not enabled"
+msgid "`enable_debug_inspection` not enabled"
 msgstr ""
 
 #: src/advanced/ws-topic.md:273

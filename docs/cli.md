@@ -184,7 +184,7 @@ nodes:
 
 # Debug settings
 _unstable_debug:
-  publish_all_messages_to_zenoh: true   # required for topic echo/hz/info
+  enable_debug_inspection: true   # required for topic echo/hz/info
 ```
 
 ### Built-in Timer Nodes
@@ -275,7 +275,7 @@ dora run <PATH> [OPTIONS]
 | `<PATH>` | required | Path to dataflow descriptor YAML |
 | `--stop-after <DURATION>` | | Auto-stop after duration (e.g., `30s`, `5m`) |
 | `--uv` | false | Use `uv` for Python node management |
-| `--debug` | false | Enable debug topics (equivalent to `publish_all_messages_to_zenoh: true`) |
+| `--debug` | false | Enable debug topics (equivalent to `enable_debug_inspection: true`) |
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
 | `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
@@ -367,7 +367,7 @@ dora start <PATH> [OPTIONS]
 | `--name <NAME>`, `-n` | | Assign a name to the dataflow |
 | `--attach` | auto | Attach to log stream and wait for completion |
 | `--detach` | auto | Return immediately after spawn |
-| `--debug` | false | Enable debug topics (equivalent to `publish_all_messages_to_zenoh: true`) |
+| `--debug` | false | Enable debug topics (equivalent to `enable_debug_inspection: true`) |
 | `--hot-reload` | false | Watch Python files and reload on change |
 | `--uv` | false | Use `uv` for Python nodes |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
@@ -443,7 +443,7 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 | `--proxy` | false | Stream via WebSocket instead of recording on target |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
-Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `publish_all_messages_to_zenoh: true`.
+Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
 
 #### `dora replay`
 
@@ -604,7 +604,7 @@ dora topic echo [OPTIONS] [DATA...]
 | `[DATA...]` | all outputs | Topics to echo (e.g., `node1/output`) |
 | `--format <FMT>` | `table` | Output format: `table\|json` |
 
-Requires `_unstable_debug.publish_all_messages_to_zenoh: true` in the descriptor.
+Requires `_unstable_debug.enable_debug_inspection: true` in the descriptor.
 
 #### `dora topic hz`
 
@@ -739,7 +739,7 @@ dora node disconnect <SOURCE/OUTPUT> <TARGET/INPUT> [OPTIONS]
 
 #### `dora topic pub`
 
-Publish JSON data to a topic in a running dataflow. Requires `publish_all_messages_to_zenoh: true`.
+Publish JSON data to a topic in a running dataflow. Requires `enable_debug_inspection: true`.
 
 ```
 dora topic pub <TOPIC> [DATA] [OPTIONS]
@@ -1559,12 +1559,12 @@ State is persisted to `~/.dora/coordinator.redb`. On restart, stale dataflows ar
 - Run `dora up` first, or check `DORA_COORDINATOR_ADDR`/`DORA_COORDINATOR_PORT`
 - Verify with `dora status`
 
-**"publish_all_messages_to_zenoh not enabled"**
+**"enable_debug_inspection not enabled"**
 - Use `--debug` flag: `dora start dataflow.yml --debug` or `dora run dataflow.yml --debug`
 - Or add to your dataflow YAML:
   ```yaml
   _unstable_debug:
-    publish_all_messages_to_zenoh: true
+    enable_debug_inspection: true
   ```
 - Required for `topic echo`, `topic hz`, `topic info`
 

@@ -131,7 +131,7 @@ fn start_dataflow(
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
     if debug {
-        dataflow_descriptor.debug.publish_all_messages_to_zenoh = true;
+        dataflow_descriptor.debug.enable_debug_inspection = true;
     }
 
     let session = connect_to_coordinator(coordinator_socket)?;

@@ -579,8 +579,13 @@
       "description": "Debug options for development.",
       "type": "object",
       "properties": {
+        "enable_debug_inspection": {
+          "description": "Mirror every node output to the coordinator WebSocket so `dora topic echo/hz/info` can inspect runtime messages. Previously named `publish_all_messages_to_zenoh`; the old name is still accepted as an alias for backward compatibility.",
+          "type": "boolean",
+          "default": false
+        },
         "publish_all_messages_to_zenoh": {
-          "description": "Publish all messages to Zenoh for debugging (required for `dora topic echo/hz/info`).",
+          "description": "Deprecated alias for `enable_debug_inspection`. Still accepted for backward compatibility; will be removed in a future release.",
           "type": "boolean",
           "default": false
         }

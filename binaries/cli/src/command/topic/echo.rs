@@ -25,7 +25,7 @@ use crate::{
 ///
 /// ```yaml
 /// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
+///   enable_debug_inspection: true
 /// ```
 ///
 /// Examples:
@@ -127,7 +127,7 @@ fn inspect(
                 }
                 if !hint_shown {
                     eprintln!(
-                        "{}: no topic data received during the wait window. Ensure `_unstable_debug.publish_all_messages_to_zenoh: true` is enabled on the dataflow.",
+                        "{}: no topic data received during the wait window. Ensure `_unstable_debug.enable_debug_inspection: true` is enabled on the dataflow.",
                         "hint".yellow().bold(),
                     );
                     hint_shown = true;

@@ -24,7 +24,7 @@ use crate::{
 ///
 /// ```yaml
 /// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
+///   enable_debug_inspection: true
 /// ```
 ///
 /// Examples:

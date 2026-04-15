@@ -572,7 +572,7 @@ impl Daemon {
 
         let mut descriptor = read_as_descriptor(dataflow_path).await?;
         if debug {
-            descriptor.debug.publish_all_messages_to_zenoh = true;
+            descriptor.debug.enable_debug_inspection = true;
         }
         if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
             eyre::bail!(
@@ -2931,7 +2931,7 @@ impl Daemon {
         })?;
         let output_id_key = OutputId(node_id.clone(), output_id.clone());
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
-            || dataflow.publish_all_messages_to_zenoh;
+            || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
         let data_bytes = send_output_to_local_receivers(
             node_id.clone(),

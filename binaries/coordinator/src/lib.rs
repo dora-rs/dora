@@ -2235,7 +2235,7 @@ fn topic_debug_enabled(
     let dataflow = running_dataflows
         .get(&dataflow_id)
         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-    Ok(dataflow.descriptor.debug.publish_all_messages_to_zenoh)
+    Ok(dataflow.descriptor.debug.enable_debug_inspection)
 }
 
 async fn start_topic_debug_stream(
@@ -2249,7 +2249,8 @@ async fn start_topic_debug_stream(
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
     if !topic_debug_enabled(running_dataflows, dataflow_id)? {
         eyre::bail!(
-            "topic inspection requires `_unstable_debug.publish_all_messages_to_zenoh: true`"
+            "topic inspection requires `_unstable_debug.enable_debug_inspection: true` \
+             (the flag was previously named `publish_all_messages_to_zenoh`; the old name is still accepted)"
         );
     }
     let subscription_id = Uuid::new_v4();
@@ -3278,7 +3279,7 @@ mod tests {
 
         let mut running_dataflows = HashMap::new();
         let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
-        dataflow.descriptor.debug.publish_all_messages_to_zenoh = true;
+        dataflow.descriptor.debug.enable_debug_inspection = true;
         running_dataflows.insert(dataflow_id, dataflow);
         let expected_node_id = node_id.clone();
         let expected_data_id = data_id.clone();
@@ -3410,7 +3411,7 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         let mut dataflow =
             test_running_dataflow(dataflow_id, daemon_id_a.clone(), node_id_a.clone());
-        dataflow.descriptor.debug.publish_all_messages_to_zenoh = true;
+        dataflow.descriptor.debug.enable_debug_inspection = true;
         dataflow
             .node_to_daemon
             .insert(node_id_b.clone(), daemon_id_b.clone());

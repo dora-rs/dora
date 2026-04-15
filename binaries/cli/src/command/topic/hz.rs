@@ -30,7 +30,7 @@ use crate::{
 ///
 /// ```yaml
 /// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
+///   enable_debug_inspection: true
 /// ```
 ///
 /// If no `DATA` is provided, all outputs from the selected dataflow will be

@@ -138,7 +138,7 @@ CLI                         WsSession                     Coordinator
 
 ### Coordinator internals
 
-1. **Validation**: `ControlEvent::TopicSubscribe` is sent to the coordinator event loop, which checks that the dataflow exists and has `publish_all_messages_to_zenoh: true` enabled
+1. **Validation**: `ControlEvent::TopicSubscribe` is sent to the coordinator event loop, which checks that the dataflow exists and has `enable_debug_inspection: true` enabled
 2. **Lazy Zenoh**: The coordinator's Zenoh session is opened on the first `TopicSubscribe` request and reused for subsequent subscriptions on the same WS connection
 3. **Per-topic tasks**: Each `(node_id, data_id)` pair spawns a tokio task that subscribes to the corresponding Zenoh topic and forwards samples to the binary frame channel
 4. **Backpressure**: The binary frame channel has capacity 64. `try_send` is used -- if the channel is full (slow consumer), samples are silently dropped rather than blocking the Zenoh subscriber
@@ -166,12 +166,12 @@ The dataflow descriptor must enable debug message publishing:
 
 ```yaml
 _unstable_debug:
-  publish_all_messages_to_zenoh: true
+  enable_debug_inspection: true
 ```
 
 Without this, the coordinator rejects the `TopicSubscribe` with:
 ```
-dataflow {id} not found or publish_all_messages_to_zenoh not enabled
+dataflow {id} not found or enable_debug_inspection not enabled
 ```
 
 ---
@@ -269,7 +269,7 @@ For high-throughput topics (camera images, point clouds), the binary frame chann
 | Error | Source | Response |
 |-------|--------|----------|
 | Dataflow not found | Coordinator validation | WsResponse with error message |
-| `publish_all_messages_to_zenoh` not enabled | Coordinator validation | WsResponse with error message |
+| `enable_debug_inspection` not enabled | Coordinator validation | WsResponse with error message |
 | Zenoh session open failure | Coordinator | WsResponse with error message |
 | Zenoh subscriber failure | Per-topic task | Warning log, task exits |
 | Binary frame too short (<16 bytes) | CLI session_loop | Warning log, frame dropped |

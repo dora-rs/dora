@@ -207,7 +207,7 @@ pub struct RunningDataflow {
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,
     pub(crate) listener_shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    pub(crate) publish_all_messages_to_zenoh: bool,
+    pub(crate) enable_debug_inspection: bool,
     /// Cross-daemon Zenoh network counters
     pub(crate) net_bytes_sent: Arc<AtomicU64>,
     pub(crate) net_bytes_received: Arc<AtomicU64>,
@@ -263,7 +263,7 @@ impl RunningDataflow {
             finished_tx,
             listener_shutdown_tx,
             listener_shutdown_rx,
-            publish_all_messages_to_zenoh: dataflow_descriptor.debug.publish_all_messages_to_zenoh,
+            enable_debug_inspection: dataflow_descriptor.debug.enable_debug_inspection,
             descriptor: dataflow_descriptor,
             net_bytes_sent: Default::default(),
             net_bytes_received: Default::default(),

@@ -486,7 +486,7 @@ QoS can be set at the bridge level (applies to all topics) or per-topic:
 
 ```yaml
 _unstable_debug:
-  publish_all_messages_to_zenoh: true
+  enable_debug_inspection: true
 ```
 
 Required for `dora topic echo`, `dora topic hz`, and `dora topic info` commands.
@@ -508,7 +508,7 @@ See [Communication Patterns](../../../docs/patterns.md) for details and examples
 health_check_interval: 10.0
 
 _unstable_debug:
-  publish_all_messages_to_zenoh: true
+  enable_debug_inspection: true
 
 nodes:
   - id: webcam
