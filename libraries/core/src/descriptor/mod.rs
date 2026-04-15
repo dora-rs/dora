@@ -192,7 +192,11 @@ impl DescriptorExt for Descriptor {
                     id: node.id,
                     name: node.name,
                     description: node.description,
-                    env: node.env,
+                    // Merge the dataflow-level `env` into the per-node `env`.
+                    // Per-node keys win on conflict so a node can override a
+                    // shared default (e.g. global `RUST_LOG=info` with one
+                    // verbose node setting `RUST_LOG=debug`).
+                    env: merge_env(self.env.as_ref(), node.env),
                     cpu_affinity: node.cpu_affinity,
                     deploy: node.deploy,
                     kind,
@@ -249,6 +253,26 @@ impl DescriptorExt for Descriptor {
     ) -> eyre::Result<(Descriptor, ModuleBoundaries)> {
         let expanded = expand::expand_modules_with_boundaries(self, working_dir)?;
         Ok((expanded.descriptor, expanded.boundaries))
+    }
+}
+
+/// Merge dataflow-level `env` into a node's `env`, with per-node keys winning
+/// on conflict. Returns `None` when both inputs are empty so the resolved
+/// node serializes cleanly when no env vars are set anywhere.
+fn merge_env(
+    global: Option<&BTreeMap<String, EnvValue>>,
+    node: Option<BTreeMap<String, EnvValue>>,
+) -> Option<BTreeMap<String, EnvValue>> {
+    match (global, node) {
+        (None, node) => node,
+        (Some(global), None) if global.is_empty() => None,
+        (Some(global), None) => Some(global.clone()),
+        (Some(global), Some(node)) => {
+            let mut merged = global.clone();
+            // Per-node entries override global ones on key conflict.
+            merged.extend(node);
+            Some(merged)
+        }
     }
 }
 
@@ -418,4 +442,113 @@ enum NodeKindMut<'a> {
     Operator(&'a mut SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), EnvValue::String(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn merge_env_returns_none_when_both_absent() {
+        assert!(merge_env(None, None).is_none());
+    }
+
+    #[test]
+    fn merge_env_keeps_per_node_when_no_global() {
+        let node_env = env(&[("A", "1")]);
+        let merged = merge_env(None, Some(node_env.clone())).unwrap();
+        assert_eq!(merged, node_env);
+    }
+
+    #[test]
+    fn merge_env_keeps_global_when_no_per_node() {
+        let global = env(&[("A", "1")]);
+        let merged = merge_env(Some(&global), None).unwrap();
+        assert_eq!(merged, global);
+    }
+
+    #[test]
+    fn merge_env_per_node_overrides_global_on_conflict() {
+        let global = env(&[("A", "global"), ("B", "global")]);
+        let node_env = env(&[("A", "node"), ("C", "node")]);
+        let merged = merge_env(Some(&global), Some(node_env)).unwrap();
+        assert_eq!(merged.get("A"), Some(&EnvValue::String("node".into())));
+        assert_eq!(merged.get("B"), Some(&EnvValue::String("global".into())));
+        assert_eq!(merged.get("C"), Some(&EnvValue::String("node".into())));
+    }
+
+    #[test]
+    fn descriptor_global_env_parses_from_yaml() {
+        // Verify the new top-level `env:` field parses and the resolver
+        // hands merged envs to every node with per-node keys winning.
+        let yaml = r#"
+env:
+  RUST_LOG: info
+  OTEL_ENDPOINT: http://collector:4317
+nodes:
+  - id: a
+    path: ./a
+    env:
+      RUST_LOG: debug
+  - id: b
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+
+        let a = resolved.get(&NodeId::from("a".to_string())).unwrap();
+        let a_env = a.env.as_ref().expect("node a inherits env");
+        // Per-node RUST_LOG=debug wins over global RUST_LOG=info.
+        assert_eq!(
+            a_env.get("RUST_LOG"),
+            Some(&EnvValue::String("debug".into()))
+        );
+        // Global key not overridden on node a is still visible.
+        assert_eq!(
+            a_env.get("OTEL_ENDPOINT"),
+            Some(&EnvValue::String("http://collector:4317".into()))
+        );
+
+        let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
+        let b_env = b.env.as_ref().expect("node b inherits global env");
+        assert_eq!(
+            b_env.get("RUST_LOG"),
+            Some(&EnvValue::String("info".into()))
+        );
+        assert_eq!(
+            b_env.get("OTEL_ENDPOINT"),
+            Some(&EnvValue::String("http://collector:4317".into()))
+        );
+    }
+
+    #[test]
+    fn descriptor_without_global_env_preserves_per_node_env() {
+        // Regression guard: no top-level `env:` must leave per-node env
+        // semantics unchanged.
+        let yaml = r#"
+nodes:
+  - id: a
+    path: ./a
+    env:
+      FOO: bar
+  - id: b
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let a = resolved.get(&NodeId::from("a".to_string())).unwrap();
+        assert_eq!(
+            a.env.as_ref().and_then(|e| e.get("FOO")),
+            Some(&EnvValue::String("bar".into()))
+        );
+        let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
+        assert!(b.env.is_none(), "node b has no env anywhere");
+    }
 }

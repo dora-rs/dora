@@ -128,6 +128,27 @@ pub struct Descriptor {
     /// ```
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_rules: Vec<TypeRuleDef>,
+
+    /// Global environment variables inherited by every node.
+    ///
+    /// Each node's own `env` map takes precedence on key conflicts, so nodes
+    /// can override a global default without repeating shared values like
+    /// `RUST_LOG`, `OTEL_EXPORTER_OTLP_ENDPOINT`, or `CUDA_VISIBLE_DEVICES`.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// env:
+    ///   RUST_LOG: info
+    ///   OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317
+    /// nodes:
+    ///   - id: verbose-node
+    ///     path: path/to/node
+    ///     env:
+    ///       RUST_LOG: debug  # overrides the global RUST_LOG for this node
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
 /// A type compatibility rule declared in the dataflow YAML.

@@ -4328,6 +4328,7 @@ mod fault_tolerance_tests {
             health_check_interval: None,
             strict_types: None,
             type_rules: vec![],
+            env: None,
         };
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
     }

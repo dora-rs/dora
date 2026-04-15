@@ -1328,6 +1328,7 @@ async fn start_inner(
                                             health_check_interval: None,
                                             strict_types: None,
                                             type_rules: Vec::new(),
+                                            env: None,
                                         };
                                         match tmp_desc.resolve_aliases_and_set_defaults() {
                                             Ok(mut resolved_map) => {
