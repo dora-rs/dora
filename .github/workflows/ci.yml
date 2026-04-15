@@ -211,12 +211,9 @@ jobs:
       - name: Rust Dataflow example
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
-      # TODO: re-enable once adora has a published tag with matching message format
-      # The git example pulls upstream dora v0.5.0 (message format v0.8.0) which
-      # is incompatible with adora's message format v0.2.1.
-      # - name: Rust Git Dataflow example
-      #   timeout-minutes: 30
-      #   run: cargo run --example rust-dataflow-git
+      - name: Rust Git Dataflow example
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow-git
       - name: Multiple Daemons example
         timeout-minutes: 30
         run: cargo run --example multiple-daemons
