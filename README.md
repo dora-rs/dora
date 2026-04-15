@@ -57,6 +57,49 @@
   </a>
 </p>
 
+## Beginner Quick Start (Conceptual)
+
+### Who is Dora for?
+
+dora-rs is designed for developers who want to build real-time robotic, AI, or multi-sensor systems without the complexity of monolithic frameworks.
+
+You will benefit from dora-rs if you are:
+- A robotics student or researcher prototyping pipelines
+- An ML engineer connecting models to sensors and actuators
+- A ROS user looking for a lightweight, faster alternative
+- A developer working with cameras, microphones, GPUs, or edge devices
+
+### Core idea in one minute
+
+At its core, dora-rs lets you build applications as dataflows.
+
+A dataflow is a graph of nodes, where:
+- Each node is an independent process
+- Nodes communicate by sending data (images, tensors, messages)
+- Connections are declared using a simple YAML file
+
+Instead of writing one large program, you compose small reusable components.
+
+### How to think about Dora (mental model)
+
+If you are familiar with other systems:
+
+- ROS users:  
+  Think of Dora as ROS nodes + launch files, but without message compilation and with faster shared memory communication.
+
+- ML pipeline users:  
+  Think of Dora as a real-time, streaming version of an ML pipeline where each stage runs independently.
+
+- Microservice users:  
+  Think of each Dora node as a small service, but optimized for high-throughput sensor data.
+
+### What Dora is not
+
+- Dora is not a simulator
+- Dora is not a replacement for your ML framework (PyTorch, TensorFlow, etc.)
+- Dora does not force a specific programming language
+- Dora does not require ROS to work
+
 ## Latest News 🎉
 
 <details open>
