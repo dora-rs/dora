@@ -135,7 +135,7 @@ Not automated: requires two networked hosts.
 
 Tracked in issue #215. Selected items:
 
-- `dora self update`
+- `dora self update` (destructive path — binary swap; `--check-only` is covered in nightly but the actual upgrade requires a sandbox harness)
 - `dora top` interactive mode (non-`--once`)
 
 Most of these are interactive TUI commands that need either non-interactive
@@ -155,6 +155,7 @@ These were on the gap list but now have nightly coverage in
 - `dora trace list` (empty-state message)
 - `dora trace view <absent-uuid>` (empty-spans message, exit 0)
 - `dora trace view <bad-prefix>` (clear error message, exit non-zero)
+- `dora self update --check-only` (read-only path against live GitHub releases; tolerates API rate limits)
 
 ## Platform parity
 

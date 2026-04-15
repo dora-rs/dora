@@ -391,6 +391,29 @@ jobs:
           echo "$out"
           echo "$out" | grep -q "no trace found matching prefix" \
             || { echo "ERROR: trace view missing prefix-error message"; exit 1; }
+      - name: dora self update --check-only read path
+        # Smokes the read path only (never swaps the binary). Queries the
+        # GitHub releases API for dora-rs/dora and reports whether an
+        # update is available. Catches regressions in CLI flag parsing,
+        # the self_update crate integration, and the API-response contract.
+        run: |
+          out=$(timeout 30 dora self update --check-only 2>&1) || exit_code=$?
+          echo "$out"
+          # Must always print the entry banner — if this is missing, the
+          # command didn't even start the check path.
+          echo "$out" | grep -q "Checking for updates" \
+            || { echo "ERROR: --check-only didn't enter update-check path"; exit 1; }
+          # One of the two valid outcomes must print. If neither appears,
+          # either GitHub rate-limited us (tolerated) or the output format
+          # regressed (fail).
+          if echo "$out" | grep -qE "latest version|update is available"; then
+            echo "OK: check-only produced a valid outcome message"
+          elif echo "$out" | grep -qE "rate limit|403|429"; then
+            echo "WARN: GitHub API rate-limited on shared runner IP — skipping outcome assertion"
+          else
+            echo "ERROR: --check-only produced no recognized outcome message"
+            exit 1
+          fi
       - name: Start a debug-enabled dataflow
         # The fixture uses Python source nodes (ticker.py / sink.py) so the
         # dataflow runs forever (rust-dataflow-example-node hits a tick limit
