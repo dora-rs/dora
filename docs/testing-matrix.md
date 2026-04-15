@@ -108,6 +108,11 @@ sudo dora daemon --rt       # requires CAP_SYS_NICE or root
 Not automated: requires specific kernel config (`CONFIG_RT_GROUP_SCHED`)
 and privileged execution, which GHA runners do not provide reliably.
 
+Maintainer validation runbook lives in
+[`docs/realtime-tuning.md`](realtime-tuning.md#maintainer-validation-runbook).
+Run it before release if the `--rt` / mlock / SCHED_FIFO code paths were
+touched in the cycle. Tracked as #256.
+
 ### Coordinator HA / distributed
 
 ```bash
