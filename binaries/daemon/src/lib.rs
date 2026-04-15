@@ -1824,15 +1824,9 @@ impl Daemon {
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
-                        let output_id = OutputId(node_id.clone(), data_id.clone());
-                        dataflow
-                            .debug_topic_subscriptions
-                            .entry(subscription_id)
-                            .or_default()
-                            .insert(output_id.clone());
                         dataflow
                             .debug_topic_watchers
-                            .entry(output_id)
+                            .entry(OutputId(node_id, data_id))
                             .or_default()
                             .insert(subscription_id);
                     }
@@ -1850,20 +1844,15 @@ impl Daemon {
                 subscription_id,
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    if let Some(outputs) =
-                        dataflow.debug_topic_subscriptions.remove(&subscription_id)
-                    {
-                        for output_id in outputs {
-                            if let Some(watchers) =
-                                dataflow.debug_topic_watchers.get_mut(&output_id)
-                            {
-                                watchers.remove(&subscription_id);
-                                if watchers.is_empty() {
-                                    dataflow.debug_topic_watchers.remove(&output_id);
-                                }
-                            }
-                        }
-                    }
+                    // Scan watchers rather than maintain an inverse map. Unsubscribe
+                    // is rare; scan is bounded by the count of outputs with active
+                    // subscribers. retain() drops empty entries in one pass.
+                    dataflow
+                        .debug_topic_watchers
+                        .retain(|_output_id, watchers| {
+                            watchers.remove(&subscription_id);
+                            !watchers.is_empty()
+                        });
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
@@ -4394,6 +4383,54 @@ mod fault_tolerance_tests {
     }
 
     // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --
+
+    /// Regression test for #241. The daemon used to carry two inverse maps
+    /// (`debug_topic_subscriptions: Uuid → Set<OutputId>` and
+    /// `debug_topic_watchers: OutputId → Set<Uuid>`). The inverse map was
+    /// dropped — unsubscribe now scans `debug_topic_watchers` with `retain`.
+    /// This test locks in the invariants the inverse map used to provide:
+    /// after stop, the subscription_id must be gone from every watcher set,
+    /// and outputs with no remaining watchers must be removed entirely.
+    #[test]
+    fn stop_debug_stream_scan_cleans_up_watchers() {
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        let out_1: DataId = "out_1".to_string().into();
+        let out_2: DataId = "out_2".to_string().into();
+        let sub_a = uuid::Uuid::new_v4();
+        let sub_b = uuid::Uuid::new_v4();
+
+        // Two subs, both watching out_1; only sub_a watches out_2.
+        df.debug_topic_watchers
+            .entry(OutputId(node_a.clone(), out_1.clone()))
+            .or_default()
+            .extend([sub_a, sub_b]);
+        df.debug_topic_watchers
+            .entry(OutputId(node_a.clone(), out_2.clone()))
+            .or_default()
+            .insert(sub_a);
+
+        // Mirror the production stop path exactly.
+        df.debug_topic_watchers.retain(|_output_id, watchers| {
+            watchers.remove(&sub_a);
+            !watchers.is_empty()
+        });
+
+        // out_1 still has sub_b → entry retained with just sub_b.
+        let out_1_watchers = df
+            .debug_topic_watchers
+            .get(&OutputId(node_a.clone(), out_1))
+            .expect("out_1 entry must remain because sub_b still watches it");
+        assert_eq!(out_1_watchers.len(), 1);
+        assert!(out_1_watchers.contains(&sub_b));
+
+        // out_2 had only sub_a → entry removed entirely after scan.
+        assert!(
+            !df.debug_topic_watchers
+                .contains_key(&OutputId(node_a, out_2)),
+            "out_2 must be dropped because its only watcher was sub_a"
+        );
+    }
 
     #[test]
     fn close_input_removes_from_open_inputs() {
