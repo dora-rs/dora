@@ -867,6 +867,8 @@ The node processes one batch, exits with code 0, waits 10s, then restarts to pro
 
 **Use `--store redb` for production deployments**. The redb backend ensures the coordinator retains dataflow history across crashes and restarts. The in-memory default is fine for development but loses all state on exit. The redb file is small (proportional to the number of dataflow records) and adds negligible overhead.
 
+**Known limitation:** when the coordinator disconnects, the daemon currently kills running node processes before reconnecting ([#260](https://github.com/dora-rs/adora/issues/260)). Dataflow *records* survive coordinator restart (via redb), but running *processes* are restarted from scratch. Seamless process reclaim across reconnect is planned.
+
 **Combine features for defense in depth**:
 - `restart_policy` + `restart_delay` -> recover from node crashes
 - `health_check_timeout` -> recover from hung nodes
