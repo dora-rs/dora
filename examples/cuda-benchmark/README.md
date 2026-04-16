@@ -11,13 +11,8 @@ conda install pyarrow "arrow-cpp-proc=*=cuda" -c conda-forge
 ## Test installation with
 python -c "import pyarrow.cuda"
 
-# Install numba for translation from arrow to torch
-pip install numba
-
-## Test installation with
-python -c "import numba.cuda"
-
-# Install torch if it's not already present
+# Install torch if it's not already present (dora.cuda uses ctypes + libcudart,
+# no numba dependency needed).
 pip install torch
 
 ## Test installation with

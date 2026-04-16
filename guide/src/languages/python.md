@@ -789,7 +789,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 - `handle_buffer` (pyarrow.Array) -- The Arrow array from `event["value"]`.
 - `metadata` (dict) -- The metadata from `event["metadata"]`.
 
-**Returns:** `numba.cuda.cudadrv.driver.IpcHandle`
+**Returns:** `dora.cuda.IpcHandle` (a lightweight wrapper around `cudaIpcMemHandle_t`; call `.open()` to map the handle into the current process and get a device pointer, `.close()` to release it).
 
 ---
 

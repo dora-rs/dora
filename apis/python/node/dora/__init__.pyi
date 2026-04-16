@@ -76,7 +76,7 @@ class Node:
     node = Node()
     ```"""
 
-    def __init__(self, node_id: str = None) -> None:
+    def __init__(self, node_id: str = None, daemon_port: int = None) -> None:
         """The custom node API lets you integrate `dora` into your application.
         It allows you to retrieve input and send output in any fashion you want.
 
@@ -91,6 +91,12 @@ class Node:
         from dora import Node
 
         node = Node()
+        ```
+
+        For a dynamic node connecting to a daemon on a custom port:
+
+        ```python
+        node = Node("my-node", daemon_port=6789)
         ```"""
 
     def log(

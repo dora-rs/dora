@@ -133,11 +133,22 @@ pub struct Node {
 #[pymethods]
 impl Node {
     #[new]
-    #[pyo3(signature = (node_id=None))]
-    pub fn new(node_id: Option<String>) -> eyre::Result<Self> {
+    #[pyo3(signature = (node_id=None, daemon_port=None))]
+    pub fn new(node_id: Option<String>, daemon_port: Option<u16>) -> eyre::Result<Self> {
         let (node, events) = if let Some(node_id) = node_id {
-            DoraNode::init_flexible(node_id.parse::<NodeId>().map_err(|e| eyre::eyre!("{e}"))?)
-                .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
+            let node_id = node_id.parse::<NodeId>().map_err(|e| eyre::eyre!("{e}"))?;
+            if let Some(port) = daemon_port {
+                DoraNode::builder()
+                    .node_id(node_id)
+                    .daemon_port(port)
+                    .build()
+                    .map_err(|e| eyre::eyre!("{e}"))
+                    .context("Could not setup node from node id with custom daemon port")?
+            } else {
+                // No explicit port: keep the flexible DORA_NODE_CONFIG-first behavior.
+                DoraNode::init_flexible(node_id)
+                    .context("Could not setup node from node id. Make sure to have a running dataflow with this dynamic node")?
+            }
         } else {
             DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
