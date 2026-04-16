@@ -1,10 +1,10 @@
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, TraceSummary},
-};
-use eyre::{Context, bail};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::TraceSummary};
 
-use crate::{command::Executable, ws_client::WsSession};
+use crate::{
+    command::Executable,
+    common::{expect_reply, send_control_request},
+    ws_client::WsSession,
+};
 
 mod list;
 mod view;
@@ -26,16 +26,8 @@ impl Executable for Trace {
 }
 
 pub(crate) fn fetch_traces(session: &WsSession) -> eyre::Result<Vec<TraceSummary>> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetTraces).unwrap())
-        .wrap_err("failed to send GetTraces request")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match reply {
-        ControlRequestReply::TraceList(t) => Ok(t),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::GetTraces)?;
+    Ok(expect_reply!(reply, TraceList(t))?)
 }
 
 pub(super) fn format_duration_us(us: u64) -> String {

@@ -1,14 +1,12 @@
 use crate::command::{Executable, default_tracing};
 use crate::common::CoordinatorOptions;
 use crate::common::connect_to_coordinator;
+use crate::common::{expect_reply, send_control_request};
 use crate::formatting::OutputFormat;
 use crate::ws_client::WsSession;
 use dora_core::descriptor::Descriptor;
 use dora_core::descriptor::DescriptorExt;
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
-};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DataflowStatus};
 use eyre::{Context, bail};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -166,35 +164,18 @@ pub fn check_environment(coordinator_addr: SocketAddr, format: OutputFormat) -> 
 }
 
 pub fn daemon_running(session: &WsSession) -> Result<bool, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-        .wrap_err("failed to send DaemonConnected message")?;
-
-    let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let running = match reply {
-        ControlRequestReply::DaemonConnected(running) => running,
-        other => bail!("unexpected reply to daemon connection check: {other:?}"),
-    };
-
-    Ok(running)
+    let reply = send_control_request(session, &ControlRequest::DaemonConnected)?;
+    Ok(expect_reply!(reply, DaemonConnected(running))?)
 }
 
 fn query_running_dataflow_count(session: &WsSession) -> Result<usize, eyre::ErrReport> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::List).unwrap())
-        .wrap_err("failed to send List message")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    match reply {
-        ControlRequestReply::DataflowList(list) => Ok(list
-            .0
-            .iter()
-            .filter(|d| d.status == DataflowStatus::Running)
-            .count()),
-        other => bail!("unexpected reply to list request: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::List)?;
+    let list = expect_reply!(reply, DataflowList(list))?;
+    Ok(list
+        .0
+        .iter()
+        .filter(|d| d.status == DataflowStatus::Running)
+        .count())
 }
 
 /// Check system health and connectivity to coordinator and daemon.

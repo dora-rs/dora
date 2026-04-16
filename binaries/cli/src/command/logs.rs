@@ -6,7 +6,10 @@ use std::{
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{CoordinatorOptions, resolve_dataflow_identifier_interactive},
+    common::{
+        CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
+        send_control_request,
+    },
     output::{
         LogFormat, LogOutputConfig, parse_jsonl_line, parse_log_filter, parse_log_level_str,
         print_log_message,
@@ -15,10 +18,7 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use clap::Args;
-use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage,
-    coordinator_to_cli::ControlRequestReply, id::NodeId,
-};
+use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, id::NodeId};
 use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
@@ -807,28 +807,21 @@ pub fn logs(
     config: &LogOutputConfig,
 ) -> Result<()> {
     let logs = {
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Logs {
-                    uuid: Some(uuid),
-                    name: None,
-                    node: node.to_string(),
-                    tail: if since.is_some() || until.is_some() || grep.is_some() {
-                        // Fetch all logs when filtering client-side, apply tail after
-                        None
-                    } else {
-                        tail
-                    },
-                })
-                .wrap_err("failed to serialize Logs request")?,
-            )
-            .wrap_err("failed to send Logs request message")?;
-
-        let reply = serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match reply {
-            ControlRequestReply::Logs(data) => data,
-            other => bail!("unexpected reply to daemon logs: {other:?}"),
-        }
+        let reply = send_control_request(
+            session,
+            &ControlRequest::Logs {
+                uuid: Some(uuid),
+                name: None,
+                node: node.to_string(),
+                tail: if since.is_some() || until.is_some() || grep.is_some() {
+                    // Fetch all logs when filtering client-side, apply tail after
+                    None
+                } else {
+                    tail
+                },
+            },
+        )?;
+        expect_reply!(reply, Logs(data))?
     };
 
     // Unified filter pipeline: parse -> time_filter -> grep -> tail -> print

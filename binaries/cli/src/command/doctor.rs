@@ -5,13 +5,13 @@ use termcolor::{Color, ColorChoice, ColorSpec, WriteColor};
 
 use crate::{
     command::{Executable, default_tracing},
-    common::{CoordinatorOptions, connect_to_coordinator, query_running_dataflows},
+    common::{
+        CoordinatorOptions, connect_to_coordinator, expect_reply, query_running_dataflows,
+        send_control_request,
+    },
     ws_client::WsSession,
 };
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DataflowStatus},
-};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DataflowStatus};
 use eyre::Context;
 
 /// Run comprehensive system diagnostics.
@@ -226,41 +226,20 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
 }
 
 fn check_daemon(session: &WsSession) -> eyre::Result<bool> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::DaemonConnected).unwrap())
-        .wrap_err("failed to send DaemonConnected")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match reply {
-        ControlRequestReply::DaemonConnected(running) => Ok(running),
-        other => eyre::bail!("unexpected reply: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::DaemonConnected)?;
+    Ok(expect_reply!(reply, DaemonConnected(running))?)
 }
 
 fn check_connected_machines(
     session: &WsSession,
 ) -> eyre::Result<Vec<dora_message::coordinator_to_cli::DaemonInfo>> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::ConnectedMachines).unwrap())
-        .wrap_err("failed to send ConnectedMachines")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match reply {
-        ControlRequestReply::ConnectedDaemons(daemons) => Ok(daemons),
-        other => eyre::bail!("unexpected reply: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::ConnectedMachines)?;
+    Ok(expect_reply!(reply, ConnectedDaemons(daemons))?)
 }
 
 fn check_node_health(session: &WsSession) -> eyre::Result<(usize, usize, usize, usize)> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let nodes = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        other => eyre::bail!("unexpected reply: {other:?}"),
-    };
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let nodes = expect_reply!(reply, NodeInfoList(infos))?;
 
     let total = nodes.len();
     let mut healthy = 0usize;

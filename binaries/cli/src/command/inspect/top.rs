@@ -9,12 +9,8 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-    id::NodeId,
-};
-use eyre::{Context, eyre};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo, id::NodeId};
+use eyre::eyre;
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -24,7 +20,9 @@ use ratatui::{
 };
 use uuid::Uuid;
 
-use crate::common::{CoordinatorOptions, connect_to_coordinator};
+use crate::common::{
+    CoordinatorOptions, connect_to_coordinator, expect_reply, send_control_request,
+};
 
 use super::super::{Executable, default_tracing};
 
@@ -278,23 +276,10 @@ impl App {
 
 fn query_once(coordinator_addr: std::net::SocketAddr) -> eyre::Result<()> {
     let session = connect_to_coordinator(coordinator_addr)?;
-
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send request to coordinator")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    match reply {
-        ControlRequestReply::NodeInfoList(infos) => {
-            println!("{}", serde_json::to_string_pretty(&infos).unwrap());
-            Ok(())
-        }
-        ControlRequestReply::Error(err) => Err(eyre!("coordinator error: {err}")),
-        _ => Err(eyre!("unexpected reply from coordinator")),
-    }
+    let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+    let infos = expect_reply!(reply, NodeInfoList(infos))?;
+    println!("{}", serde_json::to_string_pretty(&infos).unwrap());
+    Ok(())
 }
 
 fn run_app<B: Backend>(
@@ -309,23 +294,8 @@ fn run_app<B: Backend>(
     let session = connect_to_coordinator(coordinator_addr)?;
 
     // Query node info once initially
-    let request = ControlRequest::GetNodeInfo;
-    let reply_raw = session
-        .request(&serde_json::to_vec(&request).unwrap())
-        .wrap_err("failed to send initial request to coordinator")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    let mut node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => {
-            return Err(eyre!("coordinator error: {err}"));
-        }
-        _ => {
-            return Err(eyre!("unexpected reply from coordinator"));
-        }
-    };
+    let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+    let mut node_infos = expect_reply!(reply, NodeInfoList(infos))?;
     app.update_stats(node_infos.clone());
 
     loop {
@@ -371,25 +341,8 @@ fn run_app<B: Backend>(
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            let request = ControlRequest::GetNodeInfo;
-            let reply_raw = session
-                .request(&serde_json::to_vec(&request).unwrap())
-                .wrap_err("failed to send request to coordinator")?;
-
-            let reply: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-            match reply {
-                ControlRequestReply::NodeInfoList(infos) => {
-                    node_infos = infos;
-                }
-                ControlRequestReply::Error(err) => {
-                    return Err(eyre!("coordinator error: {err}"));
-                }
-                _ => {
-                    return Err(eyre!("unexpected reply from coordinator"));
-                }
-            }
+            let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+            node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
             // Update stats with current node info
             app.update_stats(node_infos.clone());

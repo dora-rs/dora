@@ -2,22 +2,20 @@
 //!
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
-use super::{Executable, default_tracing};
+use super::{default_tracing, Executable};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        CoordinatorOptions, connect_to_coordinator, local_working_dir, resolve_dataflow,
-        write_events_to,
+        connect_to_coordinator, expect_reply, local_working_dir, resolve_dataflow,
+        send_control_request, write_events_to, CoordinatorOptions,
     },
-    output::{LogOutputConfig, print_log_message},
+    output::{print_log_message, LogOutputConfig},
     session::DataflowSession,
     ws_client::WsSession,
 };
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
-};
-use eyre::{Context, bail};
+use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage};
+use eyre::Context;
 use std::{io::IsTerminal, net::SocketAddr, path::PathBuf};
 use uuid::Uuid;
 
@@ -140,31 +138,21 @@ fn start_dataflow(
 
     let dataflow_id = {
         let dataflow = dataflow_descriptor.clone();
-        let reply_raw = session
-            .request(
-                &serde_json::to_vec(&ControlRequest::Start {
-                    build_id: dataflow_session.build_id,
-                    session_id: dataflow_session.session_id,
-                    dataflow,
-                    name,
-                    local_working_dir,
-                    uv,
-                    write_events_to: write_events_to(),
-                })
-                .unwrap(),
-            )
-            .wrap_err("failed to send start dataflow message")?;
-
-        let result: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-        match result {
-            ControlRequestReply::DataflowStartTriggered { uuid } => {
-                println!("dataflow start triggered: {uuid}");
-                uuid
-            }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected start dataflow reply: {other:?}"),
-        }
+        let reply = send_control_request(
+            &session,
+            &ControlRequest::Start {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
+                dataflow,
+                name,
+                local_working_dir,
+                uv,
+                write_events_to: write_events_to(),
+            },
+        )?;
+        let uuid = expect_reply!(reply, DataflowStartTriggered { uuid })?;
+        println!("dataflow start triggered: {uuid}");
+        uuid
     };
     Ok((dataflow, dataflow_descriptor, session, dataflow_id))
 }
@@ -202,21 +190,12 @@ fn wait_until_dataflow_started(
         }
     });
 
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowSpawned { uuid } => {
-            println!("dataflow started: {uuid}");
-        }
-        ControlRequestReply::Error(err) => bail!(
-            "dataflow failed to start: {err}\n\n  \
-             hint: if nodes require building, run `dora build <dataflow.yml>` first"
-        ),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::WaitForSpawn { dataflow_id })
+        .wrap_err(
+            "dataflow failed to start\n\n  \
+             hint: if nodes require building, run `dora build <dataflow.yml>` first",
+        )?;
+    let uuid = expect_reply!(reply, DataflowSpawned { uuid })?;
+    println!("dataflow started: {uuid}");
     Ok(())
 }

@@ -74,10 +74,22 @@ macro_rules! expect_reply {
             )),
         }
     };
-    // Struct variant: ControlRequestReply::Foo { a, b }
+    // Struct variant with one field: ControlRequestReply::Foo { a, .. }
+    ($reply:expr, $variant:ident { $field:ident }) => {
+        match $reply {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $field, .. } => {
+                Ok($field)
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+    // Struct variant with multiple fields: ControlRequestReply::Foo { a, b, .. }
     ($reply:expr, $variant:ident { $($field:ident),+ $(,)? }) => {
         match $reply {
-            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ } => {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ , .. } => {
                 Ok(($($field),+))
             }
             other => Err(eyre::eyre!(
@@ -222,20 +234,15 @@ pub(crate) fn local_working_dir(
 }
 
 pub(crate) fn cli_and_daemon_on_same_machine(session: &WsSession) -> eyre::Result<bool> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::CliAndDefaultDaemonOnSameMachine).unwrap())
-        .wrap_err("failed to send start dataflow message")?;
-
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::CliAndDefaultDaemonIps {
+    let reply = send_control_request(session, &ControlRequest::CliAndDefaultDaemonOnSameMachine)?;
+    let (default_daemon, cli) = expect_reply!(
+        reply,
+        CliAndDefaultDaemonIps {
             default_daemon,
-            cli,
-        } => Ok(default_daemon.is_some() && default_daemon == cli),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected start dataflow reply: {other:?}"),
-    }
+            cli
+        }
+    )?;
+    Ok(default_daemon.is_some() && default_daemon == cli)
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {

@@ -1,13 +1,11 @@
 use std::{net::SocketAddr, path::PathBuf};
 
 use clap::Args;
-use eyre::{Context, bail};
-
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::cli_to_coordinator::ControlRequest;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::connect_to_coordinator,
+    common::{connect_to_coordinator, expect_reply, send_control_request},
 };
 
 use super::config::ClusterConfig;
@@ -46,19 +44,9 @@ impl Executable for Restart {
             grace_duration: None,
             force: false,
         };
-        let reply_raw = session
-            .request(&serde_json::to_vec(&request).unwrap())
-            .wrap_err("failed to send Restart request")?;
-        let reply: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse Restart reply")?;
-
-        match reply {
-            ControlRequestReply::DataflowRestarted { old_uuid, new_uuid } => {
-                println!("dataflow restarted: {old_uuid} -> {new_uuid}");
-            }
-            ControlRequestReply::Error(err) => bail!("failed to restart dataflow: {err}"),
-            other => bail!("unexpected reply: {other:?}"),
-        }
+        let reply = send_control_request(&session, &request)?;
+        let (old_uuid, new_uuid) = expect_reply!(reply, DataflowRestarted { old_uuid, new_uuid })?;
+        println!("dataflow restarted: {old_uuid} -> {new_uuid}");
 
         Ok(())
     }

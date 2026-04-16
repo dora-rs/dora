@@ -7,15 +7,11 @@ use uuid::Uuid;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::CoordinatorOptions,
+    common::{CoordinatorOptions, expect_reply, send_control_request},
     formatting::OutputFormat,
     ws_client::WsSession,
 };
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-};
-use eyre::{Context, bail};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo};
 
 /// List all currently running nodes and their status.
 ///
@@ -76,18 +72,8 @@ fn list(
     quiet: bool,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {

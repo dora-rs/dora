@@ -1,15 +1,12 @@
 use std::collections::HashMap;
 
 use clap::Args;
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, TraceSpan},
-};
-use eyre::{Context, bail};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::TraceSpan};
+use eyre::bail;
 
 use crate::{
     command::{Executable, default_tracing, trace::format_duration_us},
-    common::CoordinatorOptions,
+    common::{CoordinatorOptions, expect_reply, send_control_request},
     ws_client::WsSession,
 };
 
@@ -37,17 +34,8 @@ impl Executable for View {
 
         let trace_id = resolve_trace_id(&session, &self.trace_id)?;
 
-        let reply_raw = session
-            .request(&serde_json::to_vec(&ControlRequest::GetTraceSpans { trace_id }).unwrap())
-            .wrap_err("failed to send GetTraceSpans request")?;
-        let reply: ControlRequestReply =
-            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-
-        let spans = match reply {
-            ControlRequestReply::TraceSpans(s) => s,
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected reply: {other:?}"),
-        };
+        let reply = send_control_request(&session, &ControlRequest::GetTraceSpans { trace_id })?;
+        let spans = expect_reply!(reply, TraceSpans(s))?;
 
         if spans.is_empty() {
             println!("No spans found for this trace.");

@@ -7,18 +7,18 @@ use tabwriter::TabWriter;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::{CoordinatorOptions, resolve_dataflow_identifier_interactive},
+    common::{
+        CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
+        send_control_request,
+    },
     formatting::OutputFormat,
     ws_client::WsSession,
 };
 use dora_core::config::InputMapping;
 use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, NodeInfo},
-    descriptor::Descriptor,
+    cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo, descriptor::Descriptor,
     id::NodeId,
 };
-use eyre::{Context, bail};
 
 /// Show detailed information about a specific node.
 ///
@@ -122,18 +122,8 @@ fn info(
     let dataflow_uuid = resolve_dataflow_identifier_interactive(session, dataflow_filter)?;
 
     // Get descriptor
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::Info { dataflow_uuid }).unwrap())
-        .wrap_err("failed to send Info request")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let (dataflow_name, descriptor) = match reply {
-        ControlRequestReply::DataflowInfo {
-            name, descriptor, ..
-        } => (name, descriptor),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    let reply = send_control_request(session, &ControlRequest::Info { dataflow_uuid })?;
+    let (dataflow_name, descriptor) = expect_reply!(reply, DataflowInfo { name, descriptor })?;
 
     // Find the node in the descriptor
     let node_desc = descriptor
@@ -198,16 +188,8 @@ fn fetch_node_metrics(
     dataflow_uuid: uuid::Uuid,
     node_id: &NodeId,
 ) -> eyre::Result<Option<NodeInfo>> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::GetNodeInfo).unwrap())
-        .wrap_err("failed to send GetNodeInfo request")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    let node_infos = match reply {
-        ControlRequestReply::NodeInfoList(infos) => infos,
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    };
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
     Ok(node_infos
         .into_iter()

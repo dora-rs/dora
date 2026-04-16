@@ -1,11 +1,12 @@
-use dora_message::{
-    cli_to_coordinator::ControlRequest,
-    coordinator_to_cli::{ControlRequestReply, DaemonInfo},
-};
-use eyre::{Context, bail};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::DaemonInfo};
+use eyre::Context;
 use std::collections::BTreeMap;
 
-use crate::{command::Executable, ws_client::WsSession};
+use crate::{
+    command::Executable,
+    common::{expect_reply, send_control_request},
+    ws_client::WsSession,
+};
 
 use self::config::MachineConfig;
 
@@ -45,16 +46,8 @@ impl Executable for Cluster {
 }
 
 pub(crate) fn query_connected_daemons(session: &WsSession) -> eyre::Result<Vec<DaemonInfo>> {
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::ConnectedMachines).unwrap())
-        .wrap_err("failed to send ConnectedMachines request")?;
-    let reply: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match reply {
-        ControlRequestReply::ConnectedDaemons(daemons) => Ok(daemons),
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected reply: {other:?}"),
-    }
+    let reply = send_control_request(session, &ControlRequest::ConnectedMachines)?;
+    Ok(expect_reply!(reply, ConnectedDaemons(daemons))?)
 }
 
 // ---------------------------------------------------------------------------

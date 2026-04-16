@@ -2,7 +2,7 @@ use super::system::status::daemon_running;
 use super::{Executable, default_tracing};
 use crate::{
     LOCALHOST,
-    common::{connect_to_coordinator, connect_with_retry},
+    common::{connect_to_coordinator, connect_with_retry, send_control_request},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
@@ -102,20 +102,13 @@ pub(crate) fn down(
         )
     })?;
     // send destroy command to dora-coordinator
-    let reply_raw = session
-        .request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap())
-        .wrap_err("failed to send destroy message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
+    let reply = send_control_request(&session, &ControlRequest::Destroy)?;
+    match reply {
         ControlRequestReply::DestroyOk => {
             println!("Coordinator and daemons destroyed successfully");
         }
-        ControlRequestReply::Error(err) => {
-            bail!("Destroy command failed with error: {}", err);
-        }
-        _ => {
-            bail!("Unexpected reply from dora-coordinator");
+        other => {
+            bail!("unexpected reply to Destroy: {other:?}");
         }
     }
 
