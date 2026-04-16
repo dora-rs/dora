@@ -15,3 +15,5 @@ criticals = "criticals"
 unparseable = "unparseable"
 # abbreviation for "serialize"
 ser = "ser"
+# AB-BA is a standard term for lock-ordering deadlocks (not a typo of "BY"/"BE")
+BA = "BA"

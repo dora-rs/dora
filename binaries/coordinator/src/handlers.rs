@@ -185,7 +185,13 @@ pub(crate) async fn handle_destroy(
         .await?;
     }
 
-    destroy_daemons(daemon_connections, clock.new_timestamp()).await
+    destroy_daemons(daemon_connections, clock.new_timestamp()).await?;
+    // Brief grace period so daemons have time to flush final messages and
+    // close their WS connections before the coordinator shuts down the
+    // listener. Without this, daemons see "Connection refused" when they
+    // try to send a final acknowledgement or reconnect during teardown.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    Ok(())
 }
 
 pub(crate) async fn send_heartbeat_message(

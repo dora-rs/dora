@@ -93,6 +93,7 @@ pub mod bench_support {
             health_check_interval: None,
             strict_types: None,
             type_rules: vec![],
+            env: None,
         };
         let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
 

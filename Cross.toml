@@ -1,0 +1,7 @@
+# Cross-compilation Docker images for `cross` (https://github.com/cross-rs/cross).
+#
+# The default i686-unknown-linux-gnu image ships an older glibc that cannot
+# run build scripts compiled on the host (num-traits needs GLIBC_2.25+).
+# Pin a newer image that ships glibc 2.31+.
+[target.i686-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/i686-unknown-linux-gnu:main"

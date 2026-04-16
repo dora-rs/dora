@@ -202,12 +202,17 @@ jobs:
           Remove-Item "C:\Android" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
-      # No `cargo install --path binaries/cli` here: every example in this
-      # job calls into `dora_cli` as a library (via `examples/*/run.rs`).
-      # The `dora` CLI binary is not on PATH and not required.
-      - name: Build examples
+      # Examples call dora_cli as a library (via `examples/*/run.rs`) but the
+      # daemon still spawns runtime nodes as child processes via
+      # `which::which("dora")`. Build the CLI binary and add it to PATH so
+      # C/C++ runtime-node examples can find it.
+      - name: Build examples + CLI binary
         timeout-minutes: 30
-        run: cargo build --examples
+        shell: bash
+        run: |
+          cargo build --examples
+          cargo build -p dora-cli
+          echo "${{ github.workspace }}/target/debug" >> $GITHUB_PATH
       - name: Rust Dataflow example
         timeout-minutes: 30
         run: cargo run --example rust-dataflow
@@ -259,7 +264,9 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    timeout-minutes: 60
+    # Windows builds + Python Dynamic Node tests are slower than other
+    # platforms; 60 min is not enough when the runner is under load.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
