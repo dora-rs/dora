@@ -1,7 +1,7 @@
 # Dora 1.0 Consolidation Plan
 
-**Status**: Active — rename complete (PR #186), ready for upstream push
-**Date**: 2026-04-10 (updated from 2026-04-07 draft)
+**Status**: Active — Phase -1 gates cleared (governance, protocol audit, security audit, superset verification). 4 gaps to close, then ready for Phase 0.
+**Date**: 2026-04-16 (updated from 2026-04-10)
 **Author**: heyong4725 (with AI assistance)
 **Scope**: This repo (`dora-rs/adora`) is the feature superset of upstream `dora-rs/dora`. The rename from `adora` → `dora` is complete. This plan describes pushing this repo's tree into `dora-rs/dora` as **dora 1.0.0**.
 
@@ -1017,7 +1017,97 @@ Template:
 
 ---
 
-## 19. Related documents
+## 19. Fresh Superset Audit (2026-04-16)
+
+**Status**: Confirms adora is a true superset with 4 specific gaps to close before merge.
+
+### 19.1 Crate-level comparison
+
+**Only in upstream (1 crate):**
+- `libraries/communication-layer/request-reply/` -- stub `RequestReplyLayer` trait with TCP backend, marked TODO. Adora implements request/reply via Arrow metadata correlation IDs. **Intentionally superseded.**
+
+**Only in adora (26 crates):** Python CLI API, record/replay nodes, ROS2 bridge node, coordinator-store, log-utils, recording, shared-memory-server, plus 17 example crates. All are net-new features.
+
+### 19.2 Source file gaps in shared crates
+
+| Upstream file | Adora equivalent | Status |
+|---|---|---|
+| `cli/command/destroy.rs` | Folded into `up.rs` (`dora down`) | No gap |
+| `cli/command/version.rs` | `dora --version` via clap; no coordinator version query | **Minor gap** |
+| `daemon/hot_reload.rs` (293 lines) | Reload logic inline in `lib.rs:send_reload()` | Feature parity, different structure |
+| `daemon/state.rs` (172 lines) | Refactored into `running_dataflow.rs` + `event_types.rs` | No gap |
+| `coordinator/listener.rs`, `server.rs`, `tcp_utils.rs` | Replaced by `ws_control.rs`, `ws_server.rs`, `ws_daemon.rs` | Intentional upgrade |
+
+### 19.3 Recent upstream features NOT in adora (gaps to close)
+
+| Feature | Upstream PR | Impact | Action |
+|---|---|---|---|
+| **DoraNodeBuilder / daemon_port** | #1591 | Rust API: `DoraNode::builder().daemon_port(6789).build()`. Adora has `init_from_env` / `init_from_node_id` but no builder with custom daemon port. | Port before merge. ~50 lines. |
+| **CUDA IPC via ctypes** | #1618 | Python: `dora.cuda` replaced numba with ctypes for CUDA IPC. Adora still uses the old numba version. | Port before merge. Python-only change. |
+| **C/C++ publish workflow** | #1611 | CI: publishes pre-built C/C++ libraries on release. Adora has no equivalent. | Port the workflow file. |
+| **C API tracing subscriber** | #1610 | `dora_log()` init calls `tracing_subscriber::init()` in upstream; verify adora's version does the same. | Verify parity, port if needed. |
+
+### 19.4 Dependency versions
+
+| Dep | Upstream | Adora | Winner |
+|---|---|---|---|
+| arrow | 54.2.1 | 58 | Adora |
+| pyo3 | 0.23 | 0.28 | Adora |
+| zenoh | 1.1.1 | ~1.8 | Adora |
+| tokio | 1.24.2 | 1.28 | Adora |
+
+All major deps: adora ahead.
+
+### 19.5 Contributor preservation (issue #214)
+
+- Upstream: **115 unique git authors**
+- Adora: **90 unique git authors** (lost ~25 during the fork)
+- The consolidation merge recipe (Appendix A) preserves both histories as parents. After merge: `git shortlog -sne HEAD` shows the union (115 + adora-only authors).
+- GitHub's contributor card may still under-count. Mitigation: `CONTRIBUTORS.md` generated from `git log --format='%aN <%aE>' | sort -uf` after the merge.
+
+### 19.6 AI-generated code QA rules (issue #207)
+
+Per phil-opp's request, the following guardrails must be in place before 1.0:
+
+1. **Unsafe code isolation**: All `unsafe` blocks must be in small, single-purpose functions with documented `# Safety` contracts. The security audit (2026-04-16) confirmed this is already the case for all 188 unsafe blocks.
+2. **Human review for unsafe changes**: Add a CI check (or CODEOWNERS rule) requiring human approval for any PR that modifies `unsafe` blocks. Not yet implemented.
+3. **Test disabling requires human approval**: Add a CI check that fails if any `#[ignore]` or `#[cfg(not(test))]` is added without an accompanying justification comment. Not yet implemented.
+4. **Unwrap budget enforcement**: Already in CI (`.unwrap-budget` file, budget: 185).
+
+**Pre-merge action items for #207:**
+- [ ] Add CODEOWNERS entry: `**/unsafe*` requires `@phil-opp` or `@haixuanTao` review
+- [ ] Add CI check for new `#[ignore]` annotations in test code
+- [ ] Document the QA rules in `CONTRIBUTING.md`
+
+### 19.7 Updated Phase -1 gate status
+
+| Gate | Status | Notes |
+|---|---|---|
+| Governance alignment | **Done** (2026-04-16) | phil-opp, haixuanTao briefed |
+| Wire protocol audit | **Done** (2026-04-16) | Hard break (D-1a), incompatible |
+| Security audit | **Done** (2026-04-16) | 0 P0, 0 P1 remaining |
+| Superset verification | **Done** (2026-04-16) | 4 specific gaps identified |
+| Upstream alignment (#201) | **Done** (2026-04-15) | 25 PRs audited, 3 shipped |
+| CI green | **Done** (2026-04-16) | All platforms, all jobs |
+| PyPI/crates.io ownership | **Not done** | 15 min task |
+| Downstream user list | **Not done** | 1 hour task |
+| Dogfood campaign | **Not done** | Can run parallel with Phase 0-1 |
+
+### 19.8 Pre-merge checklist (new, based on this audit)
+
+Before starting Phase 0, close these gaps:
+
+- [ ] Port DoraNodeBuilder / daemon_port from upstream #1591
+- [ ] Port CUDA IPC ctypes update from upstream #1618
+- [ ] Port C/C++ publish workflow from upstream #1611
+- [ ] Verify C API tracing subscriber parity with upstream #1610
+- [ ] Add CODEOWNERS for unsafe code (#207)
+- [ ] Add CI check for test disabling (#207)
+- [ ] Generate CONTRIBUTORS.md from git history (#214)
+- [ ] Verify PyPI/crates.io ownership
+- [ ] Start dogfood campaign (runs in parallel)
+
+## 20. Related documents
 
 - [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) — Quality and testing strategy that backs this consolidation. **Must-read companion.**
 - [`dora-compatibility.md`](dora-compatibility.md) — Existing dora→dora compat layer documentation. Will be renamed and inverted as part of Phase 2.
