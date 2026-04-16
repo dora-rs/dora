@@ -16,6 +16,7 @@ name: Nightly Regression
 # Triggers:
 #   - schedule: daily at 06:00 UTC
 #   - workflow_dispatch: manual run from Actions UI
+#   - push to main: re-run on every push (validates nightly jobs on each commit)
 
 on:
   schedule:
