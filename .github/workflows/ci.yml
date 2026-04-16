@@ -18,6 +18,12 @@ concurrency:
 
 env:
   CI: true
+  # Disable incremental compilation for all CI builds.
+  # Incremental compilation generates per-crate PDB files on Windows MSVC; the
+  # MSVC linker can fail with LNK1318 when those files are present from a prior
+  # run (e.g. restored by Swatinem/rust-cache with cache-on-failure: true).
+  # CARGO_INCREMENTAL=0 is the canonical way to suppress this in CI.
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   test:
