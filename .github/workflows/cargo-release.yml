@@ -80,12 +80,17 @@ jobs:
           publish_if_not_exists dora-download
           publish_if_not_exists dora-core
           publish_if_not_exists dora-arrow-convert
+          publish_if_not_exists shared-memory-server
+          publish_if_not_exists dora-coordinator-store
+          publish_if_not_exists dora-recording
 
           # Publish rust API
           publish_if_not_exists dora-operator-api-macros
           publish_if_not_exists dora-operator-api-types
           publish_if_not_exists dora-operator-api
           publish_if_not_exists dora-node-api
+          publish_if_not_exists dora-node-api-cxx
+          publish_if_not_exists dora-operator-api-cxx
           publish_if_not_exists dora-operator-api-python
           publish_if_not_exists dora-operator-api-c
           publish_if_not_exists dora-node-api-c
@@ -94,8 +99,12 @@ jobs:
           publish_if_not_exists dora-coordinator
           publish_if_not_exists dora-runtime
           publish_if_not_exists dora-daemon
+          publish_if_not_exists dora-record-node
+          publish_if_not_exists dora-replay-node
           publish_if_not_exists dora-cli
 
           # Publish ROS2 bridge
           publish_if_not_exists dora-ros2-bridge-msg-gen
           publish_if_not_exists dora-ros2-bridge
+          publish_if_not_exists dora-ros2-bridge-arrow
+          publish_if_not_exists dora-ros2-bridge-node
