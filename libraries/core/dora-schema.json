@@ -4,6 +4,16 @@
   "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Communication**: Optional communication configuration\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
   "type": "object",
   "properties": {
+    "env": {
+      "description": "Global environment variables inherited by every node.\n\nEach node's own `env` map takes precedence on key conflicts, so nodes\ncan override a global default without repeating shared values like\n`RUST_LOG`, `OTEL_EXPORTER_OTLP_ENDPOINT`, or `CUDA_VISIBLE_DEVICES`.\n\n## Example\n\n```yaml\nenv:\n  RUST_LOG: info\n  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4317\nnodes:\n  - id: verbose-node\n    path: path/to/node\n    env:\n      RUST_LOG: debug  # overrides the global RUST_LOG for this node\n```",
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "$ref": "#/$defs/EnvValue"
+      }
+    },
     "health_check_interval": {
       "description": "How often the daemon checks node health (in seconds).\n\nDefaults to 5.0 seconds if not specified. Lower values detect hung nodes\nfaster but add more overhead.",
       "type": [
