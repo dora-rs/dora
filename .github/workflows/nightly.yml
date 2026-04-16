@@ -22,6 +22,10 @@ on:
   schedule:
     - cron: "0 6 * * *"
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nightly.yml"
 
 permissions:
   contents: read
@@ -532,7 +536,7 @@ jobs:
         run: |
           chmod +x ./cli-bin/dora
           echo "$PWD/cli-bin" >> "$GITHUB_PATH"
-      - name: Run cpu-affinity-probe fixture (cpu_affinity: [0, 1])
+      - name: "Run cpu-affinity-probe fixture (cpu_affinity: [0, 1])"
         run: |
           cd examples/cpu-affinity-probe
           out=$(dora run dataflow.yml --stop-after 3s 2>&1)
