@@ -26,15 +26,19 @@ fn build_zenoh_config(coordinator_addr: Option<IpAddr>, listen_port: Option<u16>
     // Linkstate make it possible to connect two daemons on different network through a public daemon
     // TODO: There is currently a CI/CD Error in windows linkstate.
     if cfg!(not(target_os = "windows")) {
-        zenoh_config
+        if let Err(err) = zenoh_config
             .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-            .unwrap();
+        {
+            tracing::warn!("failed to set zenoh routing peer mode to linkstate: {err}");
+        }
     }
 
     if let Some(port) = listen_port {
-        zenoh_config
+        if let Err(err) = zenoh_config
             .insert_json5("listen/endpoints", &format!(r#"["tcp/0.0.0.0:{port}"]"#))
-            .unwrap();
+        {
+            tracing::warn!("failed to set zenoh listen endpoint: {err}");
+        }
     }
 
     if let Some(addr) = coordinator_addr {
@@ -44,12 +48,14 @@ fn build_zenoh_config(coordinator_addr: Option<IpAddr>, listen_port: Option<u16>
         let would_connect_to_self =
             listen_port == Some(DORA_ZENOH_PEER_PORT_DEFAULT) && addr.is_loopback();
         if !would_connect_to_self {
-            zenoh_config
+            if let Err(err) = zenoh_config
                 .insert_json5(
                     "connect/endpoints",
                     &format!(r#"["tcp/{}:{}"]"#, addr, DORA_ZENOH_PEER_PORT_DEFAULT),
                 )
-                .unwrap();
+            {
+                tracing::warn!("failed to set zenoh connect endpoint: {err}");
+            }
         }
     }
     zenoh_config
