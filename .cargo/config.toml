@@ -1,0 +1,12 @@
+# Disable incremental compilation on Windows MSVC.
+#
+# Incremental builds write per-crate PDB files into the incremental
+# directory.  When the MSVC linker attempts to merge many of those files
+# (e.g. during `cargo build --examples`), concurrent file-system access on
+# Windows can trigger LNK1318 ("Unexpected PDB error").  Disabling
+# incremental avoids the PDB race entirely.  Release builds already have
+# incremental disabled by default, so this only affects debug builds.
+#
+# Linux and macOS are not affected by this setting.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "incremental=no"]
