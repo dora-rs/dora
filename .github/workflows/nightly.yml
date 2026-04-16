@@ -230,8 +230,10 @@ jobs:
       - name: Record rust-dataflow
         run: |
           # `dora record <yaml>` instruments the dataflow and runs it;
-          # recording written to `recording_<timestamp>.adorec`.
-          timeout 20s dora record examples/rust-dataflow/dataflow.yml -o run.adorec || true
+          # recording written to the specified output path.
+          # Nodes are pre-built above so the 30s timeout covers only runtime.
+          # Don't swallow errors (no `|| true`) — real failures should surface.
+          timeout 30s dora record examples/rust-dataflow/dataflow.yml -o run.adorec
           test -f run.adorec || { echo "record did not produce run.adorec"; exit 1; }
           echo "recording size: $(wc -c < run.adorec) bytes"
       - name: Replay
@@ -285,7 +287,27 @@ jobs:
           test "$daemon_lines" -ge 1 || { echo "ERROR: no daemons listed"; exit 1; }
           echo "$out" | grep -q 'Active dataflows:' || { echo "ERROR: missing dataflow summary"; exit 1; }
       - name: Run a dataflow through the cluster
-        run: dora run examples/rust-dataflow/dataflow.yml --stop-after 10s
+        run: |
+          # Use `dora start`, not `dora run`: a coordinator is already
+          # running from `dora up`. `dora run` starts an embedded
+          # coordinator on the same port → "Address already in use".
+          #
+          # rust-dataflow is finite (~1s), so poll until it finishes
+          # rather than sleeping + calling `dora stop` on something
+          # that's already done.
+          dora start examples/rust-dataflow/dataflow.yml --detach
+          for i in $(seq 1 30); do
+            sleep 1
+            if ! dora list 2>/dev/null | grep -q rust-dataflow; then
+              echo "dataflow completed after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: dataflow did not finish within 30s"
+              dora stop --name rust-dataflow || true
+              exit 1
+            fi
+          done
       - name: cluster down tears everything down cleanly
         run: |
           dora cluster down

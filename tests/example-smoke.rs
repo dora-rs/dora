@@ -537,10 +537,13 @@ fn smoke_local_python_multiple_arrays() {
 
 #[test]
 fn smoke_local_python_concurrent_rw() {
+    // 15s gives more headroom on slow CI runners — this example has two
+    // Python nodes in circular data dependency with threaded publish/read,
+    // and each publishes every 1s; 10s was too tight under load.
     run_smoke_test_local(
         "local-python-concurrent-rw",
         "examples/python-concurrent-rw/dataflow.yml",
-        10,
+        15,
     );
 }
 
