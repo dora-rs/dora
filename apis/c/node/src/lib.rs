@@ -180,9 +180,12 @@ pub unsafe extern "C" fn read_dora_input_data(
             dora_node_api::arrow::datatypes::DataType::UInt8 => {
                 let array: &UInt8Array = data.as_primitive();
                 let ptr = array.values().as_ptr();
+                // Use the actual buffer length, not metadata.type_info.len
+                // which comes from remote nodes and could exceed the buffer.
+                let len = array.values().len();
                 unsafe {
                     *out_ptr = ptr;
-                    *out_len = metadata.type_info.len;
+                    *out_len = len;
                 }
             }
             dora_node_api::arrow::datatypes::DataType::Null => unsafe {

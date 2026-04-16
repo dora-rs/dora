@@ -69,14 +69,23 @@ where
         .await
         .wrap_err_with(|| format!("failed to download from `{url}`"))?;
 
-    // Verify integrity if a digest was provided
+    // Verify integrity if a digest was provided.
+    // Without a digest, the download is vulnerable to MITM or CDN compromise
+    // since the downloaded binary may be executed or dlopen-ed.
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual_hash = format!("{:x}", hasher.finalize());
     if let Some(expected) = expected_sha256 {
-        let mut hasher = Sha256::new();
-        hasher.update(&bytes);
-        let actual = format!("{:x}", hasher.finalize());
-        if actual != expected {
-            eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual}");
+        if actual_hash != expected {
+            eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
         }
+    } else {
+        tracing::warn!(
+            url = %url,
+            sha256 = %actual_hash,
+            "downloading without integrity verification — \
+             consider adding sha256 to the source definition"
+        );
     }
 
     let path = target_dir.join(filename);
