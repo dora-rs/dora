@@ -2,14 +2,14 @@
 //!
 //! The `dora start` command does not run any build commands, nor update git dependencies or similar. Use `dora build` for that.
 
-use super::{default_tracing, Executable};
+use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        connect_to_coordinator, expect_reply, local_working_dir, resolve_dataflow,
-        send_control_request, write_events_to, CoordinatorOptions,
+        CoordinatorOptions, connect_to_coordinator, expect_reply, local_working_dir,
+        resolve_dataflow, send_control_request, write_events_to,
     },
-    output::{print_log_message, LogOutputConfig},
+    output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
     ws_client::WsSession,
 };
