@@ -8,6 +8,7 @@ readme = "README.md"
 description.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs`, not crates.io
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

@@ -3,6 +3,7 @@ name = "dora-ros2-bridge-node"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
+publish = false  # binary, delivered via `dora` CLI
 
 [[bin]]
 name = "dora-ros2-bridge-node"

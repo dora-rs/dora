@@ -7,6 +7,7 @@ documentation.workspace = true
 description = "Record node binary for dora dataflow recordings"
 license.workspace = true
 repository.workspace = true
+publish = false  # binary, delivered via `dora` CLI
 
 [[bin]]
 name = "dora-record-node"

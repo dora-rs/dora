@@ -3,6 +3,7 @@ name = "dora-ros2-bridge-python"
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
+publish = false  # PyO3 cdylib, shipped via PyPI (maturin), not crates.io
 
 [dependencies]
 dora-ros2-bridge = { path = "..", default-features = false }
