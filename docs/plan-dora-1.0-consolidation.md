@@ -1,6 +1,6 @@
 # Dora 1.0 Consolidation Plan
 
-**Status**: Active — Phase -1 gates cleared (governance, protocol audit, security audit, superset verification). 4 gaps to close, then ready for Phase 0.
+**Status**: **Phase -1 complete + all decision points resolved (2026-04-17).** D-0 = D-0a (tree takeover), D-1 = D-1a (hard protocol break), D-7 = D-7c (partial Zenoh SHM, data plane only). Scope reconciliation complete via #297: no `dora migrate` command (hard break, zero production users); 58 `dora-rs/adora#NNN` code-comment refs left as-is (archived repo serves them). All Phase -1 evidence gates resolved: governance (#293), wire-protocol (#288), 2026-03-21 critical-closure (#289), ownership (#290), downstream outreach right-sized (#291), dogfood rescoped to Phase 5b (#292). Phase 0 ready to start. Release flow: **5a tag rc → 5b dogfood → 5c tag GA**. See tracking epic #287.
 **Date**: 2026-04-16 (updated from 2026-04-10)
 **Author**: heyong4725 (with AI assistance)
 **Scope**: This repo (`dora-rs/adora`) is the feature superset of upstream `dora-rs/dora`. The rename from `adora` → `dora` is complete. This plan describes pushing this repo's tree into `dora-rs/dora` as **dora 1.0.0**.
@@ -17,7 +17,7 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 
 **Headline facts:**
 
-| Metric | dora (upstream) | dora (this repo) |
+| Metric | `dora-upstream` (0.5.0) | `dora-fork` (this repo, 0.2.1) |
 |---|---|---|
 | Version | 0.5.0 (2026-03-25) | 0.2.1 (2026-04-06) |
 | GitHub stars | 3,188 | 4 |
@@ -25,12 +25,14 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 | Open issues | 175 | (track separately) |
 | Default branch | main | main |
 | License | Apache-2.0 | Apache-2.0 |
-| Top contributors | phil-opp (2012), haixuanTao (1873) | heyong4725 + agents |
+| Top contributors (GitHub "contributions" metric¹) | phil-opp 2,023 · haixuanTao 1,895 | heyong4725 + agents |
 | Language primary | Rust | Rust |
-| Last push | 2026-04-07 (today, active) | 2026-04-07 |
+| Last push | 2026-04-07 (active) | 2026-04-16 |
 | Workspace crates | ~30 | ~45 |
 | Rust source files | n/a (not yet audited in upstream) | 252 |
 | Cargo.toml files | n/a | 63 |
+
+> ¹ Upstream numbers are from `GET /repos/dora-rs/dora/contributors` on 2026-04-16 — GitHub's "contributions" counter, which measures commits on the default branch after PR merge (accounting for squash/rebase attribution). This is **not** the same as `git shortlog -sne` on a local clone, which counts raw commit authorships. On the fork today, `git shortlog -sne` reports Philipp Oppermann 1,786 and the three `haixuanTao` aliases summing to 1,828 — lower than the upstream contributions metric because the fork is behind upstream's latest commits and because the two metrics disagree systematically. §19.5 discusses contributor preservation in detail (issue #214); the headline table above uses the upstream-authoritative number for the upstream column.
 
 **Timeline estimate:** ~4 weeks end-to-end, gated on governance alignment with dora maintainers.
 
@@ -39,6 +41,16 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 2. A dry-run wire-protocol compatibility audit (Phase -1 below).
 3. A 1-week dogfood campaign on a real robotics workload on dora's current tree.
 4. `Q1-minimum` test-infrastructure items landed (see `plan-agentic-qa-strategy.md`).
+
+### 1.1 Terminology (read first)
+
+Because PR #186 renamed this repo `adora` → `dora`, both trees now literally share the string "dora". To keep the rest of this document unambiguous:
+
+- **`dora-upstream`** — the canonical `dora-rs/dora` repository on GitHub, currently at v0.5.0 (3,188 stars). The consolidation **target**.
+- **`dora-fork`** — this repository (`dora-rs/adora` on GitHub, v0.2.1). The consolidation **source**. Formerly named adora; the rename is substantively complete (crate names, types, CLI, env vars) but some trailing prose, URLs, issue-refs, and the `.adorec` file format still carry the old name. Finishing that pass is a pre-merge item (see §19.8).
+- **`dora 1.0`** — the post-consolidation release published from `dora-upstream` after the merge.
+
+Where older sections still say "dora" ambiguously, the rule is: if the sentence is describing the destination repo / brand equity / crates.io namespace, it means `dora-upstream`; if it's describing a tree, feature, or crate that comes from this repo, it means `dora-fork`. A full prose relabeling pass is pending (see P0-1 in the review PR).
 
 ---
 
@@ -62,17 +74,20 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 
 ---
 
-## 3. Current State: dora vs dora
+## 3. Current State: `dora-upstream` vs `dora-fork`
+
+> **Note (2026-04-16):** §19 ("Fresh Superset Audit") supersedes parts of this section with fresher numbers. Where §3 and §19 disagree, §19 is authoritative. A full merge of §19 back into §3 is a pending cleanup (see P1-7 in the review PR).
 
 ### 3.1 Workspace layout diff
 
-**Crates present in dora but not in dora** (dora additions — these become dora 1.0 additions):
+**Crates present in `dora-fork` but not in `dora-upstream`** (fork additions — these become dora 1.0 additions):
 
 | Path | Purpose |
 |---|---|
 | `apis/python/cli` | Python bindings for the CLI (`dora.build()`, `dora.run()`, etc.) |
-| `apis/rust/compat/dora-node-api` | **Existing compat shim** — re-exports dora types under dora names. Will be **reversed** in 1.0 |
-| `apis/rust/compat/dora-operator-api` | Same for operator API |
+
+> **Correction (2026-04-16 review):** earlier drafts listed `apis/rust/compat/dora-node-api` and `.../dora-operator-api` as "existing compat shims that will be reversed in 1.0". Neither directory exists today — not in `dora-fork` and not in `dora-upstream` (verified against `dora-rs/dora@main`). The Phase 4 compat layer is **new code to write**, not a directory rename. Phase 4 has been re-scoped accordingly.
+
 | `binaries/ros2-bridge-node` | Standalone ROS2 bridge node binary |
 | `binaries/replay-node` | Replays `.drec` recordings as dataflow sources |
 | `binaries/record-node` | Records dataflow traffic to `.drec` format |
@@ -82,7 +97,7 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 | `libraries/shared-memory-server` | Zero-copy IPC, separated from communication-layer |
 | `libraries/extensions/ros2-bridge/arrow` | Arrow-typed message conversion for ROS2 bridge |
 
-**Example directories in dora not in dora**:
+**Example directories in `dora-fork` not in `dora-upstream`**:
 
 - `examples/ros2-bridge/yaml-bridge-service/{requester-node, handler-node}`
 - `examples/ros2-bridge/yaml-bridge-action/goal-node`
@@ -93,20 +108,21 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 - `examples/cross-language/{rust-sender, rust-receiver}`
 - `examples/validated-pipeline/{source, transform, sink}`
 
-**Crates present in dora but not in dora** (dora removals — need explicit decision):
+**Crates present in `dora-upstream` but not in `dora-fork`** (fork removals — need explicit decision):
 
-| Path | Status in dora | Action |
+| Path | Status in `dora-fork` | Action |
 |---|---|---|
 | `libraries/communication-layer/*` (request-reply) | Removed, replaced by service/action patterns in node API | Keep removed, document in migration guide as "replaced by `send_service_request()` helper" |
-| `examples/error-propagation/{producer, consumer}` | Not in dora | Port to dora before merge — error propagation is a dora feature worth preserving |
+| `examples/error-propagation/{producer, consumer}` | Not in fork | Port to `dora-fork` before merge — error propagation is an upstream feature worth preserving |
 
-**Files only present in dora docs or CI that dora should absorb:**
+**Files only present in `dora-upstream` docs or CI that `dora-fork` should absorb:**
 
 Run pre-merge:
 
 ```bash
-git diff --name-status dora/main dora/main -- \
-  | grep '^D' | awk '{print $2}' > dora-unique-files.txt
+# Assumes `upstream` = dora-rs/dora and `origin` = this repo.
+git diff --name-status upstream/main origin/main -- \
+  | grep '^D' | awk '{print $2}' > upstream-unique-files.txt
 ```
 
 Expected categories: some CI workflows (cargo-release.yml, pip-release.yml, claude-code.yml, regenerate-schemas.yml, dora-bot-assign.yml, docker-image.yml, labeler.yml), README sponsorship/logo sections, CONTRIBUTING conventions, possibly some docs pages, possibly the `docker-image.yml` and `cargo-update.yml` automation.
@@ -157,21 +173,23 @@ Expected categories: some CI workflows (cargo-release.yml, pip-release.yml, clau
 
 ### 3.4 CI and release pipeline diff
 
-**dora `.github/workflows/`**: 11 files
+> **Update (2026-04-16):** this section was written when `dora-fork` had 3 workflows. It now has 14. The "gaps" list below is almost entirely closed — verify before blocking on it.
+
+**`dora-upstream` `.github/workflows/`** (as of 2026-03-25): 11 files
 - ci.yml, release.yml, cargo-release.yml, cargo-update.yml, pip-release.yml, claude-code.yml, docker-image.yml, dora-bot-assign.yml, labeler.yml, delete-buildjet-cache.yml, regenerate-schemas.yml
 
-**dora `.github/workflows/`**: 3 files
-- ci.yml, guide.yml, release.yml
+**`dora-fork` `.github/workflows/`** (as of 2026-04-16): 14 files
+- ci.yml, guide.yml, release.yml, cargo-release.yml, cargo-update.yml, pip-release.yml, claude-code.yml, docker-image.yml, dora-bot-assign.yml, labeler.yml, delete-buildjet-cache.yml, regenerate-schemas.yml, nightly.yml, waiting-for-author.yml
 
-**Gaps dora should absorb from dora:**
-- `cargo-update.yml` — scheduled dependency updates (currently missing in dora)
-- `docker-image.yml` — publishes a `dora:latest` docker image (worth keeping — downstream robotics deployments use it)
-- `pip-release.yml` — separate PyPI release (dora merges into release.yml; worth evaluating which pattern is cleaner)
-- `regenerate-schemas.yml` — auto-regenerates YAML schemas from Rust structs (highly useful for agentic engineering, should keep)
-- `labeler.yml` — PR auto-labeling
-- `dora-bot-assign.yml` — PR auto-assignment
+**Gaps `dora-fork` had and has since closed:**
+- `cargo-update.yml`, `docker-image.yml`, `pip-release.yml`, `regenerate-schemas.yml`, `labeler.yml`, `dora-bot-assign.yml`, `delete-buildjet-cache.yml` — all present.
 
-**Decision:** port dora's missing workflows to dora's tree before merge. Treat them as bug fixes that dora missed while diverging.
+**Workflows unique to `dora-fork`** (candidates to keep into 1.0):
+- `nightly.yml` — nightly regression suite
+- `waiting-for-author.yml` — stale-PR housekeeping
+- `guide.yml` — mdBook guide build
+
+**Decision:** re-diff against `dora-upstream/main` immediately before Phase 0 to capture any upstream workflow changes since 2026-03-25. The original "port upstream's missing workflows to fork" directive is effectively complete.
 
 ### 3.5 Documentation diff
 
@@ -207,9 +225,11 @@ From `docs/audit-report-2026-03-21.md`:
 - **1 code execution vulnerability**: URL downloads without integrity verification
 - **30+ correctness bugs** across daemon, coordinator, APIs
 - **Performance roadmap items** from 2026-03-13 audit still unaddressed
-- **Smoke/E2E tests not in CI** at time of audit (partially addressed since — see `tests/example-smoke.rs` wiring)
+- **Smoke/E2E tests not in CI** at time of audit — addressed since. `tests/example-smoke.rs`, `tests/ws-cli-e2e.rs`, and `tests/fault-tolerance-e2e.rs` all run in CI (see `.github/workflows/ci.yml`).
 
 **Before the 1.0 release:** all memory-safety and code-execution issues must be verified fixed or have an explicit waiver documented. The 1.0 launch cannot ship with unresolved criticals from the audit. See Decision Point D-2 below.
+
+**Status (2026-04-16):** closure record [`docs/audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) walks every Critical finding. 17 fixed (with per-finding fix commits + current-HEAD verification), 3 eliminated by architectural change (DC3/CM3 → Phase 3b), 3 explicitly waived with rationale (CM1 analyzed correct; SEC1 hash opt-in with warning; SEC3 TLS deferred post-1.0). Every row has a decision recorded. Closed #289.
 
 ---
 
@@ -222,7 +242,7 @@ This is the canonical source of truth for "what wins" when dora and dora diverge
 | Source tree (`*.rs` files) | **dora wins wholesale** | Superset; cleaner to replace than merge | Where dora has a bug fix dora never received, cherry-pick the fix onto the consolidated tree |
 | Crate names | **dora-* wins** | Brand reclaim is the point of consolidation | dora-* crates published as deprecated re-export shims for 6 months |
 | Binary name | **dora wins** | Same | Ship `dora` as a deprecated symlink in the dora deb/wheel for 1 minor version |
-| File formats (`.drec` recording, YAML) | **dora wins**, but **old dora formats remain readable** | Zero-day breakage for existing dora users is unacceptable | Daemon should read both `.drec` and legacy 0.x recording formats; `dora migrate-yaml` command for config upgrades |
+| File formats (`.drec` recording, YAML) | **dora wins**; 1.0 is a hard break (#297) | No production users identified (`docs/downstream-user-assessment-2026-04-16.md`); cost of backward-compat format readers + `migrate-yaml` tooling outweighs value | Manual rename `capture.adorec → capture.drec`; no format-compat shim, no `dora migrate-yaml` command; migration guide documents manual YAML field updates |
 | Public Rust APIs | **dora wins** | Superset | Every removed/renamed API documented in migration guide with a replacement |
 | Python APIs | **dora wins** | Superset | Same |
 | C / C++ APIs | **dora wins** | Superset | Already has macro-based compat layer in dora (`node_api.h` → see `docs/migration-from-0.x.md`) |
@@ -346,47 +366,49 @@ Iterate until all four are green.
 
 **Gate:** dora 1.0 tree contains a strict union of dora and dora test coverage; verification loop still passes.
 
-### Phase 3b: Adopt Zenoh shared memory (2-3 days)
+### Phase 3b: Adopt Zenoh shared memory — data plane only (2-3 days)
+
+> **Scope locked to D-7c (partial migration) per #297 resolution, 2026-04-17.** Data-plane messages ≥ 4KB move to Zenoh SHM; the 4 local control channels per node stay on custom shmem until 1.1. The `shared-memory-server` crate remains in the workspace with reduced surface. See D-7 in §7.
 
 **Added 2026-04-08 after the Q1 POC on dora exposed `shared-memory-server` as a QA blind spot.** See `plan-agentic-qa-strategy.md` section 10a.4 and `plan-zenoh-shared-memory.md`.
 
-**Rationale.** Dora's `libraries/shared-memory-server` crate has 30 `unsafe` blocks handling every local node↔daemon message (4 control channels per node + data regions ≥ 4KB). It is the largest concentration of unsafe code in the workspace and cannot be analyzed by miri (FFI), property testing (no pure-Rust entry points), or fuzzing. Upstream dora already migrated to Zenoh's native SHM in `dora-rs/adora#1378`, which deletes ~660 lines of DropToken lifecycle code, removes ~11 unsafe blocks from `channel.rs`, gives 35% lower latency on messages ≥ 64B and 3-10× throughput on messages ≥ 2KB, and removes the pinned `raw_sync_2 =0.1.5` fork dependency.
+**Rationale.** `libraries/shared-memory-server` has 30 `unsafe` blocks handling local node↔daemon messaging. The data-path regions (messages ≥ 4KB) are the majority of bytes moved and the part upstream already migrated via `dora-rs/adora#1378` (deletes ~660 lines of DropToken lifecycle, removes ~11 unsafe blocks from `channel.rs`, 35% lower latency on messages ≥ 64B, 3-10× throughput on messages ≥ 2KB, drops the pinned `raw_sync_2 =0.1.5` fork dep). Control channels are lower-volume, stable, and can wait — covered post-1.0.
 
-**Doing this as part of the consolidation, not before or after, is the right sequencing:**
-- **Before the consolidation**: migration would touch code that is about to be replaced — wasted work, double-tested.
-- **After the consolidation**: the 30 unsafe blocks ship in dora 1.0 under the dora brand, inheriting the QA gap dora already has.
-- **During the consolidation**: the migration naturally aligns dora's tree with upstream dora, removes code that was never going to be QA-covered, and closes the miri gap by removing the uncoverable code entirely. The consolidation is already editing these files, so the churn is already paid for.
+**Doing the data-plane migration as part of the consolidation, not before or after, is the right sequencing:**
+- **Before**: migration would touch code that's about to be replaced by the consolidation merge — wasted work.
+- **After**: the data-path unsafe blocks ship in 1.0 under the dora brand unchanged.
+- **During**: the migration aligns with upstream, removes the larger chunk of uncoverable code, and the consolidation is already editing these files.
 
-**Tasks:**
-1. **Port `dora-rs/adora#1378`** into the `v1.0-rewrite` branch. This is the source code change dora has been queueing.
-2. **Delete** `apis/rust/node/src/node/drop_stream.rs`, `DropToken` types in `libraries/message/src/common.rs`, `pending_drop_tokens` and `check_drop_token` in daemon, and the 4 blocking shmem threads per node.
+**Tasks (D-7c — data plane only):**
+1. **Port the data-plane half of `dora-rs/adora#1378`** into the `v1.0-rewrite` branch.
+2. **Delete** `apis/rust/node/src/node/drop_stream.rs`, `DropToken` types in `libraries/message/src/common.rs`, `pending_drop_tokens` / `check_drop_token` in daemon. These are all data-path lifecycle code.
 3. **Rewrite** `apis/rust/node/src/node/mod.rs` to add a zenoh session + `ShmProvider` to `DoraNode`.
-4. **Update** `send_output` to publish via zenoh when data ≥ threshold.
+4. **Update** `send_output` to publish via zenoh when data ≥ 4KB threshold.
 5. **Update** `apis/rust/node/src/event_stream/data_conversion.rs` to add `RawData::ZenohShm(ZShm)`.
 6. **Update** `libraries/core/src/topics.rs` with zenoh topic helpers.
-7. **Add** recording support by copying `ZShm` data at the record-node level (the PR skips this; we must restore it because dora has `.drec` support that upstream doesn't).
-8. **Keep the 4KB threshold** for small messages — they continue via the existing TCP control path (per `plan-zenoh-shared-memory.md` recommendation).
-9. **Handle memlock gracefully** with a fallback + warning for `dora run` local dev.
-10. **Pre-warm the zenoh session** during node init to avoid the 16× first-message latency spike.
+7. **Keep** the 4 local control channels (`control`, `events`, `drop`, `events_close`) on custom `shared-memory-server`. Do **not** delete the crate; do **not** delete `ShmemChannel`. These stay until 1.1.
+8. **Add** recording support by copying `ZShm` data at the record-node level (the upstream PR skips this; restore for `.drec` support).
+9. **Keep the 4KB threshold** for small messages — they continue via the existing TCP control path.
+10. **Handle memlock gracefully** with a fallback + warning for `dora run` local dev.
+11. **Pre-warm the zenoh session** during node init to avoid the 16× first-message latency spike.
 
-**Dependencies to remove during this phase:**
-- `shared_memory_extended` (niche, low maintenance)
-- `raw_sync_2 =0.1.5` (exact-version pin on a custom fork)
+**Dependencies changed during this phase:**
+- `shared_memory_extended` — can be dropped if data path is the only consumer; verify during implementation (control channels may still depend on it).
+- `raw_sync_2 =0.1.5` — stays, still used by control channels. Drop in 1.1 when Phase 3 of `plan-zenoh-shared-memory.md` lands.
+- `zenoh` must stay pinned to `~1.8` (already done); `shared-memory` + `unstable` features enabled.
 
-**Dependencies to verify:**
-- `zenoh` must stay pinned to `~1.8` (already done in dora)
-- `zenoh`'s `shared-memory` + `unstable` features must be enabled
-
-**Gate:** `cargo test --all --exclude <python>` passes on the rewrite branch; benchmark regression shows p50 latency improved vs dora 0.x; the `shared-memory-server` crate is either deleted or reduced to <5 unsafe blocks; migration guide documents the breaking change for custom node implementations whose data path consumed `Option<Arc<DataMessage>>`.
+**Gate:** `cargo test --all --exclude <python>` passes on the rewrite branch; benchmark regression shows p50 latency improved vs 0.x for messages ≥ 64B; `shared-memory-server` is reduced in line count but not deleted; migration guide documents the breaking change for custom node implementations whose data path consumed `Option<Arc<DataMessage>>`.
 
 **Risk:** zenoh's SHM API is marked `unstable`. It has been stable since zenoh 0.10 (2023) but could change in zenoh 2.0. Mitigation: pinned to `~1.8`, monitor zenoh releases during the 1.0 post-release period.
 
-**Follow-up (post-1.0, possibly 1.1):** Phase 3 of `plan-zenoh-shared-memory.md` — migrate the 4 control channels to zenoh as well. This fully deletes `shared-memory-server` and eliminates all custom shmem code from the workspace.
+**Follow-up (tracked for 1.1):** Phase 3 of `plan-zenoh-shared-memory.md` — migrate the 4 control channels to zenoh, delete `shared-memory-server` entirely, drop `raw_sync_2`. This closes the miri gap fully.
 
 ### Phase 4: Compat layer (2 days)
 
+> **Scope correction (2026-04-16 review):** the "invert the compat direction" framing assumed `apis/rust/compat/dora-node-api` already existed. It does not — neither in `dora-fork` nor in `dora-upstream`. Phase 4 task 1 has been rewritten as "create" rather than "invert". Re-estimate the 2-day budget accordingly.
+
 **Tasks:**
-1. **Invert the compat direction.** dora currently has `apis/rust/compat/dora-node-api` that re-exports dora. In 1.0, this becomes `apis/rust/compat/dora-node-api` that re-exports dora. Rename directories and swap re-exports. Add `#[deprecated]` attribute with migration note.
+1. **Create `apis/rust/compat/`** with `dora-node-api` and `dora-operator-api` crates under it. Each is a thin `pub use dora_node_api::*;` (respectively `dora_operator_api::*;`) with a crate-level `#[deprecated(since = "0.3.0", note = "renamed to dora-node-api for 1.0")]`. Publish as dora-*  0.3.x shim crates to crates.io. This is net-new code, not a directory rename.
 2. **Final dora-* shim crates for crates.io.** Publish `dora-cli 0.3.0`, `dora-node-api 0.3.0`, `dora-operator-api 0.3.0`, etc. as thin wrappers around `dora-* 1.0.0`. Each crate's `lib.rs`:
    ```rust
    #![deprecated(
@@ -402,33 +424,62 @@ Iterate until all four are green.
    - For each dora 0.x API that changed in 1.0, provide a `dora::compat::v0` module with the old signature marked `#[deprecated]`, wrapping the new implementation.
    - Start with the top 10 most-used dora 0.x APIs (determined by downstream-user grep).
    - Remove in 1.1.0.
-5. **YAML descriptor compat**: daemon reads dora 0.x YAML with deprecation warnings; `dora migrate-yaml <file>` command upgrades in place.
-6. **Write a `dora migrate` subcommand** that upgrades a project directory from dora 0.x: updates `Cargo.toml` dependencies, renames YAML fields, prints a report of manual steps required.
+5. ~~**YAML descriptor compat**: daemon reads dora 0.x YAML with deprecation warnings; `dora migrate-yaml <file>` command upgrades in place.~~ **Dropped per #297 resolution, 2026-04-17.** 1.0 is a hard break; no `dora migrate` / `dora migrate-yaml` commands. Zero production deployments per `docs/downstream-user-assessment-2026-04-16.md` — the cost of maintaining migration tooling outweighs the value. Migration guide (`docs/migration-from-0.x.md`) documents the manual upgrade steps.
+6. ~~**Write a `dora migrate` subcommand**~~ — dropped, see task 5.
 
-**Gate:** a sample dora 0.x project (pick one from the downstream user list) builds and runs on dora 1.0 with only automated `dora migrate` changes plus the documented manual steps.
+**Gate:** a sample dora 0.x project upgrades to 1.0 by following the manual steps in `docs/migration-from-0.x.md` (Cargo.toml dep bump, daemon/coordinator/CLI full restart, recording-file extension rename). No automated migration tool ships in 1.0.
 
-### Phase 5: Release (2 days)
+### Phase 5a: Release candidate (2 days to tag; stabilization window follows)
 
-**Tasks:**
-1. Final verification: `cargo test --all`, full E2E, benchmark regression, smoke tests, cargo-audit clean, coverage baseline reported.
-2. Dogfood campaign evidence attached to the release PR. If dogfood found issues, fix them first.
-3. Merge `v1.0-rewrite` → `main` on dora repo via `--no-ff` merge to preserve the phased history.
-4. Tag `v1.0.0` on the merge commit. Annotated, signed if your release norm is to sign.
-5. Push tag. Release workflow fires:
+**Strategy (2026-04-16 revision):** the original plan ran the dogfood campaign in parallel with Phases 1–4 against the pre-merge fork tree. That's wasted testing — it exercises code that's about to be rewritten (rename + Zenoh SHM + compat layer). Dogfood belongs **on the actual consolidated tree**, so Phase 5 splits into an **RC tag + stabilization window + GA tag**. We eat our own dogfood *as the 1.0-rc*, find the real issues, fix them, then cut GA.
+
+**Phase 5a tasks:**
+1. Final CI verification: `cargo test --all`, full E2E, benchmark regression, smoke tests, cargo-audit clean, coverage baseline reported.
+2. Merge `v1.0-rewrite` → `main` on `dora-rs/dora` via `--no-ff` merge to preserve the phased history.
+3. Tag `v1.0.0-rc.1` on the merge commit. Annotated, signed if release norm is to sign.
+4. Push tag. Release workflow fires in **rc mode**:
    - Builds cross-platform CLI binaries.
+   - Publishes `dora-* 1.0.0-rc.1` to crates.io with `--allow-features` for pre-release (crates.io allows pre-release versions).
+   - Publishes `dora-rs 1.0.0rc1` to PyPI (PyPI pre-release semantics).
+   - Creates a **GitHub pre-release** (not a full release), with release notes labelled "release candidate — feedback welcome".
+5. Announce the RC only to developer channels (GitHub Discussions, Discord). **No blog post, no HN, no Reddit yet.**
+
+**Phase 5b: RC dogfood + stabilization window (≥ 1 week, open-ended until clean)**
+
+Run the dogfood campaign per [§15 Appendix D](#15-appendix-d-dogfood-campaign-plan) against the 1.0-rc tree. Measurements: uptime, unexpected restarts, shared-memory OOMs, dropped messages, p50/p99/p99.9 latency, memory growth, CPU. Target: 7 clean days (no gate resets allowed — a 4-day run plus a fix plus a new 7-day run is the next attempt, not a 3-day extension).
+
+If the RC surfaces blockers:
+- Fix on `main`.
+- Tag `v1.0.0-rc.2` (etc.) with each iteration.
+- Re-run the 7-day dogfood clock from the new tag.
+
+RC-window exit criteria:
+- 7-day clean dogfood run against the most-recent `rc.N` tag.
+- No open P0 or P1 bug against the 1.0 series.
+- Migration guide validated on at least the fork's own examples and one external repo (if any volunteer from the downstream assessment).
+
+**Gate (Phase 5b):** RC window is closed when dogfood evidence is published, outstanding P0/P1 are zero, and the decision to promote the RC to GA is recorded. No fixed calendar window — ship when it's ready, not when the week ends.
+
+### Phase 5c: GA release (1 day)
+
+Once the RC is stable:
+
+1. Tag `v1.0.0` on the same commit the final `rc.N` pointed at.
+2. Release workflow fires in **GA mode**:
+   - Re-builds cross-platform CLI binaries with the final version string.
    - Publishes `dora-* 1.0.0` to crates.io (in dependency order).
    - Publishes `dora-rs 1.0.0` to PyPI.
-   - Creates GitHub release with release notes.
-6. After `dora-* 1.0.0` is live on crates.io:
-   - Publish the deprecated `dora-* 0.3.0` shims pointing at dora.
+   - Creates the GitHub release (full, not pre-release).
+3. After `dora-* 1.0.0` is live on crates.io:
+   - Publish the deprecated `dora-* 0.3.0` shims pointing at dora (if the compat shims from Phase 4 are kept — note Phase 4 scope was re-opened in the 2026-04-16 review: `apis/rust/compat/` does not exist and the compat layer is net-new code, not a directory rename).
    - Publish `dora-rs 0.3.0` PyPI shim.
-7. **Announcement:**
+4. **Announcement:**
    - Blog post on `dora-rs.ai`: "dora 1.0: A Rust-First Rewrite, Built with Agentic Engineering."
    - Post to HN, `/r/rust`, `/r/robotics`, Rust Weekly, Discord.
-   - Email the downstream user list with a direct link to the migration guide.
-8. **Archive `dora-rs/dora` repository** via GitHub Settings. Pin a README pointing at `dora-rs/dora`. Do not delete the repo — external links may exist.
+   - Release note links the dogfood evidence file from the RC window.
+5. **Archive the fork repo `dora-rs/adora`** via GitHub Settings (per D-6a). Pin a README pointing at `dora-rs/dora`. Do not delete — external links and the 58 inline `dora-rs/adora#NNN` code-comment refs depend on it. The destination repo `dora-rs/dora` stays active and becomes the canonical 1.0+ home.
 
-**Gate:** `dora 1.0.0` is publicly released, announcement is live, archive is done.
+**Gate (Phase 5c):** `dora 1.0.0` is publicly released, announcement is live, archive is done.
 
 ### Phase 6: Post-release support (ongoing for 6 weeks)
 
@@ -452,13 +503,13 @@ Iterate until all four are green.
 | R-5 | Maintainers (phil-opp, haixuanTao) object to consolidation | Medium | Critical | Phase -1 governance conversation; collect objections; be willing to adjust the plan or walk away |
 | R-6 | crates.io name collision or yank issues | Low | Medium | Verify ownership in Phase -1; publish in strict dependency order |
 | R-7 | PyPI package name conflict | Low | Medium | Verify ownership in Phase -1 |
-| R-8 | Arrow 54→58 or pyo3 0.23→0.28 breaks downstream Python nodes | High | Medium | Migration guide links upstream changelogs; dora migrate subcommand flags this |
+| R-8 | Arrow 54→58 or pyo3 0.23→0.28 breaks downstream Python nodes | High | Medium | Migration guide links upstream changelogs; no `dora migrate` subcommand (dropped per #297) — downstream users follow manual steps in `docs/migration-from-0.x.md` |
 | R-9 | Audit critical issues resurface under dora brand | Low (if Phase -1 gate enforced) | Critical | Phase -1 gates on audit closure; independent audit pre-release |
 | R-10 | ROS2 bridge users lose functionality | Medium | High | ROS2 bridge superset claim verified in Phase -1; audit dora-unique bridge features |
 | R-11 | GitHub issue tracker mass-reports post-release | Medium | Medium | Dedicated post-release triage rotation for 2 weeks; canned responses for common migration questions |
 | R-12 | Blog post gets dunked on for "AI rewrote it and broke my stuff" | Medium | Medium | Honest framing; lead with test/verification story not velocity story |
 | R-13 | Legacy 0.x branch rots and users on 0.x stop getting security fixes | High (over 6+ months) | Medium | Define explicit EOL date in the migration guide; give 6 months notice |
-| R-14 | Merge commit confuses `git blame` or breaks third-party tooling | Low | Low | Documented in README; `--first-parent` works |
+| R-14 | Merge commit confuses `git blame` or breaks third-party tooling | Low | Low | `git log --first-parent` reproduces the upstream linear timeline; `git blame` after an `ours`-merge attributes each line to the last author who touched it in its native history (i.e. the fork's authors for fork-sourced lines), which is the intended behavior. Document this in the release notes so downstream tools expecting a single linear history aren't surprised. |
 | R-15 | Zenoh SHM migration (Phase 3b) regresses latency on small messages | Medium | Medium | Keep 4KB threshold; messages below it continue via existing TCP path; benchmark regression gate blocks release if p99 drops |
 | R-16 | Zenoh SHM `unstable` API breaks in a future zenoh release | Low (6-12 months) | Medium | Pin to `~1.8`; monitor zenoh releases; CI nightly rebuild against zenoh's main branch as early-warning |
 | R-17 | Zenoh SHM recording (`.drec`) support not finished before release | Medium | High | Phase 3b explicitly includes recording support via a ZShm → Vec<u8> copy at record-node level; gate the release on `examples/validated-pipeline` recording end-to-end test passing |
@@ -469,18 +520,30 @@ Iterate until all four are green.
 
 These are the decisions that cannot be made unilaterally. Each needs explicit resolution before the relevant phase begins.
 
+### D-0: Consolidation strategy — tree-replacement merge vs staged upstream PRs
+
+**Resolved (2026-04-16):** **D-0a** — tree-replacement merge. The fork tree takes over / overwrites upstream as the dora 1.0 baseline, since the fork is the production superset. Confirmed by heyong4725 in [PR #286](https://github.com/dora-rs/adora/pull/286) following prior contractor briefings with phil-opp and haixuanTao. R-5 (maintainer objection) is retired.
+
+**Context:** the rest of the plan assumes a single tree-replacement merge of `dora-fork` into `dora-upstream`. Alternatives considered and rejected for this decision:
+
+- ~~**D-0b:** Staged upstream PRs over 3–6 months~~ — rejected; superset delta is too large and the consolidation narrative depends on a clean 1.0 cut.
+- ~~**D-0c:** Hybrid~~ — rejected; slows down release without meaningfully reducing risk, given contractor buy-in.
+
+**Decision owner (resolved):** heyong4725 with contractor (phil-opp, haixuanTao) concurrence.
+
+---
+
 ### D-1: Wire protocol compatibility strategy
 
-**Context:** dora added `auth.rs` and `ws_protocol.rs` to `libraries/message/`. Several of dora's existing message files have likely diverged. A dora 0.5.0 daemon may not interoperate with a dora 1.0.0 daemon.
+**Resolved (2026-04-16): D-1a — hard protocol break.** Evidence: [`docs/phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) shows incompatibility at five independent layers (transport tarpc↔WebSocket, top-level dispatch, enum variant ordering, mandatory `Hello` handshake, fork-only `auth.rs`/`ws_protocol.rs` files). Bridge release (D-1b) and version negotiation (D-1c) are not justified for the small user base. Migration guide must document "full cluster restart required for 0.x → 1.0 upgrade"; release note owes an explicit breaking-change callout.
 
-**Options:**
-- **D-1a:** Ship 1.0.0 with a hard protocol break. Document "full cluster restart required for upgrade." Simple.
-- **D-1b:** Ship 0.9.0 as a bridge release with both protocols; 1.0.0 drops the 0.x protocol. Slower but allows rolling upgrades.
-- **D-1c:** Ship 1.0.0 with a version-negotiation handshake; daemons auto-downgrade when talking to 0.x peers. Most work; best UX.
+**Context (historical):** fork added `auth.rs` and `ws_protocol.rs` to `libraries/message/`, and most of the existing message files diverged. A 0.5.0 daemon cannot interoperate with a 1.0.0 daemon — connections fail at TCP handshake level.
 
-**Recommendation:** D-1a if the Phase -1 protocol audit shows the divergence is small and rolling upgrades are rare in the dora user base; D-1b otherwise. Avoid D-1c unless a specific user demands it.
+~~**Options D-1b/D-1c** (rejected):~~
+- ~~D-1b: Ship 0.9.0 as a bridge release with both protocols.~~ Cost ~1–2 engineer-weeks; small user base.
+- ~~D-1c: Version-negotiation handshake with auto-downgrade.~~ Transport-layer divergence makes this effectively D-1b with extra steps.
 
-**Decision owner:** maintainers + top 3 downstream users
+**Decision owner (resolved):** heyong4725 based on Phase -1 audit evidence; phil-opp + haixuanTao to confirm on release-note wording.
 
 ### D-2: Audit critical closure evidence
 
@@ -534,31 +597,32 @@ These are the decisions that cannot be made unilaterally. Each needs explicit re
 
 **Decision owner:** heyong4725 + marketing/community lead
 
-### D-7: Zenoh SHM migration scope and timing
+### D-6: Archive or maintain the fork repo post-release
 
-**Context:** Added 2026-04-08 after the Q1 POC on dora exposed `shared-memory-server` as the largest concentration of unsafe code in the workspace (30 blocks) and a QA blind spot (can't be analyzed by miri, proptest, or fuzz because tests call libc's `shm_open`). Upstream dora already adopted Zenoh SHM in `dora-rs/adora#1378`. Phase 3b of this plan proposes folding the migration into the consolidation merge.
-
-**Options:**
-- **D-7a:** Do it in Phase 3b as currently written. Deletes ~660 lines, removes ~11 unsafe blocks, eliminates `raw_sync_2` pinned fork dep, aligns with upstream. Adds 2-3 days to the critical path.
-- **D-7b:** Defer to dora 1.1. Consolidation ships with the current shared-memory-server; zenoh migration happens as a follow-up. Shorter 1.0 critical path; 1.0 ships with the known QA gap.
-- **D-7c:** Partial: migrate the data plane in Phase 3b (Phase 1 of `plan-zenoh-shared-memory.md`) but keep the 4 control channels on custom shmem until 1.1. This is roughly what upstream dora did.
-
-**Recommendation:** D-7c. Full migration is ~2-3 days more work than partial, and the control channels are relatively stable. D-7a risks scope creep; D-7b ships the QA gap under the dora brand.
-
-**Decision owner:** maintainers (phil-opp, haixuanTao) + heyong4725
-
-### D-6: Archive or maintain dora repo
-
-**Context:** post-release, what happens to `dora-rs/dora`?
+**Context:** post-release, what happens to `dora-rs/adora` (this repo)?
 
 **Options:**
-- **D-6a:** Archive with pinned README pointing at dora.
-- **D-6b:** Delete (not recommended — breaks external links).
-- **D-6c:** Keep as a future-experiments sandbox separate from dora's stable release.
+- **D-6a:** Archive with pinned README pointing at `dora-rs/dora`.
+- **D-6b:** Delete (not recommended — breaks the 58 `dora-rs/adora#NNN` issue references in code comments and the historical clone URLs in the wild).
+- **D-6c:** Keep as a future-experiments sandbox separate from `dora-rs/dora`'s stable release.
 
-**Recommendation:** D-6a. If you want a future-experiments sandbox, create `dora-rs/dora-next` or similar; don't conflate it with the old dora repo.
+**Recommendation:** D-6a. If a future-experiments sandbox is desired, create a new repo (e.g. `dora-rs/dora-next`); don't conflate it with the old fork.
 
 **Decision owner:** heyong4725
+
+### D-7: Zenoh SHM migration scope and timing
+
+**Resolved (2026-04-17): D-7c** — partial migration, data plane only. Keep the 4 control channels on custom shmem until 1.1. Matches what upstream did in `dora-rs/adora#1378`. Confirmed by heyong4725 via #297.
+
+**Follow-up note:** the `shared-memory-server` crate remains in the workspace after 1.0 with reduced surface (data-plane code deleted, control channels retained). This area still needs further hardening work post-1.0 — miri / proptest / fuzz coverage gaps remain on the 4 control channels, and `raw_sync_2` pinned fork dep is still present. Track as 1.1 milestone under `plan-zenoh-shared-memory.md` Phase 3.
+
+**Context (historical):** Added 2026-04-08 after the Q1 POC exposed `shared-memory-server` as the largest concentration of unsafe code in the workspace (~30 blocks) and a QA blind spot (can't be analyzed by miri, proptest, or fuzz because tests call libc's `shm_open`). Upstream dora already adopted Zenoh SHM in `dora-rs/adora#1378`.
+
+~~**Options D-7a / D-7b** (rejected):~~
+- ~~D-7a: full migration in Phase 3b (delete `shared-memory-server` entirely).~~ Scope creep risk; further from upstream's chosen approach.
+- ~~D-7b: defer all zenoh work to 1.1.~~ Ships the QA gap under the dora brand unchanged.
+
+**Decision owner (resolved):** heyong4725 with contractor (phil-opp, haixuanTao) alignment.
 
 ---
 
@@ -619,23 +683,25 @@ These are questions this plan cannot answer without maintainer input or investig
 
 | Phase | Description | Duration | Dependencies |
 |---|---|---|---|
-| -1 | Governance, prereqs, protocol audit | 1 week | — |
+| -1 | Governance, prereqs, protocol audit, ownership, criticals | 1 week | — |
 | 0 | Preparation (tags, branches, freeze) | 2 days | Phase -1 complete |
 | 1 | Mechanical merge | 1 day | Phase 0 complete |
 | 2 | Rename pass | 2-3 days | Phase 1 green |
 | 3 | Test and example union | 3-5 days | Phase 2 green |
 | 3b | Zenoh SHM migration (data plane, D-7c) | 2-3 days | Phase 3 green |
 | 4 | Compat layer | 2 days | Phase 3b green |
-| 5 | Release | 2 days | Phase 4 green + dogfood evidence |
-| 6 | Post-release support | 6 weeks (ongoing) | Phase 5 complete |
+| 5a | Tag `1.0-rc.1` + pre-release publish | 2 days | Phase 4 green |
+| 5b | RC dogfood + stabilization (rc.2, rc.3, ... as needed) | ≥ 1 week, open-ended | Phase 5a tagged |
+| 5c | Tag `1.0.0` GA + publish + announcement + archive | 1 day | Phase 5b clean |
+| 6 | Post-release support | 6 weeks (ongoing) | Phase 5c complete |
 
-**Critical path:** ~4-5 weeks from Phase -1 kickoff to 1.0 tag, assuming no blockers in governance or protocol audit. Phase 3b adds 2-3 days vs. the original estimate.
+**Critical path:** ~4–5 weeks from Phase -1 kickoff to `1.0-rc.1`, then ≥ 1 week open-ended to GA. The RC window is deliberately uncapped — ship when the dogfood is clean, not when a calendar box expires. Phase 3b adds 2-3 days vs. the original estimate.
 
 **Parallel tracks during Phases 1-4:**
-- Dogfood campaign (1 week of real-workload running)
+- ~~Dogfood campaign~~ — moved to Phase 5b per 2026-04-16 owner direction.
 - Q1-minimum test infrastructure (coverage baseline, cargo-audit, see QA plan)
 - Blog post and migration guide drafting
-- Downstream user outreach
+- ~~Downstream user outreach~~ — right-sized to release-note + watch per 2026-04-16 assessment.
 
 ---
 
@@ -651,7 +717,7 @@ These are questions this plan cannot answer without maintainer input or investig
 - [ ] `legacy/0.x` branch exists on `dora-rs/dora` and CI runs on it.
 - [ ] Migration guide published at `dora-rs.ai/docs/migration-from-0.x`.
 - [ ] Coverage baseline, cargo-audit clean, and dogfood evidence published as part of the release notes.
-- [ ] At least 3 downstream projects have confirmed successful migration to 1.0 via `dora migrate`.
+- [ ] No production user reports an unresolved migration blocker in the first 30 days post-release. ~~(Was: "At least 3 downstream projects have confirmed successful migration to 1.0 via `dora migrate`." Replaced 2026-04-16 after downstream assessment showed zero identifiable production deployments — see `docs/downstream-user-assessment-2026-04-16.md`.)~~
 
 **Narrative:**
 - [ ] Blog post published and received without significant backlash.
@@ -730,7 +796,9 @@ git push -u origin v1.0-rewrite
 
 ## 13. Appendix B: Crate and identifier rename map
 
-### Crate names
+> **Historical record only — Phase 2 is complete.** This appendix documented the `adora-*` → `dora-*` rename that landed in PR #186 (675 files, +9,612 / −9,752). After the rename, every row in the tables below has "dora" on both sides and is no longer actionable. The content is preserved so future readers can reconstruct what changed; regenerate the "from" column from the PR #186 diff if needed.
+
+### Crate names (was: `adora-*` → `dora-*`)
 
 | dora name | dora 1.0 name |
 |---|---|
@@ -802,9 +870,11 @@ Inverse of the current `node_api.h` / `operator_api.h` macros. Before 1.0, these
 
 ### Script for mechanical rename
 
+> **Historical — already executed in PR #186.** The script below is preserved as a reference for future consolidations; running it against the current tree is a no-op.
+
 ```bash
 #!/bin/bash
-# rename-dora-to-dora.sh — run from repo root after Phase 1 merge
+# rename-adora-to-dora.sh — run from repo root after Phase 1 merge
 
 set -euo pipefail
 
@@ -869,6 +939,10 @@ cargo check --all --exclude dora-node-api-python --exclude dora-operator-api-pyt
 
 ## 14. Appendix C: Downstream user impact checklist
 
+> **Superseded (2026-04-16)** by [`docs/downstream-user-assessment-2026-04-16.md`](downstream-user-assessment-2026-04-16.md). Code search turned up zero production deployments, so the top-10 outreach protocol is disproportionate. The assessment documents the right-sized alternative (release-note prominence + migration guide + issue-tracker watch). This appendix is kept as historical context for the original planning decision.
+
+### Historical: the original top-10 outreach protocol
+
 Before Phase -1 completes, produce this list:
 
 1. GitHub code search: `https://github.com/search?q=dora-node-api+language%3ARust&type=code`
@@ -883,8 +957,8 @@ Before Phase -1 completes, produce this list:
 5. For each top-10 project:
    - File a courtesy GitHub issue on their repo titled "Heads up: dora 1.0 is coming — we'd love your feedback on the migration guide"
    - Include a link to this plan doc and the migration guide draft.
-   - Ask: "Would you be willing to test `dora migrate` on your project before the 1.0 release?"
-6. Collect responses. Adjust the migration guide and `dora migrate` subcommand based on feedback.
+   - Ask: "Would you be willing to test the manual migration steps on your project before the 1.0 release?"
+6. Collect responses. Adjust the migration guide based on feedback. (Historically this section referenced a `dora migrate` subcommand; that was dropped per #297 resolution 2026-04-17 — zero production users surfaced in the assessment.)
 
 **This step is not optional.** The single biggest reputational risk of the consolidation is surprise breakage at the downstream user level. Early outreach turns potential critics into collaborators.
 
@@ -892,7 +966,7 @@ Before Phase -1 completes, produce this list:
 
 ## 15. Appendix D: Dogfood campaign plan
 
-Run in parallel with Phases 1-4. Purpose: generate evidence for the 1.0 release claim.
+> **Rescoped 2026-04-16:** originally specified to run in parallel with Phases 1–4 against the pre-merge fork tree. Changed per owner direction — dogfood runs in **Phase 5b** against the tagged `1.0-rc` on the actual consolidated tree, not against the fork. Pre-merge testing would exercise code that's about to be rewritten (rename + Zenoh SHM + compat layer); post-merge RC testing exercises the actual shipping code. Purpose unchanged: generate evidence for the 1.0 release claim.
 
 **Workload:** pick a real robotics scenario that exercises the full stack. Recommended:
 - Rust sensor node producing Arrow-formatted camera frames at 30 Hz.
@@ -921,53 +995,74 @@ Run in parallel with Phases 1-4. Purpose: generate evidence for the 1.0 release 
 
 ## 16. Appendix E: Audit commands for Phase -1
 
-Run these to collect the data needed to complete this plan.
+> **Correction (2026-04-16 review):** the previous revision had several commands where the source/target paths collapsed to the same value (pre-rename they compared `dora-rs/dora` vs `dora-rs/adora`; post-rename they compare the same path twice and produce empty diffs). Commands below are rewritten to explicitly distinguish `UPSTREAM` and `FORK` paths so the evidence is real. Run from any working directory; no `cd` needed.
 
 ```bash
-# Protocol audit: diff each message file between dora and dora
-cd ~/src/dora-rs/dora
-git remote add dora https://github.com/dora-rs/adora.git 2>/dev/null || true
-git fetch dora main
+# --- Setup: two checkouts side by side ---
+UPSTREAM=~/src/dora-rs-upstream          # dora-rs/dora (destination repo)
+FORK=~/src/dora-rs/adora                 # this repo (source repo)
+# Clone if needed:
+# git clone https://github.com/dora-rs/dora  "$UPSTREAM"
+# git clone https://github.com/dora-rs/adora "$FORK"
+
+# --- Protocol audit: diff each message file between upstream and fork ---
+cd "$FORK"
+git remote add upstream https://github.com/dora-rs/dora.git 2>/dev/null || true
+git fetch upstream main
 
 for f in cli_to_coordinator.rs common.rs config.rs coordinator_to_cli.rs \
          coordinator_to_daemon.rs daemon_to_coordinator.rs daemon_to_daemon.rs \
-         daemon_to_node.rs descriptor.rs id.rs metadata.rs node_to_daemon.rs; do
+         daemon_to_node.rs descriptor.rs id.rs metadata.rs node_to_daemon.rs \
+         auth.rs ws_protocol.rs; do
   echo "=== $f ==="
-  git diff dora/main..HEAD -- "libraries/message/src/$f" | wc -l
+  git diff upstream/main..HEAD -- "libraries/message/src/$f" | wc -l
 done
 
-# Public API diff using cargo-public-api
-cargo install cargo-public-api
-cd ~/src/dora-rs/dora
-cargo public-api -p dora-node-api > /tmp/dora-node-api.txt
-cd ~/src/dora-rs/dora  # clean checkout
-cargo public-api -p dora-node-api > /tmp/dora-node-api.txt
-diff /tmp/dora-node-api.txt /tmp/dora-node-api.txt > /tmp/api-diff.txt
+# --- Public API diff using cargo-public-api ---
+cargo install cargo-public-api 2>/dev/null || true
+( cd "$UPSTREAM" && cargo public-api -p dora-node-api ) > /tmp/upstream-node-api.txt
+( cd "$FORK"     && cargo public-api -p dora-node-api ) > /tmp/fork-node-api.txt
+diff /tmp/upstream-node-api.txt /tmp/fork-node-api.txt > /tmp/api-diff.txt
+wc -l /tmp/api-diff.txt
 
-# Downstream user grep
+# --- Downstream user grep (unchanged; searches GitHub globally) ---
 gh search code 'dora-node-api' --language rust --limit 50 --json repository \
   | jq '.[] | .repository.nameWithOwner' | sort -u > /tmp/downstream-users.txt
 
-# Crate ownership verification
-for crate in dora-node-api dora-operator-api dora-cli dora-core dora-message; do
+# --- Crate ownership verification (both old and new crate names) ---
+for crate in \
+    dora-node-api dora-operator-api dora-cli dora-core dora-message \
+    dora-node-api-python dora-operator-api-python; do
   echo "=== $crate ==="
   cargo owner --list "$crate" 2>&1 || echo "  not published"
 done
 
-# PyPI ownership
-pip index versions dora-rs 2>/dev/null || echo "dora-rs not on PyPI or index disabled"
-pip index versions dora-rs 2>/dev/null || echo "dora-rs not on PyPI or index disabled"
+# --- PyPI ownership ---
+# Both upstream and fork publish to the same two PyPI package names:
+#   `dora-rs`      (node API — from apis/python/node/pyproject.toml)
+#   `dora-rs-cli`  (CLI      — from binaries/cli/pyproject.toml)
+# So there's no old-vs-new collision to detect; the real question is whether
+# the PyPI account that currently owns each name is the same entity that
+# will publish 1.0. Verify existence + owner for both:
+for pkg in dora-rs dora-rs-cli; do
+  echo "=== $pkg ==="
+  pip index versions "$pkg" 2>/dev/null || echo "  $pkg not on PyPI"
+  # Owner check requires a PyPI maintainer session; record the owner list
+  # manually from https://pypi.org/project/$pkg/ and compare to this repo
+  # org admins below.
+  echo "  Owner list: https://pypi.org/project/$pkg/"
+done
 
-# GitHub org admin list
+# --- GitHub org admin list ---
 gh api orgs/dora-rs/members --jq '.[] | .login'
 
-# Test file counts
-find ~/src/dora-rs/dora -name '*.rs' -path '*/tests/*' | wc -l
-find ~/src/dora-rs/dora -name '*.rs' -path '*/tests/*' | wc -l
+# --- Test file counts: upstream vs fork ---
+echo "upstream tests: $(find "$UPSTREAM" -name '*.rs' -path '*/tests/*' | wc -l)"
+echo "fork tests:     $(find "$FORK"     -name '*.rs' -path '*/tests/*' | wc -l)"
 
-# Cargo.toml counts
-find ~/src/dora-rs/dora -name Cargo.toml | wc -l
-find ~/src/dora-rs/dora -name Cargo.toml | wc -l
+# --- Cargo.toml counts: upstream vs fork ---
+echo "upstream Cargo.toml: $(find "$UPSTREAM" -name Cargo.toml | wc -l)"
+echo "fork Cargo.toml:     $(find "$FORK"     -name Cargo.toml | wc -l)"
 ```
 
 Save the outputs as `docs/phase--1-audit-YYYY-MM-DD.md` and attach to this plan.
@@ -976,36 +1071,46 @@ Save the outputs as `docs/phase--1-audit-YYYY-MM-DD.md` and attach to this plan.
 
 ## 17. Appendix F: Protocol audit results
 
-**(To be filled in during Phase -1.)**
-
-Template:
-
-```
-## Protocol audit — <date>
+**Audit date:** 2026-04-16 · **Full evidence:** [`docs/phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) · **Issue:** closed #288 · **Gate:** §19.7 "Wire protocol audit" = Done
 
 ### Scope
-- dora version examined: 0.5.0 (<sha>)
-- dora version examined: 0.2.1 (<sha>)
+- `dora-upstream` examined: 0.5.0, `upstream/main` as of 2026-04-16 (HEAD `52835cff6`)
+- `dora-fork` examined: 0.2.1, local `HEAD` as of 2026-04-16
 
-### Message-by-message diff
+### Headline finding
 
-| File | Lines changed | Semantic breaks | Wire-compatible? |
-|---|---|---|---|
-| cli_to_coordinator.rs | N | describe | Yes/No |
-| coordinator_to_daemon.rs | N | describe | Yes/No |
-| daemon_to_node.rs | N | describe | Yes/No |
-| ws_protocol.rs | (dora-only) | n/a | No |
-| auth.rs | (dora-only) | n/a | No |
-| ... | | | |
+**The protocols are incompatible at multiple layers.** Rolling upgrade between a 0.5.0 deployment and a 1.0.0 deployment is impossible. Break is at: (a) transport layer — upstream uses tarpc/TCP+JSON, fork uses WebSocket; (b) message enum shape — flat RPC structs became enum-dispatched `ControlRequest`; (c) enum variant ordering — fork inserted new variants mid-enum (bincode tags shift); (d) new mandatory `Hello` handshake fork-only; (e) fork-only files `auth.rs` and `ws_protocol.rs`.
+
+### Message-by-message diff (summary)
+
+| File | Diff lines | Wire-compatible? | Notes |
+|---|---:|---|---|
+| `cli_to_coordinator.rs` | 383 | **No** | Flat structs → `ControlRequest` enum + `Hello` handshake |
+| `common.rs` | 221 | **No** | New types |
+| `config.rs` | 567 | **No** | Major additions |
+| `coordinator_to_cli.rs` | 224 | **No** | New reply variants |
+| `coordinator_to_daemon.rs` | 225 | **No** | State catch-up additions |
+| `daemon_to_coordinator.rs` | 229 | **No** | `DaemonEvent`, `NodeStatus`, `FaultToleranceSnapshot`, `NetworkMetrics` added |
+| `daemon_to_daemon.rs` | 14 | **No** (minor) | Small but breaking |
+| `daemon_to_node.rs` | 148 | **No** | `DaemonCommunication::Shmem` variant inserted; `NodeEvent` gained 4 variants (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`); `DaemonReply::NextEvents` type changed |
+| `descriptor.rs` | 1,266 | **No** | YAML descriptor superset |
+| `id.rs` | 271 | **No** | New identifier types |
+| `integration_testing_format.rs` | 0 | Yes | Identical (test-only) |
+| `lib.rs` | 73 | — | Internal re-exports |
+| `metadata.rs` | 605 | **No** | `TryFromParameterError` removed; `BufferOffset` + metadata-key constants added. `Parameter` variants in matching order (sole overlap). |
+| `node_to_daemon.rs` | 12 | Borderline | One-line addition |
+| `auth.rs` | fork-only | **No** | Bearer-token auth; no upstream equivalent |
+| `ws_protocol.rs` | fork-only | **No** | WebSocket control plane; upstream speaks tarpc |
 
 ### Handshake compatibility
-- Does dora 0.5.0 daemon recognize dora 1.0.0 coordinator? (Yes/No/Partial)
-- Does version negotiation exist? (Yes/No)
+
+- Does a 0.5.0 daemon recognize a 1.0.0 coordinator? **No.** Transport differs (tarpc vs WebSocket); connection fails at TCP handshake level.
+- Does a 1.0.0 CLI recognize a 0.5.0 coordinator? **No.** Same transport mismatch.
+- Does version negotiation exist? **Asymmetric.** Fork adds mandatory `ControlRequest::Hello { dora_version }` with semver compatibility check (`libraries/message/src/cli_to_coordinator.rs:193-232`). Upstream has only optional `get_version()` tarpc method. Cross-version connection fails before the handshake can execute.
 
 ### Recommendation
-- D-1a / D-1b / D-1c (see Decision Points)
-- Rationale: ...
-```
+
+**D-1a — hard protocol break.** Migration guide must state "full cluster restart required" for 0.x → 1.0 upgrades. D-1b (bridge release) and D-1c (version negotiation) would cost ~1–2 engineer-weeks for a small user base and are not justified. See the evidence file §6 for action items that must land before Phase 5 (explicit release-note callout, interop failure test, startup log line naming the supported protocol version).
 
 ---
 
@@ -1014,12 +1119,24 @@ Template:
 | Date | Author | Change |
 |---|---|---|
 | 2026-04-07 | heyong4725 + AI | Initial draft |
+| 2026-04-16 | heyong4725 + AI | §19 Fresh Superset Audit + Pre-merge checklist (PR #285) |
+| 2026-04-16 | heyong4725 + AI | Review amendments: §1.1 terminology; relabel `dora-upstream` vs `dora-fork`; §3.4 workflow counts corrected; §13/Appendix B marked historical (Phase 2 complete); §19.5 contributor framing corrected; §19.6 unsafe count sourced; §19.7 gate-status honesty pass; D-6/D-7 reordered; R-14 wording fixed; Phase 3b vs D-7 contradiction flagged; D-0 consolidation-strategy decision point added; §19.8 checklist expanded with governance / rename-residue / scope items. See review PR description for full findings. |
+| 2026-04-16 | heyong4725 + AI | Review round 2 (follow-up from PR #286 comments): line-3 Status header reconciled with §19.7 (no longer claims "gates cleared"); Phase 5 step 8 archive target corrected (archive fork `dora-rs/adora`, not destination `dora-rs/dora`); §3.1 and Phase 4 compat-layer scope corrected — `apis/rust/compat/` does not exist in either tree, so Phase 4 is "create" not "invert"; §16 Appendix E audit commands rewritten with explicit `UPSTREAM` / `FORK` paths (prior version diffed same file against itself); §19.6 unsafe-review enforcement rewritten (the `**/unsafe*` CODEOWNERS glob does not match actual unsafe files — proposed path-scoped CODEOWNERS + content-based CI check); §19.3 dropped upstream #1610 from the gap list (PR was ported *from* the fork per its own body); 4 gaps → 3 gaps. |
+| 2026-04-16 | heyong4725 + AI | Review round 3 (follow-up from second PR #286 review): §19.6 action list and §19.8 checklist updated to use path-scoped CODEOWNERS + content-based CI (they still referenced the broken `**/unsafe*` glob as the required step); Appendix E PyPI ownership check fixed (was running `pip index versions dora-rs` twice — verified both upstream and fork publish the same two names `dora-rs` and `dora-rs-cli`, so the check now loops both names and records owner-list URLs for manual ownership verification); §19.6 "Unsafe code isolation" softened from "isolation rule holding" to "target state documented; current compliance partial" with a verified example (channel.rs send_raw / receive / disconnect / data_len / data have inline `unsafe { }` in safe methods and 0 `# Safety:` docs). |
+| 2026-04-16 | heyong4725 + AI | Review round 4 (PR #286 third review): §1 headline top-contributor row — prior cell listed phil-opp 1,786 / haixuanTao 1,828 for the `dora-upstream` column but those are `dora-fork` local git-shortlog numbers. Verified actual upstream contributions via `gh api repos/dora-rs/dora/contributors` = phil-opp 2,023 / haixuanTao 1,895. Replaced with the upstream-authoritative figure and added a footnote naming the metric ("GitHub contributions metric" vs `git shortlog`). §19.5 contributor-count row — "upstream 115 / fork 90" had no traceable provenance; upstream contributors API returns 91. Replaced with both methods named, both commands reproducible, and a note that the prior 115/90 framing is not to be reused. |
+| 2026-04-16 | heyong4725 + AI | Governance resolution: **D-0 resolved as D-0a** (fork tree overwrites upstream as 1.0 baseline) per heyong4725 confirmation; phil-opp and haixuanTao are contractors and were briefed. §1 Status line updated; §7 D-0 marked resolved; §19.7 Governance row flipped to Done and linked to closed #293. Remaining Phase -1 evidence gates (wire-protocol audit, audit criticals re-verification, ownership, outreach, dogfood) still open as #288, #289, #290, #291, #292 — tracked under epic #287. |
+| 2026-04-16 | heyong4725 + AI | **D-1 resolved as D-1a** (hard protocol break) based on Phase -1 wire-protocol audit. Evidence: new file `docs/phase--1-audit-2026-04-16.md` with per-file diff of `libraries/message/src/*.rs` between `upstream/main` and local HEAD, transport-layer analysis (tarpc vs WebSocket), handshake analysis (mandatory `Hello` fork-only), and migration-guide action items. §17 Appendix F populated; §19.7 "Wire protocol audit" flipped to Done; §7 D-1 marked resolved with D-1b/D-1c struck through. Closed #288. |
+| 2026-04-16 | heyong4725 + AI | **Audit-2026-03-21 critical closure.** New file `docs/audit-2026-03-21-closure.md` records per-finding status across 23 Critical items: 17 fixed (with fix commit + current-HEAD verification — DC1 bounds check, CM2 Sync invariant docs, SEC1/SEC2 URL hardening, DC2 listener shutdown, AC1–AC4 unwrap elimination, Q1–Q4, ET1–ET2, etc.), 3 eliminated by Phase 3b (DC3, CM3, related), 3 explicitly waived (CM1 analyzed correct by Release/Acquire pair; SEC1 hash opt-in with warning + strict-mode deferred to 1.1; SEC3 TLS deferred post-1.0 to reverse-proxy pattern). §3.6 annotated; §19.7 "Security audit" row flipped to Done. Closed #289. |
+| 2026-04-16 | heyong4725 + AI | **PyPI + crates.io ownership verification.** New file `docs/ownership-verification-2026-04-16.md`. Queried crates.io public API for 30 workspace crates: 19 published, 11 new. Of the 19 published, 17 have `github:dora-rs:core` team ownership (heyong4725 + 3 others are team members — publish works); 3 crates (`dora-arrow-convert`, `dora-ros2-bridge`, `dora-ros2-bridge-msg-gen`) missing the team and need `cargo owner --add` from haixuanTao (A1). 11 crates new to 1.0 need publish/no-publish decision (A4). PyPI both packages present (`dora-rs` + `dora-rs-cli` at 0.5.0); maintainer list requires manual web-UI inspection (A2–A3). §19.7 PyPI/crates.io row flipped to Done; §19.8 pre-merge checklist expanded with A1–A4. Closed #290. |
+| 2026-04-16 | heyong4725 + AI | **Downstream user assessment (scope right-sized).** New file `docs/downstream-user-assessment-2026-04-16.md`. Per owner direction ("dora is mostly POCs, not production"), ran a quick GitHub code-search sweep across Rust + Python + pyproject queries. ~30 external repos surfaced; top-5 are 12–69 stars (YOR-robot, Ekumen/lekiwi, FlagOpen/RoboDriver, kornia/bubbaloop, mofa-studio); **zero production deployments identified**. §14 Appendix C top-10 outreach protocol annotated as superseded; §11 success criterion "3 downstream projects confirm migration via `dora migrate`" replaced by "no unresolved production migration blockers in first 30 days post-release". Right-sized plan: release-note prominence + migration guide + 30-day issue-tracker watch + community ping. Trigger-to-expand defined for surprise production users. §19.7 row flipped to Done. Closed #291. |
+| 2026-04-16 | heyong4725 + AI | **Release flow restructured: Phase 5 split into 5a (rc) + 5b (RC dogfood window) + 5c (GA).** Per owner direction, dogfood runs on the tagged `1.0-rc` against the actual consolidated tree, not on the pre-merge fork. Rationale: pre-merge testing exercises code that's about to change (rename + Zenoh SHM + compat layer); RC testing exercises the actual shipping tree. Phase 5b window is open-ended — ships on clean dogfood, not on a calendar box. §5 Phase 5 rewritten as 5a/5b/5c; §10 timeline table updated with the three-tag cadence; §15 Appendix D rescoped to Phase 5b; §19.7 dogfood row marked "Rescoped — not a Phase -1 gate"; §19.8 checkbox flipped to done-via-rescope; §1 Status line now reads "Phase -1 complete". #292 rescoped to RC-window tracker rather than closed. |
+| 2026-04-17 | heyong4725 + AI | **Scope reconciliation round — three team decisions via #297, all resolved.** (1) **D-7 = D-7c** (partial Zenoh SHM migration, data plane only; control channels stay on custom shmem until 1.1). §5 Phase 3b body rewritten to match (data-plane tasks only, keep `shared-memory-server` crate with reduced surface, keep `raw_sync_2` until 1.1); §7 D-7 marked resolved with D-7a/D-7b struck through; follow-up 1.1 work noted. (2) **No `dora migrate` command in 1.0** — 1.0 is a hard break; zero production users surfaced in the assessment; cost of migration tooling outweighs value. §5 Phase 4 tasks 5+6 struck through; §4 overlap matrix `File formats` row updated to reflect hard break; §6 R-8 mitigation updated to remove `dora migrate` reference; §14 Appendix C outreach questions updated to ask about manual-migration testing; §19.8 checkbox flipped. (3) **58 `dora-rs/adora#NNN` code-comment refs left as-is** — archived repo serves issues indefinitely under D-6a; lowest-churn option, preserves historical design-discussion trail. §19.8 checkbox flipped. §1 Status line updated to reflect all decision points resolved. Closes #297. |
 
 ---
 
 ## 19. Fresh Superset Audit (2026-04-16)
 
-**Status**: Confirms adora is a true superset with 4 specific gaps to close before merge.
+**Status**: Confirms the fork is a true superset. Originally listed 4 gaps; upstream #1610 was dropped after verification (it was ported *from* the fork), leaving **3 real gaps** to close before merge (see §19.3).
 
 ### 19.1 Crate-level comparison
 
@@ -1045,7 +1162,7 @@ Template:
 | **DoraNodeBuilder / daemon_port** | #1591 | Rust API: `DoraNode::builder().daemon_port(6789).build()`. Adora has `init_from_env` / `init_from_node_id` but no builder with custom daemon port. | Port before merge. ~50 lines. |
 | **CUDA IPC via ctypes** | #1618 | Python: `dora.cuda` replaced numba with ctypes for CUDA IPC. Adora still uses the old numba version. | Port before merge. Python-only change. |
 | **C/C++ publish workflow** | #1611 | CI: publishes pre-built C/C++ libraries on release. Adora has no equivalent. | Port the workflow file. |
-| **C API tracing subscriber** | #1610 | `dora_log()` init calls `tracing_subscriber::init()` in upstream; verify adora's version does the same. | Verify parity, port if needed. |
+| ~~C API tracing subscriber~~ | ~~#1610~~ | **Not actually a gap.** Upstream #1610 is titled "fix(c-api): improve safety and correctness of C node API" and its own body states "Ported from dora-rs/adora" — i.e. upstream *imported this from the fork*, so the fork is ahead on this item. Remove from the gap list. | Drop. |
 
 ### 19.4 Dependency versions
 
@@ -1060,52 +1177,95 @@ All major deps: adora ahead.
 
 ### 19.5 Contributor preservation (issue #214)
 
-- Upstream: **115 unique git authors**
-- Adora: **90 unique git authors** (lost ~25 during the fork)
-- The consolidation merge recipe (Appendix A) preserves both histories as parents. After merge: `git shortlog -sne HEAD` shows the union (115 + adora-only authors).
-- GitHub's contributor card may still under-count. Mitigation: `CONTRIBUTORS.md` generated from `git log --format='%aN <%aE>' | sort -uf` after the merge.
+Contributor counting has two systematically-different metrics. This section reports both and names the source so the numbers stay auditable.
+
+- **`dora-upstream` — GitHub contributors API** (default-branch contributors only, with `anon=true` pagination): **91 authors** as of 2026-04-16. Command: `gh api "repos/dora-rs/dora/contributors?per_page=100&anon=true" --paginate --jq 'length'`.
+- **`dora-fork` — local `git shortlog`**: **90 authors** as of 2026-04-16. Command: `git log --format='%aN' | sort -u | wc -l`. This counts raw commit authorships across all refs, not just the default branch.
+- The two numbers disagree with each other by methodology alone. Pre-merge, rerun both on the day of the merge and also produce a local `git shortlog` on a fresh clone of `dora-upstream` so we have apples-to-apples fork-vs-upstream numbers. A prior draft of this document cited "upstream 115 / fork 90" without a traceable method — don't use those figures.
+- Note: `haixuanTao` has three email aliases (`haixuanTao`, `haixuantao`, `Haixuan Xavier Tao`) that split 981 + 442 + 405 commits in this repo. A `.mailmap` pass before merge is recommended so `git shortlog -sne` collapses the aliases.
+- The consolidation merge recipe (Appendix A) preserves both histories as parents. After merge: `git shortlog -sne HEAD` (with `.mailmap` applied) shows the full union.
+- GitHub's contributor card may still under-count after the merge (the UI may not follow `--allow-unrelated-histories` well). Mitigation: generate `CONTRIBUTORS.md` from `git log --format='%aN <%aE>' | sort -uf` and commit it, so attribution is durable regardless of what the UI renders.
 
 ### 19.6 AI-generated code QA rules (issue #207)
 
 Per phil-opp's request, the following guardrails must be in place before 1.0:
 
-1. **Unsafe code isolation**: All `unsafe` blocks must be in small, single-purpose functions with documented `# Safety` contracts. The security audit (2026-04-16) confirmed this is already the case for all 188 unsafe blocks.
-2. **Human review for unsafe changes**: Add a CI check (or CODEOWNERS rule) requiring human approval for any PR that modifies `unsafe` blocks. Not yet implemented.
+1. **Unsafe code isolation (target state — not yet fully met)**: The rule phil-opp asked for is that every `unsafe` block sits in a small, single-purpose function with a documented `# Safety:` contract. Current `unsafe` footprint (grep for `unsafe fn|impl|trait|{` on 2026-04-16): **177 occurrences across 34 files**, concentrated in `libraries/shared-memory-server/` (26), `libraries/extensions/ros2-bridge/src/_core/` (34), and the C/C++ API surfaces.
+
+    **Gap against the rule, verified on 2026-04-16:** several safe methods contain inline `unsafe { }` blocks rather than delegating to a dedicated unsafe helper — e.g. `libraries/shared-memory-server/src/channel.rs` has inline `unsafe` in the otherwise-safe `send_raw`, `receive`, `disconnect`, `data_len`, `data`/`data_mut` methods, and `grep -B1 'unsafe {' channel.rs | grep -c Safety` returns **0**, i.e. none of those blocks have `# Safety:` doc comments. The 2026-04-16 security audit did not find exploitable bugs in these paths, but it cannot be cited as evidence that the isolation rule is "holding". Treat this item as: **target state documented; current compliance partial; pre-1.0 walkthrough owes either (a) refactor to single-purpose unsafe helpers with `# Safety:` docs, or (b) an explicit waiver per file that stays inline.**
+2. **Human review for unsafe changes**: Add a CI check requiring human approval for any PR that modifies `unsafe` code. CODEOWNERS alone cannot express this — `unsafe` lives in ordinary files (`libraries/shared-memory-server/src/channel.rs`, `apis/c/node/src/lib.rs`, `apis/c++/{node,operator}/src/lib.rs`, `libraries/extensions/ros2-bridge/src/_core/*.rs`, `libraries/core/src/metadata.rs`, `binaries/daemon/src/node_communication/mod.rs`, etc.) and no glob like `**/unsafe*` matches them. Two workable options:
+    - **Path-scoped CODEOWNERS** covering the directories that contain 95%+ of the `unsafe` footprint: `/libraries/shared-memory-server/ /libraries/extensions/ros2-bridge/src/_core/ /apis/c/ /apis/c++/ /libraries/core/src/metadata.rs`. Still human-maintained (drifts when new unsafe lands elsewhere).
+    - **Content-based CI check** that diffs the PR and fails if any `+` line matches `\bunsafe\b` without an accompanying `# Safety:` doc comment and a `ai-unsafe-review` label. More robust; higher one-time implementation cost.
+
+    Recommendation: ship both. CODEOWNERS for the hot directories gives blanket coverage; the CI check catches drift.
 3. **Test disabling requires human approval**: Add a CI check that fails if any `#[ignore]` or `#[cfg(not(test))]` is added without an accompanying justification comment. Not yet implemented.
 4. **Unwrap budget enforcement**: Already in CI (`.unwrap-budget` file, budget: 185).
 
 **Pre-merge action items for #207:**
-- [ ] Add CODEOWNERS entry: `**/unsafe*` requires `@phil-opp` or `@haixuanTao` review
+- [ ] Add **path-scoped CODEOWNERS** covering the directories that hold ~95% of the `unsafe` footprint (do **not** use the `**/unsafe*` glob — it matches nothing in this repo): `/libraries/shared-memory-server/`, `/libraries/extensions/ros2-bridge/src/_core/`, `/apis/c/`, `/apis/c++/`, `/libraries/core/src/metadata.rs`, `/apis/rust/operator/src/raw.rs`, `/binaries/daemon/src/node_communication/`. Owners: `@phil-opp`, `@haixuanTao` (TBD — confirm availability).
+- [ ] Add **content-based CI check**: on every PR, fail if the diff adds any `+` line containing `\bunsafe\b` unless the PR has a `ai-unsafe-review` label and the preceding 5 lines include a `# Safety:` doc comment. Catches drift when new `unsafe` lands outside the path-scoped directories.
 - [ ] Add CI check for new `#[ignore]` annotations in test code
 - [ ] Document the QA rules in `CONTRIBUTING.md`
 
 ### 19.7 Updated Phase -1 gate status
 
-| Gate | Status | Notes |
+> **Honesty pass (2026-04-16 review):** earlier drafts marked several gates "Done" without linking evidence. Rows below are rewritten to distinguish **Done + evidence attached** from **In progress / no artifact yet**. No gate should be claimed "Done" for the maintainer conversation without a linkable artifact (issue, PR, audit file, CI run).
+
+| Gate | Status | Evidence |
 |---|---|---|
-| Governance alignment | **Done** (2026-04-16) | phil-opp, haixuanTao briefed |
-| Wire protocol audit | **Done** (2026-04-16) | Hard break (D-1a), incompatible |
-| Security audit | **Done** (2026-04-16) | 0 P0, 0 P1 remaining |
-| Superset verification | **Done** (2026-04-16) | 4 specific gaps identified |
-| Upstream alignment (#201) | **Done** (2026-04-15) | 25 PRs audited, 3 shipped |
-| CI green | **Done** (2026-04-16) | All platforms, all jobs |
-| PyPI/crates.io ownership | **Not done** | 15 min task |
-| Downstream user list | **Not done** | 1 hour task |
-| Dogfood campaign | **Not done** | Can run parallel with Phase 0-1 |
+| Governance alignment | **Done** (2026-04-16) | phil-opp and haixuanTao are contractors and were briefed. D-0 resolved as **D-0a** (tree takeover). Artifact: heyong4725 confirmation on [PR #286](https://github.com/dora-rs/adora/pull/286) + prior contractor conversations. Closed via #293. |
+| Wire protocol audit | **Done** (2026-04-16) | [`docs/phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) attached; Appendix F populated from the evidence; D-1 resolved as D-1a. Closed #288. |
+| Security audit (re-verify 2026-03-21 criticals) | **Done** (2026-04-16) | [`docs/audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) walks every Critical finding with fix commit + verification, or explicit waiver. 17 fixed, 3 eliminated by Phase 3b, 3 explicitly waived (CM1 code correct by Release/Acquire pairing; SEC1 opt-in hash with warning, strict mode 1.1; SEC3 TLS deferred post-1.0). No open P0 or P1. Closed #289. |
+| Superset verification | **Done** (2026-04-16, revised) | 3 real gaps identified in §19.3 (was 4; #1610 dropped after verification) |
+| Upstream alignment (#201) | **Done** (2026-04-15) | 25 PRs audited, 3 shipped — link PR closures |
+| CI green | **Done** (2026-04-16) | All platforms, all jobs (link latest green run) |
+| PyPI/crates.io ownership | **Done** (2026-04-16) | [`docs/ownership-verification-2026-04-16.md`](ownership-verification-2026-04-16.md) — 17 of 19 published crates have `github:dora-rs:core` team ownership (heyong4725 + phil-opp + haixuanTao + bobdingAI are team members). 3 crates missing the team (`dora-arrow-convert`, `dora-ros2-bridge`, `dora-ros2-bridge-msg-gen`) — haixuanTao runs one `cargo owner --add` per crate before Phase 5. 10 crates not yet published need per-crate publish/no-publish decision. PyPI maintainer list requires manual inspection via web UI (tracked as A2–A3 action items). Closed #290. |
+| Downstream user list + outreach | **Done — scope right-sized** (2026-04-16) | [`docs/downstream-user-assessment-2026-04-16.md`](downstream-user-assessment-2026-04-16.md). Code search surfaced ~30 external repos; top-5 are 12–69 stars (YOR-robot, Ekumen/lekiwi, FlagOpen/RoboDriver, kornia/bubbaloop, mofa-studio); **zero production deployments identified**. Top-10 outreach protocol replaced by release-note prominence + migration guide + 30-day issue-tracker watch + community ping. Trigger-to-expand defined for surprise production users. Closed #291. |
+| Dogfood campaign | **Rescoped — not a Phase -1 gate** (2026-04-16) | Per owner direction, dogfood runs in **Phase 5b** against the tagged `1.0-rc`, not in parallel with Phases 0–1. Pre-merge testing would exercise code that's about to be rewritten; RC testing exercises the actual shipping tree. Tracked as Phase 5b exit criterion, not Phase -1 blocker. #292 reassigned. |
+| CLA / DCO status | Not done | Reconcile whether contributors to either tree signed a CLA (§9 Open Question 8). Blocks contributor attribution strategy. |
 
-### 19.8 Pre-merge checklist (new, based on this audit)
+### 19.8 Pre-merge checklist (based on this audit + 2026-04-16 review)
 
-Before starting Phase 0, close these gaps:
+Before starting Phase 0, close these gaps. Items marked **(review PR)** were added by the plan review; others are from the original audit.
 
+**Code / superset gaps (original):**
 - [ ] Port DoraNodeBuilder / daemon_port from upstream #1591
 - [ ] Port CUDA IPC ctypes update from upstream #1618
 - [ ] Port C/C++ publish workflow from upstream #1611
-- [ ] Verify C API tracing subscriber parity with upstream #1610
-- [ ] Add CODEOWNERS for unsafe code (#207)
+- [x] ~~Verify C API tracing subscriber parity with upstream #1610~~ — dropped; #1610 was ported *from* this fork, not a gap (see §19.3)
+
+**Governance / verification:**
+- [ ] **Written sign-off from phil-opp and haixuanTao on D-0 consolidation strategy (review PR)** — linked as artifact, not an informal brief
+- [x] ~~Verify PyPI/crates.io ownership~~ — done 2026-04-16 (#290 closed). See `docs/ownership-verification-2026-04-16.md`. Four follow-up actions below are the residue.
+- [ ] **A1 (ownership):** haixuanTao runs `cargo owner --add github:dora-rs:core` for `dora-arrow-convert`, `dora-ros2-bridge`, `dora-ros2-bridge-msg-gen` (3 crates missing the team)
+- [ ] **A2 (ownership):** inspect PyPI collaborator lists for `dora-rs` and `dora-rs-cli` via https://pypi.org/manage/project/<name>/collaboration/
+- [ ] **A3 (ownership):** add heyong4725 as Maintainer on PyPI for both packages if not already
+- [ ] **A4 (ownership):** decide publish / `publish = false` for each of the 10 not-yet-published workspace crates (see §3 of the ownership doc)
+- [ ] **Reconcile CLA / DCO status of agent-authored commits (review PR)** — §9 Open Question 8
+- [ ] Fill in Appendix F protocol-audit evidence; downgrade §19.7 Done claims until attached **(review PR)**
+- [ ] Re-verify / waive the 3 memory-safety + 1 code-execution findings from `docs/audit-report-2026-03-21.md` **(review PR)**
+- [x] ~~Start dogfood campaign (runs in parallel with Phases 0-1)~~ — rescoped 2026-04-16 to Phase 5b (post-RC tag); tracked as Phase 5b exit criterion, not Phase -1 blocker.
+- [ ] Produce top-10 downstream user list (§14 Appendix C)
+
+**Policy / repo hygiene:**
+- [ ] Add **path-scoped** CODEOWNERS for the directories that contain unsafe code (#207) — the `**/unsafe*` glob does not work
+- [ ] Add **content-based** CI check that fails on `+unsafe` lines without a `# Safety:` doc + review label (#207)
 - [ ] Add CI check for test disabling (#207)
 - [ ] Generate CONTRIBUTORS.md from git history (#214)
-- [ ] Verify PyPI/crates.io ownership
-- [ ] Start dogfood campaign (runs in parallel)
+- [ ] **Add `.mailmap` to collapse haixuanTao email aliases before `git shortlog` is cited publicly (review PR)**
+
+**Rename residue (originally claimed Phase 2 complete — pass still needed):** **(review PR)**
+- [ ] README.md, README.zh-CN.md, Changelog.md — replace `github.com/dora-rs/adora` URLs and `.adorec` filename prose
+- [ ] `Cargo.toml` workspace `repository` URL
+- [ ] `docs/octos-adora-integration-report.md` — rename file
+- [ ] `docs/dora-compatibility.md` — rename to `migration-from-0.x.md` and invert direction (§3.5)
+- [x] ~~58 inline `dora-rs/adora#NNN` issue refs across 28 files~~ — **leave as-is** per #297 resolution 2026-04-17. Archived GitHub repos continue to serve issues indefinitely under D-6a, so the links remain resolvable. Not touching is the lowest-churn option and preserves the historical design-discussion trail intact. §5 Phase 5c step 5 is consistent (does not delete the archived repo).
+- [ ] `guide/po/*.po` translation catalogs
+
+**Scope reconciliation:** **(review PR)**
+- [ ] Phase 3b body vs D-7 recommendation (currently contradicts — see §3b / D-7)
+- [x] ~~`dora migrate` subcommand: implement, drop from §11 success criteria, or reassign as a post-1.0 item~~ — **dropped 2026-04-17 (#297)**. Hard break, zero production users, no migration tool ships in 1.0.
+- [ ] Merge §19 findings back into §3 and delete the stale duplicates in §3 (see P1-7 in review PR)
 
 ## 20. Related documents
 
