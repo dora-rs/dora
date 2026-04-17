@@ -39,7 +39,7 @@ jobs:
         run: Get-PSDrive
         if: runner.os == 'Windows'
       - name: Override cargo target dir (Windows only)
-        run: echo "CARGO_TARGET_DIR=C:\cargo-target" >> "$GITHUB_ENV"
+        run: echo "CARGO_TARGET_DIR=D:\cargo-target" >> "$GITHUB_ENV"
         shell: bash
         if: runner.os == 'Windows'
 
