@@ -142,9 +142,11 @@ impl ControlChannel {
     pub fn read_pinned_memory(
         &mut self,
         shared_memory_id: String,
+        free: bool,
     ) -> eyre::Result<Metadata> {
         let request = DaemonRequest::ReadPinnedMemory {
             shared_memory_id,
+            free,
         };
         let reply = self
             .channel

@@ -507,11 +507,13 @@ impl Node {
     /// Read pinned memory from daemon and transfer to CUDA.
     ///
     /// :param pinned_buffer: pyarrow array containing shared memory identifier
+    /// :param free: if True, free the pinned memory after reading
     /// :rtype: dictionary with cuda ptr, size, dtype, shape
-    #[pyo3(signature = (pinned_buffer,))]
+    #[pyo3(signature = (pinned_buffer, free=false))]
     pub fn read_pinned_memory(
         &self,
         pinned_buffer: PyObject,
+        free: bool,
         py: Python,
     ) -> eyre::Result<Py<PyDict>> {
         // Extract shared memory ID from pyarrow array
@@ -537,12 +539,31 @@ impl Node {
 
         // Call DoraNode's read_pinned_memory method
         let metadata = self.node.get_mut()
-            .read_pinned_memory(shared_memory_id)
+            .read_pinned_memory(shared_memory_id.clone(), free)
             .wrap_err("failed to read pinned memory from daemon")?;
 
         // Convert Metadata to Python dictionary
         let dict = metadata_to_pydict(&metadata, py)
             .wrap_err("failed to convert metadata to Python dictionary")?;
+
+        // If free is True, also free the pinned memory
+        if free {
+            // Extract buffer ID from shared memory name
+            let buffer_id = if shared_memory_id.starts_with("dora_pinned_") {
+                shared_memory_id.trim_start_matches("dora_pinned_").to_string()
+            } else {
+                shared_memory_id.clone()
+            };
+
+            // Call Python's free_pinned_buffer function to actually free the memory
+            let cuda_module = py.import("dora.cuda")?;
+            let free_pinned_buffer = cuda_module.getattr("free_pinned_buffer")?;
+            let result: bool = free_pinned_buffer.call1((buffer_id,))?.extract()?;
+
+            if !result {
+                tracing::warn!("free_pinned_buffer returned false for buffer_id: {}", buffer_id);
+            }
+        }
 
         Ok(dict.into())
     }
@@ -578,7 +599,26 @@ impl Node {
             eyre::bail!("pinned_buffer must be a binary or string array, got {:?}", array.data_type())
         };
 
-        // Call DoraNode's free_pinned_memory method
+        // Extract buffer ID from shared memory name
+        // shared_memory_id is like "dora_pinned_<uuid>"
+        let buffer_id = if shared_memory_id.starts_with("dora_pinned_") {
+            shared_memory_id.trim_start_matches("dora_pinned_").to_string()
+        } else {
+            // If it's already a UUID, use it directly
+            shared_memory_id.clone()
+        };
+
+        // Call Python's free_pinned_buffer function to actually free the memory
+        // This handles CUDA unregistration and shared memory cleanup
+        let cuda_module = py.import("dora.cuda")?;
+        let free_pinned_buffer = cuda_module.getattr("free_pinned_buffer")?;
+        let result: bool = free_pinned_buffer.call1((buffer_id,))?.extract()?;
+
+        if !result {
+            tracing::warn!("free_pinned_buffer returned false for buffer_id: {}", buffer_id);
+        }
+
+        // Also notify daemon to remove the entry from its memory table
         self.node.get_mut()
             .free_pinned_memory(shared_memory_id)
             .wrap_err("failed to free pinned memory with daemon")?;

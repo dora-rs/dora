@@ -25,6 +25,10 @@ pub struct PinnedMemoryMetadata {
     pub shared_memory_name: Option<String>,
     /// Buffer ID for tracking and cleanup
     pub buffer_id: Option<String>,
+    /// Process ID that allocated the memory (if known)
+    pub allocator_pid: Option<u32>,
+    /// Whether CUDA host memory registration was performed
+    pub cuda_registered: bool,
 }
 
 /// Entry in the pinned memory table
@@ -85,11 +89,63 @@ impl MemoryManager {
     pub fn free_pinned_memory(&self, id: &PinnedMemoryId) -> Result<(), String> {
         let mut table = self.pinned_memory_table.lock().unwrap();
 
-        if table.remove(id).is_none() {
-            return Err(format!("Pinned memory with ID {} not found", id.id));
-        }
+        // Get the entry before removing it
+        let entry = match table.remove(id) {
+            Some(entry) => entry,
+            None => return Err(format!("Pinned memory with ID {} not found", id.id)),
+        };
+
+        // Try to free the shared memory if it exists
+        // Note: Daemon should not free shared memory directly as it may still be in use
+        // and CUDA memory registration needs to be unregistered by the allocating process.
+        // The allocating process (Python) is responsible for cleanup via free_pinned_buffer.
+        // We just remove the entry from the table here.
+        // if let Some(shm_name) = &entry.metadata.shared_memory_name {
+        //     if !shm_name.is_empty() {
+        //         // Attempt to free the shared memory
+        //         // Note: This is a best-effort attempt since the daemon may not have
+        //         // direct access to the shared memory or CUDA context
+        //         let _ = self.free_shared_memory(shm_name, &entry.metadata);
+        //     }
+        // }
 
         Ok(())
+    }
+
+    /// Attempt to free shared memory
+    fn free_shared_memory(&self, shm_name: &str, metadata: &PinnedMemoryMetadata) -> Result<(), String> {
+        tracing::error!("free_shared_memory CALLED! This should not happen. shm_name={}, pid={:?}", shm_name, metadata.allocator_pid);
+        // Note: Directly unlinking shared memory from /dev/shm may not work correctly
+        // because:
+        // 1. The shared memory might still be in use by other processes
+        // 2. CUDA pinned memory registration needs to be unregistered in the same process
+        // 3. File permissions might prevent the daemon from accessing the shared memory
+
+        // Instead of trying to unlink directly, we log a warning and rely on
+        // the allocating process to clean up the memory properly.
+        // The allocating process should:
+        // 1. Call cudaHostUnregister if cuda_registered is true
+        // 2. Close and unlink the SharedMemory object
+
+        tracing::warn!(
+            "Shared memory {} needs to be freed by allocating process (PID: {:?}). \
+            Daemon cannot safely free CUDA-registered memory from another process.",
+            shm_name,
+            metadata.allocator_pid
+        );
+
+        // We should NOT clean up the shared memory file from the daemon.
+        // The allocating process (Python) is responsible for cleanup via free_pinned_buffer.
+        // Removing the file while it's still in use by other processes causes errors.
+        // Just log a message and return.
+        tracing::debug!("Shared memory {} should be freed by allocating process (PID: {:?})", shm_name, metadata.allocator_pid);
+        Ok(())
+
+        // #[cfg(not(target_os = "linux"))]
+        // {
+        //     tracing::debug!("Cannot directly unlink shared memory on this platform: {}", shm_name);
+        //     Ok(())
+        // }
     }
 
     /// Get all pinned memory entries (for cleanup on shutdown)

@@ -2,263 +2,320 @@
 
 Provides helper functions for managing CUDA Inter-Process Communication (IPC)
 memory handles. These utilities enable zero-copy GPU data transfer between
-dora-rs nodes using PyTorch and Numba, facilitating high-performance
-robotic applications.
+dora-rs nodes using PyTorch, facilitating high-performance robotic
+applications.
+
+Uses ctypes to call the CUDA runtime API directly, avoiding the need for
+the numba package.
 """
 
-import pyarrow as pa
 
-# Make sure to install torch with cuda
-import torch
-from numba.cuda import to_device
-
-# Make sure to install numba with cuda
-from numba.cuda.cudadrv.devicearray import DeviceNDArray
-from numba.cuda.cudadrv.devices import get_context
-from numba.cuda.cudadrv.driver import IpcHandle
-
-
-import json
 import ctypes
-import atexit
-
 from contextlib import contextmanager
 from typing import ContextManager
 
-# Global dictionary to track allocated pinned memory
-_allocated_pinned_memory = {}
+import numpy as np
+import pyarrow as pa
+import torch
 
-def _cuda_free_host(ptr):
-    """Free pinned memory allocated with cudaHostAlloc."""
-    try:
-        cuda = ctypes.CDLL("libcudart.so")
-        cuda.cudaFreeHost.restype = ctypes.c_int
-        cuda.cudaFreeHost.argtypes = [ctypes.c_void_p]
-        result = cuda.cudaFreeHost(ptr)
-        if result != 0:
-            print(f"Warning: cudaFreeHost failed with error code {result}")
-    except OSError:
-        print("Warning: Could not load CUDA runtime to free pinned memory")
+import uuid
+import sys
+from multiprocessing.shared_memory import SharedMemory
 
-def _cleanup_pinned_memory():
-    """Clean up all allocated pinned memory on exit."""
-    for key, value in list(_allocated_pinned_memory.items()):
-        if isinstance(value, tuple) and len(value) == 2:
-            obj, size = value
-            if isinstance(obj, ctypes.c_void_p):
-                # Old style: CUDA pinned memory pointer
-                _cuda_free_host(obj)
-            else:
-                # New style: SharedMemory object
-                try:
-                    from multiprocessing.shared_memory import SharedMemory
-                    if isinstance(obj, SharedMemory):
-                        obj.close()
-                        # Only unlink if we created it (should be the case)
-                        try:
-                            obj.unlink()
-                        except FileNotFoundError:
-                            pass  # Already unlinked
-                except ImportError:
-                    pass
-        # Also handle direct SharedMemory objects (if stored differently)
-        elif hasattr(value, 'close'):
-            try:
-                value.close()
-                if hasattr(value, 'unlink'):
-                    try:
-                        value.unlink()
-                    except FileNotFoundError:
-                        pass
-            except:
-                pass
-    _allocated_pinned_memory.clear()
-
-atexit.register(_cleanup_pinned_memory)
+# ---------------------------------------------------------------------------
+# CUDA runtime bindings via ctypes
+# ---------------------------------------------------------------------------
+_libcudart = ctypes.CDLL("libcudart.so")
 
 
-def torch_to_ipc_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
-    """Convert a Pytorch tensor into a pyarrow buffer containing the IPC handle
-    and its metadata.
 
-    Example Use:
-    ```python
-    torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cuda")
-    ipc_buffer, metadata = torch_to_ipc_buffer(torch_tensor)
-    node.send_output("latency", ipc_buffer, metadata)
-    ```
+class _CudaIpcMemHandle(ctypes.Structure):
+    _fields_ = [("reserved", ctypes.c_byte * 64)]
+
+
+_libcudart.cudaIpcGetMemHandle.restype = ctypes.c_int
+_libcudart.cudaIpcGetMemHandle.argtypes = [
+    ctypes.POINTER(_CudaIpcMemHandle),
+    ctypes.c_void_p,
+]
+_libcudart.cudaIpcOpenMemHandle.restype = ctypes.c_int
+_libcudart.cudaIpcOpenMemHandle.argtypes = [
+    ctypes.POINTER(ctypes.c_void_p),
+    _CudaIpcMemHandle,
+    ctypes.c_uint,
+]
+_libcudart.cudaIpcCloseMemHandle.restype = ctypes.c_int
+_libcudart.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
+_libcudart.cudaDeviceSynchronize.restype = ctypes.c_int
+_libcudart.cudaDeviceSynchronize.argtypes = []
+
+_cudaIpcMemLazyEnablePeerAccess = 1
+
+# Additional CUDA function declarations for pinned memory operations
+_libcudart.cudaHostRegister.restype = ctypes.c_int
+_libcudart.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
+
+_libcudart.cudaHostUnregister.restype = ctypes.c_int
+_libcudart.cudaHostUnregister.argtypes = [ctypes.c_void_p]
+
+_libcudart.cudaMemcpyAsync.restype = ctypes.c_int
+_libcudart.cudaMemcpyAsync.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_void_p]
+
+_libcudart.cudaStreamCreate.restype = ctypes.c_int
+_libcudart.cudaStreamCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+
+_libcudart.cudaStreamSynchronize.restype = ctypes.c_int
+_libcudart.cudaStreamSynchronize.argtypes = [ctypes.c_void_p]
+
+_libcudart.cudaStreamDestroy.restype = ctypes.c_int
+_libcudart.cudaStreamDestroy.argtypes = [ctypes.c_void_p]
+
+_libcudart.cudaMemcpy.restype = ctypes.c_int
+_libcudart.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+
+# Constants for CUDA operations
+_cudaHostRegisterDefault = 0
+_cudaMemcpyHostToDevice = 1
+
+# Numpy dtype string -> torch dtype mapping.
+_DTYPE_MAP = {
+    "<i8": torch.int64,
+    "<i4": torch.int32,
+    "<i2": torch.int16,
+    "<f4": torch.float32,
+    "<f8": torch.float64,
+    "<f2": torch.float16,
+    "<u1": torch.uint8,
+    "|b1": torch.bool,
+    "int64": torch.int64,
+    "int32": torch.int32,
+    "int16": torch.int16,
+    "float32": torch.float32,
+    "float64": torch.float64,
+    "float16": torch.float16,
+    "uint8": torch.uint8,
+    "bool": torch.bool,
+}
+
+
+def _check(err, msg="CUDA call failed"):
+    if err != 0:
+        raise RuntimeError(f"{msg} (cudaError={err})")
+
+
+# ---------------------------------------------------------------------------
+# Public API — same signatures as the previous numba-based implementation
+# ---------------------------------------------------------------------------
+
+
+def torch_to_ipc_buffer(tensor: torch.Tensor) -> tuple[pa.array, dict]:
+    """Convert a PyTorch CUDA tensor into a pyarrow buffer containing the
+    IPC handle and its metadata.
+
+    Example::
+
+        torch_tensor = torch.tensor(data, dtype=torch.int64, device="cuda")
+        ipc_buffer, metadata = torch_to_ipc_buffer(torch_tensor)
+        node.send_output("latency", ipc_buffer, metadata)
     """
-    device_arr = to_device(tensor)
-    ipch = get_context().get_ipc_handle(device_arr.gpu_data)
-    _, handle, size, source_info, offset = ipch.__reduce__()[1]
+    if not tensor.is_cuda:
+        raise ValueError("tensor must be on a CUDA device")
+
+    handle = _CudaIpcMemHandle()
+    _check(
+        _libcudart.cudaIpcGetMemHandle(
+            ctypes.byref(handle), ctypes.c_void_p(tensor.data_ptr())
+        ),
+        "cudaIpcGetMemHandle",
+    )
+
+    # Serialize handle as signed int8 list (pa.int8 range is -128..127).
+    handle_bytes = bytes(handle)
+    signed = [(b if b < 128 else b - 256) for b in handle_bytes]
+
     metadata = {
-        "shape": device_arr.shape,
-        "strides": device_arr.strides,
-        "dtype": device_arr.dtype.str,
-        "size": size,
-        "offset": offset,
-        "source_info": json.dumps(source_info),
+        "shape": tuple(tensor.shape),
+        "strides": tuple(s * tensor.element_size() for s in tensor.stride()),
+        "dtype": np.dtype(
+            torch.zeros(1, dtype=tensor.dtype).numpy().dtype
+        ).str,
+        "size": tensor.nelement() * tensor.element_size(),
+        "offset": 0,
     }
-    return pa.array(handle, pa.int8()), metadata
+    return pa.array(signed, type=pa.int8()), metadata
+
+
+class IpcHandle:
+    """Lightweight wrapper around a CUDA IPC memory handle."""
+
+    def __init__(self, handle_bytes: bytes, size: int, offset: int):
+        self._handle_bytes = handle_bytes
+        self._size = size
+        self._offset = offset
+        self._d_ptr = None
+
+    def open(self):
+        """Open the IPC handle and return the device pointer value."""
+        handle = _CudaIpcMemHandle()
+        ctypes.memmove(ctypes.byref(handle), self._handle_bytes, 64)
+        self._d_ptr = ctypes.c_void_p()
+        _check(
+            _libcudart.cudaIpcOpenMemHandle(
+                ctypes.byref(self._d_ptr),
+                handle,
+                _cudaIpcMemLazyEnablePeerAccess,
+            ),
+            "cudaIpcOpenMemHandle",
+        )
+        _libcudart.cudaDeviceSynchronize()
+        return self._d_ptr.value
+
+    def close(self):
+        """Close the IPC handle mapping."""
+        if self._d_ptr is not None and self._d_ptr.value is not None:
+            _libcudart.cudaIpcCloseMemHandle(self._d_ptr)
+            self._d_ptr = None
 
 
 def ipc_buffer_to_ipc_handle(handle_buffer: pa.array, metadata: dict) -> IpcHandle:
-    """Convert a buffer containing a serialized handler into cuda IPC Handle.
+    """Convert a buffer containing a serialized IPC handle back into an
+    :class:`IpcHandle`.
 
-    example use:
-    ```python
-    from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+    Example::
 
-    event = node.next()
+        from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 
-    ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
-    with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
-        pass
-    ```
+        event = node.next()
+        ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
+        with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
+            pass
     """
-    handle = handle_buffer.to_pylist()
-    return IpcHandle._rebuild(
-        handle,
+    signed = handle_buffer.to_pylist()
+    handle_bytes = bytes([(b + 256) % 256 for b in signed])
+    return IpcHandle(
+        handle_bytes,
         metadata["size"],
-        json.loads(metadata["source_info"]),
-        metadata["offset"],
+        metadata.get("offset", 0),
     )
+
+
+class _CudaArrayInterface:
+    """Minimal object implementing ``__cuda_array_interface__`` so that
+    ``torch.as_tensor`` can wrap raw GPU memory as a tensor (zero-copy)."""
+
+    def __init__(self, ptr, shape, strides, dtype_str):
+        self.__cuda_array_interface__ = {
+            "shape": tuple(shape),
+            "strides": tuple(strides) if strides else None,
+            "typestr": dtype_str,
+            "data": (ptr, False),
+            "version": 3,
+        }
 
 
 @contextmanager
 def open_ipc_handle(
     ipc_handle: IpcHandle, metadata: dict
-) -> ContextManager[torch.TensorType]:
-    """Open a CUDA IPC handle and return a Pytorch tensor.
+) -> ContextManager[torch.Tensor]:
+    """Open a CUDA IPC handle and yield a PyTorch tensor backed by the
+    shared GPU memory (zero-copy).
 
-    example use:
-    ```python
-    from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+    Example::
 
-    event = node.next()
+        from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
 
-    ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
-    with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
-        pass
-    ```
+        event = node.next()
+        ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
+        with open_ipc_handle(ipc_handle, event["metadata"]) as tensor:
+            pass
     """
     shape = metadata["shape"]
-    strides = metadata["strides"]
-    dtype = metadata["dtype"]
+    strides = metadata.get("strides")
+    dtype_str = metadata["dtype"]
+
     try:
-        buffer = ipc_handle.open(get_context())
-        device_arr = DeviceNDArray(shape, strides, dtype, gpu_data=buffer)
-        yield torch.as_tensor(device_arr, device="cuda")
+        ptr = ipc_handle.open()
+        ptr += ipc_handle._offset
+
+        wrapper = _CudaArrayInterface(ptr, shape, strides, dtype_str)
+        tensor = torch.as_tensor(wrapper, device="cuda")
+
+        yield tensor
     finally:
         ipc_handle.close()
 
-def torch_to_pinned_buffer(tensor: torch.TensorType) -> tuple[pa.array, dict]:
+def torch_to_pinned_buffer(tensor: torch.Tensor) -> tuple[pa.array, dict]:
     """
-    input:tensor
-    return pinned_buffer, metadata
-    pinned_buffer为用py.array包装的共享内存标识符
-    metadata为字典，包括tensor的ptr,size,dtype,shape
-    生成的共享内存标识符用于node.register_pinned_memory(pinned_buffer, metadata)，由daemon统一分配页锁内存
+    Convert a CPU torch tensor to a pinned memory buffer.
+    Returns a pyarrow buffer containing the shared memory identifier and metadata.
     """
-    import uuid
-    from multiprocessing.shared_memory import SharedMemory
-
-    # Check if tensor is on CPU (pinned memory must be allocated on host)
     if tensor.is_cuda:
         raise ValueError("Tensor must be on CPU for pinned memory allocation")
 
     size = tensor.nbytes
-    # Create a unique name for shared memory
-    memory_uuid = str(uuid.uuid4())
-    shm_name = f"dora_pinned_{memory_uuid}"
-
-    # Allocate shared memory
+    shm_name = f"dora_pinned_{uuid.uuid4()}"
     shm = SharedMemory(name=shm_name, create=True, size=size)
 
-    # Copy tensor data to shared memory
-    # Get tensor as numpy array (CPU tensor) - this creates a view, not a copy
-    np_array = tensor.numpy()
-
-    # Get source data as bytes
-    src_bytes = np_array.tobytes()
-
-    # Get destination memoryview
-    dst_mv = shm.buf
-
-    # Copy data directly using slice assignment (avoids ctypes references)
-    dst_mv[:] = src_bytes
-
-    # Optionally register shared memory as pinned memory with CUDA
-    # cudaHostRegister requires CUDA runtime
-    # Get pointer to shared memory buffer
     try:
-        # Get pointer from memoryview using ctypes and temporary array
-        # This is safe because we don't keep a reference to the array
-        mv = shm.buf
-        # Create a temporary ctypes array to get the address
-        # Use from_buffer without keeping the array reference
-        temp_arr = (ctypes.c_char * size).from_buffer(mv)
-        ptr = ctypes.addressof(temp_arr)
-        # Immediately delete the temporary array to avoid holding reference
-        del temp_arr
-    except Exception:
-        ptr = 0
+        import multiprocessing.resource_tracker
+        multiprocessing.resource_tracker.unregister(shm._name, 'shared_memory')
+    except:
+        pass
 
-    if ptr != 0:
-        try:
-            cuda = ctypes.CDLL("libcudart.so")
-            cuda.cudaHostRegister.restype = ctypes.c_int
-            cuda.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
-            cudaHostRegisterDefault = 0
-            result = cuda.cudaHostRegister(ptr, size, cudaHostRegisterDefault)
-            if result != 0:
-                # print(f"Warning: cudaHostRegister failed with error code {result}. Memory may not be pinned.")
-                pass
-        except OSError:
-            # print("Warning: Could not load CUDA runtime to register shared memory as pinned")
-            pass
+    if not tensor.is_contiguous():
+        tensor = tensor.contiguous()
 
-    # Create buffer identifier (shared memory name)
+    mv = shm.buf
+    temp_arr = (ctypes.c_char * size).from_buffer(mv)
+    dst_ptr = ctypes.addressof(temp_arr)
+
+    np_array = tensor.numpy()
+    dtype_map = {
+        torch.int64: np.int64,
+        torch.float32: np.float32,
+        torch.float64: np.float64,
+        torch.int32: np.int32,
+        torch.int16: np.int16,
+        torch.int8: np.int8,
+        torch.uint8: np.uint8,
+        torch.bool: np.bool_,
+        torch.float16: np.float16,
+    }
+    np_dtype = dtype_map.get(tensor.dtype, np.int64)
+    shm_np = np.frombuffer(mv, dtype=np_dtype).reshape(tensor.shape)
+    np.copyto(shm_np, np_array)
+
+    del shm_np
+    del np_array
+    del temp_arr
+
     buffer_id = shm_name.encode('ascii')
     buffer_array = pa.array([buffer_id], type=pa.binary())
 
     metadata = {
-        "ptr": ptr if ptr is not None else 0,  # Pointer to shared memory in current process
+        "ptr": dst_ptr,
         "size": size,
         "dtype": str(tensor.dtype),
         "shape": list(tensor.shape),
-        # Additional metadata
-        "is_pinned": True,
         "shared_memory_name": shm_name,
-        "buffer_id": memory_uuid,  # Store UUID for later cleanup
     }
-
-    # Store the shared memory object in global dictionary for later cleanup
-    _allocated_pinned_memory[memory_uuid] = (shm, size)
-
     return buffer_array, metadata
 
-def pinned_buffer_to_torch(memory_buffer: dict, free_source: bool = True) -> torch.Tensor:
+def pinned_buffer_to_torch(memory_buffer: dict) -> torch.Tensor:
     """
-    input:memory_buffer
-    return torch
-    根据node.read_pinned_memory(event["value"])返回的memory_buffer,生成cuda上的tensor张量并返回
-    memory_buffer是一个字典，包含cuda上的ptr，张量的size,dtype,shape
-    free_source: if True, free the source pinned memory after copying to GPU
-    """
-    import numpy as np
-    from multiprocessing.shared_memory import SharedMemory
+    Convert a pinned memory buffer to a CUDA tensor using DMA transfer.
 
+    Args:
+        memory_buffer: Dictionary containing metadata (shared_memory_name, size, dtype, shape).
+
+    Returns:
+        torch.Tensor on CUDA device.
+    """
     # Extract metadata
-    # print(f"Debug: memory_buffer keys: {list(memory_buffer.keys())}")
-    ptr = memory_buffer.get("ptr", 0)
     size = memory_buffer.get("size", 0)
     dtype_str = memory_buffer.get("dtype", "int64")
     shape = memory_buffer.get("shape", [])
-    is_pinned = memory_buffer.get("is_pinned", False)
-    buffer_id = memory_buffer.get("buffer_id", None)
     shared_memory_name = memory_buffer.get("shared_memory_name", None)
-    # print(f"Debug: extracted shared_memory_name={shared_memory_name}, buffer_id={buffer_id}")
 
     if size == 0 or not shape:
         raise ValueError("Invalid memory buffer metadata")
@@ -266,189 +323,98 @@ def pinned_buffer_to_torch(memory_buffer: dict, free_source: bool = True) -> tor
     # Convert dtype string to torch dtype
     dtype_map = {
         "int64": torch.int64,
+        "torch.int64": torch.int64,
         "float32": torch.float32,
+        "torch.float32": torch.float32,
         "float64": torch.float64,
+        "torch.float64": torch.float64,
         "int32": torch.int32,
+        "torch.int32": torch.int32,
         "int16": torch.int16,
+        "torch.int16": torch.int16,
         "int8": torch.int8,
+        "torch.int8": torch.int8,
         "uint8": torch.uint8,
+        "torch.uint8": torch.uint8,
         "bool": torch.bool,
+        "torch.bool": torch.bool,
         "float16": torch.float16,
+        "torch.float16": torch.float16,
         "bfloat16": torch.bfloat16,
+        "torch.bfloat16": torch.bfloat16,
     }
     dtype = dtype_map.get(dtype_str, torch.int64)
-
-    # Calculate number of elements
-    num_elements = np.prod(shape)
 
     # Check if CUDA is available
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available")
 
-    # Clear any CUDA errors from previous operations
-    torch.cuda.synchronize()
-    torch.cuda.empty_cache()
+    # Allocate GPU memory
+    gpu_tensor = torch.empty(shape, dtype=dtype, device="cuda")
 
-    # Reset CUDA device if needed
-    try:
-        torch.cuda.reset_peak_memory_stats()
-    except:
-        pass
+    # Open shared memory
+    if not shared_memory_name:
+        raise ValueError("shared_memory_name is required")
 
-    # Allocate GPU memory with error handling
-    try:
-        gpu_tensor = torch.empty(shape, dtype=dtype, device="cuda")
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        gpu_tensor = torch.empty(shape, dtype=dtype, device="cuda")
-    except RuntimeError as e:
-        # Catch CUDA errors like "resource already mapped"
-        if "resource already mapped" in str(e).lower() or "cuda error" in str(e).lower():
-            # Try a more aggressive reset
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-            import time
-            time.sleep(0.01)  # Longer delay
-            # Try to reset the device
-            try:
-                torch.cuda.init()
-            except:
-                pass
-            gpu_tensor = torch.empty(shape, dtype=dtype, device="cuda")
-        else:
-            raise
-    except Exception as e:
-        # Try one more time after full reset
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
-        import time
-        time.sleep(0.001)  # Small delay
-        gpu_tensor = torch.empty(shape, dtype=dtype, device="cuda")
-
-    # Determine source pointer: either from shared memory or from ptr
-    host_ptr = None
     shm = None
-    memory_registered = False
-    cuda_lib = None  # Cache for CUDA library
+    host_ptr = None
+    memory_registered_by_me = False
 
     try:
-        # print(f"Debug pinned_buffer_to_torch: shared_memory_name={shared_memory_name}, ptr={ptr}, size={size}, shape={shape}")
-        if shared_memory_name:
-            try:
-                # Open existing shared memory
-                # print(f"Debug: Attempting to open shared memory: {shared_memory_name}")
-                shm = SharedMemory(name=shared_memory_name, create=False)
-                # print(f"Debug: Successfully opened shared memory, buf type: {type(shm.buf)}, buf len: {len(shm.buf)}")
+        shm = SharedMemory(name=shared_memory_name, create=False)
 
-                # Get pointer to shared memory buffer using temporary ctypes array
-                # This avoids creating Python objects that hold references to the buffer
-                mv = shm.buf
-                # Create a temporary ctypes array to get the address
-                # Use from_buffer without keeping the array reference
-                temp_arr = (ctypes.c_char * size).from_buffer(mv)
-                host_ptr = ctypes.c_void_p(ctypes.addressof(temp_arr))
-                # Immediately delete the temporary array to avoid holding reference
-                del temp_arr
-                # print(f"Debug: Got pointer from temporary array: {host_ptr.value}")
-
-                # Register the shared memory as pinned memory for CUDA
-                # This is needed for DMA transfers
-                try:
-                    cuda_lib = ctypes.CDLL("libcudart.so")
-                    cuda_lib.cudaHostRegister.restype = ctypes.c_int
-                    cuda_lib.cudaHostRegister.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint]
-                    cudaHostRegisterDefault = 0
-                    result = cuda_lib.cudaHostRegister(host_ptr, size, cudaHostRegisterDefault)
-                    if result != 0:
-                        # Error 712 is CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED, which is OK
-                        if result != 712:
-                            # print(f"Warning: cudaHostRegister failed with error code {result}. Memory may not be pinned for DMA.")
-                            pass
-                        else:
-                            # print(f"Debug: Memory already registered (error {result}), continuing...")
-                            memory_registered = True
-                    else:
-                        # print(f"Debug: Successfully registered shared memory as pinned (size={size})")
-                        memory_registered = True
-                except OSError:
-                    # print("Warning: Could not load CUDA runtime to register shared memory as pinned")
-                    pass
-
-                # print(f"Debug: Opened shared memory {shared_memory_name}, ptr={host_ptr.value}, size={size}")
-            except Exception as e:
-                # print(f"Warning: Failed to open shared memory {shared_memory_name}: {e}")
-                # import traceback
-                # traceback.print_exc()
-                # Fall back to ptr (might be invalid in receiver process)
-                # print(f"Warning: Falling back to metadata ptr={ptr}")
-                host_ptr = ctypes.c_void_p(ptr)
+        # Get pointer to shared memory buffer
+        mv = shm.buf
+        if hasattr(mv, '__array_interface__'):
+            array_info = mv.__array_interface__
+            host_ptr = ctypes.c_void_p(array_info['data'][0])
         else:
-            host_ptr = ctypes.c_void_p(ptr)
+            temp_arr = (ctypes.c_char * size).from_buffer(mv)
+            host_ptr = ctypes.c_void_p(ctypes.addressof(temp_arr))
+            del temp_arr
 
-        # Copy data from pinned memory to GPU using cudaMemcpy
-        if cuda_lib is None:
-            try:
-                cuda_lib = ctypes.CDLL("libcudart.so")
-            except OSError:
-                raise RuntimeError("CUDA runtime library not found")
+        # Register shared memory as pinned memory for CUDA DMA
+        result = _libcudart.cudaHostRegister(host_ptr, size, _cudaHostRegisterDefault)
+        if result == 0:
+            memory_registered_by_me = True
+        elif result != 712:  # CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED is OK
+            # Non-critical error, continue without pinned memory
+            pass
 
-        # Define cudaMemcpy function signature
-        cuda_lib.cudaMemcpy.restype = ctypes.c_int
-        cuda_lib.cudaMemcpy.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
-
-        # Constants
-        cudaMemcpyHostToDevice = 1
-
-        # Get GPU tensor pointer
+        # Copy data from pinned memory to GPU using asynchronous DMA
         gpu_ptr = ctypes.c_void_p(gpu_tensor.data_ptr())
+        stream = ctypes.c_void_p(0)
 
-        # Use synchronous copy for simplicity
-        result = cuda_lib.cudaMemcpy(gpu_ptr, host_ptr, size, cudaMemcpyHostToDevice)
-        if result != 0:
-            raise RuntimeError(f"cudaMemcpy failed with error code {result}")
+        result = _libcudart.cudaStreamCreate(ctypes.byref(stream))
+        if result == 0:
+            # Asynchronous copy with DMA
+            result = _libcudart.cudaMemcpyAsync(
+                gpu_ptr, host_ptr, size, _cudaMemcpyHostToDevice, stream
+            )
+            if result != 0:
+                _libcudart.cudaStreamDestroy(stream)
+                raise RuntimeError(f"cudaMemcpyAsync failed with error code {result}")
+
+            _libcudart.cudaStreamSynchronize(stream)
+            _libcudart.cudaStreamDestroy(stream)
+        else:
+            # Fallback to synchronous copy
+            result = _libcudart.cudaMemcpy(
+                gpu_ptr, host_ptr, size, _cudaMemcpyHostToDevice
+            )
+            if result != 0:
+                raise RuntimeError(f"cudaMemcpy failed with error code {result}")
 
         return gpu_tensor
 
     finally:
-        # Clean up shared memory if opened
+        # Unregister CUDA pinned memory if we registered it
+        if memory_registered_by_me and host_ptr is not None:
+            try:
+                _libcudart.cudaHostUnregister(host_ptr)
+            except:
+                pass  # Ignore errors during cleanup
+
+        # Close shared memory
         if shm is not None:
-            if free_source:
-                # Only close and unlink if we're freeing the source
-                # First, unregister the memory if it was registered
-                if memory_registered and cuda_lib is not None:
-                    try:
-                        # Try to unregister the pinned memory
-                        cuda_lib.cudaHostUnregister.restype = ctypes.c_int
-                        cuda_lib.cudaHostUnregister.argtypes = [ctypes.c_void_p]
-                        result = cuda_lib.cudaHostUnregister(host_ptr)
-                        if result != 0:
-                            print(f"Warning: cudaHostUnregister failed with error code {result}")
-                    except (OSError, AttributeError):
-                        pass  # CUDA runtime not available or function not found
-
-                shm.close()
-                try:
-                    shm.unlink()
-                except FileNotFoundError:
-                    pass
-            else:
-                # Don't close the shared memory, as it's still in use or will be cleaned up by sender
-                # The memory will be automatically cleaned up when the object is garbage collected
-                # But we should at least close it to avoid resource tracker warnings
-                shm.close()
-
-        # Free source pinned memory if requested (old style CUDA pinned memory)
-        # This is for compatibility with old-style CUDA pinned memory (not shared memory)
-        if free_source and is_pinned and buffer_id and not shared_memory_name:
-            # Remove from global dictionary and free memory
-            if buffer_id in _allocated_pinned_memory:
-                ptr_entry, size_entry = _allocated_pinned_memory.pop(buffer_id)
-                # Ensure we're freeing the same pointer (should be)
-                if ptr_entry.value == ptr:
-                    _cuda_free_host(ptr_entry)
-                else:
-                    # This shouldn't happen, but free the given ptr anyway
-                    _cuda_free_host(ctypes.c_void_p(ptr))
-            else:
-                # Buffer ID not found, free using the ptr directly
-                _cuda_free_host(ctypes.c_void_p(ptr))
+            shm.close()

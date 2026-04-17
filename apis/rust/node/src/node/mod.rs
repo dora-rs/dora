@@ -721,12 +721,14 @@ impl DoraNode {
     ///
     /// Returns metadata containing information needed to access the pinned memory
     /// from CUDA, including the pointer, size, dtype, and shape.
+    /// If free is true, the pinned memory will be freed after reading.
     pub fn read_pinned_memory(
         &mut self,
         shared_memory_id: String,
+        free: bool,
     ) -> eyre::Result<Metadata> {
         self.control_channel
-            .read_pinned_memory(shared_memory_id)
+            .read_pinned_memory(shared_memory_id, free)
             .wrap_err("failed to read pinned memory from daemon")
     }
 

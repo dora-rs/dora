@@ -40,6 +40,7 @@ pub enum DaemonRequest {
     },
     ReadPinnedMemory {
         shared_memory_id: String,
+        free: bool,
     },
     FreePinnedMemory {
         shared_memory_id: String,

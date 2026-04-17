@@ -1635,6 +1635,12 @@ impl Daemon {
                         .and_then(|p| String::try_from(p).ok());
                     let buffer_id = metadata.get("buffer_id")
                         .and_then(|p| String::try_from(p).ok());
+                    let allocator_pid = metadata.get("allocator_pid")
+                        .and_then(|p| i64::try_from(p).ok())
+                        .map(|p| p as u32);
+                    let cuda_registered = metadata.get("cuda_registered")
+                        .and_then(|p| bool::try_from(p).ok())
+                        .unwrap_or(is_pinned);
 
                     let pinned_metadata = crate::memory_manager::PinnedMemoryMetadata {
                         ptr,
@@ -1644,6 +1650,8 @@ impl Daemon {
                         is_pinned,
                         shared_memory_name,
                         buffer_id,
+                        allocator_pid,
+                        cuda_registered,
                     };
 
                     self.state.memory_manager.register_pinned_memory(
@@ -1654,11 +1662,18 @@ impl Daemon {
                 })();
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
-            DaemonNodeEvent::ReadPinnedMemory { shared_memory_id, reply_sender } => {
+            DaemonNodeEvent::ReadPinnedMemory { shared_memory_id, free, reply_sender } => {
                 let result = (|| -> Result<metadata::Metadata, String> {
                     let id = memory_manager::PinnedMemoryId { id: shared_memory_id.clone() };
                     let metadata = self.state.memory_manager.read_pinned_memory(&id)
                         .ok_or_else(|| format!("pinned memory with ID {} not found", shared_memory_id))?;
+
+                    // If free is true, free the pinned memory after reading
+                    if free {
+                        if let Err(err) = self.state.memory_manager.free_pinned_memory(&id) {
+                            tracing::warn!("Failed to free pinned memory {} after reading: {}", shared_memory_id, err);
+                        }
+                    }
 
                     // 创建参数映射
                     use dora_message::metadata::{MetadataParameters, Parameter};
@@ -3534,6 +3549,7 @@ pub enum DaemonNodeEvent {
     },
     ReadPinnedMemory {
         shared_memory_id: String,
+        free: bool,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     FreePinnedMemory {
