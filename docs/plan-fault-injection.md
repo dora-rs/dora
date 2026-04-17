@@ -167,7 +167,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 
 ### 3.6 Disk full during recording
 
-**Motivation**: The `record-node` writes `.adorec` files. What if the disk fills up mid-recording?
+**Motivation**: The `record-node` writes `.drec` files. What if the disk fills up mid-recording?
 
 **Setup**:
 1. Mount a small tmpfs (100 MB) for the recording directory
@@ -176,7 +176,7 @@ Each scenario has the form: **Setup → Fault → Expected recovery → Invarian
 
 **Fault**: disk-full error on recording write.
 
-**Expected behavior**: record-node logs an error, stops recording, but does not crash the rest of the dataflow. The other nodes continue running. A partial `.adorec` file should still be readable (valid prefix of records).
+**Expected behavior**: record-node logs an error, stops recording, but does not crash the rest of the dataflow. The other nodes continue running. A partial `.drec` file should still be readable (valid prefix of records).
 
 **Invariant**: a disk-full failure in one node must not affect upstream producers or unrelated consumers.
 

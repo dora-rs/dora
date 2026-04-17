@@ -429,7 +429,7 @@ dora restart a1b2c3d4-... --force
 
 #### `dora record`
 
-Record dataflow messages to an `.adorec` file for offline replay. See [Debugging Guide](debugging.md#record-and-replay) for full workflows.
+Record dataflow messages to a `.drec` file for offline replay. See [Debugging Guide](debugging.md#record-and-replay) for full workflows.
 
 ```
 dora record <DATAFLOW_YAML> [OPTIONS]
@@ -438,7 +438,7 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<DATAFLOW_YAML>` | required | Path to dataflow descriptor |
-| `-o, --output <PATH>` | `recording_{timestamp}.adorec` | Output file path |
+| `-o, --output <PATH>` | `recording_{timestamp}.drec` | Output file path |
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to record |
 | `--proxy` | false | Stream via WebSocket instead of recording on target |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
@@ -447,7 +447,7 @@ Default mode injects a record node into the dataflow. `--proxy` mode requires a 
 
 #### `dora replay`
 
-Replay a recorded `.adorec` file by replacing source nodes with replay nodes. See [Debugging Guide](debugging.md#replaying-a-recording) for full workflows.
+Replay a recorded `.drec` file by replacing source nodes with replay nodes. See [Debugging Guide](debugging.md#replaying-a-recording) for full workflows.
 
 ```
 dora replay <FILE> [OPTIONS]
@@ -455,7 +455,7 @@ dora replay <FILE> [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `<FILE>` | required | Path to `.adorec` recording |
+| `<FILE>` | required | Path to `.drec` recording |
 | `--speed <FLOAT>` | `1.0` | Playback speed (0 = max speed) |
 | `--loop` | false | Loop the recording |
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |

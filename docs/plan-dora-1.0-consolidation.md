@@ -74,11 +74,11 @@ This repo (`dora-rs/adora`) is a Rust-first fork of dora that has accumulated a 
 | `apis/rust/compat/dora-node-api` | **Existing compat shim** — re-exports dora types under dora names. Will be **reversed** in 1.0 |
 | `apis/rust/compat/dora-operator-api` | Same for operator API |
 | `binaries/ros2-bridge-node` | Standalone ROS2 bridge node binary |
-| `binaries/replay-node` | Replays `.adorec` recordings as dataflow sources |
-| `binaries/record-node` | Records dataflow traffic to `.adorec` format |
+| `binaries/replay-node` | Replays `.drec` recordings as dataflow sources |
+| `binaries/record-node` | Records dataflow traffic to `.drec` format |
 | `libraries/log-utils` | Shared logging utilities |
 | `libraries/coordinator-store` | Persistent state backend for coordinator (parameters, daemon state) |
-| `libraries/recording` | `.adorec` format reader/writer |
+| `libraries/recording` | `.drec` format reader/writer |
 | `libraries/shared-memory-server` | Zero-copy IPC, separated from communication-layer |
 | `libraries/extensions/ros2-bridge/arrow` | Arrow-typed message conversion for ROS2 bridge |
 
@@ -222,10 +222,10 @@ This is the canonical source of truth for "what wins" when dora and dora diverge
 | Source tree (`*.rs` files) | **dora wins wholesale** | Superset; cleaner to replace than merge | Where dora has a bug fix dora never received, cherry-pick the fix onto the consolidated tree |
 | Crate names | **dora-* wins** | Brand reclaim is the point of consolidation | dora-* crates published as deprecated re-export shims for 6 months |
 | Binary name | **dora wins** | Same | Ship `dora` as a deprecated symlink in the dora deb/wheel for 1 minor version |
-| File formats (`.adorec` recording, YAML) | **dora wins**, but **dora formats remain readable** | Zero-day breakage for existing dora users is unacceptable | Daemon should read both `.adorec` and old dora recording formats; `dora migrate-yaml` command for config upgrades |
+| File formats (`.drec` recording, YAML) | **dora wins**, but **old dora formats remain readable** | Zero-day breakage for existing dora users is unacceptable | Daemon should read both `.drec` and legacy 0.x recording formats; `dora migrate-yaml` command for config upgrades |
 | Public Rust APIs | **dora wins** | Superset | Every removed/renamed API documented in migration guide with a replacement |
 | Python APIs | **dora wins** | Superset | Same |
-| C / C++ APIs | **dora wins** | Superset | Already has macro-based compat layer in dora (`node_api.h` → see `docs/dora-compatibility.md`) |
+| C / C++ APIs | **dora wins** | Superset | Already has macro-based compat layer in dora (`node_api.h` → see `docs/migration-from-0.x.md`) |
 | Wire protocol | **dora wins**, but **see Decision Point D-1** | Needs dedicated audit | May require a 0.9 bridge release that speaks both |
 | Tests | **Union** | dora tests encode years of user-reported bug signal | If a dora test fails on dora tree, fix dora's implementation, do not delete the test |
 | Examples | **Union, dora-superset** | dora examples are tutorials users may have bookmarked | Port dora examples that don't exist in dora; update dora-branded examples in place |
@@ -364,7 +364,7 @@ Iterate until all four are green.
 4. **Update** `send_output` to publish via zenoh when data ≥ threshold.
 5. **Update** `apis/rust/node/src/event_stream/data_conversion.rs` to add `RawData::ZenohShm(ZShm)`.
 6. **Update** `libraries/core/src/topics.rs` with zenoh topic helpers.
-7. **Add** recording support by copying `ZShm` data at the record-node level (the PR skips this; we must restore it because dora has `.adorec` support that upstream doesn't).
+7. **Add** recording support by copying `ZShm` data at the record-node level (the PR skips this; we must restore it because dora has `.drec` support that upstream doesn't).
 8. **Keep the 4KB threshold** for small messages — they continue via the existing TCP control path (per `plan-zenoh-shared-memory.md` recommendation).
 9. **Handle memlock gracefully** with a fallback + warning for `dora run` local dev.
 10. **Pre-warm the zenoh session** during node init to avoid the 16× first-message latency spike.
@@ -461,7 +461,7 @@ Iterate until all four are green.
 | R-14 | Merge commit confuses `git blame` or breaks third-party tooling | Low | Low | Documented in README; `--first-parent` works |
 | R-15 | Zenoh SHM migration (Phase 3b) regresses latency on small messages | Medium | Medium | Keep 4KB threshold; messages below it continue via existing TCP path; benchmark regression gate blocks release if p99 drops |
 | R-16 | Zenoh SHM `unstable` API breaks in a future zenoh release | Low (6-12 months) | Medium | Pin to `~1.8`; monitor zenoh releases; CI nightly rebuild against zenoh's main branch as early-warning |
-| R-17 | Zenoh SHM recording (`.adorec`) support not finished before release | Medium | High | Phase 3b explicitly includes recording support via a ZShm → Vec<u8> copy at record-node level; gate the release on `examples/validated-pipeline` recording end-to-end test passing |
+| R-17 | Zenoh SHM recording (`.drec`) support not finished before release | Medium | High | Phase 3b explicitly includes recording support via a ZShm → Vec<u8> copy at record-node level; gate the release on `examples/validated-pipeline` recording end-to-end test passing |
 
 ---
 
@@ -1110,7 +1110,7 @@ Before starting Phase 0, close these gaps:
 ## 20. Related documents
 
 - [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) — Quality and testing strategy that backs this consolidation. **Must-read companion.**
-- [`dora-compatibility.md`](dora-compatibility.md) — Existing dora→dora compat layer documentation. Will be renamed and inverted as part of Phase 2.
+- [`migration-from-0.x.md`](migration-from-0.x.md) — 0.x → 1.0 migration guide. Renamed from `dora-compatibility.md` and inverted per plan §3.5 (2026-04-16).
 - [`audit-report-2026-03-21.md`](audit-report-2026-03-21.md) — Dora technical debt inventory. Criticals must be closed before 1.0.
 - [`architecture.md`](architecture.md) — System architecture reference.
 - [`testing-guide.md`](testing-guide.md) — Current test infrastructure.

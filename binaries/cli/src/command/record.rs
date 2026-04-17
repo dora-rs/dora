@@ -10,7 +10,7 @@ use crate::command::{Executable, Run, default_tracing};
 /// Record dataflow messages to a file for offline replay.
 ///
 /// Injects a record node into the dataflow that captures all (or filtered)
-/// topic data and writes it to an `.adorec` recording file.
+/// topic data and writes it to a `.drec` recording file.
 ///
 /// Examples:
 ///
@@ -21,7 +21,7 @@ use crate::command::{Executable, Run, default_tracing};
 ///     dora record dataflow.yml --topics sensor/image,lidar/points
 ///
 ///   Specify output file:
-///     dora record dataflow.yml -o capture.adorec
+///     dora record dataflow.yml -o capture.drec
 ///
 ///   Just generate the modified YAML:
 ///     dora record dataflow.yml --output-yaml modified.yml
@@ -35,7 +35,7 @@ pub struct Record {
     #[clap(value_name = "DATAFLOW_YAML")]
     file: String,
 
-    /// Output recording file (default: recording_{timestamp}.adorec)
+    /// Output recording file (default: recording_{timestamp}.drec)
     #[clap(short, long, value_name = "PATH")]
     output: Option<String>,
 
@@ -138,7 +138,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         Some(p) => p.clone(),
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            format!("recording_{ts}.adorec")
+            format!("recording_{ts}.drec")
         }
     };
     let cwd = std::env::current_dir().wrap_err("failed to get current directory")?;
@@ -275,7 +275,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         }
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            format!("recording_{ts}.adorec")
+            format!("recording_{ts}.drec")
         }
     };
 

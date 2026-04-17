@@ -10,7 +10,7 @@ pip install dora-rs              # Python node/operator API
 ## From source
 
 ```bash
-git clone https://github.com/dora-rs/adora.git
+git clone https://github.com/dora-rs/dora.git
 cd dora
 cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
@@ -26,13 +26,13 @@ cd apis/python/node && maturin develop --uv && cd ../../..
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
+  https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows:**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ## Build features

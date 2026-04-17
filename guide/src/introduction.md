@@ -31,7 +31,7 @@
 
 ### Debugging and Observability
 
-- **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution
+- **Record/replay** -- capture dataflow messages to `.drec` files, replay offline at any speed with node substitution
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
 - **Resource monitoring** -- `dora top` TUI showing per-node CPU, memory, queue depth, network I/O across all machines
 - **Log aggregation** -- subscribe to `dora/logs` to receive structured log messages from all nodes without extra wiring

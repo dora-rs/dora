@@ -238,11 +238,11 @@ jobs:
           # recording written to the specified output path.
           # Nodes are pre-built above so the 30s timeout covers only runtime.
           # Don't swallow errors (no `|| true`) — real failures should surface.
-          timeout 30s dora record examples/rust-dataflow/dataflow.yml -o run.adorec
-          test -f run.adorec || { echo "record did not produce run.adorec"; exit 1; }
-          echo "recording size: $(wc -c < run.adorec) bytes"
+          timeout 30s dora record examples/rust-dataflow/dataflow.yml -o run.drec
+          test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
+          echo "recording size: $(wc -c < run.drec) bytes"
       - name: Replay
-        run: dora replay run.adorec
+        run: dora replay run.drec
 
   cluster-smoke:
     # Smoke-tests the cluster lifecycle commands that don't require SSH:

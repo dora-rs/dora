@@ -195,8 +195,8 @@ def build_translations():
         "**容错机制** -- 每节点重启策略、指数退避、健康监测、熔断器"
     t["**Distributed by default** -- local shared memory between co-located nodes, automatic Zenoh pub-sub across machines"] = \
         "**天然分布式** -- 同机节点间共享内存，跨机自动 Zenoh 发布/订阅"
-    t["**Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed"] = \
-        "**录制/回放** -- 将数据流消息捕获到 `.adorec` 文件，可以任意速度离线回放"
+    t["**Record/replay** -- capture dataflow messages to `.drec` files, replay offline at any speed"] = \
+        "**录制/回放** -- 将数据流消息捕获到 `.drec` 文件，可以任意速度离线回放"
     t["**Built-in observability** -- `dora top` TUI, topic inspection, trace viewing, structured logging with rotation"] = \
         "**内置可观测性** -- `dora top` TUI 监控、主题检查、追踪查看、结构化日志轮转"
     # v0.2 additions to introduction

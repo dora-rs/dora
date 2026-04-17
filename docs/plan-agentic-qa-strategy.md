@@ -522,7 +522,7 @@ Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>(
 
 5. **Shared-memory framing.** Property: "any sequence of `write_frame(random_bytes)` followed by `read_frame` returns the same bytes."
 
-6. **`.adorec` recording format.** Property: "recording any finite event stream and replaying it produces the same event stream."
+6. **`.drec` recording format.** Property: "recording any finite event stream and replaying it produces the same event stream."
 
 **Setup:** add `proptest = "1.5"` to dev-dependencies of target crates. Write the property test files. No CI config changes — proptest runs under `cargo test` automatically. Control budget with `PROPTEST_CASES=1000` in the nightly job.
 
@@ -540,7 +540,7 @@ Concrete example from the POC (commit `28c99b3`, `ws_protocol.rs`): `any::<f64>(
 2. `fuzz/fuzz_targets/ws_protocol.rs` — decode arbitrary bytes as a WebSocket control plane frame.
 3. `fuzz/fuzz_targets/topic_data_frame.rs` — decode the `[16-byte UUID][bincode payload]` binary topic frame.
 4. `fuzz/fuzz_targets/shared_memory_frame.rs` — parse shared-memory frame headers.
-5. `fuzz/fuzz_targets/recording_format.rs` — parse `.adorec` files.
+5. `fuzz/fuzz_targets/recording_format.rs` — parse `.drec` files.
 6. `fuzz/fuzz_targets/arrow_ingest.rs` — convert arbitrary bytes to an Arrow RecordBatch.
 7. `fuzz/fuzz_targets/daemon_message.rs` — deserialize arbitrary bytes as any `DaemonToCoordinator` variant.
 

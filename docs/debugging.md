@@ -108,7 +108,7 @@ dora trace view <trace-id-prefix>
 dora graph dataflow.yml --open
 
 # 13. Record for offline analysis
-dora record dataflow.yml -o debug-capture.adorec
+dora record dataflow.yml -o debug-capture.drec
 ```
 
 ---
@@ -120,14 +120,14 @@ Record captures live dataflow messages to a file. Replay substitutes source node
 ### Recording a Dataflow
 
 ```bash
-# Record all topics (default output: recording_{timestamp}.adorec)
+# Record all topics (default output: recording_{timestamp}.drec)
 dora record dataflow.yml
 
 # Specify output file
-dora record dataflow.yml -o my-capture.adorec
+dora record dataflow.yml -o my-capture.drec
 ```
 
-This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to an `.adorec` file. The record node binary (`dora-record-node`) is auto-built on first use.
+This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file. The record node binary (`dora-record-node`) is auto-built on first use.
 
 The recording runs until you press Ctrl-C or the dataflow stops.
 
@@ -149,7 +149,7 @@ When the target machine has no local disk or you want to record on your local ma
 dora start dataflow.yml --detach
 
 # Record via WebSocket proxy -- data streams through coordinator to CLI
-dora record dataflow.yml --proxy -o capture.adorec
+dora record dataflow.yml --proxy -o capture.drec
 
 # Record specific topics via proxy
 dora record dataflow.yml --proxy --topics sensor/image,lidar/points
@@ -160,7 +160,7 @@ How proxy mode works:
 2. The CLI connects to the coordinator via WebSocket
 3. The coordinator subscribes to Zenoh on the CLI's behalf
 4. Message data streams through WebSocket binary frames to the CLI
-5. The CLI writes the `.adorec` file locally
+5. The CLI writes the `.drec` file locally
 
 This requires `enable_debug_inspection: true` in the descriptor.
 
@@ -178,17 +178,17 @@ This requires `enable_debug_inspection: true` in the descriptor.
 
 ```bash
 # Replay at original speed
-dora replay recording.adorec
+dora replay recording.drec
 
 # Replay at 2x speed
-dora replay recording.adorec --speed 2.0
+dora replay recording.drec --speed 2.0
 
 # Replay as fast as possible (speed 0)
-dora replay recording.adorec --speed 0
+dora replay recording.drec --speed 0
 ```
 
 Replay works by:
-1. Reading the `.adorec` file header to get the original dataflow descriptor
+1. Reading the `.drec` file header to get the original dataflow descriptor
 2. Identifying which nodes produced the recorded data
 3. Replacing those source nodes with `dora-replay-node` instances
 4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
@@ -210,10 +210,10 @@ Replace only specific source nodes while keeping others live:
 
 ```bash
 # Only replace the sensor node, keep camera live
-dora replay recording.adorec --replace sensor
+dora replay recording.drec --replace sensor
 
 # Replace sensor and lidar, keep everything else live
-dora replay recording.adorec --replace sensor,lidar
+dora replay recording.drec --replace sensor,lidar
 ```
 
 This is useful when you want to debug a specific processing pipeline with known input data while keeping other parts of the system live.
@@ -227,12 +227,12 @@ Both record and replay support `--output-yaml` to see the modified descriptor wi
 dora record dataflow.yml --output-yaml record-modified.yml
 
 # See what the replay-modified descriptor looks like
-dora replay recording.adorec --output-yaml replay-modified.yml
+dora replay recording.drec --output-yaml replay-modified.yml
 ```
 
 ### Recording File Format
 
-The `.adorec` format is a simple binary file:
+The `.drec` format is a simple binary file:
 
 ```
 ┌──────────────────────────────────┐
@@ -672,10 +672,10 @@ dora graph dataflow.yml --open
 dora topic echo -d my-dataflow node/output --format json
 
 # 2. Record for offline analysis
-dora record dataflow.yml -o debug.adorec
+dora record dataflow.yml -o debug.drec
 
 # 3. Replay with known input to isolate the issue
-dora replay debug.adorec --replace sensor --speed 0
+dora replay debug.drec --replace sensor --speed 0
 ```
 
 ### Workflow 3: Performance Issues
@@ -691,8 +691,8 @@ dora topic hz -d my-dataflow --window 10
 dora topic info -d my-dataflow heavy-node/output --duration 10
 
 # 4. Record and replay at max speed to find throughput limits
-dora record dataflow.yml -o perf.adorec
-dora replay perf.adorec --speed 0
+dora record dataflow.yml -o perf.drec
+dora replay perf.drec --speed 0
 ```
 
 ### Workflow 4: Reproducing a Field Issue
@@ -700,12 +700,12 @@ dora replay perf.adorec --speed 0
 ```bash
 # On the robot / target machine:
 dora start dataflow.yml --detach
-dora record dataflow.yml --proxy -o field-capture.adorec
+dora record dataflow.yml --proxy -o field-capture.drec
 
-# Transfer the .adorec file to your workstation, then:
-dora replay field-capture.adorec
-dora replay field-capture.adorec --speed 0.5  # slow motion
-dora replay field-capture.adorec --loop        # continuous replay
+# Transfer the .drec file to your workstation, then:
+dora replay field-capture.drec
+dora replay field-capture.drec --speed 0.5  # slow motion
+dora replay field-capture.drec --loop        # continuous replay
 ```
 
 ### Workflow 5: Remote Debugging (No Direct Access)
@@ -719,7 +719,7 @@ dora top
 dora logs my-dataflow --all-nodes --follow
 dora topic echo -d my-dataflow node/output
 dora topic hz -d my-dataflow
-dora record dataflow.yml --proxy -o remote-capture.adorec
+dora record dataflow.yml --proxy -o remote-capture.drec
 ```
 
 ---

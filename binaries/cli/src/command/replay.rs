@@ -11,7 +11,7 @@ use eyre::{Context, bail};
 
 use crate::command::{Executable, Run};
 
-/// Replay a recorded dataflow from an `.adorec` file.
+/// Replay a recorded dataflow from a `.drec` file.
 ///
 /// Reads a recording, identifies which nodes produced the recorded data,
 /// replaces them with replay nodes, and runs the modified dataflow.
@@ -20,23 +20,23 @@ use crate::command::{Executable, Run};
 /// Examples:
 ///
 ///   Replay at original speed:
-///     dora replay recording.adorec
+///     dora replay recording.drec
 ///
 ///   Replay at 2x speed:
-///     dora replay recording.adorec --speed 2.0
+///     dora replay recording.drec --speed 2.0
 ///
 ///   Replay as fast as possible:
-///     dora replay recording.adorec --speed 0
+///     dora replay recording.drec --speed 0
 ///
 ///   Only replace specific nodes:
-///     dora replay recording.adorec --replace sensor,camera
+///     dora replay recording.drec --replace sensor,camera
 ///
 ///   Just generate the modified YAML:
-///     dora replay recording.adorec --output-yaml modified.yml
+///     dora replay recording.drec --output-yaml modified.yml
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Replay {
-    /// Path to the `.adorec` recording file
+    /// Path to the `.drec` recording file
     #[clap(value_name = "FILE")]
     file: String,
 
@@ -68,7 +68,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     let file = File::open(&args.file).wrap_err_with(|| {
         format!(
             "failed to open recording file `{}`\n\n  \
-             hint: check the path is correct. Recording files have the `.adorec` extension",
+             hint: check the path is correct. Recording files have the `.drec` extension",
             args.file
         )
     })?;

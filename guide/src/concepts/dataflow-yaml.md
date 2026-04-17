@@ -74,7 +74,7 @@ Example with git source:
 
 ```yaml
 - id: rust-node
-  git: https://github.com/dora-rs/adora.git
+  git: https://github.com/dora-rs/dora.git
   branch: main
   build: cargo build -p example-node --release
   path: target/release/example-node

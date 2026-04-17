@@ -53,7 +53,7 @@
 
 ### Debugging and observability
 
-- **Record/replay** -- capture dataflow messages to `.adorec` files, replay offline at any speed with node substitution for regression testing
+- **Record/replay** -- capture dataflow messages to `.drec` files, replay offline at any speed with node substitution for regression testing
 - **Topic inspection** -- `topic echo` to print live data, `topic hz` TUI for frequency analysis, `topic info` for schema and bandwidth
 - **Resource monitoring** -- `dora top` TUI showing per-node CPU, memory, queue depth, network I/O, restart count, and health status across all machines; `--once` flag for scriptable JSON snapshots
 - **Trace inspection** -- `trace list` and `trace view` for viewing coordinator spans without external infrastructure
@@ -78,7 +78,7 @@ pip install dora-rs              # Python node/operator API
 ### From source
 
 ```bash
-git clone https://github.com/dora-rs/adora.git
+git clone https://github.com/dora-rs/dora.git
 cd dora
 cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
@@ -94,13 +94,13 @@ cd apis/python/node && maturin develop --uv && cd ../../..
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
+  https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows:**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### Build features
@@ -127,7 +127,7 @@ cargo install dora-cli --features redb-backend
 ```bash
 cargo install dora-cli            # or use install script below
 pip install dora-rs numpy pyarrow
-git clone https://github.com/dora-rs/adora.git && cd dora
+git clone https://github.com/dora-rs/dora.git && cd dora
 dora run examples/python-dataflow/dataflow.yml
 ```
 
@@ -242,8 +242,8 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `dora param delete <NODE> <KEY>` | Delete a runtime parameter |
 | `dora trace list` | List recent traces captured by the coordinator |
 | `dora trace view <ID>` | View spans for a specific trace (supports prefix matching) |
-| `dora record <PATH>` | Record dataflow messages to `.adorec` file |
-| `dora replay <FILE>` | Replay recorded messages from `.adorec` file |
+| `dora record <PATH>` | Record dataflow messages to `.drec` file |
+| `dora replay <FILE>` | Replay recorded messages from `.drec` file |
 
 ### Cluster management
 
@@ -379,7 +379,7 @@ libraries/
   message/              # Inter-component message types
   shared-memory-server/ # Zero-copy IPC
   arrow-convert/        # Arrow data conversion
-  recording/            # .adorec recording format
+  recording/            # .drec recording format
   log-utils/            # Log parsing, merging, formatting
   coordinator-store/    # Persistent coordinator state (redb)
   extensions/

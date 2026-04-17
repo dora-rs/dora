@@ -13,7 +13,7 @@ body = """
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | upper_first }}
 {% for commit in commits %}
-- {{ commit.message | split(pat="\n") | first | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/dora-rs/adora/commit/{{ commit.id }}))
+- {{ commit.message | split(pat="\n") | first | upper_first }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/dora-rs/dora/commit/{{ commit.id }}))
 {%- endfor %}
 {% endfor %}\n
 """

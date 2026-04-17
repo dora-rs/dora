@@ -1,5 +1,5 @@
 # Install the Dora CLI binary from GitHub Releases.
-# Usage: powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
+# Usage: powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 
 $ErrorActionPreference = "Stop"
 

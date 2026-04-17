@@ -45,7 +45,7 @@
           meta = {
             description = "Making robotic applications fast and simple!";
             homepage = "https://dora-rs.ai/";
-            changelog = "https://github.com/dora-rs/adora/blob/main/Changelog.md";
+            changelog = "https://github.com/dora-rs/dora/blob/main/Changelog.md";
             license = pkgs.lib.licenses.asl20;
           };
         };

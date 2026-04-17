@@ -39,8 +39,8 @@ All crates share the workspace version.
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
 | `binaries/runtime` | dora-runtime | In-process operator execution (Python/C/C++ via dlopen/PyO3) |
 | `binaries/ros2-bridge-node` | dora-ros2-bridge-node | ROS2 integration node |
-| `binaries/record-node` | dora-record-node | Records dataflow messages to `.adorec` format |
-| `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.adorec` files |
+| `binaries/record-node` | dora-record-node | Records dataflow messages to `.drec` format |
+| `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.drec` files |
 
 ### Core Libraries (6)
 
@@ -49,7 +49,7 @@ All crates share the workspace version.
 | `libraries/message` | dora-message | All inter-component message types, protocol definitions, Arrow metadata |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for messages >= 4 KiB |
-| `libraries/recording` | dora-recording | Recording format (.adorec): bincode header + entries + footer |
+| `libraries/recording` | dora-recording | Recording format (.drec): bincode header + entries + footer |
 | `libraries/arrow-convert` | dora-arrow-convert | Arrow type conversions (numeric, datetime) |
 | `libraries/coordinator-store` | dora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |
 
@@ -90,7 +90,7 @@ The `dora` command provides three command groups:
 **Monitoring** (list, logs, inspect, topic, node, record, replay, trace):
 - Real-time inspection with `dora inspect top`
 - Topic subscription and data inspection
-- Recording and replay via `.adorec` files
+- Recording and replay via `.drec` files
 
 **Setup** (status, new, graph, system, completion, self):
 - Project scaffolding, dataflow visualization, self-update
@@ -688,7 +688,7 @@ _unstable_deploy:
 
 ## Recording and Replay
 
-### .adorec Binary Format
+### .drec Binary Format
 
 ```
 [HEADER]
@@ -857,4 +857,4 @@ pub enum NodeStatus {
 | Daemon ↔ Node (TCP) | bincode over length-prefixed frames | 8-byte LE length prefix |
 | Daemon ↔ Node (shmem) | bincode via shared memory | Atomic synchronization |
 | Daemon ↔ Daemon | bincode over Zenoh | Apache Arrow data format |
-| Recording | bincode entries in .adorec | Custom binary container |
+| Recording | bincode entries in .drec | Custom binary container |

@@ -228,13 +228,13 @@ Stream dataflow data through WebSocket for local recording.
 dora start dataflow.yml --detach
 
 # Record via proxy (data streams through coordinator to CLI)
-dora record dataflow.yml --proxy -o capture.adorec
+dora record dataflow.yml --proxy -o capture.drec
 
 # Record specific topics
 dora record dataflow.yml --proxy --topics sensor/image,lidar/points
 ```
 
-Use case: the target machine (running the daemon) has no local disk or limited storage. The `--proxy` flag routes data through the coordinator WebSocket to the CLI machine, where the `.adorec` file is written locally.
+Use case: the target machine (running the daemon) has no local disk or limited storage. The `--proxy` flag routes data through the coordinator WebSocket to the CLI machine, where the `.drec` file is written locally.
 
 Without `--proxy` (default), a record node is injected into the dataflow and records directly on the daemon's machine.
 

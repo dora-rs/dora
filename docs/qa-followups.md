@@ -148,7 +148,7 @@ Substantial work items. Each has a full spec ready to pick up.
   2. `fuzz/fuzz_targets/ws_protocol.rs` — `WsMessage` JSON deserialization
   3. `fuzz/fuzz_targets/topic_data_frame.rs` — WebSocket binary frame decode
   4. `fuzz/fuzz_targets/shared_memory_frame.rs` — shmem frame header parsing
-  5. `fuzz/fuzz_targets/recording_format.rs` — `.adorec` reader
+  5. `fuzz/fuzz_targets/recording_format.rs` — `.drec` reader
   6. `fuzz/fuzz_targets/arrow_ingest.rs` — Arrow RecordBatch from arbitrary bytes
   7. `fuzz/fuzz_targets/daemon_message.rs` — `DaemonToCoordinator` deserialize
 - **Run cadence**: nightly with `cargo fuzz run <target> -- -max_total_time=600` per target

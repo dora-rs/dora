@@ -106,7 +106,7 @@ The performance gains are compelling (35% lower latency, 3-10x throughput for ro
 
 Add a recording interceptor that copies shmem data before it's consumed:
 - Record-node subscribes to the same zenoh topics
-- Copies `ZShm` to `Vec<u8>` for `.adorec` file
+- Copies `ZShm` to `Vec<u8>` for `.drec` file
 - No change to normal data path (recording is a subscriber like any other)
 
 ### Phase 3: Control Channel Migration (Optional, v0.3+)

@@ -13,4 +13,4 @@ after = ["links"]
 
 [output.html]
 git-repository-url = "https://github.com/dora-rs/dora"
-edit-url-template = "https://github.com/dora-rs/adora/edit/main/guide/{path}"
+edit-url-template = "https://github.com/dora-rs/dora/edit/main/guide/{path}"

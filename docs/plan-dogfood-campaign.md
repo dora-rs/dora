@@ -87,7 +87,7 @@ Alternative if only one machine is available: run both daemons on the same host 
 
 - **`camera_sim`**: generates synthetic RGB frames (640x480x3 = 921600 bytes, padded to 2 MB for realism) with a deterministic pattern that lets downstream nodes detect corruption. Frame number embedded in the first 16 bytes.
 - **Detection**: `vision_infer` runs a real ONNX model (not a mock). Use a small YOLO variant or similar — purpose is to exercise real Python->Rust data handoff, not to benchmark AI.
-- **Recording**: `.adorec` recording enabled for the first hour and the last hour. Tests that the recording format survives long-running operation and that the record-node doesn't leak memory.
+- **Recording**: `.drec` recording enabled for the first hour and the last hour. Tests that the recording format survives long-running operation and that the record-node doesn't leak memory.
 
 ## 4. Monitoring
 

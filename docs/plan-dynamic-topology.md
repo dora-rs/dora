@@ -115,7 +115,7 @@ dora node disconnect <dataflow> <source/output> <target/input>
 ## Risks
 
 - **Descriptor becomes stale**: `RunningDataflow.descriptor` won't reflect dynamic changes. Accept for now (it's "initial topology").
-- **Recording**: `.adorec` header won't include dynamic nodes. Document as limitation.
+- **Recording**: `.drec` header won't include dynamic nodes. Document as limitation.
 - **Restart behavior**: `dora restart <dataflow>` should only restart original descriptor nodes. Dynamic nodes are caller's responsibility.
 - **No message replay**: New nodes miss messages sent before they joined. Same as Zenoh late-subscribe behavior.
 

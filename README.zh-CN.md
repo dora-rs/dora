@@ -48,7 +48,7 @@
 
 ### 调试与可观测性
 
-- **录制/回放** -- 将数据流消息捕获到 `.adorec` 文件，支持以任意速度离线回放并替换节点，用于回归测试
+- **录制/回放** -- 将数据流消息捕获到 `.drec` 文件，支持以任意速度离线回放并替换节点，用于回归测试
 - **主题检查** -- `topic echo` 打印实时数据，`topic hz` TUI 进行频率分析，`topic info` 查看 schema 和带宽
 - **资源监控** -- `dora top` TUI 显示所有机器上每个节点的 CPU、内存、队列深度、网络 I/O、重启次数和健康状态；`--once` 标志可输出可脚本化的 JSON 快照
 - **追踪检查** -- `trace list` 和 `trace view` 无需外部基础设施即可查看协调器 span
@@ -73,7 +73,7 @@ pip install dora-rs              # Python 节点/算子 API
 ### 从源码构建
 
 ```bash
-git clone https://github.com/dora-rs/adora.git
+git clone https://github.com/dora-rs/dora.git
 cd dora
 cargo build --release -p dora-cli
 PATH=$PATH:$(pwd)/target/release
@@ -89,13 +89,13 @@ maturin develop -m apis/python/operator/Cargo.toml
 
 ```bash
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
+  https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 ```
 
 **Windows：**
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.ps1 | iex"
 ```
 
 ### 构建特性
@@ -119,7 +119,7 @@ cargo install dora-cli --features redb-backend
 ```bash
 cargo install dora-cli            # 或使用下方安装脚本
 pip install dora-rs
-git clone https://github.com/dora-rs/adora.git && cd dora
+git clone https://github.com/dora-rs/dora.git && cd dora
 dora run examples/python-dataflow/dataflow.yml
 ```
 
@@ -222,8 +222,8 @@ dora cluster down
 | `dora node list` | 列出数据流中的节点 |
 | `dora trace list` | 列出协调器捕获的最近追踪 |
 | `dora trace view <ID>` | 查看特定追踪的 span（支持前缀匹配） |
-| `dora record <PATH>` | 将数据流消息录制到 `.adorec` 文件 |
-| `dora replay <FILE>` | 从 `.adorec` 文件回放录制的消息 |
+| `dora record <PATH>` | 将数据流消息录制到 `.drec` 文件 |
+| `dora replay <FILE>` | 从 `.drec` 文件回放录制的消息 |
 
 ### 集群管理
 
@@ -326,7 +326,7 @@ libraries/
   message/              # 组件间消息类型
   shared-memory-server/ # 零拷贝 IPC
   arrow-convert/        # Arrow 数据转换
-  recording/            # .adorec 录制格式
+  recording/            # .drec 录制格式
   log-utils/            # 日志解析、合并、格式化
   coordinator-store/    # 持久化协调器状态（redb）
   extensions/

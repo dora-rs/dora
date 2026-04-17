@@ -9,7 +9,7 @@ Get a dataflow running in 5 minutes.
 cargo install dora-cli --locked
 ```
 
-Or download a prebuilt binary from [GitHub Releases](https://github.com/dora-rs/adora/releases).
+Or download a prebuilt binary from [GitHub Releases](https://github.com/dora-rs/dora/releases).
 
 **Python node API** (optional):
 ```bash

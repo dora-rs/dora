@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Install the Dora CLI binary from GitHub Releases.
-# Usage: curl -fsSL https://github.com/dora-rs/adora/releases/latest/download/dora-cli-installer.sh | sh
+# Usage: curl -fsSL https://github.com/dora-rs/dora/releases/latest/download/dora-cli-installer.sh | sh
 
 set -eu
 

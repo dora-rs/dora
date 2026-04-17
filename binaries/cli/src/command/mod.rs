@@ -112,7 +112,7 @@ pub enum Command {
     /// Record dataflow messages to a file for offline replay
     #[clap(display_order = 16)]
     Record(Record),
-    /// Replay a recorded dataflow from a `.adorec` file
+    /// Replay a recorded dataflow from a `.drec` file
     #[clap(display_order = 17)]
     Replay(Replay),
     /// View coordinator tracing spans
@@ -508,7 +508,7 @@ mod tests {
 
     #[test]
     fn parse_record_with_output() {
-        parse_ok(&["dora", "record", "dataflow.yml", "-o", "capture.adorec"]);
+        parse_ok(&["dora", "record", "dataflow.yml", "-o", "capture.drec"]);
     }
 
     #[test]
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn parse_replay() {
-        parse_ok(&["dora", "replay", "recording.adorec"]);
+        parse_ok(&["dora", "replay", "recording.drec"]);
     }
 
     #[test]
@@ -548,7 +548,7 @@ mod tests {
         parse_ok(&[
             "dora",
             "replay",
-            "recording.adorec",
+            "recording.drec",
             "--speed",
             "2.0",
             "--loop",
@@ -562,7 +562,7 @@ mod tests {
         parse_ok(&[
             "dora",
             "replay",
-            "recording.adorec",
+            "recording.drec",
             "--output-yaml",
             "modified.yml",
         ]);
