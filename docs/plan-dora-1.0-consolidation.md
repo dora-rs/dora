@@ -240,7 +240,7 @@ This is the canonical source of truth for "what wins" when dora and dora diverge
 | Axis | Rule | Rationale | Exceptions |
 |---|---|---|---|
 | Source tree (`*.rs` files) | **dora wins wholesale** | Superset; cleaner to replace than merge | Where dora has a bug fix dora never received, cherry-pick the fix onto the consolidated tree |
-| Crate names | **dora-* wins** | Brand reclaim is the point of consolidation | dora-* crates published as deprecated re-export shims for 6 months |
+| Crate names | **dora-* wins** | Brand reclaim is the point of consolidation | No crate-name transition required: upstream already used `dora-*` names on crates.io; fork never published `adora-*` crates (verified 2026-04-17). Only PyPI transition needed — `adora-rs 0.3.0` deprecated shim ships at Phase 5c pointing at `dora-rs 1.0.0`. |
 | Binary name | **dora wins** | Same | Ship `dora` as a deprecated symlink in the dora deb/wheel for 1 minor version |
 | File formats (`.drec` recording, YAML) | **dora wins**; 1.0 is a hard break (#297) | No production users identified (`docs/downstream-user-assessment-2026-04-16.md`); cost of backward-compat format readers + `migrate-yaml` tooling outweighs value | Manual rename `capture.adorec → capture.drec`; no format-compat shim, no `dora migrate-yaml` command; migration guide documents manual YAML field updates |
 | Public Rust APIs | **dora wins** | Superset | Every removed/renamed API documented in migration guide with a replacement |
@@ -392,31 +392,32 @@ Landing sequence:
 
 **1.1 follow-up** (unchanged from original D-7c rationale): migrate the 4 local control channels to zenoh too; delete `shared-memory-server` entirely; drop `raw_sync_2` pinned fork dep; close the miri coverage gap fully. Tracked in `plan-zenoh-shared-memory.md` Phase 3.
 
-### Phase 4: Compat layer (2 days)
+### Phase 4: Compat layer (0.5 day)
 
-> **Scope correction (2026-04-16 review):** the "invert the compat direction" framing assumed `apis/rust/compat/dora-node-api` already existed. It does not — neither in `dora-fork` nor in `dora-upstream`. Phase 4 task 1 has been rewritten as "create" rather than "invert". Re-estimate the 2-day budget accordingly.
+> **Scope correction (2026-04-17 review):** the original plan assumed three compat surfaces were needed — Rust crate-name shims on crates.io, a `dora::compat::v0` Rust module, and a PyPI shim. Re-verification against published registries and the fork's actual public API cut the scope to one real item.
+>
+> - **No Rust crate-name shims needed.** `adora-*` crates were never published to crates.io (verified 2026-04-17 via `curl https://crates.io/api/v1/crates/adora-*` — all 404). The fork's local crate names exist only inside the fork's own workspace; nobody outside the fork ever depended on `adora-rs` / `adora-node-api` / `adora-cli` as a crates.io name. Upstream's `dora-*` names win by default, and there is no downstream Rust user to shim for.
+> - **No `dora::compat::v0` module needed.** The fork is a strict public-API superset of upstream (verified during Phase 1 merge — every `pub` symbol from upstream `dora-node-api` / `dora-operator-api` is present in the fork with identical signatures). Fork-era POC additions are new surface, not renames of old surface. A 0.x user upgrading to 1.0 by bumping their `dora-node-api` dep to `1.0.0` gets the upstream surface they already depended on, plus the fork extensions as net-new APIs.
+> - **PyPI shim IS needed.** `adora-rs 0.2.1` was published to PyPI during the fork era (verified 2026-04-17 at https://pypi.org/project/adora-rs/). That is the one real compat target.
+>
+> This collapses Phase 4 from 2 days to ~0.5 day.
 
 **Tasks:**
-1. **Create `apis/rust/compat/`** with `dora-node-api` and `dora-operator-api` crates under it. Each is a thin `pub use dora_node_api::*;` (respectively `dora_operator_api::*;`) with a crate-level `#[deprecated(since = "0.3.0", note = "renamed to dora-node-api for 1.0")]`. Publish as dora-*  0.3.x shim crates to crates.io. This is net-new code, not a directory rename.
-2. **Final dora-* shim crates for crates.io.** Publish `dora-cli 0.3.0`, `dora-node-api 0.3.0`, `dora-operator-api 0.3.0`, etc. as thin wrappers around `dora-* 1.0.0`. Each crate's `lib.rs`:
-   ```rust
-   #![deprecated(
-       since = "0.3.0",
-       note = "dora has been consolidated into dora 1.0. \
-               Use `dora-node-api` instead. See migration guide: \
-               https://dora-rs.ai/docs/migration-from-dora"
-   )]
-   pub use dora_node_api::*;
-   ```
-3. **PyPI shim**: `dora-rs 0.3.0` depends on `dora-rs>=1.0.0`, re-exports `from dora import *` in its `__init__.py`, emits a `DeprecationWarning` on import. Maintain for 6 months.
-4. **dora 0.x to 1.0 compat shims** (the more important direction):
-   - For each dora 0.x API that changed in 1.0, provide a `dora::compat::v0` module with the old signature marked `#[deprecated]`, wrapping the new implementation.
-   - Start with the top 10 most-used dora 0.x APIs (determined by downstream-user grep).
-   - Remove in 1.1.0.
-5. ~~**YAML descriptor compat**: daemon reads dora 0.x YAML with deprecation warnings; `dora migrate-yaml <file>` command upgrades in place.~~ **Dropped per #297 resolution, 2026-04-17.** 1.0 is a hard break; no `dora migrate` / `dora migrate-yaml` commands. Zero production deployments per `docs/downstream-user-assessment-2026-04-16.md` — the cost of maintaining migration tooling outweighs the value. Migration guide (`docs/migration-from-0.x.md`) documents the manual upgrade steps.
-6. ~~**Write a `dora migrate` subcommand**~~ — dropped, see task 5.
 
-**Gate:** a sample dora 0.x project upgrades to 1.0 by following the manual steps in `docs/migration-from-0.x.md` (Cargo.toml dep bump, daemon/coordinator/CLI full restart, recording-file extension rename). No automated migration tool ships in 1.0.
+1. **PyPI shim `adora-rs 0.3.0`.** Ship at Phase 5c alongside `dora-rs 1.0.0`. Source lives at `apis/python/compat/adora-rs/` in the tree:
+   - `pyproject.toml`: `name = "adora-rs"`, `version = "0.3.0"`, `dependencies = ["dora-rs>=1.0.0,<2.0.0"]`, `Development Status :: 7 - Inactive`.
+   - `adora_rs/__init__.py`: emits a `DeprecationWarning` on import, then `from dora import *` so existing imports keep working during migration.
+   - `README.md`: one page explaining the rename and pointing at `docs/migration-from-0.x.md`.
+
+   Maintained on PyPI for 6 months after 1.0 GA (until ~2026-11-01), then yanked. No further releases of `adora-rs` on PyPI.
+
+2. ~~**Rust crate-name shims** (`adora-cli` / `adora-node-api` / `adora-operator-api` on crates.io pointing at `dora-*`).~~ **Not needed — never published. See scope correction above.**
+
+3. ~~**`dora::compat::v0` module** with old-signature wrappers.~~ **Not needed — fork is a public-API superset. See scope correction above.**
+
+4. ~~**`dora migrate` / `dora migrate-yaml` subcommands.**~~ **Dropped per #297 resolution, 2026-04-17.** Zero production deployments per `docs/downstream-user-assessment-2026-04-16.md`; `docs/migration-from-0.x.md` documents the manual upgrade steps instead.
+
+**Gate:** `apis/python/compat/adora-rs/` exists in the tree and `python -c "import adora_rs; print(adora_rs.Node)"` against a local install succeeds (import works, `DeprecationWarning` fires, `Node` resolves via the `from dora import *` re-export). Actual PyPI upload of `adora-rs 0.3.0` happens in Phase 5c, after `dora-rs 1.0.0` is live.
 
 ### Phase 5a: Release candidate (2 days to tag; stabilization window follows)
 
@@ -459,9 +460,9 @@ Once the RC is stable:
    - Publishes `dora-* 1.0.0` to crates.io (in dependency order).
    - Publishes `dora-rs 1.0.0` to PyPI.
    - Creates the GitHub release (full, not pre-release).
-3. After `dora-* 1.0.0` is live on crates.io:
-   - Publish the deprecated `dora-* 0.3.0` shims pointing at dora (if the compat shims from Phase 4 are kept — note Phase 4 scope was re-opened in the 2026-04-16 review: `apis/rust/compat/` does not exist and the compat layer is net-new code, not a directory rename).
-   - Publish `dora-rs 0.3.0` PyPI shim.
+3. After `dora-rs 1.0.0` is live on PyPI:
+   - Publish `adora-rs 0.3.0` PyPI shim from `apis/python/compat/adora-rs/` (Phase 4 artifact). Verify `pip install adora-rs` emits the `DeprecationWarning` and pulls in `dora-rs 1.0.0` transitively.
+   - **No Rust crate-name shims to publish** — `adora-*` was never on crates.io; see Phase 4 scope correction (2026-04-17).
 4. **Announcement:**
    - Blog post on `dora-rs.ai`: "dora 1.0: A Rust-First Rewrite, Built with Agentic Engineering."
    - Post to HN, `/r/rust`, `/r/robotics`, Rust Weekly, Discord.
@@ -678,7 +679,7 @@ These are questions this plan cannot answer without maintainer input or investig
 | 2 | Rename pass | 2-3 days | Phase 1 green |
 | 3 | Test and example union | 3-5 days | Phase 2 green |
 | 3b | Zenoh SHM migration (data plane, D-7c) | 2-3 days | Phase 3 green |
-| 4 | Compat layer | 2 days | Phase 3b green |
+| 4 | Compat layer (PyPI `adora-rs` shim only) | 0.5 day | Phase 3b green |
 | 5a | Tag `1.0-rc.1` + pre-release publish | 2 days | Phase 4 green |
 | 5b | RC dogfood + stabilization (rc.2, rc.3, ... as needed) | ≥ 1 week, open-ended | Phase 5a tagged |
 | 5c | Tag `1.0.0` GA + publish + announcement + archive | 1 day | Phase 5b clean |
