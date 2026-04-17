@@ -123,11 +123,11 @@ Two execution modes are tested for each applicable example:
 
 ```bash
 # Must run single-threaded (shared coordinator port)
-cargo test --test example-smoke -- --test-threads=1
+cargo test -p dora-examples --test example-smoke -- --test-threads=1
 
 # Run only networked or local tests
-cargo test --test example-smoke smoke_rust -- --test-threads=1
-cargo test --test example-smoke smoke_local -- --test-threads=1
+cargo test -p dora-examples --test example-smoke smoke_rust -- --test-threads=1
+cargo test -p dora-examples --test example-smoke smoke_local -- --test-threads=1
 ```
 
 A bash script is also available for quick local validation:
@@ -138,40 +138,26 @@ A bash script is also available for quick local validation:
 ./scripts/smoke-all.sh --python-only # Python examples only
 ```
 
-**Networked tests (17):**
+The suite currently exercises **45 smoke scenarios** split across:
 
-| Test | Example | Timeout |
-|------|---------|---------|
-| `smoke_rust_dataflow` | rust-dataflow/dataflow.yml | 30s |
-| `smoke_rust_dataflow_dynamic` | rust-dataflow/dataflow_dynamic.yml | 30s |
-| `smoke_rust_dataflow_url` | rust-dataflow-url/dataflow.yml | 30s |
-| `smoke_benchmark` | benchmark/dataflow.yml | 30s |
-| `smoke_log_sink_file` | log-sink-file/dataflow.yml | 30s |
-| `smoke_log_sink_alert` | log-sink-alert/dataflow.yml | 30s |
-| `smoke_log_sink_tcp` | log-sink-tcp/dataflow.yml | 30s |
-| `smoke_python_dataflow` | python-dataflow/dataflow.yml | 30s |
-| `smoke_python_async` | python-async/dataflow.yaml | 15s |
-| `smoke_python_drain` | python-drain/dataflow.yaml | 15s |
-| `smoke_python_log` | python-log/dataflow.yaml | 15s |
-| `smoke_python_logging` | python-logging/dataflow.yml | 15s |
-| `smoke_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 15s |
-| `smoke_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 15s |
-| `smoke_service_example` | service-example/dataflow.yml | 30s |
-| `smoke_action_example` | action-example/dataflow.yml | 30s |
+- Rust dataflows and benchmark examples
+- Python dataflows in both networked and local modes
+- module expansion via a runnable module dataflow
+- service and action examples in both modes
+- streaming, typed-dataflow, and log aggregation examples
+- cross-language Rust↔Python examples in both modes
+- deterministic validated-pipeline checks
+- queue/timeout regressions, including the Rust queue-latest receiver
 
-**Local tests (9):**
+Representative coverage includes:
 
-| Test | Example | stop-after |
-|------|---------|------------|
-| `smoke_local_python_dataflow` | python-dataflow/dataflow.yml | 30s |
-| `smoke_local_python_async` | python-async/dataflow.yaml | 10s |
-| `smoke_local_python_drain` | python-drain/dataflow.yaml | 10s |
-| `smoke_local_python_log` | python-log/dataflow.yaml | 10s |
-| `smoke_local_python_logging` | python-logging/dataflow.yml | 10s |
-| `smoke_local_python_multiple_arrays` | python-multiple-arrays/dataflow.yml | 10s |
-| `smoke_local_python_concurrent_rw` | python-concurrent-rw/dataflow.yml | 10s |
-| `smoke_local_service_example` | service-example/dataflow.yml | 10s |
-| `smoke_local_action_example` | action-example/dataflow.yml | 10s |
+| Category | Examples |
+|----------|----------|
+| Rust/networked | `rust-dataflow`, `rust-dataflow_dynamic`, `rust-dataflow-url`, `benchmark` |
+| Python/networked | `python-dataflow`, `python-async`, `python-echo`, `python-drain`, `python-log`, `python-logging`, `python-multiple-arrays`, `python-concurrent-rw`, `python-recv-async` |
+| Local-mode | Python examples above plus `service-example`, `action-example`, `module-dataflow`, `streaming-example`, `typed-dataflow`, `log-aggregator`, `validated-pipeline`, queue regressions |
+| Cross-language | `cross-language/rust-to-python.yml`, `cross-language/python-to-rust.yml` |
+| Feature-focused | `service-example`, `action-example`, `streaming-example`, `validated-pipeline` |
 
 Examples requiring special dependencies (webcam, CUDA, ROS2, C/C++ toolchain, multi-machine deploy) are not included in smoke tests.
 
@@ -230,24 +216,25 @@ Topics covered: health check, list/stop/destroy requests, invalid JSON/params, c
 
 CI runs on push/PR to `main`. See `.github/workflows/ci.yml`.
 
-```
-fmt  ──────────────┐
-clippy ────────────┤ (all run in parallel)
-test ──────────────┤
-typos ─────────────┘
-                   │
-              e2e (depends on test)
-```
-
 | Job | Runner | What runs |
 |-----|--------|-----------|
 | **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
 | **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
-| **test** | ubuntu-latest | `cargo test --all ...` (excl. Python + dora-examples) |
-| **e2e** | ubuntu-latest | example-tests, fault-tolerance, smoke tests, WS E2E |
+| **test** | ubuntu/macOS/windows | `cargo check`, `cargo build`, `cargo test --all ...` (excluding Python crates and `dora-examples`) plus fast CLI smoke/semantic checks |
+| **examples** | ubuntu/macOS/windows | `cargo run --example ...` for Rust, multiple-daemons, C, C++, C++ Arrow, and CMake examples |
+| **cli** | ubuntu/macOS/windows | `dora new` template projects, dynamic dataflows, Python examples, queue regressions |
+| **e2e** | ubuntu-latest | `ws-cli-e2e` and `fault-tolerance-e2e` |
+| **bench-example** | ubuntu/macOS/windows | `cargo run --example benchmark --release` |
+| **bench** | ubuntu-latest | criterion benchmark regression check |
+| **audit** | ubuntu-latest | `cargo-audit` + `cargo-deny` via `make qa-audit` |
+| **unwrap-budget** | ubuntu-latest | `.unwrap()` / `.expect()` budget check |
 | **typos** | ubuntu-latest | `crate-ci/typos@master` |
+| **cross-check** | ubuntu/macOS | cross-compilation checks for key targets |
+| **ros2-bridge** | ubuntu-latest | ROS2 bridge tests and examples |
+| **msrv** | ubuntu-latest | minimum supported Rust version build/test |
+| **license** | ubuntu-latest | license validation |
 
-The `e2e` job only runs after `test` passes. All other jobs run in parallel.
+The heavier example, CLI, benchmark, E2E, cross-check, ROS2, MSRV, and license jobs depend on `test`. The full smoke suite in `tests/example-smoke.rs` runs in nightly, not in the per-PR CI lane.
 
 ## Writing New Tests
 
