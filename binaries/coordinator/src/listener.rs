@@ -7,7 +7,8 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_cli::{DataflowResult, StopDataflowReply},
     daemon_to_coordinator::{
-        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics, Timestamped,
+        CoordinatorNotify, CoordinatorRequest, DataflowDaemonResult, NodeMetrics,
+        StateDeleteRequest, StateGetRequest, StateSetRequest, Timestamped,
     },
     tarpc,
 };
@@ -331,5 +332,172 @@ impl CoordinatorNotify for CoordinatorNotifyServer {
                 );
             }
         }
+    }
+
+    async fn state_get(
+        self,
+        _ctx: tarpc::context::Context,
+        request: StateGetRequest,
+    ) -> Result<Option<Vec<u8>>, String> {
+        Ok(self
+            .coordinator_state
+            .shared_state
+            .get(&request.namespace, &request.key))
+    }
+
+    async fn state_set(
+        self,
+        _ctx: tarpc::context::Context,
+        request: StateSetRequest,
+    ) -> Result<(), String> {
+        self.coordinator_state.shared_state.set(
+            request.namespace,
+            request.key,
+            request.value,
+            request.ttl_ms,
+        )
+    }
+
+    async fn state_delete(
+        self,
+        _ctx: tarpc::context::Context,
+        request: StateDeleteRequest,
+    ) -> Result<bool, String> {
+        Ok(self
+            .coordinator_state
+            .shared_state
+            .delete(&request.namespace, &request.key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::CoordinatorState;
+    use dora_core::uhlc::HLC;
+    use dora_message::daemon_to_coordinator::CoordinatorNotifyClient;
+    use futures::{StreamExt, stream::AbortHandle};
+    use tarpc::server::Channel;
+    use tokio::sync::mpsc;
+
+    fn test_state() -> Arc<CoordinatorState> {
+        let (daemon_events_tx, _daemon_events_rx) = mpsc::channel(1);
+        let (abort_handle, _abort_registration) = AbortHandle::new_pair();
+        Arc::new(CoordinatorState {
+            clock: Arc::new(HLC::default()),
+            running_builds: Default::default(),
+            finished_builds: Default::default(),
+            running_dataflows: Default::default(),
+            dataflow_results: Default::default(),
+            archived_dataflows: Default::default(),
+            shared_state: Default::default(),
+            daemon_connections: Default::default(),
+            daemon_events_tx,
+            abort_handle,
+        })
+    }
+
+    fn test_server(state: Arc<CoordinatorState>) -> CoordinatorNotifyServer {
+        CoordinatorNotifyServer {
+            daemon_id: DaemonId::new(Some("test-daemon".to_owned())),
+            coordinator_state: state,
+        }
+    }
+
+    fn state_client(server: CoordinatorNotifyServer) -> CoordinatorNotifyClient {
+        let (client_transport, server_transport) = tarpc::transport::channel::unbounded();
+        let channel = tarpc::server::BaseChannel::with_defaults(server_transport);
+        tokio::spawn(channel.execute(server.serve()).for_each(|fut| async {
+            tokio::spawn(fut);
+        }));
+        CoordinatorNotifyClient::new(tarpc::client::Config::default(), client_transport).spawn()
+    }
+
+    #[tokio::test]
+    async fn state_set_get_delete_and_ttl_over_rpc() {
+        let state = test_state();
+        let client = state_client(test_server(state));
+
+        client
+            .state_set(
+                tarpc::context::current(),
+                StateSetRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "node/camera".to_owned(),
+                    value: b"v1".to_vec(),
+                    ttl_ms: None,
+                },
+            )
+            .await
+            .expect("state_set should succeed")
+            .expect("state_set result should be Ok");
+
+        let value = client
+            .state_get(
+                tarpc::context::current(),
+                StateGetRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "node/camera".to_owned(),
+                },
+            )
+            .await
+            .expect("state_get should succeed")
+            .expect("state_get result should be Ok");
+        assert_eq!(value, Some(b"v1".to_vec()));
+
+        let deleted = client
+            .state_delete(
+                tarpc::context::current(),
+                StateDeleteRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "node/camera".to_owned(),
+                },
+            )
+            .await
+            .expect("state_delete should succeed")
+            .expect("state_delete result should be Ok");
+        assert!(deleted);
+
+        let missing = client
+            .state_get(
+                tarpc::context::current(),
+                StateGetRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "node/camera".to_owned(),
+                },
+            )
+            .await
+            .expect("state_get should succeed")
+            .expect("state_get result should be Ok");
+        assert!(missing.is_none());
+
+        client
+            .state_set(
+                tarpc::context::current(),
+                StateSetRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "ephemeral".to_owned(),
+                    value: b"temp".to_vec(),
+                    ttl_ms: Some(20),
+                },
+            )
+            .await
+            .expect("state_set should succeed")
+            .expect("state_set result should be Ok");
+
+        tokio::time::sleep(std::time::Duration::from_millis(35)).await;
+
+        let expired = client
+            .state_get(
+                tarpc::context::current(),
+                StateGetRequest {
+                    namespace: "runtime".to_owned(),
+                    key: "ephemeral".to_owned(),
+                },
+            )
+            .await
+            .expect("state_get should succeed")
+            .expect("state_get result should be Ok");
+        assert!(expired.is_none());
     }
 }

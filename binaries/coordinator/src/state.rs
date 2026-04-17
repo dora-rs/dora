@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     ArchivedDataflow, BuildFinishedResult, CachedResult, DaemonConnections, Event, RunningBuild,
-    RunningDataflow,
+    RunningDataflow, shared_state::SharedStateStore,
 };
 
 pub struct CoordinatorState {
@@ -19,6 +19,7 @@ pub struct CoordinatorState {
     pub running_dataflows: DashMap<DataflowId, RunningDataflow>,
     pub dataflow_results: DashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     pub archived_dataflows: DashMap<DataflowId, ArchivedDataflow>,
+    pub shared_state: SharedStateStore,
     pub daemon_connections: DaemonConnections,
     pub daemon_events_tx: mpsc::Sender<Event>,
     pub abort_handle: futures::stream::AbortHandle,

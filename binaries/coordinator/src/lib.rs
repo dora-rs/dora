@@ -51,6 +51,7 @@ use uuid::Uuid;
 mod listener;
 mod run;
 mod server;
+mod shared_state;
 mod state;
 mod tcp_utils;
 
@@ -167,6 +168,7 @@ async fn init_coordinator(
         running_dataflows: Default::default(),
         dataflow_results: Default::default(),
         archived_dataflows: Default::default(),
+        shared_state: Default::default(),
         daemon_connections: Default::default(),
         daemon_events_tx,
         abort_handle,
