@@ -224,7 +224,9 @@ pub struct CommunicationConfig {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "lowercase")]
+#[derive(Default)]
 pub enum RemoteCommunicationConfig {
+    #[default]
     Tcp,
     // TODO:a
     // Zenoh {
@@ -233,8 +235,3 @@ pub enum RemoteCommunicationConfig {
     // },
 }
 
-impl Default for RemoteCommunicationConfig {
-    fn default() -> Self {
-        Self::Tcp
-    }
-}

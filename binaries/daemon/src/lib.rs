@@ -1000,8 +1000,8 @@ impl Daemon {
         spawn_nodes: BTreeSet<NodeId>,
         uv: bool,
         write_events_to: Option<PathBuf>,
-        hot_reload: bool,
-        dataflow_path: Option<PathBuf>,
+        _hot_reload: bool,
+        _dataflow_path: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         let mut logger = self
             .logger
@@ -1841,7 +1841,7 @@ impl Daemon {
         node_id: NodeId,
         outputs: Vec<DataId>,
     ) -> eyre::Result<()> {
-        let (local_node_inputs, closed) = {
+        let (_local_node_inputs, closed) = {
             let mut dataflow = self
                 .state
                 .running

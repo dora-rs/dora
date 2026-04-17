@@ -152,7 +152,7 @@ impl Node {
             DoraNode::init_from_env().context("Could not initiate node from environment variable. For dynamic node, please add a node id in the initialization function.")?
         };
         let id = node.id().clone();
-        let dataflow_id = node.dataflow_id().clone();
+        let dataflow_id = *node.dataflow_id();
         RUNTIME.spawn(async move {
             let _guard = init_tracing(&id, &dataflow_id).unwrap();
             loop {
@@ -257,10 +257,7 @@ impl Node {
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> PyResult<Option<Py<PyDict>>> {
         Ok(match self.events.try_recv()? {
-            Ok(event) => match event.to_py_dict(py) {
-                Ok(dict) => Some(dict),
-                Err(_) => None,
-            },
+            Ok(event) => event.to_py_dict(py).ok(),
             Err(_) => None,
         })
     }
@@ -525,20 +522,20 @@ impl Events {
         match &mut *inner {
             EventsInner::Dora(events) => match events.drain() {
                 Some(items) => {
-                    return Some(
+                    Some(
                         items
                             .into_iter()
                             .map(MergedEvent::Dora)
                             .map(|event| PyEvent { event })
                             .collect(),
-                    );
+                    )
                 }
-                None => return None,
+                None => None,
             },
             EventsInner::Merged(_events) => {
                 todo!("Draining external event is not yet implemented!")
             }
-        };
+        }
     }
 
     fn is_empty(&self) -> bool {
