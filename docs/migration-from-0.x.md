@@ -48,12 +48,26 @@ Non-exhaustive; see the full 1.0 release notes for the complete list.
 - `DoraNodeBuilder` with custom daemon port (upstream PR #1591 compatible)
 - CUDA IPC via ctypes (no more `numba` dependency)
 
+## Removed in 1.0
+
+Features and code that existed in dora 0.x but are absent from 1.0. If you depended on one of these, the 0.x upgrade path doesn't cover it — contact the maintainers if you need it restored.
+
+| 0.x surface | Status in 1.0 | Replacement / rationale |
+|---|---|---|
+| `dora destroy` CLI command | Removed | Use `dora down` instead — same function, one consolidated command |
+| `dora version` subcommand (queries coordinator for version info) | Removed | `dora --version` (clap auto) shows the CLI version. Runtime version negotiation happens automatically via the `ControlRequest::Hello` handshake on every CLI↔coordinator connect. |
+| `libraries/communication-layer/request-reply/` (TCP-backed `RequestReplyLayer` trait) | Removed | Superseded by the service/action patterns using Arrow metadata correlation IDs — `send_service_request()` / `send_service_response()` helpers on `DoraNode`. See [`docs/patterns.md`](patterns.md). |
+| Coordinator TCP listener (`listener.rs`, `server.rs`, `tcp_utils.rs`) | Removed | Replaced by the WebSocket control plane (`ws_server.rs`, `ws_control.rs`, `ws_daemon.rs`). Per D-1a, this is a **hard protocol break** — 0.x daemons cannot interoperate with 1.0 coordinators. |
+| Daemon `hot_reload.rs` module (293 lines) | Removed | Inlined into `binaries/daemon/src/lib.rs` as `send_reload()`. Same functionality, leaner file layout. |
+| Daemon `state.rs` module (172 lines) | Removed | Refactored into `running_dataflow.rs` + `event_types.rs`. Same state handling, clearer separation of concerns. |
+| Upstream `libraries/extensions/ros2-bridge/python/src/typed/deserialize/string.rs` | Moved | Functionality is in `libraries/extensions/ros2-bridge/arrow/src/deserialize/string.rs` and additionally supports `WStringDeserializer` (which was `todo!()` in 0.x). |
+
 ## Still to do (this guide)
 
 - Per-API before/after code snippets for the 10 most-used 0.x APIs
 - Dedicated section on the C/C++ API (headers stable, call signatures unchanged)
 - Dedicated section on the Python API
-- `dora migrate` subcommand usage (if shipped — scope is still open, see consolidation plan §297)
+- ~~`dora migrate` subcommand usage~~ — **dropped per #297 resolution**. No migration tool ships in 1.0; manual steps above + release-note hard-break callout only.
 
 ## Related documents
 
