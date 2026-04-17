@@ -425,13 +425,34 @@ Landing sequence:
 
 **Phase 5a tasks:**
 1. Final CI verification: `cargo test --all`, full E2E, benchmark regression, smoke tests, cargo-audit clean, coverage baseline reported.
-2. Merge `v1.0-rewrite` → `main` on `dora-rs/dora` via `--no-ff` merge to preserve the phased history.
-3. Tag `v1.0.0-rc.1` on the merge commit. Annotated, signed if release norm is to sign.
-4. Push tag. Release workflow fires in **rc mode**:
-   - Builds cross-platform CLI binaries.
-   - Publishes `dora-* 1.0.0-rc.1` to crates.io with `--allow-features` for pre-release (crates.io allows pre-release versions).
-   - Publishes `dora-rs 1.0.0rc1` to PyPI (PyPI pre-release semantics).
-   - Creates a **GitHub pre-release** (not a full release), with release notes labelled "release candidate — feedback welcome".
+2. **Squash-merge** `v1.0-rewrite` → `main` on `dora-rs/dora`. Revised from original `--no-ff` plan (2026-04-17): main gets one commit whose tree equals `v1.0-rewrite`'s tip, parent equals upstream main's tip at merge time. Rationale: keeps `git log main --first-parent` readable for the maintainers taking over (phil-opp, haixuanTao); avoids polluting main with ~200 fork-era POC commits that are mostly agentic-engineering iteration. Detailed history is preserved:
+   - `v1.0-rewrite` branch kept alive on `dora-rs/dora` post-merge (not deleted).
+   - Tag `consolidation/v1.0-rewrite-detail` pins the pre-squash tip permanently.
+   - Archived `dora-rs/adora` repo (per D-6a) keeps the full fork-era commit history browsable.
+
+   Concrete recipe (run from the dora-upstream checkout on `v1.0-rewrite`):
+   ```bash
+   git fetch origin
+   git tag consolidation/v1.0-rewrite-detail v1.0-rewrite
+   git push origin consolidation/v1.0-rewrite-detail
+
+   git checkout main
+   git pull --ff-only
+   git merge --squash v1.0-rewrite
+   git commit -F <prepared-squash-message>
+   # (Co-Authored-By: trailers for fork contributors; body links to
+   #  docs/plan-dora-1.0-consolidation.md and the detail tag.)
+
+   git tag -a v1.0.0-rc.1 -m "dora 1.0.0-rc.1"
+   git push origin main
+   git push origin v1.0.0-rc.1
+   ```
+
+   Note: if upstream `main` has advanced between Phase 1 and Phase 5a, the squash-merge overwrites those intermediate upstream commits with the fork's tree (tree-takeover is the intent). The overwritten commits remain reachable as ancestors of the squash commit and are enumerated in the squash commit body for auditability.
+3. Tag `v1.0.0-rc.1` on the squash-merge commit. Annotated, signed if release norm is to sign.
+4. **No automatic crates.io / PyPI publish on tag push.** Verified 2026-04-17: `release.yml` trigger pattern `v[0-9]+.[0-9]+.[0-9]+` does not match `v1.0.0-rc.1` (GitHub Actions glob doesn't treat `+` as a quantifier). `cargo-release.yml` and `pip-release.yml` publish jobs only fire on `release: published` events, not tag pushes. This means:
+   - Push of `v1.0.0-rc.1` is **safe**: wheel-build jobs run but artifact upload steps are gated by `github.event_name == 'release'` and therefore skip.
+   - Actual publish to crates.io + PyPI is triggered by a separate manual step: creating a GitHub pre-release from the tag. That step requires A1 (three crates' owner-team fix) and A3 (PyPI Maintainer role) to be complete first, or the pipeline will 403 partway through.
 5. Announce the RC only to developer channels (GitHub Discussions, Discord). **No blog post, no HN, no Reddit yet.**
 
 **Phase 5b: RC dogfood + stabilization window (≥ 1 week, open-ended until clean)**
