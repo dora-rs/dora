@@ -175,6 +175,23 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
 #[ffi_export]
 pub fn dora_free_data(_data: safer_ffi::Vec<u8>) {}
 
+/// Send an output from a C/C++ operator.
+///
+/// # Safety
+///
+/// - `send_output` must be a valid reference.
+/// - `id` must be a valid null-terminated UTF-8 string.
+/// - If `data_len > 0`, then `data_ptr` must be a non-null, well-aligned
+///   pointer to `data_len` bytes of initialized memory, and that memory
+///   must not be mutated for the duration of this call.
+/// - If `data_len == 0`, then `data_ptr` may be null — the empty-data
+///   case is handled explicitly to match the C idiom of passing
+///   `(NULL, 0)` for zero-length messages.
+///
+/// This function parallels `dora_send_output` in `apis/c/node/src/lib.rs`,
+/// which has had a null check since its introduction. Adding the
+/// equivalent here closes the gap found during the 2026-04-08 unsafe
+/// audit.
 #[ffi_export]
 pub unsafe fn dora_send_operator_output(
     send_output: &SendOutput,
@@ -183,7 +200,20 @@ pub unsafe fn dora_send_operator_output(
     data_len: usize,
 ) -> DoraResult {
     let result = || {
-        let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+        // Handle the C convention (NULL, 0) for empty messages without UB.
+        // `slice::from_raw_parts(null, 0)` is UB in Rust even though the
+        // slice is empty — the pointer must be non-null and well-aligned
+        // regardless of the length.
+        let data: &[u8] = if data_len == 0 {
+            &[]
+        } else if data_ptr.is_null() {
+            return Err(
+                "dora_send_operator_output: data_ptr is null with non-zero data_len".to_string(),
+            );
+        } else {
+            // SAFETY: caller-provided per the function's #[safety] contract above.
+            unsafe { slice::from_raw_parts(data_ptr, data_len) }
+        };
         let arrow_data = data.to_owned().into_arrow();
         let (data_array, schema) =
             arrow::ffi::to_ffi(&arrow_data.into_data()).map_err(|err| err.to_string())?;

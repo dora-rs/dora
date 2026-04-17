@@ -18,17 +18,51 @@ use tracing_subscriber::{
 };
 
 use tracing_subscriber::Registry;
+use tracing_subscriber::filter::Directive;
 pub mod metrics;
+pub mod span_store;
 pub mod telemetry;
+
+/// Parse a tracing directive known to be syntactically valid by
+/// construction. Panics on failure — call sites must only pass string
+/// literals. Replaces ~20 individual `.parse().unwrap()` sites with a
+/// single documented helper, and keeps the panic path centralized.
+fn directive(literal: &'static str) -> Directive {
+    literal
+        .parse()
+        .unwrap_or_else(|e| panic!("invalid hardcoded tracing directive `{literal}`: {e}"))
+}
+
+/// Standard set of noisy-crate suppressions applied to every filter in
+/// this module. Centralized so the list is the same everywhere.
+const NOISY_CRATES_OFF: &[&str] = &[
+    "hyper=off",
+    "tonic=off",
+    "tokio=off",
+    "process_wrap=off",
+    "h2=off",
+    "reqwest=off",
+];
+
+/// Add the `NOISY_CRATES_OFF` directives to an `EnvFilter`.
+fn with_noisy_crates_off(mut filter: EnvFilter) -> EnvFilter {
+    for d in NOISY_CRATES_OFF {
+        filter = filter.add_directive(directive(d));
+    }
+    filter
+}
 
 /// Setup tracing with a default configuration.
 ///
 /// This will set up a global subscriber that logs to stdout with a filter level of "warn".
+/// Outputs structured JSONL that the dora daemon parses as `LogMessage`,
+/// so `tracing::info!()` calls in user nodes are automatically routed through
+/// the dora log pipeline (file, coordinator, `dora/logs` subscribers).
 ///
 /// Should **ONLY** be used in `DoraNode` implementations.
 pub fn set_up_tracing(name: &str) -> eyre::Result<()> {
     TracingBuilder::new(name)
-        .with_stdout("warn", false)
+        .with_node_stdout("warn")
         .build()
         .wrap_err(format!(
             "failed to set tracing global subscriber for {name}"
@@ -57,29 +91,42 @@ impl TracingBuilder {
         }
     }
 
+    /// Add a layer that writes structured JSONL to stdout, compatible with the
+    /// dora daemon's `LogMessageHelper` parser.
+    ///
+    /// This is the recommended layer for user nodes: `tracing::info!()` calls
+    /// are automatically parsed by the daemon and routed through the log pipeline.
+    pub fn with_node_stdout(mut self, filter: impl AsRef<str>) -> Self {
+        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
+        let env_log = std::env::var("RUST_LOG").unwrap_or_default();
+        if !env_log.contains("zenoh") {
+            parsed = parsed.add_directive(directive("zenoh=warn"));
+        }
+        let env_filter = EnvFilter::from_default_env().or(parsed);
+        let layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(std::io::stdout)
+            .with_filter(env_filter);
+        self.layers.push(layer.boxed());
+        self
+    }
+
     /// Add a layer that write logs to the [std::io::stdout] with the given filter.
     ///
     /// **DO NOT** use this in `DoraNode` implementations,
     /// it uses [std::io::stdout] which is synchronous
     /// and might block the logging thread.
     pub fn with_stdout(mut self, filter: impl AsRef<str>, json: bool) -> Self {
-        let mut parsed = EnvFilter::builder()
-            .parse_lossy(filter)
-            .add_directive("hyper=off".parse().unwrap())
-            .add_directive("tonic=off".parse().unwrap())
-            .add_directive("tokio=off".parse().unwrap())
-            .add_directive("process_wrap=off".parse().unwrap())
-            .add_directive("h2=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap());
+        let mut parsed = with_noisy_crates_off(EnvFilter::builder().parse_lossy(filter));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
         if !env_log.contains("dora_daemon") {
-            parsed = parsed.add_directive("dora_daemon=info".parse().unwrap());
+            parsed = parsed.add_directive(directive("dora_daemon=info"));
         }
         if !env_log.contains("dora_core") {
-            parsed = parsed.add_directive("dora_core=warn".parse().unwrap());
+            parsed = parsed.add_directive(directive("dora_core=warn"));
         }
         if !env_log.contains("zenoh") {
-            parsed = parsed.add_directive("zenoh=warn".parse().unwrap());
+            parsed = parsed.add_directive(directive("zenoh=warn"));
         }
         let env_filter = EnvFilter::from_default_env().or(parsed);
         let layer = tracing_subscriber::fmt::layer()
@@ -132,7 +179,8 @@ impl TracingBuilder {
             .wrap_err("DORA_OTLP_ENDPOINT or DORA_JAEGER_TRACING environment variable not set")?;
 
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
-        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint);
+        let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
+            .wrap_err("failed to initialize OTLP tracing exporter")?;
         let meter_provider = metrics::init_meter_provider();
 
         // TODO: Maybe this needs to be removed in favor of application level global.
@@ -147,16 +195,10 @@ impl TracingBuilder {
 
         self.guard = Some(guard);
         self.layers.push(MetricsLayer::new(meter_provider).boxed());
-        let mut filter_otel = EnvFilter::new("trace")
-            .add_directive("hyper=off".parse().unwrap())
-            .add_directive("tonic=off".parse().unwrap())
-            .add_directive("tokio=off".parse().unwrap())
-            .add_directive("process_wrap=off".parse().unwrap())
-            .add_directive("h2=off".parse().unwrap())
-            .add_directive("reqwest=off".parse().unwrap());
+        let mut filter_otel = with_noisy_crates_off(EnvFilter::new("trace"));
         let env_log = std::env::var("RUST_LOG").unwrap_or_default();
         if !env_log.contains("dora_daemon") {
-            filter_otel = filter_otel.add_directive("dora_daemon=debug".parse().unwrap());
+            filter_otel = filter_otel.add_directive(directive("dora_daemon=debug"));
         }
         self.layers.push(
             OpenTelemetryLayer::new(tracer)
@@ -164,6 +206,25 @@ impl TracingBuilder {
                 .boxed(),
         );
         Ok(self)
+    }
+
+    /// Legacy method name for backward compatibility.
+    #[deprecated(since = "0.1.0", note = "Use `with_otlp_tracing` instead")]
+    pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
+        self.with_otlp_tracing()
+    }
+
+    /// Add a layer that captures completed spans into the given store.
+    ///
+    /// Only captures spans from `dora_*` crates at info level to avoid noise
+    /// from third-party dependencies.
+    pub fn with_span_capture(mut self, store: span_store::SharedSpanStore) -> Self {
+        let filter = EnvFilter::new("off")
+            .add_directive(directive("dora_coordinator=info"))
+            .add_directive(directive("dora_core=info"));
+        let layer = span_store::SpanCaptureLayer::new(store).with_filter(filter);
+        self.layers.push(layer.boxed());
+        self
     }
 
     pub fn add_layer<L>(mut self, layer: L) -> Self

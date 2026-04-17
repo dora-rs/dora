@@ -1,9 +1,4 @@
-"""Sentence Transformers operator for dora-rs dataflow.
-
-This operator uses the Sentence Transformers library to index and search
-Python code files within a directory. It allows for semantic search over
-the codebase by encoding files and queries into a vector space.
-"""
+"""TODO: Add docstring."""
 
 import os
 import sys
@@ -22,16 +17,7 @@ SHOULD_BE_INCLUDED = [
 
 ## Get all python files path in given directory
 def get_all_functions(path):
-    """Recursively discover and read Python files in a directory.
-
-    Only includes files specified in the SHOULD_BE_INCLUDED list.
-
-    Args:
-        path (str): The root directory to search.
-
-    Returns:
-        tuple: A pair containing (list of file contents, list of file paths).
-    """
+    """TODO: Add docstring."""
     raw = []
     paths = []
     for root, dirs, files in os.walk(path):
@@ -51,19 +37,7 @@ def get_all_functions(path):
 
 
 def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=None):
-    """Perform a semantic search using cosine similarity.
-
-    Args:
-        query_embedding (Tensor): The embedding of the search query.
-        corpus_embeddings (Tensor): Executable embeddings of the codebase.
-        paths (List[str]): List of file paths corresponding to embeddings.
-        raw (List[str]): List of raw file contents.
-        k (int): Number of top results to return.
-        file_extension (str, optional): Not currently used.
-
-    Returns:
-        List: A flattened list of [content, path, score] for the top K matches.
-    """
+    """TODO: Add docstring."""
     cos_scores = util.cos_sim(query_embedding, corpus_embeddings)[0]
     top_results = torch.topk(cos_scores, k=min(k, len(cos_scores)), sorted=True)
     out = []
@@ -73,11 +47,11 @@ def search(query_embedding, corpus_embeddings, paths, raw, k=5, file_extension=N
 
 
 class Operator:
-    """Dora operator for semantic search over Python files."""
+    """TODO: Add docstring."""
 
     def __init__(self):
         ## TODO: Add a initialisation step
-        """Initializes the operator, discovers files, and generates initial embeddings."""
+        """TODO: Add docstring."""
         self.model = SentenceTransformer("BAAI/bge-large-en-v1.5")
         self.encoding = []
         # file directory
@@ -92,18 +66,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """Handle search queries or file updates.
-
-        If the input is "query", it performs a semantic search. Otherwise,
-        it updates the internal index with the provided file content.
-
-        Args:
-            dora_event (dict): The event from dora-rs.
-            send_output (Callable): Callback to emit search results.
-
-        Returns:
-            DoraStatus: CONTINUE to allow further interactions.
-        """
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             if dora_event["id"] == "query":
                 values = dora_event["value"].to_pylist()

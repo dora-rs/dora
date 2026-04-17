@@ -1,0 +1,51 @@
+# CI workflow for smoke-testing an dora dataflow.
+# Copy this file to your project's .github/workflows/ directory.
+#
+# This installs the dora CLI, runs your dataflow with --stop-after,
+# and fails if any node exits with an error.
+#
+# Adjust the DATAFLOW_PATH and STOP_AFTER values for your project.
+
+name: Dataflow Smoke Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Path to your dataflow YAML file
+  DATAFLOW_PATH: dataflow.yml
+  # How long to run before stopping (e.g., "10s", "30s")
+  STOP_AFTER: "10s"
+
+jobs:
+  smoke:
+    name: Smoke Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install pyarrow dora-rs
+
+      - name: Install dora CLI
+        run: cargo install dora-cli --locked
+
+      - name: Build nodes
+        run: dora build "$DATAFLOW_PATH"
+
+      - name: Run dataflow
+        run: dora run "$DATAFLOW_PATH" --stop-after "$STOP_AFTER"

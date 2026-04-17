@@ -67,6 +67,16 @@ fn receive_reply(
 }
 
 fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::Result<()> {
+    if message.len() > dora_message::MAX_MESSAGE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "outgoing message size {} exceeds maximum {}",
+                message.len(),
+                dora_message::MAX_MESSAGE_BYTES
+            ),
+        ));
+    }
     let len_raw = (message.len() as u64).to_le_bytes();
     connection.write_all(&len_raw)?;
     connection.write_all(message)?;
@@ -78,8 +88,22 @@ fn tcp_receive(connection: &mut (impl Read + Unpin)) -> std::io::Result<Vec<u8>>
     let reply_len = {
         let mut raw = [0; 8];
         connection.read_exact(&mut raw)?;
-        u64::from_le_bytes(raw) as usize
+        usize::try_from(u64::from_le_bytes(raw)).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "message length overflows usize",
+            )
+        })?
     };
+    if reply_len > dora_message::MAX_MESSAGE_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "message size {reply_len} exceeds maximum {}",
+                dora_message::MAX_MESSAGE_BYTES
+            ),
+        ));
+    }
     let mut reply = vec![0; reply_len];
     connection.read_exact(&mut reply)?;
     Ok(reply)

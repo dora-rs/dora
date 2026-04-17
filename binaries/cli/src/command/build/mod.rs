@@ -49,26 +49,29 @@
 
 use dora_core::{
     descriptor::{CoreNodeKind, CustomNode, Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
+    topics::{DORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
+    types::TypeRegistry,
 };
-use dora_message::{BuildId, cli_to_coordinator::CoordinatorControlClient, descriptor::NodeSource};
+use dora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
-use std::{collections::BTreeMap, net::IpAddr};
+use std::{collections::BTreeMap, net::IpAddr, path::PathBuf};
+
+use crate::ws_client::WsSession;
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{
-        ConnectAndCheckVersionError, connect_and_check_version, local_working_dir, resolve_dataflow,
-    },
+    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
     session::DataflowSession,
 };
 
-use distributed::build_distributed_dataflow;
+use distributed::{build_distributed_dataflow, wait_until_dataflow_built};
 use local::build_dataflow_locally;
+use lockfile::BuildLockfile;
 
 mod distributed;
 mod git;
 mod local;
+mod lockfile;
 
 #[derive(Debug, clap::Args)]
 /// Run build commands provided in the given dataflow.
@@ -77,10 +80,10 @@ pub struct Build {
     #[clap(value_name = "PATH")]
     dataflow: String,
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP")]
+    #[clap(long, value_name = "IP", env = "DORA_COORDINATOR_ADDR")]
     coordinator_addr: Option<IpAddr>,
     /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT")]
+    #[clap(long, value_name = "PORT", env = "DORA_COORDINATOR_PORT")]
     coordinator_port: Option<u16>,
     // Use UV to build nodes.
     #[clap(long, action)]
@@ -88,112 +91,222 @@ pub struct Build {
     // Run build on local machine
     #[clap(long, action)]
     local: bool,
+    /// Treat type warnings as errors
+    #[clap(long, action)]
+    strict_types: bool,
+    /// Use pinned git source commits from a lockfile.
+    #[clap(long, action, conflicts_with = "write_lockfile")]
+    locked: bool,
+    /// Write resolved git source commits to a lockfile.
+    #[clap(long, action)]
+    write_lockfile: bool,
+    /// Path to build lockfile (defaults to `<dataflow-stem>.dora-lock.yaml`).
+    #[clap(long, value_name = "PATH")]
+    lockfile: Option<PathBuf>,
+    /// Build nodes concurrently (faster on multi-core machines).
+    #[clap(long, action)]
+    parallel: bool,
 }
 
 impl Executable for Build {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        build_async(
+        build(
             self.dataflow,
             self.coordinator_addr,
             self.coordinator_port,
             self.uv,
             self.local,
+            self.strict_types,
+            self.locked,
+            self.write_lockfile,
+            self.lockfile,
+            self.parallel,
         )
-        .await
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     dataflow: String,
     coordinator_addr: Option<IpAddr>,
     coordinator_port: Option<u16>,
     uv: bool,
     force_local: bool,
+    strict_types: bool,
+    locked: bool,
+    write_lockfile: bool,
+    lockfile_override: Option<PathBuf>,
+    parallel: bool,
 ) -> eyre::Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("tokio runtime failed")?;
-    rt.block_on(build_async(
-        dataflow,
-        coordinator_addr,
-        coordinator_port,
-        uv,
-        force_local,
-    ))
-}
+    let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    if lockfile_override.is_some() && !(locked || write_lockfile) {
+        eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");
+    }
+    let working_dir = dataflow_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
+        .wrap_err_with(|| {
+            format!(
+                "failed to read dataflow at `{}`\n\n  \
+                 hint: check the file exists and is valid YAML",
+                dataflow_path.display()
+            )
+        })?
+        .expand(working_dir)
+        .wrap_err("failed to expand modules in dataflow descriptor")?;
 
-pub async fn build_async(
-    dataflow: String,
-    coordinator_addr: Option<IpAddr>,
-    coordinator_port: Option<u16>,
-    uv: bool,
-    force_local: bool,
-) -> eyre::Result<()> {
-    let dataflow_path = resolve_dataflow(dataflow)
-        .await
-        .context("could not resolve dataflow")?;
-    let dataflow_descriptor =
-        Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
+    // --- Type checking (Phase 1) ---
+    let strict = strict_types || dataflow_descriptor.strict_types.unwrap_or(false);
+    let mut registry = TypeRegistry::new();
+    let types_dir = working_dir.join("types");
+    if types_dir.is_dir() {
+        match registry.load_from_dir(&types_dir) {
+            Ok(count) if count > 0 => {
+                log::info!("Loaded {count} user-defined type(s) from types/");
+            }
+            Err(e) => {
+                eyre::bail!("failed to load user types: {e}");
+            }
+            _ => {}
+        }
+    }
+    let type_result = dora_core::descriptor::validate::check_type_annotations_full(
+        &dataflow_descriptor,
+        &registry,
+        strict,
+    );
+    for inf in &type_result.inferences {
+        println!("  {inf}");
+    }
+    if !type_result.warnings.is_empty() {
+        for w in &type_result.warnings {
+            eprintln!("  warning: {w}");
+        }
+        let count = type_result.warnings.len();
+        if strict {
+            eyre::bail!("{count} type error(s) found (strict mode)");
+        } else {
+            eprintln!(
+                "{count} type warning(s) found.\n  \
+                 hint: use --strict-types to fail on type warnings"
+            );
+        }
+    }
+
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
+    let lockfile_path = BuildLockfile::path_for_dataflow(&dataflow_path, lockfile_override);
+    let build_lockfile = if locked {
+        Some(BuildLockfile::read_from(&lockfile_path).with_context(|| {
+            format!(
+                "failed to read build lockfile at `{}`",
+                lockfile_path.display()
+            )
+        })?)
+    } else {
+        None
+    };
+
     let mut git_sources = BTreeMap::new();
+    let mut descriptor_git_sources = BTreeMap::new();
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
+    // Pass 1 (fail-fast): derive descriptor git-source fingerprint and validate lockfile
+    // provenance before any per-node locked-source lookups.
+    for (node_id, node) in &resolved_nodes {
+        if let CoreNodeKind::Custom(CustomNode {
+            source: NodeSource::GitBranch { repo, rev },
+            ..
+        }) = &node.kind
+        {
+            descriptor_git_sources.insert(
+                node_id.clone(),
+                NodeSource::GitBranch {
+                    repo: repo.clone(),
+                    rev: rev.clone(),
+                },
+            );
+        }
+    }
+    let descriptor_fingerprint =
+        BuildLockfile::fingerprint_descriptor_git_sources(&descriptor_git_sources);
+    if let Some(lockfile) = &build_lockfile {
+        lockfile
+            .ensure_descriptor_fingerprint_matches(&descriptor_fingerprint)
+            .with_context(|| {
+                format!(
+                    "failed to validate lockfile against descriptor at `{}`",
+                    dataflow_path.display()
+                )
+            })?;
+    }
+    // Pass 2: resolve each node's concrete source, now that lockfile provenance
+    // has been validated (when `--locked` is enabled).
     for (node_id, node) in resolved_nodes {
         if let CoreNodeKind::Custom(CustomNode {
             source: NodeSource::GitBranch { repo, rev },
             ..
         }) = node.kind
         {
-            let source = git::fetch_commit_hash(repo, rev)
-                .with_context(|| format!("failed to find commit hash for `{node_id}`"))?;
+            let source = match &build_lockfile {
+                Some(lockfile) => lockfile
+                    .get_source(&node_id, &repo)
+                    .with_context(|| format!("failed to resolve locked git source `{node_id}`"))?,
+                None => git::fetch_commit_hash(repo, rev)
+                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
+            };
             git_sources.insert(node_id, source);
         }
     }
+    if write_lockfile {
+        BuildLockfile::write_git_sources(&lockfile_path, &git_sources, &descriptor_fingerprint)
+            .with_context(|| {
+                format!(
+                    "failed to write build lockfile to `{}`",
+                    lockfile_path.display()
+                )
+            })?;
+        log::info!("wrote build lockfile to {}", lockfile_path.display());
+    }
 
-    let session = || connect_to_coordinator_rpc_with_defaults(coordinator_addr, coordinator_port);
+    let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
     let build_kind = if force_local {
-        tracing::info!("Building locally, as requested through `--force-local`");
+        log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
-        tracing::info!("Building locally because dataflow does not contain any `deploy` sections");
+        log::info!("Building locally because dataflow does not contain any `deploy` sections");
         BuildKind::Local
     } else if coordinator_addr.is_some() || coordinator_port.is_some() {
-        tracing::info!(
-            "Building through coordinator, using the given coordinator socket information"
-        );
+        log::info!("Building through coordinator, using the given coordinator socket information");
         // explicit coordinator address or port set -> there should be a coordinator running
         BuildKind::ThroughCoordinator {
-            coordinator_client: session()
-                .await
-                .context("failed to connect to coordinator")?,
+            coordinator_session: session().context("failed to connect to coordinator")?,
         }
     } else {
-        match session().await {
-            Ok(coordinator_client) => {
+        match session() {
+            Ok(coordinator_session) => {
                 // we found a local coordinator instance at default port -> use it for building
-                tracing::info!(
-                    "Found local dora coordinator instance -> building through coordinator"
-                );
-                BuildKind::ThroughCoordinator { coordinator_client }
+                log::info!("Found local dora coordinator instance -> building through coordinator");
+                BuildKind::ThroughCoordinator {
+                    coordinator_session,
+                }
             }
-            Err(ConnectAndCheckVersionError::ConnectionFailed(_)) => {
-                tracing::warn!("No dora coordinator instance found -> trying a local build");
+            Err(_) => {
+                log::warn!("No dora coordinator instance found -> trying a local build");
                 // no coordinator instance found -> do a local build
                 BuildKind::Local
             }
-            Err(err) => return Err(err).context("failed to connect to coordinator"),
         }
     };
 
     match build_kind {
         BuildKind::Local => {
-            tracing::info!("running local build");
+            log::info!("running local build");
             // use dataflow dir as base working dir
             let local_working_dir = dunce::canonicalize(&dataflow_path)
                 .context("failed to canonicalize dataflow path")?
@@ -206,34 +319,46 @@ pub async fn build_async(
                 &dataflow_session,
                 local_working_dir,
                 uv,
-            )
-            .await?;
+                parallel,
+            )?;
 
             dataflow_session.git_sources = git_sources;
-            // generate a random BuildId and store the associated build info
-            dataflow_session.build_id = Some(BuildId::generate());
+            // Reuse existing build_id if git sources are unchanged and
+            // a prior build already exists. This preserves the
+            // association between the build_id and the git clone
+            // directories so `dora run`'s internal rebuild doesn't
+            // orphan them.
+            if dataflow_session.build_id.is_none() {
+                dataflow_session.build_id = Some(BuildId::generate());
+            }
             dataflow_session.local_build = Some(build_info);
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
         }
-        BuildKind::ThroughCoordinator { coordinator_client } => {
+        BuildKind::ThroughCoordinator {
+            coordinator_session,
+        } => {
             let local_working_dir =
-                local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_client)
-                    .await?;
+                local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_session)?;
             let build_id = build_distributed_dataflow(
-                &coordinator_client,
+                &coordinator_session,
                 dataflow_descriptor,
                 &git_sources,
                 &dataflow_session,
                 local_working_dir,
                 uv,
-                coordinator_addr.unwrap_or(LOCALHOST),
-                log::LevelFilter::Info,
-            )
-            .await?;
+            )?;
 
             dataflow_session.git_sources = git_sources;
+            dataflow_session
+                .write_out_for_dataflow(&dataflow_path)
+                .context("failed to write out dataflow session file")?;
+
+            // wait until dataflow build is finished
+
+            wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info)?;
+
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
             dataflow_session
@@ -247,16 +372,14 @@ pub async fn build_async(
 
 enum BuildKind {
     Local,
-    ThroughCoordinator {
-        coordinator_client: CoordinatorControlClient,
-    },
+    ThroughCoordinator { coordinator_session: WsSession },
 }
 
-async fn connect_to_coordinator_rpc_with_defaults(
+fn connect_to_coordinator_with_defaults(
     coordinator_addr: Option<std::net::IpAddr>,
     coordinator_port: Option<u16>,
-) -> Result<CoordinatorControlClient, ConnectAndCheckVersionError> {
-    let addr = coordinator_addr.unwrap_or(LOCALHOST);
-    let control_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_CONTROL_DEFAULT);
-    connect_and_check_version(addr, control_port).await
+) -> eyre::Result<WsSession> {
+    let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
+    let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
+    connect_to_coordinator((coordinator_addr, coordinator_port).into())
 }

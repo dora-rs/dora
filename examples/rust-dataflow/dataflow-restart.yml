@@ -11,6 +11,10 @@ nodes:
     build: cargo build -p rust-dataflow-example-status-node
     path: ../../target/debug/rust-dataflow-example-status-node
     restart_policy: on-failure
+    max_restarts: 5
+    restart_delay: 1.0
+    max_restart_delay: 10.0
+    health_check_timeout: 30.0
     inputs:
       tick: dora/timer/millis/100
       fail: dora/timer/millis/400
@@ -24,6 +28,11 @@ nodes:
     build: cargo build -p rust-dataflow-example-sink
     path: ../../target/debug/rust-dataflow-example-sink
     restart_policy: always
+    max_restarts: 10
+    restart_delay: 0.5
+    restart_window: 60.0
     inputs:
-      exit: rust-status-node/triggered-exit
+      exit:
+        source: rust-status-node/triggered-exit
+        input_timeout: 10.0
       message: rust-status-node/status

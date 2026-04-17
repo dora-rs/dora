@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io::Write};
 
 use clap::Args;
-use dora_core::{config::InputMapping, topics::zenoh_output_publish_topic};
+use dora_core::config::InputMapping;
 use dora_message::id::{DataId, NodeId};
 use serde::Serialize;
 use tabwriter::TabWriter;
@@ -35,10 +35,10 @@ pub struct List {
     coordinator: CoordinatorOptions,
 }
 impl Executable for List {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        list(self.coordinator, self.selector, self.format).await
+        list(self.coordinator, self.selector, self.format)
     }
 }
 
@@ -47,16 +47,15 @@ struct OutputEntry {
     node: NodeId,
     name: DataId,
     subscribers: Vec<String>,
-    zenoh_key: String,
 }
 
-async fn list(
+fn list(
     coordinator: CoordinatorOptions,
     selector: DataflowSelector,
     format: OutputFormat,
 ) -> eyre::Result<()> {
-    let client = coordinator.connect_rpc().await?;
-    let (dataflow_id, descriptor) = selector.resolve(&client).await?;
+    let session = coordinator.connect()?;
+    let (_dataflow_id, descriptor) = selector.resolve(&session)?;
 
     let mut subscribers = BTreeMap::<(&NodeId, &DataId), Vec<(&NodeId, &DataId)>>::new();
     for node in &descriptor.nodes {
@@ -82,7 +81,6 @@ async fn list(
                     .into_iter()
                     .map(|(node, data)| format!("{node}/{data}"))
                     .collect(),
-                zenoh_key: zenoh_output_publish_topic(dataflow_id, &node.id, output),
             });
         }
     }
@@ -90,14 +88,13 @@ async fn list(
     match format {
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
-            tw.write_all(b"Node\tName\tZenoh Key\tSubscribers\n")?;
+            tw.write_all(b"Node\tName\tSubscribers\n")?;
             for entry in entries {
                 tw.write_all(
                     format!(
-                        "{}\t{}\t{}\t{}\n",
+                        "{}\t{}\t{}\n",
                         entry.node,
                         entry.name,
-                        entry.zenoh_key,
                         entry.subscribers.join(", ")
                     )
                     .as_bytes(),

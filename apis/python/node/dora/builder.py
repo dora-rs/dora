@@ -44,6 +44,9 @@ class Output:
         return f"{self.node.id}/{self.output_id}"
 
 
+_VALID_QUEUE_POLICIES = frozenset({"drop_oldest", "backpressure"})
+
+
 class Node:
     """A node in a dora dataflow."""
 
@@ -100,29 +103,41 @@ class Node:
         return Output(self, output_id)
 
     def add_input(
-        self, input_id: str, source: str | Output, queue_size: int = None
+        self,
+        input_id: str,
+        source: str | Output,
+        queue_size: int = None,
+        queue_policy: str = None,
     ) -> Node:
-        """Adds a user-defined input to the node. Source can be a string or an Output object."""
+        """Adds a user-defined input to the node. Source can be a string or an Output object.
+
+        Args:
+            input_id: The input identifier.
+            source: Source node/output (e.g. "node_a/output_1") or an Output object.
+            queue_size: Input buffer size. When full, behavior depends on queue_policy.
+            queue_policy: "drop_oldest" (default) or "backpressure" (buffers 10x queue_size).
+        """
+        if queue_policy is not None and queue_policy not in _VALID_QUEUE_POLICIES:
+            raise ValueError(
+                f"queue_policy must be one of {_VALID_QUEUE_POLICIES}, got {queue_policy!r}"
+            )
+        if queue_size is not None and queue_size < 1:
+            raise ValueError(f"queue_size must be >= 1, got {queue_size}")
+
         if "inputs" not in self.config:
             self.config["inputs"] = {}
 
-        if isinstance(source, Output):
-            source_str = str(source)
+        source_str = str(source) if isinstance(source, Output) else source
+        has_options = queue_size is not None or queue_policy is not None
+        if has_options:
+            opts = {"source": source_str}
             if queue_size is not None:
-                self.config["inputs"][input_id] = {
-                    "source": source_str,
-                    "queue_size": queue_size,
-                }
-            else:
-                self.config["inputs"][input_id] = source_str
+                opts["queue_size"] = queue_size
+            if queue_policy is not None:
+                opts["queue_policy"] = queue_policy
+            self.config["inputs"][input_id] = opts
         else:
-            if queue_size is not None:
-                self.config["inputs"][input_id] = {
-                    "source": source,
-                    "queue_size": queue_size,
-                }
-            else:
-                self.config["inputs"][input_id] = source
+            self.config["inputs"][input_id] = source_str
         return self
 
     def to_dict(self) -> dict:

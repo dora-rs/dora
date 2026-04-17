@@ -1,0 +1,25 @@
+[package]
+name = "dora-coordinator-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+redb-backend = ["dep:redb", "dep:bincode", "dep:libc"]
+
+[dependencies]
+dora-message = { workspace = true }
+bincode = { version = "2.0", features = ["serde"], optional = true }
+eyre = { workspace = true }
+libc = { version = "0.2", optional = true }
+redb = { version = "2", optional = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

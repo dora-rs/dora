@@ -28,7 +28,7 @@ impl Package {
         }
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.messages.is_empty() && self.services.is_empty() && self.actions.is_empty()
     }
 

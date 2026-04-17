@@ -1,0 +1,39 @@
+types:
+  Image:
+    arrow: Struct
+    description: "Raw image with width, height, encoding, data fields"
+    fields:
+      - name: width
+        type: UInt32
+      - name: height
+        type: UInt32
+      - name: encoding
+        type: Utf8
+      - name: data
+        type: LargeBinary
+  CompressedImage:
+    arrow: LargeBinary
+    description: "JPEG/PNG compressed image bytes"
+  PointCloud:
+    arrow: Struct
+    description: "3D point cloud with XYZ coordinates and optional fields"
+    fields:
+      - name: points
+        type: LargeBinary
+      - name: width
+        type: UInt32
+      - name: height
+        type: UInt32
+  AudioFrame:
+    arrow: Struct
+    description: "Audio samples with sample_rate, channels, data fields"
+    params:
+      - name: sample_type
+        default: f32
+    fields:
+      - name: sample_rate
+        type: UInt32
+      - name: channels
+        type: UInt32
+      - name: data
+        type: LargeBinary

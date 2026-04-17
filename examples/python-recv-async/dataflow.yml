@@ -1,0 +1,19 @@
+nodes:
+  - id: sender
+    path: sender.py
+    outputs:
+      - values
+    output_types:
+      values: std/core/v1/Int64
+
+  - id: async-receiver
+    path: receiver.py
+    inputs:
+      values: sender/values
+    input_types:
+      values: std/core/v1/Int64
+    # outputs declared to test send_output() from async context (GIL interaction)
+    outputs:
+      - echo
+    output_types:
+      echo: std/core/v1/Int64

@@ -1,4 +1,4 @@
-mod top;
+pub mod top;
 
 use clap::Subcommand;
 
@@ -11,9 +11,9 @@ pub enum Inspect {
 }
 
 impl Executable for Inspect {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         match self {
-            Inspect::Top(args) => args.execute().await,
+            Inspect::Top(args) => args.execute(),
         }
     }
 }

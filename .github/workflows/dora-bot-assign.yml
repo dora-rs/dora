@@ -14,7 +14,7 @@ jobs:
     if: github.event_name == 'issue_comment'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Parses comment then assign/unassign user
         env:

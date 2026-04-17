@@ -1,0 +1,34 @@
+# CI workflow for Python dora nodes.
+# Copy this file to your project's .github/workflows/ directory.
+#
+# Prerequisites: your node uses `from dora import Node` and has a
+# tests/ directory with pytest tests (using MockNode from dora.testing).
+
+name: Python Node CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pyarrow dora-rs pytest
+
+      - name: Run tests
+        run: pytest tests/ -v

@@ -43,16 +43,16 @@ impl GitManager {
             .filter(|p| p.git_source.repo == repo)
             .map(|p| &p.git_source.commit_hash);
 
-        if let Some(using) = self.clones_in_use.get(&clone_dir) {
-            if !using.is_empty() {
-                // The directory is currently in use by another dataflow. Rebuilding
-                // while a dataflow is running could lead to unintended behavior.
-                eyre::bail!(
-                    "the build directory is still in use by the following \
+        if let Some(using) = self.clones_in_use.get(&clone_dir)
+            && !using.is_empty()
+        {
+            // The directory is currently in use by another dataflow. Rebuilding
+            // while a dataflow is running could lead to unintended behavior.
+            eyre::bail!(
+                "the build directory is still in use by the following \
                     dataflows, please stop them before rebuilding: {}",
-                    using.iter().join(", ")
-                )
-            }
+                using.iter().join(", ")
+            )
         }
 
         let reuse = if self.clone_dir_ready(session_id, &clone_dir) {
@@ -176,18 +176,14 @@ impl GitFolder {
                     )
                     .await;
                 let clone_target = target_dir.clone();
-                let checkout_result = await_git_worker(
-                    tokio::task::spawn_blocking(move || {
-                        let repository =
-                            clone_into(repo_url.clone(), &clone_target).with_context(|| {
-                                format!("failed to clone git repo from `{repo_url}`")
-                            })?;
-                        checkout_tree(&repository, &commit_hash)
-                            .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
-                    }),
-                    "git clone/checkout worker task failed",
-                )
-                .await;
+                let checkout_result = tokio::task::spawn_blocking(move || {
+                    let repository = clone_into(repo_url.clone(), &clone_target)
+                        .with_context(|| format!("failed to clone git repo from `{repo_url}`"))?;
+                    checkout_tree(&repository, &commit_hash)
+                        .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
+                })
+                .await
+                .unwrap();
 
                 match checkout_result {
                     Ok(()) => target_dir,
@@ -281,13 +277,6 @@ impl GitFolder {
     }
 }
 
-async fn await_git_worker<T>(
-    worker: tokio::task::JoinHandle<eyre::Result<T>>,
-    context: &'static str,
-) -> eyre::Result<T> {
-    worker.await.wrap_err(context)?
-}
-
 #[derive(Debug)]
 enum ReuseOptions {
     /// Create a new clone of the repository.
@@ -366,6 +355,12 @@ async fn fetch_changes(
 }
 
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
+    // Reject arbitrary rev-spec expressions; only allow hex commit hashes and branch/tag names.
+    if commit_hash.contains("..") || commit_hash.contains(':') || commit_hash.contains('^') {
+        eyre::bail!(
+            "invalid commit reference '{commit_hash}': rev-spec expressions are not allowed"
+        );
+    }
     let (object, reference) = repository
         .revparse_ext(commit_hash)
         .context("failed to parse ref")?;
@@ -382,22 +377,4 @@ fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Resu
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::await_git_worker;
-
-    #[tokio::test]
-    async fn returns_error_when_git_worker_join_fails() {
-        let worker = tokio::spawn(async { Ok::<(), eyre::Error>(()) });
-        worker.abort();
-
-        let err = await_git_worker(worker, "git clone/checkout worker task failed")
-            .await
-            .expect_err("aborted worker should return an error");
-
-        let msg = format!("{err:#}");
-        assert!(msg.contains("git clone/checkout worker task failed"));
-    }
 }

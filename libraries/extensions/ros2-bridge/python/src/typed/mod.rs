@@ -1,27 +1,7 @@
-use dora_ros2_bridge_msg_gen::types::Message;
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
-
-pub use serialize::TypedValue;
-
-pub mod deserialize;
-pub mod serialize;
-
-#[derive(Debug, Clone)]
-pub struct TypeInfo<'a> {
-    pub package_name: Cow<'a, str>,
-    pub message_name: Cow<'a, str>,
-    pub messages: Arc<HashMap<String, HashMap<String, Message>>>,
-}
-
-/// Serde requires that struct and field names are known at
-/// compile time with a `'static` lifetime, which is not
-/// possible in this case. Thus, we need to use dummy names
-/// instead.
-///
-/// The actual names do not really matter because
-/// the CDR format of ROS2 does not encode struct or field
-/// names.
-const DUMMY_STRUCT_NAME: &str = "struct";
+// Re-export the Arrow<->ROS2 conversion types from the shared crate.
+// The actual logic lives in `dora-ros2-bridge-arrow` to be reusable
+// by the standalone bridge binary.
+pub use dora_ros2_bridge_arrow::*;
 
 #[cfg(test)]
 mod tests {
@@ -57,12 +37,11 @@ mod tests {
     use serde_assert::Deserializer;
     #[test]
     fn test_python_array_code() -> Result<()> {
-        pyo3::prepare_freethreaded_python();
         let context = Ros2Context::new(None).context("Could not create a context")?;
         let messages = context.messages.clone();
         let serializer = Serializer::builder().build();
 
-        Python::with_gil(|py| -> Result<()> {
+        Python::attach(|py| -> Result<()> {
             let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")); //.join("test_utils.py"); // Adjust this path as needed
 
             // Add the Python module's directory to sys.path
@@ -80,10 +59,10 @@ mod tests {
 
             let arrays = my_module.getattr("TEST_ARRAYS")?;
             let arrays = arrays
-                .downcast::<PyList>()
+                .cast::<PyList>()
                 .map_err(|err| eyre!("Could not downcast PyAny. Err: {}", err))?;
             for array_wrapper in arrays.iter() {
-                let arrays = array_wrapper.downcast::<PyTuple>().map_err(|err| {
+                let arrays = array_wrapper.cast::<PyTuple>().map_err(|err| {
                     eyre!("Could not downcast expected tuple test array. Err: {}", err)
                 })?;
                 let package_name: String = arrays.get_item(0)?.extract()?;

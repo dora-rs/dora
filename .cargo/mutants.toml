@@ -1,0 +1,69 @@
+# cargo-mutants configuration
+#
+# See docs/plan-agentic-qa-strategy.md for the mutation testing strategy.
+# Waived mutants here are documented equivalent mutants (mathematically
+# indistinguishable from the original) or known false positives.
+#
+# DO NOT ADD untested code to this skip list. The goal is to drive the
+# mutation score up by improving tests, not to hide gaps.
+
+# Run ALL workspace tests for every mutation, not just the tests in the
+# mutated package. This is required for binary crates (dora-daemon,
+# dora-coordinator) whose real test coverage comes from workspace-level
+# E2E tests in `tests/` (ws-cli-e2e, fault-tolerance-e2e, example-smoke)
+# that belong to the `dora-examples` package.
+#
+# Experimental verification 2026-04-08 (commit b878e50 follow-up):
+# fault_tolerance.rs under the daemon went from 21 missed / 0 caught
+# (package-scoped) to 21 caught / 0 missed (workspace-scoped). The
+# original 5.8% daemon mutation score was almost entirely an artifact
+# of cargo-mutants' default scoping behavior, not a real test gap.
+#
+# Cost: roughly 10-40 seconds per mutation depending on which tests
+# are triggered. A full daemon re-run with this config takes ~5 hours.
+# Budget accordingly.
+test_workspace = true
+
+# ---- Equivalent mutants (documented) ----
+#
+# libraries/core/src/types.rs:177:29  replace || with && in types_match
+#
+# Context (types.rs lines 166-188):
+#
+#     pub fn types_match(a: &str, b: &str) -> bool {
+#         let Some(pa) = parse_urn(a) else { return a == b; };
+#         let Some(pb) = parse_urn(b) else { return a == b; };
+#         if pa.base != pb.base { return false; }
+#         if pa.params.is_empty() || pb.params.is_empty() {   // <-- mutation here
+#             return true;
+#         }
+#         for (k, va) in &pa.params {
+#             if let Some(vb) = pb.params.get(k) {
+#                 if va != vb { return false; }
+#             }
+#         }
+#         true
+#     }
+#
+# Reasoning: if we change `||` to `&&`, the early-return fast path is
+# only taken when BOTH sides have empty params. In every other case
+# execution continues into the for loop. But:
+#   - If pa.params is empty, the loop body does not execute, and we
+#     return `true` at the end — same as the fast path.
+#   - If pb.params is empty but pa.params is not, the loop iterates
+#     over pa.params, pb.params.get(k) always returns None, the body
+#     does not return `false`, and we fall through to `true` — same
+#     as the fast path.
+# Therefore the `&&` mutation produces identical output for all inputs.
+# This is a genuine equivalent mutant and cannot be tested around.
+#
+# If the function is refactored in a way that breaks this equivalence,
+# remove this waiver and expect the mutation to be caught by existing
+# tests.
+exclude_re = [
+    # Line/column numbers intentionally omitted so that unrelated edits
+    # above the target function don't silently break this waiver.
+    # The mutation name uniquely identifies this specific || → &&
+    # replacement inside types_match (only one such mutation exists).
+    "libraries/core/src/types\\.rs:.*replace \\|\\| with && in types_match",
+]

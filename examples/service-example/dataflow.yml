@@ -1,0 +1,27 @@
+nodes:
+  - id: service-client-1
+    build: cargo build -p service-example-client
+    path: ../../target/debug/service-example-client
+    inputs:
+      tick: dora/timer/millis/500
+      response: service-server/response
+    outputs:
+      - request
+
+  - id: service-client-2
+    build: cargo build -p service-example-client
+    path: ../../target/debug/service-example-client
+    inputs:
+      tick: dora/timer/millis/700
+      response: service-server/response
+    outputs:
+      - request
+
+  - id: service-server
+    build: cargo build -p service-example-server
+    path: ../../target/debug/service-example-server
+    inputs:
+      request-1: service-client-1/request
+      request-2: service-client-2/request
+    outputs:
+      - response

@@ -1,10 +1,5 @@
 #!/usr/bin/env python
-"""CUDA benchmark demonstration sender for dora-rs.
-
-This script benchmarks the transmission of large data packets from a GPU-based
-node. It demonstrates both standard CPU-based transfer (default) and
-high-performance zero-copy CUDA-to-CUDA transfer using IPC handles.
-"""
+"""TODO: Add docstring."""
 
 
 import os

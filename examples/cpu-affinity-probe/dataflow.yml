@@ -1,0 +1,10 @@
+# Regression fixture for `cpu_affinity` (tracks #252). A probe binary
+# reads its own affinity mask via sched_getaffinity() and prints it.
+# The e2e test asserts the printed mask equals the requested set.
+nodes:
+  - id: probe
+    build: cargo build -p cpu-affinity-probe
+    path: ../../target/debug/cpu-affinity-probe
+    cpu_affinity: [0, 1]
+    inputs:
+      tick: dora/timer/millis/100

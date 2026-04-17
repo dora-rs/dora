@@ -1,0 +1,16 @@
+# Cross-compilation Docker images for `cross` (https://github.com/cross-rs/cross).
+#
+# The default images ship an older glibc that cannot run build scripts
+# compiled on the host (serde_core needs GLIBC_2.28+, num-traits needs
+# GLIBC_2.25+). Pin the `main` tag which ships glibc 2.31+.
+[target.i686-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/i686-unknown-linux-gnu:main"
+
+[target.aarch64-unknown-linux-gnu]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+
+[target.aarch64-unknown-linux-musl]
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-musl:main"
+
+[target.armv7-unknown-linux-musleabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-musleabihf:main"

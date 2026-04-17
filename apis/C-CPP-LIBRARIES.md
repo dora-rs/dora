@@ -21,6 +21,8 @@ Pre-built C and C++ static libraries are published as GitHub release artifacts f
 | `aarch64-apple-darwin` | macOS Apple Silicon | `.tar.gz` |
 | `x86_64-pc-windows-msvc` | Windows x86_64 | `.zip` |
 
+Intel macOS (`x86_64-apple-darwin`) is not published as a pre-built artifact — build from source with `cargo build --release -p dora-node-api-c -p dora-operator-api-c -p dora-node-api-cxx -p dora-operator-api-cxx`.
+
 ## Download
 
 1. Go to the [Dora releases page](https://github.com/dora-rs/dora/releases)
@@ -83,7 +85,12 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
         set(DORA_TARGET "aarch64-apple-darwin")
     else()
-        set(DORA_TARGET "x86_64-apple-darwin")
+        # No pre-built artifact for Intel macOS (x86_64-apple-darwin) —
+        # the publish workflow only targets Apple Silicon. Build from
+        # source with `cargo build --release -p dora-node-api-c` on x86_64 Macs.
+        message(FATAL_ERROR
+            "No pre-built dora C/C++ artifact for Intel macOS. "
+            "Build from source or run on Apple Silicon.")
     endif()
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
     set(DORA_TARGET "x86_64-pc-windows-msvc")

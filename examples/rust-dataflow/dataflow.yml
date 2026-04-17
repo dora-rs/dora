@@ -6,6 +6,8 @@ nodes:
       tick: dora/timer/millis/10
     outputs:
       - random
+    output_types:
+      random: std/core/v1/UInt64
 
   - id: rust-status-node
     build: cargo build -p rust-dataflow-example-status-node
@@ -13,11 +15,17 @@ nodes:
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
+    input_types:
+      random: std/core/v1/UInt64
     outputs:
       - status
+    output_types:
+      status: std/core/v1/String
 
   - id: rust-sink
     build: cargo build -p rust-dataflow-example-sink
     path: ../../target/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
+    input_types:
+      message: std/core/v1/String

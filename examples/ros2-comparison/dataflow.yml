@@ -1,0 +1,14 @@
+nodes:
+  - id: dora-sender
+    path: dora_sender.py
+    outputs:
+      - latency
+      - throughput
+
+  - id: dora-receiver
+    path: dora_receiver.py
+    inputs:
+      latency: dora-sender/latency
+      throughput:
+        source: dora-sender/throughput
+        queue_size: 1000

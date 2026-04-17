@@ -1,22 +1,26 @@
 use std::collections::BTreeMap;
 
 pub use crate::common::{
-    DataMessage, LogLevel, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
+    DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
     BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
 };
 
+/// Per-dataflow status reported by a daemon after (re-)registration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DataflowStatusEntry {
+    pub dataflow_id: uuid::Uuid,
+    pub running_nodes: Vec<NodeId>,
+}
+
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
-    /// Register a notification channel for daemon→coordinator RPC.
-    ///
-    /// Sent on a second TCP connection after the initial registration.
-    /// The coordinator sets up a `CoordinatorNotify` tarpc server
-    /// on this connection.
-    RegisterNotificationChannel {
+    Event {
         daemon_id: DaemonId,
+        event: DaemonEvent,
     },
 }
 
@@ -24,23 +28,16 @@ pub enum CoordinatorRequest {
 pub struct DaemonRegisterRequest {
     dora_version: semver::Version,
     pub machine_id: Option<String>,
-    /// System-level unique machine identifier (e.g. `/etc/machine-id` on Linux).
-    /// Used to reliably detect whether CLI and daemon run on the same machine,
-    /// even behind NAT.
     #[serde(default)]
-    pub machine_uid: Option<String>,
-    /// Zenoh ZID reported by the daemon's local zenoh::Session, if one was opened.
-    #[serde(default)]
-    pub zenoh_peer_id: Option<String>,
+    pub labels: BTreeMap<String, String>,
 }
 
 impl DaemonRegisterRequest {
-    pub fn new(machine_id: Option<String>, zenoh_peer_id: Option<String>) -> Self {
+    pub fn new(machine_id: Option<String>, labels: BTreeMap<String, String>) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
-            machine_uid: crate::common::machine_uid(),
-            zenoh_peer_id,
+            labels,
         }
     }
 
@@ -60,6 +57,89 @@ impl DaemonRegisterRequest {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub enum DaemonEvent {
+    BuildResult {
+        build_id: BuildId,
+        result: Result<(), String>,
+    },
+    SpawnResult {
+        dataflow_id: DataflowId,
+        result: Result<(), String>,
+    },
+    AllNodesReady {
+        dataflow_id: DataflowId,
+        exited_before_subscribe: Vec<NodeId>,
+    },
+    AllNodesFinished {
+        dataflow_id: DataflowId,
+        result: DataflowDaemonResult,
+    },
+    Heartbeat {
+        #[serde(default)]
+        ft_stats: Option<FaultToleranceSnapshot>,
+    },
+    /// Sent by the daemon after registration to report its current state.
+    /// Enables coordinator-daemon reconciliation on reconnect.
+    StatusReport {
+        running_dataflows: Vec<DataflowStatusEntry>,
+    },
+    Log(LogMessage),
+    Exit,
+    NodeMetrics {
+        dataflow_id: DataflowId,
+        metrics: BTreeMap<NodeId, NodeMetrics>,
+        #[serde(default)]
+        network: Option<NetworkMetrics>,
+    },
+    /// Topic debug payload destined for one or more active CLI subscriptions.
+    ///
+    /// Daemon and coordinator are co-deployed from the same build, so this
+    /// multi-subscriber shape is safe to evolve within the repository.
+    TopicDebugData {
+        dataflow_id: DataflowId,
+        subscription_ids: Vec<uuid::Uuid>,
+        payload: Vec<u8>,
+    },
+    /// Daemon acknowledges state catch-up through a given sequence number.
+    StateCatchUpAck {
+        dataflow_id: DataflowId,
+        ack_sequence: u64,
+    },
+}
+
+/// Health status of a node
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum NodeStatus {
+    #[default]
+    Running,
+    Restarting,
+    /// One or more inputs have timed out (circuit breaker open)
+    Degraded,
+    Failed,
+}
+
+impl std::fmt::Display for NodeStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeStatus::Running => write!(f, "Running"),
+            NodeStatus::Restarting => write!(f, "Restarting"),
+            NodeStatus::Degraded => write!(f, "Degraded"),
+            NodeStatus::Failed => write!(f, "Failed"),
+        }
+    }
+}
+
+/// Snapshot of daemon-level fault tolerance counters
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct FaultToleranceSnapshot {
+    pub restarts: u64,
+    pub health_check_kills: u64,
+    pub input_timeouts: u64,
+    pub circuit_breaker_recoveries: u64,
+}
+
 /// Resource metrics for a node process
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeMetrics {
@@ -73,6 +153,29 @@ pub struct NodeMetrics {
     pub disk_read_bytes: Option<u64>,
     /// Disk write bytes per second (if available)
     pub disk_write_bytes: Option<u64>,
+    /// Number of times this node has been restarted
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Input IDs that have timed out (circuit breaker open)
+    #[serde(default)]
+    pub broken_inputs: Vec<String>,
+    /// Current health status
+    #[serde(default)]
+    pub status: NodeStatus,
+    /// Number of pending messages in the node's input queue
+    #[serde(default)]
+    pub pending_messages: u64,
+}
+
+/// Per-dataflow network I/O counters for cross-daemon Zenoh traffic.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct NetworkMetrics {
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub messages_sent: u64,
+    pub messages_received: u64,
+    #[serde(default)]
+    pub publish_failures: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -87,25 +190,22 @@ impl DataflowDaemonResult {
     }
 }
 
-/// tarpc service for daemon→coordinator notifications.
-///
-/// The coordinator runs a tarpc server implementing this trait,
-/// and each daemon holds a client to notify the coordinator about
-/// events such as node readiness, dataflow completion, and metrics.
-#[tarpc::service]
-pub trait CoordinatorNotify {
-    /// Report that all local nodes on this daemon are ready.
-    async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
-    /// Report that all nodes on this daemon have finished.
-    async fn all_nodes_finished(dataflow_id: DataflowId, result: DataflowDaemonResult);
-    /// Daemon heartbeat.
-    async fn heartbeat();
-    /// Notify the coordinator that this daemon is exiting.
-    async fn daemon_exit();
-    /// Report resource metrics for running nodes.
-    async fn node_metrics(dataflow_id: DataflowId, metrics: BTreeMap<NodeId, NodeMetrics>);
-    /// Report that a build has completed (or failed) on this daemon.
-    async fn build_result(build_id: BuildId, result: Result<(), String>);
-    /// Report that a dataflow spawn has completed (or failed) on this daemon.
-    async fn spawn_result(dataflow_id: DataflowId, result: Result<(), String>);
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum DaemonCoordinatorReply {
+    TriggerBuildResult(Result<(), String>),
+    TriggerSpawnResult(Result<(), String>),
+    ReloadResult(Result<(), String>),
+    StopResult(Result<(), String>),
+    DestroyResult {
+        result: Result<(), String>,
+        #[serde(skip)]
+        notify: Option<tokio::sync::oneshot::Sender<()>>,
+    },
+    Logs(Result<Vec<u8>, String>),
+    RestartNodeResult(Result<(), String>),
+    StopNodeResult(Result<(), String>),
+    SetParamResult(Result<(), String>),
+    DeleteParamResult(Result<(), String>),
+    StartTopicDebugStreamResult(Result<(), String>),
+    StopTopicDebugStreamResult(Result<(), String>),
 }

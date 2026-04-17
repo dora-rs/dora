@@ -10,6 +10,8 @@ the numba package.
 """
 
 import ctypes
+import functools
+import sys
 from contextlib import contextmanager
 from typing import ContextManager
 
@@ -20,28 +22,43 @@ import torch
 # ---------------------------------------------------------------------------
 # CUDA runtime bindings via ctypes
 # ---------------------------------------------------------------------------
-_libcudart = ctypes.CDLL("libcudart.so")
 
 
 class _CudaIpcMemHandle(ctypes.Structure):
     _fields_ = [("reserved", ctypes.c_byte * 64)]
 
 
-_libcudart.cudaIpcGetMemHandle.restype = ctypes.c_int
-_libcudart.cudaIpcGetMemHandle.argtypes = [
-    ctypes.POINTER(_CudaIpcMemHandle),
-    ctypes.c_void_p,
-]
-_libcudart.cudaIpcOpenMemHandle.restype = ctypes.c_int
-_libcudart.cudaIpcOpenMemHandle.argtypes = [
-    ctypes.POINTER(ctypes.c_void_p),
-    _CudaIpcMemHandle,
-    ctypes.c_uint,
-]
-_libcudart.cudaIpcCloseMemHandle.restype = ctypes.c_int
-_libcudart.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
-_libcudart.cudaDeviceSynchronize.restype = ctypes.c_int
-_libcudart.cudaDeviceSynchronize.argtypes = []
+@functools.lru_cache(maxsize=1)
+def _libcudart():
+    # Resolve the CUDA runtime lazily so non-CUDA hosts (and macOS/Windows
+    # importers that never touch IPC) can `import dora.cuda` without blowing
+    # up at module load. Raises a descriptive RuntimeError on failure.
+    name = {"linux": "libcudart.so", "darwin": "libcudart.dylib"}.get(
+        sys.platform, "cudart64_12.dll"
+    )
+    try:
+        lib = ctypes.CDLL(name)
+    except OSError as e:
+        raise RuntimeError(
+            f"failed to load CUDA runtime ({name}): {e}. "
+            "CUDA IPC requires a working CUDA installation."
+        ) from e
+    lib.cudaIpcGetMemHandle.restype = ctypes.c_int
+    lib.cudaIpcGetMemHandle.argtypes = [
+        ctypes.POINTER(_CudaIpcMemHandle),
+        ctypes.c_void_p,
+    ]
+    lib.cudaIpcOpenMemHandle.restype = ctypes.c_int
+    lib.cudaIpcOpenMemHandle.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        _CudaIpcMemHandle,
+        ctypes.c_uint,
+    ]
+    lib.cudaIpcCloseMemHandle.restype = ctypes.c_int
+    lib.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
+    lib.cudaDeviceSynchronize.restype = ctypes.c_int
+    lib.cudaDeviceSynchronize.argtypes = []
+    return lib
 
 _cudaIpcMemLazyEnablePeerAccess = 1
 
@@ -91,7 +108,7 @@ def torch_to_ipc_buffer(tensor: torch.Tensor) -> tuple[pa.array, dict]:
 
     handle = _CudaIpcMemHandle()
     _check(
-        _libcudart.cudaIpcGetMemHandle(
+        _libcudart().cudaIpcGetMemHandle(
             ctypes.byref(handle), ctypes.c_void_p(tensor.data_ptr())
         ),
         "cudaIpcGetMemHandle",
@@ -124,24 +141,28 @@ class IpcHandle:
 
     def open(self):
         """Open the IPC handle and return the device pointer value."""
+        lib = _libcudart()
         handle = _CudaIpcMemHandle()
         ctypes.memmove(ctypes.byref(handle), self._handle_bytes, 64)
         self._d_ptr = ctypes.c_void_p()
         _check(
-            _libcudart.cudaIpcOpenMemHandle(
+            lib.cudaIpcOpenMemHandle(
                 ctypes.byref(self._d_ptr),
                 handle,
                 _cudaIpcMemLazyEnablePeerAccess,
             ),
             "cudaIpcOpenMemHandle",
         )
-        _libcudart.cudaDeviceSynchronize()
+        _check(lib.cudaDeviceSynchronize(), "cudaDeviceSynchronize")
         return self._d_ptr.value
 
     def close(self):
         """Close the IPC handle mapping."""
         if self._d_ptr is not None and self._d_ptr.value is not None:
-            _libcudart.cudaIpcCloseMemHandle(self._d_ptr)
+            _check(
+                _libcudart().cudaIpcCloseMemHandle(self._d_ptr),
+                "cudaIpcCloseMemHandle",
+            )
             self._d_ptr = None
 
 

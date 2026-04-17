@@ -3,7 +3,6 @@ use std::{
     path::PathBuf,
     pin::pin,
     sync::Arc,
-    task::Poll,
     time::Duration,
 };
 
@@ -23,7 +22,7 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
-    DaemonCommunicationWrapper,
+    DaemonCommunicationWrapper, PatternError,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
 };
@@ -37,6 +36,7 @@ pub use scheduler::Scheduler as EventScheduler;
 
 mod data_conversion;
 mod event;
+pub mod input_tracker;
 pub mod merged;
 mod scheduler;
 mod thread;
@@ -62,35 +62,62 @@ mod thread;
 /// [`StopCause::Manual`] was received.
 pub struct EventStream {
     node_id: NodeId,
-    receiver: tokio::sync::mpsc::UnboundedReceiver<EventItem>,
+    // Drop order: Rust drops fields in declaration order (top to bottom).
+    // receiver must drop FIRST so tx_clone.send() in subscriber threads
+    // returns Err, causing threads to exit before JoinHandles are dropped.
+    // Using `tokio::sync::mpsc::Receiver` — instead of `flume` — avoids the
+    // AB-BA deadlock between flume 0.10's spinlock and pyo3's GIL-acquiring
+    // waker when a Python coroutine polls this stream
+    // (upstream dora-rs/dora#1603).
+    receiver: tokio::sync::mpsc::Receiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
+    _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
-    closed: bool,
+    /// Expected input types from YAML descriptor (for first-message validation).
+    /// Each input is checked once; after the first message, the entry is removed.
+    input_type_checks: HashMap<DataId, arrow_schema::DataType>,
+    /// Events that were consumed by a pattern-aware helper
+    /// (`recv_service_response`, `recv_action_result`) while searching
+    /// for a correlation match. Drained first on the next `recv()` so
+    /// the caller's main event loop never loses intermediate events
+    /// (dora-rs/adora#148).
+    pending_passthrough: std::collections::VecDeque<Event>,
 }
 
 impl EventStream {
-    #[tracing::instrument(level = "trace", skip(clock))]
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
         daemon_communication: &DaemonCommunicationWrapper,
         input_config: BTreeMap<DataId, Input>,
+        input_types: &BTreeMap<DataId, String>,
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
+        zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
+                    DaemonCommunication::Shmem {
+                        daemon_events_region_id,
+                        ..
+                    } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
+                        .wrap_err_with(|| {
+                            format!("failed to create shmem event stream for node `{node_id}`")
+                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event stream for node `{node_id}`")
                         })?
                     }
+
                     DaemonCommunication::Interactive => {
                         DaemonChannel::Interactive(Default::default())
                     }
@@ -105,6 +132,15 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
+                    DaemonCommunication::Shmem {
+                        daemon_events_close_region_id,
+                        ..
+                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
+                        .wrap_err_with(|| {
+                            format!(
+                                "failed to create shmem event close channel for node `{node_id}`"
+                            )
+                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
@@ -125,7 +161,12 @@ impl EventStream {
             .map(|(input, config)| {
                 (
                     input.clone(),
-                    (config.queue_size.unwrap_or(1), VecDeque::new()),
+                    (
+                        config
+                            .queue_size
+                            .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE),
+                        VecDeque::new(),
+                    ),
                 )
             })
             .collect();
@@ -135,7 +176,21 @@ impl EventStream {
             (1_000, VecDeque::new()),
         );
 
-        let scheduler = Scheduler::new(queue_size_limit);
+        let queue_policies: HashMap<DataId, dora_message::config::QueuePolicy> = input_config
+            .iter()
+            .filter_map(|(input, config)| config.queue_policy.map(|p| (input.clone(), p)))
+            .collect();
+
+        let scheduler = Scheduler::with_policies(queue_size_limit, queue_policies);
+
+        let total_queue_capacity: usize = input_config
+            .values()
+            .map(|c| {
+                c.queue_size
+                    .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
+            })
+            .sum::<usize>()
+            .max(64);
 
         let write_events_to = match write_events_to {
             Some(path) => {
@@ -166,6 +221,33 @@ impl EventStream {
             None => None,
         };
 
+        // Resolve input type URNs to Arrow DataTypes for first-message validation.
+        let mut input_type_checks = HashMap::new();
+        {
+            let registry = dora_core::types::TypeRegistry::new();
+            for (input_id, type_urn) in input_types {
+                match registry.resolve_arrow_type(type_urn) {
+                    Some(dt) => {
+                        input_type_checks.insert(input_id.clone(), dt);
+                    }
+                    None => {
+                        // Complex or custom types not resolvable to a simple Arrow DataType
+                        if registry.resolve(type_urn).is_some() {
+                            tracing::debug!(
+                                input = %input_id,
+                                "skipping type check for complex type \"{type_urn}\""
+                            );
+                        } else {
+                            tracing::warn!(
+                                input = %input_id,
+                                "unknown input type URN \"{type_urn}\" — skipping type check"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         Self::init_on_channel(
             dataflow_id,
             node_id,
@@ -174,9 +256,14 @@ impl EventStream {
             clock,
             scheduler,
             write_events_to,
+            input_type_checks,
+            total_queue_capacity,
+            zenoh_session,
+            &input_config,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn init_on_channel(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -185,6 +272,10 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         scheduler: Scheduler,
         write_events_to: Option<WriteEventsTo>,
+        input_type_checks: HashMap<DataId, arrow_schema::DataType>,
+        channel_capacity: usize,
+        zenoh_session: Option<&zenoh::Session>,
+        input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let reply = channel
@@ -205,11 +296,7 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        // Use tokio mpsc instead of flume to avoid a deadlock between flume's
-        // internal Spinlock and pyo3's GIL-acquiring waker (AsyncioWaker).
-        // tokio mpsc drops its internal lock before calling waker.wake(),
-        // preventing the deadlock.
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -220,19 +307,134 @@ impl EventStream {
             _ => true,
         };
 
+        // Spawn zenoh subscribers for each input that has a source node.
+        // These feed events directly into the same flume channel as daemon events.
+        // Subscriber threads are tracked for cleanup in EventStream::drop.
+        let mut zenoh_thread_handles = Vec::new();
+        if let Some(session) = zenoh_session {
+            use zenoh::Wait;
+            for (input_id, input) in input_config {
+                let mapping = &input.mapping;
+                // Only user inputs from other nodes need zenoh subscribers
+                if let dora_message::config::InputMapping::User(user_mapping) = mapping {
+                    let source_node = &user_mapping.source;
+                    let source_output = &user_mapping.output;
+                    let topic = dora_core::topics::zenoh_output_publish_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    let key_expr = match zenoh::key_expr::KeyExpr::new(topic.clone()) {
+                        Ok(k) => k.into_owned(),
+                        Err(e) => {
+                            tracing::warn!(input = %input_id, "invalid zenoh key ({e}), using daemon path");
+                            continue;
+                        }
+                    };
+                    let subscriber = match session.declare_subscriber(key_expr).wait() {
+                        Ok(s) => s,
+                        Err(e) => {
+                            // Graceful degradation: this input falls back to daemon delivery
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare zenoh subscriber ({e}), using daemon path"
+                            );
+                            continue;
+                        }
+                    };
+
+                    tracing::debug!(
+                        input = %input_id,
+                        %topic,
+                        "zenoh subscriber declared for input"
+                    );
+
+                    let tx_clone = tx.clone();
+                    let input_id = input_id.clone();
+                    let handle =
+                        std::thread::Builder::new()
+                            .name(format!("zenoh-sub-{input_id}"))
+                            .spawn(move || {
+                                while let Ok(sample) = subscriber.recv() {
+                                    // Extract metadata from attachment
+                                    let metadata = match sample.attachment() {
+                                        Some(att) => {
+                                            match bincode::deserialize::<
+                                                dora_message::metadata::Metadata,
+                                            >(
+                                                &att.to_bytes()
+                                            ) {
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    tracing::warn!(
+                                                        "zenoh metadata deserialization failed: {e}"
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            tracing::warn!(
+                                                "zenoh sample missing metadata attachment"
+                                            );
+                                            continue;
+                                        }
+                                    };
+
+                                    // Send the raw ZBytes payload to the event
+                                    // loop for zero-copy Arrow conversion.
+                                    // The old path copied SHM payloads into an
+                                    // AVec; this path holds the ZBytes directly
+                                    // so `convert_event_item` can wrap it in an
+                                    // Arrow Buffer backed by the original zenoh
+                                    // buffer (dora-rs/adora#132).
+                                    let payload = sample.payload().clone();
+
+                                    // blocking_send: this thread is a plain
+                                    // std::thread (synchronous subscriber.recv
+                                    // loop), so calling the async Sender::send
+                                    // would require an executor. blocking_send
+                                    // is the documented primitive for this.
+                                    if tx_clone
+                                        .blocking_send(EventItem::ZenohInput {
+                                            id: input_id.clone(),
+                                            metadata: std::sync::Arc::new(metadata),
+                                            payload,
+                                        })
+                                        .is_err()
+                                    {
+                                        break; // receiver dropped
+                                    }
+                                }
+                                tracing::trace!("zenoh subscriber thread exiting");
+                            });
+                    match handle {
+                        Ok(h) => zenoh_thread_handles.push(h),
+                        Err(e) => {
+                            tracing::warn!(
+                                "failed to spawn zenoh subscriber thread ({e}), input will use daemon path"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
             receiver: rx,
             _thread_handle: thread_handle,
+            _zenoh_thread_handles: zenoh_thread_handles,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
             scheduler,
             write_events_to,
             use_scheduler,
-            closed: false,
+            input_type_checks,
+            pending_passthrough: std::collections::VecDeque::new(),
         })
     }
 
@@ -252,12 +454,6 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
-    ///
-    /// ## Panics
-    ///
-    /// This method will panic if called after the event stream has been closed, i.e. after
-    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
-    /// is closed.
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
@@ -280,12 +476,6 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
-    ///
-    /// ## Panics
-    ///
-    /// This method will panic if called after the event stream has been closed, i.e. after
-    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
-    /// is closed.
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
@@ -303,54 +493,95 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// [`StreamExt::next`] method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
-    ///
-    /// ## Panics
-    ///
-    /// This method will panic if called after the event stream has been closed, i.e. after
-    /// it has returned `None` once. Use [`is_closed`][Self::is_closed] to check if the stream
-    /// is closed.
     pub async fn recv_async(&mut self) -> Option<Event> {
-        assert!(
-            !self.closed,
-            "receive function called after None was returned"
-        );
-
-        if !self.use_scheduler {
-            return self.receiver.recv().await.map(Self::convert_event_item);
+        // Drain any events that were stashed by pattern-aware helpers
+        // (`recv_service_response`, `recv_action_result`) while they
+        // were waiting for a specific correlation. These must be
+        // returned to the caller before we poll the underlying
+        // scheduler, so the caller's main event loop never loses
+        // events that arrived during a helper wait (dora-rs/adora#148).
+        if let Some(event) = self.pending_passthrough.pop_front() {
+            return Some(event);
         }
-        loop {
-            if self.scheduler.is_empty() {
-                if let Some(event) = self.receiver.recv().await {
-                    self.add_event(event);
+        let event = if !self.use_scheduler {
+            self.receiver.recv().await.map(Self::convert_event_item)
+        } else {
+            loop {
+                if self.scheduler.is_empty() {
+                    if let Some(event) = self.receiver.recv().await {
+                        self.add_event(event);
+                    } else {
+                        break;
+                    }
                 } else {
-                    break;
+                    match self.receiver.try_recv() {
+                        Ok(event) => self.add_event(event),
+                        Err(_) => break, // empty or disconnected
+                    };
                 }
-            } else {
-                match self.receiver.try_recv() {
-                    Ok(event) => self.add_event(event),
-                    Err(_) => break, // no other ready events or closed
-                };
+            }
+            self.scheduler.next().map(Self::convert_event_item)
+        };
+
+        // First-message type validation: check once per input, then remove.
+        // Zero cost after first message per input.
+        //
+        // Skip the check when the message carries pattern metadata
+        // (`request_id`, `goal_id`, or `goal_status`) — the input is
+        // polymorphic by pattern design and a single declared type
+        // cannot cover all variants. The check stays armed so a later
+        // non-pattern message can still validate (dora-rs/adora#150).
+        if let Some(Event::Input {
+            ref id,
+            ref metadata,
+            ref data,
+        }) = event
+            && let Some(expected) = self.input_type_checks.get(id).cloned()
+        {
+            let is_pattern_message = metadata
+                .parameters
+                .contains_key(dora_message::metadata::REQUEST_ID)
+                || metadata
+                    .parameters
+                    .contains_key(dora_message::metadata::GOAL_ID)
+                || metadata
+                    .parameters
+                    .contains_key(dora_message::metadata::GOAL_STATUS);
+            if !is_pattern_message {
+                // Consume the check and validate.
+                self.input_type_checks.remove(id);
+                let actual = data.data_type();
+                // Skip check for Null type (timer ticks, empty payloads)
+                // to avoid spurious warnings on annotated timer inputs.
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message"
+                    );
+                }
             }
         }
-        let event = self.scheduler.next();
-        tracing::debug!("received event from scheduler: {:?}", event);
-        if event.is_none() {
-            self.closed = true;
-        }
-        event.map(Self::convert_event_item)
+
+        event
     }
 
-    /// Check if there are any buffered events in the scheduler or the receiver.
+    /// Check if there are any buffered events in the scheduler, the
+    /// receiver, or the passthrough buffer used by pattern-aware helpers.
     pub fn is_empty(&self) -> bool {
-        self.scheduler.is_empty() && self.receiver.is_empty()
+        self.pending_passthrough.is_empty() & self.scheduler.is_empty() & self.receiver.is_empty()
     }
 
-    /// Returns `true` if the event stream has been closed.
+    /// Returns and resets the accumulated drop counts per input ID.
     ///
-    /// An event stream is closed after it has returned `None` once from
-    /// any of its receive methods. Calling receive methods again after that will panic.
-    pub fn is_closed(&self) -> bool {
-        self.closed
+    /// When inputs overflow their queue limits, the oldest messages are discarded.
+    /// For `drop_oldest` inputs this happens at `queue_size`. For `backpressure`
+    /// inputs this happens at a hard safety cap of 10x `queue_size`.
+    /// This method returns a map from input ID to the number of messages dropped
+    /// since the last call.
+    pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
+        self.scheduler.drain_drop_counts()
     }
 
     fn add_event(&mut self, event: EventItem) {
@@ -362,14 +593,13 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop { reason } => {
+                    NodeEvent::Stop => {
                         let time_offset = self
                             .clock
                             .new_timestamp()
                             .get_diff_duration(&self.start_timestamp);
                         let event_json = serde_json::json!({
                             "type": "Stop",
-                            "reason": format!("{:?}", reason.as_ref().unwrap_or(&StopCause::Manual)),
                             "time_offset_secs": time_offset.as_secs_f64(),
                         });
                         Some(event_json)
@@ -398,20 +628,26 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
-                    NodeEvent::NodeFailed {
-                        affected_input_ids,
-                        error,
-                        source_node_id,
-                    } => {
+                    NodeEvent::InputRecovered { id } => {
                         let time_offset = self
                             .clock
                             .new_timestamp()
                             .get_diff_duration(&self.start_timestamp);
                         let event_json = serde_json::json!({
-                            "type": "NodeFailed",
-                            "affected_input_ids": affected_input_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>(),
-                            "error": error,
-                            "source_node_id": source_node_id.to_string(),
+                            "type": "InputRecovered",
+                            "id": id.to_string(),
+                            "time_offset_secs": time_offset.as_secs_f64(),
+                        });
+                        Some(event_json)
+                    }
+                    NodeEvent::NodeRestarted { id } => {
+                        let time_offset = self
+                            .clock
+                            .new_timestamp()
+                            .get_diff_duration(&self.start_timestamp);
+                        let event_json = serde_json::json!({
+                            "type": "NodeRestarted",
+                            "id": id.to_string(),
                             "time_offset_secs": time_offset.as_secs_f64(),
                         });
                         Some(event_json)
@@ -427,6 +663,7 @@ impl EventStream {
                         });
                         Some(event_json)
                     }
+                    _ => None,
                 },
                 _ => None,
             };
@@ -513,12 +750,215 @@ impl EventStream {
         }
     }
 
+    /// Waits for a service response carrying `request_id` in its metadata.
+    ///
+    /// Drives the event loop internally and returns the matching
+    /// [`Event::Input`] as soon as it arrives. Non-matching events are
+    /// buffered and replayed on the next call to `recv()` / `recv_async()`,
+    /// so your main event loop does not lose intermediate events.
+    ///
+    /// Terminal conditions return a [`PatternError`]:
+    ///
+    /// - `Timeout` — `timeout` elapsed before any matching response arrived.
+    /// - `ServerRestarted(expected_server)` — the expected server node
+    ///   restarted, which means its in-flight `request_id` correlation
+    ///   was orphaned. The caller should retry against the new instance.
+    /// - `StreamEnded` — the event stream closed (dataflow stopping)
+    ///   before a response arrived. The terminal `Stop` event is still
+    ///   returned to the caller's next `recv()`.
+    /// - `StreamError` — an upstream error event surfaced during the wait.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let request_id = node.send_service_request(...)?;
+    /// match events
+    ///     .recv_service_response(&request_id, &server_id, Duration::from_secs(5))
+    ///     .await
+    /// {
+    ///     Ok(Event::Input { data, .. }) => handle_response(data),
+    ///     Err(PatternError::Timeout) => fallback_path(),
+    ///     Err(PatternError::ServerRestarted(_)) => retry_with_new_instance(),
+    ///     Err(e) => return Err(e.into()),
+    ///     _ => unreachable!(),
+    /// }
+    /// ```
+    pub async fn recv_service_response(
+        &mut self,
+        request_id: &str,
+        expected_server: &NodeId,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(
+            timeout,
+            expected_server,
+            |event, request_id| match event {
+                Event::Input { metadata, .. } => {
+                    dora_message::metadata::get_string_param(
+                        &metadata.parameters,
+                        dora_message::metadata::REQUEST_ID,
+                    ) == Some(request_id)
+                }
+                _ => false,
+            },
+            request_id,
+        )
+        .await
+    }
+
+    /// Waits for a terminal action result (`goal_status` ∈
+    /// {`succeeded`, `aborted`, `canceled`}) with a matching `goal_id`.
+    ///
+    /// Semantics mirror [`recv_service_response`](Self::recv_service_response)
+    /// but match on `goal_id` + a terminal `goal_status` instead of
+    /// `request_id`. Intermediate feedback events (matching `goal_id`
+    /// without a terminal `goal_status`) are stashed for the caller's
+    /// main loop — use `recv()` separately if you need to observe them.
+    pub async fn recv_action_result(
+        &mut self,
+        goal_id: &str,
+        expected_server: &NodeId,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(
+            timeout,
+            expected_server,
+            |event, goal_id| match event {
+                Event::Input { metadata, .. } => {
+                    let matches_goal = dora_message::metadata::get_string_param(
+                        &metadata.parameters,
+                        dora_message::metadata::GOAL_ID,
+                    ) == Some(goal_id);
+                    if !matches_goal {
+                        return false;
+                    }
+                    matches!(
+                        dora_message::metadata::get_string_param(
+                            &metadata.parameters,
+                            dora_message::metadata::GOAL_STATUS,
+                        ),
+                        Some(dora_message::metadata::GOAL_STATUS_SUCCEEDED)
+                            | Some(dora_message::metadata::GOAL_STATUS_ABORTED)
+                            | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
+                    )
+                }
+                _ => false,
+            },
+            goal_id,
+        )
+        .await
+    }
+
+    /// Core loop for the pattern-aware helpers. Waits up to `timeout`
+    /// for an event that satisfies `is_match(event, needle)`. Buffers
+    /// every non-matching event so the caller's main event loop can
+    /// still see them via `recv()`.
+    async fn wait_for_correlation<F>(
+        &mut self,
+        timeout: Duration,
+        expected_server: &NodeId,
+        is_match: F,
+        needle: &str,
+    ) -> Result<Event, PatternError>
+    where
+        F: Fn(&Event, &str) -> bool,
+    {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(PatternError::Timeout);
+            }
+            let event = match select(Delay::new(remaining), pin!(self.recv_async())).await {
+                Either::Left((_elapsed, _)) => return Err(PatternError::Timeout),
+                Either::Right((None, _)) => return Err(PatternError::StreamEnded),
+                Either::Right((Some(e), _)) => e,
+            };
+
+            match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
+                CorrelationOutcome::Match => return Ok(event),
+                CorrelationOutcome::ServerRestarted => {
+                    self.pending_passthrough.push_back(event);
+                    return Err(PatternError::ServerRestarted(expected_server.to_string()));
+                }
+                CorrelationOutcome::StreamEnded => {
+                    self.pending_passthrough.push_back(event);
+                    return Err(PatternError::StreamEnded);
+                }
+                CorrelationOutcome::StreamError => {
+                    if let Event::Error(err) = event {
+                        return Err(PatternError::StreamError(err));
+                    }
+                    unreachable!("StreamError only returned for Event::Error");
+                }
+                CorrelationOutcome::Passthrough => {
+                    self.pending_passthrough.push_back(event);
+                }
+            }
+        }
+    }
+}
+
+/// Outcome of classifying a single event during a pattern-aware wait.
+/// Separated from `wait_for_correlation` so the decision logic can be
+/// unit-tested without a live `EventStream`.
+#[derive(Debug, PartialEq, Eq)]
+enum CorrelationOutcome {
+    /// The event satisfies the caller's predicate — return it.
+    Match,
+    /// `Event::NodeRestarted { id }` where `id == expected_server`.
+    ServerRestarted,
+    /// `Event::Stop(_)` — the dataflow is shutting down.
+    StreamEnded,
+    /// `Event::Error(_)` — the stream surfaced an error.
+    StreamError,
+    /// Unrelated event — buffer it and keep waiting.
+    Passthrough,
+}
+
+fn classify_correlation_event<F>(
+    event: &Event,
+    expected_server: &NodeId,
+    is_match: F,
+) -> CorrelationOutcome
+where
+    F: Fn(&Event) -> bool,
+{
+    if is_match(event) {
+        return CorrelationOutcome::Match;
+    }
+    match event {
+        Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::Stop(_) => CorrelationOutcome::StreamEnded,
+        Event::Error(_) => CorrelationOutcome::StreamError,
+        _ => CorrelationOutcome::Passthrough,
+    }
+}
+
+impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
             EventItem::NodeEvent { event, ack_channel } => match event {
-                NodeEvent::Stop { reason } => Event::Stop(reason.unwrap_or(StopCause::Manual)),
+                NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
+                NodeEvent::InputRecovered { id } => Event::InputRecovered { id },
+                NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
+                NodeEvent::Input { id, metadata, data } => {
+                    let data_inner = data.map(Arc::unwrap_or_clone);
+                    let result = data_to_arrow_array(data_inner, &metadata, ack_channel);
+                    match result {
+                        Ok(data) => Event::Input {
+                            id,
+                            metadata: Arc::unwrap_or_clone(metadata),
+                            data: data.into(),
+                        },
+                        Err(err) => Event::Error(format!("{err:?}")),
+                    }
+                }
+                NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
+                NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
+                NodeEvent::ParamDeleted { key } => Event::ParamDeleted { key },
                 NodeEvent::NodeFailed {
                     affected_input_ids,
                     error,
@@ -528,19 +968,27 @@ impl EventStream {
                     error,
                     source_node_id,
                 },
-                NodeEvent::Input { id, metadata, data } => {
-                    let data = data_to_arrow_array(data, &metadata, ack_channel);
-                    match data {
-                        Ok(data) => Event::Input {
-                            id,
-                            metadata,
-                            data: data.into(),
-                        },
-                        Err(err) => Event::Error(format!("{err:?}")),
-                    }
+                other => {
+                    tracing::warn!("ignoring unrecognized NodeEvent variant: {other:?}");
+                    Event::Error(format!("unrecognized node event: {other:?}"))
                 }
-                NodeEvent::AllInputsClosed => Event::Stop(StopCause::AllInputsClosed),
             },
+
+            EventItem::ZenohInput {
+                id,
+                metadata,
+                payload,
+            } => {
+                let result = zenoh_payload_to_arrow_array(payload, &metadata);
+                match result {
+                    Ok(data) => Event::Input {
+                        id,
+                        metadata: Arc::unwrap_or_clone(metadata),
+                        data: data.into(),
+                    },
+                    Err(err) => Event::Error(format!("{err:?}")),
+                }
+            }
 
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
@@ -559,6 +1007,88 @@ pub enum TryRecvError {
     Empty,
     /// The event stream has been closed.
     Closed,
+}
+
+/// Convert a zenoh `ZBytes` payload into an Arrow array without copying
+/// for contiguous buffers (e.g. Zenoh SHM).
+///
+/// For `Cow::Borrowed` payloads (SHM), the Arrow `Buffer` is backed by
+/// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
+/// achieving true zero-copy. For `Cow::Owned` (normal network path),
+/// the owned `Vec` is wrapped via the same mechanism at zero cost.
+///
+/// (dora-rs/adora#132)
+fn zenoh_payload_to_arrow_array(
+    payload: zenoh::bytes::ZBytes,
+    metadata: &dora_message::metadata::Metadata,
+) -> eyre::Result<Arc<dyn arrow::array::Array>> {
+    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
+    use std::ptr::NonNull;
+
+    let is_ipc = dora_message::metadata::get_string_param(
+        &metadata.parameters,
+        dora_message::metadata::FRAMING,
+    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
+
+    if payload.is_empty() {
+        let empty = dora_arrow_convert::IntoArrow::into_arrow(());
+        return Ok(arrow::array::make_array(empty.into()));
+    }
+
+    if is_ipc {
+        // IPC path: need contiguous bytes for the IPC reader.
+        let bytes = payload.to_bytes();
+        return decode_arrow_ipc(&bytes).map(arrow::array::make_array);
+    }
+
+    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer.
+    //
+    // For SHM payloads, to_bytes() returns Cow::Borrowed pointing into
+    // shared memory. We extract the raw pointer, then move the ZBytes
+    // (which owns the SHM mapping) into an Arc used as the custom
+    // allocation owner. The pointer remains valid because the ZBytes
+    // inside the Arc keeps the mapping alive.
+    //
+    // Branch on Cow to handle ownership correctly for each case.
+    let raw_buffer = match payload.to_bytes() {
+        std::borrow::Cow::Borrowed(slice) => {
+            // SHM path: the slice points into memory owned by `payload`
+            // (the zenoh shared-memory mapping). Wrap `payload` in an
+            // Arc as the allocation owner so the mapping stays alive
+            // for the lifetime of the Arrow buffer.
+            let ptr =
+                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+            let len = slice.len();
+
+            // Newtype satisfying arrow's Allocation trait.
+            #[allow(dead_code)] // field kept alive to own the zenoh buffer
+            struct ZBytesAllocation(zenoh::bytes::ZBytes);
+            unsafe impl Sync for ZBytesAllocation {}
+            unsafe impl Send for ZBytesAllocation {}
+            impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+
+            // SAFETY: `ptr` points into the SHM region owned by
+            // `payload`. Moving `payload` into the Arc keeps the
+            // region mapped for the lifetime of the Buffer.
+            unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(
+                    ptr,
+                    len,
+                    Arc::new(ZBytesAllocation(payload)),
+                )
+            }
+        }
+        std::borrow::Cow::Owned(vec) => {
+            // Non-SHM path: zenoh materialized a fresh Vec. Let the
+            // Arrow buffer own that Vec directly — no copy, correct
+            // ownership (the Vec's allocation is freed when the Buffer
+            // drops). `payload` is dropped here; it does not own the
+            // Vec's allocation.
+            arrow::buffer::Buffer::from_vec(vec)
+        }
+    };
+
+    buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
 }
 
 pub fn data_to_arrow_array(
@@ -583,10 +1113,15 @@ pub fn data_to_arrow_array(
         },
     };
 
+    let is_ipc = dora_message::metadata::get_string_param(
+        &metadata.parameters,
+        dora_message::metadata::FRAMING,
+    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
+
     data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
         raw_data
-            .into_arrow_array(&metadata.type_info)
+            .into_arrow_array(&metadata.type_info, is_ipc)
             .map(arrow::array::make_array)
     })
 }
@@ -597,10 +1132,58 @@ impl Stream for EventStream {
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> Poll<Option<Self::Item>> {
-        self.receiver
+    ) -> std::task::Poll<Option<Self::Item>> {
+        // Drain events that were buffered by pattern-aware helpers
+        // (`recv_service_response`, `recv_action_result`) before
+        // polling the underlying receiver. Mirrors the drain at the
+        // top of `recv_async` so `StreamExt::next()` and `recv()`
+        // return the same events in the same order
+        // (dora-rs/adora#172).
+        if let Some(event) = self.pending_passthrough.pop_front() {
+            return std::task::Poll::Ready(Some(event));
+        }
+
+        let poll = self
+            .receiver
             .poll_recv(cx)
-            .map(|item| item.map(Self::convert_event_item))
+            .map(|item| item.map(Self::convert_event_item));
+
+        // Run first-message type check on the Stream path too.
+        //
+        // Mirror the recv_async() logic: skip the check (and keep it
+        // armed) when the message carries pattern metadata, so a later
+        // non-pattern message can still validate (dora-rs/adora#174).
+        if let std::task::Poll::Ready(Some(Event::Input {
+            ref id,
+            ref metadata,
+            ref data,
+        })) = poll
+            && let Some(expected) = self.input_type_checks.get(id).cloned()
+        {
+            let is_pattern_message = metadata
+                .parameters
+                .contains_key(dora_message::metadata::REQUEST_ID)
+                || metadata
+                    .parameters
+                    .contains_key(dora_message::metadata::GOAL_ID)
+                || metadata
+                    .parameters
+                    .contains_key(dora_message::metadata::GOAL_STATUS);
+            if !is_pattern_message {
+                self.input_type_checks.remove(id);
+                let actual = data.data_type();
+                if *actual != arrow_schema::DataType::Null && *actual != expected {
+                    tracing::warn!(
+                        input = %id,
+                        expected = ?expected,
+                        actual = ?actual,
+                        "input type mismatch on first message (Stream path)"
+                    );
+                }
+            }
+        }
+
+        poll
     }
 }
 
@@ -624,13 +1207,13 @@ impl Drop for EventStream {
             tracing::warn!("{err:?}")
         }
 
-        if let Some(write_events_to) = self.write_events_to.take() {
-            if let Err(err) = write_events_to.write_out() {
-                tracing::warn!(
-                    "failed to write out events for node {}: {err:?}",
-                    self.node_id
-                );
-            }
+        if let Some(write_events_to) = self.write_events_to.take()
+            && let Err(err) = write_events_to.write_out()
+        {
+            tracing::warn!(
+                "failed to write out events for node {}: {err:?}",
+                self.node_id
+            );
         }
     }
 }
@@ -655,5 +1238,407 @@ impl WriteEventsTo {
         serde_json::to_writer_pretty(file, &inputs_file)
             .context("failed to write events to file")?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl EventStream {
+    /// Test-only: inject an event into the passthrough buffer so we can
+    /// verify that `is_empty`, `recv_async`, and `Stream::poll_next` all
+    /// drain it correctly (dora-rs/adora#172).
+    fn push_passthrough_for_testing(&mut self, event: Event) {
+        self.pending_passthrough.push_back(event);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Create a dummy ack channel for testing event conversion.
+    fn dummy_ack() -> flume::Sender<()> {
+        let (tx, _rx) = flume::bounded(1);
+        tx
+    }
+
+    #[test]
+    fn convert_param_update() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::ParamUpdate {
+                key: "fps".into(),
+                value: serde_json::json!(60),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::ParamUpdate { key, value } => {
+                assert_eq!(key, "fps");
+                assert_eq!(value, serde_json::json!(60));
+            }
+            other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_param_deleted() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::ParamDeleted { key: "fps".into() },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::ParamDeleted { key } => {
+                assert_eq!(key, "fps");
+            }
+            other => panic!("expected ParamDeleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_stop_event() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::Stop,
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        assert!(matches!(event, Event::Stop(StopCause::Manual)));
+    }
+
+    #[test]
+    fn convert_all_inputs_closed() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::AllInputsClosed,
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        assert!(matches!(event, Event::Stop(StopCause::AllInputsClosed)));
+    }
+
+    #[test]
+    fn convert_input_closed() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::InputClosed {
+                id: "input_1".to_string().into(),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::InputClosed { id } => assert_eq!(AsRef::<str>::as_ref(&id), "input_1"),
+            other => panic!("expected InputClosed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn convert_node_restarted() {
+        let item = EventItem::NodeEvent {
+            event: NodeEvent::NodeRestarted {
+                id: "upstream".to_string().into(),
+            },
+            ack_channel: dummy_ack(),
+        };
+        let event = EventStream::convert_event_item(item);
+        match event {
+            Event::NodeRestarted { id } => assert_eq!(AsRef::<str>::as_ref(&id), "upstream"),
+            other => panic!("expected NodeRestarted, got {other:?}"),
+        }
+    }
+
+    // ---- dora-rs/adora#148: pattern-aware correlation classification ----
+
+    use arrow::array::new_empty_array;
+    use arrow::datatypes::DataType as ArrowDataType;
+    use dora_arrow_convert::ArrowData;
+    use dora_message::metadata::{
+        ArrowTypeInfo, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
+        MetadataParameters, Parameter, REQUEST_ID,
+    };
+
+    fn make_metadata(params: MetadataParameters) -> Metadata {
+        let type_info = ArrowTypeInfo {
+            data_type: ArrowDataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        Metadata::from_parameters(
+            dora_core::uhlc::HLC::default().new_timestamp(),
+            type_info,
+            params,
+        )
+    }
+
+    fn make_input_event(id: &str, params: MetadataParameters) -> Event {
+        Event::Input {
+            id: id.into(),
+            metadata: make_metadata(params),
+            data: ArrowData(new_empty_array(&ArrowDataType::Null)),
+        }
+    }
+
+    fn request_id_params(id: &str) -> MetadataParameters {
+        let mut p = MetadataParameters::new();
+        p.insert(REQUEST_ID.into(), Parameter::String(id.to_string()));
+        p
+    }
+
+    fn goal_params(goal_id: &str, status: Option<&str>) -> MetadataParameters {
+        let mut p = MetadataParameters::new();
+        p.insert(GOAL_ID.into(), Parameter::String(goal_id.to_string()));
+        if let Some(s) = status {
+            p.insert(GOAL_STATUS.into(), Parameter::String(s.to_string()));
+        }
+        p
+    }
+
+    fn is_request_match(needle: &str) -> impl Fn(&Event) -> bool + '_ {
+        move |event: &Event| match event {
+            Event::Input { metadata, .. } => {
+                dora_message::metadata::get_string_param(&metadata.parameters, REQUEST_ID)
+                    == Some(needle)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_action_result_match(needle: &str) -> impl Fn(&Event) -> bool + '_ {
+        move |event: &Event| match event {
+            Event::Input { metadata, .. } => {
+                let p = &metadata.parameters;
+                dora_message::metadata::get_string_param(p, GOAL_ID) == Some(needle)
+                    && matches!(
+                        dora_message::metadata::get_string_param(p, GOAL_STATUS),
+                        Some(GOAL_STATUS_SUCCEEDED)
+                            | Some(GOAL_STATUS_ABORTED)
+                            | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn classify_matching_request_id_returns_match() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("response", request_id_params("req-42"));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_different_request_id_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("response", request_id_params("req-99"));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_expected_server_restart_returns_server_restarted() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeRestarted { id: server.clone() };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::ServerRestarted
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_node_restart_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::NodeRestarted {
+            id: NodeId::from("other".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_stop_returns_stream_ended() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::Stop(StopCause::Manual);
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::StreamEnded
+        );
+    }
+
+    #[test]
+    fn classify_error_returns_stream_error() {
+        let server = NodeId::from("calc".to_string());
+        let event = Event::Error("boom".to_string());
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::StreamError
+        );
+    }
+
+    #[test]
+    fn classify_unrelated_input_is_passthrough() {
+        let server = NodeId::from("calc".to_string());
+        let event = make_input_event("sensor", MetadataParameters::new());
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_param_update_is_passthrough() {
+        // Runtime parameter updates must survive a helper wait.
+        let server = NodeId::from("calc".to_string());
+        let event = Event::ParamUpdate {
+            key: "threshold".to_string(),
+            value: serde_json::json!(0.85),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_action_result_terminal_succeeded_matches() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_SUCCEEDED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_action_result_terminal_aborted_matches() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_ABORTED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Match
+        );
+    }
+
+    #[test]
+    fn classify_action_feedback_without_terminal_status_is_passthrough() {
+        // Intermediate feedback (no terminal goal_status) should pass
+        // through so the caller's main loop can observe it.
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("feedback", goal_params("goal-1", None));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_action_result_for_different_goal_is_passthrough() {
+        let server = NodeId::from("nav".to_string());
+        let event = make_input_event("result", goal_params("goal-2", Some(GOAL_STATUS_SUCCEEDED)));
+        assert_eq!(
+            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    // ---- dora-rs/adora#172: pending_passthrough integration ----
+
+    use crate::integration_testing::{
+        IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+        integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+    };
+
+    /// Create a minimal EventStream via the testing path.
+    fn test_event_stream() -> (crate::DoraNode, EventStream) {
+        let events = vec![TimedIncomingEvent {
+            time_offset_secs: 0.0,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
+    }
+
+    #[test]
+    fn is_empty_reflects_pending_passthrough() {
+        let (_node, mut events) = test_event_stream();
+        // Drain the initial Stop event so the stream is empty.
+        let _ = events.recv();
+        assert!(events.is_empty(), "should be empty after draining");
+
+        // Inject a passthrough event — is_empty must now return false.
+        events.push_passthrough_for_testing(Event::ParamDeleted {
+            key: "k".to_string(),
+        });
+        assert!(
+            !events.is_empty(),
+            "should not be empty with pending passthrough"
+        );
+    }
+
+    #[test]
+    fn stream_poll_next_drains_pending_passthrough() {
+        use futures::StreamExt;
+        let (_node, mut events) = test_event_stream();
+        // Drain the initial Stop event.
+        let _ = events.recv();
+
+        // Inject a passthrough event.
+        events.push_passthrough_for_testing(Event::ParamUpdate {
+            key: "threshold".to_string(),
+            value: serde_json::json!(42),
+        });
+
+        // StreamExt::next() should return the passthrough event, not
+        // block waiting on the underlying receiver.
+        let next = futures::executor::block_on(events.next());
+        match next {
+            Some(Event::ParamUpdate { key, value }) => {
+                assert_eq!(key, "threshold");
+                assert_eq!(value, serde_json::json!(42));
+            }
+            other => panic!("expected ParamUpdate from passthrough, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recv_async_drains_pending_passthrough_before_receiver() {
+        let (_node, mut events) = test_event_stream();
+
+        // Inject a passthrough event BEFORE the Stop in the receiver.
+        events.push_passthrough_for_testing(Event::ParamDeleted {
+            key: "x".to_string(),
+        });
+
+        // First recv should return the passthrough event.
+        let first = events.recv();
+        assert!(
+            matches!(first, Some(Event::ParamDeleted { .. })),
+            "expected passthrough ParamDeleted first, got {first:?}"
+        );
+
+        // Second recv should return the Stop from the receiver.
+        let second = events.recv();
+        assert!(
+            matches!(second, Some(Event::Stop(_))),
+            "expected Stop second, got {second:?}"
+        );
     }
 }

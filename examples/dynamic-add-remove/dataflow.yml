@@ -1,0 +1,36 @@
+# Dynamic Add/Remove Example
+#
+# This dataflow starts with a simple sender -> receiver pipeline.
+# After starting, you can dynamically add a "filter" node between them
+# using `dora node add` and `dora node connect`.
+#
+# Step 1: Start the base dataflow
+#   dora up
+#   dora start dataflow.yml --detach
+#
+# Step 2: Add a filter node dynamically
+#   dora node add --from-yaml filter-node.yml --dataflow dynamic-add-remove
+#
+# Step 3: Wire the filter into the pipeline
+#   dora node connect <dataflow> sender/value filter/input
+#   dora node connect <dataflow> filter/output receiver/filtered
+#
+# Step 4: Remove the filter
+#   dora node remove <dataflow> filter
+#
+# Step 5: Stop
+#   dora stop --all
+#   dora down
+
+nodes:
+  - id: sender
+    path: sender.py
+    outputs:
+      - value
+    inputs:
+      tick: dora/timer/millis/200
+
+  - id: receiver
+    path: receiver.py
+    inputs:
+      value: sender/value

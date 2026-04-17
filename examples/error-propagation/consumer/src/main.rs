@@ -17,15 +17,9 @@ fn main() -> Result<()> {
                 source_node_id,
             } => {
                 println!(
-                    "⚠️  Received error from node '{}' affecting inputs {:?}: {}",
+                    "Received error from node '{}' affecting inputs {:?}: {}",
                     source_node_id, affected_input_ids, error
                 );
-                println!("Handling error in some way...");
-                // In a real application, you could:
-                // - Use cached/backup data
-                // - Switch to alternative input source
-                // - Log the error and continue
-                // - Implement retry logic
             }
             Event::InputClosed { id } => {
                 println!("Input {} closed", id);

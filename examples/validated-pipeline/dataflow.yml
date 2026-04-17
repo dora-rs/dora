@@ -1,0 +1,30 @@
+nodes:
+  - id: source
+    build: cargo build -p validated-pipeline-source
+    path: ../../target/debug/validated-pipeline-source
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - value
+    output_types:
+      value: std/core/v1/Int64
+
+  - id: transform
+    build: cargo build -p validated-pipeline-transform
+    path: ../../target/debug/validated-pipeline-transform
+    inputs:
+      value: source/value
+    input_types:
+      value: std/core/v1/Int64
+    outputs:
+      - doubled
+    output_types:
+      doubled: std/core/v1/Int64
+
+  - id: sink
+    build: cargo build -p validated-pipeline-sink
+    path: ../../target/debug/validated-pipeline-sink
+    inputs:
+      doubled: transform/doubled
+    input_types:
+      doubled: std/core/v1/Int64

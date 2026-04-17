@@ -6,7 +6,9 @@ use dora_core::{
     descriptor::{Descriptor, PythonSource, source_is_url},
 };
 use dora_download::download_file;
-use dora_node_api::{Event, Parameter, merged::MergedEvent};
+#[cfg(feature = "telemetry")]
+use dora_node_api::Parameter;
+use dora_node_api::{Event, merged::MergedEvent};
 use dora_operator_api_python::PyEvent;
 use dora_operator_api_types::DoraStatus;
 use eyre::{Context, Result, bail, eyre};
@@ -19,11 +21,11 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     path::Path,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{error, field, span, warn};
 
 fn traceback(err: pyo3::PyErr) -> eyre::Report {
-    let traceback = Python::with_gil(|py| err.traceback(py).and_then(|t| t.format().ok()));
+    let traceback = Python::attach(|py| err.traceback(py).and_then(|t| t.format().ok()));
     if let Some(traceback) = traceback {
         eyre::eyre!("{traceback}\n{err}")
     } else {
@@ -36,7 +38,7 @@ pub fn run(
     node_id: &NodeId,
     operator_id: &OperatorId,
     python_source: &PythonSource,
-    events_tx: flume::Sender<OperatorEvent>,
+    events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
     dataflow_descriptor: &Descriptor,
@@ -47,7 +49,7 @@ pub fn run(
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(download_file(&python_source.source, target_path))
+        rt.block_on(download_file(&python_source.source, target_path, None))
             .wrap_err("failed to download Python operator")?
     } else {
         Path::new(&python_source.source).to_owned()
@@ -108,7 +110,7 @@ pub fn run(
 
     let python_runner = move || {
         let mut operator =
-            match Python::with_gil(init_operator).wrap_err("failed to init python operator") {
+            match Python::attach(init_operator).wrap_err("failed to init python operator") {
                 Ok(op) => {
                     let _ = init_done.send(Ok(()));
                     op
@@ -130,15 +132,14 @@ pub fn run(
                 reload = true;
                 // Reloading method
                 #[allow(clippy::blocks_in_conditions)]
-                match Python::with_gil(|py| -> Result<Py<PyAny>> {
+                match Python::attach(|py| -> Result<Py<PyAny>> {
                     // Saving current state
                     let current_state = operator
                         .getattr(py, "__dict__")
                         .wrap_err("Could not retrieve current operator state")?;
-                    let current_state =
-                        current_state.downcast_bound::<PyDict>(py).map_err(|err| {
-                            eyre!("could not extract operator state as a PyDict. Err: {}", err)
-                        })?;
+                    let current_state = current_state.cast_bound::<PyDict>(py).map_err(|err| {
+                        eyre!("could not extract operator state as a PyDict. Err: {}", err)
+                    })?;
                     // Reload module
                     let module = py
                         .import(module_name)
@@ -168,7 +169,7 @@ pub fn run(
                     operator
                         .getattr(py, "__dict__")
                         .wrap_err("Could not retrieve new operator state")?
-                        .downcast_bound::<PyDict>(py)
+                        .cast_bound::<PyDict>(py)
                         .map_err(|err| {
                             eyre!("could not extract new operator state as a PyDict. Err: {err}")
                         })?
@@ -186,7 +187,7 @@ pub fn run(
                 }
             }
 
-            let status = Python::with_gil(|py| -> Result<i32> {
+            let status = Python::attach(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
                 let _ = span.enter();
 
@@ -227,9 +228,9 @@ pub fn run(
                     .map_err(traceback);
                 match status_enum {
                     Ok(status_enum) => {
-                        let status_val = Python::with_gil(|py| status_enum.getattr(py, "value"))
+                        let status_val = Python::attach(|py| status_enum.getattr(py, "value"))
                             .wrap_err("on_event must have enum return value")?;
-                        Python::with_gil(|py| status_val.extract(py))
+                        Python::attach(|py| status_val.extract(py))
                             .wrap_err("on_event has invalid return value")
                     }
                     Err(err) => {
@@ -253,7 +254,7 @@ pub fn run(
 
         // Dropping the operator using Python garbage collector.
         // Locking the GIL for immediate release.
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             drop(operator);
         });
 
@@ -266,23 +267,23 @@ pub fn run(
 
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.send(OperatorEvent::Finished { reason });
+            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.send(OperatorEvent::Error(err));
+            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.send(OperatorEvent::Panic(panic));
+            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
         }
     }
 
     Ok(())
 }
 
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 struct SendOutputCallback {
-    events_tx: flume::Sender<OperatorEvent>,
+    events_tx: Sender<OperatorEvent>,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -300,14 +301,16 @@ mod callback_impl {
         arrow_utils::{copy_array_into_sample, required_data_size},
     };
     use dora_operator_api_python::pydict_to_metadata;
+    #[cfg(feature = "telemetry")]
     use dora_tracing::telemetry::deserialize_context;
     use eyre::{Context, Result, eyre};
     use pyo3::{
-        Bound, PyObject, Python, pymethods,
+        Bound, Py, PyAny, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
     };
     use tokio::sync::oneshot;
     use tracing::{field, span};
+    #[cfg(feature = "telemetry")]
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     /// Send an output from the operator:
@@ -321,7 +324,7 @@ mod callback_impl {
         fn __call__(
             &mut self,
             output: &str,
-            data: PyObject,
+            data: Py<PyAny>,
             metadata: Option<Bound<'_, PyDict>>,
             py: Python,
         ) -> Result<()> {
@@ -332,25 +335,27 @@ mod callback_impl {
                 output_id = field::Empty
             );
             span.record("output_id", output);
-            let otel = if let Some(dora_node_api::Parameter::String(otel)) =
-                parameters.get("open_telemetry_context")
+            #[cfg(feature = "telemetry")]
             {
-                otel.to_string()
-            } else {
-                "".to_string()
-            };
-
-            let cx = deserialize_context(&otel);
-            span.set_parent(cx)
-                .context("failed to set parent span")
-                .unwrap_or_default();
+                let otel = if let Some(dora_node_api::Parameter::String(otel)) =
+                    parameters.get("open_telemetry_context")
+                {
+                    otel.to_string()
+                } else {
+                    String::new()
+                };
+                let cx = deserialize_context(&otel);
+                span.set_parent(cx)
+                    .context("failed to set parent span")
+                    .unwrap_or_default();
+            }
             let _ = span.enter();
 
             let allocate_sample = |data_len| {
                 if data_len > ZERO_COPY_THRESHOLD {
                     let (tx, rx) = oneshot::channel();
                     self.events_tx
-                        .send(OperatorEvent::AllocateOutputSample {
+                        .blocking_send(OperatorEvent::AllocateOutputSample {
                             len: data_len,
                             sample: tx,
                         })
@@ -365,7 +370,7 @@ mod callback_impl {
                 }
             };
 
-            let (sample, type_info) = if let Ok(py_bytes) = data.downcast_bound::<PyBytes>(py) {
+            let (sample, type_info) = if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
                 let data = py_bytes.as_bytes();
                 let mut sample = allocate_sample(data.len())?;
                 sample.copy_from_slice(data);
@@ -381,7 +386,7 @@ mod callback_impl {
                 eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
             };
 
-            py.allow_threads(|| {
+            py.detach(|| {
                 let event = OperatorEvent::Output {
                     output_id: output.to_owned().into(),
                     type_info,
@@ -389,7 +394,7 @@ mod callback_impl {
                     data: Some(sample),
                 };
                 self.events_tx
-                    .send(event)
+                    .blocking_send(event)
                     .map_err(|_| eyre!("failed to send output to runtime"))
             })?;
 

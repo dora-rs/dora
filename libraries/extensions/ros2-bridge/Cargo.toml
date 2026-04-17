@@ -17,25 +17,25 @@ generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
 
 [dependencies]
 array-init = "2.1.0"
-serde = { version = "1.0.164", features = ["derive"] }
+serde = { workspace = true }
 serde-big-array = "0.5.1"
 widestring = "1.0.2"
 ros2-client = "0.8.0"
 rustdds = "=0.11.4" # pinned because of https://github.com/Atostek/RustDDS/issues/375
-eyre = { version = "0.6.8" }
-tracing = "0.1.37"
+eyre = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = "0.3.20"
 flume = "0.11.0"
-futures = { version = "0.3.21", features = ["thread-pool"] }
+futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.3"
 
 [dev-dependencies]
 dora-daemon = { workspace = true }
-tokio = { version = "1.29.1", features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 dora-cli = { workspace = true }
 dunce = "1.0.2"
 rand = "0.8.5"
-futures = { version = "0.3.28", default-features = false }
+futures = { workspace = true }
 process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
 
 [build-dependencies]

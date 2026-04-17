@@ -14,7 +14,18 @@ fn main() -> eyre::Result<()> {
         "dataflow.yml".to_string()
     };
 
-    build(dataflow.clone(), None, None, false, true)?;
+    build(
+        dataflow.clone(),
+        None,
+        None,
+        false,
+        true,
+        false,
+        false,
+        false,
+        None,
+        false,
+    )?;
 
     run(dataflow, false)?;
 

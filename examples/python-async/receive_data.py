@@ -1,3 +1,5 @@
+"""Async example: receive data using asyncio with run_in_executor."""
+
 import asyncio
 
 from dora import Node
@@ -5,8 +7,9 @@ from dora import Node
 
 async def main():
     node = Node()
-    for _ in range(50):
-        event = await node.recv_async()
+    loop = asyncio.get_event_loop()
+    while True:
+        event = await loop.run_in_executor(None, node.next)
         if event is None or event["type"] == "STOP":
             break
         del event

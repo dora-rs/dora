@@ -1,0 +1,31 @@
+types:
+  Twist:
+    arrow: Struct
+    description: "Linear and angular velocity (2x Vector3)"
+    fields:
+      - name: linear
+        type: Vector3
+      - name: angular
+        type: Vector3
+  JointState:
+    arrow: Struct
+    description: "Joint positions, velocities, efforts as Float64 lists"
+    fields:
+      - name: names
+        type: List<Utf8>
+      - name: positions
+        type: List<Float64>
+      - name: velocities
+        type: List<Float64>
+      - name: efforts
+        type: List<Float64>
+  Odometry:
+    arrow: Struct
+    description: "Pose + Twist in a reference frame"
+    fields:
+      - name: pose
+        type: Pose
+      - name: twist
+        type: Twist
+      - name: frame_id
+        type: Utf8

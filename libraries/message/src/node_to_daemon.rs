@@ -8,6 +8,7 @@ use crate::{
     versions_compatible,
 };
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),

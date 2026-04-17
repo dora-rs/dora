@@ -8,8 +8,33 @@ use crate::{
     BuildId, DataflowId, SessionId,
     common::{DaemonId, GitSource},
     descriptor::{Descriptor, ResolvedNode},
-    id::{NodeId, OperatorId},
+    id::{DataId, NodeId, OperatorId},
 };
+
+// ---------------------------------------------------------------------------
+// State catch-up types (incremental replay for reconnecting daemons)
+// ---------------------------------------------------------------------------
+
+/// A single state mutation that a reconnecting daemon may have missed.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateCatchUpEntry {
+    pub sequence: u64,
+    pub operation: StateCatchUpOperation,
+}
+
+/// The kind of state mutation recorded in the replication log.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum StateCatchUpOperation {
+    SetParam {
+        node_id: NodeId,
+        key: String,
+        value: serde_json::Value,
+    },
+    DeleteParam {
+        node_id: NodeId,
+        key: String,
+    },
+}
 
 pub use crate::common::Timestamped;
 
@@ -29,6 +54,108 @@ impl RegisterResult {
             RegisterResult::Err(err) => Err(eyre::eyre!(err)),
         }
     }
+}
+
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub enum DaemonCoordinatorEvent {
+    Build(BuildDataflowNodes),
+    Spawn(SpawnDataflowNodes),
+    AllNodesReady {
+        dataflow_id: DataflowId,
+        exited_before_subscribe: Vec<NodeId>,
+    },
+    StopDataflow {
+        dataflow_id: DataflowId,
+        grace_duration: Option<Duration>,
+        #[serde(default)]
+        force: bool,
+    },
+    ReloadDataflow {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        operator_id: Option<OperatorId>,
+    },
+    Logs {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        tail: Option<usize>,
+    },
+    RestartNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    StopNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    SetParam {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        key: String,
+        value: serde_json::Value,
+    },
+    DeleteParam {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        key: String,
+    },
+    Destroy,
+    Heartbeat,
+    PeerDaemonDisconnected {
+        daemon_id: DaemonId,
+    },
+    // --- Dynamic Topology ---
+    /// Add a node to a running dataflow on this daemon.
+    AddNode {
+        dataflow_id: DataflowId,
+        node: crate::descriptor::ResolvedNode,
+        uv: bool,
+    },
+    /// Remove a node from a running dataflow on this daemon.
+    RemoveNode {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    /// Add a mapping (connection) in a running dataflow.
+    AddMapping {
+        dataflow_id: DataflowId,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    /// Remove a mapping (connection) in a running dataflow.
+    RemoveMapping {
+        dataflow_id: DataflowId,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    /// Start forwarding matching output frames back to the coordinator over
+    /// the daemon control channel for CLI topic inspection.
+    StartTopicDebugStream {
+        dataflow_id: DataflowId,
+        outputs: Vec<(NodeId, DataId)>,
+        subscription_id: uuid::Uuid,
+    },
+    /// Stop forwarding output frames for a previously registered CLI topic
+    /// inspection subscription.
+    StopTopicDebugStream {
+        dataflow_id: DataflowId,
+        subscription_id: uuid::Uuid,
+    },
+    /// Incremental state catch-up: replays missed state mutations to a
+    /// reconnecting daemon.
+    StateCatchUp {
+        dataflow_id: DataflowId,
+        /// The entries the daemon missed, ordered by sequence number.
+        entries: Vec<StateCatchUpEntry>,
+    },
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -68,71 +195,8 @@ pub struct SpawnDataflowNodes {
     pub spawn_nodes: BTreeSet<NodeId>,
     pub uv: bool,
     pub write_events_to: Option<PathBuf>,
-    /// When true, hot-reload file watching is enabled for this dataflow.
-    #[serde(default)]
-    pub hot_reload: bool,
-    /// Path to the dataflow YAML file, used for hot-reload YAML watching.
-    #[serde(default)]
-    pub dataflow_path: Option<PathBuf>,
-}
-
-type DaemonResult<T> = std::result::Result<T, String>;
-
-#[tarpc::service]
-pub trait DaemonControl {
-    /// Trigger a dataflow build on this daemon.
-    async fn build(request: BuildDataflowNodes) -> DaemonResult<()>;
-    /// Trigger spawning dataflow nodes on this daemon.
-    async fn spawn(request: SpawnDataflowNodes) -> DaemonResult<()>;
-    /// Notify the daemon that all nodes across all daemons are ready.
-    async fn all_nodes_ready(dataflow_id: DataflowId, exited_before_subscribe: Vec<NodeId>);
-    /// Stop a running dataflow on this daemon.
-    async fn stop_dataflow(
-        dataflow_id: DataflowId,
-        grace_duration: Option<Duration>,
-        force: bool,
-    ) -> DaemonResult<()>;
-    /// Reload a specific node/operator in a running dataflow.
-    async fn reload_dataflow(
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    ) -> DaemonResult<()>;
-    /// Retrieve log file contents for a specific node.
-    async fn logs(
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        tail: Option<usize>,
-    ) -> DaemonResult<crate::common::LogsResponse>;
-    /// Stop a single node within a running dataflow (for hot-reload).
-    async fn stop_node(dataflow_id: DataflowId, node_id: NodeId) -> DaemonResult<()>;
-    /// Dynamically spawn a node into a running dataflow (for hot-reload).
-    async fn dynamic_spawn(
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        node: Box<ResolvedNode>,
-        dataflow_descriptor: Box<Descriptor>,
-    ) -> DaemonResult<()>;
-    /// Restart a node with new configuration (for hot-reload).
-    async fn restart_node(
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        new_node: Box<ResolvedNode>,
-        dataflow_descriptor: Box<Descriptor>,
-    ) -> DaemonResult<()>;
-    /// Destroy the daemon (shut it down).
-    async fn destroy() -> DaemonResult<()>;
-    /// Heartbeat check.
-    async fn heartbeat();
-    /// Return the daemon's version info for compatibility checking.
-    async fn get_version() -> DaemonVersionInfo;
-}
-
-/// Version info returned by the daemon's `get_version` RPC method.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct DaemonVersionInfo {
-    /// The daemon's own crate version (e.g. "0.4.1")
-    pub daemon_version: String,
-    /// The dora-message crate version used by the daemon (e.g. "0.7.0")
-    pub message_format_version: String,
+    /// Base URL for downloading artifacts from the coordinator (HTTP distribution mode).
+    /// When set, daemons can pull binaries from `{artifact_base_url}/{build_id}/{node_id}`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_base_url: Option<String>,
 }

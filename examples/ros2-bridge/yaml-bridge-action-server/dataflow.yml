@@ -1,0 +1,35 @@
+# Action Server Dataflow
+#
+# Demonstrates using the YAML ROS2 bridge as an action SERVER.
+# The bridge receives Fibonacci goals from ROS2 clients, forwards them
+# to the handler node (pure Arrow data, no ROS2 deps), which computes
+# the sequence with feedback and returns the result.
+#
+# Prerequisites:
+#   - ROS2 environment sourced (AMENT_PREFIX_PATH set)
+#   - A ROS2 Fibonacci action client running, e.g.:
+#       ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}"
+#
+# Usage:
+#   dora run dataflow.yml
+
+nodes:
+  - id: fib_server
+    ros2:
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: server
+    inputs:
+      feedback: handler/feedback
+      result: handler/result
+    outputs:
+      - goal
+
+  - id: handler
+    build: cargo build -p yaml-bridge-action-server-handler
+    path: ../../../target/debug/yaml-bridge-action-server-handler
+    inputs:
+      goal: fib_server/goal
+    outputs:
+      - feedback
+      - result

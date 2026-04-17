@@ -1,9 +1,4 @@
-"""Asynchronous data sender example for dora-rs.
-
-This script demonstrates how to send data from a Python node to a dora-rs
-dataflow. It sends a sequence of timestamps as 64-bit unsigned integers
-to an output named "data".
-"""
+"""Async example: send timestamped data at 10ms intervals."""
 
 import time
 
@@ -13,11 +8,9 @@ from dora import Node
 
 node = Node()
 
-i = 0
 for event in node:
-    if i == 100:
+    if event["type"] == "STOP":
         break
-    else:
-        i += 1
-    now = time.perf_counter_ns()
-    node.send_output("data", pa.array([np.uint64(now)]))
+    if event["type"] == "INPUT":
+        now = time.perf_counter_ns()
+        node.send_output("data", pa.array([np.uint64(now)]))

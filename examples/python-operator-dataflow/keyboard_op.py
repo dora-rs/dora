@@ -1,10 +1,4 @@
-"""Keyboard input handler for dora-rs dataflow.
-
-This script captures keyboard events using the 'pynput' library and
-forwards them to the dora-rs dataflow. It maintains a text buffer,
-supports basic editing (backspace), history navigation (up/down),
-and emits the buffered text upon pressing 'Enter'.
-"""
+"""TODO: Add docstring."""
 
 import pyarrow as pa
 from dora import Node

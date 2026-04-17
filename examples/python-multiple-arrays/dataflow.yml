@@ -1,5 +1,6 @@
 nodes:
   - id: sender
+    build: pip install numpy pyarrow
     path: sender.py
     outputs:
       - multi_array_msg
@@ -7,6 +8,7 @@ nodes:
       tick: dora/timer/millis/1000
 
   - id: receiver
+    build: pip install numpy pyarrow
     path: receiver.py
     inputs:
       multi_array_msg: sender/multi_array_msg

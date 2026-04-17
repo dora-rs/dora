@@ -1,0 +1,26 @@
+# Dataflow with `enable_debug_inspection: true` enabled (previously named
+# `publish_all_messages_to_zenoh`) — required for `dora topic echo`,
+# `topic info`, and `topic pub` to inspect/inject runtime messages.
+# Used by the nightly TUI smoke job.
+#
+# Uses Python timer source so the dataflow runs indefinitely until
+# explicitly stopped (rust-dataflow nodes hit their tick limit and exit).
+nodes:
+  - id: ticker
+    path: ticker.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - count
+    output_types:
+      count: std/core/v1/UInt64
+
+  - id: sink
+    path: sink.py
+    inputs:
+      count: ticker/count
+    input_types:
+      count: std/core/v1/UInt64
+
+_unstable_debug:
+  enable_debug_inspection: true

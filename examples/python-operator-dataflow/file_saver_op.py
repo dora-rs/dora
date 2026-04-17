@@ -1,8 +1,4 @@
-"""File saver operator for the dora-rs dataflow.
-
-This operator listens for "file" inputs and saves the provided raw content
-to the specified path on the local filesystem.
-"""
+"""TODO: Add docstring."""
 
 import pyarrow as pa
 from dora import DoraStatus
@@ -12,7 +8,7 @@ class Operator:
     """Inferring object from images."""
 
     def __init__(self):
-        """Initializes the File Saver operator with default state."""
+        """TODO: Add docstring."""
         self.last_file = ""
         self.last_path = ""
         self.last_netadata = None
@@ -22,17 +18,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """Handle incoming file events and save them to disk.
-
-        Args:
-            dora_event (dict): The event from dora-rs. Expected to be of
-                type "INPUT" with id "file".
-            send_output (Callable): Function to signal that the file has
-                been saved.
-
-        Returns:
-            DoraStatus: CONTINUE to keep the operator running.
-        """
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT" and dora_event["id"] == "file":
             input = dora_event["value"][0].as_py()
 

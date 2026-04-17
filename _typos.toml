@@ -1,3 +1,6 @@
+[files]
+extend-exclude = ["Changelog.md"]
+
 [default.extend-identifiers]
 # *sigh* this just isn't worth the cost of fixing
 DeviceNDArray = "DeviceNDArray"
@@ -5,5 +8,14 @@ Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
 clonable_command = "clonable_command"
 
 [default.extend-words]
-# Windows system library name
+# ratatui is a Rust TUI crate name, not a misspelling of ratatouille
+ratatui = "ratatui"
+# valid English words flagged by typos
+criticals = "criticals"
+unparseable = "unparseable"
+# abbreviation for "serialize"
+ser = "ser"
+# AB-BA is a standard term for lock-ordering deadlocks (not a typo of "BY"/"BE")
+BA = "BA"
+# Windows system library name (used by the C/C++ publish workflow)
 secur = "secur"

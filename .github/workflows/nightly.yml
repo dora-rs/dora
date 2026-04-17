@@ -1,0 +1,887 @@
+name: Nightly Regression
+
+# Deep regression coverage that runs outside the PR cycle.
+#
+# Tier 1 gates per docs/testing-matrix.md:
+#   - Full example-smoke suite (~11 min)
+#   - Service/action communication patterns (Rust-only)
+#   - Streaming example (Python)
+#   - Log-sink example dataflows (Python sources)
+#   - Record/replay round-trip
+#
+# Failures file issues with the `nightly-regression` label; they do not
+# block PRs. If a failure reproduces for 3 consecutive nightly runs,
+# promote it to the fast CI gate.
+#
+# Triggers:
+#   - schedule: daily at 06:00 UTC
+#   - workflow_dispatch: manual run from Actions UI
+#   - push to main: re-run on every push (validates nightly jobs on each commit)
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/nightly.yml"
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_VERSION: "1.92.0"
+
+jobs:
+  smoke-suite:
+    name: Smoke suite (tests/example-smoke.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Run smoke suite
+        id: smoke
+        continue-on-error: true
+        run: |
+          cargo test -p dora-examples --test example-smoke -- --test-threads=1 2>&1 | tee smoke-output.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Upload smoke log
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-output
+          path: smoke-output.log
+          retention-days: 14
+      - name: Fail the job if smoke suite failed
+        if: steps.smoke.outputs.exit_code != '0'
+        run: exit 1
+
+  # Build the dora CLI once and upload as artifact for downstream jobs.
+  # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
+  build-cli:
+    name: Build dora CLI (shared)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install dora CLI to ./dist
+        run: cargo install --path binaries/cli --locked --root ./dist
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dora-cli
+          path: dist/bin/dora
+          retention-days: 1
+
+  log-sinks:
+    name: Log-sink examples (Python sources)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        # Required because every log-sink example has Python source nodes
+        # (sensor.py / source.py). Mirrors the ci.yml Python setup.
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build log-sink nodes
+        run: cargo build -p log-sink-file -p log-sink-alert -p log-sink-tcp
+      - name: log-sink-file
+        run: dora run examples/log-sink-file/dataflow.yml --uv --stop-after 15s
+      - name: log-sink-alert
+        run: dora run examples/log-sink-alert/dataflow.yml --uv --stop-after 15s
+      - name: log-sink-tcp
+        run: dora run examples/log-sink-tcp/dataflow.yml --uv --stop-after 15s
+
+  service-action:
+    name: Service / Action patterns (Rust-only)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build service / action example nodes
+        run: >
+          cargo build
+          -p service-example-client
+          -p service-example-server
+          -p action-example-client
+          -p action-example-server
+      - name: service-example
+        run: dora run examples/service-example/dataflow.yml --stop-after 15s
+      - name: action-example
+        run: dora run examples/action-example/dataflow.yml --stop-after 20s
+
+  streaming:
+    name: Streaming example (Python)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        # Required because prompt_source.py / generator.py / sink.py are
+        # Python nodes. Mirrors the ci.yml Python setup.
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: streaming-example
+        run: dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s
+
+  record-replay:
+    name: Record/replay round-trip
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build rust-dataflow example nodes
+        run: >
+          cargo build
+          -p rust-dataflow-example-node
+          -p rust-dataflow-example-status-node
+          -p rust-dataflow-example-sink
+      - name: Record rust-dataflow
+        run: |
+          # `dora record <yaml>` instruments the dataflow and runs it;
+          # recording written to the specified output path.
+          # Nodes are pre-built above so the 30s timeout covers only runtime.
+          # Don't swallow errors (no `|| true`) — real failures should surface.
+          timeout 30s dora record examples/rust-dataflow/dataflow.yml -o run.drec
+          test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
+          echo "recording size: $(wc -c < run.drec) bytes"
+      - name: Replay
+        run: dora replay run.drec
+
+  cluster-smoke:
+    # Smoke-tests the cluster lifecycle commands that don't require SSH:
+    # `dora cluster status` and `dora cluster down`. (`dora cluster up`
+    # needs SSH to each machine in cluster.yml — out of scope for a
+    # single-runner smoke; needs dedicated infra.)
+    #
+    # Strategy: use `dora up` to launch a local coordinator+daemon, then
+    # exercise the cluster CLI against it. Run a real dataflow to prove
+    # the cluster can execute work. Tear down with `dora cluster down`.
+    name: Cluster lifecycle smoke
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build rust-dataflow example nodes
+        run: >
+          cargo build
+          -p rust-dataflow-example-node
+          -p rust-dataflow-example-status-node
+          -p rust-dataflow-example-sink
+      - name: Start local cluster (coordinator + daemon)
+        run: |
+          dora up
+          sleep 2
+      - name: cluster status shows at least 1 daemon
+        run: |
+          out=$(dora cluster status)
+          echo "$out"
+          echo "$out" | grep -q 'DAEMON ID' || { echo "ERROR: status output missing header"; exit 1; }
+          # At least one non-header line = at least one daemon row
+          daemon_lines=$(echo "$out" | grep -E '^[0-9a-f]{8}-' | wc -l)
+          test "$daemon_lines" -ge 1 || { echo "ERROR: no daemons listed"; exit 1; }
+          echo "$out" | grep -q 'Active dataflows:' || { echo "ERROR: missing dataflow summary"; exit 1; }
+      - name: Run a dataflow through the cluster
+        run: |
+          # Use `dora start`, not `dora run`: a coordinator is already
+          # running from `dora up`. `dora run` starts an embedded
+          # coordinator on the same port → "Address already in use".
+          #
+          # rust-dataflow is finite (~1s), so poll until it finishes
+          # rather than sleeping + calling `dora stop` on something
+          # that's already done.
+          dora start examples/rust-dataflow/dataflow.yml --detach
+          for i in $(seq 1 30); do
+            sleep 1
+            if ! dora list 2>/dev/null | grep -q rust-dataflow; then
+              echo "dataflow completed after ${i}s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "ERROR: dataflow did not finish within 30s"
+              dora stop --name rust-dataflow || true
+              exit 1
+            fi
+          done
+      - name: cluster down tears everything down cleanly
+        run: |
+          dora cluster down
+          sleep 1
+          # Verify coordinator is actually gone: cluster status must fail.
+          if dora cluster status 2>/dev/null; then
+            echo "ERROR: cluster status succeeded after 'cluster down'"
+            exit 1
+          fi
+          # Verify no leftover processes (race-tolerant). The actual
+          # invocations are `dora daemon --quiet` / `dora coordinator --quiet`
+          # — a single `dora` binary with subcommands, not separate
+          # `dora-daemon`/`dora-coordinator` binaries. Match the real
+          # command lines.
+          sleep 1
+          if pgrep -fa 'dora (daemon|coordinator)' > /dev/null; then
+            echo "ERROR: leftover dora processes after cluster down:"
+            pgrep -fa 'dora (daemon|coordinator)'
+            exit 1
+          fi
+
+  topic-and-top-smoke:
+    # Smoke-tests the inspection commands: `dora top --once`, `dora topic
+    # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
+    # built-in exit / --duration / --count). Topic inspection (echo/hz/info)
+    # streams over the coordinator WebSocket (PR #238) — requires
+    # `_unstable_debug.publish_all_messages_to_zenoh: true` in the fixture.
+    #
+    # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
+    # indefinitely until stopped (rust-dataflow nodes hit tick limits).
+    # Runs without --uv: ambient venv has local dora-rs 0.2.1; --uv would
+    # spawn isolated per-script venvs that pull dora-rs 0.5.0 from PyPI.
+    name: Topic & top inspection smoke
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv with local dora-rs
+        # Required so the Python source nodes import dora-rs 0.2.1 (matching
+        # the daemon's message format), not the 0.5.0 from PyPI.
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Start coordinator + daemon
+        run: |
+          dora up
+          sleep 2
+      - name: dora top --once with no dataflow returns valid JSON
+        run: |
+          # No dataflow running yet: must produce '[]' (valid empty JSON).
+          out=$(dora top --once || true)
+          echo "$out"
+          echo "$out" | grep -qE '^\[' || { echo "ERROR: top --once didn't produce JSON array"; exit 1; }
+      - name: dora trace list on empty coordinator
+        run: |
+          # With no dataflow run yet, the trace store is empty. The command
+          # must exit 0 and print the canonical empty-state message (not
+          # error, not hang).
+          out=$(dora trace list)
+          echo "$out"
+          echo "$out" | grep -q "No traces captured yet." \
+            || { echo "ERROR: trace list empty-state message missing"; exit 1; }
+      - name: dora trace view with known-absent UUID
+        run: |
+          # Valid UUID that the coordinator has no spans for. Must exit 0
+          # and report the empty-spans message.
+          out=$(dora trace view 00000000-0000-0000-0000-000000000000)
+          echo "$out"
+          echo "$out" | grep -q "No spans found for this trace." \
+            || { echo "ERROR: trace view absent-UUID empty-state message missing"; exit 1; }
+      - name: dora trace view with unresolvable prefix errors clearly
+        run: |
+          # Non-UUID prefix with no matches must exit non-zero and surface
+          # a clear "no trace found" message, not a generic protocol error.
+          if out=$(dora trace view definitely-not-a-trace 2>&1); then
+            echo "ERROR: expected non-zero exit for unresolvable prefix"
+            echo "$out"
+            exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q "no trace found matching prefix" \
+            || { echo "ERROR: trace view missing prefix-error message"; exit 1; }
+      - name: dora self update --check-only read path
+        # Smokes the read path only (never swaps the binary). Queries the
+        # GitHub releases API for dora-rs/dora and reports whether an
+        # update is available. Catches regressions in CLI flag parsing,
+        # the self_update crate integration, and the API-response contract.
+        run: |
+          out=$(timeout 30 dora self update --check-only 2>&1) || exit_code=$?
+          echo "$out"
+          # Must always print the entry banner — if this is missing, the
+          # command didn't even start the check path.
+          echo "$out" | grep -q "Checking for updates" \
+            || { echo "ERROR: --check-only didn't enter update-check path"; exit 1; }
+          # One of the two valid outcomes must print. If neither appears,
+          # either GitHub rate-limited us (tolerated) or the output format
+          # regressed (fail).
+          if echo "$out" | grep -qE "latest version|update is available"; then
+            echo "OK: check-only produced a valid outcome message"
+          elif echo "$out" | grep -qE "rate limit|403|429"; then
+            echo "WARN: GitHub API rate-limited on shared runner IP — skipping outcome assertion"
+          else
+            echo "ERROR: --check-only produced no recognized outcome message"
+            exit 1
+          fi
+      - name: Start a debug-enabled dataflow
+        # The fixture uses Python source nodes (ticker.py / sink.py) so the
+        # dataflow runs forever (rust-dataflow-example-node hits a tick limit
+        # and exits, breaking subsequent topic queries). Runs without --uv:
+        # the ambient venv has local dora-rs (just installed above), and
+        # --uv would create a fresh venv that pulls dora-rs 0.5.0 from PyPI.
+        run: |
+          dora start tests/fixtures/zenoh-debug-dataflow.yml --name tui-smoke --detach
+          sleep 5  # let nodes register and start emitting messages
+          dora list  # surface status for the log
+      - name: dora topic list (NDJSON)
+        run: |
+          # `topic list --format json` emits NDJSON (one object per line),
+          # not a JSON array. Parse each line, assert at least one row
+          # describes the ticker/count topic.
+          out=$(dora topic list -d tui-smoke --format json)
+          echo "$out"
+          echo "$out" | python3 -c "
+          import json, sys
+          rows = [json.loads(line) for line in sys.stdin if line.strip()]
+          assert rows, 'no NDJSON rows produced'
+          assert any(r.get('node') == 'ticker' and r.get('name') == 'count' for r in rows), \
+              f'ticker/count not in topic list: {rows}'
+          "
+      - name: dora topic info on ticker/count (--duration 3)
+        run: |
+          dora topic info -d tui-smoke ticker/count --duration 3 2>&1 | tee info.out
+          grep -q 'ticker/count' info.out || { echo "ERROR: info output missing topic"; exit 1; }
+          # Assert messages actually flowed. Pre-#238 this step passed with
+          # `Total messages: 0` because the zenoh late-subscribe path dropped
+          # frames silently. Guard against regression.
+          total=$(grep -oE 'Total messages: [0-9]+' info.out | grep -oE '[0-9]+' || echo 0)
+          if [ "$total" -lt 10 ]; then
+            echo "ERROR: info received $total messages in 3s on a 10Hz fixture; expected >= 10"
+            exit 1
+          fi
+      - name: dora topic echo --count 5 (JSON frames)
+        run: |
+          # Tests the CLI-side WebSocket subscription path end-to-end (#238).
+          # Fixture emits at 10 Hz, so 5 frames arrive in ~500ms — generous
+          # 15s timeout protects against daemon startup delay.
+          timeout 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
+            2>&1 | tee echo.out
+          lines=$(grep -c '"name":"ticker/count"' echo.out || echo 0)
+          if [ "$lines" -lt 5 ]; then
+            echo "ERROR: echo --count 5 produced $lines frames; expected 5"
+            exit 1
+          fi
+      - name: dora topic hz --duration 3 (non-TTY stats)
+        run: |
+          # --duration mode skips ratatui and prints a tab-separated stats
+          # table. The "ALL" row aggregates across all subscribed topics.
+          dora topic hz -d tui-smoke ticker/count --duration 3 2>&1 | tee hz.out
+          # Fixture is 10 Hz; expect ~30 samples in 3 seconds. Accept >= 10
+          # to absorb scheduler jitter on slow runners.
+          samples=$(awk -F'\t' '/^ticker\/count/ { print $NF }' hz.out)
+          if [ -z "$samples" ] || [ "$samples" -lt 10 ]; then
+            echo "ERROR: hz received ${samples:-0} samples in 3s on a 10Hz fixture; expected >= 10"
+            exit 1
+          fi
+      - name: dora topic pub --count 3
+        run: |
+          dora topic pub -d tui-smoke ticker/count '42' --count 3 2>&1 | tee pub.out
+          # `topic pub` prints "Published message N/3" on success.
+          grep -q 'Published message 3/3' pub.out || { echo "ERROR: pub didn't emit all 3 messages"; exit 1; }
+      - name: Stop dataflow + tear down
+        if: always()
+        run: |
+          dora stop --name tui-smoke --grace-duration 5s 2>/dev/null || true
+          dora destroy 2>/dev/null || true
+
+  cpu-affinity-smoke:
+    # Regression test for #252. Spawns `cpu-affinity-probe` pinned to cores
+    # [0, 1] via the dataflow YAML; the probe reads its own affinity mask
+    # via sched_getaffinity and prints it. Test asserts the mask matches
+    # the requested set. Linux-only (sched_{get,set}affinity are Linux APIs).
+    name: cpu_affinity end-to-end (Linux)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: "Run cpu-affinity-probe fixture (cpu_affinity: [0, 1])"
+        run: |
+          cd examples/cpu-affinity-probe
+          out=$(dora run dataflow.yml --stop-after 3s 2>&1)
+          echo "$out"
+          # The probe prints exactly one `AFFINITY_MASK:<csv>` line from stdout.
+          # `dora run` prefixes node stdout with "stdout probe:" so extract the
+          # csv tail.
+          mask=$(echo "$out" | grep -oE 'AFFINITY_MASK:[^[:space:]]+' | head -1 | cut -d: -f2)
+          if [ -z "$mask" ]; then
+            echo "ERROR: probe did not print AFFINITY_MASK — cpu-affinity-probe failed to run"
+            exit 1
+          fi
+          if [ "$mask" != "0,1" ]; then
+            echo "ERROR: expected AFFINITY_MASK:0,1, got: $mask"
+            exit 1
+          fi
+          echo "OK: probe ran with the expected affinity mask: $mask"
+
+  redb-backend-smoke:
+    # Regression test for #253. Proves the redb coordinator store survives
+    # a coord restart: writes during normal operation, reads cleanly on
+    # startup. The load signal is a tracing line the restarted coord prints
+    # after reading stored daemon records — see binaries/coordinator/src/lib.rs
+    # `"cleared N stale daemon records"`.
+    name: redb backend end-to-end
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Session 1 — write state to redb
+        run: |
+          STORE=/tmp/dora-redb-smoke.db
+          rm -f "$STORE"
+          # Start coord with persistent redb store + daemon.
+          dora coordinator --store "redb:$STORE" > /tmp/coord1.log 2>&1 &
+          sleep 2
+          dora daemon > /tmp/daemon1.log 2>&1 &
+          sleep 2
+          # Run a short dataflow so the coord writes dataflow + daemon records
+          # to the store.
+          dora start examples/cpu-affinity-probe/dataflow.yml --name redb-smoke --detach
+          sleep 6
+          # Verify the store file exists and contains the dataflow name as
+          # evidence of actual writes (not just preallocation).
+          test -f "$STORE" || { echo "ERROR: redb store not created"; exit 1; }
+          if ! strings "$STORE" | grep -q "redb-smoke"; then
+            echo "ERROR: redb store does not contain the dataflow name — writes missing"
+            exit 1
+          fi
+          echo "OK: redb store contains dataflow record"
+          # Kill coord only, leave daemon orphaned (simulates a coord crash).
+          pkill -TERM -f "dora coordinator" || true
+          # Give the coord ~1s to shut down gracefully.
+          sleep 2
+      - name: Session 2 — restart coord, read state from redb
+        run: |
+          STORE=/tmp/dora-redb-smoke.db
+          # Restart coord against the same store.
+          dora coordinator --store "redb:$STORE" > /tmp/coord2.log 2>&1 &
+          sleep 4
+          echo "=== coord2 log ==="
+          cat /tmp/coord2.log
+          # The stale-daemon-cleanup path only runs if the coord successfully
+          # read at least one daemon record from redb. This is the round-trip
+          # proof: writes in session 1 were persisted AND session 2 read them.
+          if ! grep -q "cleared.*stale daemon records" /tmp/coord2.log; then
+            echo "ERROR: session 2 coord did not emit the stale-daemon cleanup log"
+            echo "(expected a line matching 'cleared N stale daemon records')"
+            exit 1
+          fi
+          # Also assert clean startup — no corruption, no panic.
+          if grep -qE "corrupt|panicked|ERROR" /tmp/coord2.log; then
+            echo "ERROR: session 2 coord log contains corruption or panic markers"
+            exit 1
+          fi
+          echo "OK: redb store read cleanly on restart"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+
+  daemon-reconnect-smoke:
+    # Regression test for #254. Proves the daemon auto-reconnect loop works
+    # end-to-end by SIGSTOPping the daemon long enough for the coord's
+    # heartbeat watchdog to disconnect it (30s timeout in coord/src/lib.rs:1664),
+    # then SIGCONTing and asserting the daemon rediscovers + re-registers.
+    # Linux-only: relies on SIGSTOP/SIGCONT semantics for freezing the process.
+    name: daemon auto-reconnect end-to-end (Linux)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Start coord + daemon, capture PID
+        run: |
+          dora coordinator > /tmp/coord.log 2>&1 &
+          echo "COORD_PID=$!" >> "$GITHUB_ENV"
+          sleep 2
+          dora daemon > /tmp/daemon.log 2>&1 &
+          echo "DAEMON_PID=$!" >> "$GITHUB_ENV"
+          sleep 3
+          # Sanity: daemon registered and emitted its first status report.
+          if ! grep -q "daemon.*reports.*running dataflow" /tmp/coord.log; then
+            echo "ERROR: daemon did not register — no 'daemon X reports' line in coord log"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: initial daemon registration confirmed"
+      - name: Freeze daemon with SIGSTOP, wait past heartbeat timeout
+        run: |
+          kill -STOP "$DAEMON_PID"
+          echo "daemon frozen at $(date +%s)"
+          # Coord's watchdog: 30s timeout (binaries/coordinator/src/lib.rs:1664).
+          # Wait 35s to give the watchdog 5s of margin.
+          sleep 35
+          if ! grep -q "Disconnecting daemons that failed watchdog" /tmp/coord.log; then
+            echo "ERROR: coord did not log watchdog disconnect after 35s pause"
+            echo "--- coord log ---"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: coord timed out the frozen daemon"
+      - name: Resume daemon with SIGCONT, wait for reconnect
+        run: |
+          kill -CONT "$DAEMON_PID"
+          echo "daemon resumed at $(date +%s)"
+          # Daemon reconnect loop: 1s backoff on first retry. 30s is very
+          # generous but absorbs scheduler jitter on slow runners.
+          sleep 30
+          # Daemon should have noticed the disconnect and retried.
+          if ! grep -q "daemon disconnected from coordinator" /tmp/daemon.log; then
+            echo "ERROR: daemon did not detect disconnect post-resume"
+            echo "--- daemon log ---"
+            cat /tmp/daemon.log
+            exit 1
+          fi
+          echo "OK: daemon detected disconnect"
+          # Coord should show at least two 'daemon X reports' lines — initial
+          # registration and post-reconnect registration.
+          report_count=$(grep -c "daemon.*reports.*running dataflow" /tmp/coord.log || true)
+          echo "coord saw $report_count daemon status reports total"
+          if [ "$report_count" -lt 2 ]; then
+            echo "ERROR: expected >= 2 daemon reports (initial + post-reconnect), got $report_count"
+            echo "--- coord log ---"
+            cat /tmp/coord.log
+            exit 1
+          fi
+          echo "OK: daemon reconnected and re-registered"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -CONT -f "dora daemon" 2>/dev/null || true
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+
+  state-reconstruction-smoke:
+    # Partial regression test for #255. Validates what the current redb
+    # backend + recovery path actually delivers on coord restart: store
+    # records survive, and the coord transitions previously-Running
+    # dataflows to Recovering on startup.
+    #
+    # NOT tested here: daemons keeping running dataflows alive across
+    # coord disconnect. That part of the README claim ('dataflow state
+    # reconstruction on coordinator restart') is aspirational — see the
+    # follow-up issue for the implementation gap. When the daemon side
+    # lands, this job should be extended to assert the Recovering -> Running
+    # reconciliation path at binaries/coordinator/src/lib.rs:1996.
+    name: state reconstruction end-to-end (partial)
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Download dora CLI
+        uses: actions/download-artifact@v4
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Pre-build example nodes
+        run: |
+          cargo build -p rust-dataflow-example-node
+      - name: Session 1 — run long-lived dataflow, kill coord
+        run: |
+          STORE=/tmp/state-reconstruct.db
+          rm -f "$STORE"
+          # 500ms timer × 100-tick source node → ~50s runtime, long enough
+          # for the record to be persisted as Running before we kill coord.
+          cat > examples/rust-dataflow/long-running.yml <<'EOF'
+          nodes:
+            - id: source
+              path: ../../target/debug/rust-dataflow-example-node
+              inputs:
+                tick: dora/timer/millis/500
+              outputs:
+                - random
+          EOF
+          dora coordinator --store "redb:$STORE" > /tmp/sr-c1.log 2>&1 &
+          sleep 2
+          dora daemon > /tmp/sr-d1.log 2>&1 &
+          sleep 2
+          dora start examples/rust-dataflow/long-running.yml --name sr-test --detach
+          sleep 4
+          # The dataflow name must appear in the store as evidence of
+          # a Running record being persisted.
+          if ! strings "$STORE" | grep -q "sr-test"; then
+            echo "ERROR: dataflow name not in store — writes missing"
+            exit 1
+          fi
+          echo "OK: Running dataflow persisted to store"
+          pkill -TERM -f "dora coordinator" || true
+          sleep 2
+      - name: Session 2 — restart coord, assert Recovering transition
+        run: |
+          STORE=/tmp/state-reconstruct.db
+          dora coordinator --store "redb:$STORE" > /tmp/sr-c2.log 2>&1 &
+          sleep 4
+          echo "=== sr-c2 log ==="
+          cat /tmp/sr-c2.log
+          # The startup code at binaries/coordinator/src/lib.rs:302 reads
+          # persisted Running records and transitions them to Recovering.
+          # This log line is the observable proof.
+          if ! grep -q "coordinator restarted:.*-> Recovering" /tmp/sr-c2.log; then
+            echo "ERROR: coord did not mark previously-Running dataflow as Recovering"
+            exit 1
+          fi
+          echo "OK: coord hydrated Running record as Recovering on startup"
+      - name: Teardown
+        if: always()
+        run: |
+          pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+          rm -f examples/rust-dataflow/long-running.yml
+
+  file-issue-on-failure:
+    name: File issue on nightly failure
+    runs-on: ubuntu-latest
+    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke, state-reconstruction-smoke]
+    # `always() && contains(needs.*.result, 'failure')` covers both direct
+    # failures and the case where build-cli fails and downstream jobs get
+    # skipped (plain `failure()` would miss the skipped-cascade case).
+    if: always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create or update regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          # Find any open nightly-regression issue. If one exists, append
+          # a comment with today's failure. Otherwise open a fresh issue.
+          # Prevents issue spam when nightly is red for multiple days.
+          DATE=$(date -u +%Y-%m-%d)
+          EXISTING=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --label nightly-regression \
+            --limit 1 \
+            --json number \
+            --jq '.[0].number // empty')
+
+          COMMENT_BODY=$(cat <<EOF
+          Another failure on $DATE.
+
+          Run: $RUN_URL
+          Commit: $COMMIT_SHA
+
+          Reproduce locally:
+          \`\`\`
+          cargo test -p dora-examples --test example-smoke -- --test-threads=1
+          \`\`\`
+          EOF
+          )
+
+          if [ -n "$EXISTING" ]; then
+            echo "Updating existing issue #$EXISTING"
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT_BODY"
+          else
+            echo "Opening new nightly-regression issue"
+            ISSUE_BODY=$(cat <<EOF
+          Nightly regression suite failed on $DATE.
+
+          Run: $RUN_URL
+          Commit: $COMMIT_SHA
+
+          Jobs:
+          - smoke-suite
+          - log-sinks
+          - service-action
+          - streaming
+          - record-replay
+          - cluster-smoke
+          - topic-and-top-smoke
+          - cpu-affinity-smoke
+          - redb-backend-smoke
+          - daemon-reconnect-smoke
+          - state-reconstruction-smoke
+
+          See the run for per-job status and logs. Subsequent failures
+          will comment on this issue instead of opening new ones. Close
+          this issue when the regression is fixed.
+
+          Reproduce locally:
+          \`\`\`
+          cargo test -p dora-examples --test example-smoke -- --test-threads=1
+          \`\`\`
+          EOF
+            )
+            gh issue create \
+              --repo "$REPO" \
+              --title "Nightly regression since $DATE" \
+              --body "$ISSUE_BODY" \
+              --label nightly-regression
+          fi

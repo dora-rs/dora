@@ -7,7 +7,18 @@ fn main() -> eyre::Result<()> {
     std::env::set_current_dir(root.join(file!()).parent().unwrap())
         .wrap_err("failed to set working dir")?;
 
-    build("dataflow.yml".to_string(), None, None, true, true)?;
+    build(
+        "dataflow.yml".to_string(),
+        None,
+        None,
+        true,
+        true,
+        false,
+        false,
+        false,
+        None,
+        false,
+    )?;
 
     dora_run("dataflow.yml".to_string(), true)?;
 

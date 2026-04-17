@@ -12,26 +12,42 @@ You can use the standard `cargo check`, `cargo build`, `cargo run`, and `cargo t
 To run a command for a specific package only, pass e.g. `--package dora-daemon`.
 Running a command for the whole workspace is possible by passing `--workspace`.
 
+```bash
+# Build all (excluding Python packages which require maturin)
+cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
+# Test all
+cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+
+# Lint
+cargo clippy --all -- -D warnings
+
+# Format
+cargo fmt --all
+```
+
+## Development Workflow
+
+1. **Plan**: Use an issue or discussion to outline your approach
+2. **Test-Driven**: Write a failing test first (RED), then make it pass (GREEN), then refactor (IMPROVE)
+3. **Review**: Run `cargo clippy` and `cargo fmt` before submitting
+4. **Commit**: Use conventional commit format: `type(scope): description`
+   - Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
+
+See [docs/testing-guide.md](docs/testing-guide.md) for detailed testing patterns.
 
 ## Continuous Integration (CI)
 
-We're using [GitHub Actions](https://github.com/features/actions) to run automated checks on all commits and pull requests.
-These checks ensure that our `main` branch always builds successfully and that it passes all tests.
-Please ensure that your pull request passes all checks.
-You don't need to fix warnings that are unrelated to your changes.
-Feel free to ask for help if you're unsure about a check failure.
+We use [GitHub Actions](https://github.com/features/actions) to run automated checks on all commits and pull requests.
+Please ensure that your pull request passes all checks. You don't need to fix warnings unrelated to your changes.
 
-We're currently running the following kind of checks:
+Current CI jobs:
 
-- **CI / Test:** Ensures that the project builds and that all unit tests pass. This check is run on Linux, Windows, and macOS.
-- **CI / Examples:** Builds and runs the Rust, C, and C++ dataflows from the `examples` subdirectory. This check is run on Linux, Windows, and macOS.
-- **CI-python / Python Examples:** Builds and runs the Python dataflows from the `examples` subdirectory. This check is run on Linux only.
-- **github pages / deploy:** Generates our website from the `docs` subfolder.
-- **CI / CLI Test:** Runs some basic tests of the `dora` command-line application. This check is run on Linux, Windows, and macOS.
-- **CI / Clippy:** Runs the additional checks of the [`clippy`](https://github.com/rust-lang/rust-clippy) project.
-- **CI / Formatting:** Ensures that the code is formatted using `rustfmt` (see [below](#style))
-- **CI / License Checks:** Scans the dependency tree and tries to detect possible license incompatibilities.
+- **fmt**: `cargo fmt --all -- --check`
+- **clippy**: `cargo clippy --all -- -D warnings` (excluding Python packages)
+- **test**: `cargo test --all` (excluding Python and example packages)
+- **e2e**: End-to-end smoke tests, fault tolerance tests, WebSocket CLI tests
+- **typos**: Spell checking via `crate-ci/typos`
 
 ## Issue Management
 
@@ -52,8 +68,46 @@ We use [`rustfmt`](https://github.com/rust-lang/rustfmt) with its default settin
 Please run `cargo fmt --all` on your code before submitting a pull request.
 Our CI will run an automatic formatting check of your code.
 
-## Publishing new Versions
+## Releasing
 
-The maintainers are responsible for publishing new versions of the `dora` crates.
-Please don't open unsolicited pull requests to create new releases.
-Instead, request a new version by opening an issue or by leaving a comment on a merged PR.
+Releases are automated via GitHub Actions. Only maintainers should cut releases.
+
+### Prerequisites (one-time)
+
+```bash
+cargo install cargo-release git-cliff
+```
+
+### Cutting a release
+
+```bash
+# 1. Ensure main is green and up to date
+git checkout main && git pull
+
+# 2. Generate/update changelog
+git cliff --tag v0.5.0 --output CHANGELOG.md
+git add CHANGELOG.md && git commit -m "docs: update changelog for v0.5.0"
+
+# 3. Bump version, commit, tag, and push (dry-run first)
+cargo release minor              # dry-run: review what will happen
+cargo release minor --execute    # bumps workspace version, tags v0.5.0, pushes
+```
+
+CI takes over from the tag push and automatically:
+- Publishes all crates to crates.io (in dependency order)
+- Builds and publishes the Python node API wheel to PyPI (`dora-rs`)
+- Builds CLI binaries for all platforms
+- Creates a GitHub Release with changelog and binary assets
+
+### Configuration
+
+| File | Purpose |
+|------|---------|
+| `release.toml` | cargo-release settings (version bump, tagging) |
+| `cliff.toml` | git-cliff changelog generation |
+| `.github/workflows/release.yml` | Tag-triggered publish pipeline |
+
+### Required GitHub secrets
+
+- `CARGO_REGISTRY_TOKEN`: crates.io API token
+- PyPI: configure [OIDC trusted publishing](https://docs.pypi.org/trusted-publishers/) for the `pypi` environment (no secret needed)

@@ -1,41 +1,57 @@
 use super::Executable;
-use crate::LISTEN_WILDCARD;
+use crate::LISTEN_DEFAULT;
 use dora_coordinator::Event;
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, DORA_COORDINATOR_PORT_DEFAULT};
+use dora_coordinator::{CoordinatorStore, InMemoryStore};
+use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 
 #[cfg(feature = "tracing")]
 use dora_tracing::TracingBuilder;
 
 use eyre::Context;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
 #[derive(Debug, clap::Args)]
 /// Run coordinator
 pub struct Coordinator {
-    /// Network interface to bind to for daemon communication
-    #[clap(long, default_value_t = LISTEN_WILDCARD)]
+    /// Network interface to bind to
+    #[clap(long, default_value_t = LISTEN_DEFAULT, env = "DORA_COORDINATOR_INTERFACE")]
     interface: IpAddr,
-    /// Port number to bind to for daemon communication
-    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_DEFAULT)]
+    /// Port number to bind to
+    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_WS_DEFAULT, env = "DORA_COORDINATOR_PORT")]
     port: u16,
-    /// Network interface to bind to for control communication
-    #[clap(long, default_value_t = LISTEN_WILDCARD)]
-    control_interface: IpAddr,
-    /// Port number to bind to for control communication
-    #[clap(long, default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    control_port: u16,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
+    /// State store backend: "redb" (default), "memory", or "redb:/path/to/file.redb".
+    /// The "redb" backend persists coordinator state to disk so it survives restarts.
+    /// Use "memory" for ephemeral local development.
+    #[clap(long, default_value = "redb", value_parser = parse_store_spec)]
+    store: String,
+    /// Enable token authentication.
+    ///
+    /// When enabled, the coordinator generates a random token on startup
+    /// and writes it to ~/.config/dora/.dora-token. Clients must present
+    /// this token to connect.
+    #[clap(long)]
+    auth: bool,
 }
 
 impl Executable for Coordinator {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
+        #[cfg(feature = "tracing")]
+        let span_store;
         #[cfg(feature = "tracing")]
         {
+            use dora_tracing::span_store::new_shared_store;
+
             let name = "dora-coordinator";
+            let store = new_shared_store();
+            span_store = Some(store.clone());
             let mut builder = TracingBuilder::new(name);
+            builder = builder.with_span_capture(store);
             if !self.quiet {
                 builder = builder.with_stdout("info", false);
             }
@@ -44,14 +60,138 @@ impl Executable for Coordinator {
                 .build()
                 .wrap_err("failed to set up tracing subscriber")?;
         }
+        #[cfg(not(feature = "tracing"))]
+        let span_store = ();
 
-        let bind = SocketAddr::new(self.interface, self.port);
-        let bind_control = SocketAddr::new(self.control_interface, self.control_port);
-        let (port, task) =
-            dora_coordinator::start(bind, bind_control, futures::stream::empty::<Event>()).await?;
-        if !self.quiet {
-            println!("Listening for incoming daemon connection on {port}");
-        }
-        task.await.context("failed to run dora-coordinator")
+        let store = create_store(&self.store)?;
+
+        let rt = Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        let auth = self.auth;
+        rt.block_on(async {
+            let bind = SocketAddr::new(self.interface, self.port);
+            let (port, task) = dora_coordinator::start_with_auth(
+                bind,
+                futures::stream::empty::<Event>(),
+                store,
+                span_store,
+                auth,
+            )
+            .await?;
+            if !self.quiet {
+                println!("Listening on port {port}");
+            }
+            task.await
+        })
+        .context("failed to run dora-coordinator")
     }
+}
+
+fn parse_store_spec(s: &str) -> Result<String, String> {
+    match s {
+        "memory" => Ok(s.to_string()),
+        s if s == "redb" || s.starts_with("redb:") => Ok(s.to_string()),
+        other => Err(format!(
+            "unknown store backend: `{other}` (expected `memory` or `redb`)"
+        )),
+    }
+}
+
+fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
+    match spec {
+        "memory" => Ok(Arc::new(InMemoryStore::new())),
+
+        #[cfg(feature = "redb-backend")]
+        "redb" => {
+            let path = default_redb_path()?;
+            Ok(Arc::new(
+                dora_coordinator::dora_coordinator_store::RedbStore::open(&path)?,
+            ))
+        }
+
+        #[cfg(feature = "redb-backend")]
+        s if s.starts_with("redb:") => {
+            let raw = &s["redb:".len()..];
+            if raw.is_empty() {
+                eyre::bail!("redb path cannot be empty; use `redb` for the default path");
+            }
+            let path = std::path::PathBuf::from(raw);
+            if path
+                .components()
+                .any(|c| c == std::path::Component::ParentDir)
+            {
+                eyre::bail!("redb path must not contain `..` components");
+            }
+            Ok(Arc::new(
+                dora_coordinator::dora_coordinator_store::RedbStore::open(&path)?,
+            ))
+        }
+
+        #[cfg(not(feature = "redb-backend"))]
+        s if s == "redb" || s.starts_with("redb:") => {
+            eyre::bail!(
+                "redb store requested but the `redb-backend` feature is not enabled. \
+                 Rebuild with `--features redb-backend`."
+            )
+        }
+
+        other => eyre::bail!("unknown store backend: `{other}` (expected `memory` or `redb`)"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_store_spec_memory() {
+        assert_eq!(parse_store_spec("memory").unwrap(), "memory");
+    }
+
+    #[test]
+    fn parse_store_spec_redb() {
+        assert_eq!(parse_store_spec("redb").unwrap(), "redb");
+    }
+
+    #[test]
+    fn parse_store_spec_redb_with_path() {
+        assert_eq!(
+            parse_store_spec("redb:/tmp/test.redb").unwrap(),
+            "redb:/tmp/test.redb"
+        );
+    }
+
+    #[test]
+    fn parse_store_spec_unknown() {
+        assert!(parse_store_spec("sqlite").is_err());
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    let dir = std::path::PathBuf::from(home).join(".dora");
+    // Set restrictive umask before creating directory to close the TOCTOU window
+    // between creation and set_permissions.
+    #[cfg(unix)]
+    {
+        // SAFETY: umask is always safe to call and has no undefined behavior.
+        let old = unsafe { libc::umask(0o077) };
+        let result = std::fs::create_dir_all(&dir);
+        unsafe { libc::umask(old) };
+        result?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir)?;
+    // Defense-in-depth: also set permissions explicitly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir.join("coordinator.redb"))
 }

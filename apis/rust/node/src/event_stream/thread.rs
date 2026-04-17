@@ -3,7 +3,7 @@ use dora_core::{
     uhlc::{self, Timestamp},
 };
 use dora_message::{
-    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
+    daemon_to_node::{DaemonReply, NodeEvent},
     node_to_daemon::{DaemonRequest, DropToken, Timestamped},
 };
 use eyre::{Context, eyre};
@@ -12,18 +12,19 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::sync::mpsc;
 
 use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
     node_id: NodeId,
-    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
+    tx: mpsc::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
     let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
-    Ok(EventStreamThreadHandle::new(join_handle))
+    Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
 #[derive(Debug)]
@@ -33,21 +34,37 @@ pub enum EventItem {
         event: NodeEvent,
         ack_channel: flume::Sender<()>,
     },
+    /// Zenoh-received input carrying the raw `ZBytes` payload.
+    ///
+    /// Unlike `NodeEvent::Input` which wraps data in `DataMessage::Vec`
+    /// (requiring a copy for SHM payloads), this variant holds the
+    /// original zenoh buffer so the Arrow conversion can use
+    /// `Buffer::from_custom_allocation` for zero-copy
+    /// (dora-rs/adora#132).
+    ZenohInput {
+        id: dora_core::config::DataId,
+        metadata: std::sync::Arc<dora_message::metadata::Metadata>,
+        payload: zenoh::bytes::ZBytes,
+    },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
 }
 
 pub struct EventStreamThreadHandle {
+    _node_id: NodeId,
     handle: flume::Receiver<std::thread::Result<()>>,
 }
 
 impl EventStreamThreadHandle {
-    fn new(join_handle: std::thread::JoinHandle<()>) -> Self {
+    fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {
             let _ = tx.send(join_handle.join());
         });
-        Self { handle: rx }
+        Self {
+            _node_id: node_id,
+            handle: rx,
+        }
     }
 }
 
@@ -83,7 +100,7 @@ impl Drop for EventStreamThreadHandle {
 #[tracing::instrument(skip(tx, channel, clock))]
 fn event_stream_loop(
     node_id: NodeId,
-    tx: tokio::sync::mpsc::UnboundedSender<EventItem>,
+    tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
 ) {
@@ -115,29 +132,28 @@ fn event_stream_loop(
             Ok(DaemonReply::Result(Err(err))) => {
                 let err = eyre!(err).wrap_err("error in incoming event");
                 tracing::error!("{err:?}");
+                // Back off to avoid spinning on persistent daemon errors
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
 
             Ok(other) => {
                 let err = eyre!("unexpected control reply: {other:?}");
                 tracing::warn!("{err:?}");
+                std::thread::sleep(Duration::from_millis(100));
                 continue;
             }
             Err(err) => {
-                let err = err.wrap_err("failed to receive incoming event");
-                break 'outer Err(err);
+                // Channel error means the daemon connection is broken.
+                // Break instead of retrying a dead connection.
+                break Err(err.wrap_err("daemon channel broken"));
             }
         };
         for Timestamped { inner, timestamp } in events {
             if let Err(err) = clock.update_with_timestamp(&timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            let NodeEventOrUnknown::Known(inner) = inner else {
-                tracing::info!("received unknown event from daemon -> skipping it");
-                continue;
-            };
-
-            let drop_token = match inner.as_ref() {
+            let drop_token = match &inner {
                 NodeEvent::Input {
                     data: Some(data), ..
                 } => data.drop_token(),
@@ -150,14 +166,19 @@ fn event_stream_loop(
 
             if let Some(tx) = tx.as_ref() {
                 let (drop_tx, drop_rx) = flume::bounded(0);
-                match tx.send(EventItem::NodeEvent {
-                    event: *inner,
+                // `blocking_send` is used because this function runs on a
+                // dedicated `std::thread` (not a tokio worker). Using
+                // `tokio::sync::mpsc` here — instead of `flume` — avoids the
+                // AB-BA deadlock between flume 0.10's spinlock and pyo3's
+                // GIL-acquiring waker (upstream dora-rs/dora#1603).
+                match tx.blocking_send(EventItem::NodeEvent {
+                    event: inner,
                     ack_channel: drop_tx,
                 }) {
                     Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.0;
-                        tracing::warn!(
+                        tracing::trace!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
 
@@ -179,8 +200,9 @@ fn event_stream_loop(
     };
     if let Err(err) = result {
         if let Some(tx) = tx.as_ref() {
-            if let Err(send_error) = tx.send(EventItem::FatalError(err)) {
-                let err = match send_error.0 {
+            if let Err(mpsc::error::SendError(item)) = tx.blocking_send(EventItem::FatalError(err))
+            {
+                let err = match item {
                     EventItem::FatalError(err) => err,
                     _ => unreachable!(),
                 };

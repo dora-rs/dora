@@ -1,9 +1,112 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::IpAddr};
 
 use uuid::Uuid;
 
 pub use crate::common::{LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus};
-use crate::{common::DaemonId, descriptor::Descriptor, id::NodeId};
+use crate::{
+    BuildId,
+    common::DaemonId,
+    descriptor::Descriptor,
+    id::{DataId, NodeId},
+};
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub enum ControlRequestReply {
+    Error(String),
+    CoordinatorStopped,
+    /// Response to [`ControlRequest::Hello`][crate::cli_to_coordinator::ControlRequest::Hello].
+    /// Carries the coordinator's own dora crate version so the CLI can
+    /// display it on version mismatches and in debug output
+    /// (dora-rs/adora#151).
+    HelloOk {
+        dora_version: semver::Version,
+    },
+    DataflowBuildTriggered {
+        build_id: BuildId,
+    },
+    DataflowBuildFinished {
+        build_id: BuildId,
+        result: Result<(), String>,
+    },
+    DataflowStartTriggered {
+        uuid: Uuid,
+    },
+    DataflowSpawned {
+        uuid: Uuid,
+    },
+    DataflowReloaded {
+        uuid: Uuid,
+    },
+    DataflowStopped {
+        uuid: Uuid,
+        result: DataflowResult,
+    },
+    DataflowRestarted {
+        old_uuid: Uuid,
+        new_uuid: Uuid,
+    },
+    DataflowList(DataflowList),
+    DataflowInfo {
+        uuid: Uuid,
+        name: Option<String>,
+        descriptor: Descriptor,
+    },
+    DestroyOk,
+    DaemonConnected(bool),
+    ConnectedDaemons(Vec<DaemonInfo>),
+    Logs(Vec<u8>),
+    CliAndDefaultDaemonIps {
+        default_daemon: Option<IpAddr>,
+        cli: Option<IpAddr>,
+    },
+    NodeInfoList(Vec<NodeInfo>),
+    TopicSubscribed {
+        subscription_id: Uuid,
+    },
+    TraceList(Vec<TraceSummary>),
+    TraceSpans(Vec<TraceSpan>),
+    NodeRestarted {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeStopped {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    TopicPublished,
+    // --- Dynamic Topology ---
+    NodeAdded {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    NodeRemoved {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
+    MappingAdded {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    MappingRemoved {
+        dataflow_id: Uuid,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    },
+    ParamList {
+        params: Vec<(String, serde_json::Value)>,
+    },
+    ParamValue {
+        key: String,
+        value: serde_json::Value,
+    },
+    ParamSet,
+    ParamDeleted,
+}
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct NodeInfo {
@@ -12,6 +115,9 @@ pub struct NodeInfo {
     pub node_id: NodeId,
     pub daemon_id: DaemonId,
     pub metrics: Option<NodeMetricsInfo>,
+    /// Per-dataflow cross-daemon network I/O counters (shared across nodes in same dataflow)
+    #[serde(default)]
+    pub network: Option<crate::daemon_to_coordinator::NetworkMetrics>,
 }
 
 /// Resource metrics for a node (from daemon)
@@ -27,6 +133,50 @@ pub struct NodeMetricsInfo {
     pub disk_read_mb_s: Option<f64>,
     /// Disk write MB/s (if available)
     pub disk_write_mb_s: Option<f64>,
+    /// Number of times this node has been restarted
+    #[serde(default)]
+    pub restart_count: u32,
+    /// Input IDs that have timed out (circuit breaker open)
+    #[serde(default)]
+    pub broken_inputs: Vec<String>,
+    /// Current health status
+    #[serde(default)]
+    pub status: crate::daemon_to_coordinator::NodeStatus,
+    /// Number of pending messages in the node's input queue
+    #[serde(default)]
+    pub pending_messages: u64,
+}
+
+/// Health information about a connected daemon.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct DaemonInfo {
+    pub daemon_id: DaemonId,
+    pub last_heartbeat_ago_ms: u64,
+    /// Fault tolerance stats from the daemon (if available).
+    #[serde(default)]
+    pub ft_stats: Option<crate::daemon_to_coordinator::FaultToleranceSnapshot>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TraceSummary {
+    pub trace_id: String,
+    pub root_span_name: String,
+    pub span_count: usize,
+    pub start_time: u64,
+    pub total_duration_us: u64,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TraceSpan {
+    pub trace_id: String,
+    pub span_id: u64,
+    pub parent_span_id: Option<u64>,
+    pub name: String,
+    pub target: String,
+    pub level: String,
+    pub start_time: u64,
+    pub duration_us: u64,
+    pub fields: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -90,44 +240,4 @@ impl std::fmt::Display for DataflowIdAndName {
             write!(f, "[<unnamed>] {}", self.uuid)
         }
     }
-}
-
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct DataflowInfo {
-    pub uuid: Uuid,
-    pub name: Option<String>,
-    pub descriptor: Descriptor,
-}
-
-/// Reply for the `check` RPC method.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub enum CheckDataflowReply {
-    Running { uuid: Uuid },
-    Stopped { uuid: Uuid, result: DataflowResult },
-}
-
-/// Reply for the `stop` and `stop_by_name` RPC methods.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct StopDataflowReply {
-    pub uuid: Uuid,
-    pub result: DataflowResult,
-}
-
-/// Reply for the `get_version` RPC method.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct VersionInfo {
-    /// The coordinator's dora crate version (e.g. "0.4.1")
-    pub coordinator_version: String,
-    /// The dora-message crate version used by the coordinator (e.g. "0.7.0")
-    pub message_format_version: String,
-}
-
-/// Information about a single connected daemon, returned by `list_daemons`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct DaemonInfo {
-    pub daemon_id: DaemonId,
-    /// Whether the daemon opened a Zenoh session.
-    pub zenoh_ready: bool,
-    /// The Zenoh ZID of the daemon's session, if open.
-    pub zenoh_peer_id: Option<String>,
 }

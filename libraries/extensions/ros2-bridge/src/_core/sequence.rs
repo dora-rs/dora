@@ -66,6 +66,9 @@ impl<T> Deref for FFISeq<T> {
     type Target = [T];
 
     fn deref(&self) -> &[T] {
+        if self.size == 0 {
+            return &[];
+        }
         unsafe { std::slice::from_raw_parts(self.data, self.len()) }
     }
 }

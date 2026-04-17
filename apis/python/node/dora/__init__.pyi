@@ -41,8 +41,7 @@ class Enum:
     [<Color.RED: 1>, <Color.BLUE: 2>, <Color.GREEN: 3>]
 
     Methods can be added to enumerations, and members can have their own
-    attributes -- see the documentation for details.
-    """
+    attributes -- see the documentation for details."""
 
     @staticmethod
     def __contains__(value: typing.Any) -> bool:
@@ -50,8 +49,7 @@ class Enum:
 
         `value` is in `cls` if:
         1) `value` is a member of `cls`, or
-        2) `value` is the value of one of the `cls`'s members.
-        """
+        2) `value` is the value of one of the `cls`'s members."""
 
     @staticmethod
     def __getitem__(name: typing.Any) -> typing.Any:
@@ -76,12 +74,16 @@ class Node:
     from dora import Node
 
     node = Node()
-    ```
-    """
+    ```"""
 
     def __init__(self, node_id: str = None, daemon_port: int = None) -> None:
         """The custom node API lets you integrate `dora` into your application.
         It allows you to retrieve input and send output in any fashion you want.
+
+        Creating a Node automatically bridges Python's ``logging`` module to the
+        dora daemon. After ``Node()`` is created, ``logging.info()`` etc. produce
+        structured log entries that work with ``min_log_level``, ``send_logs_as``,
+        and ``dora/logs`` subscribers. No extra configuration needed.
 
         Use with:
 
@@ -91,26 +93,65 @@ class Node:
         node = Node()
         ```
 
-        For dynamic nodes with a custom daemon port:
+        For a dynamic node connecting to a daemon on a custom port:
 
         ```python
         node = Node("my-node", daemon_port=6789)
-        ```
-        """
+        ```"""
+
+    def log(
+        self,
+        level: str,
+        message: str,
+        target: typing.Optional[str] = None,
+        fields: typing.Optional[typing.Dict[str, str]] = None,
+    ) -> None:
+        """Send a structured log message.
+
+        Outputs a JSONL line to stdout that the daemon parses automatically.
+        Works with ``min_log_level`` filtering and ``send_logs_as`` routing.
+
+        :param level: Log level string (error, warn, info, debug, trace)
+        :param message: The log message
+        :param target: Optional target/module path
+        :param fields: Optional key-value pairs for structured context"""
+
+    def log_error(self, message: str) -> None:
+        """Log an error message. Shorthand for ``node.log("error", message)``."""
+
+    def log_warn(self, message: str) -> None:
+        """Log a warning message. Shorthand for ``node.log("warn", message)``."""
+
+    def log_info(self, message: str) -> None:
+        """Log an info message. Shorthand for ``node.log("info", message)``."""
+
+    def log_debug(self, message: str) -> None:
+        """Log a debug message. Shorthand for ``node.log("debug", message)``."""
+
+    def log_trace(self, message: str) -> None:
+        """Log a trace message. Shorthand for ``node.log("trace", message)``."""
 
     def dataflow_descriptor(self) -> dict:
         """Returns the full dataflow descriptor that this node is part of.
 
-        This method returns the parsed dataflow YAML file.
-        """
+        This method returns the parsed dataflow YAML file."""
 
     def dataflow_id(self) -> str:
         """Returns the dataflow id."""
 
+    def is_restart(self) -> bool:
+        """Returns True if this node was restarted after a previous exit or failure.
+
+        Nodes can use this to decide whether to restore saved state or start fresh."""
+
+    def restart_count(self) -> int:
+        """Returns how many times this node has been restarted.
+
+        Returns 0 on the first run, 1 after the first restart, etc."""
+
     def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
-        This currently only work with ROS2.
-        """
+        This currently only work with ROS2."""
 
     def next(self, timeout: float = None) -> dict:
         """`.next()` gives you the next input that the node has received.
@@ -130,8 +171,7 @@ class Node:
         case "INPUT":
         match event["id"]:
         case "image":
-        ```
-        """
+        ```"""
 
     def node_config(self) -> dict:
         """Returns the node configuration."""
@@ -150,8 +190,7 @@ class Node:
         event = await node.recv_async()
         ```
 
-        You can also iterate over the event stream with a loop
-        """
+        You can also iterate over the event stream with a loop"""
 
     def send_output(
         self, output_id: str, data: pyarrow.Array, metadata: dict = None
@@ -169,8 +208,7 @@ class Node:
 
         ```python
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
-        ```
-        """
+        ```"""
 
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""
@@ -198,13 +236,12 @@ class Ros2Context:
     You can also use `ros_paths` if you don't want to use env variable.
 
     warning::
-    dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    Dora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 
     ```python
     context = Ros2Context()
-    ```
-    """
+    ```"""
 
     def __init__(self, ros_paths: typing.List[str] = None) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
@@ -219,13 +256,12 @@ class Ros2Context:
         You can also use `ros_paths` if you don't want to use env variable.
 
         warning::
-        dora Ros2 bridge functionality is considered **unstable**. It may be changed
+        Dora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change.
 
         ```python
         context = Ros2Context()
-        ```
-        """
+        ```"""
 
     def new_node(
         self, name: str, namespace: str, options: dora.Ros2NodeOptions
@@ -241,9 +277,8 @@ class Ros2Context:
         ```
 
         warning::
-        dora Ros2 bridge functionality is considered **unstable**. It may be changed
-        at any point without it being considered a breaking change.
-        """
+        Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+        at any point without it being considered a breaking change."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
@@ -318,11 +353,10 @@ class Ros2Node:
     """ROS2 Node
 
     warnings::
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
     - There's a known issue about ROS2 nodes not being discoverable by ROS2
-    See: https://github.com/jhelovuo/ros2-client/issues/4
-    """
+    See: https://github.com/jhelovuo/ros2-client/issues/4"""
 
     def create_publisher(
         self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
@@ -333,9 +367,8 @@ class Ros2Node:
         pose_publisher = ros2_node.create_publisher(turtle_pose_topic)
         ```
         warnings:
-        - dora Ros2 bridge functionality is considered **unstable**. It may be changed
-        at any point without it being considered a breaking change.
-        """
+        - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+        at any point without it being considered a breaking change."""
 
     def create_subscription(
         self, topic: dora.Ros2Topic, qos: dora.Ros2QosPolicies = None
@@ -346,11 +379,9 @@ class Ros2Node:
         pose_reader = ros2_node.create_subscription(turtle_pose_topic)
         ```
 
-        Warnings:
-        - dora Ros2 bridge functionality is considered **unstable**. It may be changed
-        at any point without it being considered a breaking change.
-
-        """
+        warnings:
+        - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+        at any point without it being considered a breaking change."""
 
     def create_topic(
         self, name: str, message_type: str, qos: dora.Ros2QosPolicies
@@ -361,8 +392,7 @@ class Ros2Node:
         turtle_twist_topic = ros2_node.create_topic(
         "/turtle1/cmd_vel", "geometry_msgs/Twist", topic_qos
         )
-        ```
-        """
+        ```"""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
@@ -387,11 +417,9 @@ class Ros2NodeOptions:
 class Ros2Publisher:
     """ROS2 Publisher
 
-    Warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
-    at any point without it being considered a breaking change.
-
-    """
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
 
     def publish(self, data: pyarrow.Array) -> None:
         """Publish a message into ROS2 topic.
@@ -410,8 +438,7 @@ class Ros2Publisher:
         ]
         ),
         )
-        ```
-        """
+        ```"""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
@@ -445,11 +472,10 @@ class Ros2QosPolicies:
 class Ros2Subscription:
     """ROS2 Subscription
 
-    Warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
-    at any point without it being considered a breaking change.
 
-    """
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
 
     def next(self): ...
     def __repr__(self) -> str:
@@ -462,11 +488,9 @@ class Ros2Subscription:
 class Ros2Topic:
     """ROS2 Topic
 
-    Warnings:
-    - dora Ros2 bridge functionality is considered **unstable**. It may be changed
-    at any point without it being considered a breaking change.
-
-    """
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
@@ -490,7 +514,6 @@ def run(dataflow_path: str, uv: bool = None, stop_after: float = None) -> None:
         dataflow_path: Path to the dataflow YAML file
         uv: Use UV to run Python nodes (optional)
         stop_after: Automatically stop the dataflow after the given duration in seconds (optional)
-
     """
 
 def start_runtime() -> None:

@@ -1,16 +1,27 @@
 //! Enable serialisation and deserialisation of capnproto messages
 //!
 
-#![allow(clippy::missing_safety_doc)]
-
 /// The version of the dora-message crate
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub use tarpc;
 pub use uhlc;
 
+/// Maximum allowed message size over TCP (64 MiB).
+///
+/// Large payloads should use the shared-memory transport instead,
+/// which bypasses this limit via zero-copy IPC.
+pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Read timeout for TCP/socket connections (30 seconds).
+pub const TCP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// WebSocket ping interval for keepalive (10 seconds).
+pub const WS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+pub mod auth;
 pub mod common;
 pub mod config;
+/// Dataflow descriptor types for YAML-based dataflow specifications.
 pub mod descriptor;
 pub mod id;
 pub mod metadata;
@@ -26,8 +37,11 @@ pub mod node_to_daemon;
 pub mod cli_to_coordinator;
 pub mod coordinator_to_cli;
 
+pub mod ws_protocol;
+
 pub mod integration_testing_format;
 
+pub use aligned_vec;
 pub use arrow_data;
 pub use arrow_schema;
 use uuid::{Timestamp, Uuid};
@@ -69,24 +83,7 @@ impl std::fmt::Display for BuildId {
     }
 }
 
-/// Check whether a remote version string is compatible with this crate's version.
-pub fn check_version_compatibility(remote_version: &str) -> eyre::Result<()> {
-    let crate_version = current_crate_version();
-    let specified_version = semver::Version::parse(remote_version)
-        .map_err(|e| eyre::eyre!("failed to parse remote version `{remote_version}`: {e}"))?;
-    let compatible =
-        versions_compatible(&crate_version, &specified_version).map_err(|e| eyre::eyre!(e))?;
-    if compatible {
-        Ok(())
-    } else {
-        Err(eyre::eyre!(
-            "version mismatch: remote message format v{specified_version} is not compatible \
-            with local message format v{crate_version}"
-        ))
-    }
-}
-
-pub(crate) fn current_crate_version() -> semver::Version {
+pub fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
 
     semver::Version::parse(crate_version_raw).unwrap()

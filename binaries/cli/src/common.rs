@@ -1,48 +1,22 @@
-use crate::{LOCALHOST, formatting::FormatDataflowError};
+use crate::{LOCALHOST, formatting::FormatDataflowError, ws_client::WsSession};
 use dora_core::{
     descriptor::{Descriptor, source_is_url},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, dora_coordinator_port_rpc},
+    topics::DORA_COORDINATOR_PORT_WS_DEFAULT,
 };
 use dora_download::download_file;
 use dora_message::{
-    cli_to_coordinator::CoordinatorControlClient,
-    coordinator_to_cli::{DataflowList, DataflowResult},
-    tarpc::{self, client, tokio_serde},
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
 };
 use eyre::{Context, ContextCompat, bail};
 use std::{
     env::current_dir,
-    future::Future,
-    net::IpAddr,
+    io::IsTerminal,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    time::Duration,
 };
+use tokio::runtime::Builder;
 use uuid::Uuid;
-
-/// Call a tarpc RPC method, unwrapping the two Result layers:
-///
-/// 1. Transport-level error (e.g. `RpcError`)
-/// 2. `Result<T, String>` from the application (coordinator) layer
-pub(crate) async fn rpc<T, E: std::error::Error + Send + Sync + 'static>(
-    operation: &str,
-    future: impl Future<Output = Result<Result<T, String>, E>>,
-) -> eyre::Result<T> {
-    future
-        .await
-        .wrap_err_with(|| format!("RPC transport error during {operation}"))?
-        .map_err(|e| eyre::eyre!("{operation} failed: {e}"))
-}
-
-/// Create a tarpc context with a long deadline (10 minutes) for RPCs that
-/// may block for an extended time (e.g. `wait_for_build`, `stop`, `destroy`).
-///
-/// The default `tarpc::context::current()` has a 10-second deadline which
-/// is too short for operations that wait on dataflow lifecycle events.
-pub(crate) fn long_context() -> tarpc::context::Context {
-    let mut ctx = tarpc::context::current();
-    ctx.deadline = std::time::Instant::now() + Duration::from_secs(600);
-    ctx
-}
 
 pub(crate) fn handle_dataflow_result(
     result: DataflowResult,
@@ -62,34 +36,114 @@ pub(crate) fn handle_dataflow_result(
     }
 }
 
-pub(crate) async fn query_running_dataflows(
-    client: &CoordinatorControlClient,
-) -> eyre::Result<DataflowList> {
-    rpc("list dataflows", client.list(tarpc::context::current())).await
+/// Send a control request and deserialize the reply.
+///
+/// Returns `Err` if the coordinator replies with
+/// [`ControlRequestReply::Error`], so callers don't need to match
+/// on the error variant themselves (dora-rs/adora#153).
+pub(crate) fn send_control_request(
+    session: &WsSession,
+    request: &ControlRequest,
+) -> eyre::Result<ControlRequestReply> {
+    let reply_raw = session
+        .request(&serde_json::to_vec(request).unwrap())
+        .wrap_err("failed to send control request")?;
+    let reply: ControlRequestReply =
+        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+    match reply {
+        ControlRequestReply::Error(err) => Err(eyre::eyre!("{err}")),
+        other => Ok(other),
+    }
 }
 
-pub(crate) async fn resolve_dataflow_identifier_interactive(
-    client: &CoordinatorControlClient,
+/// Extract a specific reply variant, returning an error for mismatches.
+///
+/// Eliminates the repetitive
+/// `match reply { Variant(x) => x, other => bail!("unexpected: {other:?}") }`
+/// at every CLI call site (dora-rs/adora#153).
+macro_rules! expect_reply {
+    // Tuple variant: ControlRequestReply::Foo(inner)
+    ($reply:expr, $variant:ident ($inner:ident)) => {
+        match $reply {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant($inner) => {
+                Ok($inner)
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+    // Struct variant with one field: ControlRequestReply::Foo { a, .. }
+    ($reply:expr, $variant:ident { $field:ident }) => {
+        match $reply {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $field, .. } => {
+                Ok($field)
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+    // Struct variant with multiple fields: ControlRequestReply::Foo { a, b, .. }
+    ($reply:expr, $variant:ident { $($field:ident),+ $(,)? }) => {
+        match $reply {
+            dora_message::coordinator_to_cli::ControlRequestReply::$variant { $($field),+ , .. } => {
+                Ok(($($field),+))
+            }
+            other => Err(eyre::eyre!(
+                "unexpected reply (expected {}): {other:?}",
+                stringify!($variant)
+            )),
+        }
+    };
+}
+pub(crate) use expect_reply;
+
+pub(crate) fn query_running_dataflows(session: &WsSession) -> eyre::Result<DataflowList> {
+    let reply = send_control_request(session, &ControlRequest::List)?;
+    expect_reply!(reply, DataflowList(list))
+}
+
+pub(crate) fn resolve_dataflow_identifier_interactive(
+    session: &WsSession,
     name_or_uuid: Option<&str>,
 ) -> eyre::Result<Uuid> {
     if let Some(uuid) = name_or_uuid.and_then(|s| Uuid::parse_str(s).ok()) {
         return Ok(uuid);
     }
 
-    let list = query_running_dataflows(client)
-        .await
-        .wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active: Vec<dora_message::coordinator_to_cli::DataflowIdAndName> = list.get_active();
     if let Some(name) = name_or_uuid {
         let Some(dataflow) = active.iter().find(|it| it.name.as_deref() == Some(name)) else {
-            bail!("No dataflow with name `{name}` is running");
+            let available: Vec<_> = active.iter().filter_map(|d| d.name.as_deref()).collect();
+            if available.is_empty() {
+                bail!(
+                    "no dataflow with name `{name}` is running\n\n  \
+                     hint: use `dora list` to see running dataflows"
+                );
+            } else {
+                bail!(
+                    "no dataflow with name `{name}` is running\n\n  \
+                     hint: running dataflows: {}",
+                    available.join(", ")
+                );
+            }
         };
         return Ok(dataflow.uuid);
     }
     Ok(match &active[..] {
-        [] => bail!("No dataflows are running"),
+        [] => bail!(
+            "no dataflows are running\n\n  \
+             hint: start a dataflow with `dora start` or `dora run`"
+        ),
         [entry] => entry.uuid,
         _ => {
+            if !std::io::stdin().is_terminal() {
+                bail!("Multiple dataflows running. Specify a UUID or name.");
+            }
             inquire::Select::new("Choose dataflow:", active)
                 .prompt()?
                 .uuid
@@ -100,39 +154,53 @@ pub(crate) async fn resolve_dataflow_identifier_interactive(
 #[derive(Debug, clap::Args)]
 pub(crate) struct CoordinatorOptions {
     /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
+    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "DORA_COORDINATOR_ADDR")]
     pub coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
+    /// Port number of the coordinator WebSocket server
+    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_WS_DEFAULT, env = "DORA_COORDINATOR_PORT")]
     pub coordinator_port: u16,
 }
 
 impl CoordinatorOptions {
-    pub async fn connect_rpc(&self) -> eyre::Result<CoordinatorControlClient> {
-        Ok(connect_and_check_version(self.coordinator_addr, self.coordinator_port).await?)
+    pub fn socket_addr(&self) -> SocketAddr {
+        (self.coordinator_addr, self.coordinator_port).into()
+    }
+
+    pub fn connect(&self) -> eyre::Result<WsSession> {
+        connect_to_coordinator(self.socket_addr())
     }
 }
 
-/// Connect to the coordinator's tarpc RPC service.
-pub(crate) async fn connect_to_coordinator_rpc(
-    addr: IpAddr,
-    control_port: u16,
-) -> eyre::Result<CoordinatorControlClient> {
-    let rpc_port = dora_coordinator_port_rpc(control_port);
-    let transport =
-        tarpc::serde_transport::tcp::connect((addr, rpc_port), tokio_serde::formats::Json::default)
-            .await
-            .context("failed to connect tarpc client to coordinator")?;
-    let client = CoordinatorControlClient::new(client::Config::default(), transport).spawn();
-    Ok(client)
+pub(crate) fn connect_to_coordinator(coordinator_addr: SocketAddr) -> eyre::Result<WsSession> {
+    WsSession::connect(coordinator_addr)
 }
 
-pub(crate) async fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
+/// Try to connect to the coordinator, retrying for `timeout` before giving up.
+pub(crate) fn connect_with_retry(
+    addr: SocketAddr,
+    timeout: std::time::Duration,
+) -> eyre::Result<WsSession> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match connect_to_coordinator(addr) {
+            Ok(session) => return Ok(session),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     let dataflow = if source_is_url(&dataflow) {
         // try to download the shared library
         let target_path = current_dir().context("Could not access the current dir")?;
-        download_file(&dataflow, &target_path)
-            .await
+        let rt = Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("tokio runtime failed")?;
+        rt.block_on(async { download_file(&dataflow, &target_path, None).await })
             .wrap_err("failed to download dataflow yaml file")?
     } else {
         PathBuf::from(dataflow)
@@ -140,17 +208,17 @@ pub(crate) async fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> 
     Ok(dataflow)
 }
 
-pub(crate) async fn local_working_dir(
+pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
-    client: &CoordinatorControlClient,
+    coordinator_session: &WsSession,
 ) -> eyre::Result<Option<PathBuf>> {
     Ok(
         if dataflow_descriptor
             .nodes
             .iter()
             .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
-            && cli_and_daemon_on_same_machine(client).await?
+            && cli_and_daemon_on_same_machine(coordinator_session)?
         {
             Some(
                 dunce::canonicalize(dataflow_path)
@@ -165,172 +233,20 @@ pub(crate) async fn local_working_dir(
     )
 }
 
-pub(crate) async fn cli_and_daemon_on_same_machine(
-    client: &CoordinatorControlClient,
-) -> eyre::Result<bool> {
-    rpc(
-        "check if CLI and daemon on same machine",
-        client.cli_and_default_daemon_on_same_machine(
-            tarpc::context::current(),
-            dora_message::common::machine_uid(),
-        ),
-    )
-    .await
+pub(crate) fn cli_and_daemon_on_same_machine(session: &WsSession) -> eyre::Result<bool> {
+    let reply = send_control_request(session, &ControlRequest::CliAndDefaultDaemonOnSameMachine)?;
+    let (default_daemon, cli) = expect_reply!(
+        reply,
+        CliAndDefaultDaemonIps {
+            default_daemon,
+            cli
+        }
+    )?;
+    Ok(default_daemon.is_some() && default_daemon == cli)
 }
 
 pub(crate) fn write_events_to() -> Option<PathBuf> {
     std::env::var("DORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
-}
-
-#[derive(Debug)]
-pub(crate) enum ConnectAndCheckVersionError {
-    ConnectionFailed(eyre::Report),
-    VersionCheckFailed(eyre::Report),
-}
-
-impl std::fmt::Display for ConnectAndCheckVersionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ConnectionFailed(_) => f.write_str("failed to connect to coordinator"),
-            Self::VersionCheckFailed(_) => f.write_str("failed to verify coordinator version"),
-        }
-    }
-}
-
-impl std::error::Error for ConnectAndCheckVersionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::ConnectionFailed(err) | Self::VersionCheckFailed(err) => Some(err.as_ref()),
-        }
-    }
-}
-
-/// Connect to the coordinator and check that the message format version is compatible.
-pub(crate) async fn connect_and_check_version(
-    addr: IpAddr,
-    control_port: u16,
-) -> Result<CoordinatorControlClient, ConnectAndCheckVersionError> {
-    let client = connect_to_coordinator_rpc(addr, control_port)
-        .await
-        .map_err(ConnectAndCheckVersionError::ConnectionFailed)?;
-    check_coordinator_version(&client)
-        .await
-        .map_err(ConnectAndCheckVersionError::VersionCheckFailed)?;
-    Ok(client)
-}
-
-/// Check that the coordinator's message format version matches this CLI's.
-pub(crate) async fn check_coordinator_version(
-    client: &CoordinatorControlClient,
-) -> eyre::Result<()> {
-    let version_info = match client.get_version(tarpc::context::current()).await {
-        Ok(v) => v,
-        Err(_) => {
-            bail!(
-                "Failed to query coordinator version. \
-                 The coordinator may be running an older version of dora \
-                 that is incompatible with this CLI (message format v{}).",
-                dora_message::VERSION
-            );
-        }
-    };
-    let local = semver::Version::parse(dora_message::VERSION)
-        .map_err(|e| eyre::eyre!("failed to parse local message format version: {e}"))?;
-    let remote = semver::Version::parse(&version_info.message_format_version)
-        .map_err(|e| eyre::eyre!("failed to parse coordinator message format version: {e}"))?;
-    if !semver_compatible(&local, &remote) {
-        bail!(
-            "CLI message format (v{local}) is not compatible with \
-             coordinator message format (v{remote}). \
-             Please ensure CLI and coordinator are the same version."
-        );
-    }
-    Ok(())
-}
-
-/// Check if two semver versions are compatible using Rust/Cargo conventions:
-/// - For `0.0.x`: only the exact same version is compatible.
-/// - For `0.x.y` (x > 0): major and minor must match (patch may differ).
-/// - For `>=1.0.0`: only major must match.
-fn semver_compatible(a: &semver::Version, b: &semver::Version) -> bool {
-    if a.major != b.major {
-        return false;
-    }
-    if a.major == 0 {
-        if a.minor != b.minor {
-            return false;
-        }
-        if a.minor == 0 {
-            return a.patch == b.patch;
-        }
-    }
-    true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{error::Error as _, io};
-
-    fn v(s: &str) -> semver::Version {
-        semver::Version::parse(s).unwrap()
-    }
-
-    #[test]
-    fn test_semver_compatible_pre_1_0() {
-        // Same minor: compatible (patch may differ)
-        assert!(semver_compatible(&v("0.7.0"), &v("0.7.0")));
-        assert!(semver_compatible(&v("0.7.0"), &v("0.7.1")));
-        assert!(semver_compatible(&v("0.7.3"), &v("0.7.1")));
-
-        // Different minor: incompatible
-        assert!(!semver_compatible(&v("0.7.0"), &v("0.8.0")));
-        assert!(!semver_compatible(&v("0.6.0"), &v("0.7.0")));
-    }
-
-    #[test]
-    fn test_semver_compatible_0_0_x() {
-        // 0.0.x requires exact patch match
-        assert!(semver_compatible(&v("0.0.1"), &v("0.0.1")));
-        assert!(!semver_compatible(&v("0.0.1"), &v("0.0.2")));
-    }
-
-    #[test]
-    fn test_semver_compatible_post_1_0() {
-        // Same major: compatible
-        assert!(semver_compatible(&v("1.0.0"), &v("1.0.0")));
-        assert!(semver_compatible(&v("1.0.0"), &v("1.2.3")));
-        assert!(semver_compatible(&v("2.1.0"), &v("2.5.3")));
-
-        // Different major: incompatible
-        assert!(!semver_compatible(&v("1.0.0"), &v("2.0.0")));
-    }
-
-    #[test]
-    fn preserves_connection_error_sources() {
-        let err =
-            ConnectAndCheckVersionError::ConnectionFailed(eyre::Report::from(io::Error::new(
-                io::ErrorKind::ConnectionRefused,
-                "coordinator not listening",
-            )));
-
-        assert_eq!(
-            err.source().map(std::string::ToString::to_string),
-            Some("coordinator not listening".to_owned())
-        );
-    }
-
-    #[test]
-    fn preserves_version_check_error_sources() {
-        let err = ConnectAndCheckVersionError::VersionCheckFailed(eyre::eyre!(
-            "coordinator version mismatch"
-        ));
-
-        assert_eq!(
-            err.source().map(std::string::ToString::to_string),
-            Some("coordinator version mismatch".to_owned())
-        );
-    }
 }

@@ -15,10 +15,12 @@ fn main() {
 
     // rename header files
     let src_dir = origin_dir();
-    let target_dir = src_dir.parent().unwrap();
+    let target_dir = src_dir
+        .parent()
+        .expect("failed to get parent directory of source directory");
 
     let target_dir = if let Ok(target_path) = std::env::var("DORA_NODE_API_CXX_INSTALL") {
-        PathBuf::from_str(&target_path).unwrap()
+        PathBuf::from_str(&target_path).expect("failed to parse DORA_NODE_API_CXX_INSTALL path")
     } else {
         target_dir.join("install")
     };
@@ -51,7 +53,7 @@ fn origin_dir() -> PathBuf {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .ancestors()
                 .nth(3)
-                .unwrap();
+                .expect("failed to get root directory from manifest path");
             root.join("target")
         });
     let cross_target = default_target
@@ -181,7 +183,7 @@ mod ros2 {
                 let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                     .ancestors()
                     .nth(3)
-                    .unwrap();
+                    .expect("failed to get root directory from manifest path");
                 root.join("target")
             });
         let out_dir_str = std::env::var("OUT_DIR").unwrap();

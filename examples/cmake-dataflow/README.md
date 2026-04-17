@@ -19,4 +19,7 @@ make install
 cd ..
 dora up
 dora start dataflow.yml
+# When done:
+dora stop --all
+dora down
 ```

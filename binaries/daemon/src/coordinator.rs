@@ -1,535 +1,322 @@
-use crate::{
-    Event, log, read_last_n_lines, send_with_timestamp,
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
-    state::DaemonState,
-};
+use crate::DaemonCoordinatorEvent;
 use dora_core::uhlc::HLC;
 use dora_message::{
-    DataflowId,
     common::{DaemonId, Timestamped},
-    coordinator_to_daemon::{
-        BuildDataflowNodes, DaemonControl, DaemonControlRequest, DaemonControlResponse,
-        RegisterResult, SpawnDataflowNodes,
-    },
-    daemon_to_coordinator::{
-        CoordinatorNotifyClient, CoordinatorNotifyRequest, CoordinatorNotifyResponse,
-        CoordinatorRequest, DaemonRegisterRequest,
-    },
-    daemon_to_node::NodeEvent,
-    id::{NodeId, OperatorId},
-    tarpc::{
-        self, ClientMessage, Response, client,
-        server::{BaseChannel, Channel},
-        tokio_serde,
-    },
+    coordinator_to_daemon::RegisterResult,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
+    ws_protocol::WsResponse,
 };
-use eyre::Context;
-use futures::StreamExt;
+use eyre::eyre;
+use futures::{SinkExt, StreamExt};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::{io::AsyncReadExt, net::TcpStream, task::JoinHandle, time::sleep};
-use tracing::warn;
+use tokio::sync::{mpsc, oneshot};
+use tokio_stream::{Stream, wrappers::ReceiverStream};
+use tokio_tungstenite::tungstenite::Message;
+use uuid::Uuid;
 
-const DAEMON_COORDINATOR_RETRY_INTERVAL: std::time::Duration = Duration::from_secs(1);
+const DAEMON_COORDINATOR_RETRY_INITIAL: Duration = Duration::from_secs(1);
+const DAEMON_COORDINATOR_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Maximum number of consecutive failed connection attempts before giving up.
+const DAEMON_COORDINATOR_RETRY_LIMIT: u32 = 50;
+const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Result of [`register`]: everything the daemon needs after connecting to the
-/// coordinator.
-pub struct DaemonRegistration {
-    pub daemon_id: DaemonId,
-    /// Handle for the coordinator→daemon tarpc server task.
-    pub rpc_server_handle: JoinHandle<()>,
-    /// tarpc client for daemon→coordinator RPC calls.
-    pub coordinator_client: CoordinatorNotifyClient,
+#[derive(Debug)]
+pub struct CoordinatorEvent {
+    pub event: DaemonCoordinatorEvent,
+    pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 
-/// Connect to the coordinator, register, set up bidirectional tarpc channels.
-///
-/// 1. Opens a TCP connection, sends `Register`, receives `DaemonId`.
-/// 2. Converts that connection into a tarpc server (coordinator→daemon `DaemonControl`).
-/// 3. Opens a **second** TCP connection, sends `RegisterNotificationChannel`, and
-///    creates a tarpc client (daemon→coordinator `CoordinatorNotify`).
+/// Wraps the WS send channel for fire-and-forget daemon events to the coordinator.
+#[derive(Clone)]
+pub struct CoordinatorSender {
+    sender: mpsc::Sender<String>,
+}
+
+#[derive(Debug)]
+pub enum TrySendEventError {
+    InvalidUtf8(std::str::Utf8Error),
+    Full,
+    Closed,
+}
+
+impl std::fmt::Display for TrySendEventError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidUtf8(err) => write!(f, "event message not UTF-8: {err}"),
+            Self::Full => write!(f, "WS send channel full"),
+            Self::Closed => write!(f, "WS send channel closed"),
+        }
+    }
+}
+
+impl std::error::Error for TrySendEventError {}
+
+impl CoordinatorSender {
+    fn format_event_message(message: &[u8]) -> Result<String, TrySendEventError> {
+        let params_str = std::str::from_utf8(message).map_err(TrySendEventError::InvalidUtf8)?;
+        let id = Uuid::new_v4();
+        Ok(format!(
+            r#"{{"id":"{id}","method":"daemon_event","params":{params_str}}}"#
+        ))
+    }
+
+    /// Send a serialized event message to the coordinator (fire-and-forget).
+    ///
+    /// Embeds the raw JSON bytes directly to preserve u128 fidelity
+    /// for uhlc::ID inside timestamps.
+    pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
+        let json = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
+        self.sender
+            .send(json)
+            .await
+            .map_err(|_| eyre!("WS send channel closed"))
+    }
+
+    pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
+        let json = Self::format_event_message(message)?;
+        self.sender.try_send(json).map_err(|err| match err {
+            mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
+            mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
+        })
+    }
+}
+
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
-    clock: &Arc<HLC>,
-    state: Arc<DaemonState>,
-) -> eyre::Result<DaemonRegistration> {
-    // --- First connection: registration + coordinator→daemon RPC ---
-    let mut stream = loop {
-        match TcpStream::connect(addr)
-            .await
-            .wrap_err("failed to connect to dora-coordinator")
-        {
-            Err(err) => {
-                warn!(
-                    "Could not connect to: {addr}, with error: {err}. Retrying in {DAEMON_COORDINATOR_RETRY_INTERVAL:#?}.."
-                );
-                sleep(DAEMON_COORDINATOR_RETRY_INTERVAL).await;
-            }
-            Ok(stream) => {
-                break stream;
-            }
-        };
-    };
-    stream
-        .set_nodelay(true)
-        .wrap_err("failed to set TCP_NODELAY")?;
-
-    let zenoh_peer_id = state.zenoh_session.as_ref().map(|s| s.zid().to_string());
-
-    // Registration handshake (raw length-prefixed JSON)
-    let register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, zenoh_peer_id)),
-        timestamp: clock.new_timestamp(),
-    })?;
-    socket_stream_send(&mut stream, &register)
-        .await
-        .wrap_err("failed to send register request to dora-coordinator")?;
-    let reply_raw = socket_stream_receive(&mut stream)
-        .await
-        .wrap_err("failed to receive register reply from dora-coordinator")?;
-    let result: Timestamped<RegisterResult> = serde_json::from_slice(&reply_raw)
-        .wrap_err("failed to deserialize dora-coordinator reply")?;
-    let daemon_id = result.inner.to_result()?;
-    if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
-        tracing::warn!("failed to update timestamp after register: {err}");
-    }
-
-    tracing::info!("Connected to dora-coordinator at {:?}", addr);
-
-    // Set up tarpc server for coordinator→daemon RPC on the registered stream
-    let codec = tokio_serde::formats::Json::<
-        ClientMessage<DaemonControlRequest>,
-        Response<DaemonControlResponse>,
-    >::default();
-    let transport = tarpc::serde_transport::Transport::from((stream, codec));
-
-    let server = DaemonControlServer {
-        state: state.clone(),
-    };
-
-    let channel = BaseChannel::with_defaults(transport);
-    let rpc_server_handle = tokio::spawn(channel.execute(server.serve()).for_each(|fut| async {
-        tokio::spawn(fut);
-    }));
-
-    // --- Second connection: daemon→coordinator RPC ---
-    let mut reverse_stream = TcpStream::connect(addr)
-        .await
-        .wrap_err("failed to open reverse channel to dora-coordinator")?;
-    reverse_stream
-        .set_nodelay(true)
-        .wrap_err("failed to set TCP_NODELAY on reverse channel")?;
-
-    let reverse_register = serde_json::to_vec(&Timestamped {
-        inner: CoordinatorRequest::RegisterNotificationChannel {
-            daemon_id: daemon_id.clone(),
-        },
-        timestamp: clock.new_timestamp(),
-    })?;
-    socket_stream_send(&mut reverse_stream, &reverse_register)
-        .await
-        .wrap_err("failed to send RegisterNotificationChannel to dora-coordinator")?;
-
-    // Set up tarpc client for daemon→coordinator RPC on the reverse stream
-    let reverse_codec = tokio_serde::formats::Json::<
-        Response<CoordinatorNotifyResponse>,
-        ClientMessage<CoordinatorNotifyRequest>,
-    >::default();
-    let reverse_transport =
-        tarpc::serde_transport::Transport::from((reverse_stream, reverse_codec));
-    let coordinator_client =
-        CoordinatorNotifyClient::new(client::Config::default(), reverse_transport).spawn();
-
-    tracing::info!("Reverse-channel RPC client established for daemon→coordinator");
-
-    Ok(DaemonRegistration {
-        daemon_id,
-        rpc_server_handle,
-        coordinator_client,
-    })
-}
-
-/// tarpc server that handles coordinator→daemon RPC calls directly using
-/// shared `DaemonState`.
-#[derive(Clone)]
-struct DaemonControlServer {
-    state: Arc<DaemonState>,
-}
-
-impl DaemonControl for DaemonControlServer {
-    async fn build(
-        self,
-        _ctx: tarpc::context::Context,
-        request: BuildDataflowNodes,
-    ) -> Result<(), String> {
-        let BuildDataflowNodes {
-            build_id,
-            session_id,
-            local_working_dir,
-            git_sources,
-            prev_git_sources,
-            dataflow_descriptor,
-            nodes_on_machine,
-            uv,
-        } = request;
-
-        let base_working_dir =
-            crate::Daemon::base_working_dir_static(local_working_dir, session_id)
-                .map_err(|err| format!("{err:?}"))?;
-
-        let result = crate::Daemon::build_dataflow_static(
-            &self.state,
-            build_id,
-            session_id,
-            base_working_dir,
-            git_sources,
-            prev_git_sources,
-            dataflow_descriptor,
-            nodes_on_machine,
-            uv,
-        )
-        .await;
-        let (trigger_result, result_task) = match result {
-            Ok(result_task) => (Ok(()), Some(result_task)),
-            Err(err) => (Err(format!("{err:?}")), None),
-        };
-
-        // Spawn background task to report build completion to coordinator
-        if let Some(result_task) = result_task {
-            let state = self.state.clone();
-            tokio::spawn(async move {
-                let result = result_task.await;
-                let build_result = result
-                    .as_ref()
-                    .map(|_| ())
-                    .map_err(|err| format!("{err:?}"));
-
-                // Update session mapping and clean up any previous build associated
-                // with this session, to match the event-loop behavior.
-                if let Some(old_build_id) = state.sessions.insert(session_id, build_id) {
-                    state.builds.remove(&old_build_id);
-                }
-
-                // Store the build info for the new build_id
-                if let Ok(info) = result {
-                    state.builds.insert(build_id, info);
-                }
-
-                // Report to coordinator
-                if let Some(client) = state.coordinator_client() {
-                    let ctx = tarpc::context::current();
-                    let _ = client.build_result(ctx, build_id, build_result).await;
-                }
-            });
-        }
-
-        trigger_result
-    }
-
-    async fn spawn(
-        self,
-        _ctx: tarpc::context::Context,
-        request: SpawnDataflowNodes,
-    ) -> Result<(), String> {
-        let SpawnDataflowNodes {
-            build_id,
-            session_id: _,
-            dataflow_id,
-            local_working_dir,
-            nodes,
-            dataflow_descriptor,
-            spawn_nodes,
-            uv,
-            write_events_to,
-            hot_reload,
-            dataflow_path,
-        } = request;
-
-        // For spawn, we still route through the event loop because spawn_dataflow
-        // needs mutable access to the logger and complex event loop integration.
-        // TODO: Move spawn logic here once logger is refactored.
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let clock = self.state.clock.clone();
-        let event = Timestamped {
-            inner: Event::SpawnRequest {
-                build_id,
-                dataflow_id,
-                local_working_dir,
-                nodes,
-                dataflow_descriptor,
-                spawn_nodes,
-                uv,
-                write_events_to,
-                hot_reload,
-                dataflow_path,
-                reply_tx: result_tx,
-            },
-            timestamp: clock.new_timestamp(),
-        };
-        self.state
-            .events_tx
-            .send(event)
-            .await
-            .map_err(|_| "daemon event loop closed".to_string())?;
-
-        result_rx
-            .await
-            .map_err(|_| "daemon dropped spawn reply channel".to_string())?
-    }
-
-    async fn all_nodes_ready(
-        self,
-        _ctx: tarpc::context::Context,
-        dataflow_id: DataflowId,
-        exited_before_subscribe: Vec<NodeId>,
-    ) {
-        tracing::debug!(
-            "received AllNodesReady (exited_before_subscribe: {exited_before_subscribe:?})"
-        );
-        // Handle pending nodes while holding the DashMap guard, then drop
-        // the guard before doing any further async work.
-        let ready = {
-            let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) else {
-                tracing::warn!("received AllNodesReady for unknown dataflow (ID `{dataflow_id}`)");
-                return;
-            };
-            let ready = exited_before_subscribe.is_empty();
-            let df = &mut *dataflow;
-            if let Err(err) = df
-                .pending_nodes
-                .handle_external_all_nodes_ready(
-                    exited_before_subscribe,
-                    &mut df.cascading_error_causes,
-                )
-                .await
-            {
-                tracing::error!("failed to handle AllNodesReady: {err:?}");
-                return;
-            }
-            ready
-        };
-        // DashMap guard is now dropped — safe to re-acquire.
-        if ready {
-            tracing::info!("coordinator reported that all nodes are ready, starting dataflow");
-            if let Some(mut dataflow) = self.state.running.get_mut(&dataflow_id) {
-                if let Err(err) = dataflow
-                    .start(&self.state.events_tx, &self.state.clock)
-                    .await
-                {
-                    tracing::error!("failed to start dataflow: {err:?}");
-                }
-            }
-        }
-    }
-
-    async fn stop_dataflow(
-        self,
-        _ctx: tarpc::context::Context,
-        dataflow_id: DataflowId,
-        grace_duration: Option<Duration>,
-        force: bool,
-    ) -> Result<(), String> {
-        // Route through the event loop to avoid holding DashMap guards
-        // across `.await` points. `stop_all` can trigger RPC calls
-        // back to the coordinator (via `report_nodes_ready`), which may
-        // call back into this daemon concurrently — deadlocking the
-        // DashMap if we held a RefMut here.
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let event = Timestamped {
-            inner: Event::StopDataflowRequest {
-                dataflow_id,
-                grace_duration,
-                force,
-                reply_tx: result_tx,
-            },
-            timestamp: self.state.clock.new_timestamp(),
-        };
-        self.state
-            .events_tx
-            .send(event)
-            .await
-            .map_err(|_| "daemon event loop closed".to_string())?;
-
-        result_rx
-            .await
-            .map_err(|_| "daemon dropped stop reply channel".to_string())?
-    }
-
-    async fn reload_dataflow(
-        self,
-        _ctx: tarpc::context::Context,
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    ) -> Result<(), String> {
-        use dora_message::daemon_to_node::StopCause;
-        let mut dataflow =
-            self.state.running.get_mut(&dataflow_id).ok_or_else(|| {
-                format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
-            })?;
-
-        // If operator_id is None, this is a custom node reload (hot-reload of binary).
-        // Send a Stop event with HotReload reason so the node can save state and exit gracefully.
-        // A fallback SIGTERM is sent after 2 seconds in case the node doesn't respond.
-        if operator_id.is_none() {
-            if dataflow.running_nodes.contains_key(&node_id) {
-                tracing::info!(
-                    "Hot-reload: sending Stop(HotReload) to custom node `{}` for restart",
-                    node_id
-                );
-
-                // Set pending_hot_reload flag before sending the stop event to avoid races
-                let running_node = dataflow.running_nodes.get(&node_id).unwrap();
-                running_node
-                    .pending_hot_reload
-                    .store(true, std::sync::atomic::Ordering::Release);
-
-                // Send Stop event with HotReload reason
-                if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-                    let _ = send_with_timestamp(
-                        channel,
-                        NodeEvent::Stop {
-                            reason: Some(StopCause::HotReload),
-                        },
-                        &self.state.clock,
+    labels: std::collections::BTreeMap<String, String>,
+    clock: Arc<HLC>,
+) -> eyre::Result<(
+    DaemonId,
+    CoordinatorSender,
+    impl Stream<Item = Timestamped<CoordinatorEvent>>,
+)> {
+    let display_url = format!("ws://{addr}/api/daemon");
+    let auth_token = dora_message::auth::discover_token();
+    let ws_stream = {
+        let mut backoff = DAEMON_COORDINATOR_RETRY_INITIAL;
+        let mut attempts: u32 = 0;
+        loop {
+            let request = {
+                let mut req = tokio_tungstenite::tungstenite::http::Request::builder()
+                    .uri(&display_url)
+                    .header("Host", addr.to_string())
+                    .header("Connection", "Upgrade")
+                    .header("Upgrade", "websocket")
+                    .header("Sec-WebSocket-Version", "13")
+                    .header(
+                        "Sec-WebSocket-Key",
+                        tokio_tungstenite::tungstenite::handshake::client::generate_key(),
                     );
+                if let Some(ref token) = auth_token {
+                    req = req.header("Authorization", format!("Bearer {}", token.as_hex()));
                 }
-
-                // Spawn a fallback task: if the node doesn't exit within 2 seconds, send SIGTERM
-                if let Some(process) = &running_node.process {
-                    let sender = process.clone_sender();
-                    let pending_flag = running_node.pending_hot_reload.clone();
-                    tokio::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                        if pending_flag.load(std::sync::atomic::Ordering::Acquire) {
-                            let _ = sender.send(crate::ProcessOperation::SoftKill);
-                        }
-                    });
+                req.body(()).expect("valid WS request")
+            };
+            match tokio_tungstenite::connect_async(request).await {
+                Ok((stream, _)) => break stream,
+                Err(err) => {
+                    attempts += 1;
+                    if attempts >= DAEMON_COORDINATOR_RETRY_LIMIT {
+                        return Err(eyre::eyre!(
+                            "failed to connect to coordinator at {display_url} after {attempts} attempts: {err}"
+                        ));
+                    }
+                    // Add jitter: +/- 25% of backoff to prevent thundering herd
+                    let jitter_range = backoff / 4;
+                    let jitter = Duration::from_millis(
+                        (rand_jitter_millis() % (jitter_range.as_millis() as u64 * 2 + 1))
+                            .saturating_sub(jitter_range.as_millis() as u64),
+                    );
+                    let sleep_duration = backoff.saturating_add(jitter);
+                    tracing::warn!(
+                        "Could not connect to WS at {display_url}: {err}. Retrying in {sleep_duration:#?} ({attempts}/{DAEMON_COORDINATOR_RETRY_LIMIT}).."
+                    );
+                    tokio::time::sleep(sleep_duration).await;
+                    backoff = (backoff * 2).min(DAEMON_COORDINATOR_RETRY_MAX);
                 }
-            } else {
-                tracing::info!(
-                    "Hot-reload: node `{}` is not running, cannot reload",
-                    node_id
-                );
             }
-        } else {
-            // For Python operators in Runtime nodes, send the reload event
-            let event = NodeEvent::Reload { operator_id };
-            if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-                match send_with_timestamp(channel, event, &self.state.clock) {
-                    Ok(()) => {}
-                    Err(_) => {
-                        dataflow.subscribe_channels.remove(&node_id);
+        }
+    };
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    // Channel for outgoing messages (daemon events + command replies).
+    // The coordinator sender writes to this, and the spawned task reads and forwards to WS.
+    let (send_tx, mut send_rx) = mpsc::channel::<String>(64);
+
+    // Send Register request.
+    // Serialize params via to_string (not to_value) to preserve u128 fidelity
+    // for uhlc::ID(NonZeroU128) inside the timestamp.
+    let register_params_json = serde_json::to_string(&Timestamped {
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, labels)),
+        timestamp: clock.new_timestamp(),
+    })?;
+    let register_id = Uuid::new_v4();
+    let register_json = format!(
+        r#"{{"id":"{register_id}","method":"daemon_event","params":{register_params_json}}}"#
+    );
+    ws_tx
+        .send(Message::Text(register_json.into()))
+        .await
+        .map_err(|e| eyre!("failed to send register request: {e}"))?;
+
+    // Wait for register reply with timeout.
+    // The coordinator's register handler sends back Timestamped<RegisterResult>
+    // wrapped in a WsRequest with method "daemon_event".
+    let daemon_id = tokio::time::timeout(REGISTER_TIMEOUT, async {
+        loop {
+            let msg = ws_rx
+                .next()
+                .await
+                .ok_or_else(|| eyre!("WS connection closed before register reply"))?
+                .map_err(|e| eyre!("WS error during register: {e}"))?;
+
+            let Message::Text(text) = msg else {
+                continue;
+            };
+
+            // Parse directly from raw text to preserve u128 fidelity.
+            let raw: RegisterReplyRaw = match serde_json::from_str(&text) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let result = raw.params;
+
+            if let Err(err) = clock.update_with_timestamp(&result.timestamp) {
+                tracing::warn!("failed to update timestamp after register: {err}");
+            }
+
+            break result.inner.to_result();
+        }
+    })
+    .await
+    .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
+
+    tracing::info!("Connected to dora-coordinator at ws://{addr}/api/daemon");
+
+    let (tx, rx) = mpsc::channel(1);
+
+    // Spawned task: bidirectional WS message routing.
+    // - Reads coordinator commands from WS, sends to event channel, awaits reply, sends reply back.
+    // - Reads outgoing events from send_rx, forwards to WS.
+    let task_clock = clock.clone();
+    tokio::spawn(async move {
+        let clock = task_clock;
+        loop {
+            tokio::select! {
+                msg = ws_rx.next() => {
+                    let Some(msg) = msg else { break };
+                    let text = match msg {
+                        Ok(Message::Text(text)) => text,
+                        Ok(Message::Close(_)) => break,
+                        Ok(Message::Ping(data)) => {
+                            let _ = ws_tx.send(Message::Pong(data)).await;
+                            continue;
+                        }
+                        Ok(_) => continue,
+                        Err(e) => {
+                            tracing::warn!("WS coordinator connection error: {e}");
+                            break;
+                        }
+                    };
+
+                    // Parse directly from raw text to preserve u128 fidelity
+                    // for uhlc::ID inside timestamps.
+                    let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            tracing::warn!("failed to parse coordinator WS message: {e}");
+                            continue;
+                        }
+                    };
+
+                    let request_id = raw.id;
+                    let needs_reply = raw.method == "daemon_command";
+                    let event = raw.params;
+
+                    if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
+                        tracing::warn!("failed to update daemon clock: {err}");
+                    }
+
+                    let (reply_tx, reply_rx) = oneshot::channel();
+                    if tx
+                        .send(Timestamped {
+                            inner: CoordinatorEvent {
+                                event: event.inner,
+                                reply_tx,
+                            },
+                            timestamp: event.timestamp,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+
+                    let Ok(reply) = reply_rx.await else {
+                        tracing::warn!("daemon sent no reply");
+                        continue;
+                    };
+
+                    if let Some(reply) = reply {
+                        if needs_reply {
+                            let response = match serde_json::to_value(&reply) {
+                                Ok(val) => WsResponse::ok(request_id, val),
+                                Err(e) => {
+                                    tracing::error!("failed to serialize reply: {e}");
+                                    WsResponse::err(request_id, format!("{e}"))
+                                }
+                            };
+                            if let Ok(json) = serde_json::to_string(&response)
+                                && ws_tx.send(Message::Text(json.into())).await.is_err() {
+                                    break;
+                                }
+                        }
+                        if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
+                            if let Some(notify) = notify {
+                                let _ = notify.send(());
+                            }
+                            break;
+                        }
+                    }
+                }
+                Some(outgoing) = send_rx.recv() => {
+                    if ws_tx.send(Message::Text(outgoing.into())).await.is_err() {
+                        break;
                     }
                 }
             }
         }
-        Ok(())
-    }
+    });
 
-    async fn stop_node(
-        self,
-        _ctx: tarpc::context::Context,
-        _dataflow_id: DataflowId,
-        _node_id: NodeId,
-    ) -> Result<(), String> {
-        // Stop node is handled via the enhanced reload_dataflow for now.
-        // Full implementation would route through the event loop.
-        Err("stop_node not yet implemented via RPC".to_string())
-    }
+    Ok((
+        daemon_id,
+        CoordinatorSender { sender: send_tx },
+        ReceiverStream::new(rx),
+    ))
+}
 
-    async fn dynamic_spawn(
-        self,
-        _ctx: tarpc::context::Context,
-        _dataflow_id: DataflowId,
-        _node_id: NodeId,
-        _node: Box<dora_message::descriptor::ResolvedNode>,
-        _dataflow_descriptor: Box<dora_message::descriptor::Descriptor>,
-    ) -> Result<(), String> {
-        // Dynamic spawn would route through the event loop.
-        Err("dynamic_spawn not yet implemented via RPC".to_string())
-    }
+/// Helper for deserializing register reply directly from raw JSON text,
+/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+#[derive(serde::Deserialize)]
+struct RegisterReplyRaw {
+    params: Timestamped<RegisterResult>,
+}
 
-    async fn restart_node(
-        self,
-        _ctx: tarpc::context::Context,
-        _dataflow_id: DataflowId,
-        _node_id: NodeId,
-        _new_node: Box<dora_message::descriptor::ResolvedNode>,
-        _dataflow_descriptor: Box<dora_message::descriptor::Descriptor>,
-    ) -> Result<(), String> {
-        // Restart node would route through the event loop.
-        Err("restart_node not yet implemented via RPC".to_string())
-    }
+/// Helper for deserializing coordinator commands directly from raw JSON text,
+/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+#[derive(serde::Deserialize)]
+struct CoordinatorCommandRaw {
+    id: Uuid,
+    method: String,
+    params: Timestamped<DaemonCoordinatorEvent>,
+}
 
-    async fn logs(
-        self,
-        _ctx: tarpc::context::Context,
-        dataflow_id: DataflowId,
-        node_id: NodeId,
-        tail: Option<usize>,
-    ) -> Result<dora_message::common::LogsResponse, String> {
-        let working_dir = self
-            .state
-            .working_dir
-            .get(&dataflow_id)
-            .map(|entry| entry.clone())
-            .ok_or_else(|| format!("no working dir for dataflow `{dataflow_id}`"))?;
-
-        async {
-            let mut file =
-                tokio::fs::File::open(log::log_path(&working_dir, &dataflow_id, &node_id))
-                    .await
-                    .map_err(|err| {
-                        eyre::eyre!(
-                            "Could not open log file: {:#?}: {err}",
-                            log::log_path(&working_dir, &dataflow_id, &node_id)
-                        )
-                    })?;
-
-            let mut content = match tail {
-                None | Some(0) => {
-                    let mut contents = vec![];
-                    file.read_to_end(&mut contents).await.map(|_| contents)
-                }
-                Some(tail) => read_last_n_lines(&mut file, tail).await,
-            }
-            .map_err(|err| eyre::eyre!("Could not read log file: {err}"))?;
-            if !content.ends_with(b"\n") {
-                content.push(b'\n');
-            }
-            let daemon_timestamp = chrono::Utc::now();
-            Result::<_, eyre::Report>::Ok(dora_message::common::LogsResponse {
-                content,
-                daemon_timestamp,
-            })
-        }
-        .await
-        .map_err(|err| format!("{err:?}"))
-    }
-
-    async fn destroy(self, _ctx: tarpc::context::Context) -> Result<(), String> {
-        tracing::info!("received destroy command -> exiting");
-        // Send a Destroy event to the event loop to trigger shutdown
-        let event = Timestamped {
-            inner: Event::Destroy,
-            timestamp: self.state.clock.new_timestamp(),
-        };
-        let _ = self.state.events_tx.send(event).await;
-        Ok(())
-    }
-
-    async fn heartbeat(self, _ctx: tarpc::context::Context) {
-        *self.state.last_coordinator_heartbeat.lock().await = std::time::Instant::now();
-    }
-
-    async fn get_version(
-        self,
-        _ctx: tarpc::context::Context,
-    ) -> dora_message::coordinator_to_daemon::DaemonVersionInfo {
-        dora_message::coordinator_to_daemon::DaemonVersionInfo {
-            daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-            message_format_version: dora_message::VERSION.to_string(),
-        }
-    }
+/// Jitter for reconnect backoff using a properly seeded random source.
+fn rand_jitter_millis() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish()
 }

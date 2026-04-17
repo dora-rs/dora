@@ -2,11 +2,7 @@ use crate::{
     CoreNodeKindExt, Event,
     log::NodeLogger,
     node_communication::spawn_listener_loop,
-    node_inputs,
-    spawn::{
-        command::{path_spawn_command, uv_python_interpreter_from_env},
-        prepared::PreparedNode,
-    },
+    spawn::{command::path_spawn_command, prepared::PreparedNode},
 };
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
@@ -25,9 +21,42 @@ use eyre::{ContextCompat, WrapErr, bail};
 use std::{
     future::Future,
     path::PathBuf,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, atomic::AtomicU64},
 };
 use tokio::sync::mpsc;
+
+/// Environment variable names that must never be passed to spawned nodes.
+const ENV_DENYLIST: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_LIBRARY_PATH",
+    "LD_LIBRARY_PATH",
+    "DORA_AUTH_TOKEN",
+    "DORA_ALLOW_SHELL_NODES",
+];
+
+/// Returns true if the env var key is denied, logging a warning if so.
+fn is_denied_env(key: &str) -> bool {
+    if ENV_DENYLIST.contains(&key) {
+        tracing::warn!(
+            "skipping denied environment variable '{key}' (security: could inject shared libraries)"
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Strip all denied env vars from the inherited process environment.
+/// This prevents the daemon's own env (e.g. `DORA_AUTH_TOKEN`) from leaking
+/// to child nodes via `/proc/<pid>/environ`.
+fn strip_denied_env(mut command: Command) -> Command {
+    for key in ENV_DENYLIST {
+        command = command.env_remove(key);
+    }
+    command
+}
 
 #[derive(Clone)]
 pub struct Spawner {
@@ -37,6 +66,9 @@ pub struct Spawner {
     /// clock is required for generating timestamps when dropping messages early because queue is full
     pub clock: Arc<HLC>,
     pub uv: bool,
+    pub ft_stats: Arc<crate::FaultToleranceStats>,
+    /// Signals listener loops to shut down when the dataflow finishes.
+    pub shutdown: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Spawner {
@@ -58,16 +90,15 @@ impl Spawner {
             )
             .await;
 
-        let queue_sizes = node_inputs(&node)
-            .into_iter()
-            .map(|(k, v)| (k, v.queue_size.unwrap_or(10)))
-            .collect();
-        let (daemon_communication, listener_abort_handle) = spawn_listener_loop(
+        let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
+        let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
             &self.daemon_tx,
-            queue_sizes,
+            self.dataflow_descriptor.communication.local,
             self.clock.clone(),
+            last_activity.clone(),
+            self.shutdown.clone(),
         )
         .await?;
 
@@ -80,6 +111,7 @@ impl Spawner {
                 .context("failed to serialize dataflow descriptor to YAML")?,
             dynamic: node.kind.dynamic(),
             write_events_to,
+            restart_count: 0,
         };
 
         let mut logger = logger
@@ -87,22 +119,21 @@ impl Spawner {
             .await
             .wrap_err("failed to clone logger")?;
         let task = async move {
-            let mut prepared = self
-                .prepare_node_inner(
-                    node,
-                    node_working_dir,
-                    &mut logger,
-                    dataflow_id,
-                    node_config,
-                    node_stderr_most_recent,
-                )
-                .await?;
-            prepared.listener_abort_handle = listener_abort_handle;
-            Ok(prepared)
+            self.prepare_node_inner(
+                node,
+                node_working_dir,
+                &mut logger,
+                dataflow_id,
+                node_config,
+                node_stderr_most_recent,
+                last_activity,
+            )
+            .await
         };
         Ok(task)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn prepare_node_inner(
         self,
         node: ResolvedNode,
@@ -111,6 +142,7 @@ impl Spawner {
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
+        last_activity: Arc<AtomicU64>,
     ) -> eyre::Result<PreparedNode> {
         std::fs::create_dir_all(&node_working_dir)
             .context("failed to create node working directory")?;
@@ -122,6 +154,7 @@ impl Spawner {
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
                     command = command.stdin(Stdio::Null);
+                    command = strip_denied_env(command);
 
                     command = command.env(
                         "DORA_NODE_CONFIG",
@@ -132,13 +165,17 @@ impl Spawner {
                     // the node runtime.
                     if let Some(envs) = &node.env {
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
                     if let Some(envs) = &n.envs {
                         // node has some inner env variables -> add them too
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
 
@@ -175,11 +212,11 @@ impl Spawner {
                     // Use python to spawn runtime if there is a python operator
 
                     // TODO: Handle multi-operator runtime once sub-interpreter is supported
-                    if python_operators.len() > 2 {
+                    if python_operators.len() > 1 {
                         eyre::bail!(
-                            "Runtime currently only support one Python Operator.
-                     This is because pyo4 sub-interpreter is not yet available.
-                     See: https://github.com/PyO4/pyo3/issues/576"
+                            "Runtime currently only supports one Python Operator.
+                     This is because PyO3 sub-interpreter is not yet available.
+                     See: https://github.com/PyO3/pyo3/issues/576"
                         );
                     }
 
@@ -206,30 +243,14 @@ impl Spawner {
                         ]);
                         Some(command)
                     } else {
-                        let uv_python = uv_python_interpreter_from_env();
                         let mut cmd = if self.uv {
                             let mut cmd = Command::new("uv");
                             cmd = cmd.arg("run");
-                            cmd = cmd.arg("--no-project");
-                            if let Some(ref uv_python) = uv_python {
-                                cmd = cmd.arg("--python");
-                                cmd = cmd.arg(uv_python);
-                            } else {
-                                cmd = cmd.arg("--active");
-                            }
-                            cmd = cmd.arg("--no-managed-python");
                             cmd = cmd.arg("python");
-                            match uv_python {
-                                Some(path) => tracing::info!(
-                                    "spawning: uv run --no-project --python {} --no-managed-python python -uc import dora; dora.start_runtime() # {}",
-                                    path.display(),
-                                    node.id
-                                ),
-                                None => tracing::info!(
-                                    "spawning: uv run --active --no-project --no-managed-python python -uc import dora; dora.start_runtime() # {}",
-                                    node.id
-                                ),
-                            }
+                            tracing::info!(
+                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                node.id
+                            );
                             cmd
                         } else {
                             let python = get_python_path()
@@ -276,16 +297,8 @@ impl Spawner {
                         ]);
                         Some(cmd)
                     } else {
-                        let dora_path = which::which("dora").wrap_err(
-                            "failed to find the `dora` binary in PATH.\n  \
-                            \n  \
-                            Hint: install it with:\n    \
-                            cargo install dora-cli\n  \
-                            \n  \
-                            Or if you built from source, add the build output to your PATH:\n    \
-                            export PATH=\"$PWD/target/debug:$PATH\"",
-                        )?;
-                        let mut cmd = Command::new(dora_path);
+                        let mut cmd =
+                            Command::new(which::which("dora").wrap_err("failed to get dora path")?);
                         cmd = cmd.arg("runtime");
                         Some(cmd)
                     }
@@ -303,6 +316,7 @@ impl Spawner {
 
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
+                    command = strip_denied_env(command);
 
                     command = command.env(
                         "DORA_RUNTIME_CONFIG",
@@ -313,7 +327,9 @@ impl Spawner {
                     // the node runtime.
                     if let Some(envs) = &node.env {
                         for (key, value) in envs {
-                            command = command.env(key, value.to_string());
+                            if !is_denied_env(key) {
+                                command = command.env(key, value.to_string());
+                            }
                         }
                     }
 
@@ -342,8 +358,8 @@ impl Spawner {
             clock: self.clock,
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
-            pending_hot_reload: Arc::new(AtomicBool::new(false)),
-            listener_abort_handle: None,
+            last_activity,
+            ft_stats: self.ft_stats,
         })
     }
 }

@@ -1,5 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf};
 
+use std::sync::Arc;
+
 use crate::{
     DataflowId,
     config::NodeRunConfig,
@@ -26,11 +28,22 @@ pub struct NodeConfig {
     pub dataflow_descriptor: serde_yaml::Value,
     pub dynamic: bool,
     pub write_events_to: Option<PathBuf>,
+    /// Number of times this node has been restarted. 0 on first run.
+    #[serde(default)]
+    pub restart_count: u32,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonCommunication {
-    Tcp { socket_addr: SocketAddr },
+    Shmem {
+        daemon_control_region_id: SharedMemoryId,
+        daemon_drop_region_id: SharedMemoryId,
+        daemon_events_region_id: SharedMemoryId,
+        daemon_events_close_region_id: SharedMemoryId,
+    },
+    Tcp {
+        socket_addr: SocketAddr,
+    },
     Interactive,
 }
 
@@ -40,79 +53,60 @@ pub enum DaemonCommunication {
 pub enum DaemonReply {
     Result(Result<(), String>),
     PreparedMessage { shared_memory_id: SharedMemoryId },
-    NextEvents(Vec<Timestamped<NodeEventOrUnknown>>),
+    NextEvents(Vec<Timestamped<NodeEvent>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(untagged)]
-pub enum NodeEventOrUnknown {
-    Known(Box<NodeEvent>),
-    Unknown,
-}
-
-impl<'de> serde::Deserialize<'de> for NodeEventOrUnknown {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let event = serde::Deserialize::deserialize(deserializer);
-        match event {
-            Ok(event) => Ok(NodeEventOrUnknown::Known(event)),
-            Err(_) => Ok(NodeEventOrUnknown::Unknown),
-        }
-    }
-}
-
-impl From<NodeEvent> for NodeEventOrUnknown {
-    fn from(event: NodeEvent) -> Self {
-        NodeEventOrUnknown::Known(Box::new(event))
-    }
-}
-
-impl From<Timestamped<NodeEvent>> for Timestamped<NodeEventOrUnknown> {
-    fn from(value: Timestamped<NodeEvent>) -> Self {
-        Timestamped {
-            inner: value.inner.into(),
-            timestamp: value.timestamp,
-        }
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
-pub enum StopCause {
-    Manual,
-    HotReload,
-    AllInputsClosed,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum NodeEvent {
-    Stop {
-        /// `Option` for backwards compatibility: older serialized messages lack this
-        /// field, so `#[serde(default)]` deserializes them as `None`.
-        #[serde(default)]
-        reason: Option<StopCause>,
-    },
+    Stop,
     Reload {
         operator_id: Option<OperatorId>,
     },
     Input {
         id: DataId,
-        metadata: Metadata,
-        data: Option<DataMessage>,
+        metadata: Arc<Metadata>,
+        data: Option<Arc<DataMessage>>,
     },
     InputClosed {
         id: DataId,
+    },
+    /// Notifies a node that a previously closed input has recovered and will receive data again.
+    InputRecovered {
+        id: DataId,
+    },
+    /// Notifies a node that an upstream node has restarted.
+    ///
+    /// Sent to downstream nodes when a node with a restart policy successfully
+    /// restarts after a failure.
+    NodeRestarted {
+        id: NodeId,
     },
     /// Notifies a node that all its inputs have been closed.
     ///
     /// This event is only sent to nodes that have at least one input.
     AllInputsClosed,
+    /// A runtime parameter has been updated.
+    ///
+    /// Sent when `dora param set` changes a parameter for this node.
+    ParamUpdate {
+        key: String,
+        value: serde_json::Value,
+    },
+    /// A runtime parameter has been deleted.
+    ///
+    /// Sent when `dora param delete` removes a parameter for this node.
+    ParamDeleted {
+        key: String,
+    },
+    /// An upstream node has failed.
+    ///
+    /// Sent to downstream nodes when an upstream node exits with a
+    /// non-zero exit code.
     NodeFailed {
         affected_input_ids: Vec<DataId>,
         error: String,

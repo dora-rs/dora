@@ -1,0 +1,19 @@
+nodes:
+  - id: sender
+    path: sender.py
+    inputs:
+      tick: dora/timer/millis/500
+    outputs:
+      - data
+
+  - id: echo
+    path: echo.py
+    inputs:
+      data: sender/data
+    outputs:
+      - data
+
+  - id: checker
+    path: checker.py
+    inputs:
+      data: echo/data

@@ -4,15 +4,16 @@ use std::{
     fmt,
 };
 
-use crate::common::{resolve_dataflow_identifier_interactive, rpc};
+use crate::common::resolve_dataflow_identifier_interactive;
+use crate::ws_client::WsSession;
 use dora_core::{config::InputMapping, descriptor::Descriptor};
 use dora_message::{
     DataflowId,
-    cli_to_coordinator::CoordinatorControlClient,
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::ControlRequestReply,
     id::{DataId, NodeId},
-    tarpc,
 };
-use eyre::{ContextCompat, bail};
+use eyre::{Context, ContextCompat, bail};
 use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
@@ -23,18 +24,24 @@ pub struct DataflowSelector {
 }
 
 impl DataflowSelector {
-    pub async fn resolve(
-        &self,
-        client: &CoordinatorControlClient,
-    ) -> eyre::Result<(Uuid, Descriptor)> {
+    pub fn resolve(&self, session: &WsSession) -> eyre::Result<(Uuid, Descriptor)> {
         let dataflow_id =
-            resolve_dataflow_identifier_interactive(client, self.dataflow.as_deref()).await?;
-        let info = rpc(
-            "get dataflow info",
-            client.info(tarpc::context::current(), dataflow_id),
-        )
-        .await?;
-        Ok((dataflow_id, info.descriptor))
+            resolve_dataflow_identifier_interactive(session, self.dataflow.as_deref())?;
+        let reply_raw = session
+            .request(
+                &serde_json::to_vec(&ControlRequest::Info {
+                    dataflow_uuid: dataflow_id,
+                })
+                .unwrap(),
+            )
+            .wrap_err("failed to send message")?;
+        let reply: ControlRequestReply =
+            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+        match reply {
+            ControlRequestReply::DataflowInfo { descriptor, .. } => Ok((dataflow_id, descriptor)),
+            ControlRequestReply::Error(err) => bail!("{err}"),
+            other => bail!("unexpected list dataflow reply: {other:?}"),
+        }
     }
 }
 
@@ -60,23 +67,11 @@ impl fmt::Display for TopicIdentifier {
 }
 
 impl TopicSelector {
-    pub async fn resolve(
+    pub fn resolve(
         &self,
-        client: &CoordinatorControlClient,
+        session: &WsSession,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
-        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(client).await?;
-        if !dataflow_descriptor.debug.publish_all_messages_to_zenoh {
-            bail!(
-                "Dataflow `{dataflow_id}` does not have `publish_all_messages_to_zenoh` enabled. You should enable it in order to inspect data.\n\
-                \n\
-                Tip: Add the following snipppet to your dataflow descriptor:\n\
-                \n\
-                ```\n\
-                _unstable_debug:\n  publish_all_messages_to_zenoh: true\n\
-                ```
-                "
-            );
-        }
+        let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
 
         let node_map = dataflow_descriptor
             .nodes
@@ -102,9 +97,18 @@ impl TopicSelector {
             }
             match s.parse() {
                 Ok(InputMapping::User(user)) => {
-                    let node = *node_map
-                        .get(&user.source)
-                        .with_context(|| format!("Unknown node: `{}`", user.source))?;
+                    let node = *node_map.get(&user.source).with_context(|| {
+                        format!(
+                            "unknown node `{}`\n\n  \
+                             hint: available nodes: {}",
+                            user.source,
+                            node_map
+                                .keys()
+                                .map(|k| k.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })?;
                     if user.output.is_empty() {
                         data.extend(node.outputs.iter().map(|output| TopicIdentifier {
                             node_id: user.source.clone(),
@@ -117,9 +121,15 @@ impl TopicSelector {
                         });
                     } else {
                         bail!(
-                            "Node `{}` does not have output `{}`",
+                            "node `{}` does not have output `{}`\n\n  \
+                             hint: available outputs: {}",
                             user.source,
-                            user.output
+                            user.output,
+                            node.outputs
+                                .iter()
+                                .map(|o| o.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
                         );
                     }
                 }
@@ -128,6 +138,13 @@ impl TopicSelector {
                 }
                 Err(e) => bail!("Invalid output id `{s}`: {e}"),
             }
+        }
+
+        if data.is_empty() {
+            bail!(
+                "no outputs found in this dataflow\n\n  \
+                 hint: ensure nodes in the dataflow declare `outputs` in their YAML definition"
+            );
         }
 
         Ok((dataflow_id, data))

@@ -4,20 +4,54 @@ use dora_message::{
     id::{DataId, NodeId},
 };
 
-use super::{CustomNode, ResolvedNode, RuntimeNode};
+use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
     time::Duration,
 };
 
 pub fn visualize_nodes(nodes: &BTreeMap<NodeId, ResolvedNode>) -> String {
+    visualize_nodes_with_boundaries(nodes, &ModuleBoundaries::default())
+}
+
+pub fn visualize_nodes_with_boundaries(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    boundaries: &ModuleBoundaries,
+) -> String {
     let mut flowchart = "flowchart TB\n".to_owned();
     let mut all_nodes = HashMap::new();
 
+    // Track which nodes are inside a module subgraph
+    let mut module_nodes: HashSet<&str> = HashSet::new();
+    for members in boundaries.modules.values() {
+        for m in members {
+            module_nodes.insert(m.as_str());
+        }
+    }
+
+    // Render module subgraphs first
+    for (module_id, members) in &boundaries.modules {
+        // Sanitize ID for Mermaid (dots are invalid in subgraph IDs)
+        let safe_id = module_id.replace('.', "_");
+        writeln!(flowchart, "subgraph {safe_id} [{module_id}]").unwrap();
+        for node in nodes.values() {
+            let node_id_str: &str = node.id.as_ref();
+            if members.iter().any(|m| m == node_id_str) {
+                visualize_node(node, &mut flowchart);
+                all_nodes.insert(&node.id, node);
+            }
+        }
+        flowchart.push_str("end\n");
+    }
+
+    // Render non-module nodes
     for node in nodes.values() {
-        visualize_node(node, &mut flowchart);
-        all_nodes.insert(&node.id, node);
+        let node_id_str: &str = node.id.as_ref();
+        if !module_nodes.contains(node_id_str) {
+            visualize_node(node, &mut flowchart);
+            all_nodes.insert(&node.id, node);
+        }
     }
 
     let dora_timers = collect_dora_timers(nodes);
@@ -62,7 +96,7 @@ fn collect_dora_nodes(
 ) {
     for input in values {
         match &input.mapping {
-            InputMapping::User(_) => {}
+            InputMapping::User(_) | InputMapping::Logs(_) => {}
             InputMapping::Timer { interval } => {
                 dora_timers.insert(*interval);
             }
@@ -173,7 +207,7 @@ fn visualize_inputs(
 ) {
     for (input_id, input) in inputs {
         match &input.mapping {
-            mapping @ InputMapping::Timer { .. } => {
+            mapping @ (InputMapping::Timer { .. } | InputMapping::Logs(_)) => {
                 writeln!(flowchart, "  {mapping} -- {input_id} --> {target}").unwrap();
             }
             InputMapping::User(mapping) => {
@@ -196,10 +230,16 @@ fn visualize_user_mapping(
         match &source_node.kind {
             CoreNodeKind::Custom(custom_node) => {
                 if custom_node.run_config.outputs.contains(output) {
+                    let type_label = custom_node
+                        .run_config
+                        .output_types
+                        .get(output)
+                        .map(|t| format_type_label(t))
+                        .unwrap_or_default();
                     let data = if output == input_id {
-                        format!("{output}")
+                        format!("{output}{type_label}")
                     } else {
-                        format!("{output} as {input_id}")
+                        format!("{output} as {input_id}{type_label}")
                     };
                     writeln!(flowchart, "  {source} -- {data} --> {target}").unwrap();
                     source_found = true;
@@ -207,17 +247,22 @@ fn visualize_user_mapping(
             }
             CoreNodeKind::Runtime(RuntimeNode { operators, .. }) => {
                 let (operator_id, output) = output.split_once('/').unwrap_or(("", output));
-                if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id) {
-                    if operator.config.outputs.contains(output) {
-                        let data = if output == input_id.as_str() {
-                            output.to_string()
-                        } else {
-                            format!("{output} as {input_id}")
-                        };
-                        writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}")
-                            .unwrap();
-                        source_found = true;
-                    }
+                if let Some(operator) = operators.iter().find(|o| o.id.as_ref() == operator_id)
+                    && operator.config.outputs.contains(output)
+                {
+                    let type_label = operator
+                        .config
+                        .output_types
+                        .get(&DataId::from(output.to_owned()))
+                        .map(|t| format_type_label(t))
+                        .unwrap_or_default();
+                    let data = if output == input_id.as_str() {
+                        format!("{output}{type_label}")
+                    } else {
+                        format!("{output} as {input_id}{type_label}")
+                    };
+                    writeln!(flowchart, "  {source}/{operator_id} -- {data} --> {target}").unwrap();
+                    source_found = true;
                 }
             }
         }
@@ -225,4 +270,11 @@ fn visualize_user_mapping(
     if !source_found {
         writeln!(flowchart, "  missing>missing] -- {input_id} --> {target}").unwrap();
     }
+}
+
+/// Format a type URN as a short label for graph edges.
+/// Extracts the type name from the URN (e.g. `std/media/v1/Image` -> ` [Image]`).
+fn format_type_label(urn: &str) -> String {
+    let short = crate::types::urn_short_name(urn);
+    format!(" [{short}]")
 }

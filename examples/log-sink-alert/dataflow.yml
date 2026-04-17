@@ -1,0 +1,17 @@
+nodes:
+  - id: source
+    path: source.py
+    send_stdout_as: log_entries
+    inputs:
+      tick: dora/timer/millis/200
+    outputs:
+      - log_entries
+
+  - id: alert_router
+    build: cargo build -p log-sink-alert
+    path: ../../target/debug/log-sink-alert
+    inputs:
+      logs: source/log_entries
+    outputs:
+      - all_logs
+      - alerts

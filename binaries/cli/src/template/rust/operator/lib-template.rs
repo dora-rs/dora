@@ -14,10 +14,10 @@ impl DoraOperator for ExampleOperator {
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String> {
         match event {
-            Event::Input { id, data } => match id {
+            Event::Input { id, metadata: _, data: _ } => match id {
                 other => eprintln!("Received input {other}"),
             },
-            _ => {}
+            _other => {}
         }
 
         Ok(DoraStatus::Continue)

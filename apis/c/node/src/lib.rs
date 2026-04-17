@@ -26,12 +26,6 @@ struct DoraContext {
 /// On error, a null pointer is returned.
 #[unsafe(no_mangle)]
 pub extern "C" fn init_dora_context_from_env() -> *mut c_void {
-    // Set up a tracing subscriber so that dora_log() calls are emitted.
-    // Ignore errors if a subscriber is already set.
-    let _ = dora_tracing::TracingBuilder::new("dora-c-node")
-        .with_stdout("info", true)
-        .build();
-
     let context = || {
         let (node, events) = DoraNode::init_from_env()?;
         let node = Box::leak(Box::new(node));
@@ -186,9 +180,12 @@ pub unsafe extern "C" fn read_dora_input_data(
             dora_node_api::arrow::datatypes::DataType::UInt8 => {
                 let array: &UInt8Array = data.as_primitive();
                 let ptr = array.values().as_ptr();
+                // Use the actual buffer length, not metadata.type_info.len
+                // which comes from remote nodes and could exceed the buffer.
+                let len = array.values().len();
                 unsafe {
                     *out_ptr = ptr;
-                    *out_len = metadata.type_info.len;
+                    *out_len = len;
                 }
             }
             dora_node_api::arrow::datatypes::DataType::Null => unsafe {
@@ -281,17 +278,17 @@ unsafe fn try_send_output(
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
     let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
-    context
+    Ok(context
         .node
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
-        })
+        })?)
 }
 
 /// Sends a structured log message from a C node.
 ///
 /// The `level_ptr`/`level_len` fields must point to a UTF-8 string containing
-/// one of: "error", "warn", "info", "debug", "trace" (case-insensitive).
+/// one of: "error", "warn", "info", "debug", "trace".
 ///
 /// The `msg_ptr`/`msg_len` fields must point to a UTF-8 string with the log
 /// message.
@@ -321,24 +318,18 @@ pub unsafe extern "C" fn dora_log(
 }
 
 unsafe fn try_log(
-    _context: *mut c_void,
+    context: *mut c_void,
     level_ptr: *const u8,
     level_len: usize,
     msg_ptr: *const u8,
     msg_len: usize,
 ) -> eyre::Result<()> {
-    if level_ptr.is_null() || msg_ptr.is_null() {
+    if context.is_null() || level_ptr.is_null() || msg_ptr.is_null() {
         eyre::bail!("null pointer passed to dora_log");
     }
+    let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let level = std::str::from_utf8(unsafe { slice::from_raw_parts(level_ptr, level_len) })?;
     let message = std::str::from_utf8(unsafe { slice::from_raw_parts(msg_ptr, msg_len) })?;
-    match level.to_ascii_lowercase().as_str() {
-        "error" => tracing::error!(target: "dora.c.log", "{message}"),
-        "warn" => tracing::warn!(target: "dora.c.log", "{message}"),
-        "info" => tracing::info!(target: "dora.c.log", "{message}"),
-        "debug" => tracing::debug!(target: "dora.c.log", "{message}"),
-        "trace" => tracing::trace!(target: "dora.c.log", "{message}"),
-        other => eyre::bail!("unknown log level: {other}"),
-    }
+    context.node.log(level, message, None);
     Ok(())
 }
