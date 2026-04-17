@@ -21,7 +21,8 @@ use dora_message::{
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{
-        BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes, StateCatchUpOperation,
+        BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes, StateCatchUpEntry,
+        StateCatchUpOperation,
     },
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
@@ -1873,58 +1874,22 @@ impl Daemon {
                     "state catch-up: applying {} entry(ies) (up to seq {max_seq})",
                     entries.len(),
                 );
-                for entry in &entries {
-                    match &entry.operation {
-                        StateCatchUpOperation::SetParam {
-                            node_id,
-                            key,
-                            value,
-                        } => {
-                            if let Some(dataflow) = self.running.get(&dataflow_id)
-                                && let Some(channel) = dataflow.subscribe_channels.get(node_id)
-                            {
-                                match send_with_timestamp(
-                                    channel,
-                                    NodeEvent::ParamUpdate {
-                                        key: key.clone(),
-                                        value: value.clone(),
-                                    },
-                                    &self.clock,
-                                ) {
-                                    Ok(true) => dataflow.inc_pending(node_id),
-                                    Ok(false) => {} // dropped (channel full)
-                                    Err(_) => {
-                                        tracing::warn!("catch-up: node `{node_id}` channel closed")
-                                    }
-                                }
-                            }
-                        }
-                        StateCatchUpOperation::DeleteParam { node_id, key } => {
-                            if let Some(dataflow) = self.running.get(&dataflow_id)
-                                && let Some(channel) = dataflow.subscribe_channels.get(node_id)
-                            {
-                                match send_with_timestamp(
-                                    channel,
-                                    NodeEvent::ParamDeleted { key: key.clone() },
-                                    &self.clock,
-                                ) {
-                                    Ok(true) => dataflow.inc_pending(node_id),
-                                    Ok(false) => {}
-                                    Err(_) => {
-                                        tracing::warn!("catch-up: node `{node_id}` channel closed")
-                                    }
-                                }
-                            }
-                        }
+                let applied_through = match self.running.get(&dataflow_id) {
+                    Some(dataflow) => apply_state_catch_up_entries(dataflow, &entries, &self.clock),
+                    None => {
+                        tracing::warn!(
+                            "state catch-up: dataflow `{dataflow_id}` no longer running on daemon"
+                        );
+                        0
                     }
-                }
-                // Send ack back to coordinator so it can prune the log.
-                if max_seq > 0
+                };
+                // Ack only the prefix that was actually accepted for delivery.
+                if applied_through > 0
                     && let Some(sender) = &self.coordinator_sender
                 {
                     let ack = DaemonEvent::StateCatchUpAck {
                         dataflow_id,
-                        ack_sequence: max_seq,
+                        ack_sequence: applied_through,
                     };
                     let stamped = Timestamped {
                         inner: CoordinatorRequest::Event {
@@ -3844,6 +3809,99 @@ impl Daemon {
     }
 }
 
+fn apply_state_catch_up_entries(
+    dataflow: &RunningDataflow,
+    entries: &[StateCatchUpEntry],
+    clock: &HLC,
+) -> u64 {
+    let mut applied_through = 0;
+
+    for entry in entries {
+        let delivered = match &entry.operation {
+            StateCatchUpOperation::SetParam {
+                node_id,
+                key,
+                value,
+            } => {
+                let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
+                    tracing::warn!(
+                        "catch-up: node `{node_id}` not connected; stopping replay at seq {}",
+                        entry.sequence
+                    );
+                    break;
+                };
+                match send_with_timestamp(
+                    channel,
+                    NodeEvent::ParamUpdate {
+                        key: key.clone(),
+                        value: value.clone(),
+                    },
+                    clock,
+                ) {
+                    Ok(true) => {
+                        dataflow.inc_pending(node_id);
+                        true
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "catch-up: node `{node_id}` channel full; stopping replay at seq {}",
+                            entry.sequence
+                        );
+                        false
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "catch-up: node `{node_id}` channel closed; stopping replay at seq {}",
+                            entry.sequence
+                        );
+                        false
+                    }
+                }
+            }
+            StateCatchUpOperation::DeleteParam { node_id, key } => {
+                let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
+                    tracing::warn!(
+                        "catch-up: node `{node_id}` not connected; stopping replay at seq {}",
+                        entry.sequence
+                    );
+                    break;
+                };
+                match send_with_timestamp(
+                    channel,
+                    NodeEvent::ParamDeleted { key: key.clone() },
+                    clock,
+                ) {
+                    Ok(true) => {
+                        dataflow.inc_pending(node_id);
+                        true
+                    }
+                    Ok(false) => {
+                        tracing::warn!(
+                            "catch-up: node `{node_id}` channel full; stopping replay at seq {}",
+                            entry.sequence
+                        );
+                        false
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "catch-up: node `{node_id}` channel closed; stopping replay at seq {}",
+                            entry.sequence
+                        );
+                        false
+                    }
+                }
+            }
+        };
+
+        if !delivered {
+            break;
+        }
+        applied_through = entry.sequence;
+    }
+
+    applied_through
+}
+
 async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u8>> {
     let mut pos = file.seek(io::SeekFrom::End(0)).await?;
 
@@ -4888,6 +4946,81 @@ mod fault_tolerance_tests {
         let result =
             send_with_timestamp(&tx, NodeEvent::ParamDeleted { key: "rate".into() }, &clock);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn state_catch_up_stops_at_first_full_channel_and_returns_applied_prefix() {
+        let clock = test_clock();
+        let mut dataflow = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+
+        let (tx_a, mut rx_a) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx_b, _rx_b) = mpsc::channel::<Timestamped<NodeEvent>>(1);
+        tx_b.try_send(Timestamped {
+            inner: NodeEvent::Stop,
+            timestamp: clock.new_timestamp(),
+        })
+        .expect("prefill node_b channel");
+
+        dataflow.subscribe_channels.insert(node_a.clone(), tx_a);
+        dataflow.subscribe_channels.insert(node_b.clone(), tx_b);
+
+        let applied_through = apply_state_catch_up_entries(
+            &dataflow,
+            &[
+                StateCatchUpEntry {
+                    sequence: 1,
+                    operation: StateCatchUpOperation::SetParam {
+                        node_id: node_a.clone(),
+                        key: "threshold".into(),
+                        value: serde_json::json!(42),
+                    },
+                },
+                StateCatchUpEntry {
+                    sequence: 2,
+                    operation: StateCatchUpOperation::DeleteParam {
+                        node_id: node_b,
+                        key: "threshold".into(),
+                    },
+                },
+            ],
+            &clock,
+        );
+
+        assert_eq!(applied_through, 1);
+
+        let events = drain_events(&mut rx_a);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            NodeEvent::ParamUpdate { key, value } => {
+                assert_eq!(key, "threshold");
+                assert_eq!(value, &serde_json::json!(42));
+            }
+            other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_catch_up_returns_zero_when_first_entry_cannot_be_delivered() {
+        let clock = test_clock();
+        let dataflow = test_dataflow();
+        let node_id: NodeId = "node_a".to_string().into();
+
+        let applied_through = apply_state_catch_up_entries(
+            &dataflow,
+            &[StateCatchUpEntry {
+                sequence: 7,
+                operation: StateCatchUpOperation::SetParam {
+                    node_id,
+                    key: "threshold".into(),
+                    value: serde_json::json!(42),
+                },
+            }],
+            &clock,
+        );
+
+        assert_eq!(applied_through, 0);
     }
 }
 
