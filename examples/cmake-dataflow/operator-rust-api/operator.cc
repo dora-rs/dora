@@ -21,3 +21,17 @@ DoraOnInputResult on_input(Operator &op, rust::Str id, rust::Slice<const uint8_t
     DoraOnInputResult result = {send_result.error, false};
     return result;
 }
+
+DoraOnInputResult on_input_closed(Operator &op, rust::Str id)
+{
+    std::cout << "Rust API operator: input `" << std::string(id) << "` closed" << std::endl;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}
+
+DoraOnInputResult on_stop(Operator &op)
+{
+    std::cout << "Rust API operator: stop received (counter was " << (unsigned int)op.counter << ")" << std::endl;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}

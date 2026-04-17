@@ -1,11 +1,11 @@
-use std::{any::Any, collections::BTreeMap, vec};
+use std::{any::Any, collections::BTreeMap, time::{Duration, Instant}, vec};
 
 use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
-    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter,
+    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
 };
@@ -36,6 +36,10 @@ mod ffi {
         Error,
         Unknown,
         AllInputsClosed,
+        Timeout,
+        Empty,
+        NodeFailed,
+        Reload,
     }
 
     struct DoraInput {
@@ -45,6 +49,12 @@ mod ffi {
 
     struct DoraResult {
         error: String,
+    }
+
+    struct DoraNodeFailed {
+        affected_input_ids: Vec<String>,
+        error: String,
+        source_node_id: String,
     }
 
     struct ArrowInputInfo {
@@ -80,6 +90,7 @@ mod ffi {
         type MergedDoraEvent;
         type Metadata;
         type DataSampleHandle;
+        type DrainedEvents;
 
         fn init_dora_node() -> Result<DoraNode>;
         fn init_dora_node_from_id(node_id: String) -> Result<DoraNode>;
@@ -92,8 +103,22 @@ mod ffi {
         fn empty_combined_events() -> CombinedEvents;
         fn next(self: &mut Events) -> Box<DoraEvent>;
         fn next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
+        fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent>;
+        fn try_next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
+        fn events_is_empty(events: &Box<Events>) -> bool;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
+
+        fn drain_events(events: &mut Box<Events>) -> Box<DrainedEvents>;
+        fn drained_events_len(drained: &Box<DrainedEvents>) -> usize;
+        fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent>;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
+        fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        fn close_outputs(
+            output_sender: &mut Box<OutputSender>,
+            output_ids: Vec<String>,
+        ) -> DoraResult;
+        fn node_config_json(output_sender: &Box<OutputSender>) -> Result<String>;
+        fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -242,12 +267,62 @@ pub struct Events(EventStream);
 
 impl Events {
     fn next(&mut self) -> Box<DoraEvent> {
-        Box::new(DoraEvent(self.0.recv()))
+        Box::new(DoraEvent::from_recv(self.0.recv()))
     }
 }
 
 fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
     events.next()
+}
+
+fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent> {
+    let dur = Duration::from_millis(timeout_ms);
+    let deadline = Instant::now() + dur;
+
+    loop {
+        match events.0.try_recv() {
+            Ok(event) => return Box::new(DoraEvent::with_event(event)),
+            Err(TryRecvError::Closed) => return Box::new(DoraEvent::closed()),
+            Err(TryRecvError::Empty) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Box::new(DoraEvent::timed_out());
+                }
+                let remaining = deadline - now;
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
+        }
+    }
+}
+
+fn try_next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
+    match events.0.try_recv() {
+        Ok(event) => Box::new(DoraEvent::with_event(event)),
+        Err(TryRecvError::Empty) => Box::new(DoraEvent::empty()),
+        Err(TryRecvError::Closed) => Box::new(DoraEvent::closed()),
+    }
+}
+
+fn events_is_empty(events: &Box<Events>) -> bool {
+    events.0.is_empty()
+}
+
+pub struct DrainedEvents(std::collections::VecDeque<Event>);
+
+fn drain_events(events: &mut Box<Events>) -> Box<DrainedEvents> {
+    let evts = events.0.drain().unwrap_or_default();
+    Box::new(DrainedEvents(evts.into()))
+}
+
+fn drained_events_len(drained: &Box<DrainedEvents>) -> usize {
+    drained.0.len()
+}
+
+fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent> {
+    match drained.0.pop_front() {
+        Some(e) => Box::new(DoraEvent::with_event(e)),
+        None => Box::new(DoraEvent::empty()),
+    }
 }
 
 fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
@@ -269,23 +344,68 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     }
 }
 
-pub struct DoraEvent(Option<Event>);
+/// Why a DoraEvent has no event payload.
+#[derive(PartialEq)]
+enum NoEventReason {
+    /// An event is present.
+    HasEvent,
+    /// The event stream closed (all inputs closed).
+    Closed,
+    /// A timeout expired before an event arrived.
+    TimedOut,
+    /// No event was immediately available (non-blocking check).
+    Empty,
+}
+
+pub struct DoraEvent {
+    event: Option<Event>,
+    reason: NoEventReason,
+}
+
+impl DoraEvent {
+    fn with_event(event: Event) -> Self {
+        Self { event: Some(event), reason: NoEventReason::HasEvent }
+    }
+
+    fn from_recv(event: Option<Event>) -> Self {
+        match event {
+            Some(e) => Self::with_event(e),
+            None => Self::closed(),
+        }
+    }
+
+    fn closed() -> Self {
+        Self { event: None, reason: NoEventReason::Closed }
+    }
+
+    fn timed_out() -> Self {
+        Self { event: None, reason: NoEventReason::TimedOut }
+    }
+
+    fn empty() -> Self {
+        Self { event: None, reason: NoEventReason::Empty }
+    }
+}
 
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
-    match &event.0 {
-        Some(event) => match event {
+    match (&event.event, &event.reason) {
+        (_, NoEventReason::TimedOut) => ffi::DoraEventType::Timeout,
+        (_, NoEventReason::Empty) => ffi::DoraEventType::Empty,
+        (Some(event), _) => match event {
             Event::Stop(_) => ffi::DoraEventType::Stop,
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,
+            Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
+            Event::Reload { .. } => ffi::DoraEventType::Reload,
             _ => ffi::DoraEventType::Unknown,
         },
-        None => ffi::DoraEventType::AllInputsClosed,
+        (None, _) => ffi::DoraEventType::AllInputsClosed,
     }
 }
 
 fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
-    let Some(Event::Input { id, metadata, data }) = event.0 else {
+    let Some(Event::Input { id, metadata, data }) = event.event else {
         bail!("not an input event");
     };
     let data = match metadata.type_info.data_type {
@@ -308,6 +428,48 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
     })
 }
 
+fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFailed> {
+    let Some(Event::NodeFailed {
+        affected_input_ids,
+        error,
+        source_node_id,
+    }) = event.event
+    else {
+        bail!("not a NodeFailed event");
+    };
+    Ok(ffi::DoraNodeFailed {
+        affected_input_ids: affected_input_ids
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        error,
+        source_node_id: source_node_id.to_string(),
+    })
+}
+
+fn close_outputs(sender: &mut Box<OutputSender>, output_ids: Vec<String>) -> ffi::DoraResult {
+    let ids: Vec<dora_node_api::dora_core::config::DataId> =
+        output_ids.into_iter().map(|s| s.into()).collect();
+    match sender.0.close_outputs(ids) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
+}
+
+fn node_config_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    serde_json::to_string(output_sender.0.node_config())
+        .map_err(|e| eyre!("failed to serialize node config: {e}"))
+}
+
+fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    let desc = output_sender.0.dataflow_descriptor()?;
+    serde_json::to_string(desc).map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
+}
+
 unsafe fn event_as_arrow_input(
     event: Box<DoraEvent>,
     out_array: *mut u8,
@@ -321,7 +483,7 @@ unsafe fn event_as_arrow_input(
         id: _,
         metadata: _,
         data,
-    }) = event.0
+    }) = event.event
     else {
         return ffi::DoraResult {
             error: "Not an input event".to_string(),
@@ -609,7 +771,7 @@ unsafe fn event_as_arrow_input_with_info(
     let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
     let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
 
-    let Some(Event::Input { id, metadata, data }) = event.0 else {
+    let Some(Event::Input { id, metadata, data }) = event.event else {
         return ffi::ArrowInputInfo {
             id: String::new(),
             metadata: Box::new(Metadata::empty()),
@@ -942,7 +1104,7 @@ impl ffi::CombinedEvent {
 
 fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
     match event.event.0 {
-        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent(Some(event)))),
+        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent::with_event(event))),
         _ => eyre::bail!("not an external event"),
     }
 }
