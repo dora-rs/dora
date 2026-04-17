@@ -74,7 +74,7 @@ fn origin_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    
+
     use std::{
         io::BufRead,
         path::{Component, Path, PathBuf},
@@ -175,8 +175,6 @@ mod ros2 {
     }
 
     pub fn generate_ros2_message_header(target_path: &Path) {
-        
-
         let default_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {

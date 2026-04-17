@@ -19,3 +19,5 @@ ser = "ser"
 BA = "BA"
 # Windows system library name (used by the C/C++ publish workflow)
 secur = "secur"
+# GitHub org/user name referenced in downstream-user assessment docs (not "YOUR")
+YOR = "YOR"
