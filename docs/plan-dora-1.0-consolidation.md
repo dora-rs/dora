@@ -1,6 +1,6 @@
 # Dora 1.0 Consolidation Plan
 
-**Status**: **Phase -1 complete + all decision points resolved (2026-04-17).** D-0 = D-0a (tree takeover), D-1 = D-1a (hard protocol break), D-7 = D-7c (partial Zenoh SHM, data plane only). Scope reconciliation complete via #297: no `dora migrate` command (hard break, zero production users); 58 `dora-rs/adora#NNN` code-comment refs left as-is (archived repo serves them). All Phase -1 evidence gates resolved: governance (#293), wire-protocol (#288), 2026-03-21 critical-closure (#289), ownership (#290), downstream outreach right-sized (#291), dogfood rescoped to Phase 5b (#292). Phase 0 ready to start. Release flow: **5a tag rc → 5b dogfood → 5c tag GA**. See tracking epic #287.
+**Status** (2026-04-17): **Phases 0, 1, 3 landed on `dora-rs/dora` `v1.0-rewrite`. Phase 3b deferred into RC-window landings.** D-0 = D-0a (tree takeover), D-1 = D-1a (hard protocol break), D-7 = D-7c (partial Zenoh SHM) — landing progressively in the RC window as separate `rc.N` tags per #313 + #314, not pre-rc.1. No `dora migrate` command per #297. Release flow: **5a tag rc.1 → 5b iterate rc.N (rc.2 = adopt upstream's control-channel cleanup #313; rc.3 = zenoh SHM data-plane migration #314) → 5c tag GA with both landed**. See execution epic #305.
 **Date**: 2026-04-16 (updated from 2026-04-10)
 **Author**: heyong4725 (with AI assistance)
 **Scope**: This repo (`dora-rs/adora`) is the feature superset of upstream `dora-rs/dora`. The rename from `adora` → `dora` is complete. This plan describes pushing this repo's tree into `dora-rs/dora` as **dora 1.0.0**.
@@ -366,42 +366,31 @@ Iterate until all four are green.
 
 **Gate:** dora 1.0 tree contains a strict union of dora and dora test coverage; verification loop still passes.
 
-### Phase 3b: Adopt Zenoh shared memory — data plane only (2-3 days)
+### Phase 3b: Deferred — architectural cleanup moves to RC window (0 days)
 
-> **Scope locked to D-7c (partial migration) per #297 resolution, 2026-04-17.** Data-plane messages ≥ 4KB move to Zenoh SHM; the 4 local control channels per node stay on custom shmem until 1.1. The `shared-memory-server` crate remains in the workspace with reduced surface. See D-7 in §7.
+> **Rescoped 2026-04-17 after verification (#309 closure comment).** The original D-7c plan assumed upstream had already migrated to zenoh SHM via PR `#1378`. Verification showed:
+> - Upstream PR #1378 is **open, not merged**. 3,000 lines, Copilot-authored, mergeable=false. Experimental.
+> - Upstream main doesn't use zenoh SHM at all. Upstream commit `01995ad67` (2026-03-18) *removed* the shmem control channel entirely (it was disabled-by-default) and kept `shared_memory_extended` for the data plane.
+> - Forcing the zenoh migration in before rc.1 bundles high-risk code with the mechanical merge, muddies regression attribution, and inherits unreviewed upstream work.
+>
+> **Revised approach:** architectural changes (control-channel cleanup + zenoh SHM migration) land **progressively during the Phase 5b RC window** as separate `rc.N` tags with independent dogfood. 1.0 GA ships with both.
 
-**Added 2026-04-08 after the Q1 POC on dora exposed `shared-memory-server` as a QA blind spot.** See `plan-agentic-qa-strategy.md` section 10a.4 and `plan-zenoh-shared-memory.md`.
+**Phase 3b is now a placeholder.** No code work happens here. Proceed directly from Phase 3 (#308, closed) to Phase 4 (#310).
 
-**Rationale.** `libraries/shared-memory-server` has 30 `unsafe` blocks handling local node↔daemon messaging. The data-path regions (messages ≥ 4KB) are the majority of bytes moved and the part upstream already migrated via `dora-rs/adora#1378` (deletes ~660 lines of DropToken lifecycle, removes ~11 unsafe blocks from `channel.rs`, 35% lower latency on messages ≥ 64B, 3-10× throughput on messages ≥ 2KB, drops the pinned `raw_sync_2 =0.1.5` fork dep). Control channels are lower-volume, stable, and can wait — covered post-1.0.
+Landing sequence:
+- **rc.1** — fork's current architecture (includes custom shmem control channel, disabled by default).
+- **rc.2** — Option D: adopt upstream's [`01995ad67`](https://github.com/dora-rs/dora/commit/01995ad67) equivalent. Remove shmem control-channel wiring, keep data-plane shmem (`shared_memory_extended` via `shared-memory-server` re-exports). Tracked in #313.
+- **rc.3** — Zenoh SHM data-plane migration. Port or improve upstream PR #1378 based on its state at work-start. Includes fork-specific additions (`.drec` recording with ZShm, memlock fallback, session pre-warm). Tracked in #314.
+- **rc.N** — each architectural landing gets its own 7-day clean dogfood before moving forward.
+- **GA (rc.N → v1.0.0)** — ships with both D and zenoh SHM.
 
-**Doing the data-plane migration as part of the consolidation, not before or after, is the right sequencing:**
-- **Before**: migration would touch code that's about to be replaced by the consolidation merge — wasted work.
-- **After**: the data-path unsafe blocks ship in 1.0 under the dora brand unchanged.
-- **During**: the migration aligns with upstream, removes the larger chunk of uncoverable code, and the consolidation is already editing these files.
+**Why this is safer than the original D-7c timing:**
+- rc.1 provides a stable-known-architecture reference for attribution.
+- D and zenoh land separately — regression signals are cleanly identifiable.
+- Upstream PR #1378 may merge during this window; if so, we port the reviewed version rather than the Copilot draft.
+- Plan §7 D-7 outcome effectively remains D-7c (partial migration lands in 1.0), just with different timing and a safer gate sequence.
 
-**Tasks (D-7c — data plane only):**
-1. **Port the data-plane half of `dora-rs/adora#1378`** into the `v1.0-rewrite` branch.
-2. **Delete** `apis/rust/node/src/node/drop_stream.rs`, `DropToken` types in `libraries/message/src/common.rs`, `pending_drop_tokens` / `check_drop_token` in daemon. These are all data-path lifecycle code.
-3. **Rewrite** `apis/rust/node/src/node/mod.rs` to add a zenoh session + `ShmProvider` to `DoraNode`.
-4. **Update** `send_output` to publish via zenoh when data ≥ 4KB threshold.
-5. **Update** `apis/rust/node/src/event_stream/data_conversion.rs` to add `RawData::ZenohShm(ZShm)`.
-6. **Update** `libraries/core/src/topics.rs` with zenoh topic helpers.
-7. **Keep** the 4 local control channels (`control`, `events`, `drop`, `events_close`) on custom `shared-memory-server`. Do **not** delete the crate; do **not** delete `ShmemChannel`. These stay until 1.1.
-8. **Add** recording support by copying `ZShm` data at the record-node level (the upstream PR skips this; restore for `.drec` support).
-9. **Keep the 4KB threshold** for small messages — they continue via the existing TCP control path.
-10. **Handle memlock gracefully** with a fallback + warning for `dora run` local dev.
-11. **Pre-warm the zenoh session** during node init to avoid the 16× first-message latency spike.
-
-**Dependencies changed during this phase:**
-- `shared_memory_extended` — can be dropped if data path is the only consumer; verify during implementation (control channels may still depend on it).
-- `raw_sync_2 =0.1.5` — stays, still used by control channels. Drop in 1.1 when Phase 3 of `plan-zenoh-shared-memory.md` lands.
-- `zenoh` must stay pinned to `~1.8` (already done); `shared-memory` + `unstable` features enabled.
-
-**Gate:** `cargo test --all --exclude <python>` passes on the rewrite branch; benchmark regression shows p50 latency improved vs 0.x for messages ≥ 64B; `shared-memory-server` is reduced in line count but not deleted; migration guide documents the breaking change for custom node implementations whose data path consumed `Option<Arc<DataMessage>>`.
-
-**Risk:** zenoh's SHM API is marked `unstable`. It has been stable since zenoh 0.10 (2023) but could change in zenoh 2.0. Mitigation: pinned to `~1.8`, monitor zenoh releases during the 1.0 post-release period.
-
-**Follow-up (tracked for 1.1):** Phase 3 of `plan-zenoh-shared-memory.md` — migrate the 4 control channels to zenoh, delete `shared-memory-server` entirely, drop `raw_sync_2`. This closes the miri gap fully.
+**1.1 follow-up** (unchanged from original D-7c rationale): migrate the 4 local control channels to zenoh too; delete `shared-memory-server` entirely; drop `raw_sync_2` pinned fork dep; close the miri coverage gap fully. Tracked in `plan-zenoh-shared-memory.md` Phase 3.
 
 ### Phase 4: Compat layer (2 days)
 
@@ -1131,6 +1120,7 @@ Save the outputs as `docs/phase--1-audit-YYYY-MM-DD.md` and attach to this plan.
 | 2026-04-16 | heyong4725 + AI | **Downstream user assessment (scope right-sized).** New file `docs/downstream-user-assessment-2026-04-16.md`. Per owner direction ("dora is mostly POCs, not production"), ran a quick GitHub code-search sweep across Rust + Python + pyproject queries. ~30 external repos surfaced; top-5 are 12–69 stars (YOR-robot, Ekumen/lekiwi, FlagOpen/RoboDriver, kornia/bubbaloop, mofa-studio); **zero production deployments identified**. §14 Appendix C top-10 outreach protocol annotated as superseded; §11 success criterion "3 downstream projects confirm migration via `dora migrate`" replaced by "no unresolved production migration blockers in first 30 days post-release". Right-sized plan: release-note prominence + migration guide + 30-day issue-tracker watch + community ping. Trigger-to-expand defined for surprise production users. §19.7 row flipped to Done. Closed #291. |
 | 2026-04-16 | heyong4725 + AI | **Release flow restructured: Phase 5 split into 5a (rc) + 5b (RC dogfood window) + 5c (GA).** Per owner direction, dogfood runs on the tagged `1.0-rc` against the actual consolidated tree, not on the pre-merge fork. Rationale: pre-merge testing exercises code that's about to change (rename + Zenoh SHM + compat layer); RC testing exercises the actual shipping tree. Phase 5b window is open-ended — ships on clean dogfood, not on a calendar box. §5 Phase 5 rewritten as 5a/5b/5c; §10 timeline table updated with the three-tag cadence; §15 Appendix D rescoped to Phase 5b; §19.7 dogfood row marked "Rescoped — not a Phase -1 gate"; §19.8 checkbox flipped to done-via-rescope; §1 Status line now reads "Phase -1 complete". #292 rescoped to RC-window tracker rather than closed. |
 | 2026-04-17 | heyong4725 + AI | **Scope reconciliation round — three team decisions via #297, all resolved.** (1) **D-7 = D-7c** (partial Zenoh SHM migration, data plane only; control channels stay on custom shmem until 1.1). §5 Phase 3b body rewritten to match (data-plane tasks only, keep `shared-memory-server` crate with reduced surface, keep `raw_sync_2` until 1.1); §7 D-7 marked resolved with D-7a/D-7b struck through; follow-up 1.1 work noted. (2) **No `dora migrate` command in 1.0** — 1.0 is a hard break; zero production users surfaced in the assessment; cost of migration tooling outweighs value. §5 Phase 4 tasks 5+6 struck through; §4 overlap matrix `File formats` row updated to reflect hard break; §6 R-8 mitigation updated to remove `dora migrate` reference; §14 Appendix C outreach questions updated to ask about manual-migration testing; §19.8 checkbox flipped. (3) **58 `dora-rs/adora#NNN` code-comment refs left as-is** — archived repo serves issues indefinitely under D-6a; lowest-churn option, preserves historical design-discussion trail. §19.8 checkbox flipped. §1 Status line updated to reflect all decision points resolved. Closes #297. |
+| 2026-04-17 | heyong4725 + AI | **Phase 3b rescoped — architectural changes move to RC window.** Verification on 2026-04-17 showed the D-7c premise was broken: upstream PR #1378 is still open (not merged; mergeable=false; Copilot-authored 3,000-line experiment), and upstream main doesn't use zenoh SHM at all. Upstream's current state is TCP-control + `shared_memory_extended`-data (per commit `01995ad67` from 2026-03-18 which removed the shmem control channel entirely). Per owner direction, multiple `v1.0.0-rc.N` tags during Phase 5b will progressively land: rc.2 = Option D (adopt upstream's `01995ad67` control-channel cleanup, tracked in #313); rc.3 = zenoh SHM data-plane migration (port or improve PR #1378 based on its state at work-start, tracked in #314). GA ships with both. §5 Phase 3b rewritten as a deferred placeholder. §7 D-7 outcome remains D-7c (partial migration in 1.0) but via rc.N landings, not pre-rc.1. Closes #309. |
 
 ---
 
