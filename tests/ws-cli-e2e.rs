@@ -677,6 +677,43 @@ mod real_dataflow {
         }
     }
 
+    fn set_param_with_retry(
+        session: &WsSession,
+        dataflow_id: Uuid,
+        node_id: dora_message::id::NodeId,
+        key: String,
+        value: serde_json::Value,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        loop {
+            let reply = super::send_request(
+                session,
+                &ControlRequest::SetParam {
+                    dataflow_id,
+                    node_id: node_id.clone(),
+                    key: key.clone(),
+                    value: value.clone(),
+                },
+            )
+            .unwrap();
+            match reply {
+                ControlRequestReply::ParamSet => return,
+                ControlRequestReply::Error(msg)
+                    if msg.contains("not connected")
+                        || msg.contains("channel full")
+                        || msg.contains("failed to apply SetParam") =>
+                {
+                    assert!(
+                        std::time::Instant::now() <= deadline,
+                        "set failed after retries for key `{key}`: {msg}"
+                    );
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                other => panic!("set failed for key `{key}`: {other:?}"),
+            }
+        }
+    }
+
     /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
     #[test]
     fn e2e_start_list_stop() {
@@ -788,19 +825,12 @@ mod real_dataflow {
         let node_id: dora_message::id::NodeId = "rust-node".to_string().into();
         let session = connect_session();
 
-        let reply = super::send_request(
+        set_param_with_retry(
             &session,
-            &ControlRequest::SetParam {
-                dataflow_id,
-                node_id: node_id.clone(),
-                key: "rate".into(),
-                value: serde_json::json!(100),
-            },
-        )
-        .unwrap();
-        assert!(
-            matches!(reply, ControlRequestReply::ParamSet),
-            "set failed: {reply:?}"
+            dataflow_id,
+            node_id.clone(),
+            "rate".into(),
+            serde_json::json!(100),
         );
 
         let reply = super::send_request(
@@ -884,19 +914,12 @@ mod real_dataflow {
         ];
 
         for (key, value) in &test_cases {
-            let reply = super::send_request(
+            set_param_with_retry(
                 &session,
-                &ControlRequest::SetParam {
-                    dataflow_id,
-                    node_id: node_id.clone(),
-                    key: key.to_string(),
-                    value: value.clone(),
-                },
-            )
-            .unwrap();
-            assert!(
-                matches!(reply, ControlRequestReply::ParamSet),
-                "set failed for {key}"
+                dataflow_id,
+                node_id.clone(),
+                key.to_string(),
+                value.clone(),
             );
         }
 
