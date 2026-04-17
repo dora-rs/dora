@@ -27,6 +27,10 @@ on:
       - "binaries/cli/**"
       - "Cargo.toml"
 
+env:
+  RUST_VERSION: "1.92.0"
+  RUST_TOOLCHAIN_DIR: "1.92.0-x86_64-unknown-linux-gnu"
+
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
     cancel-in-progress: ${{ github.event_name != 'release' }}
@@ -63,8 +67,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
-      - run: rustup default stable
-      - run: rustup update
+      - run: rustup default ${{ env.RUST_VERSION }}
+      - run: rustup update ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -80,12 +84,12 @@ jobs:
           before-script-linux: |
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libatomic1-i386-cross libatomic1-armhf-cross
-            mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/
-            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so
-            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1
+            mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/
+            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so
+            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1
             ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1
-            mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
-            ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
+            mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
+            ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
