@@ -73,6 +73,7 @@ mod coordinator;
 mod extract_err_from_stderr;
 mod local_listener;
 mod log;
+mod memory_manager;
 mod node_communication;
 mod pending;
 mod socket_stream_utils;
@@ -1605,6 +1606,107 @@ impl Daemon {
                     None => Err(format!("no running dataflow with ID `{dataflow_id}`")),
                 };
                 let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            DaemonNodeEvent::RegisterPinnedMemory { shared_memory_id, metadata, reply_sender } => {
+                // 从metadata中提取PinnedMemoryMetadata字段
+                let result = (|| -> Result<(), String> {
+                    let ptr = metadata.get("ptr")
+                        .and_then(|p| i64::try_from(p).ok())
+                        .ok_or_else(|| "missing or invalid ptr".to_string())? as u64;
+                    let size = metadata.get("size")
+                        .and_then(|p| i64::try_from(p).ok())
+                        .ok_or_else(|| "missing or invalid size".to_string())? as usize;
+                    let dtype = metadata.get("dtype")
+                        .and_then(|p| String::try_from(p).ok())
+                        .ok_or_else(|| "missing or invalid dtype".to_string())?;
+                    let shape_param = metadata.get("shape")
+                        .ok_or_else(|| "missing shape".to_string())?;
+                    let shape = Vec::<i64>::try_from(shape_param)
+                        .map_err(|_| "invalid shape format".to_string())?
+                        .into_iter()
+                        .map(|x| x as usize)
+                        .collect();
+
+                    // Extract optional fields
+                    let is_pinned = metadata.get("is_pinned")
+                        .and_then(|p| bool::try_from(p).ok())
+                        .unwrap_or(false);
+                    let shared_memory_name = metadata.get("shared_memory_name")
+                        .and_then(|p| String::try_from(p).ok());
+                    let buffer_id = metadata.get("buffer_id")
+                        .and_then(|p| String::try_from(p).ok());
+
+                    let pinned_metadata = crate::memory_manager::PinnedMemoryMetadata {
+                        ptr,
+                        size,
+                        dtype,
+                        shape,
+                        is_pinned,
+                        shared_memory_name,
+                        buffer_id,
+                    };
+
+                    self.state.memory_manager.register_pinned_memory(
+                        crate::memory_manager::PinnedMemoryId { id: shared_memory_id },
+                        pinned_metadata,
+                        node_id.to_string(),
+                    )
+                })();
+                let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::ReadPinnedMemory { shared_memory_id, reply_sender } => {
+                let result = (|| -> Result<metadata::Metadata, String> {
+                    let id = memory_manager::PinnedMemoryId { id: shared_memory_id.clone() };
+                    let metadata = self.state.memory_manager.read_pinned_memory(&id)
+                        .ok_or_else(|| format!("pinned memory with ID {} not found", shared_memory_id))?;
+
+                    // 创建参数映射
+                    use dora_message::metadata::{MetadataParameters, Parameter};
+                    let mut parameters = MetadataParameters::new();
+                    parameters.insert("ptr".to_string(), Parameter::Integer(metadata.ptr as i64));
+                    parameters.insert("size".to_string(), Parameter::Integer(metadata.size as i64));
+                    parameters.insert("dtype".to_string(), Parameter::String(metadata.dtype));
+                    let shape_i64: Vec<i64> = metadata.shape.iter().map(|&x| x as i64).collect();
+                    parameters.insert("shape".to_string(), Parameter::ListInt(shape_i64));
+                    parameters.insert("is_pinned".to_string(), Parameter::Bool(metadata.is_pinned));
+                    if let Some(ref shared_memory_name) = metadata.shared_memory_name {
+                        parameters.insert("shared_memory_name".to_string(), Parameter::String(shared_memory_name.clone()));
+                    }
+                    if let Some(ref buffer_id) = metadata.buffer_id {
+                        parameters.insert("buffer_id".to_string(), Parameter::String(buffer_id.clone()));
+                    }
+
+                    // 创建时间戳和类型信息（虚拟值）
+                    let timestamp = self.state.clock.new_timestamp();
+                    let type_info = metadata::ArrowTypeInfo {
+                        data_type: dora_node_api::arrow::datatypes::DataType::Null,
+                        len: 0,
+                        null_count: 0,
+                        validity: None,
+                        offset: 0,
+                        buffer_offsets: vec![],
+                        child_data: vec![],
+                    };
+
+                    Ok(metadata::Metadata::from_parameters(timestamp, type_info, parameters))
+                })();
+
+                match result {
+                    Ok(metadata) => {
+                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
+                    }
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                }
+            }
+            DaemonNodeEvent::FreePinnedMemory { shared_memory_id, reply_sender } => {
+                let result = (|| -> Result<(), String> {
+                    let id = memory_manager::PinnedMemoryId { id: shared_memory_id.clone() };
+                    self.state.memory_manager.free_pinned_memory(&id)
+                })();
+
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
         Ok(())
@@ -3423,6 +3525,19 @@ pub enum DaemonNodeEvent {
         tokens: Vec<DropToken>,
     },
     EventStreamDropped {
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    RegisterPinnedMemory {
+        shared_memory_id: String,
+        metadata: metadata::Metadata,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    ReadPinnedMemory {
+        shared_memory_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    FreePinnedMemory {
+        shared_memory_id: String,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }

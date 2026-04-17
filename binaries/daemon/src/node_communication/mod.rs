@@ -338,6 +338,33 @@ impl Listener {
                 )
                 .await?;
             }
+            DaemonRequest::RegisterPinnedMemory { shared_memory_id, metadata } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::RegisterPinnedMemory { shared_memory_id, metadata, reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::ReadPinnedMemory { shared_memory_id } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::ReadPinnedMemory { shared_memory_id, reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::FreePinnedMemory { shared_memory_id } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::FreePinnedMemory { shared_memory_id, reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
         }
         Ok(())
     }

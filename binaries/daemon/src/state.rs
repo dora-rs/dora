@@ -46,6 +46,9 @@ pub(crate) struct DaemonState {
     /// Channel to send remote daemon events into the event loop.
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+
+    /// Manager for pinned memory allocations
+    pub(crate) memory_manager: crate::memory_manager::MemoryManager,
 }
 
 impl DaemonState {
@@ -69,6 +72,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session,
             remote_daemon_events_tx,
+            memory_manager: crate::memory_manager::MemoryManager::new(),
         }
     }
 
@@ -100,6 +104,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session: Some(zenoh_session),
             remote_daemon_events_tx: None,
+            memory_manager: crate::memory_manager::MemoryManager::new(),
         };
         let _ = state.daemon_id.set(daemon_id);
         state

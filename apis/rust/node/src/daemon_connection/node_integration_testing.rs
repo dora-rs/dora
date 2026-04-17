@@ -122,6 +122,11 @@ impl IntegrationTestingEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. } => {
+                DaemonReply::Result(Err("not supported in integration testing mode".to_string()))
+            }
         };
         Ok(reply)
     }

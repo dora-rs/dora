@@ -43,6 +43,7 @@ pub enum DaemonReply {
     NextEvents(Vec<Timestamped<NodeEventOrUnknown>>),
     NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
+    PinnedMemoryMetadata { metadata: Metadata },
     Empty,
 }
 

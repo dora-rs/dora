@@ -8,6 +8,7 @@ use crate::{
     versions_compatible,
 };
 
+#[repr(u8)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),
@@ -33,6 +34,16 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
+    RegisterPinnedMemory {
+        shared_memory_id: String,
+        metadata: Metadata,
+    },
+    ReadPinnedMemory {
+        shared_memory_id: String,
+    },
+    FreePinnedMemory {
+        shared_memory_id: String,
+    },
 }
 
 impl DaemonRequest {
@@ -49,7 +60,10 @@ impl DaemonRequest {
             | DaemonRequest::NextEvent { .. }
             | DaemonRequest::SubscribeDrop
             | DaemonRequest::NextFinishedDropTokens
-            | DaemonRequest::EventStreamDropped => true,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. } => true,
         }
     }
 
@@ -66,7 +80,10 @@ impl DaemonRequest {
             | DaemonRequest::NextFinishedDropTokens
             | DaemonRequest::ReportDropTokens { .. }
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. } => false,
         }
     }
 }

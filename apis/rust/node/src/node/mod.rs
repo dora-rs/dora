@@ -703,6 +703,44 @@ impl DoraNode {
         Ok(())
     }
 
+    /// Register pinned memory with the daemon.
+    ///
+    /// The daemon will allocate and manage pinned memory for zero-copy CPU-GPU transfers.
+    pub fn register_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        metadata: Metadata,
+    ) -> eyre::Result<()> {
+        self.control_channel
+            .register_pinned_memory(shared_memory_id, metadata)
+            .wrap_err("failed to register pinned memory with daemon")?;
+        Ok(())
+    }
+
+    /// Read pinned memory from daemon and get metadata for CUDA access.
+    ///
+    /// Returns metadata containing information needed to access the pinned memory
+    /// from CUDA, including the pointer, size, dtype, and shape.
+    pub fn read_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+    ) -> eyre::Result<Metadata> {
+        self.control_channel
+            .read_pinned_memory(shared_memory_id)
+            .wrap_err("failed to read pinned memory from daemon")
+    }
+
+    /// Free pinned memory registered with daemon.
+    pub fn free_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+    ) -> eyre::Result<()> {
+        self.control_channel
+            .free_pinned_memory(shared_memory_id)
+            .wrap_err("failed to free pinned memory with daemon")?;
+        Ok(())
+    }
+
     /// Returns the ID of the node as specified in the dataflow configuration file.
     pub fn id(&self) -> &NodeId {
         &self.id

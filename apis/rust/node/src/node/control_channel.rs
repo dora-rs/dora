@@ -115,4 +115,68 @@ impl ControlChannel {
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
+
+    pub fn register_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        metadata: Metadata,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::RegisterPinnedMemory {
+            shared_memory_id,
+            metadata,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send RegisterPinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) | DaemonReply::Empty => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("daemon error: {}", e),
+            other => bail!("unexpected RegisterPinnedMemory reply: {other:?}"),
+        }
+    }
+
+    pub fn read_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+    ) -> eyre::Result<Metadata> {
+        let request = DaemonRequest::ReadPinnedMemory {
+            shared_memory_id,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
+            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
+        }
+    }
+
+    pub fn free_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::FreePinnedMemory {
+            shared_memory_id,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send FreePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) | DaemonReply::Empty => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("daemon error: {}", e),
+            other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
+        }
+    }
 }

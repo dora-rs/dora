@@ -1,0 +1,19 @@
+nodes:
+  - id: sender_node
+    path: cpu_sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - cpu_data
+    env:
+      mode: pinned
+      massage_num: 100
+  - id: receiver_node
+    path: cuda_receiver.py
+    inputs:
+      latency: sender_node/cpu_data
+    outputs:
+      - next_require
+    env:
+      mode: pinned
+      massage_num: 100

@@ -6,13 +6,16 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+use arrow::array::{Array, BinaryArray, StringArray};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_download::download_file;
 use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
+use dora_node_api::dora_core::metadata::ArrowTypeInfoExt;
+use dora_node_api::dora_core::uhlc;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
+use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, Metadata, MetadataParameters, init_tracing};
+use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata, metadata_to_pydict};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
@@ -448,6 +451,137 @@ impl Node {
         );
         // update self.events with the merged stream
         *inner = EventsInner::Merged(Box::new(events.merge_external_send(Box::pin(stream))));
+
+        Ok(())
+    }
+
+    /// Register pinned memory with the daemon.
+    ///
+    /// :param pinned_buffer: pyarrow array containing shared memory identifier
+    /// :param metadata: dictionary with tensor ptr, size, dtype, shape
+    /// :rtype: None
+    #[pyo3(signature = (pinned_buffer, metadata))]
+    pub fn register_pinned_memory(
+        &self,
+        pinned_buffer: PyObject,
+        metadata: Bound<'_, PyDict>,
+        py: Python,
+    ) -> eyre::Result<()> {
+        // Extract shared memory ID from pyarrow array
+        let array_data = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py))
+            .wrap_err("failed to convert pinned_buffer to arrow array")?;
+        let array = arrow::array::make_array(array_data);
+
+        // The array should be a binary array containing the shared memory ID
+        let shared_memory_id = if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
+            if binary_array.len() != 1 {
+                eyre::bail!("expected binary array with exactly one element, got {}", binary_array.len());
+            }
+            let bytes = binary_array.value(0);
+            String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
+        } else if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+            if string_array.len() != 1 {
+                eyre::bail!("expected string array with exactly one element, got {}", string_array.len());
+            }
+            string_array.value(0).to_string()
+        } else {
+            eyre::bail!("pinned_buffer must be a binary or string array, got {:?}", array.data_type())
+        };
+
+        // Convert Python metadata dict to MetadataParameters
+        let parameters = pydict_to_metadata(Some(metadata))?;
+
+        // Create Metadata object with empty type info and current timestamp
+        let timestamp = uhlc::HLC::default().new_timestamp();
+        let type_info = dora_node_api::dora_core::metadata::ArrowTypeInfoExt::empty();
+        let metadata_obj = Metadata::from_parameters(timestamp, type_info, parameters);
+
+        // Call DoraNode's register_pinned_memory method
+        self.node.get_mut()
+            .register_pinned_memory(shared_memory_id, metadata_obj)
+            .wrap_err("failed to register pinned memory with daemon")?;
+
+        Ok(())
+    }
+
+    /// Read pinned memory from daemon and transfer to CUDA.
+    ///
+    /// :param pinned_buffer: pyarrow array containing shared memory identifier
+    /// :rtype: dictionary with cuda ptr, size, dtype, shape
+    #[pyo3(signature = (pinned_buffer,))]
+    pub fn read_pinned_memory(
+        &self,
+        pinned_buffer: PyObject,
+        py: Python,
+    ) -> eyre::Result<Py<PyDict>> {
+        // Extract shared memory ID from pyarrow array
+        let array_data = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py))
+            .wrap_err("failed to convert pinned_buffer to arrow array")?;
+        let array = arrow::array::make_array(array_data);
+
+        // The array should be a binary array containing the shared memory ID
+        let shared_memory_id = if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
+            if binary_array.len() != 1 {
+                eyre::bail!("expected binary array with exactly one element, got {}", binary_array.len());
+            }
+            let bytes = binary_array.value(0);
+            String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
+        } else if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+            if string_array.len() != 1 {
+                eyre::bail!("expected string array with exactly one element, got {}", string_array.len());
+            }
+            string_array.value(0).to_string()
+        } else {
+            eyre::bail!("pinned_buffer must be a binary or string array, got {:?}", array.data_type())
+        };
+
+        // Call DoraNode's read_pinned_memory method
+        let metadata = self.node.get_mut()
+            .read_pinned_memory(shared_memory_id)
+            .wrap_err("failed to read pinned memory from daemon")?;
+
+        // Convert Metadata to Python dictionary
+        let dict = metadata_to_pydict(&metadata, py)
+            .wrap_err("failed to convert metadata to Python dictionary")?;
+
+        Ok(dict.into())
+    }
+
+    /// Free pinned memory registered with daemon.
+    ///
+    /// :param pinned_buffer: pyarrow array containing shared memory identifier
+    /// :rtype: None
+    #[pyo3(signature = (pinned_buffer,))]
+    pub fn free_pinned_memory(
+        &self,
+        pinned_buffer: PyObject,
+        py: Python,
+    ) -> eyre::Result<()> {
+        // Extract shared memory ID from pyarrow array
+        let array_data = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py))
+            .wrap_err("failed to convert pinned_buffer to arrow array")?;
+        let array = arrow::array::make_array(array_data);
+
+        // The array should be a binary array containing the shared memory ID
+        let shared_memory_id = if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
+            if binary_array.len() != 1 {
+                eyre::bail!("expected binary array with exactly one element, got {}", binary_array.len());
+            }
+            let bytes = binary_array.value(0);
+            String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
+        } else if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+            if string_array.len() != 1 {
+                eyre::bail!("expected string array with exactly one element, got {}", string_array.len());
+            }
+            string_array.value(0).to_string()
+        } else {
+            eyre::bail!("pinned_buffer must be a binary or string array, got {:?}", array.data_type())
+        };
+
+        // Call DoraNode's free_pinned_memory method
+        self.node.get_mut()
+            .free_pinned_memory(shared_memory_id)
+            .wrap_err("failed to free pinned memory with daemon")?;
 
         Ok(())
     }
