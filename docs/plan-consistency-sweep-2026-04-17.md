@@ -218,7 +218,7 @@ echo "upstream: $(gh api repos/dora-rs/dora/contents/Cargo.toml --jq .content | 
 
 # §6 Dep versions — scope to [workspace.dependencies] so you don't pick up a
 # [dev-dependencies] copy of the same key (which is exactly how the sweep's
-# first draft mis-read serde_yaml on upstream).
+# first draft misread serde_yaml on upstream).
 #
 # Note: don't use `awk '/^\[workspace.dependencies\]/,/^\[/'` — the `/^\[/`
 # end pattern matches the START line too, so awk exits immediately and emits
