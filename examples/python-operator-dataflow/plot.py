@@ -1,137 +1,148 @@
-"""Plotting and visualization operator for dora-rs dataflow.
-
-This operator aggregates images, bounding boxes, keyboard inputs, and
-assistant messages to create a composite visualization. It uses OpenCV
-to render overlays and display the result in a window.
-"""
 
 import os
-
-import cv2
+import time
+import numpy as np
 from dora import DoraStatus
 from utils import LABELS
 
-CI = os.environ.get("CI")
+# HEADLESS FIX: Must be set BEFORE cv2 import
+# cv2 reads QT_QPA_PLATFORM at import time, not at runtime
+if os.environ.get("GITHUB_ACTIONS") == "true":
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    IS_HEADLESS = True
+elif os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+    IS_HEADLESS = True
+else:
+    IS_HEADLESS = False
+
+import cv2  # noqa: E402
 
 CAMERA_WIDTH = 640
-CAMERA_HEIGHT = 480
-
-FONT = cv2.FONT_HERSHEY_SIMPLEX
 
 
 class Operator:
-    """Plot image and bounding box."""
-
     def __init__(self):
-        """Initializes the Plot operator with empty lists for tracking state."""
-        self.bboxs = []
-        self.buffer = ""
-        self.submitted = []
-        self.lines = []
+        """Initializes the Plot operator with empty state."""
+        # Initialize as numpy array not list — safe to iterate always
+        self.bboxs = np.zeros((0, 6))
+        self.inference_latency = 0
+        self.last_time = time.time()
+        self.fps = 0
 
     def on_event(
         self,
         dora_event,
         send_output,
     ):
-        """Process incoming events and update the visualization buffer.
+        """Process incoming events and update the visualization.
 
-        Handles "image", "bbox", "keyboard_buffer", "line", and "message"
-        inputs. Images are decorated with bounding boxes and text overlays
-        before being displayed.
+        Handles "image", "bbox", and "latency" inputs. Images are decorated
+        with bounding boxes and performance overlays before being displayed.
 
         Args:
             dora_event (dict): The event from dora-rs.
-            send_output (Callable): Callback (not used for output emission
-                in this specific operator, but part of the interface).
+            send_output (Callable): Callback (part of the operator interface).
 
         Returns:
-            DoraStatus: CONTINUE to keep plotting, or STOP if the display
-                window is closed.
+            DoraStatus: CONTINUE to keep plotting, or STOP if quit is pressed.
         """
-        if dora_event["type"] == "INPUT":
-            id = dora_event["id"]
-            value = dora_event["value"]
-            if id == "image":
+        try:
+            if dora_event["type"] == "INPUT":
+                event_id = dora_event["id"]
 
-                image = (
-                    value.to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3)).copy()
-                )
+                # 1. IMAGE INPUT
+                if event_id == "image":
+                    try:
+                        image_array = dora_event["value"].to_numpy()
+                        # Dynamic reshape — no hardcoded height
+                        image = image_array.reshape((-1, CAMERA_WIDTH, 3)).copy()
 
-                for bbox in self.bboxs:
-                    [
-                        min_x,
-                        min_y,
-                        max_x,
-                        max_y,
-                        confidence,
-                        label,
-                    ] = bbox
-                    cv2.rectangle(
-                        image,
-                        (int(min_x), int(min_y)),
-                        (int(max_x), int(max_y)),
-                        (0, 255, 0),
-                    )
-                    cv2.putText(
-                        image,
-                        f"{LABELS[int(label)]}, {confidence:0.2f}",
-                        (int(max_x), int(max_y)),
-                        FONT,
-                        0.5,
-                        (0, 255, 0),
-                    )
+                        # FPS Calculation
+                        curr = time.time()
+                        elapsed = curr - self.last_time
+                        self.fps = 1.0 / elapsed if elapsed > 0 else 0
+                        self.last_time = curr
 
-                cv2.putText(
-                    image, self.buffer, (20, 14 + 21 * 14), FONT, 0.5, (190, 250, 0), 1,
-                )
+                        # Draw Bounding Boxes
+                        for bbox in self.bboxs:
+                            [x1, y1, x2, y2, conf, lbl] = bbox
+                            cv2.rectangle(
+                                image,
+                                (int(x1), int(y1)),
+                                (int(x2), int(y2)),
+                                (0, 255, 0),
+                                2,
+                            )
+                            txt = f"{LABELS[int(lbl)]}: {conf:.2f}"
+                            (w, h), _ = cv2.getTextSize(
+                                txt, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1
+                            )
+                            # Filled green background for readable white text
+                            cv2.rectangle(
+                                image,
+                                (int(x1), int(y1) - h - 10),
+                                (int(x1) + w, int(y1)),
+                                (0, 255, 0),
+                                -1,
+                            )
+                            cv2.putText(
+                                image,
+                                txt,
+                                (int(x1), int(y1) - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6,
+                                (255, 255, 255),
+                                1,
+                            )
 
-                i = 0
-                for text in self.submitted[::-1]:
-                    color = (
-                        (0, 255, 190)
-                        if text["role"] == "user_message"
-                        else (0, 190, 255)
-                    )
-                    cv2.putText(
-                        image,
-                        text["content"],
-                        (
-                            20,
-                            14 + (19 - i) * 14,
-                        ),
-                        FONT,
-                        0.5,
-                        color,
-                        1,
-                    )
-                    i += 1
+                        # Performance Overlay
+                        cv2.putText(
+                            image,
+                            f"Total FPS: {self.fps:.1f}",
+                            (20, 40),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 255, 255),
+                            2,
+                        )
+                        cv2.putText(
+                            image,
+                            f"AI Latency: {self.inference_latency:.1f}ms",
+                            (20, 70),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            (0, 255, 255),
+                            2,
+                        )
 
-                for line in self.lines:
-                    cv2.line(
-                        image,
-                        (int(line[0]), int(line[1])),
-                        (int(line[2]), int(line[3])),
-                        (0, 0, 255),
-                        2,
-                    )
+                        if not IS_HEADLESS:
+                            cv2.imshow("frame", image)
+                            if cv2.waitKey(1) & 0xFF == ord("q"):
+                                return DoraStatus.STOP
 
-                if CI != "true":
-                    cv2.imshow("frame", image)
-                    if cv2.waitKey(1) & 0xFF == ord("q"):
-                        return DoraStatus.STOP
-            elif id == "bbox":
-                self.bboxs = value.to_numpy().reshape((-1, 6))
-            elif id == "keyboard_buffer":
-                self.buffer = value[0].as_py()
-            elif id == "line":
-                self.lines += [value.to_pylist()]
-            elif "message" in id:
-                self.submitted += [
-                    {
-                        "role": id,
-                        "content": value[0].as_py(),
-                    },
-                ]
+                    except Exception as e:
+                        print(f"Image processing error: {e}")
+
+                # 2. BBOX INPUT
+                elif event_id == "bbox":
+                    try:
+                        arr = dora_event["value"].to_numpy()
+                        # Guard against empty array — shape (0,) would crash reshape(-1,6)
+                        self.bboxs = (
+                            arr.reshape((-1, 6)) if arr.size > 0 else np.zeros((0, 6))
+                        )
+                    except Exception as e:
+                        print(f"BBox reshape error: {e}")
+                        self.bboxs = np.zeros((0, 6))
+
+                # 3. LATENCY INPUT
+                elif event_id == "latency":
+                    try:
+                        self.inference_latency = dora_event["value"].to_numpy()[0]
+                    except Exception as e:
+                        print(f"Latency extraction error: {e}")
+
+        except Exception as e:
+            print(f"Unexpected error in on_event: {e}")
 
         return DoraStatus.CONTINUE
