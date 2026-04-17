@@ -27,6 +27,12 @@ cd "$(dirname "$0")/../.."
 
 BUDGET_FILE=".unwrap-budget"
 
+if ! command -v rg >/dev/null 2>&1; then
+  echo "scripts/qa/unwrap-budget.sh requires ripgrep ('rg') on PATH" >&2
+  echo "Install ripgrep and re-run the QA checks." >&2
+  exit 2
+fi
+
 # Count unwrap/expect in non-test source code. Three steps:
 # 1. Enumerate candidate .rs files (excluding tests/, examples/, build.rs)
 # 2. Drop files named tests.rs (submodule test files)
