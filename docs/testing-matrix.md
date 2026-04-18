@@ -18,7 +18,8 @@ Fast gates. Must pass for every PR.
 | Example dataflows (Rust/C/C++/Python) | `.github/workflows/ci.yml` `examples` | `cargo run --example ...` on 3 platforms |
 | CLI template + basic Python examples | `.github/workflows/ci.yml` `cli` | `dora new` + `dora run` on 3 platforms |
 | E2E WS control plane | `.github/workflows/ci.yml` `e2e` | `cargo test --test ws-cli-e2e` |
-| Fault tolerance E2E | `.github/workflows/ci.yml` `fault-tolerance-e2e` | `cargo test --test fault-tolerance-e2e` |
+| Fault tolerance E2E | `.github/workflows/ci.yml` `e2e` | `cargo test --test fault-tolerance-e2e` |
+| Semantic contract tests (service, action, streaming, validated-pipeline) | `.github/workflows/ci.yml` `contract-tests` | `cargo test -p dora-examples --test example-smoke contract_` |
 | Supply chain (cargo-audit / cargo-deny) | `.github/workflows/ci.yml` `audit` | `scripts/qa/audit.sh` |
 | Unwrap budget | `.github/workflows/ci.yml` `unwrap-budget` | `scripts/qa/unwrap-budget.sh` |
 | Benchmark regression | `.github/workflows/ci.yml` `benchmark-regression` | |
@@ -29,9 +30,16 @@ Fast gates. Must pass for every PR.
 Runs daily at 06:00 UTC and via `workflow_dispatch`. Failures file issues with
 the `nightly-regression` label but do not block PRs.
 
+The liveness-oriented `smoke_*` tests in `tests/example-smoke.rs` stay
+nightly-only — they catch crash-class regressions and, for the four
+capabilities with a `contract_*` sibling (service, action, streaming,
+validated-pipeline), the contract tests in Tier 0 already provide
+stronger per-PR coverage. See "Tier policy" below for the promotion
+criteria used in #1632.
+
 | Area | Job |
 |---|---|
-| Full smoke suite (`tests/example-smoke.rs`, 45 tests) | `smoke-suite` |
+| Full smoke suite (`tests/example-smoke.rs`, 45 `smoke_*` tests) | `smoke-suite` |
 | Log-sink examples (file, alert, tcp) | `log-sinks` |
 | Service / Action patterns (Rust-only) | `service-action` |
 | Streaming example (Python nodes) | `streaming` |
@@ -186,12 +194,39 @@ regression is reported, the fix is to lift the `if: runner.os == 'Linux'` gate o
 the relevant step and add platform-specific install logic — not to keep shipping
 broken.
 
-## Promotion policy
+## Tier policy (promotion / demotion criteria)
 
-If a nightly failure reproduces for **3 consecutive runs**, promote the
-corresponding test to the remote CI gate (move from `nightly.yml` to
-`ci.yml`). Keep lean-CI-first: only promote gates that catch real bugs,
-not flaky infra.
+See issue #1632 for the policy discussion; this section is the
+authoritative summary.
 
-If a remote CI gate is flaky (>10% false-positive rate over a month),
-demote it to nightly.
+**Promote to Tier 0 (PR CI)** when a test is:
+
+- Deterministic — no "either outcome is fine" fallbacks, no retries on
+  flakiness.
+- Fast — adds a reasonable slice of per-PR runtime. The
+  `contract-tests` job runs in ~2 min; that's roughly the ceiling for
+  anything else promoted without a compelling reason.
+- High-signal — catches user-visible feature regressions, not just
+  "did not crash".
+- Hosted-runner-friendly — no privileged execution, no multi-host
+  infra, no per-runner timing hacks.
+
+**Keep in Tier 1 (nightly)** when a test is useful but slow, mildly
+flaky on shared runners, timing-sensitive, or only catches a
+lower-frequency regression class.
+
+**Keep in Tier 2 (laptop / manual)** when a test needs SSH-backed
+cluster deployment, real multi-host networking, privileged RT / mlock
+paths, or destructive operations (for example, an actual `self update`
+binary swap).
+
+### Demotion
+
+If a Tier 0 gate flakes > 10% false-positive over a month, demote it
+to Tier 1 and open an issue to harden it before re-promoting.
+
+### Reactive promotion
+
+If a Tier 1 failure reproduces for **3 consecutive nightly runs**,
+promote the corresponding test to Tier 0. Keep lean-CI-first: promote
+only gates that catch real regressions, not flaky infra.
