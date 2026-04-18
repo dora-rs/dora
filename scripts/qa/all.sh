@@ -5,7 +5,7 @@
 # Designed for local-first execution: same script runs locally and in CI.
 #
 # Modes:
-#   --fast    pre-commit budget (~1 minute) — fmt, clippy, audit, unwrap
+#   --fast    pre-commit budget (~1 minute) — fmt, clippy, audit, unwrap, typos
 #   --full    pre-push budget (~5-10 minutes) — fast + tests + coverage
 #   --tier1   full Tier 1 gate (~15 minutes) — full + mutants + semver
 #
@@ -39,6 +39,7 @@ run "clippy"        cargo clippy --all \
                       -- -D warnings
 run "audit"         scripts/qa/audit.sh
 run "unwrap-budget" scripts/qa/unwrap-budget.sh
+run "typos"         scripts/qa/typos.sh
 
 if [[ "$MODE" == "--fast" ]]; then
   : # done
