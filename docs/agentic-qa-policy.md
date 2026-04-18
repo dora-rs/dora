@@ -95,7 +95,10 @@ All of Class B, plus:
       `cargo test -p dora-examples --test example-smoke contract_ -- --test-threads=1`.
 - [ ] Decide, and state explicitly in the PR:
   - New semantic contract test for the touched behavior (preferred), **or**
-  - Diff-coverage threshold demonstrated on touched lines, **or**
+  - Thresholded diff coverage on the touched lines
+    (`pip install diff-cover` then
+    `DIFF_COVERAGE_FAIL_UNDER=80 make qa-coverage`; `make qa-coverage`
+    alone produces a report but does not gate), **or**
   - Focused mutation-testing run on touched files
     (`make qa-mutants` scoped), **or**
   - Explicit manual-validation notes when automation is genuinely
@@ -152,7 +155,8 @@ Class A PRs don't need a formal block — the diff speaks for itself.
 | Workspace tests | `cargo test --all --exclude <python-crates>` | [`CLAUDE.md`](../CLAUDE.md) |
 | Fault-tolerance E2E | `cargo test --test fault-tolerance-e2e` | [`testing-capabilities.md`](testing-capabilities.md#fault-tolerance) |
 | Semantic contracts | `cargo test -p dora-examples --test example-smoke contract_` | [`testing-capabilities.md`](testing-capabilities.md) |
-| Diff coverage | `make qa-coverage` | [`qa-runbook.md`](qa-runbook.md) |
+| Coverage report (lcov) | `make qa-coverage` | [`qa-runbook.md`](qa-runbook.md) |
+| Thresholded diff coverage (optional gate) | `pip install diff-cover` + `DIFF_COVERAGE_FAIL_UNDER=80 make qa-coverage` | `scripts/qa/coverage.sh` header |
 | Mutation testing | `make qa-mutants` | [`qa-runbook.md`](qa-runbook.md) |
 | Adversarial review | `make qa-adversarial` | [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) |
 
