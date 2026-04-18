@@ -62,6 +62,7 @@ members = [
     "libraries/extensions/ros2-bridge/arrow",
     "tests/queue_size_latest_data_rust/receive_data",
     "tests/fault_tolerance/always_crash_node",
+    "tests/fault_tolerance/clean_exit_node",
 ]
 
 [workspace.package]
