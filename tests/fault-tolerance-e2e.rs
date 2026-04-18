@@ -256,15 +256,17 @@ async fn restart_policy_always_restarts_on_clean_exit() {
     eprintln!("clean-exit-node incarnations observed: {incarnations}");
 
     // Core contract: `restart_policy: always` + `max_restarts: 2`
-    // produces ≥2 incarnations. Exactly 3 is the happy path
-    // (initial + 2 restarts within the stop_after window); we accept
-    // ≥2 to tolerate stop_after racing the final restart on a slow
-    // runner. `never`/`on-failure` would give exactly 1, which the
-    // assertion rejects.
-    assert!(
-        incarnations >= 2,
-        "restart_policy: always + max_restarts: 2 should produce at least 2 \
-         incarnations after clean exits; got {incarnations}. marker contents:\n{contents}"
+    // produces exactly 3 incarnations (initial spawn + 2 restarts).
+    // With the fixture's 50 ms tick + 100 ms restart_delay the full
+    // cycle completes in roughly 500 ms, leaving ample headroom under
+    // the 10 s stop_after — there's no legitimate race that would cut
+    // the count short, so a weaker `>= 2` assertion would let an
+    // off-by-one regression slip through (addressing review feedback
+    // on PR #1645).
+    assert_eq!(
+        incarnations, 3,
+        "restart_policy: always + max_restarts: 2 should produce exactly 3 \
+         incarnations (initial + 2 restarts); got {incarnations}. marker contents:\n{contents}"
     );
 }
 
