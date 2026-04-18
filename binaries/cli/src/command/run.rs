@@ -5,7 +5,10 @@
 use super::{Executable, system::status::daemon_running};
 use crate::{
     LOCALHOST, build as build_dataflow,
-    common::{connect_with_retry, handle_dataflow_result, resolve_dataflow, write_events_to},
+    common::{
+        connect_with_retry, error_indicates_dataflow_finished, handle_dataflow_result,
+        resolve_dataflow, write_events_to,
+    },
     output::{
         LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
     },
@@ -312,6 +315,14 @@ impl Executable for Run {
         };
 
         // --- Wait for spawn ---
+        //
+        // Sub-second dataflows race against this request: the coordinator
+        // drops the running-dataflow entry on completion, so a WaitForSpawn
+        // that arrives afterwards comes back as `Error("unknown dataflow X")`.
+        // That's not a startup failure — the DataflowStartTriggered we
+        // already received proves the coordinator accepted the spawn. Treat
+        // it as evidence the dataflow ran to completion.
+        let mut spawn_already_finished = false;
         {
             let reply_raw = session
                 .request(
@@ -322,6 +333,12 @@ impl Executable for Run {
                 serde_json::from_slice(&reply_raw).context("failed to parse reply")?;
             match result {
                 ControlRequestReply::DataflowSpawned { uuid: _ } => {}
+                ControlRequestReply::Error(err) if error_indicates_dataflow_finished(&err) => {
+                    tracing::debug!(
+                        "dataflow {dataflow_id} finished before WaitForSpawn arrived: {err}"
+                    );
+                    spawn_already_finished = true;
+                }
                 ControlRequestReply::Error(err) => bail!(
                     "dataflow failed to start: {err}\n\n  \
                      hint: if nodes require building, run `dora build <dataflow.yml>` first"
@@ -355,35 +372,52 @@ impl Executable for Run {
             print_daemon_name: false,
         };
 
-        let log_rx = session
-            .subscribe_logs(
-                &serde_json::to_vec(&ControlRequest::LogSubscribe {
-                    dataflow_id,
-                    level: log_level,
-                })
-                .context("failed to serialize log subscribe")?,
-            )
-            .context("failed to subscribe to logs")?;
-
-        let log_event_tx = event_tx.clone();
-        std::thread::spawn(move || {
-            // Forward log messages to the print loop.
-            // When the log subscription closes (coordinator shuts down), the thread exits.
-            while let Ok(raw) = log_rx.recv() {
-                let parsed: eyre::Result<LogMessage> = match raw {
-                    Ok(bytes) => {
-                        serde_json::from_slice(&bytes).context("failed to parse log message")
-                    }
-                    Err(err) => Err(err),
-                };
-                match parsed {
-                    Ok(msg) => print_log_message(msg, &log_config),
-                    Err(err) => tracing::warn!("failed to parse log message: {err:#}"),
+        // Subscribing to logs also races against sub-second dataflows: the
+        // ack can come back with "no running dataflow with id X" even after
+        // a successful WaitForSpawn. Skip the stream (nothing to tail) but
+        // keep running so the remaining lifecycle bookkeeping still
+        // reports the dataflow exit status correctly.
+        let log_subscribe_request = serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
+        .context("failed to serialize log subscribe")?;
+        let log_subscription = if spawn_already_finished {
+            None
+        } else {
+            match session.subscribe_logs(&log_subscribe_request) {
+                Ok(rx) => Some(rx),
+                Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
+                    tracing::debug!(
+                        "dataflow {dataflow_id} finished before log subscribe arrived: {err}"
+                    );
+                    None
                 }
+                Err(err) => return Err(err).context("failed to subscribe to logs"),
             }
-            // Signal the main loop when log subscription closes (coordinator shutting down)
-            let _ = log_event_tx;
-        });
+        };
+
+        if let Some(log_rx) = log_subscription {
+            let log_event_tx = event_tx.clone();
+            std::thread::spawn(move || {
+                // Forward log messages to the print loop.
+                // When the log subscription closes (coordinator shuts down), the thread exits.
+                while let Ok(raw) = log_rx.recv() {
+                    let parsed: eyre::Result<LogMessage> = match raw {
+                        Ok(bytes) => {
+                            serde_json::from_slice(&bytes).context("failed to parse log message")
+                        }
+                        Err(err) => Err(err),
+                    };
+                    match parsed {
+                        Ok(msg) => print_log_message(msg, &log_config),
+                        Err(err) => tracing::warn!("failed to parse log message: {err:#}"),
+                    }
+                }
+                // Signal the main loop when log subscription closes (coordinator shutting down)
+                let _ = log_event_tx;
+            });
+        }
 
         // --- Stop-after timer ---
         if let Some(stop_after) = self.stop_after {

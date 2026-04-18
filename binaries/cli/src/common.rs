@@ -18,6 +18,20 @@ use std::{
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
+/// Whether a coordinator error message indicates the dataflow has already
+/// completed and been dropped from the running-dataflows table.
+///
+/// `LogSubscribe` reports `"no running dataflow with id X"` (see
+/// `binaries/coordinator/src/ws_control.rs:164`) and `WaitForSpawn` reports
+/// `"unknown dataflow X"` (see `binaries/coordinator/src/lib.rs:696`). Both
+/// hit this race for sub-second dataflows: the coordinator removes the
+/// entry as soon as the dataflow finishes, so any request that arrives
+/// afterwards errors — even though the dataflow ran successfully and the
+/// CLI already received `DataflowStartTriggered`.
+pub(crate) fn error_indicates_dataflow_finished(msg: &str) -> bool {
+    msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
+}
+
 pub(crate) fn handle_dataflow_result(
     result: DataflowResult,
     uuid: Option<Uuid>,
