@@ -118,7 +118,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | Sub-capability | Test(s) | Tier | Strength |
 |---|---|---|---|
 | `dora record` → `.drec` file + `dora replay` round-trip (existence + size) | `record-replay` job | Nightly | Smoke |
-| Semantic replay equivalence | no automated coverage | — | Gap (#1632 follow-up candidate) |
+| Semantic replay equivalence (validated-pipeline SUCCESS marker after record → replay round-trip) | `contract_record_replay_reproduces_validated_pipeline` | PR | Contract |
 
 ## Fault tolerance
 
@@ -239,7 +239,6 @@ filed and tracked:
 - Action pattern: cancellation — #1630 follow-up.
 - Streaming pattern: `flush=true` + interruption — #1630 follow-up.
 - `dora top` interactive TUI — needs expect harness (#215).
-- Record/replay semantic equivalence — candidate for PR promotion.
 - Fault tolerance: full kill→respawn→kill cycle under health check —
   #1631 follow-up.
 - `dora cluster up` (SSH) — manual, needs dedicated infra.

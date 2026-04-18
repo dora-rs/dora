@@ -848,6 +848,186 @@ fn contract_validated_pipeline_produces_exactly_ten_doubled_outputs() {
     );
 }
 
+/// Emit a test fixture YAML for validated-pipeline that uses absolute
+/// paths and no `build:` directives, so `dora record` / `dora replay`
+/// (which write their modified YAML into a `/tmp` tempfile) don't trip
+/// over `cargo build -p …` failing from a directory with no Cargo.toml
+/// in its parent chain. Returns the fixture path; caller deletes after
+/// the test. Pre-built binaries are a prerequisite — callers should run
+/// `ensure_validated_pipeline_nodes_built()` first.
+fn write_absolute_path_validated_pipeline_fixture() -> std::path::PathBuf {
+    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let target_debug = manifest_dir.join("target/debug");
+    let source_bin = target_debug.join("validated-pipeline-source");
+    let transform_bin = target_debug.join("validated-pipeline-transform");
+    let sink_bin = target_debug.join("validated-pipeline-sink");
+    for b in [&source_bin, &transform_bin, &sink_bin] {
+        assert!(b.exists(), "pre-built binary missing at {b:?}");
+    }
+
+    let yaml = format!(
+        r#"nodes:
+  - id: source
+    path: {source}
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - value
+    output_types:
+      value: std/core/v1/Int64
+
+  - id: transform
+    path: {transform}
+    inputs:
+      value: source/value
+    input_types:
+      value: std/core/v1/Int64
+    outputs:
+      - doubled
+    output_types:
+      doubled: std/core/v1/Int64
+
+  - id: sink
+    path: {sink}
+    inputs:
+      doubled: transform/doubled
+    input_types:
+      doubled: std/core/v1/Int64
+"#,
+        source = source_bin.display(),
+        transform = transform_bin.display(),
+        sink = sink_bin.display(),
+    );
+    let path = manifest_dir.join("tests/dataflows/record-replay-validated-fixture.yml");
+    std::fs::write(&path, yaml).expect("failed to write record/replay test fixture");
+    path
+}
+
+/// Semantic record/replay equivalence (#1660).
+///
+/// The nightly `record-replay` subjob proves `dora record` produces a
+/// `.drec` file and `dora replay` doesn't crash. That's weaker than
+/// the contract users care about: **replay reproduces the downstream
+/// behavior the recording captured**.
+///
+/// Fixture: validated-pipeline (source emits `0..=9`, transform
+/// doubles, sink `bail!`s unless it sees each `received * 2` and
+/// prints `sink: SUCCESS - validated 10 doubled values` at the end —
+/// see `examples/validated-pipeline/sink/src/main.rs`).
+///
+/// Protocol:
+///
+/// 1. `dora record` runs the dataflow live; capture stdout+stderr and
+///    assert the SUCCESS marker (same assertion as
+///    `contract_validated_pipeline_produces_exactly_ten_doubled_outputs`).
+///    This is the "recorded run" baseline.
+/// 2. `dora replay` replaces the recorded source with
+///    `dora-replay-node` (it plays back the captured `value` outputs);
+///    transform + sink run live and must produce the *same* SUCCESS
+///    marker. Anything that silently desyncs replayed values from
+///    original would fail sink's in-process `value == received * 2`
+///    check and never print the marker.
+///
+/// A regression in `dora-recording` / `dora-record-node` /
+/// `dora-replay-node` that reordered, duplicated, or dropped
+/// messages, or a regression that broke the replay-node substitution
+/// path in `binaries/cli/src/command/replay.rs`, would fail this
+/// test — the existing nightly smoke wouldn't.
+#[test]
+fn contract_record_replay_reproduces_validated_pipeline() {
+    ensure_cli_built();
+    ensure_validated_pipeline_nodes_built();
+
+    // record spawns `dora-record-node`; replay spawns `dora-replay-node`.
+    // Pre-build so neither CLI step falls into a cold cargo compile
+    // (which, per PR #1641, can take minutes on a fresh rust-cache).
+    let build_status = Command::new("cargo")
+        .args(["build", "-p", "dora-record-node", "-p", "dora-replay-node"])
+        .status()
+        .expect("failed to build record/replay nodes");
+    assert!(
+        build_status.success(),
+        "failed to build dora-record-node / dora-replay-node"
+    );
+
+    let dora = dora_bin();
+    // Use the absolute-path fixture instead of examples/validated-pipeline/dataflow.yml:
+    // `dora record` writes its modified descriptor into a tempfile in
+    // /tmp, so any `build: cargo build -p …` directive carried over
+    // from the original YAML runs cargo from /tmp — where there's no
+    // Cargo.toml. Stripping the build directives in the fixture (and
+    // using absolute `path:`) sidesteps that.
+    let yaml = write_absolute_path_validated_pipeline_fixture();
+
+    let success_marker = "sink: SUCCESS - validated 10 doubled values";
+
+    // Stable per-test filename; --test-threads=1 means no cross-test
+    // contention. Use std::env::temp_dir so macOS `/var/folders/...`
+    // works alongside `/tmp` on Linux.
+    let drec = std::env::temp_dir().join("dora-record-replay-validated-pipeline.drec");
+    let _ = std::fs::remove_file(&drec);
+
+    // ---- Step 1: record ----
+    let rec = Command::new(&dora)
+        .args([
+            "record",
+            yaml.to_str().unwrap(),
+            "-o",
+            drec.to_str().unwrap(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn dora record");
+
+    let rec_stdout = String::from_utf8_lossy(&rec.stdout);
+    let rec_stderr = String::from_utf8_lossy(&rec.stderr);
+    // Clean the fixture now; everything record needed is captured in
+    // stdout/stderr and the .drec on disk.
+    let _ = std::fs::remove_file(&yaml);
+    assert!(
+        rec.status.success(),
+        "dora record exited non-zero: {:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}",
+        rec.status
+    );
+    assert!(
+        rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker),
+        "recorded run did not reach the SUCCESS marker — the baseline run is broken.\n\
+         ---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}"
+    );
+    assert!(
+        drec.exists() && std::fs::metadata(&drec).unwrap().len() > 0,
+        "dora record did not produce a non-empty .drec at {drec:?}"
+    );
+
+    // ---- Step 2: replay ----
+    let rep = Command::new(&dora)
+        .args(["replay", drec.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn dora replay");
+
+    let rep_stdout = String::from_utf8_lossy(&rep.stdout);
+    let rep_stderr = String::from_utf8_lossy(&rep.stderr);
+    let _ = std::fs::remove_file(&drec);
+
+    assert!(
+        rep.status.success(),
+        "dora replay exited non-zero: {:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}",
+        rep.status
+    );
+    // The contract: replay produces the exact same SUCCESS marker as
+    // the recorded run. If the replay dropped/reordered/mutated any
+    // value in the recording, sink's `expected = received * 2` check
+    // would bail and this marker would never appear.
+    assert!(
+        rep_stdout.contains(success_marker) || rep_stderr.contains(success_marker),
+        "replay did not reproduce the SUCCESS marker — semantic equivalence broken.\n\
+         ---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}"
+    );
+}
+
 /// Run `dora run --stop-after <secs>s` against `yaml_path`, capture combined
 /// stdout+stderr, and return `(exit_status, stdout, stderr)`. Pass
 /// `use_uv = true` for dataflows with Python nodes so `dora run` provisions
