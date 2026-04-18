@@ -1,0 +1,22 @@
+[package]
+name = "timed-burst-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: emits exactly two `value` outputs, separated by
+# `$DORA_TEST_BURST_GAP_MS` ms. Between the two emits the source is
+# alive but silent — long enough for `input_timeout` on a downstream
+# to fire. The second emit then triggers `InputRecovered` delivery.
+
+[[bin]]
+name = "timed-burst-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

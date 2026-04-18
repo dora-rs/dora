@@ -1,0 +1,29 @@
+# input_timeout checks run on NodeHealthCheckInterval ticks — override
+# the default 5 s so the 0.5 s timeout can actually fire inside the
+# test's stop_after window.
+health_check_interval: 0.1
+
+nodes:
+  # Emits once, stays silent for 2 s, then emits again. The first
+  # emit arms the observer's input; the 2 s silence is long enough
+  # for `input_timeout: 0.5` to fire → `InputClosed:value`; the
+  # second emit re-arms the input → `InputRecovered:value`.
+  - id: burst-source
+    build: cargo build -p timed-burst-source-node
+    path: ../../target/debug/timed-burst-source-node
+    env:
+      DORA_TEST_BURST_GAP_MS: "2000"
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - value
+
+  - id: observer
+    build: cargo build -p event-log-observer-node
+    path: ../../target/debug/event-log-observer-node
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-input-recovered-delivery.log
+    inputs:
+      value:
+        source: burst-source/value
+        input_timeout: 0.5
