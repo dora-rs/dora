@@ -16,7 +16,13 @@ name: Nightly Regression
 # Triggers:
 #   - schedule: daily at 06:00 UTC
 #   - workflow_dispatch: manual run from Actions UI
-#   - push to main: re-run on every push (validates nightly jobs on each commit)
+#   - push to main under `paths:` — ONLY re-runs when this workflow
+#     file itself changes, so maintainers editing the nightly pipeline
+#     get an immediate validation run. Every-push triggering was
+#     considered and rejected: the suite is intentionally expensive
+#     (~11 min smoke + 11 fault-tolerance subjobs) and the Tier 1
+#     policy in docs/testing-matrix.md treats it as lower-frequency
+#     regression coverage, not a per-commit gate (#1656).
 
 on:
   schedule:
