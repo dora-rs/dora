@@ -31,7 +31,7 @@ the `nightly-regression` label but do not block PRs.
 
 | Area | Job |
 |---|---|
-| Full smoke suite (`tests/example-smoke.rs`, 44 tests) | `smoke-suite` |
+| Full smoke suite (`tests/example-smoke.rs`, 45 tests) | `smoke-suite` |
 | Log-sink examples (file, alert, tcp) | `log-sinks` |
 | Service / Action patterns (Rust-only) | `service-action` |
 | Streaming example (Python nodes) | `streaming` |

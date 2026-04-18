@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 #
-# Smoke-test all safe example dataflows using the networked lifecycle:
-#   dora up -> dora start --detach -> poll dora list -> dora stop -> dora down
+# Smoke-test all safe example dataflows using the same high-level behavior as
+# `tests/example-smoke.rs`.
+#
+# Networked lifecycle:
+#   dora up -> dora build -> dora start --detach -> poll dora list
+#   -> dora stop -> dora destroy -> dora down
 #
 # Usage:
 #   ./scripts/smoke-all.sh              # Run all examples
@@ -46,23 +50,51 @@ log_pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 log_fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); FAILURES+=("$1"); }
 log_skip() { echo "  SKIP: $1 ($2)"; SKIP=$((SKIP + 1)); }
 
+cleanup_stale() {
+    "$DORA" stop --all > /dev/null 2>&1 || true
+    "$DORA" destroy > /dev/null 2>&1 || true
+    "$DORA" down > /dev/null 2>&1 || true
+    sleep 0.5
+}
+
+needs_uv() {
+    local yaml="$1"
+    python3 - "$yaml" <<'PY'
+import pathlib
+import sys
+
+content = pathlib.Path(sys.argv[1]).read_text()
+sys.exit(0 if ".py" in content or "pip install" in content else 1)
+PY
+}
+
 # Run a dataflow through the full up/start/stop/down lifecycle (networked).
 run_networked() {
     local name="$1" yaml="$2" timeout="${3:-30}"
     echo "=> $name (networked, ${timeout}s)"
 
-    # Clean up any stale processes
-    "$DORA" down > /dev/null 2>&1 || true
-    sleep 0.5
+    local full_yaml="$ROOT/$yaml"
+    local uv_args=()
+    if needs_uv "$full_yaml"; then
+        uv_args=(--uv)
+    fi
+
+    cleanup_stale
 
     if ! "$DORA" up > /dev/null 2>&1; then
         log_fail "$name (dora up failed)"
         return
     fi
 
-    if ! "$DORA" start "$ROOT/$yaml" --detach > /dev/null 2>&1; then
+    if ! "$DORA" build "$full_yaml" "${uv_args[@]}" > /dev/null 2>&1; then
+        log_fail "$name (dora build failed)"
+        cleanup_stale
+        return
+    fi
+
+    if ! "$DORA" start "$full_yaml" --detach "${uv_args[@]}" > /dev/null 2>&1; then
         log_fail "$name (dora start failed)"
-        "$DORA" down > /dev/null 2>&1 || true
+        cleanup_stale
         return
     fi
 
@@ -88,9 +120,7 @@ run_networked() {
     done
 
     # Cleanup
-    "$DORA" stop --all > /dev/null 2>&1 || true
-    sleep 0.5
-    "$DORA" down > /dev/null 2>&1 || true
+    cleanup_stale
 
     if [ "$failed" = true ]; then
         log_fail "$name"
@@ -104,8 +134,13 @@ run_networked() {
 run_local() {
     local name="$1" yaml="$2" timeout="${3:-15}"
     local hard_timeout=$((timeout * 2 + 5))
+    local full_yaml="$ROOT/$yaml"
+    local uv_args=()
+    if needs_uv "$full_yaml"; then
+        uv_args=(--uv)
+    fi
     echo "=> $name (local, ${timeout}s, hard-kill ${hard_timeout}s)"
-    "$DORA" run "$ROOT/$yaml" --stop-after "${timeout}s" \
+    "$DORA" run "$full_yaml" --stop-after "${timeout}s" "${uv_args[@]}" \
         > /dev/null 2>&1 &
     local pid=$!
     local elapsed=0

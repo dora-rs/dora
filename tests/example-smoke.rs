@@ -271,6 +271,22 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
         "{name}: dataflow YAML not found at {full_yaml:?}"
     );
 
+    let uv = needs_uv(&full_yaml);
+
+    // Build first so local runs also have resolved artifacts (required for
+    // Python/git/etc. and examples that don't prebuild their nodes in the test).
+    let mut build_cmd = Command::new(&dora);
+    build_cmd.args(["build", full_yaml.to_str().unwrap()]);
+    if uv {
+        build_cmd.arg("--uv");
+    }
+    let build_status = build_cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
+    assert!(build_status.success(), "{name}: dora build failed");
+
     let stop_after = format!("{stop_after_secs}s");
     let mut cmd = Command::new(&dora);
     cmd.args([
@@ -279,7 +295,7 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
         "--stop-after",
         &stop_after,
     ]);
-    if needs_uv(&full_yaml) {
+    if uv {
         cmd.arg("--uv");
     }
     let output = cmd
