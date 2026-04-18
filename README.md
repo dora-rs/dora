@@ -532,7 +532,11 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 ## Development
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.2.0.**
+**Rust edition 2024; MSRV and default workspace package metadata are
+tracked in `[workspace.package]` of the root `Cargo.toml`.** Most crates
+inherit the workspace version via `version.workspace = true`; a handful
+(e.g. `apis/rust/operator/types`, the `examples/error-propagation/*`
+samples) pin their own version independently.
 
 ### Build
 

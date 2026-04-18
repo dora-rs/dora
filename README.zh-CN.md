@@ -457,7 +457,11 @@ examples/               # 示例数据流
 
 ## 开发
 
-**Rust 版本 2024，最低支持 Rust 版本 1.85.0，工作区版本 0.1.0。**
+**Rust 版本 2024；最低支持 Rust 版本（MSRV）及工作区默认包元数据以根
+`Cargo.toml` 的 `[workspace.package]` 为准。** 多数 crate 通过
+`version.workspace = true` 继承该版本；少数 crate（例如
+`apis/rust/operator/types` 与 `examples/error-propagation/*` 样例）
+自带独立版本号。
 
 ### 构建
 

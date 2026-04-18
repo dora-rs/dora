@@ -27,8 +27,12 @@ Dora is built on four core principles:
 
 ## Workspace Structure
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.1.0.**
-All crates share the workspace version.
+**Rust edition 2024; MSRV and default workspace package metadata are
+tracked in `[workspace.package]` in the root `Cargo.toml`.** Most
+crates inherit the workspace version via `version.workspace = true`;
+a handful (e.g. `apis/rust/operator/types`, the
+`examples/error-propagation/*` samples) pin their own version
+independently.
 
 ### Binaries (7)
 

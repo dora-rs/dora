@@ -57,7 +57,8 @@ CI tracks these via `benchmark-action/github-action-benchmark` with 120% alert t
 ### Requirements
 
 - Linux or macOS (shared memory IPC)
-- Rust 1.85+ with release profile
+- Rust toolchain at or above the workspace MSRV (see `rust-version`
+  in root `Cargo.toml`), release profile
 - Python 3.10+ with `numpy`, `pyarrow`
 - ROS2 Humble+ (for comparison only)
 
