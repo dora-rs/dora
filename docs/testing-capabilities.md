@@ -201,7 +201,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | `cargo clippy -D warnings` | `clippy` job | PR | Structural |
 | `cargo-deny` license check | `audit` job / `check-license` | PR | Structural |
 | `typos` | `typos` job | PR | Structural |
-| MSRV (1.85) | `msrv` job | PR | Structural |
+| MSRV (workspace `rust-version` in `Cargo.toml`) | `msrv` job | PR | Structural |
 | 8 target triples compile | `cross-check` matrix | PR | Structural |
 | Benchmark regression vs. cached baseline | `bench` job | PR | Structural |
 
