@@ -229,23 +229,30 @@ jobs:
         run: |
           chmod +x ./cli-bin/dora
           echo "$PWD/cli-bin" >> "$GITHUB_PATH"
-      - name: Build rust-dataflow example nodes
+      - name: Build rust-dataflow example nodes + record-node
+        # `dora record` spawns `dora-record-node`. It links `dora-node-api`
+        # with `default-features = false` (binaries/record-node/Cargo.toml:17),
+        # while the example nodes use the default feature set ("tracing",
+        # "metrics"). Building the record-node in a separate cargo
+        # invocation used to trigger a full dora-node-api + transitive
+        # zenoh recompile mid-`dora record` step — observed as exit 124 at
+        # the original 30s inner timeout on cold rust-cache.
+        #
+        # Including -p dora-record-node in the same invocation lets cargo
+        # unify features once, compile each dep once, and keep the record
+        # step to its actual runtime (~1-2s).
         run: >
           cargo build
           -p rust-dataflow-example-node
           -p rust-dataflow-example-status-node
           -p rust-dataflow-example-sink
+          -p dora-record-node
       - name: Record rust-dataflow
         run: |
-          # `dora record <yaml>` instruments the dataflow and runs it;
-          # recording written to the specified output path.
-          # The nodes pre-built above don't cover everything dora record
-          # re-invokes via the YAML `build:` directives — on a cold rust-cache
-          # miss it can drop back into compiling zenoh/arrow transitively
-          # (observed as exit 124 at the original 30s cap). A 300s outer
-          # timeout still guards against a hang without amputating cold
-          # compile. Runtime itself is ~1-2s. Don't swallow errors (no `|| true`).
-          timeout 300s dora record examples/rust-dataflow/dataflow.yml -o run.drec
+          # All node binaries pre-built above, so this step is pure
+          # dataflow runtime. 60s catches genuine hangs without being
+          # sensitive to cargo incremental check overhead.
+          timeout 60s dora record examples/rust-dataflow/dataflow.yml -o run.drec
           test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
           echo "recording size: $(wc -c < run.drec) bytes"
       - name: Replay
