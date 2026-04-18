@@ -19,3 +19,9 @@ ser = "ser"
 BA = "BA"
 # Windows system library name (used by the C/C++ publish workflow)
 secur = "secur"
+
+[default]
+# Scoped allow: GitHub user name "YOR-robot" appears in the downstream-user
+# assessment table in docs/plan-dora-1.0-consolidation.md. Matching the full
+# compound token (not bare "YOR") keeps typo detection active everywhere else.
+extend-ignore-re = ["YOR-robot"]
