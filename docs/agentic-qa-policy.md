@@ -64,11 +64,11 @@ impact. Current list (update when a new subsystem earns it):
 
 ### Class A — Low-risk
 
-- [ ] `make qa-fast` (fmt + clippy + audit + unwrap-budget).
-- [ ] `typos` (covered by `qa-fast` via remote CI, but run locally first when the change touches prose).
+- [ ] `make qa-fast` (fmt + clippy + audit + unwrap-budget + typos).
 
 That's the whole bar. Don't over-test cosmetic changes — reviewers can
-eyeball them and CI backs it up.
+eyeball them and CI backs it up. `typos` is now part of `qa-fast`
+itself (#1657) so docs-heavy PRs don't need a separate manual step.
 
 ### Class B — Behavior change
 

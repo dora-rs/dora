@@ -37,7 +37,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + typos | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-tier1` | `qa-full` + mutation testing on diff + semver | ~1-2 hrs | Pre-release or focused audit |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
