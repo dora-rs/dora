@@ -3,6 +3,7 @@
 **Audience**: dora developers (human or agent) running QA locally.
 **Purpose**: tell you which command to run, how to read the output, and what to do when something fails.
 **Deep dives**: see [`plan-agentic-qa-strategy.md`](plan-agentic-qa-strategy.md) for the strategy and rationale; this document is the operational reference.
+**Coverage by capability**: see [`testing-capabilities.md`](testing-capabilities.md) (#1633) when you need to know *which* tests cover a feature before touching it.
 
 ---
 

@@ -5,6 +5,9 @@ Where each feature is tested, and how to run the manual gates.
 See issue #215 for the original audit. See `CLAUDE.md` for the CI philosophy
 (remote CI is deliberately lean; deep gates run on laptops and nightly).
 
+> Looking for coverage by Dora **capability** rather than by test tier?
+> See [`testing-capabilities.md`](testing-capabilities.md) (#1633).
+
 ## Tier 0 — Remote CI (every push and PR)
 
 Fast gates. Must pass for every PR.

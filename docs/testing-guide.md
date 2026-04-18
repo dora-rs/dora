@@ -2,9 +2,13 @@
 
 This guide covers how to run, write, and troubleshoot tests across the Dora workspace.
 
+> Looking for **which tests cover which capability**? See
+> [`testing-capabilities.md`](testing-capabilities.md) (#1633) — the
+> capability-oriented source-of-truth companion to this guide.
+
 ## Prerequisites
 
-- Rust toolchain (MSRV 1.85.0)
+- Rust toolchain — MSRV is the workspace `rust-version` in `Cargo.toml` (currently 1.88.0)
 - Python 3 with `numpy` and `pyarrow` installed (`pip install numpy pyarrow`) — required for Python smoke tests
 
 ## Quick Start (5-minute validation)
