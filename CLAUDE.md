@@ -100,6 +100,12 @@ Internal transport:
 
 **Every commit MUST pass these gates before pushing.** This is a BLOCKING REQUIREMENT — do not skip any step. Remote CI is slower than your laptop and has limited capacity; catching failures locally saves 5-15 minutes per round-trip.
 
+> The bar below is the **Class A** (low-risk) baseline. Behavior
+> changes and high-risk subsystem edits have additional requirements
+> — see [`docs/agentic-qa-policy.md`](docs/agentic-qa-policy.md)
+> (#1634) for the per-class expectations and the PR validation
+> summary template.
+
 ### Step 1: Run /review
 
 Run the `/review` skill on your changes before committing. This catches structural issues, security problems, and logic errors that tests and clippy miss.

@@ -7,6 +7,9 @@ See issue #215 for the original audit. See `CLAUDE.md` for the CI philosophy
 
 > Looking for coverage by Dora **capability** rather than by test tier?
 > See [`testing-capabilities.md`](testing-capabilities.md) (#1633).
+>
+> Looking for **how much validation** a given change needs (Class A /
+> B / C)? See [`agentic-qa-policy.md`](agentic-qa-policy.md) (#1634).
 
 ## Tier 0 — Remote CI (every push and PR)
 

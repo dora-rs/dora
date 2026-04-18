@@ -135,6 +135,12 @@ Relevant test entry points:
 
 ## Validation Expectations
 
+> The per-class policy (Class A low-risk / Class B behavior change /
+> Class C high-risk subsystem) lives in
+> [`docs/agentic-qa-policy.md`](docs/agentic-qa-policy.md). The
+> commands below are what the policy asks for; this section is the
+> agent-facing cheat sheet.
+
 Before finishing substantial code changes, run the smallest set that proves correctness:
 
 - Always: targeted tests for touched crates or behavior
