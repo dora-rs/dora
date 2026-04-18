@@ -346,6 +346,91 @@ async fn restart_window_resets_restart_counter() {
     );
 }
 
+/// `input_timeout` actually delivers `InputClosed` to downstream (#1631).
+///
+/// The pre-existing `input_timeout_closes_stale_input` test below uses a
+/// fixture whose sink exits on the first `exit` input, ~500 ms after
+/// startup. That's well before the 2 s `input_timeout` could possibly
+/// fire — so `input_timeout` in that test is dead config and the
+/// `result.is_ok()` assertion only proves the dataflow completes at all.
+///
+/// This test closes the gap by driving the timeout path directly:
+///
+/// - `silent-source-node` emits exactly one output on the first tick
+///   then stays alive but silent (so channel-close doesn't fire — the
+///   only way the downstream can learn the input went stale is via
+///   `input_timeout`).
+/// - `input-closed-observer-node` appends one line per event
+///   (`Input:<id>` or `InputClosed:<id>`) to
+///   `$DORA_TEST_MARKER_FILE`, exiting on the first `InputClosed`.
+/// - Fixture `input-timeout-delivery.yml` sets `input_timeout: 0.5`.
+///
+/// Assertion: the marker records both `Input:value` (so we know the
+/// initial message arrived) **and** `InputClosed:value` (so we know
+/// the daemon delivered the timeout-triggered close). A regression that
+/// silently dropped the timeout path would leave the marker with a
+/// single `Input:value` line and the observer would hang until
+/// `stop_after`, which the assertion rejects.
+#[tokio::test(flavor = "multi_thread")]
+async fn input_timeout_delivers_input_closed_to_downstream() {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "silent-source-node",
+            "-p",
+            "input-closed-observer-node",
+        ])
+        .status()
+        .expect("failed to build input-timeout test nodes");
+    assert!(status.success(), "input-timeout test nodes build failed");
+
+    let marker = Path::new("/tmp/dora-input-timeout-delivery.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/input-timeout-delivery.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // 5 s is plenty — the observer should see Input at ~50 ms and
+        // InputClosed at ~550 ms (input_timeout = 0.5 s), then exit.
+        Some(Duration::from_secs(5)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("observer marker file should exist — the observer writes on every event");
+    let _ = std::fs::remove_file(marker);
+    eprintln!("observer events:\n{contents}");
+
+    assert!(
+        contents.contains("Input:value"),
+        "observer never saw the initial `value` input — silent-source is not emitting. contents:\n{contents}"
+    );
+    assert!(
+        contents.contains("InputClosed:value"),
+        "observer never saw `InputClosed:value` — `input_timeout: 0.5` did not fire even though \
+         silent-source stayed alive without producing. contents:\n{contents}"
+    );
+}
+
 /// Input timeout fires when upstream stops producing.
 ///
 /// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0

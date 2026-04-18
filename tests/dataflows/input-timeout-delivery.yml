@@ -1,0 +1,25 @@
+# `input_timeout` checks run on `NodeHealthCheckInterval` ticks, which
+# default to 5 s (binaries/daemon/src/lib.rs:857). A 0.5 s input_timeout
+# paired with the 5 s default would only fire on the first post-startup
+# health-check tick, racing `stop_after`. Override to 0.1 s so the
+# timeout path fires promptly and the test runtime stays short.
+health_check_interval: 0.1
+
+nodes:
+  - id: silent-source
+    build: cargo build -p silent-source-node
+    path: ../../target/debug/silent-source-node
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - value
+
+  - id: observer
+    build: cargo build -p input-closed-observer-node
+    path: ../../target/debug/input-closed-observer-node
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-input-timeout-delivery.log
+    inputs:
+      value:
+        source: silent-source/value
+        input_timeout: 0.5

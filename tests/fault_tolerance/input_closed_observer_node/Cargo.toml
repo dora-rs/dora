@@ -1,0 +1,22 @@
+[package]
+name = "input-closed-observer-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: records every `Input`/`InputClosed` event it sees to
+# `$DORA_TEST_MARKER_FILE`, one line each. Paired with
+# `silent-source-node` and the `input_timeout_delivers_input_closed`
+# test to prove the daemon fires `InputClosed` on timeout expiry.
+
+[[bin]]
+name = "input-closed-observer-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
