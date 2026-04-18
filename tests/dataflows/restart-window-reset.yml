@@ -1,0 +1,18 @@
+nodes:
+  - id: delayed-crash
+    build: cargo build -p delayed-crash-node
+    path: ../../target/debug/delayed-crash-node
+    # max_restarts: 1 + restart_window: 0.3 means "at most 1 restart per
+    # 300 ms". Because DORA_TEST_CRASH_AFTER_MS=500 makes each incarnation
+    # live longer than the window, the counter resets on every crash — so
+    # the node can restart indefinitely. Without restart_window, the
+    # second crash would exhaust the budget and the daemon would give up.
+    restart_policy: on-failure
+    max_restarts: 1
+    restart_window: 0.3
+    restart_delay: 0.1
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-restart-window-reset.log
+      DORA_TEST_CRASH_AFTER_MS: "500"
+    inputs:
+      tick: dora/timer/millis/100

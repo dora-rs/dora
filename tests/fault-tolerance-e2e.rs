@@ -270,6 +270,82 @@ async fn restart_policy_always_restarts_on_clean_exit() {
     );
 }
 
+/// `restart_window` resets the restart counter after the window
+/// elapses (#1631).
+///
+/// The daemon's restart accounting (binaries/daemon/src/spawn/prepared.rs:
+/// around the `restart` check) resets `window_count` when
+/// `window_start.elapsed() > window`. That means a node whose restarts
+/// are spaced further apart than `restart_window` can recover budget
+/// indefinitely, even with a tiny `max_restarts`.
+///
+/// Fixture: `delayed-crash-node` appends an incarnation marker, sleeps
+/// 500 ms, then panics. With `restart_window: 0.3`, every crash arrives
+/// after the previous window has already expired — the counter resets,
+/// and the node is re-spawned. Without the window reset (or with
+/// `restart_window` misconfigured), `max_restarts: 1` would exhaust
+/// after the second crash and the node would stop at 2 incarnations.
+///
+/// Expected over a 10 s stop_after window (cycle ≈ 600 ms): ~16–17
+/// incarnations. We assert `>= 3` — the minimum that could *only* be
+/// produced by a window reset (without reset, `max_restarts: 1` caps
+/// incarnations at 2). A regression that disables the reset lands at
+/// exactly 2, which the assertion rejects.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_window_resets_restart_counter() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "delayed-crash-node"])
+        .status()
+        .expect("failed to build delayed-crash-node");
+    assert!(status.success(), "delayed-crash-node build failed");
+
+    // Fixture writes to this hardcoded path; tests run with
+    // --test-threads=1 so there's no cross-test contention. Pre-clean
+    // in case a prior crash left stale markers around.
+    let marker = Path::new("/tmp/dora-restart-window-reset.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/restart-window-reset.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(10)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker file should exist — the node writes it on every spawn");
+    let incarnations = contents.lines().count();
+    let _ = std::fs::remove_file(marker);
+    eprintln!("delayed-crash-node incarnations observed: {incarnations}");
+
+    // `max_restarts: 1` with no window reset → exactly 2 incarnations.
+    // Anything strictly greater proves the counter reset path fired.
+    assert!(
+        incarnations >= 3,
+        "restart_window: 0.3 with max_restarts: 1 should let the node restart \
+         many times via window reset; got {incarnations} incarnations. Without \
+         reset this would cap at 2. marker contents:\n{contents}"
+    );
+}
+
 /// Input timeout fires when upstream stops producing.
 ///
 /// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0
