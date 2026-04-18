@@ -239,9 +239,13 @@ jobs:
         run: |
           # `dora record <yaml>` instruments the dataflow and runs it;
           # recording written to the specified output path.
-          # Nodes are pre-built above so the 30s timeout covers only runtime.
-          # Don't swallow errors (no `|| true`) — real failures should surface.
-          timeout 30s dora record examples/rust-dataflow/dataflow.yml -o run.drec
+          # The nodes pre-built above don't cover everything dora record
+          # re-invokes via the YAML `build:` directives — on a cold rust-cache
+          # miss it can drop back into compiling zenoh/arrow transitively
+          # (observed as exit 124 at the original 30s cap). A 300s outer
+          # timeout still guards against a hang without amputating cold
+          # compile. Runtime itself is ~1-2s. Don't swallow errors (no `|| true`).
+          timeout 300s dora record examples/rust-dataflow/dataflow.yml -o run.drec
           test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
           echo "recording size: $(wc -c < run.drec) bytes"
       - name: Replay
