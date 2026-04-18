@@ -1,0 +1,23 @@
+[package]
+name = "hang-after-init-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: registers with the daemon, appends an incarnation
+# marker, then blocks without ever calling `events.recv()` so no further
+# traffic is sent to the daemon. Paired with `health-check-timeout.yml`
+# and the `health_check_timeout_kills_unresponsive_node` test (#1631)
+# to prove the daemon's unresponsive-node kill path fires.
+
+[[bin]]
+name = "hang-after-init-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

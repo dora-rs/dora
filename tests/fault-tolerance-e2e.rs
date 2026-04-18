@@ -431,6 +431,111 @@ async fn input_timeout_delivers_input_closed_to_downstream() {
     );
 }
 
+/// `health_check_timeout` kills an unresponsive node with SIGKILL (#1631).
+///
+/// The daemon's `check_node_health`
+/// (binaries/daemon/src/lib.rs:1917) compares
+/// `now - last_activity` to the per-node `health_check_timeout`.
+/// `last_activity` advances only when the daemon receives a
+/// `DaemonRequest` from the node
+/// (binaries/daemon/src/node_communication/mod.rs:339), so a node
+/// whose background event-stream thread has exited and whose main
+/// thread is asleep is silent from the daemon's perspective. When the
+/// watchdog fires, it submits `ProcessOperation::Kill` — SIGKILL, not
+/// SIGTERM — which surfaces as `NodeExitStatus::Signal(9)` in
+/// `DataflowResult::node_results`.
+///
+/// Fixture: `hang-after-init-node` registers, pumps exactly one event
+/// so `last_activity` arms past its unarmed-zero state, writes an
+/// incarnation marker, drops `DoraNode` + `EventStream` to kill the
+/// background event-stream thread, then sleeps indefinitely. With
+/// `health_check_timeout: 0.5` and the dataflow-level
+/// `health_check_interval: 0.1`, the kill fires within ~0.6 s.
+///
+/// A regression that disabled the watchdog would surface as a
+/// `NodeExitStatus::Signal(15)` (the `stop_after` SIGTERM path) or a
+/// `GraceDuration` NodeErrorCause — both of which the assertion
+/// rejects.
+///
+/// **Scope**: this slice covers the kill-path itself. Exercising the
+/// full kill → restart → kill cycle under `restart_policy: on-failure`
+/// is deferred — the node_api interaction after a health-check SIGKILL
+/// leaves the daemon in a state where subsequent spawns don't cleanly
+/// re-trigger the path, and figuring out whether that's a test-harness
+/// limitation or a real daemon bug deserves its own investigation.
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_timeout_sigkills_unresponsive_node() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "hang-after-init-node"])
+        .status()
+        .expect("failed to build hang-after-init-node");
+    assert!(status.success(), "hang-after-init-node build failed");
+
+    let marker = Path::new("/tmp/dora-health-check-timeout.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/health-check-timeout.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // 10 s keeps stop_after well clear of the ~2.1-2.2 s kill —
+        // see fixture for why the health_check_timeout can't just be
+        // 0.5 s (init_from_env takes ~500 ms and needs to finish before
+        // the marker write races the kill).
+        Some(Duration::from_secs(10)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+    // Marker confirms the node did reach the post-init hang state,
+    // so any observed non-kill exit is a real kill-path regression —
+    // not "the node never ran".
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker file should exist — the node writes it right after init+recv");
+    let _ = std::fs::remove_file(marker);
+    eprintln!("marker:\n{contents}");
+    assert!(
+        contents.contains("incarnation"),
+        "hang-after-init-node never reached the post-init marker write — unrelated regression"
+    );
+
+    // Core contract: the kill was a SIGKILL from the watchdog, not a
+    // SIGTERM from stop_after (Signal(15)) nor a GraceDuration
+    // timeout. `NodeExitStatus::Signal(9)` in node_results is the
+    // observable proof the health-check path fired.
+    let node_result = dr
+        .node_results
+        .get(&"hang-after-init".to_string().into())
+        .expect("hang-after-init should be in node_results");
+    let err = node_result
+        .as_ref()
+        .err()
+        .expect("hang-after-init should have errored — kill is a failure exit");
+    use dora_message::common::NodeExitStatus;
+    assert!(
+        matches!(err.exit_status, NodeExitStatus::Signal(9)),
+        "expected `NodeExitStatus::Signal(9)` from health-check SIGKILL, got {:?} \
+         (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+}
+
 /// Input timeout fires when upstream stops producing.
 ///
 /// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0

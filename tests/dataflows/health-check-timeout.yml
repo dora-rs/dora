@@ -1,0 +1,20 @@
+# `check_node_health` runs on `NodeHealthCheckInterval` ticks (default
+# 5 s, binaries/daemon/src/lib.rs). Override to 0.1 s so the kill path
+# fires quickly with the test's 0.5 s timeout.
+health_check_interval: 0.1
+
+nodes:
+  - id: hang-after-init
+    build: cargo build -p hang-after-init-node
+    path: ../../target/debug/hang-after-init-node
+    # `restart_policy: never` keeps the assertion on the **kill path**
+    # itself (Signal(9) in the node_result). Exercising the full
+    # kill → restart → kill loop requires handling the node_api's
+    # interaction with graceful teardown after SIGKILL, which deserves
+    # its own follow-up slice.
+    restart_policy: never
+    health_check_timeout: 2.0
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-health-check-timeout.log
+    inputs:
+      tick: dora/timer/millis/200
