@@ -1,5 +1,29 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
+<p align="center">
+    <img src="https://raw.githubusercontent.com/dora-rs/dora/main/docs/src/logo.svg" width="400"/>
+</p>
+
+<h2 align="center">
+  <a href="https://www.dora-rs.ai">官网</a>
+  |
+  <a href="https://dora-rs.ai/docs/guides/getting-started/conversation_py/">Python API</a>
+  |
+  <a href="https://docs.rs/dora-node-api/latest/dora_node_api/">Rust API</a>
+  |
+  <a href="https://www.dora-rs.ai/docs/guides/">指南</a>
+  |
+  <a href="https://discord.gg/6eMGGutkfE">Discord</a>
+</h2>
+
+<div align="center">
+  <a href="https://github.com/dora-rs/dora/actions"><img src="https://github.com/dora-rs/dora/workflows/CI/badge.svg" alt="Build and test"/></a>
+  <a href="https://crates.io/crates/dora-rs"><img src="https://img.shields.io/crates/v/dora_node_api.svg" alt="crates.io"/></a>
+  <a href="https://docs.rs/dora-node-api/latest/dora_node_api/"><img src="https://docs.rs/dora-node-api/badge.svg" alt="docs.rs"/></a>
+  <a href="https://pypi.org/project/dora-rs/"><img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPI"/></a>
+  <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
+</div>
+
 # Dora
 
 **智能体数据流导向的机器人架构（Agentic Dataflow-Oriented Robotic Architecture）** -- 一个 100% Rust 编写的实时机器人与 AI 应用框架。
