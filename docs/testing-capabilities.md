@@ -107,7 +107,11 @@ Known gap: `dora self update` destructive swap path (tracked in
 
 | Sub-capability | Test(s) | Tier | Strength |
 |---|---|---|---|
-| `dora param get/set/list/delete` | no automated coverage | — | Gap |
+| WS protocol happy-path CRUD (`SetParam`, `GetParam`, `GetParams`, `DeleteParam`) | `cli_param_set_get_list_delete` in `ws-cli-e2e.rs` | PR | Contract |
+| WS protocol JSON-type coverage (int, float, string, bool, array, object) | `cli_param_set_json_types` | PR | Contract |
+| WS protocol error paths (unknown target, missing key) | `cli_param_set_rejects_unknown_target`, `cli_param_get_nonexistent`, `cli_param_delete_rejects_unknown_target` | PR | Contract |
+| `dora param` CLI subprocess CRUD + output format | `cli_param_crud_via_subprocess` in `ws-cli-e2e.rs::param_cli` | PR | Contract |
+| `dora param set` JSON parse-error path | `cli_param_set_rejects_non_json_value` | PR | Contract |
 
 ## Record / replay
 
@@ -235,7 +239,6 @@ filed and tracked:
 - Action pattern: cancellation — #1630 follow-up.
 - Streaming pattern: `flush=true` + interruption — #1630 follow-up.
 - `dora top` interactive TUI — needs expect harness (#215).
-- Parameter operations — no tests.
 - Record/replay semantic equivalence — candidate for PR promotion.
 - Fault tolerance: full kill→respawn→kill cycle under health check —
   #1631 follow-up.

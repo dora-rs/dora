@@ -573,6 +573,173 @@ fn cli_param_set_json_types() {
     }
 }
 
+// -- Phase 3.1: Parameter operations via the dora CLI binary (#1655) --
+//
+// The WsSession tests above cover the control-plane protocol. These tests
+// exercise the actual `dora param` subcommand code path
+// (binaries/cli/src/command/param/) so a regression in argument parsing,
+// JSON deserialization, or output formatting is caught alongside
+// protocol-layer regressions.
+
+mod param_cli {
+    use super::{seed_dataflow_record, start_coordinator_background_with_store};
+    use dora_coordinator::{CoordinatorStore, InMemoryStore};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Once};
+
+    static BUILD_CLI: Once = Once::new();
+
+    fn dora_bin() -> String {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let target = Path::new(manifest).join("target/debug/dora");
+        if target.exists() {
+            target.to_string_lossy().to_string()
+        } else {
+            "dora".to_string()
+        }
+    }
+
+    fn ensure_cli_built() {
+        BUILD_CLI.call_once(|| {
+            let status = Command::new("cargo")
+                .args(["build", "-p", "dora-cli"])
+                .status()
+                .expect("failed to build dora-cli");
+            assert!(status.success(), "failed to build dora-cli");
+        });
+    }
+
+    fn run_dora(
+        dora: &str,
+        port: u16,
+        args: &[&str],
+    ) -> (std::process::ExitStatus, String, String) {
+        let mut cmd = Command::new(dora);
+        cmd.args(args);
+        cmd.arg("--coordinator-port").arg(port.to_string());
+        let out = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("failed to spawn dora");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status, stdout, stderr)
+    }
+
+    /// Full CRUD via the CLI subprocess: `dora param set`, `get`, `list`,
+    /// `delete`. Each step asserts the specific observable output — exit
+    /// code alone wouldn't catch a regression that, say, dropped the value
+    /// or printed a wrong key.
+    #[test]
+    fn cli_param_crud_via_subprocess() {
+        ensure_cli_built();
+        let dora = dora_bin();
+
+        let store_impl = Arc::new(InMemoryStore::new());
+        let dataflow_id = uuid::Uuid::new_v4();
+        seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+        let store: Arc<dyn CoordinatorStore> = store_impl;
+        let port = start_coordinator_background_with_store(store);
+
+        let df = dataflow_id.to_string();
+
+        // set → "Set `rate` = 100 on node `sensor`"
+        let (status, stdout, stderr) = run_dora(
+            &dora,
+            port,
+            &["param", "set", "sensor", "rate", "100", "-d", &df],
+        );
+        assert!(
+            status.success(),
+            "dora param set failed: status={status:?}\n\
+             stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stdout.contains("Set `rate` = 100 on node `sensor`"),
+            "unexpected set stdout:\n{stdout}"
+        );
+
+        // get → the JSON value line
+        let (status, stdout, _) =
+            run_dora(&dora, port, &["param", "get", "sensor", "rate", "-d", &df]);
+        assert!(status.success(), "dora param get failed: {stdout}");
+        assert_eq!(stdout.trim(), "100", "get stdout not the JSON value");
+
+        // list → shows "rate = 100"
+        let (status, stdout, _) = run_dora(&dora, port, &["param", "list", "sensor", "-d", &df]);
+        assert!(status.success(), "dora param list failed: {stdout}");
+        assert!(
+            stdout.contains("rate = 100"),
+            "list didn't show `rate = 100`:\n{stdout}"
+        );
+
+        // list --format json → parseable JSON with the key
+        let (status, stdout, _) = run_dora(
+            &dora,
+            port,
+            &["param", "list", "sensor", "--format", "json", "-d", &df],
+        );
+        assert!(status.success());
+        let parsed: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("list --format json output is not JSON");
+        assert_eq!(parsed["rate"], serde_json::json!(100));
+
+        // delete → confirmation line
+        let (status, stdout, _) = run_dora(
+            &dora,
+            port,
+            &["param", "delete", "sensor", "rate", "-d", &df],
+        );
+        assert!(status.success(), "dora param delete failed: {stdout}");
+        assert!(
+            stdout.contains("Deleted `rate` from node `sensor`"),
+            "unexpected delete stdout:\n{stdout}"
+        );
+
+        // get after delete → error (the key is gone)
+        let (status, _, stderr) =
+            run_dora(&dora, port, &["param", "get", "sensor", "rate", "-d", &df]);
+        assert!(
+            !status.success(),
+            "dora param get should fail after delete, but exit was success. stderr:\n{stderr}"
+        );
+    }
+
+    /// Regression guard for the "invalid JSON value" parse path in
+    /// `binaries/cli/src/command/param/set.rs` — a bare word like `hello`
+    /// is not valid JSON (needs quotes) and the CLI must reject it
+    /// cleanly instead of succeeding or panicking.
+    #[test]
+    fn cli_param_set_rejects_non_json_value() {
+        ensure_cli_built();
+        let dora = dora_bin();
+        let store_impl = Arc::new(InMemoryStore::new());
+        let dataflow_id = uuid::Uuid::new_v4();
+        seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+        let store: Arc<dyn CoordinatorStore> = store_impl;
+        let port = start_coordinator_background_with_store(store);
+
+        let df = dataflow_id.to_string();
+
+        let (status, stdout, stderr) = run_dora(
+            &dora,
+            port,
+            &["param", "set", "sensor", "mode", "hello", "-d", &df],
+        );
+        assert!(
+            !status.success(),
+            "bare-word value should fail JSON parse, but succeeded. \
+             stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("invalid JSON"),
+            "stderr should mention invalid JSON, got:\n{stderr}"
+        );
+    }
+}
+
 /// Full-stack E2E tests using coordinator + daemon + real nodes.
 ///
 /// These tests use the `dora` CLI binary via `dora up` / `dora start` etc.
