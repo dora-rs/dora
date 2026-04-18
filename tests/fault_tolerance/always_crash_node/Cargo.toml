@@ -1,0 +1,22 @@
+[package]
+name = "always-crash-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: panics on the first tick of every incarnation so that
+# `max_restarts` is reliably exhausted (unlike the shared status-node
+# which only crashes on incarnation 0). Used by fault-tolerance-e2e.rs
+# to prove the restart-budget path is actually traversed.
+
+[[bin]]
+name = "always-crash-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

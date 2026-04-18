@@ -1,0 +1,9 @@
+nodes:
+  - id: always-crash
+    build: cargo build -p always-crash-node
+    path: ../../target/debug/always-crash-node
+    restart_policy: on-failure
+    max_restarts: 2
+    restart_delay: 0.1
+    inputs:
+      tick: dora/timer/millis/50
