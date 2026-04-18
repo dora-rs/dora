@@ -210,7 +210,10 @@ jobs:
     name: Record/replay round-trip
     runs-on: ubuntu-latest
     needs: build-cli
-    timeout-minutes: 15
+    # Cold-cache zenoh compile of the example nodes (~12 min) plus record +
+    # replay runtime doesn't fit in 15 min on a fresh rust-cache. Observed
+    # exit 124 during `Compiling pin-project-internal` on rc.1 (145ccce04).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -536,10 +539,18 @@ jobs:
         run: |
           chmod +x ./cli-bin/dora
           echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Pre-build cpu-affinity-probe
+        # Avoids cold-cache cargo compile inside `dora run`; keeps the step
+        # focused on the affinity assertion rather than dep compilation.
+        run: cargo build -p cpu-affinity-probe
       - name: "Run cpu-affinity-probe fixture (cpu_affinity: [0, 1])"
         run: |
           cd examples/cpu-affinity-probe
-          out=$(dora run dataflow.yml --stop-after 3s 2>&1)
+          # Capture regardless of exit code. `dora run --stop-after` can
+          # return non-zero when the probe exits normally before the stop
+          # timer fires; under `bash -e` that would silently kill the step
+          # before the assertion runs, hiding the real output.
+          out=$(dora run dataflow.yml --stop-after 3s 2>&1 || true)
           echo "$out"
           # The probe prints exactly one `AFFINITY_MASK:<csv>` line from stdout.
           # `dora run` prefixes node stdout with "stdout probe:" so extract the
@@ -580,18 +591,37 @@ jobs:
         run: |
           chmod +x ./cli-bin/dora
           echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Pre-build example node for redb fixture
+        # Long-running dataflow needs a real node binary on PATH. Using
+        # cpu-affinity-probe here would race: the probe exits on its first
+        # tick, so `dora start --detach` can see the dataflow gone before
+        # its post-trigger log subscribe completes (CLI race in
+        # binaries/cli/src/command/start/mod.rs:167).
+        run: cargo build -p rust-dataflow-example-node
       - name: Session 1 — write state to redb
         run: |
           STORE=/tmp/dora-redb-smoke.db
           rm -f "$STORE"
+          # Inline dataflow: 500ms timer + long-running source node, so the
+          # dataflow stays Running during the 6s observation window. YAML
+          # lives next to the example so the relative node path resolves.
+          cat > examples/rust-dataflow/redb-smoke.yml <<'EOF'
+          nodes:
+            - id: source
+              path: ../../target/debug/rust-dataflow-example-node
+              inputs:
+                tick: dora/timer/millis/500
+              outputs:
+                - random
+          EOF
           # Start coord with persistent redb store + daemon.
           dora coordinator --store "redb:$STORE" > /tmp/coord1.log 2>&1 &
           sleep 2
           dora daemon > /tmp/daemon1.log 2>&1 &
           sleep 2
-          # Run a short dataflow so the coord writes dataflow + daemon records
-          # to the store.
-          dora start examples/cpu-affinity-probe/dataflow.yml --name redb-smoke --detach
+          # Run the long-lived dataflow so coord writes dataflow + daemon
+          # records to the store while it's actually Running.
+          dora start examples/rust-dataflow/redb-smoke.yml --name redb-smoke --detach
           sleep 6
           # Verify the store file exists and contains the dataflow name as
           # evidence of actual writes (not just preallocation).
@@ -631,6 +661,7 @@ jobs:
         if: always()
         run: |
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
+          rm -f examples/rust-dataflow/redb-smoke.yml
 
   daemon-reconnect-smoke:
     # Regression test for #254. Proves the daemon auto-reconnect loop works
