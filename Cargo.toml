@@ -64,6 +64,8 @@ members = [
     "tests/fault_tolerance/always_crash_node",
     "tests/fault_tolerance/clean_exit_node",
     "tests/fault_tolerance/delayed_crash_node",
+    "tests/fault_tolerance/input_closed_observer_node",
+    "tests/fault_tolerance/silent_source_node",
 ]
 
 [workspace.package]

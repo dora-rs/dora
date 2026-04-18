@@ -1,0 +1,23 @@
+[package]
+name = "silent-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: emits a single `value` output on the first tick, then
+# stays alive indefinitely without producing anything more. Paired with
+# `input-timeout.yml` + `input_closed_observer_node` to prove the
+# daemon delivers `InputClosed` on `input_timeout` expiry even when the
+# upstream node is still running (#1631).
+
+[[bin]]
+name = "silent-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
