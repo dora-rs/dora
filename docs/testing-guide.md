@@ -2,6 +2,10 @@
 
 This guide covers how to run, write, and troubleshoot tests across the Dora workspace.
 
+> Looking for **which tests cover which capability**? See
+> [`testing-capabilities.md`](testing-capabilities.md) (#1633) — the
+> capability-oriented source-of-truth companion to this guide.
+
 ## Prerequisites
 
 - Rust toolchain (MSRV 1.85.0)
