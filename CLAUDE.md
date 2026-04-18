@@ -48,7 +48,7 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
 ## Workspace Layout
 
-- **Rust edition 2024, MSRV 1.85.0, version 0.2.0** (all crates share workspace version)
+- **Rust edition 2024; MSRV and workspace version live in `[workspace.package]` in the root `Cargo.toml`** (all crates share the workspace version)
 - Python packages use PyO3 0.28 and are built with **maturin**, not cargo
 
 ### Key crates

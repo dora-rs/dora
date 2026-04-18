@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-[Octos](https://github.com/octos-org/octos) (Open Cognitive Tasks Orchestration System) is a Rust-native agentic OS that can serve as Dora's "brain" — handling thinking, planning, and orchestration while Dora handles real-time execution. Both projects share the same Rust toolchain (edition 2024, MSRV 1.85.0) and Apache-2.0 license, making them a natural pairing.
+[Octos](https://github.com/octos-org/octos) (Open Cognitive Tasks Orchestration System) is a Rust-native agentic OS that can serve as Dora's "brain" — handling thinking, planning, and orchestration while Dora handles real-time execution. Both projects share the same Rust toolchain (edition 2024; see each project's `Cargo.toml` for the current MSRV) and Apache-2.0 license, making them a natural pairing.
 
 **Key finding**: The integration is viable today via Octos's `ShellTool` + Dora's JSON CLI output. A dedicated Octos skill or MCP server would make it production-grade.
 

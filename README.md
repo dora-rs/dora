@@ -532,7 +532,8 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 
 ## Development
 
-**Rust edition 2024, MSRV 1.85.0, workspace version 0.2.0.**
+**Rust edition 2024; MSRV and workspace version are tracked in
+`[workspace.package]` of the root `Cargo.toml`.**
 
 ### Build
 

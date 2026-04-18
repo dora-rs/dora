@@ -457,7 +457,8 @@ examples/               # 示例数据流
 
 ## 开发
 
-**Rust 版本 2024，最低支持 Rust 版本 1.85.0，工作区版本 0.1.0。**
+**Rust 版本 2024；最低支持 Rust 版本（MSRV）和工作区版本以根
+`Cargo.toml` 的 `[workspace.package]` 为准。**
 
 ### 构建
 
