@@ -784,6 +784,265 @@ fn smoke_local_validated_pipeline() {
     );
 }
 
+/// Semantic contract test for `validated-pipeline` (#1630).
+///
+/// The liveness-only `smoke_local_validated_pipeline` above catches crashes
+/// and `Failed` state, but it would still pass if the sink silently
+/// received **zero** messages (as long as the node exited cleanly). That is
+/// exactly the regression class the issue is asking us to close: an
+/// example-backed test should prove the advertised feature behavior, not
+/// just process exit.
+///
+/// The contract we assert here:
+///
+/// - Source emits exactly 10 `Int64` values (`0..=9`) over a 50ms timer,
+///   then exits (see `examples/validated-pipeline/source/src/main.rs`).
+/// - Transform doubles each value (`0, 2, …, 18`).
+/// - Sink verifies `value == received * 2` and, on clean completion,
+///   prints `"sink: SUCCESS - validated 10 doubled values"` to stderr.
+///
+/// The test captures combined stdout+stderr from `dora run --stop-after`
+/// and asserts the exact success marker appears. If any layer of the
+/// pipeline silently drops messages, truncates the run, or mis-doubles,
+/// the marker won't match and the test fails with the full dataflow log
+/// attached for triage.
+#[test]
+fn contract_validated_pipeline_produces_exactly_ten_doubled_outputs() {
+    ensure_cli_built();
+    ensure_validated_pipeline_nodes_built();
+
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let yaml = Path::new(manifest_dir).join("examples/validated-pipeline/dataflow.yml");
+    assert!(yaml.exists(), "validated-pipeline YAML missing at {yaml:?}");
+
+    // 15s is far above the ~500ms natural runtime (10 outputs × 50ms tick +
+    // teardown). `--stop-after` just bounds worst-case; the dataflow should
+    // finish and dora run should exit before the timer fires.
+    let output = Command::new(&dora)
+        .args(["run", yaml.to_str().unwrap(), "--stop-after", "15s"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn dora run for validated-pipeline contract test");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    let success_marker = "sink: SUCCESS - validated 10 doubled values";
+    let combined_contains_marker =
+        stdout.contains(success_marker) || stderr.contains(success_marker);
+
+    assert!(
+        combined_contains_marker,
+        "validated-pipeline did not reach the 10-message SUCCESS milestone.\n\
+         expected marker: {success_marker:?}\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+
+    assert!(
+        output.status.success(),
+        "dora run exited non-zero: {:?}\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
+        output.status
+    );
+}
+
+/// Run `dora run --stop-after <secs>s` against `yaml_path`, capture combined
+/// stdout+stderr, and return `(exit_status, stdout, stderr)`. Pass
+/// `use_uv = true` for dataflows with Python nodes so `dora run` provisions
+/// an isolated venv for each node.
+///
+/// Shared helper for the contract tests below (#1630) — they all follow the
+/// same run-and-grep pattern but differ in markers and timing.
+fn run_dora_capture(
+    label: &str,
+    yaml_path: &str,
+    stop_after_secs: u64,
+    use_uv: bool,
+) -> (std::process::ExitStatus, String, String) {
+    ensure_cli_built();
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let yaml = Path::new(manifest_dir).join(yaml_path);
+    assert!(yaml.exists(), "{label}: dataflow YAML missing at {yaml:?}");
+
+    let stop_after = format!("{stop_after_secs}s");
+    let mut cmd = Command::new(&dora);
+    cmd.args(["run", yaml.to_str().unwrap(), "--stop-after", &stop_after]);
+    if use_uv {
+        cmd.arg("--uv");
+    }
+    let output = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap_or_else(|e| panic!("{label}: failed to spawn dora run: {e}"));
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    (output.status, stdout, stderr)
+}
+
+/// Semantic contract test for `service-example` (#1630).
+///
+/// Contract:
+///
+/// - Client emits a request on each 500ms (or 700ms) tick, tagged with a
+///   unique `request_id` in metadata.
+/// - Server receives `{a, b}`, replies with `{sum}` preserving the
+///   `request_id`.
+/// - Client correlates the response with the in-flight request by
+///   `request_id` and asserts `sum == a + b` before printing
+///   `"[client-*] response <rid>: a + b = sum"`.
+///
+/// The existing `smoke_service_example` would pass even if every response
+/// was dropped: the dataflow would still exit cleanly on `--stop-after`.
+/// This test instead asserts that the CLI log shows at least 3 correlated
+/// "response" lines from clients, proving the request_id pipeline carried
+/// a reply back to the right client for at least three ticks.
+#[test]
+fn contract_service_example_correlates_requests_and_responses() {
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-service-example",
+        "examples/service-example/dataflow.yml",
+        10,
+        false,
+    );
+    let combined = format!("{stdout}\n{stderr}");
+
+    // "[service-client-1] response r: a + b = sum" (client_id is the node
+    // id from the YAML; two client instances run in parallel in the
+    // fixture, so we match the common prefix).
+    let matches: Vec<&str> = combined
+        .lines()
+        .filter(|l| l.contains("] response ") && l.contains(" = "))
+        .collect();
+
+    assert!(
+        matches.len() >= 3,
+        "service-example produced fewer than 3 correlated responses in {}s.\n\
+         matched {} line(s): {:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
+        10,
+        matches.len(),
+        matches
+    );
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+}
+
+/// Semantic contract test for `action-example` (#1630).
+///
+/// Contract:
+///
+/// - Client sends a goal on each tick with `start_value = 3 + tick_count`.
+/// - Server decrements the countdown on every subsequent input event and
+///   emits a `feedback` output carrying the current remaining value and
+///   the original `goal_id`.
+/// - When the countdown reaches 0 the server emits a `result` tagged with
+///   `goal_status = SUCCEEDED`. The ordering invariant — feedback before
+///   the terminal result — is the core action-pattern contract.
+///
+/// Liveness smoke would pass for a server that drops every feedback or
+/// result. This test asserts the observable log shows at least one full
+/// `goal → feedback(s) → result SUCCEEDED` sequence, in order, for the
+/// same `goal_id`.
+#[test]
+fn contract_action_example_feedback_precedes_success_result() {
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-action-example",
+        "examples/action-example/dataflow.yml",
+        20,
+        false,
+    );
+    let combined = format!("{stdout}\n{stderr}");
+
+    // Lines from `dora run` are log-forwarded with a timestamp + stream
+    // prefix: e.g. `09:48:50 stdout  action-server:  [server] result <gid>: succeeded`.
+    // `GOAL_STATUS_SUCCEEDED` is the lowercase literal `"succeeded"` from
+    // libraries/message/src/metadata.rs:128 (not the Rust constant name).
+    //
+    // Find the first `[server] result <gid>: succeeded` line and confirm a
+    // matching feedback line for the same gid appeared earlier in the log.
+    let result_marker = "[server] result ";
+    let succeeded_suffix = ": succeeded";
+    let (result_gid, result_idx) = combined
+        .lines()
+        .enumerate()
+        .find_map(|(idx, line)| {
+            let start = line.find(result_marker)? + result_marker.len();
+            let end = line[start..].find(succeeded_suffix)? + start;
+            Some((line[start..end].to_string(), idx))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "action-example did not produce a single `[server] result … succeeded` \
+                 line in {}s.\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
+                20
+            )
+        });
+
+    let feedback_needle = format!("[server] feedback {result_gid}:");
+    let feedback_idx = combined
+        .lines()
+        .take(result_idx)
+        .position(|l| l.contains(&feedback_needle));
+    assert!(
+        feedback_idx.is_some(),
+        "action-example emitted SUCCEEDED result for goal {result_gid} without preceding feedback.\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+}
+
+/// Semantic contract test for `streaming-example` (#1630).
+///
+/// Contract:
+///
+/// - `generator` emits a sequence of tokens for each prompt, tagged with
+///   `session_id` (constant across the stream) and `seq` (monotonic).
+/// - The final token of each stream carries `fin=true`.
+/// - `sink` accumulates tokens by `session_id` and, on `fin=true`, logs
+///   `"[session <id>] Complete (<N> tokens): <reassembled text>"`.
+///
+/// The contract is: session_id groups tokens correctly AND `fin=true`
+/// triggers reassembly. A regression that dropped the fin flag or mixed
+/// sessions would never produce a `Complete` log line — the liveness
+/// smoke would not notice.
+#[test]
+fn contract_streaming_example_reassembles_session_on_fin() {
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-streaming-example",
+        "examples/streaming-example/dataflow.yml",
+        15,
+        true,
+    );
+    let combined = format!("{stdout}\n{stderr}");
+
+    // "[session <id>] Complete (<N> tokens): …"
+    let complete_lines: Vec<&str> = combined
+        .lines()
+        .filter(|l| l.contains("] Complete (") && l.contains(" tokens):"))
+        .collect();
+
+    assert!(
+        !complete_lines.is_empty(),
+        "streaming-example produced zero completed sessions in {}s — \
+         the fin=true reassembly path did not fire.\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
+        15
+    );
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Queue/timeout regression tests (timing-sensitive, local mode only)
 // Guards against previously-fixed bugs in daemon event scheduling.
