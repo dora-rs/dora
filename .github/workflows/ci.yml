@@ -494,6 +494,59 @@ jobs:
           cargo test --test fault-tolerance-e2e -- --test-threads=1
         timeout-minutes: 15
 
+  # Semantic contract tests — promoted from nightly per #1632.
+  #
+  # These are the `contract_*` tests in tests/example-smoke.rs added by
+  # PR #1642. Unlike the liveness-oriented `smoke_*` tests (which just
+  # prove the dataflow completed without crashing), each `contract_*`
+  # test asserts a specific feature behavior: validated-pipeline's
+  # SUCCESS marker for exactly 10 doubled values, service-example's
+  # request_id correlation, action-example's feedback-before-result
+  # ordering, streaming-example's fin-triggered session reassembly.
+  #
+  # Promotion rationale (per #1632 criteria):
+  # - deterministic (each test waits for a specific log marker)
+  # - ~75 s total runtime — well under any reasonable PR budget
+  # - Linux-only to dodge the macOS/Windows Python setup overhead
+  # - no privileged execution or multi-host infra needed
+  #
+  # The liveness `smoke_*` siblings (45 tests) stay in nightly — they
+  # exist to catch crash-class regressions, which the contract tests
+  # already cover for the four examples they touch.
+  contract-tests:
+    name: Semantic contract tests
+    runs-on: ubuntu-latest
+    needs: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        # contract_streaming_example uses `--uv`; the other three are
+        # Rust-only but share the same test binary so the setup has
+        # to land before any of them run.
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Run semantic contract tests
+        run: >
+          cargo test -p dora-examples --test example-smoke contract_
+          --
+          --test-threads=1
+          --nocapture
+
   # Benchmark regression check — Ubuntu only (intentional).
   # Upstream dora runs bench on 3 platforms but only for the benchmark
   # example (not criterion regression). Our `examples` job already runs
