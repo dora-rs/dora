@@ -536,6 +536,173 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
     );
 }
 
+/// `NodeRestarted` is delivered to downstream nodes after an upstream
+/// node is restarted (#1631).
+///
+/// When the daemon successfully respawns a node, it emits
+/// `NodeRestarted { id }` to every downstream node whose `inputs`
+/// reference an output of the restarted upstream
+/// (binaries/daemon/src/lib.rs:3625). That signal is what service /
+/// action clients use to invalidate pre-crash correlation state
+/// (dora-rs/adora#148). A regression that dropped the signal would
+/// leave downstream nodes unaware of the restart — silently blocked
+/// on stale state.
+///
+/// Fixture: `always-crash-node` (from PR #1644) panics on every
+/// incarnation; `event-log-observer-node` subscribes to its
+/// `pulse` output and logs every `Event` variant. With
+/// `restart_policy: on-failure` and `max_restarts: 1`, the daemon
+/// respawns the upstream exactly once before giving up — the
+/// observer marker must therefore contain exactly one
+/// `NodeRestarted:crasher` line.
+#[tokio::test(flavor = "multi_thread")]
+async fn node_restarted_is_delivered_to_downstream() {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "always-crash-node",
+            "-p",
+            "event-log-observer-node",
+        ])
+        .status()
+        .expect("failed to build node-restarted test crates");
+    assert!(status.success(), "node-restarted test crates build failed");
+
+    let marker = Path::new("/tmp/dora-node-restarted-delivery.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/node-restarted-delivery.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // Full cycle is ~250 ms (2 crashes × ~100 ms restart_delay),
+        // plus observer teardown. 5 s is generous.
+        Some(Duration::from_secs(5)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("observer marker file should exist — the observer writes every event");
+    let _ = std::fs::remove_file(marker);
+    eprintln!("observer events:\n{contents}");
+
+    let node_restarted_count = contents
+        .lines()
+        .filter(|l| *l == "NodeRestarted:crasher")
+        .count();
+    assert_eq!(
+        node_restarted_count, 1,
+        "expected exactly one `NodeRestarted:crasher` line (restart_policy: on-failure + \
+         max_restarts: 1 → one respawn), got {node_restarted_count}. observer marker:\n{contents}"
+    );
+}
+
+/// `InputRecovered` is delivered after a broken input receives data
+/// again (#1631).
+///
+/// `check_input_timeouts` breaks an input when the timeout fires
+/// (binaries/daemon/src/lib.rs:1974 → `break_input` →
+/// `InputClosed`). Once broken, the entry lives in
+/// `dataflow.broken_inputs`. When a new message for that broken
+/// input arrives, the daemon clears the `broken_inputs` entry,
+/// arms a fresh `input_deadlines` slot, and emits
+/// `NodeEvent::InputRecovered` (binaries/daemon/src/lib.rs:4095).
+///
+/// Fixture: `timed-burst-source-node` emits `value` twice, separated
+/// by 2 s of silence. The observer has `input_timeout: 0.5`, so:
+///
+/// - t≈50 ms   first emit → `Input:value`
+/// - t≈550 ms  silence past the 0.5 s timeout → `InputClosed:value`
+/// - t≈2.05 s  second emit → `InputRecovered:value` + `Input:value`
+///
+/// Assertion: the marker contains the exact `InputClosed:value`
+/// → `InputRecovered:value` ordering. A regression that dropped
+/// `InputRecovered` delivery would leave the marker with only the
+/// `InputClosed` line.
+#[tokio::test(flavor = "multi_thread")]
+async fn input_recovered_is_delivered_after_broken_input_receives_data() {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "timed-burst-source-node",
+            "-p",
+            "event-log-observer-node",
+        ])
+        .status()
+        .expect("failed to build input-recovered test crates");
+    assert!(status.success(), "input-recovered test crates build failed");
+
+    let marker = Path::new("/tmp/dora-input-recovered-delivery.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/input-recovered-delivery.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(5)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("observer marker file should exist — observer writes every event");
+    let _ = std::fs::remove_file(marker);
+    eprintln!("observer events:\n{contents}");
+
+    let closed_idx = contents
+        .lines()
+        .position(|l| l == "InputClosed:value")
+        .unwrap_or_else(|| {
+            panic!(
+                "never saw `InputClosed:value` — `input_timeout: 0.5` did not fire. \
+                 events:\n{contents}"
+            )
+        });
+    let recovered_idx = contents
+        .lines()
+        .position(|l| l == "InputRecovered:value")
+        .unwrap_or_else(|| {
+            panic!(
+                "never saw `InputRecovered:value` — the daemon did not deliver the \
+                 recovery event after the second emit. events:\n{contents}"
+            )
+        });
+    assert!(
+        recovered_idx > closed_idx,
+        "expected `InputRecovered:value` after `InputClosed:value` (got {closed_idx} then \
+         {recovered_idx}). events:\n{contents}"
+    );
+}
+
 /// Input timeout fires when upstream stops producing.
 ///
 /// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0

@@ -2431,6 +2431,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "event-log-observer-node"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "ext-trait"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6949,6 +6957,14 @@ checksum = "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
 dependencies = [
  "num-conv",
  "time-core",
+]
+
+[[package]]
+name = "timed-burst-source-node"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
 ]
 
 [[package]]
