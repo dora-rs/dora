@@ -803,9 +803,9 @@ fn smoke_local_validated_pipeline() {
 ///
 /// The test captures combined stdout+stderr from `dora run --stop-after`
 /// and asserts the exact success marker appears. If any layer of the
-/// pipeline silently drops messages, truncates the run, or mis-doubles,
-/// the marker won't match and the test fails with the full dataflow log
-/// attached for triage.
+/// pipeline silently drops messages, truncates the run, or produces
+/// incorrect doubled values, the marker won't match and the test fails
+/// with the full dataflow log attached for triage.
 #[test]
 fn contract_validated_pipeline_produces_exactly_ten_doubled_outputs() {
     ensure_cli_built();
