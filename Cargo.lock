@@ -2911,6 +2911,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hang-after-init-node"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
