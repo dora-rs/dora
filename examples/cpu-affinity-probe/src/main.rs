@@ -7,21 +7,24 @@
 //!
 //! On non-Linux, prints `AFFINITY_MASK:unsupported` so the test skips
 //! cleanly.
+//!
+//! After printing, the probe consumes tick events until the dora stream
+//! closes. Exiting on the first tick used to race `dora run`'s log-subscribe
+//! path (short-lived dataflows could be gone from the coordinator by the
+//! time subscribe_logs arrives → "no running dataflow with id" at
+//! binaries/cli/src/ws_client.rs:454). Staying alive for the duration of
+//! `--stop-after` closes that race on the node side.
 
-use dora_node_api::DoraNode;
+use dora_node_api::{DoraNode, Event};
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
-    // Initialize as a dora node so the daemon can manage the process
-    // lifecycle. We don't consume events; the node prints its mask and
-    // exits on the first tick (or immediately).
-    let (_node, _events) =
+    let (_node, mut events) =
         DoraNode::init_from_env().context("failed to init dora node from env")?;
 
     #[cfg(target_os = "linux")]
     {
         let mask = read_affinity_mask()?;
-        // Sort for deterministic comparison.
         let mut sorted = mask;
         sorted.sort_unstable();
         let csv = sorted
@@ -35,6 +38,12 @@ fn main() -> eyre::Result<()> {
     #[cfg(not(target_os = "linux"))]
     {
         println!("AFFINITY_MASK:unsupported");
+    }
+
+    while let Some(event) = events.recv() {
+        if matches!(event, Event::Stop(_)) {
+            break;
+        }
     }
 
     Ok(())
