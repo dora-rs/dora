@@ -410,10 +410,20 @@ pub struct CommunicationConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum LocalCommunicationConfig {
     #[default]
     Tcp,
     Shmem,
+}
+
+impl fmt::Display for LocalCommunicationConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp => write!(f, "tcp"),
+            Self::Shmem => write!(f, "shmem"),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -621,5 +631,49 @@ mod tests {
                 node_filter: None,
             })
         ));
+    }
+
+    #[test]
+    fn communication_config_local_tcp_lowercase() {
+        let yaml = "_unstable_local: tcp\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
+    }
+
+    #[test]
+    fn communication_config_local_shmem_lowercase() {
+        let yaml = "_unstable_local: shmem\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.local, LocalCommunicationConfig::Shmem);
+    }
+
+    #[test]
+    fn communication_config_remote_tcp_lowercase() {
+        let yaml = "_unstable_remote: tcp\n";
+        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(matches!(config.remote, RemoteCommunicationConfig::Tcp));
+    }
+
+    #[test]
+    fn communication_config_unknown_local_variant_errors() {
+        let yaml = "_unstable_local: unixdomain\n";
+        assert!(serde_yaml::from_str::<CommunicationConfig>(yaml).is_err());
+    }
+
+    #[test]
+    fn local_communication_config_display() {
+        assert_eq!(LocalCommunicationConfig::Tcp.to_string(), "tcp");
+        assert_eq!(LocalCommunicationConfig::Shmem.to_string(), "shmem");
+    }
+
+    #[test]
+    fn communication_config_roundtrip_local() {
+        let config = CommunicationConfig {
+            local: LocalCommunicationConfig::Shmem,
+            remote: RemoteCommunicationConfig::Tcp,
+        };
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let parsed: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.local, LocalCommunicationConfig::Shmem);
     }
 }
