@@ -1,0 +1,26 @@
+[package]
+name = "clean-exit-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: exits cleanly (Ok) on the first tick of every
+# incarnation and appends an incarnation marker to
+# `$DORA_TEST_MARKER_FILE`. Paired with `restart-policy-always.yml`
+# and `fault-tolerance-e2e.rs::restart_policy_always_restarts_on_clean_exit`.
+#
+# `restart_policy: on-failure` would never restart a node that exited
+# Ok, so counting markers distinguishes `always` from `on-failure` /
+# `never`.
+
+[[bin]]
+name = "clean-exit-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

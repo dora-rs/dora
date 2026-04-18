@@ -197,6 +197,77 @@ async fn max_restarts_exhaustion_marks_node_failed() {
     );
 }
 
+/// `restart_policy: always` restarts the node even on a clean exit
+/// (#1631).
+///
+/// `on-failure` and `never` both leave a cleanly-exiting node alone.
+/// Only `always` re-spawns after `Ok`. This test proves the difference
+/// observable, not just inferred.
+///
+/// Fixture: `clean-exit-node` appends one `incarnation\n` line to
+/// `$DORA_TEST_MARKER_FILE` on every spawn, then exits `Ok(())` after
+/// the first tick. With `restart_policy: always` + `max_restarts: 2`,
+/// the daemon must spawn the node three times (initial + 2 restarts)
+/// — so the marker file grows to exactly three lines. With
+/// `restart_policy: never`, it would contain one.
+#[tokio::test(flavor = "multi_thread")]
+async fn restart_policy_always_restarts_on_clean_exit() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "clean-exit-node"])
+        .status()
+        .expect("failed to build clean-exit-node");
+    assert!(status.success(), "clean-exit-node build failed");
+
+    // Fixture writes to this hardcoded path; tests already run with
+    // --test-threads=1, so there is no cross-test contention. Clean
+    // before and after so a prior crash doesn't pollute.
+    let marker = Path::new("/tmp/dora-restart-policy-always.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/restart-policy-always.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(10)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker file should exist — the node writes it on every spawn");
+    let incarnations = contents.lines().count();
+    let _ = std::fs::remove_file(marker);
+    eprintln!("clean-exit-node incarnations observed: {incarnations}");
+
+    // Core contract: `restart_policy: always` + `max_restarts: 2`
+    // produces ≥2 incarnations. Exactly 3 is the happy path
+    // (initial + 2 restarts within the stop_after window); we accept
+    // ≥2 to tolerate stop_after racing the final restart on a slow
+    // runner. `never`/`on-failure` would give exactly 1, which the
+    // assertion rejects.
+    assert!(
+        incarnations >= 2,
+        "restart_policy: always + max_restarts: 2 should produce at least 2 \
+         incarnations after clean exits; got {incarnations}. marker contents:\n{contents}"
+    );
+}
+
 /// Input timeout fires when upstream stops producing.
 ///
 /// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0
