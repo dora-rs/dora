@@ -6,8 +6,8 @@ use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        CoordinatorOptions, connect_to_coordinator, expect_reply, local_working_dir,
-        resolve_dataflow, send_control_request, write_events_to,
+        CoordinatorOptions, connect_to_coordinator, error_indicates_dataflow_finished,
+        expect_reply, local_working_dir, resolve_dataflow, send_control_request, write_events_to,
     },
     output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
@@ -163,39 +163,64 @@ fn wait_until_dataflow_started(
     log_level: log::LevelFilter,
     print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    // subscribe to log messages
-    let log_rx = session.subscribe_logs(
+    // Subscribe to log messages. This can race against sub-second
+    // dataflows: the coordinator drops the running-dataflow entry on
+    // completion, so a LogSubscribe that arrives after the dataflow
+    // finished fails with "no running dataflow with id X". That's a
+    // valid state — the dataflow ran and exited — not an error for
+    // the --detach caller. Warn and continue without a log stream.
+    match session.subscribe_logs(
         &serde_json::to_vec(&ControlRequest::LogSubscribe {
             dataflow_id,
             level: log_level,
         })
         .wrap_err("failed to serialize message")?,
-    )?;
-    std::thread::spawn(move || {
-        while let Ok(Ok(raw)) = log_rx.recv() {
-            let parsed: eyre::Result<LogMessage> =
-                serde_json::from_slice(&raw).context("failed to parse log message");
-            match parsed {
-                Ok(log_message) => {
-                    let config = LogOutputConfig {
-                        print_daemon_name: print_daemon_id,
-                        ..LogOutputConfig::default()
-                    };
-                    print_log_message(log_message, &config);
+    ) {
+        Ok(log_rx) => {
+            std::thread::spawn(move || {
+                while let Ok(Ok(raw)) = log_rx.recv() {
+                    let parsed: eyre::Result<LogMessage> =
+                        serde_json::from_slice(&raw).context("failed to parse log message");
+                    match parsed {
+                        Ok(log_message) => {
+                            let config = LogOutputConfig {
+                                print_daemon_name: print_daemon_id,
+                                ..LogOutputConfig::default()
+                            };
+                            print_log_message(log_message, &config);
+                        }
+                        Err(err) => {
+                            tracing::warn!("failed to parse log message: {err:?}")
+                        }
+                    }
                 }
-                Err(err) => {
-                    tracing::warn!("failed to parse log message: {err:?}")
-                }
-            }
+            });
         }
-    });
+        Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
+            tracing::debug!("dataflow {dataflow_id} completed before log subscribe arrived");
+        }
+        Err(err) => return Err(err).wrap_err("failed to subscribe to logs"),
+    }
 
-    let reply = send_control_request(session, &ControlRequest::WaitForSpawn { dataflow_id })
-        .wrap_err(
-            "dataflow failed to start\n\n  \
-             hint: if nodes require building, run `dora build <dataflow.yml>` first",
-        )?;
-    let uuid = expect_reply!(reply, DataflowSpawned { uuid })?;
-    println!("dataflow started: {uuid}");
+    // Same race on WaitForSpawn: a dataflow that exited before this
+    // request landed is reported as "unknown dataflow X". The
+    // DataflowStartTriggered reply we already observed is proof that
+    // the coordinator accepted the spawn — treat "unknown" as evidence
+    // the dataflow ran to completion, not as a startup failure.
+    match send_control_request(session, &ControlRequest::WaitForSpawn { dataflow_id }) {
+        Ok(reply) => {
+            let uuid = expect_reply!(reply, DataflowSpawned { uuid })?;
+            println!("dataflow started: {uuid}");
+        }
+        Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
+            println!("dataflow started and finished: {dataflow_id}");
+        }
+        Err(err) => {
+            return Err(err).wrap_err(
+                "dataflow failed to start\n\n  \
+                 hint: if nodes require building, run `dora build <dataflow.yml>` first",
+            );
+        }
+    }
     Ok(())
 }
