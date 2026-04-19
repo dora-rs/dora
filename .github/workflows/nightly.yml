@@ -867,11 +867,117 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
+          # `toJSON(needs)` is a map `{ job_name: { result: "failure" | "success" | ... } }`.
+          # Parse in-shell to list only the jobs that actually failed
+          # and render per-job reproduction hints (#1659). Without this,
+          # every comment pointed at the same generic `cargo test` line
+          # regardless of which subjob red-lit.
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          # Find any open nightly-regression issue. If one exists, append
-          # a comment with today's failure. Otherwise open a fresh issue.
-          # Prevents issue spam when nightly is red for multiple days.
+          set -euo pipefail
+
           DATE=$(date -u +%Y-%m-%d)
+
+          # Per-job repro hints. Keep in sync with the job blocks above.
+          # Blank entries fall back to "see workflow file" in the
+          # composer below.
+          job_repro() {
+            case "$1" in
+              build-cli)
+                echo 'cargo install --path binaries/cli --locked --root ./dist'
+                ;;
+              smoke-suite)
+                echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
+                ;;
+              log-sinks)
+                # Three dataflows in this job; run each individually on failure.
+                printf 'dora run examples/log-sink-file/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-alert/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-tcp/dataflow.yml --uv --stop-after 15s\n'
+                ;;
+              service-action)
+                printf 'dora run examples/service-example/dataflow.yml --stop-after 15s\ndora run examples/action-example/dataflow.yml --stop-after 20s\n'
+                ;;
+              streaming)
+                echo 'dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s'
+                ;;
+              record-replay)
+                # The PR-CI contract test covers the semantic path; job
+                # itself is in .github/workflows/nightly.yml if you need
+                # the exact invocation against rust-dataflow.
+                echo 'cargo test -p dora-examples --test example-smoke contract_record_replay -- --test-threads=1'
+                ;;
+              cluster-smoke)
+                # Multi-step: dora up + cluster status + dataflow + cluster down.
+                echo 'See the `cluster-smoke` job block in .github/workflows/nightly.yml for the exact sequence.'
+                ;;
+              topic-and-top-smoke)
+                echo 'See the `topic-and-top-smoke` job block in .github/workflows/nightly.yml.'
+                ;;
+              cpu-affinity-smoke)
+                # Linux-only; the fixture requires sched_setaffinity.
+                echo 'cd examples/cpu-affinity-probe && dora run dataflow.yml --stop-after 3s  # Linux only'
+                ;;
+              redb-backend-smoke)
+                echo 'See the `redb-backend-smoke` job block in .github/workflows/nightly.yml (Session 1 + Session 2).'
+                ;;
+              daemon-reconnect-smoke)
+                # Uses SIGSTOP / SIGCONT — Linux only.
+                echo 'See the `daemon-reconnect-smoke` job block in .github/workflows/nightly.yml (Linux only).'
+                ;;
+              state-reconstruction-smoke)
+                echo 'See the `state-reconstruction-smoke` job block in .github/workflows/nightly.yml.'
+                ;;
+              *)
+                echo 'No job-specific repro recorded. See the run log for this subjob.'
+                ;;
+            esac
+          }
+
+          # Pull the list of failed jobs from the needs context.
+          failed_jobs=$(echo "$NEEDS_JSON" \
+            | jq -r 'to_entries | map(select(.value.result == "failure")) | .[].key' \
+            | sort)
+          # Jobs that got skipped because a dependency failed — usually
+          # cascading from build-cli. Report separately so the reader
+          # knows why they didn't run.
+          skipped_jobs=$(echo "$NEEDS_JSON" \
+            | jq -r 'to_entries | map(select(.value.result == "skipped")) | .[].key' \
+            | sort)
+
+          # Compose the failure-specific section.
+          details=""
+          if [ -n "$failed_jobs" ]; then
+            details+=$'\n### Failed jobs\n\n'
+            while IFS= read -r job; do
+              [ -z "$job" ] && continue
+              details+="<details><summary>\`$job\`</summary>"$'\n\n'"Reproduce locally:"$'\n\n```\n'
+              details+="$(job_repro "$job")"$'\n```\n</details>\n\n'
+            done <<< "$failed_jobs"
+          fi
+          if [ -n "$skipped_jobs" ]; then
+            details+=$'\n### Skipped (cascading from a failed dependency)\n\n'
+            while IFS= read -r job; do
+              [ -z "$job" ] && continue
+              details+="- \`$job\`"$'\n'
+            done <<< "$skipped_jobs"
+            details+=$'\nThese typically clear once the failed dependency above is fixed.\n'
+          fi
+
+          # Issue/comment composer. Exports COMMENT_BODY and ISSUE_BODY
+          # so the gh commands below can pick them up.
+          comment_body="Another failure on $DATE.
+
+          Run: $RUN_URL
+          Commit: \`$COMMIT_SHA\`
+          $details"
+          issue_body="Nightly regression suite failed on $DATE.
+
+          Run: $RUN_URL
+          Commit: \`$COMMIT_SHA\`
+          $details
+          Subsequent failures will comment on this issue instead of
+          opening new ones. Close this issue when the regression is
+          fixed."
+
           EXISTING=$(gh issue list \
             --repo "$REPO" \
             --state open \
@@ -880,56 +986,14 @@ jobs:
             --json number \
             --jq '.[0].number // empty')
 
-          COMMENT_BODY=$(cat <<EOF
-          Another failure on $DATE.
-
-          Run: $RUN_URL
-          Commit: $COMMIT_SHA
-
-          Reproduce locally:
-          \`\`\`
-          cargo test -p dora-examples --test example-smoke -- --test-threads=1
-          \`\`\`
-          EOF
-          )
-
           if [ -n "$EXISTING" ]; then
             echo "Updating existing issue #$EXISTING"
-            gh issue comment "$EXISTING" --repo "$REPO" --body "$COMMENT_BODY"
+            gh issue comment "$EXISTING" --repo "$REPO" --body "$comment_body"
           else
             echo "Opening new nightly-regression issue"
-            ISSUE_BODY=$(cat <<EOF
-          Nightly regression suite failed on $DATE.
-
-          Run: $RUN_URL
-          Commit: $COMMIT_SHA
-
-          Jobs:
-          - smoke-suite
-          - log-sinks
-          - service-action
-          - streaming
-          - record-replay
-          - cluster-smoke
-          - topic-and-top-smoke
-          - cpu-affinity-smoke
-          - redb-backend-smoke
-          - daemon-reconnect-smoke
-          - state-reconstruction-smoke
-
-          See the run for per-job status and logs. Subsequent failures
-          will comment on this issue instead of opening new ones. Close
-          this issue when the regression is fixed.
-
-          Reproduce locally:
-          \`\`\`
-          cargo test -p dora-examples --test example-smoke -- --test-threads=1
-          \`\`\`
-          EOF
-            )
             gh issue create \
               --repo "$REPO" \
               --title "Nightly regression since $DATE" \
-              --body "$ISSUE_BODY" \
+              --body "$issue_body" \
               --label nightly-regression
           fi
