@@ -404,13 +404,19 @@ jobs:
           OTEL_SDK_DISABLED: true
         run: dora run examples/python-drain/dataflow.yaml --uv
 
-      # TODO: re-enable once dora 1.0 is published to PyPI (supersedes upstream 0.5.0).
-      # The builder example installs dora-hub packages (opencv-video-capture,
-      # dora-yolo) from PyPI which pull upstream dora-rs 0.5.0, overwriting
-      # our local build and introducing incompatible type definitions.
-      # - name: Test Python Dataflow Builder
-      #   timeout-minutes: 30
-      #   run: uv run examples/python-dataflow-builder/simple_example.py
+      # `simple_example.py` itself still can't run here — its `build:`
+      # directives pip-install hub packages (opencv-video-capture,
+      # dora-yolo, opencv-plot) which transitively pull the PyPI
+      # `dora-rs` 0.5.0 and clobber the locally-built workspace
+      # version. Re-enable that path after 1.0 PyPI publish.
+      #
+      # In the meantime, exercise the builder API itself (the part
+      # the capability matrix cares about) via a hub-package-free
+      # YAML generation contract test (#1654). This is fast and
+      # runs on every PR.
+      - name: Test Python Dataflow Builder API (YAML generation)
+        timeout-minutes: 5
+        run: python examples/python-dataflow-builder/test_builder_api.py
 
       - name: Python Queue Latency Test
         timeout-minutes: 30
