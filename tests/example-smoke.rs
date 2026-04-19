@@ -720,6 +720,66 @@ fn smoke_local_cross_language_python_to_rust() {
     );
 }
 
+/// Semantic cross-language contracts (#1658).
+///
+/// The `smoke_cross_language_*` tests above only check for non-Failed
+/// state via `dora list` — they'd still pass if every payload arrived
+/// with a wrong value as long as the receivers didn't `bail!`/`sys.exit`.
+/// The receivers (`cross-language/python_receiver.py`,
+/// `cross-language/rust-receiver/src/main.rs`) already validate each
+/// payload against the sender's deterministic sequence `[0, 10, …, 90]`
+/// and print a specific `SUCCESS - validated N messages` marker on
+/// clean completion; the smoke lane just never looks.
+///
+/// These two tests run `dora run --stop-after`, capture combined
+/// stdout+stderr, and assert the marker contains exactly the number
+/// the senders emit (10). A regression in the Rust ↔ Python Arrow
+/// payload path (for example: byte-order drift, length mismatch,
+/// type-widening, or a message being dropped on the wire) fails
+/// either the receiver's in-process validation (no marker) or the
+/// count check here.
+#[test]
+fn contract_cross_language_rust_to_python_delivers_all_ten_values() {
+    ensure_cross_language_nodes_built();
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-cross-language-rust-to-python",
+        "examples/cross-language/rust-to-python.yml",
+        15,
+        true, // Python receiver needs uv-provisioned venv
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("python-receiver: SUCCESS - validated 10 messages"),
+        "rust → python did not deliver exactly 10 validated messages.\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+}
+
+#[test]
+fn contract_cross_language_python_to_rust_delivers_all_ten_values() {
+    ensure_cross_language_nodes_built();
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-cross-language-python-to-rust",
+        "examples/cross-language/python-to-rust.yml",
+        15,
+        true, // Python sender needs uv-provisioned venv
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("rust-receiver: SUCCESS - validated 10 messages"),
+        "python → rust did not deliver exactly 10 validated messages.\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Python recv_async() smoke test (GIL/async deadlock regression)
 // ---------------------------------------------------------------------------
