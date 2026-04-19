@@ -158,7 +158,8 @@ Known gap: `dora self update` destructive swap path (tracked in
 |---|---|---|---|
 | Rust → Python dataflow | `smoke_cross_language_rust_to_python`, `smoke_local_cross_language_rust_to_python` | Nightly | Smoke |
 | Python → Rust dataflow | `smoke_cross_language_python_to_rust`, `smoke_local_cross_language_python_to_rust` | Nightly | Smoke |
-| Semantic assertion on cross-language payload | no automated coverage | — | Gap (#1632 follow-up candidate) |
+| Semantic Rust → Python payload delivery (exact count + value validation) | `contract_cross_language_rust_to_python_delivers_all_ten_values` | PR | Contract |
+| Semantic Python → Rust payload delivery (exact count + value validation) | `contract_cross_language_python_to_rust_delivers_all_ten_values` | PR | Contract |
 
 ## Python operator path
 
@@ -244,7 +245,6 @@ filed and tracked:
 - `dora cluster up` (SSH) — manual, needs dedicated infra.
 - State reconstruction: full Recovering→Running reconciliation —
   aspirational per current docstring.
-- Cross-language semantic assertions — #1632 follow-up candidate.
 - Python operator hot reload — no tests.
 - C/C++ on macOS/Windows — platform-parity policy.
 - `mlockall` / SCHED_FIFO — #256 (manual, privileged).
