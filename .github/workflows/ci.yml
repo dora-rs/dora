@@ -416,7 +416,13 @@ jobs:
       # runs on every PR.
       - name: Test Python Dataflow Builder API (YAML generation)
         timeout-minutes: 5
-        run: python examples/python-dataflow-builder/test_builder_api.py
+        shell: bash
+        # `uv run` is needed so the step uses the project venv from
+        # the "Set up Python venv" step above — `source .venv/bin/activate`
+        # doesn't persist to later steps. `--with PyYAML` provisions
+        # the one extra dep the contract test needs, without polluting
+        # the dora-rs install with a transitive upgrade from PyPI.
+        run: uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
 
       - name: Python Queue Latency Test
         timeout-minutes: 30
