@@ -168,7 +168,8 @@ Known gap: `dora self update` destructive swap path (tracked in
 | Python node template + `dora run` | `cli` job (ci.yml) | PR | Smoke |
 | Python async / drain / echo / log / multiple-arrays / concurrent-rw examples | `smoke_python_*` + `smoke_local_python_*` | Nightly | Smoke |
 | Python operator hot reload | no automated coverage | — | Gap |
-| Python builder API (programmatic dataflow construction) | no automated coverage | — | Gap |
+| Python builder API (programmatic dataflow construction → YAML) | `examples/python-dataflow-builder/test_builder_api.py` invoked by the `cli` job | PR | Contract |
+| Python builder API → `build()` + `run()` end-to-end with hub packages (`simple_example.py`) | not covered — blocked on PyPI `dora-rs` 0.5.0 clobbering the local workspace install; re-enable after 1.0 PyPI publish (#1654) | — | Gap (infrastructural) |
 
 ## C / C++ template & examples
 
@@ -235,7 +236,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 The rows labeled "Gap" are consolidated here so follow-up work can be
 filed and tracked:
 
-- Python builder API — no tests.
+- Python builder `build()` + `run()` with hub packages — blocked on PyPI 1.0 publish; builder API itself is covered.
 - Service pattern: timeout / retry paths — #1630 follow-up.
 - Action pattern: cancellation — #1630 follow-up.
 - Streaming pattern: `flush=true` + interruption — #1630 follow-up.
