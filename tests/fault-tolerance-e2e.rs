@@ -711,3 +711,89 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
 // `input_timeout_delivers_input_closed_to_downstream` (PR #1647),
 // which actively drives the timeout path via a silent-source + event
 // observer fixture.
+
+/// Full `health_check_timeout` kill → respawn → kill → Err cycle (#1668).
+///
+/// Extends `health_check_timeout_sigkills_unresponsive_node` from
+/// PR #1648, which only exercised the first kill. Here the fixture
+/// uses `restart_policy: on-failure` + `max_restarts: 1`, so the
+/// daemon must respawn the node once after the first SIGKILL, let
+/// the new incarnation hang, watchdog-kill it again, and then give
+/// up with a final `Err` in node_results.
+///
+/// Cycle timing with the fixture:
+///
+/// - t=0         first incarnation spawned
+/// - t=~0.5 s    init_from_env, marker write, drop(events)+drop(node)
+/// - t=~2.1 s    watchdog fires, SIGKILL, restart_delay 0.1 s
+/// - t=~2.2 s    second incarnation spawned
+/// - t=~2.7 s    marker write #2, drop
+/// - t=~4.8 s    watchdog fires, SIGKILL — max_restarts: 1 exhausted
+/// - node_results['hang-after-init'] → Err(…Signal(9)…)
+///
+/// 10 s stop_after gives ~5 s of headroom above the ~5 s expected
+/// total runtime, so the assertion lands on behavior not stop_after.
+#[tokio::test(flavor = "multi_thread")]
+async fn health_check_timeout_exhausts_restart_budget() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "hang-after-init-node"])
+        .status()
+        .expect("failed to build hang-after-init-node");
+    assert!(status.success(), "hang-after-init-node build failed");
+
+    let marker = Path::new("/tmp/dora-health-check-cycle.log");
+    let _ = std::fs::remove_file(marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/health-check-cycle.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(10)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+
+    let contents = std::fs::read_to_string(marker)
+        .expect("marker file should exist — the node writes it on every spawn");
+    let incarnations = contents.lines().count();
+    let _ = std::fs::remove_file(marker);
+    eprintln!("hang-after-init-node incarnations observed: {incarnations}");
+
+    // Core contract: with max_restarts=1 the daemon spawns the node
+    // exactly twice (initial + one respawn). A regression that lost
+    // track of the restart budget across health-check kills would
+    // either loop forever (>>2) or stop at 1.
+    assert_eq!(
+        incarnations, 2,
+        "expected exactly 2 incarnations (initial + 1 respawn), got {incarnations}. marker:\n{contents}"
+    );
+
+    // After exhausting max_restarts the daemon must record an Err
+    // for the node. Same assertion class as
+    // `max_restarts_exhaustion_marks_node_failed` but driven by
+    // health-check SIGKILL rather than self-inflicted panics.
+    let node_result = dr
+        .node_results
+        .get(&"hang-after-init".to_string().into())
+        .expect("hang-after-init should be in node_results");
+    assert!(
+        node_result.is_err(),
+        "after two health-check SIGKILLs with max_restarts: 1, expected Err; got {node_result:?}"
+    );
+}
