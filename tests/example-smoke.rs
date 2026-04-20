@@ -1325,3 +1325,33 @@ fn smoke_local_queue_size_latest_data_rust() {
         20,
     );
 }
+
+// ---------------------------------------------------------------------------
+// Examples under `examples/` that are deliberately NOT covered by CI smoke
+// tests. Keep this table in sync with `scripts/smoke-all.sh` so the shell
+// helper and the Rust suite agree on what's skipped and why.
+//
+// If you land a fix for a blocker below, write the corresponding smoke test
+// here and remove the row. Consumers of this file: the QA policy in
+// `docs/agentic-qa-policy.md` and the capability matrix in
+// `docs/testing-capabilities.md`.
+//
+// | Example                   | Blocker                        | Tracking |
+// |---------------------------|--------------------------------|----------|
+// | cuda-benchmark            | needs NVIDIA CUDA toolkit      | —        |
+// | dynamic-add-remove        | `dora node add` times out +    | #1682    |
+// |                           | corrupts dataflow state        |          |
+// | dynamic-agent-tools       | same as dynamic-add-remove     | #1682    |
+// | python-parquet-recorder   | no test written; low-priority  | —        |
+// | python-yolo-detection     | needs YOLO model weights       | —        |
+// | ros2-bridge               | needs ROS2 runtime             | —        |
+// | ros2-comparison           | needs ROS2 runtime             | —        |
+// | c-dataflow                | covered by `cli` job (3 OS)    | covered  |
+// | c++-dataflow              | covered by `cli` job (3 OS)    | covered  |
+// | c++-arrow-dataflow        | covered by `cli` job (3 OS)    | covered  |
+// | cmake-dataflow            | covered by `cli` job (3 OS)    | covered  |
+// | multiple-daemons          | covered by `cargo check --all` | covered  |
+// | rust-dataflow-git         | covered by `examples` job      | covered  |
+//
+// "Covered" rows are listed so future refactors don't assume the examples
+// are entirely unexercised — they run in other CI jobs, just not this file.
