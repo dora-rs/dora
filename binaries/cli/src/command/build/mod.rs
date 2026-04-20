@@ -161,11 +161,14 @@ pub struct BuildConfig {
 }
 
 impl BuildConfig {
-    /// Construct a `BuildConfig` from the string-typed argument shape
-    /// that the PyO3 Python bindings expose. Parses `coordinator_addr`
-    /// and returns a parse error if it isn't a valid IP. All other
-    /// fields default.
-    pub fn from_python_args(
+    /// Shared constructor for callers that marshal arguments as
+    /// strings (`coordinator_addr: Option<String>`) and optional
+    /// booleans (`uv: Option<bool>`) rather than as pre-parsed
+    /// `IpAddr` / `bool`. Keeps the `addr.parse()` + `unwrap_or_default`
+    /// glue in one place instead of duplicating it in every binding
+    /// that exposes a simplified build API (PyO3 today, potentially
+    /// a C FFI or WASM shim later).
+    pub fn from_str_args(
         dataflow: String,
         uv: Option<bool>,
         coordinator_addr: Option<String>,

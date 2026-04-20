@@ -27,7 +27,7 @@ pub fn build(
     coordinator_port: Option<u16>,
     force_local: bool,
 ) -> eyre::Result<()> {
-    dora_cli::build(dora_cli::BuildConfig::from_python_args(
+    dora_cli::build(dora_cli::BuildConfig::from_str_args(
         dataflow_path,
         uv,
         coordinator_addr,
