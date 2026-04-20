@@ -73,6 +73,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-test
       - name: Check
         run: cargo check --all
       - name: Build (excluding Python packages)
@@ -529,13 +531,15 @@ jobs:
     name: Semantic contract tests
     runs-on: ubuntu-latest
     needs: test
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-test
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
