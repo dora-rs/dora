@@ -14,10 +14,11 @@ use uuid::Uuid;
 ///
 /// If no id or name is provided, you will be able to choose between the running dataflows.
 pub struct Restart {
-    /// UUID of the dataflow that should be restarted
-    uuid: Option<Uuid>,
-    /// Name of the dataflow that should be restarted
-    #[clap(long, short = 'n')]
+    /// Name or UUID of the dataflow that should be restarted
+    #[clap(value_name = "NAME_OR_UUID")]
+    identifier: Option<String>,
+    /// Name of the dataflow (alternative to positional; kept for back-compat)
+    #[clap(long, short = 'n', conflicts_with = "identifier")]
     name: Option<String>,
     /// Kill the dataflow if it doesn't stop after the given duration before restarting
     #[clap(
@@ -39,12 +40,14 @@ impl Executable for Restart {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         let session = self.coordinator.connect()?;
-        match (self.uuid, self.name) {
-            (Some(uuid), _) => restart_dataflow(uuid, self.grace_duration, self.force, &session),
-            (None, Some(name)) => {
-                restart_dataflow_by_name(name, self.grace_duration, self.force, &session)
-            }
-            (None, None) => restart_dataflow_interactive(self.grace_duration, self.force, &session),
+
+        let ident = self.identifier.or(self.name);
+        match ident {
+            Some(s) => match Uuid::parse_str(&s) {
+                Ok(uuid) => restart_dataflow(uuid, self.grace_duration, self.force, &session),
+                Err(_) => restart_dataflow_by_name(s, self.grace_duration, self.force, &session),
+            },
+            None => restart_dataflow_interactive(self.grace_duration, self.force, &session),
         }
     }
 }

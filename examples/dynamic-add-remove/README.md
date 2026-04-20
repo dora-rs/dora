@@ -70,7 +70,7 @@ on the original `value` input.
 ### Step 5: Clean up
 
 ```bash
-dora stop --all
+dora stop demo
 dora down
 ```
 

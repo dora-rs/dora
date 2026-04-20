@@ -16,11 +16,15 @@ use uuid::Uuid;
 ///
 /// You could specify the strategy to stop the dataflow with `--grace-duration` or `--force`.
 pub struct Stop {
-    /// UUID of the dataflow that should be stopped
-    uuid: Option<Uuid>,
-    /// Name of the dataflow that should be stopped
-    #[clap(long, short = 'n')]
+    /// Name or UUID of the dataflow that should be stopped
+    #[clap(value_name = "NAME_OR_UUID", conflicts_with = "all")]
+    identifier: Option<String>,
+    /// Name of the dataflow (alternative to positional; kept for back-compat)
+    #[clap(long, short = 'n', conflicts_with_all = ["identifier", "all"])]
     name: Option<String>,
+    /// Stop every running dataflow.
+    #[clap(long, conflicts_with_all = ["identifier", "name"])]
+    all: bool,
     /// Kill the dataflow if it doesn't stop after the given duration
     ///
     /// Specifically, it does the following:
@@ -46,14 +50,52 @@ impl Executable for Stop {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         let session = self.coordinator.connect()?;
-        match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
-            (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &session)
-            }
-            (None, None) => stop_dataflow_interactive(self.grace_duration, self.force, &session),
+
+        if self.all {
+            return stop_all(self.grace_duration, self.force, &session);
+        }
+
+        let ident = self.identifier.or(self.name);
+        match ident {
+            // Identifier parses as UUID -> dispatch by UUID. Otherwise treat
+            // as a dataflow name. Users who want strict name-only lookup can
+            // still use `-n/--name` (which takes the explicit-name path).
+            Some(s) => match Uuid::parse_str(&s) {
+                Ok(uuid) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
+                Err(_) => stop_dataflow_by_name(s, self.grace_duration, self.force, &session),
+            },
+            None => stop_dataflow_interactive(self.grace_duration, self.force, &session),
         }
     }
+}
+
+fn stop_all(
+    grace_duration: Option<Duration>,
+    force: bool,
+    session: &WsSession,
+) -> eyre::Result<()> {
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active = list.get_active();
+    if active.is_empty() {
+        println!("No dataflows are running.");
+        return Ok(());
+    }
+    let total = active.len();
+    let mut errors = Vec::new();
+    for entry in active {
+        if let Err(e) = stop_dataflow(entry.uuid, grace_duration, force, session) {
+            errors.push(format!("{}: {e}", entry.uuid));
+        }
+    }
+    if !errors.is_empty() {
+        bail!(
+            "{} of {total} dataflow(s) failed to stop:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        );
+    }
+    println!("Stopped {total} dataflow(s).");
+    Ok(())
 }
 
 fn stop_dataflow_interactive(
