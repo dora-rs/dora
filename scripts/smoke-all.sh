@@ -29,14 +29,27 @@ FAILURES=()
 RUN_RUST=true
 RUN_PYTHON=true
 VERBOSE=false
+SHOW_OUTPUT=false
 
 for arg in "$@"; do
     case "$arg" in
         --rust-only)   RUN_PYTHON=false ;;
         --python-only) RUN_RUST=false ;;
         -v|--verbose)  VERBOSE=true ;;
+        -s|--show-output) SHOW_OUTPUT=true ;;
         -h|--help)
-            echo "Usage: $0 [--rust-only] [--python-only] [-v|--verbose]"
+            cat <<'USAGE'
+Usage: ./scripts/smoke-all.sh [OPTIONS]
+
+  --rust-only         Run Rust examples only.
+  --python-only       Run Python examples only.
+  -s, --show-output   After each example, dump the tail of dora output
+                      (on PASS too, not just FAIL). Good for seeing what
+                      the nodes actually printed.
+  -v, --verbose       Stream dora stdout/stderr live (includes coordinator/
+                      daemon chatter). Use when debugging a hang.
+  -h, --help          This message.
+USAGE
             exit 0
             ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
@@ -175,6 +188,7 @@ run_networked() {
         dump_tail "$logfile"
         log_fail "$name"
     else
+        [ "$SHOW_OUTPUT" = true ] && dump_tail "$logfile" 15
         log_pass "$name"
     fi
 }
@@ -222,6 +236,7 @@ run_local() {
     [ "$VERBOSE" != true ] && echo ""
     wait "$pid" 2>/dev/null
     if [ $? -eq 0 ]; then
+        [ "$SHOW_OUTPUT" = true ] && dump_tail "$logfile" 15
         log_pass "$name"
     else
         dump_tail "$logfile"
