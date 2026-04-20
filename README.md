@@ -588,9 +588,17 @@ Dora ships with a three-tier QA system designed for AI-authored code. Everything
 
 ```bash
 make qa-install     # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
-make qa-fast        # ~15s  -- fmt + clippy + audit + unwrap-budget (pre-commit)
+make qa-fast        # ~15s  -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
 make qa-full        # ~5-10 min -- qa-fast + tests + coverage (pre-push)
 make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-release)
+```
+
+On Ubuntu, install `ripgrep` separately and install `typos-cli` with Cargo:
+
+```bash
+sudo apt update
+sudo apt install ripgrep
+cargo install typos-cli
 ```
 
 **Gates in place:**
@@ -606,6 +614,7 @@ make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-rele
 
 **Reference docs:**
 
+- [Contributor QA Cheat Sheet](docs/contributor-qa-cheatsheet.md) -- contributor-oriented setup, day-to-day commands, and PR validation checklist
 - [QA Runbook](docs/qa-runbook.md) -- day-to-day command reference, failure modes, and fixes
 - [Agentic QA Strategy](docs/plan-agentic-qa-strategy.md) -- full three-tier design and rationale
 - [POC Report](docs/qa-poc-report-2026-04-09.md) -- case studies, metrics, lessons learned, recommendations for the wider ecosystem
@@ -613,6 +622,8 @@ make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-rele
 ## Contributing
 
 We welcome contributors of all experience levels. See the [contributing guide](CONTRIBUTING.md) to get started.
+
+For non-trivial work, discuss the approach in a GitHub issue, discussion, or Discord thread before implementing it. Before opening or updating a PR, run the QA level appropriate for the change and include the validation you ran in the PR description. The [Contributor QA Cheat Sheet](docs/contributor-qa-cheatsheet.md) is the fastest day-to-day reference; the stricter per-change policy lives in [docs/agentic-qa-policy.md](docs/agentic-qa-policy.md).
 
 ### Communication
 
