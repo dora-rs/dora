@@ -32,8 +32,11 @@ if [[ "${1:-}" == "--full" ]]; then
     --timeout 120
 else
   echo "Running diff mutation test vs origin/main..."
+  DIFF_FILE="$(mktemp)"
+  trap 'rm -f "$DIFF_FILE"' EXIT
+  git diff -U0 origin/main...HEAD >"$DIFF_FILE" 2>/dev/null || git diff -U0 origin/main >"$DIFF_FILE"
   cargo mutants \
-    --in-diff origin/main \
+    --in-diff "$DIFF_FILE" \
     "${CRITICAL_CRATES[@]}" \
     --jobs 4 \
     --timeout 120
