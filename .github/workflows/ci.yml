@@ -77,6 +77,12 @@ jobs:
           shared-key: workspace-test
       - name: Check
         run: cargo check --all
+      # `cargo check --all` does NOT build `[[example]]` targets, so
+      # signature breaks in `dora_cli::build` / `dora_cli::run` ship
+      # silently otherwise — example binaries are a common integration
+      # surface and deserve their own compile gate.
+      - name: Check examples compile
+        run: cargo check --examples
       - name: Build (excluding Python packages)
         run: >
           cargo build --all
