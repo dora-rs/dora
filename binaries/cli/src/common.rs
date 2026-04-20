@@ -222,6 +222,39 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
+/// Resolve the descriptor-relative working dir, preferring an explicit
+/// override over `dataflow_path.parent()`. Used for module expansion
+/// and relative node binary resolution. See the canonicalizing sibling
+/// `canonicalize_working_dir` for the cargo / coordinator path.
+pub(crate) fn working_dir_or_parent<'a>(
+    override_: Option<&'a Path>,
+    dataflow_path: &'a Path,
+) -> &'a Path {
+    match override_ {
+        Some(p) => p,
+        None => dataflow_path.parent().unwrap_or_else(|| Path::new(".")),
+    }
+}
+
+/// Canonicalized form of `working_dir_or_parent`. Cargo invocations for
+/// `build:` directives and the `local_working_dir` sent to the
+/// coordinator both need a canonical path (symlinks resolved) so the
+/// workspace walk-up lands on the right `Cargo.toml`.
+pub(crate) fn canonicalize_working_dir(
+    override_: Option<&Path>,
+    dataflow_path: &Path,
+) -> eyre::Result<PathBuf> {
+    match override_ {
+        Some(p) => dunce::canonicalize(p)
+            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
+        None => Ok(dunce::canonicalize(dataflow_path)
+            .context("failed to canonicalize dataflow file path")?
+            .parent()
+            .context("dataflow path has no parent dir")?
+            .to_owned()),
+    }
+}
+
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
@@ -263,4 +296,58 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
     std::env::var("DORA_WRITE_EVENTS_TO")
         .ok()
         .map(PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn working_dir_or_parent_prefers_override() {
+        let dataflow = Path::new("/repo/examples/foo/dataflow.yml");
+        let override_ = Path::new("/tmp/elsewhere");
+        assert_eq!(working_dir_or_parent(Some(override_), dataflow), override_);
+    }
+
+    #[test]
+    fn working_dir_or_parent_falls_back_to_dataflow_parent() {
+        let dataflow = Path::new("/repo/examples/foo/dataflow.yml");
+        assert_eq!(
+            working_dir_or_parent(None, dataflow),
+            Path::new("/repo/examples/foo")
+        );
+    }
+
+    #[test]
+    fn working_dir_or_parent_handles_bare_filename() {
+        // `Path::parent()` on "dataflow.yml" returns `Some("")` not `None`.
+        // The helper should ultimately treat this as "." (current dir).
+        let dataflow = Path::new("dataflow.yml");
+        assert_eq!(working_dir_or_parent(None, dataflow), Path::new(""));
+    }
+
+    #[test]
+    fn canonicalize_working_dir_prefers_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow, "").unwrap();
+        let got = canonicalize_working_dir(Some(tmp.path()), &dataflow).unwrap();
+        assert_eq!(got, dunce::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_working_dir_falls_back_to_dataflow_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow, "").unwrap();
+        let got = canonicalize_working_dir(None, &dataflow).unwrap();
+        assert_eq!(got, dunce::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_working_dir_errors_on_missing_override() {
+        let missing = Path::new("/definitely/not/a/real/path/for/tests");
+        let dataflow = Path::new("/tmp/does-not-matter.yml");
+        assert!(canonicalize_working_dir(Some(missing), dataflow).is_err());
+    }
 }

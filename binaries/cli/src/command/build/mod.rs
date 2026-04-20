@@ -60,7 +60,10 @@ use crate::ws_client::WsSession;
 
 use super::{Executable, default_tracing};
 use crate::{
-    common::{connect_to_coordinator, local_working_dir, resolve_dataflow},
+    common::{
+        canonicalize_working_dir, connect_to_coordinator, local_working_dir, resolve_dataflow,
+        working_dir_or_parent,
+    },
     session::DataflowSession,
 };
 
@@ -122,6 +125,7 @@ impl Executable for Build {
             self.write_lockfile,
             self.lockfile,
             self.parallel,
+            None,
         )
     }
 }
@@ -138,14 +142,13 @@ pub fn build(
     write_lockfile: bool,
     lockfile_override: Option<PathBuf>,
     parallel: bool,
+    working_dir_override: Option<PathBuf>,
 ) -> eyre::Result<()> {
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     if lockfile_override.is_some() && !(locked || write_lockfile) {
         eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");
     }
-    let working_dir = dataflow_path
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."));
+    let working_dir = working_dir_or_parent(working_dir_override.as_deref(), &dataflow_path);
     let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
         .wrap_err_with(|| {
             format!(
@@ -307,12 +310,8 @@ pub fn build(
     match build_kind {
         BuildKind::Local => {
             log::info!("running local build");
-            // use dataflow dir as base working dir
-            let local_working_dir = dunce::canonicalize(&dataflow_path)
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?
-                .to_owned();
+            let local_working_dir =
+                canonicalize_working_dir(working_dir_override.as_deref(), &dataflow_path)?;
             let build_info = build_dataflow_locally(
                 dataflow_descriptor,
                 &git_sources,

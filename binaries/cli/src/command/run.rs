@@ -6,8 +6,8 @@ use super::{Executable, system::status::daemon_running};
 use crate::{
     LOCALHOST, build as build_dataflow,
     common::{
-        connect_with_retry, error_indicates_dataflow_finished, handle_dataflow_result,
-        resolve_dataflow, write_events_to,
+        canonicalize_working_dir, connect_with_retry, error_indicates_dataflow_finished,
+        handle_dataflow_result, resolve_dataflow, working_dir_or_parent, write_events_to,
     },
     output::{
         LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
@@ -24,7 +24,7 @@ use dora_message::{
     cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
 };
 use duration_str::parse as parse_duration_str;
-use eyre::{Context, ContextCompat, bail};
+use eyre::{Context, bail};
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Builder;
 
@@ -93,6 +93,12 @@ pub struct Run {
     /// Path to build lockfile (defaults to `<dataflow-stem>.dora-lock.yaml`).
     #[clap(long, value_name = "PATH")]
     pub lockfile: Option<PathBuf>,
+    /// Decouples the working dir used for descriptor-relative paths
+    /// from the dataflow file's parent. Needed when the path passed in
+    /// is a rewritten copy (e.g. `dora record`'s tempfile) whose parent
+    /// can't resolve the original `build:` / relative-path references.
+    #[clap(skip)]
+    pub working_dir: Option<PathBuf>,
 }
 
 impl Run {
@@ -109,7 +115,13 @@ impl Run {
             locked: false,
             write_lockfile: false,
             lockfile: None,
+            working_dir: None,
         }
+    }
+
+    pub fn with_working_dir(mut self, working_dir: PathBuf) -> Self {
+        self.working_dir = Some(working_dir);
+        self
     }
 }
 
@@ -173,14 +185,13 @@ impl Executable for Run {
             self.write_lockfile,
             self.lockfile.clone(),
             false, // sequential build for `dora run`
+            self.working_dir.clone(),
         )
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
-        let working_dir = dataflow_path
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
+        let working_dir = working_dir_or_parent(self.working_dir.as_deref(), &dataflow_path);
         let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
             .wrap_err_with(|| {
                 format!(
@@ -281,13 +292,10 @@ impl Executable for Run {
         }
 
         // --- Start the dataflow via coordinator ---
-        let local_working_dir = Some(
-            dunce::canonicalize(&dataflow_path)
-                .context("failed to canonicalize dataflow file path")?
-                .parent()
-                .context("dataflow path has no parent dir")?
-                .to_owned(),
-        );
+        let local_working_dir = Some(canonicalize_working_dir(
+            self.working_dir.as_deref(),
+            &dataflow_path,
+        )?);
 
         let dataflow_id = {
             let reply_raw = session

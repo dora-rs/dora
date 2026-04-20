@@ -216,7 +216,15 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to temp file and run
+    // The tempfile lives in /tmp but descriptor-relative paths
+    // (`build:` cargo, node binaries) must still resolve against the
+    // original source dir, so pass it as an explicit `working_dir`
+    // override to `Run`.
+    let source_dir = PathBuf::from(&args.file)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     let mut tmp =
         tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
     tmp.write_all(modified_yaml.as_bytes())?;
@@ -230,8 +238,9 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    let run = Run::new(tmp_path.to_string_lossy().to_string());
-    run.execute()
+    Run::new(tmp_path.to_string_lossy().to_string())
+        .with_working_dir(source_dir)
+        .execute()
 }
 
 fn run_record_proxy(args: Record) -> eyre::Result<()> {
