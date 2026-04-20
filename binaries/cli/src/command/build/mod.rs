@@ -160,6 +160,35 @@ pub struct BuildConfig {
     pub working_dir_override: Option<PathBuf>,
 }
 
+impl BuildConfig {
+    /// Shared constructor for callers that marshal arguments as
+    /// strings (`coordinator_addr: Option<String>`) and optional
+    /// booleans (`uv: Option<bool>`) rather than as pre-parsed
+    /// `IpAddr` / `bool`. Keeps the `addr.parse()` + `unwrap_or_default`
+    /// glue in one place instead of duplicating it in every binding
+    /// that exposes a simplified build API (PyO3 today, potentially
+    /// a C FFI or WASM shim later).
+    pub fn from_str_args(
+        dataflow: String,
+        uv: Option<bool>,
+        coordinator_addr: Option<String>,
+        coordinator_port: Option<u16>,
+        force_local: bool,
+    ) -> eyre::Result<Self> {
+        Ok(Self {
+            dataflow,
+            coordinator_addr: coordinator_addr
+                .map(|addr| addr.parse())
+                .transpose()
+                .wrap_err("invalid coordinator_addr")?,
+            coordinator_port,
+            uv: uv.unwrap_or_default(),
+            force_local,
+            ..Default::default()
+        })
+    }
+}
+
 pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     let BuildConfig {
         dataflow,
@@ -420,4 +449,55 @@ fn connect_to_coordinator_with_defaults(
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     connect_to_coordinator((coordinator_addr, coordinator_port).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_args_parses_valid_coordinator_addr() {
+        let cfg = BuildConfig::from_str_args(
+            "dataflow.yml".into(),
+            None,
+            Some("127.0.0.1".into()),
+            None,
+            false,
+        )
+        .expect("valid IP should parse");
+        assert_eq!(
+            cfg.coordinator_addr,
+            Some("127.0.0.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn from_str_args_accepts_none_addr() {
+        let cfg = BuildConfig::from_str_args("dataflow.yml".into(), None, None, None, false)
+            .expect("None addr should be fine");
+        assert!(cfg.coordinator_addr.is_none());
+    }
+
+    #[test]
+    fn from_str_args_errors_on_invalid_addr() {
+        let err = BuildConfig::from_str_args(
+            "dataflow.yml".into(),
+            None,
+            Some("not-an-ip".into()),
+            None,
+            false,
+        )
+        .expect_err("malformed addr should error");
+        assert!(
+            err.to_string().contains("invalid coordinator_addr"),
+            "error should carry context: {err}"
+        );
+    }
+
+    #[test]
+    fn from_str_args_unwraps_uv_default_to_false() {
+        let cfg =
+            BuildConfig::from_str_args("dataflow.yml".into(), None, None, None, false).unwrap();
+        assert!(!cfg.uv, "uv should default to false when None");
+    }
 }
