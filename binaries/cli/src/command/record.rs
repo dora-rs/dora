@@ -216,27 +216,22 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to temp file and run. The temp file MUST live alongside the
-    // original dataflow YAML — `Run::execute()` derives its working_dir
-    // from the dataflow path's parent, and any `build: cargo build -p X`
-    // directives in the nodes expect to resolve `Cargo.toml` from that
-    // parent (or an ancestor). Writing to the system temp dir (e.g. /tmp)
-    // breaks cargo with "could not find Cargo.toml in /tmp".
+    // Write the augmented descriptor to a system tempfile. We can't
+    // simply use the dataflow's parent — the source directory may be
+    // read-only (installed examples, CI caches) which would add a new
+    // failure mode for otherwise-valid inputs. Instead we pass the
+    // original parent as an explicit `working_dir` to `Run` so
+    // descriptor-relative paths (module expansion, `build: cargo build
+    // -p …`, node binary resolution) still resolve from the source
+    // directory. Without that override, cargo would fail with
+    // "could not find Cargo.toml in /tmp".
     let source_dir = PathBuf::from(&args.file)
         .parent()
         .map(|p| p.to_path_buf())
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| PathBuf::from("."));
-    let mut tmp = tempfile::Builder::new()
-        .prefix(".dora-record-")
-        .suffix(".yml")
-        .tempfile_in(&source_dir)
-        .wrap_err_with(|| {
-            format!(
-                "failed to create temp file alongside dataflow at {}",
-                source_dir.display()
-            )
-        })?;
+    let mut tmp =
+        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
     tmp.write_all(modified_yaml.as_bytes())?;
     tmp.flush()?;
     let tmp_path = tmp.into_temp_path();
@@ -248,8 +243,9 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    let run = Run::new(tmp_path.to_string_lossy().to_string());
-    run.execute()
+    Run::new(tmp_path.to_string_lossy().to_string())
+        .with_working_dir(source_dir)
+        .execute()
 }
 
 fn run_record_proxy(args: Record) -> eyre::Result<()> {
