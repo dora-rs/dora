@@ -205,7 +205,7 @@ cargo test --test fault-tolerance-e2e
 Tests:
 - `restart_recovers_from_failure` -- node with `restart_policy: on-failure` survives panics (15s)
 - `max_restarts_limit_reached` -- node exhausts `max_restarts: 2` budget (15s)
-- `input_timeout_closes_stale_input` -- `input_timeout: 2.0s` fires when upstream stops (10s)
+- `input_timeout_delivers_input_closed_to_downstream` -- `input_timeout: 0.5s` fires after a silent upstream, delivering `InputClosed` to the observer (5s)
 
 Dataflow YAMLs for these tests live in `tests/dataflows/`.
 

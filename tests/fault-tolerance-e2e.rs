@@ -348,13 +348,13 @@ async fn restart_window_resets_restart_counter() {
 
 /// `input_timeout` actually delivers `InputClosed` to downstream (#1631).
 ///
-/// The pre-existing `input_timeout_closes_stale_input` test below uses a
-/// fixture whose sink exits on the first `exit` input, ~500 ms after
-/// startup. That's well before the 2 s `input_timeout` could possibly
-/// fire — so `input_timeout` in that test is dead config and the
-/// `result.is_ok()` assertion only proves the dataflow completes at all.
-///
-/// This test closes the gap by driving the timeout path directly:
+/// The legacy `input_timeout_closes_stale_input` test used a fixture
+/// whose sink exited on the first `exit` input ~500 ms after startup
+/// — well before the 2 s `input_timeout` could possibly fire — so
+/// `input_timeout` in that test was dead config and the
+/// `result.is_ok()` assertion only proved the dataflow completed at all.
+/// Removed in #1669; this test replaces it by driving the timeout path
+/// directly:
 ///
 /// - `silent-source-node` emits exactly one output on the first tick
 ///   then stays alive but silent (so channel-close doesn't fire — the
@@ -703,45 +703,11 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
     );
 }
 
-/// Input timeout fires when upstream stops producing.
-///
-/// The status-node exits after receiving trigger-exit. The sink has input_timeout: 2.0
-/// on the status-node output. After the timeout, the sink receives InputClosed and
-/// the dataflow completes gracefully.
-#[tokio::test(flavor = "multi_thread")]
-async fn input_timeout_closes_stale_input() {
-    ensure_nodes_built();
-
-    let dataflow_path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/input-timeout.yml");
-
-    let result = Daemon::run_dataflow(
-        &dataflow_path,
-        None,
-        None,
-        SessionId::generate(),
-        false,
-        LogDestination::Tracing,
-        None,
-        Some(Duration::from_secs(10)),
-        false,
-    )
-    .await;
-
-    match &result {
-        Ok(dr) => {
-            eprintln!(
-                "dataflow completed with {} node results",
-                dr.node_results.len()
-            );
-            for (id, r) in &dr.node_results {
-                eprintln!("  {id}: {r:?}");
-            }
-        }
-        Err(e) => {
-            eprintln!("dataflow error: {e}");
-        }
-    }
-
-    assert!(result.is_ok(), "dataflow should complete: {result:?}");
-}
+// Legacy `input_timeout_closes_stale_input` removed (#1669). Its
+// fixture's sink exited on the first `exit` signal at ~500 ms, well
+// before the 2 s `input_timeout` could possibly fire — so the
+// `input_timeout` config was dead and the test only proved "the
+// dataflow runs". Real coverage lives in
+// `input_timeout_delivers_input_closed_to_downstream` (PR #1647),
+// which actively drives the timeout path via a silent-source + event
+// observer fixture.

@@ -11,7 +11,7 @@
 The existing `tests/fault-tolerance-e2e.rs` has 3 tests:
 - `restart_recovers_from_failure` — node panics with restart policy
 - `max_restarts_limit_reached` — restart policy bounded
-- `input_timeout_closes_stale_input` — timeout semantics
+- `input_timeout_delivers_input_closed_to_downstream` — timeout semantics (replaced legacy `input_timeout_closes_stale_input` in #1669)
 
 These test **node-level** failures. They do not test:
 - **Coordinator crashes** (the single point of control)
