@@ -216,19 +216,14 @@ fn run_record(args: Record) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write the augmented descriptor to a system tempfile. We can't
-    // simply use the dataflow's parent — the source directory may be
-    // read-only (installed examples, CI caches) which would add a new
-    // failure mode for otherwise-valid inputs. Instead we pass the
-    // original parent as an explicit `working_dir` to `Run` so
-    // descriptor-relative paths (module expansion, `build: cargo build
-    // -p …`, node binary resolution) still resolve from the source
-    // directory. Without that override, cargo would fail with
-    // "could not find Cargo.toml in /tmp".
+    // The tempfile lives in /tmp but descriptor-relative paths
+    // (`build:` cargo, node binaries) must still resolve against the
+    // original source dir, so pass it as an explicit `working_dir`
+    // override to `Run`.
     let source_dir = PathBuf::from(&args.file)
         .parent()
-        .map(|p| p.to_path_buf())
         .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let mut tmp =
         tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;

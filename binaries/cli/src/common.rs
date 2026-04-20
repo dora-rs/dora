@@ -222,6 +222,39 @@ pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     Ok(dataflow)
 }
 
+/// Resolve the descriptor-relative working dir, preferring an explicit
+/// override over `dataflow_path.parent()`. Used for module expansion
+/// and relative node binary resolution. See the canonicalizing sibling
+/// `canonicalize_working_dir` for the cargo / coordinator path.
+pub(crate) fn working_dir_or_parent<'a>(
+    override_: Option<&'a Path>,
+    dataflow_path: &'a Path,
+) -> &'a Path {
+    match override_ {
+        Some(p) => p,
+        None => dataflow_path.parent().unwrap_or_else(|| Path::new(".")),
+    }
+}
+
+/// Canonicalized form of `working_dir_or_parent`. Cargo invocations for
+/// `build:` directives and the `local_working_dir` sent to the
+/// coordinator both need a canonical path (symlinks resolved) so the
+/// workspace walk-up lands on the right `Cargo.toml`.
+pub(crate) fn canonicalize_working_dir(
+    override_: Option<&Path>,
+    dataflow_path: &Path,
+) -> eyre::Result<PathBuf> {
+    match override_ {
+        Some(p) => dunce::canonicalize(p)
+            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
+        None => Ok(dunce::canonicalize(dataflow_path)
+            .context("failed to canonicalize dataflow file path")?
+            .parent()
+            .context("dataflow path has no parent dir")?
+            .to_owned()),
+    }
+}
+
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
