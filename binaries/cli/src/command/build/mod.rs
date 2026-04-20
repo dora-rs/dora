@@ -114,36 +114,75 @@ pub struct Build {
 impl Executable for Build {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        build(
-            self.dataflow,
-            self.coordinator_addr,
-            self.coordinator_port,
-            self.uv,
-            self.local,
-            self.strict_types,
-            self.locked,
-            self.write_lockfile,
-            self.lockfile,
-            self.parallel,
-            None,
-        )
+        build(BuildConfig {
+            dataflow: self.dataflow,
+            coordinator_addr: self.coordinator_addr,
+            coordinator_port: self.coordinator_port,
+            uv: self.uv,
+            force_local: self.local,
+            strict_types: self.strict_types,
+            locked: self.locked,
+            write_lockfile: self.write_lockfile,
+            lockfile_override: self.lockfile,
+            parallel: self.parallel,
+            ..Default::default()
+        })
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build(
-    dataflow: String,
-    coordinator_addr: Option<IpAddr>,
-    coordinator_port: Option<u16>,
-    uv: bool,
-    force_local: bool,
-    strict_types: bool,
-    locked: bool,
-    write_lockfile: bool,
-    lockfile_override: Option<PathBuf>,
-    parallel: bool,
-    working_dir_override: Option<PathBuf>,
-) -> eyre::Result<()> {
+/// Configuration for a [`build`] invocation. Set `dataflow` and
+/// override only the fields you care about using struct-update syntax:
+///
+/// ```ignore
+/// build(BuildConfig {
+///     dataflow: path,
+///     uv: true,
+///     force_local: true,
+///     ..Default::default()
+/// })?;
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct BuildConfig {
+    pub dataflow: String,
+    pub coordinator_addr: Option<IpAddr>,
+    pub coordinator_port: Option<u16>,
+    pub uv: bool,
+    pub force_local: bool,
+    pub strict_types: bool,
+    pub locked: bool,
+    pub write_lockfile: bool,
+    pub lockfile_override: Option<PathBuf>,
+    pub parallel: bool,
+    /// Overrides the working directory for cargo invocations and
+    /// module expansion. Needed when the dataflow path points at a
+    /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
+    /// original `build:` directives or relative node binaries.
+    pub working_dir_override: Option<PathBuf>,
+}
+
+pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
+    let BuildConfig {
+        dataflow,
+        coordinator_addr,
+        coordinator_port,
+        uv,
+        force_local,
+        strict_types,
+        locked,
+        write_lockfile,
+        lockfile_override,
+        parallel,
+        working_dir_override,
+    } = cfg;
+    // `BuildConfig` derives `Default` so `..Default::default()` works at
+    // call sites, but that gives `dataflow: String::new()` which would
+    // fail late with a confusing "failed to read ``" error. Catch it up
+    // front with a clear message.
+    if dataflow.is_empty() {
+        eyre::bail!(
+            "BuildConfig::dataflow is empty — set it to a YAML path or URL before calling build()"
+        );
+    }
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     if lockfile_override.is_some() && !(locked || write_lockfile) {
         eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");

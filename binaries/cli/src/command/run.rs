@@ -4,7 +4,7 @@
 
 use super::{Executable, system::status::daemon_running};
 use crate::{
-    LOCALHOST, build as build_dataflow,
+    BuildConfig, LOCALHOST, build as build_dataflow,
     common::{
         canonicalize_working_dir, connect_with_retry, error_indicates_dataflow_finished,
         handle_dataflow_result, resolve_dataflow, working_dir_or_parent, write_events_to,
@@ -174,19 +174,16 @@ impl Executable for Run {
 
         let dataflow_path =
             resolve_dataflow(self.dataflow.clone()).context("could not resolve dataflow")?;
-        build_dataflow(
-            dataflow_path.to_string_lossy().into_owned(),
-            None,
-            None,
-            self.uv,
-            true,
-            false,
-            self.locked,
-            self.write_lockfile,
-            self.lockfile.clone(),
-            false, // sequential build for `dora run`
-            self.working_dir.clone(),
-        )
+        build_dataflow(BuildConfig {
+            dataflow: dataflow_path.to_string_lossy().into_owned(),
+            uv: self.uv,
+            force_local: true,
+            locked: self.locked,
+            write_lockfile: self.write_lockfile,
+            lockfile_override: self.lockfile.clone(),
+            working_dir_override: self.working_dir.clone(),
+            ..Default::default()
+        })
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;

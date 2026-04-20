@@ -22,10 +22,14 @@ timer (10ms) --> rust-node --> random --> rust-status-node --> status --> rust-s
 The `run.rs` harness calls dora CLI functions as a library:
 
 ```rust
-use dora_cli::{build, run};
+use dora_cli::{BuildConfig, build, run};
 
 fn main() -> eyre::Result<()> {
-    build("dataflow.yml".to_string(), None, None, false, true)?;
+    build(BuildConfig {
+        dataflow: "dataflow.yml".to_string(),
+        force_local: true,
+        ..Default::default()
+    })?;
     run("dataflow.yml".to_string(), false)?;
     Ok(())
 }
