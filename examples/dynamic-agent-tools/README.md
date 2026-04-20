@@ -69,7 +69,7 @@ Back to echo-only. Calc requests go unanswered again.
 ### Step 4: Clean up
 
 ```bash
-dora stop --all
+dora stop agent-demo
 dora down
 ```
 
