@@ -114,36 +114,83 @@ pub struct Build {
 impl Executable for Build {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        build(
-            self.dataflow,
-            self.coordinator_addr,
-            self.coordinator_port,
-            self.uv,
-            self.local,
-            self.strict_types,
-            self.locked,
-            self.write_lockfile,
-            self.lockfile,
-            self.parallel,
-            None,
-        )
+        build(BuildConfig {
+            coordinator_addr: self.coordinator_addr,
+            coordinator_port: self.coordinator_port,
+            uv: self.uv,
+            force_local: self.local,
+            strict_types: self.strict_types,
+            locked: self.locked,
+            write_lockfile: self.write_lockfile,
+            lockfile_override: self.lockfile,
+            parallel: self.parallel,
+            ..BuildConfig::new(self.dataflow)
+        })
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build(
-    dataflow: String,
-    coordinator_addr: Option<IpAddr>,
-    coordinator_port: Option<u16>,
-    uv: bool,
-    force_local: bool,
-    strict_types: bool,
-    locked: bool,
-    write_lockfile: bool,
-    lockfile_override: Option<PathBuf>,
-    parallel: bool,
-    working_dir_override: Option<PathBuf>,
-) -> eyre::Result<()> {
+/// Configuration for a [`build`] invocation. Construct via
+/// [`BuildConfig::new`] and override only the fields you care about
+/// using struct-update syntax:
+///
+/// ```ignore
+/// build(BuildConfig {
+///     uv: true,
+///     force_local: true,
+///     ..BuildConfig::new(path)
+/// })?;
+/// ```
+#[derive(Debug, Clone)]
+pub struct BuildConfig {
+    pub dataflow: String,
+    pub coordinator_addr: Option<IpAddr>,
+    pub coordinator_port: Option<u16>,
+    pub uv: bool,
+    pub force_local: bool,
+    pub strict_types: bool,
+    pub locked: bool,
+    pub write_lockfile: bool,
+    pub lockfile_override: Option<PathBuf>,
+    pub parallel: bool,
+    /// See `binaries/cli/src/command/run.rs::Run::working_dir` for why
+    /// this exists — `dora record` rewrites the YAML into /tmp but the
+    /// cargo invocations must still resolve `Cargo.toml` from the
+    /// original source directory.
+    pub working_dir_override: Option<PathBuf>,
+}
+
+impl BuildConfig {
+    pub fn new(dataflow: String) -> Self {
+        Self {
+            dataflow,
+            coordinator_addr: None,
+            coordinator_port: None,
+            uv: false,
+            force_local: false,
+            strict_types: false,
+            locked: false,
+            write_lockfile: false,
+            lockfile_override: None,
+            parallel: false,
+            working_dir_override: None,
+        }
+    }
+}
+
+pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
+    let BuildConfig {
+        dataflow,
+        coordinator_addr,
+        coordinator_port,
+        uv,
+        force_local,
+        strict_types,
+        locked,
+        write_lockfile,
+        lockfile_override,
+        parallel,
+        working_dir_override,
+    } = cfg;
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     if lockfile_override.is_some() && !(locked || write_lockfile) {
         eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");

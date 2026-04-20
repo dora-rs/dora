@@ -28,7 +28,7 @@ mod trace;
 mod up;
 mod validate;
 
-pub use build::build;
+pub use build::{BuildConfig, build};
 pub use run::{Run, run};
 
 use build::Build;

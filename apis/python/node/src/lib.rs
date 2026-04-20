@@ -798,22 +798,16 @@ pub fn build(
     coordinator_port: Option<u16>,
     force_local: bool,
 ) -> eyre::Result<()> {
-    dora_cli::build(
-        dataflow_path,
-        coordinator_addr
+    dora_cli::build(dora_cli::BuildConfig {
+        coordinator_addr: coordinator_addr
             .map(|addr| addr.parse())
             .transpose()
             .wrap_err("invalid coordinator_addr")?,
         coordinator_port,
-        uv.unwrap_or_default(),
+        uv: uv.unwrap_or_default(),
         force_local,
-        false,
-        false,
-        false,
-        None,
-        false,
-        None,
-    )
+        ..dora_cli::BuildConfig::new(dataflow_path)
+    })
 }
 
 /// Run a Dataflow, exactly the same way as `dora run` command line tool.

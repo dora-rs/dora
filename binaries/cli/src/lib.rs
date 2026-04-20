@@ -13,7 +13,7 @@ mod template;
 mod ws_client;
 pub use ws_client::WsSession;
 
-pub use command::build;
+pub use command::{BuildConfig, build};
 pub use command::{Executable, Run as RunCommand, run};
 
 /// Default address for *connecting* to a coordinator (client side).
