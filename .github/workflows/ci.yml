@@ -77,6 +77,13 @@ jobs:
           shared-key: workspace-test
       - name: Check
         run: cargo check --all
+      # `cargo check --all` does NOT build `[[example]]` targets —
+      # #1674 and #1677 both silently broke examples under `main`
+      # because there was no CI gate that compiled them. Cheap to run
+      # (<30s on cached builds); catches signature breakage at the
+      # source tree's most common integration surface.
+      - name: Check examples compile
+        run: cargo check --examples
       - name: Build (excluding Python packages)
         run: >
           cargo build --all
