@@ -174,6 +174,15 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         parallel,
         working_dir_override,
     } = cfg;
+    // `BuildConfig` derives `Default` so `..Default::default()` works at
+    // call sites, but that gives `dataflow: String::new()` which would
+    // fail late with a confusing "failed to read ``" error. Catch it up
+    // front with a clear message.
+    if dataflow.is_empty() {
+        eyre::bail!(
+            "BuildConfig::dataflow is empty — set it to a YAML path or URL before calling build()"
+        );
+    }
     let dataflow_path = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     if lockfile_override.is_some() && !(locked || write_lockfile) {
         eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");
