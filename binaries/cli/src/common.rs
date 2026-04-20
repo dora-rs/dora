@@ -297,3 +297,57 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
         .ok()
         .map(PathBuf::from)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn working_dir_or_parent_prefers_override() {
+        let dataflow = Path::new("/repo/examples/foo/dataflow.yml");
+        let override_ = Path::new("/tmp/elsewhere");
+        assert_eq!(working_dir_or_parent(Some(override_), dataflow), override_);
+    }
+
+    #[test]
+    fn working_dir_or_parent_falls_back_to_dataflow_parent() {
+        let dataflow = Path::new("/repo/examples/foo/dataflow.yml");
+        assert_eq!(
+            working_dir_or_parent(None, dataflow),
+            Path::new("/repo/examples/foo")
+        );
+    }
+
+    #[test]
+    fn working_dir_or_parent_handles_bare_filename() {
+        // `Path::parent()` on "dataflow.yml" returns `Some("")` not `None`.
+        // The helper should ultimately treat this as "." (current dir).
+        let dataflow = Path::new("dataflow.yml");
+        assert_eq!(working_dir_or_parent(None, dataflow), Path::new(""));
+    }
+
+    #[test]
+    fn canonicalize_working_dir_prefers_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow, "").unwrap();
+        let got = canonicalize_working_dir(Some(tmp.path()), &dataflow).unwrap();
+        assert_eq!(got, dunce::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_working_dir_falls_back_to_dataflow_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow, "").unwrap();
+        let got = canonicalize_working_dir(None, &dataflow).unwrap();
+        assert_eq!(got, dunce::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_working_dir_errors_on_missing_override() {
+        let missing = Path::new("/definitely/not/a/real/path/for/tests");
+        let dataflow = Path::new("/tmp/does-not-matter.yml");
+        assert!(canonicalize_working_dir(Some(missing), dataflow).is_err());
+    }
+}
