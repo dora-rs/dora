@@ -8,9 +8,10 @@
 #   -> dora stop -> dora destroy -> dora down
 #
 # Usage:
-#   ./scripts/smoke-all.sh              # Run all examples
-#   ./scripts/smoke-all.sh --rust-only  # Rust examples only
+#   ./scripts/smoke-all.sh               # Run all examples
+#   ./scripts/smoke-all.sh --rust-only   # Rust examples only
 #   ./scripts/smoke-all.sh --python-only # Python examples only
+#   ./scripts/smoke-all.sh --verbose     # Stream dora stdout/stderr live
 #
 # Prerequisites: cargo, Python 3 with pyarrow + numpy installed.
 # Skips examples that need webcam, CUDA, ROS2, C/C++ toolchain, etc.
@@ -27,18 +28,44 @@ SKIP=0
 FAILURES=()
 RUN_RUST=true
 RUN_PYTHON=true
+VERBOSE=false
+# Default ON: this script is for humans running smokes locally, so they
+# should see what the dataflow actually did. CI/nightly uses the Rust
+# suite at tests/example-smoke.rs, not this script.
+SHOW_OUTPUT=true
 
 for arg in "$@"; do
     case "$arg" in
-        --rust-only)  RUN_PYTHON=false ;;
-        --python-only) RUN_RUST=false ;;
+        --rust-only)      RUN_PYTHON=false ;;
+        --python-only)    RUN_RUST=false ;;
+        -v|--verbose)     VERBOSE=true ;;
+        -q|--quiet)       SHOW_OUTPUT=false ;;
+        -s|--show-output) SHOW_OUTPUT=true ;;  # kept for back-compat; now a no-op by default
         -h|--help)
-            echo "Usage: $0 [--rust-only] [--python-only]"
+            cat <<'USAGE'
+Usage: ./scripts/smoke-all.sh [OPTIONS]
+
+  --rust-only         Run Rust examples only.
+  --python-only       Run Python examples only.
+  -v, --verbose       Stream dora stdout/stderr live (includes coordinator
+                      and daemon chatter). Use when debugging a hang.
+  -q, --quiet         Suppress the tail of dora output after each PASS.
+                      Keeps the step progress + PASS/FAIL summary.
+  -s, --show-output   (default) Dump the tail of dora output after each
+                      example. Kept as an explicit opt-in for symmetry
+                      with -q; equivalent to the default.
+  -h, --help          This message.
+USAGE
             exit 0
             ;;
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
+
+# Startup hint so the developer knows the escape hatches.
+if [ "$VERBOSE" = false ] && [ "$SHOW_OUTPUT" = true ]; then
+    echo "(tip: -v streams dora live; -q suppresses the per-example tail)"
+fi
 
 DORA="${DORA_BIN:-$ROOT/target/debug/dora}"
 
@@ -49,6 +76,35 @@ DORA="${DORA_BIN:-$ROOT/target/debug/dora}"
 log_pass() { echo "  PASS: $1"; PASS=$((PASS + 1)); }
 log_fail() { echo "  FAIL: $1"; FAIL=$((FAIL + 1)); FAILURES+=("$1"); }
 log_skip() { echo "  SKIP: $1 ($2)"; SKIP=$((SKIP + 1)); }
+
+# Run a dora sub-command. In --verbose mode, stream output live. Otherwise
+# capture it into a file so we can dump it on failure.
+#
+#   run_dora_step <logfile> <args...>
+#
+# Returns the sub-command's exit status.
+run_dora_step() {
+    local logfile="$1"
+    shift
+    if [ "$VERBOSE" = true ]; then
+        "$DORA" "$@" 2>&1 | tee -a "$logfile"
+        return "${PIPESTATUS[0]}"
+    else
+        "$DORA" "$@" > "$logfile" 2>&1
+    fi
+}
+
+# Dump the last N lines of a captured log file, indented. Used on failure
+# so the developer sees WHY the step failed without having to re-run in
+# --verbose mode.
+dump_tail() {
+    local logfile="$1" lines="${2:-20}"
+    if [ -s "$logfile" ]; then
+        echo "    ---- last $lines lines ----"
+        tail -n "$lines" "$logfile" | sed 's/^/    | /'
+        echo "    --------------------------"
+    fi
+}
 
 cleanup_stale() {
     "$DORA" stop --all > /dev/null 2>&1 || true
@@ -79,32 +135,49 @@ run_networked() {
         uv_args=(--uv)
     fi
 
+    local logfile
+    logfile=$(mktemp -t "smoke-${name}.XXXXXX")
+    # Always clean the log up on return, no matter which branch we exit through.
+    trap 'rm -f "$logfile"' RETURN
+
     cleanup_stale
 
-    if ! "$DORA" up > /dev/null 2>&1; then
+    printf '  up'
+    if ! run_dora_step "$logfile" up; then
+        echo " FAIL"
+        dump_tail "$logfile"
         log_fail "$name (dora up failed)"
         return
     fi
+    printf ' ok |  build'
 
-    if ! "$DORA" build "$full_yaml" "${uv_args[@]}" > /dev/null 2>&1; then
+    if ! run_dora_step "$logfile" build "$full_yaml" ${uv_args[@]+"${uv_args[@]}"}; then
+        echo " FAIL"
+        dump_tail "$logfile"
         log_fail "$name (dora build failed)"
         cleanup_stale
         return
     fi
+    printf ' ok |  start'
 
-    if ! "$DORA" start "$full_yaml" --detach "${uv_args[@]}" > /dev/null 2>&1; then
+    if ! run_dora_step "$logfile" start "$full_yaml" --detach ${uv_args[@]+"${uv_args[@]}"}; then
+        echo " FAIL"
+        dump_tail "$logfile"
         log_fail "$name (dora start failed)"
         cleanup_stale
         return
     fi
+    printf ' ok | running'
 
-    # Poll until dataflow finishes or timeout.
-    # Reaching the timeout is fine -- timer-driven dataflows run forever.
+    # Poll until dataflow finishes or timeout. Emit a heartbeat dot + elapsed
+    # count every 2s so the developer can see it's alive. The line is rewritten
+    # in place via \r so it doesn't flood stdout.
     local elapsed=0
     local failed=false
     while [ "$elapsed" -lt "$timeout" ]; do
         sleep 2
         elapsed=$((elapsed + 2))
+        printf '\r  up ok |  build ok |  start ok | running %ds/%ds ' "$elapsed" "$timeout"
         local list_out
         list_out=$("$DORA" list --json 2>/dev/null || echo "")
         if [ -z "$list_out" ]; then
@@ -118,13 +191,15 @@ run_networked() {
             break
         fi
     done
+    echo ""
 
-    # Cleanup
     cleanup_stale
 
     if [ "$failed" = true ]; then
+        dump_tail "$logfile"
         log_fail "$name"
     else
+        [ "$SHOW_OUTPUT" = true ] && dump_tail "$logfile" 15
         log_pass "$name"
     fi
 }
@@ -140,24 +215,42 @@ run_local() {
         uv_args=(--uv)
     fi
     echo "=> $name (local, ${timeout}s, hard-kill ${hard_timeout}s)"
-    "$DORA" run "$full_yaml" --stop-after "${timeout}s" "${uv_args[@]}" \
-        > /dev/null 2>&1 &
+
+    local logfile
+    logfile=$(mktemp -t "smoke-${name}.XXXXXX")
+    trap 'rm -f "$logfile"' RETURN
+
+    if [ "$VERBOSE" = true ]; then
+        "$DORA" run "$full_yaml" --stop-after "${timeout}s" \
+            ${uv_args[@]+"${uv_args[@]}"} 2>&1 | tee "$logfile" &
+    else
+        "$DORA" run "$full_yaml" --stop-after "${timeout}s" \
+            ${uv_args[@]+"${uv_args[@]}"} > "$logfile" 2>&1 &
+    fi
     local pid=$!
     local elapsed=0
     while kill -0 "$pid" 2>/dev/null; do
         if [ "$elapsed" -ge "$hard_timeout" ]; then
             kill -9 "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
+            echo ""
+            dump_tail "$logfile"
             log_fail "$name (hard-killed after ${hard_timeout}s)"
             return
         fi
         sleep 1
         elapsed=$((elapsed + 1))
+        if [ "$VERBOSE" != true ]; then
+            printf '\r  running %ds/%ds (hard-kill %ds) ' "$elapsed" "$timeout" "$hard_timeout"
+        fi
     done
+    [ "$VERBOSE" != true ] && echo ""
     wait "$pid" 2>/dev/null
     if [ $? -eq 0 ]; then
+        [ "$SHOW_OUTPUT" = true ] && dump_tail "$logfile" 15
         log_pass "$name"
     else
+        dump_tail "$logfile"
         log_fail "$name"
     fi
 }
