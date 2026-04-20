@@ -86,13 +86,13 @@ run_networked() {
         return
     fi
 
-    if ! "$DORA" build "$full_yaml" "${uv_args[@]}" > /dev/null 2>&1; then
+    if ! "$DORA" build "$full_yaml" ${uv_args[@]+"${uv_args[@]}"} > /dev/null 2>&1; then
         log_fail "$name (dora build failed)"
         cleanup_stale
         return
     fi
 
-    if ! "$DORA" start "$full_yaml" --detach "${uv_args[@]}" > /dev/null 2>&1; then
+    if ! "$DORA" start "$full_yaml" --detach ${uv_args[@]+"${uv_args[@]}"} > /dev/null 2>&1; then
         log_fail "$name (dora start failed)"
         cleanup_stale
         return
@@ -140,7 +140,7 @@ run_local() {
         uv_args=(--uv)
     fi
     echo "=> $name (local, ${timeout}s, hard-kill ${hard_timeout}s)"
-    "$DORA" run "$full_yaml" --stop-after "${timeout}s" "${uv_args[@]}" \
+    "$DORA" run "$full_yaml" --stop-after "${timeout}s" ${uv_args[@]+"${uv_args[@]}"} \
         > /dev/null 2>&1 &
     local pid=$!
     local elapsed=0
