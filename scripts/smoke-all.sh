@@ -29,25 +29,31 @@ FAILURES=()
 RUN_RUST=true
 RUN_PYTHON=true
 VERBOSE=false
-SHOW_OUTPUT=false
+# Default ON: this script is for humans running smokes locally, so they
+# should see what the dataflow actually did. CI/nightly uses the Rust
+# suite at tests/example-smoke.rs, not this script.
+SHOW_OUTPUT=true
 
 for arg in "$@"; do
     case "$arg" in
-        --rust-only)   RUN_PYTHON=false ;;
-        --python-only) RUN_RUST=false ;;
-        -v|--verbose)  VERBOSE=true ;;
-        -s|--show-output) SHOW_OUTPUT=true ;;
+        --rust-only)      RUN_PYTHON=false ;;
+        --python-only)    RUN_RUST=false ;;
+        -v|--verbose)     VERBOSE=true ;;
+        -q|--quiet)       SHOW_OUTPUT=false ;;
+        -s|--show-output) SHOW_OUTPUT=true ;;  # kept for back-compat; now a no-op by default
         -h|--help)
             cat <<'USAGE'
 Usage: ./scripts/smoke-all.sh [OPTIONS]
 
   --rust-only         Run Rust examples only.
   --python-only       Run Python examples only.
-  -s, --show-output   After each example, dump the tail of dora output
-                      (on PASS too, not just FAIL). Good for seeing what
-                      the nodes actually printed.
-  -v, --verbose       Stream dora stdout/stderr live (includes coordinator/
-                      daemon chatter). Use when debugging a hang.
+  -v, --verbose       Stream dora stdout/stderr live (includes coordinator
+                      and daemon chatter). Use when debugging a hang.
+  -q, --quiet         Suppress the tail of dora output after each PASS.
+                      Keeps the step progress + PASS/FAIL summary.
+  -s, --show-output   (default) Dump the tail of dora output after each
+                      example. Kept as an explicit opt-in for symmetry
+                      with -q; equivalent to the default.
   -h, --help          This message.
 USAGE
             exit 0
@@ -55,6 +61,11 @@ USAGE
         *) echo "Unknown option: $arg"; exit 1 ;;
     esac
 done
+
+# Startup hint so the developer knows the escape hatches.
+if [ "$VERBOSE" = false ] && [ "$SHOW_OUTPUT" = true ]; then
+    echo "(tip: -v streams dora live; -q suppresses the per-example tail)"
+fi
 
 DORA="${DORA_BIN:-$ROOT/target/debug/dora}"
 
