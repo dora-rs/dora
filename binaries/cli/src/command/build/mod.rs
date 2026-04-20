@@ -450,3 +450,54 @@ fn connect_to_coordinator_with_defaults(
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     connect_to_coordinator((coordinator_addr, coordinator_port).into())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_args_parses_valid_coordinator_addr() {
+        let cfg = BuildConfig::from_str_args(
+            "dataflow.yml".into(),
+            None,
+            Some("127.0.0.1".into()),
+            None,
+            false,
+        )
+        .expect("valid IP should parse");
+        assert_eq!(
+            cfg.coordinator_addr,
+            Some("127.0.0.1".parse::<IpAddr>().unwrap())
+        );
+    }
+
+    #[test]
+    fn from_str_args_accepts_none_addr() {
+        let cfg = BuildConfig::from_str_args("dataflow.yml".into(), None, None, None, false)
+            .expect("None addr should be fine");
+        assert!(cfg.coordinator_addr.is_none());
+    }
+
+    #[test]
+    fn from_str_args_errors_on_invalid_addr() {
+        let err = BuildConfig::from_str_args(
+            "dataflow.yml".into(),
+            None,
+            Some("not-an-ip".into()),
+            None,
+            false,
+        )
+        .expect_err("malformed addr should error");
+        assert!(
+            err.to_string().contains("invalid coordinator_addr"),
+            "error should carry context: {err}"
+        );
+    }
+
+    #[test]
+    fn from_str_args_unwraps_uv_default_to_false() {
+        let cfg =
+            BuildConfig::from_str_args("dataflow.yml".into(), None, None, None, false).unwrap();
+        assert!(!cfg.uv, "uv should default to false when None");
+    }
+}
