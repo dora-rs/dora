@@ -1327,31 +1327,46 @@ fn smoke_local_queue_size_latest_data_rust() {
 }
 
 // ---------------------------------------------------------------------------
-// Examples under `examples/` that are deliberately NOT covered by CI smoke
-// tests. Keep this table in sync with `scripts/smoke-all.sh` so the shell
-// helper and the Rust suite agree on what's skipped and why.
+// Examples under `examples/` that do NOT have a corresponding `smoke_*` or
+// `contract_*` test in this file. Some are blocked (filed issue or external
+// dep); others are intentionally covered by a DIFFERENT CI job. Keep this
+// table in sync with `scripts/smoke-all.sh` and the CI workflows it cites,
+// so the Rust suite, the shell helper, and CI all agree on what's covered
+// where and why.
+//
+// Audit method: diff `ls examples/` against the `smoke_*`/`contract_*`
+// function list in this file. Every example without a match here must have
+// a row below — either as a blocker or as "covered elsewhere" with a link
+// to the specific CI line that covers it.
 //
 // If you land a fix for a blocker below, write the corresponding smoke test
 // here and remove the row. Consumers of this file: the QA policy in
 // `docs/agentic-qa-policy.md` and the capability matrix in
 // `docs/testing-capabilities.md`.
 //
-// | Example                   | Blocker                        | Tracking |
-// |---------------------------|--------------------------------|----------|
-// | cuda-benchmark            | needs NVIDIA CUDA toolkit      | —        |
-// | dynamic-add-remove        | `dora node add` times out +    | #1682    |
-// |                           | corrupts dataflow state        |          |
-// | dynamic-agent-tools       | same as dynamic-add-remove     | #1682    |
-// | python-parquet-recorder   | no test written; low-priority  | —        |
-// | python-yolo-detection     | needs YOLO model weights       | —        |
-// | ros2-bridge               | needs ROS2 runtime             | —        |
-// | ros2-comparison           | needs ROS2 runtime             | —        |
-// | c-dataflow                | covered by `cli` job (3 OS)    | covered  |
-// | c++-dataflow              | covered by `cli` job (3 OS)    | covered  |
-// | c++-arrow-dataflow        | covered by `cli` job (3 OS)    | covered  |
-// | cmake-dataflow            | covered by `cli` job (3 OS)    | covered  |
-// | multiple-daemons          | covered by `cargo check --all` | covered  |
-// | rust-dataflow-git         | covered by `examples` job      | covered  |
+// | Example                   | Where it's tested / blocker                          | Tracking |
+// |---------------------------|------------------------------------------------------|----------|
+// | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
+// | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |
+// |                           | corrupts dataflow state                              |          |
+// | dynamic-agent-tools       | blocker: same as dynamic-add-remove                  | #1682    |
+// | python-parquet-recorder   | blocker: no test written; low-priority               | —        |
+// | python-yolo-detection     | blocker: needs YOLO model weights                    | —        |
+// | ros2-bridge               | blocker: needs ROS2 runtime                          | —        |
+// | ros2-comparison           | blocker: needs ROS2 runtime                          | —        |
+// | c-dataflow                | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
+// | c++-dataflow              | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
+// | c++-arrow-dataflow        | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
+// | cmake-dataflow            | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
+// | cpu-affinity-probe        | covered: nightly `cpu-affinity-smoke`                | covered  |
+// |                           | (.github/workflows/nightly.yml:535)                  |          |
+// | error-propagation         | covered: `cli` job .github/workflows/ci.yml:327      | covered  |
+// | multiple-daemons          | covered: `cargo check --all` (workspace members)     | covered  |
+// | python-dataflow-builder   | covered: builder contract                            | covered  |
+// |                           | .github/workflows/ci.yml:433 + docs/                 |          |
+// |                           | testing-capabilities.md                              |          |
+// | python-operator-dataflow  | covered: `cli` job .github/workflows/ci.yml:393      | covered  |
+// | rust-dataflow-git         | covered: `examples` job (3 OS)                       | covered  |
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.
