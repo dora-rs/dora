@@ -135,6 +135,11 @@ cargo test --all \
   --exclude dora-cli-api-python \
   --exclude dora-examples
 
+# 4. Example targets — `cargo check --all` does NOT build `[[example]]`
+# targets, so signature breaks in `dora_cli::build` / `dora_cli::run`
+# can ship silently otherwise. CI gates on this (#1680).
+cargo check --examples
+
 # Quick single-crate check while iterating:
 # cargo test -p <crate-name>
 ```
