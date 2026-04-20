@@ -11,7 +11,8 @@ use std::path::PathBuf;
 pub struct Add {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
-    #[clap(long)]
+    /// Dataflow name or UUID to add the node to
+    #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     dataflow: Option<String>,
     #[clap(long = "from-yaml")]
     from_yaml: PathBuf,

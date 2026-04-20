@@ -12,7 +12,8 @@ use eyre::bail;
 pub struct Remove {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
-    #[clap(long)]
+    /// Dataflow name or UUID to remove the node from
+    #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     dataflow: Option<String>,
     node: String,
     /// Grace period in seconds before force-killing the node.

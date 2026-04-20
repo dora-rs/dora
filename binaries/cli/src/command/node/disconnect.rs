@@ -14,7 +14,8 @@ use eyre::bail;
 pub struct Disconnect {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
-    #[clap(long)]
+    /// Dataflow name or UUID to remove the mapping from
+    #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     dataflow: Option<String>,
     /// Source in "node/output" format.
     source: String,
