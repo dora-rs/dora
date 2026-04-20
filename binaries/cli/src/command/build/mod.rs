@@ -115,6 +115,7 @@ impl Executable for Build {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
         build(BuildConfig {
+            dataflow: self.dataflow,
             coordinator_addr: self.coordinator_addr,
             coordinator_port: self.coordinator_port,
             uv: self.uv,
@@ -124,23 +125,23 @@ impl Executable for Build {
             write_lockfile: self.write_lockfile,
             lockfile_override: self.lockfile,
             parallel: self.parallel,
-            ..BuildConfig::new(self.dataflow)
+            ..Default::default()
         })
     }
 }
 
-/// Configuration for a [`build`] invocation. Construct via
-/// [`BuildConfig::new`] and override only the fields you care about
-/// using struct-update syntax:
+/// Configuration for a [`build`] invocation. Set `dataflow` and
+/// override only the fields you care about using struct-update syntax:
 ///
 /// ```ignore
 /// build(BuildConfig {
+///     dataflow: path,
 ///     uv: true,
 ///     force_local: true,
-///     ..BuildConfig::new(path)
+///     ..Default::default()
 /// })?;
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BuildConfig {
     pub dataflow: String,
     pub coordinator_addr: Option<IpAddr>,
@@ -152,29 +153,11 @@ pub struct BuildConfig {
     pub write_lockfile: bool,
     pub lockfile_override: Option<PathBuf>,
     pub parallel: bool,
-    /// See `binaries/cli/src/command/run.rs::Run::working_dir` for why
-    /// this exists — `dora record` rewrites the YAML into /tmp but the
-    /// cargo invocations must still resolve `Cargo.toml` from the
-    /// original source directory.
+    /// Overrides the working directory for cargo invocations and
+    /// module expansion. Needed when the dataflow path points at a
+    /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
+    /// original `build:` directives or relative node binaries.
     pub working_dir_override: Option<PathBuf>,
-}
-
-impl BuildConfig {
-    pub fn new(dataflow: String) -> Self {
-        Self {
-            dataflow,
-            coordinator_addr: None,
-            coordinator_port: None,
-            uv: false,
-            force_local: false,
-            strict_types: false,
-            locked: false,
-            write_lockfile: false,
-            lockfile_override: None,
-            parallel: false,
-            working_dir_override: None,
-        }
-    }
 }
 
 pub fn build(cfg: BuildConfig) -> eyre::Result<()> {

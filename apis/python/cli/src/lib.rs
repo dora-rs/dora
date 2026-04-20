@@ -28,6 +28,7 @@ pub fn build(
     force_local: bool,
 ) -> eyre::Result<()> {
     dora_cli::build(dora_cli::BuildConfig {
+        dataflow: dataflow_path,
         coordinator_addr: coordinator_addr
             .map(|addr| addr.parse())
             .transpose()
@@ -35,7 +36,7 @@ pub fn build(
         coordinator_port,
         uv: uv.unwrap_or_default(),
         force_local,
-        ..dora_cli::BuildConfig::new(dataflow_path)
+        ..Default::default()
     })
 }
 

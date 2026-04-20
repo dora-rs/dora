@@ -175,13 +175,14 @@ impl Executable for Run {
         let dataflow_path =
             resolve_dataflow(self.dataflow.clone()).context("could not resolve dataflow")?;
         build_dataflow(BuildConfig {
+            dataflow: dataflow_path.to_string_lossy().into_owned(),
             uv: self.uv,
             force_local: true,
             locked: self.locked,
             write_lockfile: self.write_lockfile,
             lockfile_override: self.lockfile.clone(),
             working_dir_override: self.working_dir.clone(),
-            ..BuildConfig::new(dataflow_path.to_string_lossy().into_owned())
+            ..Default::default()
         })
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
