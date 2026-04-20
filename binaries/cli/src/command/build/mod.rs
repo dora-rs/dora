@@ -160,6 +160,32 @@ pub struct BuildConfig {
     pub working_dir_override: Option<PathBuf>,
 }
 
+impl BuildConfig {
+    /// Construct a `BuildConfig` from the string-typed argument shape
+    /// that the PyO3 Python bindings expose. Parses `coordinator_addr`
+    /// and returns a parse error if it isn't a valid IP. All other
+    /// fields default.
+    pub fn from_python_args(
+        dataflow: String,
+        uv: Option<bool>,
+        coordinator_addr: Option<String>,
+        coordinator_port: Option<u16>,
+        force_local: bool,
+    ) -> eyre::Result<Self> {
+        Ok(Self {
+            dataflow,
+            coordinator_addr: coordinator_addr
+                .map(|addr| addr.parse())
+                .transpose()
+                .wrap_err("invalid coordinator_addr")?,
+            coordinator_port,
+            uv: uv.unwrap_or_default(),
+            force_local,
+            ..Default::default()
+        })
+    }
+}
+
 pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     let BuildConfig {
         dataflow,
