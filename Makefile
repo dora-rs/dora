@@ -10,7 +10,12 @@
 #   make qa-deep             ~15 min     target Tier 1 gate, stronger than today's CI
 #                                        (adds coverage, adversarial, mutants, semver -
 #                                        kept laptop-only, see strategy doc §5)
-#   make qa-nightly          ~30-60 min  Tier 2 locally (deep + proptest@1000 + miri)
+#   make qa-nightly          ~60-90 min  Tier 2 locally + CI nightly smoke parity
+#                                        (deep + proptest@1000 + miri + example-smoke
+#                                        suite). The example-smoke step is what the
+#                                        GHA smoke-suite / log-sinks / service-action /
+#                                        streaming / record-replay jobs run, so a green
+#                                        local run maps to a green CI nightly on those.
 #   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
 #                                        audit/dogfood are human)
 #   make qa-mutation-audit   ~10-18 hrs  full-repo cargo-mutants; deliberate
