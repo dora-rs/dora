@@ -154,13 +154,14 @@ All three steps are required for every commit. Do NOT push without completing th
 
 ### Do NOT run the full QA suite on every commit/push
 
-The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make qa-release-gate`, `make qa-mutation-audit`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
+The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make qa-release-gate`, `make qa-mutation-audit`, `make qa-examples`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
 
 - `make qa-full` (qa-fast + full tests + coverage) — ~5-10 minutes. Run before a significant push if you want extra confidence; coverage is too slow for every push.
 - `make qa-deep` (qa-full + mutation testing + semver) — ~15 minutes. The **target** Tier 1 local gate. Today's CI PR gate only runs the fast subset (fmt/clippy/typos/audit/unwrap-budget + tests); `qa-deep` adds coverage, adversarial review, diff-scoped mutation, and semver — kept laptop-only because they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5). Alias: `make qa-tier1`, kept for back-compat.
 - `make qa-nightly` (qa-deep + proptest@1000 + miri) — ~30-60 minutes. Tier 2 equivalent locally, for overnight runs on a powerful machine. Skips miri if `cargo +nightly miri` isn't installed. **Does not** include full-repo mutation testing — that's split into `qa-mutation-audit` because it takes 10-18 hours on this workspace.
 - `make qa-release-gate` (qa-deep + semver) — the automatable subset of Tier 3. The non-automatable parts (independent security audit, dogfood campaign, migration validation) are documented in `docs/plan-agentic-qa-strategy.md` §7 but not locally gateable.
 - `make qa-mutation-audit` — ~10-18 hours. Full-repo `cargo-mutants` across 6 critical crates. Deliberate test-quality audit; run before a release or when investigating a specific crate, not every nightly.
+- `make qa-examples` — ~15-20 min. Runs every example dataflow end-to-end via `scripts/smoke-all.sh`. Orthogonal to the qa-fast/full/deep ladder: those targets `--exclude dora-examples` to keep per-commit / pre-push budgets tight. Run this when you want actual dataflows exercised (after touching node/operator APIs, CLI subcommands, or the descriptor surface). Pass flags via `ARGS`, e.g. `make qa-examples ARGS="--rust-only"` or `make qa-examples ARGS="-v"`.
 - `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.

@@ -594,6 +594,7 @@ make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target 
 make qa-nightly        # ~30-60m -- qa-deep + proptest@1000 + miri (Tier 2 locally; overnight runs)
 make qa-release-gate   #         -- qa-deep + semver (Tier 3 automatable; audit/dogfood are human)
 make qa-mutation-audit # ~10-18h -- full-repo cargo-mutants; deliberate test-quality audit
+make qa-examples       # ~15-20m -- run every example dataflow end-to-end (orthogonal to ladder)
 ```
 
 On Ubuntu, install `ripgrep` separately and install `typos-cli` with Cargo:
