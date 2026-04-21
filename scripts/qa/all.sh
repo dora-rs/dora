@@ -21,6 +21,9 @@
 #                                smoke, redb-backend-smoke, daemon-reconnect-smoke,
 #                                state-reconstruction-smoke). Green local qa-nightly
 #                                predicts a green CI nightly schedule.
+#                                Requires BOTH `uv` AND Python 3.12 (preflighted
+#                                with specific install hints; matches GHA's
+#                                actions/setup-python@3.12 + uv setup).
 #   --release-gate               Tier 3 automatable (deep + semver; audit+dogfood are human gates)
 #   --mutation-audit  ~10-18 hrs full-repo cargo-mutants across 6 critical crates
 #                                (1679+ mutants). Deliberate test-quality audit, not every nightly.
@@ -285,14 +288,30 @@ case "$MODE" in
     # Without this step, `make qa-nightly` passes locally only when the
     # user already has workspace bindings in some other ambient venv -- a
     # hidden prerequisite that defeats the whole point of CI parity.
-    if ! command -v uv > /dev/null 2>&1; then
+    # Hard prereqs for this step: uv + an available Python 3.12 interpreter
+    # (matches .github/workflows/nightly.yml:56 which installs 3.12 via
+    # actions/setup-python before creating the venv). Checking both up
+    # front -- a missing 3.12 would otherwise fail at `uv venv -p 3.12`
+    # below with a raw uv error instead of our clear install hint.
+    nightly_py_missing() {
+      local name="$1"
       echo
-      echo "=== example-smoke (FAIL: uv is required for Python smoke tests) ==="
-      echo "Install uv with:"
-      echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
-      echo "or, if uv is not available on this host, skip Python smoke tests"
-      echo "with \`make qa-deep\` (Tier 1 -- no Python smoke)."
-      FAILED+=("example-smoke: uv prerequisite missing")
+      echo "=== example-smoke (FAIL: $name prerequisite missing) ==="
+      echo "Install with:"
+      if [ "$name" = "uv" ]; then
+        echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+      else
+        echo "  uv python install 3.12"
+      fi
+      echo "Alternative: skip Python smoke tests with \`make qa-deep\`"
+      echo "(Tier 1 gate; no Python smoke, no uv/3.12 requirement)."
+      FAILED+=("example-smoke: $name missing")
+    }
+
+    if ! command -v uv > /dev/null 2>&1; then
+      nightly_py_missing "uv"
+    elif ! uv python find 3.12 > /dev/null 2>&1; then
+      nightly_py_missing "Python 3.12"
     else
       NIGHTLY_VENV="$(pwd)/target/qa-nightly-venv"
       echo
