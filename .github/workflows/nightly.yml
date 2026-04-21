@@ -255,10 +255,14 @@ jobs:
           -p dora-record-node
       - name: Record rust-dataflow
         run: |
-          # All node binaries pre-built above, so this step is pure
-          # dataflow runtime. 60s catches genuine hangs without being
-          # sensitive to cargo incremental check overhead.
-          timeout 60s dora record examples/rust-dataflow/dataflow.yml -o run.drec
+          # Node binaries are pre-built above, but cargo's feature-
+          # unification across the prebuild and the descriptor's per-node
+          # `build: cargo build -p <node>` isn't reliable on cold caches:
+          # deps can re-link with different features and trigger a ~30s
+          # re-compile inside the record step (#1691, 2026-04-21 nightly).
+          # 300s absorbs that variance while still bounding genuine hangs
+          # well under the 30-min job timeout.
+          timeout 300s dora record examples/rust-dataflow/dataflow.yml -o run.drec
           test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
           echo "recording size: $(wc -c < run.drec) bytes"
       - name: Replay
