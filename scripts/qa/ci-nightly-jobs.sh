@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
-# scripts/qa/ci-nightly-jobs.sh -- local driver for the 6 GHA-only nightly jobs.
+# scripts/qa/ci-nightly-jobs.sh -- local driver for the 7 GHA-only nightly jobs.
 #
 # The GHA nightly workflow (.github/workflows/nightly.yml) has 11 test jobs.
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
-# example-smoke step) covers 5 of them (smoke-suite + log-sinks +
-# service-action + streaming + record-replay). This script covers the other 6:
+# example-smoke step) covers 4 of them (smoke-suite + log-sinks +
+# service-action + streaming). This script covers the other 7:
 #
+#   - record-replay             record + replay with build: directives INTACT.
+#                               example-smoke.rs's contract_record_replay_* uses
+#                               a fixture that strips build directives, so it's
+#                               blind to the /tmp cargo bug class (#1674, #1691).
+#                               This job IS the only local coverage for that path.
 #   - cluster-smoke             dora up + cluster status + start --detach + cluster down
 #   - topic-and-top-smoke       dora top/trace/topic/self update against a zenoh-debug fixture
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
@@ -162,7 +167,56 @@ run_job() {
 }
 
 # -----------------------------------------------------------------------------
-# Job 1: cluster-smoke
+# Job 1: record-replay (build: directives INTACT)
+#
+# Mirrors .github/workflows/nightly.yml `record-replay` job. The whole point
+# of this job is to exercise `dora record` + `dora replay` against a dataflow
+# whose descriptor has live `build: cargo build -p <node>` directives. That
+# path has been a recurring source of /tmp cargo bugs (#1673/#1674 for
+# record, #1691 for replay).
+#
+# example-smoke.rs's contract_record_replay_* test uses a fixture that
+# deliberately STRIPS the build directives (see the comment at
+# write_absolute_path_validated_pipeline_fixture), so it's blind to this
+# class of bug. Keep this function in lockstep with the GHA step bodies.
+# -----------------------------------------------------------------------------
+job_record_replay() {
+  cargo build --quiet \
+    -p rust-dataflow-example-node \
+    -p rust-dataflow-example-status-node \
+    -p rust-dataflow-example-sink \
+    -p dora-record-node \
+    -p dora-replay-node
+
+  # Write the .drec next to its dataflow (not at the workspace root) so
+  # replay's working_dir is examples/rust-dataflow/ -- avoids picking up
+  # $WORKSPACE/types/std/* as "user types" (build/mod.rs rejects those).
+  local DREC=examples/rust-dataflow/run.drec
+  rm -f "$DREC"
+
+  # Bounded timeout: record+replay of rust-dataflow completes in ~5s warm;
+  # 300s absorbs cold-cache rebuild variance (#1705 context).
+  if ! dora record examples/rust-dataflow/dataflow.yml -o "$DREC"; then
+    echo "ERROR: dora record failed"
+    return 1
+  fi
+  if [ ! -s "$DREC" ]; then
+    echo "ERROR: dora record did not produce a non-empty .drec"
+    return 1
+  fi
+  echo "OK: recording size: $(wc -c < "$DREC") bytes"
+
+  if ! dora replay "$DREC"; then
+    echo "ERROR: dora replay failed"
+    rm -f "$DREC"
+    return 1
+  fi
+  rm -f "$DREC"
+  echo "OK: record-replay round-trip with build: directives intact"
+}
+
+# -----------------------------------------------------------------------------
+# Job 2: cluster-smoke
 # -----------------------------------------------------------------------------
 job_cluster_smoke() {
   cargo build --quiet \
@@ -555,6 +609,7 @@ EOF
 # Dispatch
 # -----------------------------------------------------------------------------
 
+run_job "record-replay"             job_record_replay
 run_job "cluster-smoke"             job_cluster_smoke
 run_job "topic-and-top-smoke"       job_topic_and_top
 run_job "cpu-affinity-smoke"        job_cpu_affinity
