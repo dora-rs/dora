@@ -408,6 +408,9 @@ jobs:
       - checkout
       - cargo-cache-restore
       - run:
+          name: Install C/C++ build tools
+          command: sudo apt-get update && sudo apt-get install -y clang cmake
+      - run:
           name: Build examples + CLI binary
           command: |
             cargo build --examples
@@ -593,12 +596,6 @@ jobs:
             echo "$output" | grep -q "Received error from node" \
               || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
           no_output_timeout: 10m
-      - run:
-          name: Rust Queue Latency Test
-          command: |
-            dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
-            dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
-          no_output_timeout: 30m
       - cargo-cache-save
 
   cli-python:
@@ -678,6 +675,12 @@ jobs:
       - run:
           name: Python Queue Latency + Timeout Test
           command: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+          no_output_timeout: 30m
+      - run:
+          name: Rust Queue Latency Test
+          command: |
+            dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+            dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
           no_output_timeout: 30m
       - cargo-cache-save
 
@@ -1014,6 +1017,9 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
       QT_QPA_PLATFORM: offscreen
+      # Force PyO3 to compile against the Python we explicitly install,
+      # not whatever the machine image ships (which may lack libpython*.so).
+      PYO3_PYTHON: python3.12
     steps:
       - checkout
       - install-rust:
@@ -1021,9 +1027,14 @@ jobs:
       - cargo-cache-restore:
           prefix: ros2
       - run:
+          name: Install Python 3.12 + dev headers
+          command: |
+            sudo add-apt-repository -y ppa:deadsnakes/ppa
+            sudo apt-get update
+            sudo apt-get install -y python3.12 python3.12-dev python3.12-venv libpython3.12
+      - run:
           name: Install ROS2 Humble
           command: |
-            sudo apt-get update
             sudo apt-get install -y software-properties-common curl
             sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
               -o /usr/share/keyrings/ros-archive-keyring.gpg
@@ -1034,7 +1045,7 @@ jobs:
             sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions
       - run:
           name: Install Python dependencies
-          command: pip3 install pyarrow
+          command: python3.12 -m pip install pyarrow
       - run:
           name: Test ROS2 bridge
           command: |
