@@ -55,6 +55,18 @@ if [[ "$MODE" == "--tier1" ]]; then
   MODE="--deep"
 fi
 
+# Validate mode up front. An unknown mode should fail fast with zero side
+# effects -- do NOT run fast gates then error out at the end.
+case "$MODE" in
+  --fast|--full|--deep|--nightly|--release-gate|--mutation-audit)
+    ;;
+  *)
+    echo "Unknown mode: $MODE"
+    echo "Usage: $0 [--fast|--full|--deep|--tier1|--nightly|--release-gate|--mutation-audit]"
+    exit 2
+    ;;
+esac
+
 # Print a per-mode overview so a developer knows what they're about to
 # sit through. The actual checks follow the same order listed here.
 print_overview() {
@@ -197,14 +209,9 @@ case "$MODE" in
     run "adversarial" scripts/qa/adversarial.sh --optional
     ;;
   --mutation-audit)
-    # Handled entirely below; skip the common test/coverage/adversarial path
-    # because this mode is explicitly about mutation testing, nothing else.
+    # Skips the common test/coverage/adversarial path -- this mode is
+    # explicitly about mutation testing, nothing else.
     :
-    ;;
-  *)
-    echo "Unknown mode: $MODE"
-    echo "Usage: $0 [--fast|--full|--deep|--tier1|--nightly|--release-gate|--mutation-audit]"
-    exit 2
     ;;
 esac
 
