@@ -85,15 +85,23 @@ Will run:
 EOF
       ;;
     --deep)
-      header="qa-deep -- full Tier 1 PR gate locally (~15 min)"
+      header="qa-deep -- target Tier 1 gate, stronger than today's CI (~15 min)"
       cat <<EOF
 ============================================================
 $header
-Mirrors what CI runs on every PR. Will run:
-  1-5.  everything from qa-fast
-  6-8.  everything from qa-full                 (test, coverage, adversarial)
-  9.    mutants (diff-scoped)                   -- cargo-mutants on changed code
-  10.   semver                                  -- cargo-semver-checks vs last tag
+Today's CI PR gate only runs a subset of this: fmt, clippy, typos,
+audit, unwrap-budget, and the workspace test suite. qa-deep adds the
+planned Tier 1 extras (see docs/plan-agentic-qa-strategy.md §5) that
+are kept laptop-only today because they're too slow for every PR:
+coverage, adversarial review, diff-scoped mutation testing, semver.
+
+Will run:
+  1-5.  everything from qa-fast                 (in CI today)
+  6.    test         -- cargo test --all        (in CI today)
+  7.    coverage     -- cargo llvm-cov          (NOT in CI; laptop-only)
+  8.    adversarial  -- codex/claude review     (NOT in CI; skipped w/o tools)
+  9.    mutants      -- cargo-mutants on diff   (NOT in CI; laptop-only)
+  10.   semver       -- cargo-semver-checks     (NOT in CI; pre-release only)
 ============================================================
 EOF
       ;;

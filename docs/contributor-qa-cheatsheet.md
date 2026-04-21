@@ -80,14 +80,17 @@ Runs `qa-fast` plus:
 - coverage report
 - optional adversarial review if supported tools are installed
 
-### Simulate the full PR gate locally
+### Target Tier 1 gate (stronger than today's CI)
 
 ```bash
 make qa-deep    # alias: make qa-tier1
 ```
 
-Runs `qa-full` plus:
+Runs `qa-full` plus the Tier 1 extras that stay laptop-only because
+they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 
+- coverage (already in `qa-full`)
+- adversarial LLM review (already in `qa-full`; skipped if tools missing)
 - mutation testing (diff-scoped)
 - semver checks
 

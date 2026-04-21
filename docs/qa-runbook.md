@@ -17,7 +17,7 @@ make qa-fast
 # Before every push (~5-10 minutes)
 make qa-full
 
-# Simulate the full Tier 1 PR gate locally (~15 minutes)
+# Target Tier 1 gate -- stronger than today's CI (~15 minutes)
 make qa-deep
 
 # Overnight run on a beefy machine -- Tier 2 equivalent (~4 hours)
@@ -45,7 +45,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 |---|---|---|---|
 | `make qa-fast` | fmt + clippy + audit + unwrap-budget + typos | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
-| `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Simulate the full Tier 1 PR gate locally |
+| `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
 | `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) + full-repo mutation testing | ~4 hrs | Tier 2 equivalent locally -- overnight runs on a powerful machine |
 | `make qa-release-gate` | `qa-deep` + semver | ~15 min | The automatable subset of Tier 3. Non-automatable: security audit + dogfood + migration validation (see strategy doc §7) |
