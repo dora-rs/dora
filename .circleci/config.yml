@@ -1055,7 +1055,7 @@ jobs:
           command: |
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
-            uv pip install --system --python python3.12 pyarrow
+            sudo "$HOME/.local/bin/uv" pip install --system --python python3.12 pyarrow
       - run:
           name: Test ROS2 bridge
           command: |
