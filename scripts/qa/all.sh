@@ -51,6 +51,89 @@ if [[ "$MODE" == "--tier1" ]]; then
   MODE="--deep"
 fi
 
+# Print a per-mode overview so a developer knows what they're about to
+# sit through. The actual checks follow the same order listed here.
+print_overview() {
+  local mode="$1"
+  local header
+  case "$mode" in
+    --fast)
+      header="qa-fast -- pre-commit sanity (~1 min)"
+      cat <<EOF
+============================================================
+$header
+Will run:
+  1. fmt            -- cargo fmt --all -- --check
+  2. clippy         -- cargo clippy --all -- -D warnings (excluding Python)
+  3. audit          -- cargo-audit + cargo-deny on the dependency tree
+  4. unwrap-budget  -- count production .unwrap() / .expect( regressions
+  5. typos          -- spell-check against _typos.toml allowlist
+============================================================
+EOF
+      ;;
+    --full)
+      header="qa-full -- pre-push gate (~5-10 min)"
+      cat <<EOF
+============================================================
+$header
+Will run:
+  1-5. everything from qa-fast                  (fmt/clippy/audit/unwrap/typos)
+  6.   test         -- cargo test --all         (workspace test suite)
+  7.   coverage     -- cargo llvm-cov           (writes lcov.info)
+  8.   adversarial  -- codex/claude review      (optional; skipped if unavailable)
+============================================================
+EOF
+      ;;
+    --deep)
+      header="qa-deep -- full Tier 1 PR gate locally (~15 min)"
+      cat <<EOF
+============================================================
+$header
+Mirrors what CI runs on every PR. Will run:
+  1-5.  everything from qa-fast
+  6-8.  everything from qa-full                 (test, coverage, adversarial)
+  9.    mutants (diff-scoped)                   -- cargo-mutants on changed code
+  10.   semver                                  -- cargo-semver-checks vs last tag
+============================================================
+EOF
+      ;;
+    --nightly)
+      header="qa-nightly -- Tier 2 locally (~4 hours)"
+      cat <<EOF
+============================================================
+$header
+For overnight runs on a powerful machine. Will run:
+  1-5.  everything from qa-fast
+  6-8.  everything from qa-full                 (test, coverage, adversarial)
+  9.    semver                                  -- cargo-semver-checks vs last tag
+  10.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
+  11.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
+  12.   mutants (full-repo, not just diff)      -- every function, every critical crate
+Expect ~4 hours. See docs/plan-agentic-qa-strategy.md §6.
+============================================================
+EOF
+      ;;
+    --release-gate)
+      header="qa-release-gate -- Tier 3 automatable subset"
+      cat <<EOF
+============================================================
+$header
+The automatable parts of the Tier 3 release gate. Will run:
+  1-5.   everything from qa-fast
+  6-8.   everything from qa-full                 (test, coverage, adversarial)
+  9.     mutants (diff-scoped)
+  10.    semver
+Non-automatable Tier 3 gates (external security audit, 7-day dogfood
+campaign, migration validation on external repos) are human-gated --
+see docs/plan-agentic-qa-strategy.md §7.
+============================================================
+EOF
+      ;;
+  esac
+}
+
+print_overview "$MODE"
+
 # ----- Always run (fast) -----
 run "fmt"           cargo fmt --all -- --check
 run "clippy"        cargo clippy --all \
