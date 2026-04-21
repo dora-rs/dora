@@ -204,10 +204,11 @@ jobs:
             # resolve the latest tag first via the GitHub /releases/latest redirect.
             VERSION=$(basename "$(curl -sSfL -o /dev/null -w '%{url_effective}' \
               https://github.com/crate-ci/typos/releases/latest)")
+            mkdir -p /tmp/typos-dl
             curl -sSfL \
               "https://github.com/crate-ci/typos/releases/download/${VERSION}/typos-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-              | tar xz -C /tmp
-            sudo install /tmp/typos /usr/local/bin/
+              | tar xz -C /tmp/typos-dl
+            sudo install /tmp/typos-dl/typos /usr/local/bin/
       - run: typos
 
   audit:
