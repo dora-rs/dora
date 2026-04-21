@@ -11,7 +11,14 @@
 #                                (full + mutants on diff + semver; see strategy doc §5 for why the
 #                                extras are laptop-only)
 #   --tier1                      back-compat alias for --deep
-#   --nightly         ~30-60 min Tier 2 locally (deep + proptest@1000 + miri)
+#   --nightly         ~60-90 min Tier 2 locally + CI nightly integration smoke
+#                                (deep + proptest@1000 + miri + example-smoke suite).
+#                                The example-smoke step mirrors what the GHA
+#                                smoke-suite / log-sinks / service-action /
+#                                streaming / record-replay jobs exercise (all
+#                                backed by tests/example-smoke.rs), so a green
+#                                local qa-nightly maps to a green CI nightly
+#                                on those jobs.
 #   --release-gate               Tier 3 automatable (deep + semver; audit+dogfood are human gates)
 #   --mutation-audit  ~10-18 hrs full-repo cargo-mutants across 6 critical crates
 #                                (1679+ mutants). Deliberate test-quality audit, not every nightly.
@@ -122,7 +129,7 @@ Will run:
 EOF
       ;;
     --nightly)
-      header="qa-nightly -- Tier 2 locally (~30-60 min)"
+      header="qa-nightly -- Tier 2 locally + CI nightly smoke parity (~60-90 min)"
       cat <<EOF
 ============================================================
 $header
@@ -133,6 +140,16 @@ For overnight runs on a powerful machine. Will run:
   10.   semver                                  -- cargo-semver-checks vs last tag
   11.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
   12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
+  13.   example-smoke                           -- tests/example-smoke.rs (52 tests)
+
+Step 13 is the local equivalent of the GHA nightly's smoke-suite /
+log-sinks / service-action / streaming / record-replay jobs -- all of
+those jobs run the examples whose smoke tests live in
+tests/example-smoke.rs, so a green step 13 maps to a green CI nightly
+on those jobs. Not covered locally: cluster-smoke, cpu-affinity-smoke,
+redb-backend-smoke, daemon-reconnect-smoke, state-reconstruction-smoke,
+topic-and-top-smoke. Those have specialized setup (dora CLI on PATH,
+reserved ports, tmp dirs) and stay CI-only for now.
 
 Full-repo mutation testing is a SEPARATE target (qa-mutation-audit)
 because in practice it takes 10-18 hours on this workspace -- too long
@@ -247,6 +264,14 @@ case "$MODE" in
     # or other filesystem ops that miri's isolation sandbox rejects.
     run_optional "miri" "cargo +nightly miri --version" \
       cargo +nightly miri test -p dora-core -- metadata::tests
+
+    # CI-nightly parity: the GHA `smoke-suite` job runs exactly this
+    # command, and the log-sinks / service-action / streaming /
+    # record-replay jobs are all backed by tests in the same file.
+    # --test-threads=1 matches CI (the smoke tests share global
+    # coordinator ports and can't run in parallel).
+    run "example-smoke" cargo test -p dora-examples --test example-smoke \
+      -- --test-threads=1
     ;;
   --mutation-audit)
     # Deliberate full-repo mutation audit. Expect 10-18 hours.
