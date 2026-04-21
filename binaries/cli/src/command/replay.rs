@@ -7,7 +7,7 @@ use std::{
 
 use clap::Args;
 use dora_recording::RecordingReader;
-use eyre::{bail, Context};
+use eyre::{Context, bail};
 
 use crate::command::{Executable, Run};
 
