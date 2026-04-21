@@ -5,17 +5,20 @@
 #
 # The ladder (increasing thoroughness, increasing runtime):
 #
-#   make qa-fast       ~1 min     pre-commit sanity
-#   make qa-full       ~5-10 min  pre-push
-#   make qa-deep       ~15 min    target Tier 1 gate, stronger than today's CI
-#                                 (adds coverage, adversarial, mutants, semver -
-#                                 kept laptop-only, see strategy doc §5)
-#   make qa-nightly    ~4 hours   Tier 2 equivalent locally (proptest, miri, full mutants)
-#   make qa-release-gate          Tier 3 automatable parts (deep + semver; audit/dogfood are human)
+#   make qa-fast             ~1 min      pre-commit sanity
+#   make qa-full             ~5-10 min   pre-push
+#   make qa-deep             ~15 min     target Tier 1 gate, stronger than today's CI
+#                                        (adds coverage, adversarial, mutants, semver -
+#                                        kept laptop-only, see strategy doc §5)
+#   make qa-nightly          ~30-60 min  Tier 2 locally (deep + proptest@1000 + miri)
+#   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
+#                                        audit/dogfood are human)
+#   make qa-mutation-audit   ~10-18 hrs  full-repo cargo-mutants; deliberate
+#                                        test-quality audit, NOT every nightly
 #
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
-.PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate \
+.PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-install
 
@@ -38,6 +41,9 @@ qa-nightly:
 
 qa-release-gate:
 	@scripts/qa/all.sh --release-gate
+
+qa-mutation-audit:
+	@scripts/qa/all.sh --mutation-audit
 
 # Individual gates
 

@@ -97,12 +97,13 @@ they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 ### Overnight run on a powerful machine (Tier 2 equivalent)
 
 ```bash
-make qa-nightly    # ~4 hours
+make qa-nightly    # ~30-60 min
 ```
 
-Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code
-(skipped if `cargo +nightly miri` isn't installed), and full-repo
-mutation testing.
+Runs `qa-deep` plus property tests at 1000 cases and miri on unsafe
+code (skipped if `cargo +nightly miri` isn't installed). **Does not**
+include full-repo mutation testing -- that's split into
+`qa-mutation-audit` because it takes 10-18 hours on this workspace.
 
 ### Before tagging a release
 
@@ -113,6 +114,21 @@ make qa-release-gate
 The automatable subset of Tier 3. The non-automatable parts (external
 security audit, dogfood campaign, migration validation) are documented
 in `docs/plan-agentic-qa-strategy.md` §7.
+
+### Deliberate full-repo test-quality audit
+
+```bash
+make qa-mutation-audit    # ~10-18 hours
+```
+
+Runs `cargo-mutants --full` on the 6 critical crates (dora-core,
+dora-daemon, dora-coordinator, dora-message, dora-coordinator-store,
+shared-memory-server). About 1679 mutants. Background it, check the
+morning after. Use when:
+
+- Investigating low test coverage in a specific crate.
+- Before a major release to score test-suite quality overall.
+- Adding a new critical crate and want a baseline.
 
 ## 4. Most useful manual commands
 

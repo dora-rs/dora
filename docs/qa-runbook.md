@@ -20,11 +20,14 @@ make qa-full
 # Target Tier 1 gate -- stronger than today's CI (~15 minutes)
 make qa-deep
 
-# Overnight run on a beefy machine -- Tier 2 equivalent (~4 hours)
+# Overnight run on a beefy machine -- Tier 2 equivalent (~30-60 min)
 make qa-nightly
 
 # Before tagging a release
 make qa-release-gate
+
+# Deliberate test-quality audit (NOT every nightly; takes 10-18 hrs)
+make qa-mutation-audit
 ```
 
 If you only remember one command: **`make qa-fast`**.
@@ -47,8 +50,9 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
-| `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) + full-repo mutation testing | ~4 hrs | Tier 2 equivalent locally -- overnight runs on a powerful machine |
+| `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) | ~30-60 min | Tier 2 equivalent locally -- overnight runs on a powerful machine. Does NOT include full-repo mutation testing (see `qa-mutation-audit`) |
 | `make qa-release-gate` | `qa-deep` + semver | ~15 min | The automatable subset of Tier 3. Non-automatable: security audit + dogfood + migration validation (see strategy doc §7) |
+| `make qa-mutation-audit` | `cargo-mutants --full` on 6 critical crates | ~10-18 hrs | Deliberate test-quality audit, not every nightly |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
 | `make qa-clippy` | `cargo clippy --all -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |

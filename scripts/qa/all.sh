@@ -5,14 +5,16 @@
 # Designed for local-first execution: same script runs locally and in CI.
 #
 # Modes (increasing thoroughness):
-#   --fast          ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap, typos)
-#   --full          ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
-#   --deep          ~15 min    target Tier 1 gate, stronger than today's CI
-#                              (full + mutants on diff + semver; see strategy doc §5 for why the
-#                              extras are laptop-only)
-#   --tier1                    back-compat alias for --deep
-#   --nightly       ~4 hours   Tier 2 locally (deep + proptest@1000 + miri + full mutants)
-#   --release-gate             Tier 3 automatable (deep + semver; audit+dogfood are human gates)
+#   --fast            ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap, typos)
+#   --full            ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
+#   --deep            ~15 min    target Tier 1 gate, stronger than today's CI
+#                                (full + mutants on diff + semver; see strategy doc §5 for why the
+#                                extras are laptop-only)
+#   --tier1                      back-compat alias for --deep
+#   --nightly         ~30-60 min Tier 2 locally (deep + proptest@1000 + miri)
+#   --release-gate               Tier 3 automatable (deep + semver; audit+dogfood are human gates)
+#   --mutation-audit  ~10-18 hrs full-repo cargo-mutants across 6 critical crates
+#                                (1679+ mutants). Deliberate test-quality audit, not every nightly.
 #
 # Without flags, runs --fast.
 
@@ -108,18 +110,42 @@ Will run:
 EOF
       ;;
     --nightly)
-      header="qa-nightly -- Tier 2 locally (~4 hours)"
+      header="qa-nightly -- Tier 2 locally (~30-60 min)"
       cat <<EOF
 ============================================================
 $header
 For overnight runs on a powerful machine. Will run:
   1-5.  everything from qa-fast
   6-8.  everything from qa-full                 (test, coverage, adversarial)
-  9.    semver                                  -- cargo-semver-checks vs last tag
-  10.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
-  11.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
-  12.   mutants (full-repo, not just diff)      -- every function, every critical crate
-Expect ~4 hours. See docs/plan-agentic-qa-strategy.md §6.
+  9.    mutants (diff-scoped)                   -- same as qa-deep
+  10.   semver                                  -- cargo-semver-checks vs last tag
+  11.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
+  12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
+
+Full-repo mutation testing is a SEPARATE target (qa-mutation-audit)
+because in practice it takes 10-18 hours on this workspace -- too long
+to bundle with a "nightly" run most devs will actually use. See
+docs/plan-agentic-qa-strategy.md §6.
+============================================================
+EOF
+      ;;
+    --mutation-audit)
+      header="qa-mutation-audit -- full-repo cargo-mutants (10-18 hours)"
+      cat <<EOF
+============================================================
+$header
+Runs cargo-mutants --full on 6 critical crates: dora-core, dora-daemon,
+dora-coordinator, dora-message, dora-coordinator-store,
+shared-memory-server. About 1679 mutants last measured.
+
+A test-quality audit, NOT a code gate. Run when:
+  - Investigating low test coverage in a specific crate.
+  - Before a major release to score test-suite quality overall.
+  - Adding a new critical crate and want a baseline.
+
+Expect 10-18 hours on a fast machine. Background it and check the
+morning after. Timeouts are capped at 45s per mutant (was 120s,
+lowered after observed 52 full-timeout waits per 1008 mutants).
 ============================================================
 EOF
       ;;
@@ -170,22 +196,22 @@ case "$MODE" in
     # Adversarial LLM review skips cleanly on machines without codex/claude.
     run "adversarial" scripts/qa/adversarial.sh --optional
     ;;
+  --mutation-audit)
+    # Handled entirely below; skip the common test/coverage/adversarial path
+    # because this mode is explicitly about mutation testing, nothing else.
+    :
+    ;;
   *)
     echo "Unknown mode: $MODE"
-    echo "Usage: $0 [--fast|--full|--deep|--tier1|--nightly|--release-gate]"
+    echo "Usage: $0 [--fast|--full|--deep|--tier1|--nightly|--release-gate|--mutation-audit]"
     exit 2
     ;;
 esac
 
 case "$MODE" in
-  --deep|--release-gate)
+  --deep|--nightly|--release-gate)
     run "mutants (diff-scoped)" scripts/qa/mutants.sh
     run "semver"                scripts/qa/semver.sh
-    ;;
-  --nightly)
-    # Tier 2 skips the diff-scoped mutants run -- `mutants --full` below
-    # subsumes it.
-    run "semver" scripts/qa/semver.sh
     ;;
 esac
 
@@ -214,9 +240,9 @@ case "$MODE" in
     # or other filesystem ops that miri's isolation sandbox rejects.
     run_optional "miri" "cargo +nightly miri --version" \
       cargo +nightly miri test -p dora-core -- metadata::tests
-
-    # Full mutation testing (not diff-scoped). The default `qa-mutants` is
-    # diff-scoped for the Tier 1 PR gate; --full runs every function.
+    ;;
+  --mutation-audit)
+    # Deliberate full-repo mutation audit. Expect 10-18 hours.
     run "mutants (full-repo)" scripts/qa/mutants.sh --full
     ;;
 esac
