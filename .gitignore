@@ -181,3 +181,6 @@ out/
 yolo.yml
 
 ~*
+
+# Git worktrees
+.worktrees/
