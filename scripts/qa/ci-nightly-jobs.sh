@@ -663,9 +663,12 @@ job_test_cross_platform() {
 job_examples() {
   cargo build --quiet --examples
   cargo build --quiet -p dora-cli
-  # dora-cli binary may not be on PATH already; daemon spawner does
-  # which::which("dora") when runtime nodes exec, so add target/debug.
-  export PATH="$(pwd)/target/debug:$PATH"
+  # NOTE: $CLI_ROOT/bin/dora is already on PATH (set by the script
+  # preamble), so the daemon's which::which("dora") will find it. Do
+  # NOT prepend target/debug here -- a naive `export PATH=...` leaks
+  # past this function and subsequent jobs' spawned `dora up` children
+  # would end up at target/debug/dora, which `terminate_our_dora_children`
+  # (scoped to $CLI_ROOT/bin/dora via pgrep) can't see -> leaked procs.
 
   timeout 600s cargo run --example rust-dataflow
   timeout 600s cargo run --example rust-dataflow-git
