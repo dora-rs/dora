@@ -12,12 +12,18 @@
 #                                        kept laptop-only, see strategy doc §5)
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
-#                                        + ci-nightly-jobs). example-smoke covers the 5
-#                                        example-backed GHA jobs; scripts/qa/ci-nightly-jobs.sh
-#                                        drives the 6 remaining (cluster/topic-and-top/
-#                                        cpu-affinity/redb-backend/daemon-reconnect/
-#                                        state-reconstruction). Green local run predicts
-#                                        a green CI nightly schedule.
+#                                        + ci-nightly-jobs). After the #1716 rebalance,
+#                                        nightly.yml has 18 test jobs: example-smoke
+#                                        covers 4 (smoke-suite/log-sinks/service-action/
+#                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
+#                                        the 14 remaining with platform-aware dispatch
+#                                        (record-replay, cluster-smoke, topic-and-top,
+#                                        cpu-affinity [Linux], redb-backend, daemon-reconnect
+#                                        [Linux], state-reconstruction, test-cross-platform,
+#                                        examples, cli-tests, bench-example, cross-check,
+#                                        ros2-bridge [Linux+ROS2], msrv). Green local run
+#                                        on platform X predicts green CI nightly for
+#                                        platform X's jobs.
 #   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
 #                                        audit/dogfood are human)
 #   make qa-mutation-audit   ~10-18 hrs  full-repo cargo-mutants; deliberate
