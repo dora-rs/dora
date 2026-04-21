@@ -110,12 +110,22 @@ cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
 Together these cover all 11 GHA nightly test jobs. A green local run
 predicts a green CI nightly schedule.
 
-The script installs the dora CLI into a scratch dir (so it won't clobber
-your `~/.cargo/bin/dora`) and bails out if port 6013 is already in use.
-cpu-affinity-smoke and daemon-reconnect-smoke skip on non-Linux because
-they rely on `sched_getaffinity` / SIGSTOP+SIGCONT semantics. Python
-venv + `uv pip install -e apis/python/node` is set up only for the
-topic-and-top job.
+**Requires `uv`.** Before running example-smoke, `scripts/qa/all.sh`
+creates a scratch venv at `target/qa-nightly-venv`, installs `pyarrow`
+and `-e apis/python/node` into it, and runs `cargo test` with
+`VIRTUAL_ENV` + `PATH` pointing at that venv. This matches the GHA
+smoke-suite / log-sinks / service-action / streaming setup exactly --
+otherwise `dora run --uv` either falls through to the system Python
+(ImportError on clean machines) or pulls PyPI `dora-rs` which doesn't
+match the workspace message format (#1710). If `uv` isn't installed,
+example-smoke is skipped with a clear install hint; install via
+`curl -LsSf https://astral.sh/uv/install.sh | sh`.
+
+The ci-nightly-jobs script installs the dora CLI into a scratch dir
+(so it won't clobber your `~/.cargo/bin/dora`) and bails out if port
+6013 is already in use. cpu-affinity-smoke and daemon-reconnect-smoke
+skip on non-Linux because they rely on `sched_getaffinity` /
+SIGSTOP+SIGCONT semantics.
 
 **Does not** include full-repo mutation testing -- that's split into
 `qa-mutation-audit` because it takes 10-18 hours on this workspace.

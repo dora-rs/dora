@@ -144,7 +144,12 @@ For overnight runs on a powerful machine. Will run:
   12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
   13.   example-smoke                           -- tests/example-smoke.rs (52 tests;
                                                    covers GHA smoke-suite + log-sinks
-                                                   + service-action + streaming + record-replay)
+                                                   + service-action + streaming + record-replay).
+                                                   Runs inside a scratch uv venv that
+                                                   has \`-e apis/python/node\` installed,
+                                                   matching the GHA Python setup exactly
+                                                   (so workspace Python bindings are used,
+                                                   NOT PyPI). Requires uv.
   14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    (covers GHA cluster-smoke + topic-and-top
                                                    + cpu-affinity + redb-backend + daemon-reconnect
@@ -270,13 +275,47 @@ case "$MODE" in
     run_optional "miri" "cargo +nightly miri --version" \
       cargo +nightly miri test -p dora-core -- metadata::tests
 
-    # CI-nightly parity: the GHA `smoke-suite` job runs exactly this
-    # command, and the log-sinks / service-action / streaming /
-    # record-replay jobs are all backed by tests in the same file.
-    # --test-threads=1 matches CI (the smoke tests share global
-    # coordinator ports and can't run in parallel).
-    run "example-smoke" cargo test -p dora-examples --test example-smoke \
-      -- --test-threads=1
+    # Ambient Python venv for example-smoke. CI smoke jobs all set one up
+    # with `uv pip install -e apis/python/node` before running cargo test;
+    # without it, `dora run --uv` creates isolated venvs that either fall
+    # through to system Python for `dora` bindings (ImportError on clean
+    # machines) or pull dora-rs from PyPI (#1710: PyPI 0.5.0 speaks message
+    # format v0.8.0, workspace speaks v0.2.1 -> mismatch).
+    #
+    # Without this step, `make qa-nightly` passes locally only when the
+    # user already has workspace bindings in some other ambient venv -- a
+    # hidden prerequisite that defeats the whole point of CI parity.
+    if ! command -v uv > /dev/null 2>&1; then
+      echo
+      echo "=== example-smoke (FAIL: uv is required for Python smoke tests) ==="
+      echo "Install uv with:"
+      echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+      echo "or, if uv is not available on this host, skip Python smoke tests"
+      echo "with \`make qa-deep\` (Tier 1 -- no Python smoke)."
+      FAILED+=("example-smoke: uv prerequisite missing")
+    else
+      NIGHTLY_VENV="$(pwd)/target/qa-nightly-venv"
+      echo
+      echo "=== preparing ambient Python venv at $NIGHTLY_VENV ==="
+      echo "=== (matches GHA smoke-suite's 'uv pip install -e apis/python/node') ==="
+      # Fresh venv each run so `-e apis/python/node` picks up workspace
+      # bindings rebuilt by maturin since the last run.
+      rm -rf "$NIGHTLY_VENV"
+      uv venv --seed -p 3.12 "$NIGHTLY_VENV" > /dev/null
+      VIRTUAL_ENV="$NIGHTLY_VENV" uv pip install --quiet pyarrow
+      VIRTUAL_ENV="$NIGHTLY_VENV" uv pip install --quiet -e apis/python/node
+
+      # CI-nightly parity: the GHA `smoke-suite` job runs exactly this
+      # command, and the log-sinks / service-action / streaming /
+      # record-replay jobs are all backed by tests in the same file.
+      # --test-threads=1 matches CI (the smoke tests share global
+      # coordinator ports and can't run in parallel).
+      run "example-smoke" env \
+        VIRTUAL_ENV="$NIGHTLY_VENV" \
+        PATH="$NIGHTLY_VENV/bin:$PATH" \
+        cargo test -p dora-examples --test example-smoke \
+        -- --test-threads=1
+    fi
 
     # Drive the 6 remaining GHA nightly jobs (cluster-smoke, topic-and-top,
     # cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
