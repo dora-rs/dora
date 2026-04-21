@@ -6,6 +6,20 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "asyncio>=4.0.0",
+    "dora-rs",
     "dora-rs-cli>=0.3.13",
     "numpy>=2.3.5",
+    "pyarrow>=14.0.1",
 ]
+
+# Use the workspace's Python bindings (built via maturin from
+# apis/python/node) instead of PyPI's `dora-rs`. Required because this
+# is a work-in-progress main branch whose message format (v0.2.1) has
+# drifted from the latest published version on PyPI (0.5.0, v0.8.0);
+# installing from PyPI causes "version mismatch" at daemon registration.
+# See #1710.
+#
+# Other Python examples that call `dora.Node()` should adopt this same
+# override until the workspace Python bindings are re-published.
+[tool.uv.sources]
+dora-rs = { path = "../../apis/python/node", editable = true }

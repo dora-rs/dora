@@ -21,6 +21,9 @@
 #                                smoke, redb-backend-smoke, daemon-reconnect-smoke,
 #                                state-reconstruction-smoke). Green local qa-nightly
 #                                predicts a green CI nightly schedule.
+#                                Requires BOTH `uv` AND Python 3.12 (preflighted
+#                                with specific install hints; matches GHA's
+#                                actions/setup-python@3.12 + uv setup).
 #   --release-gate               Tier 3 automatable (deep + semver; audit+dogfood are human gates)
 #   --mutation-audit  ~10-18 hrs full-repo cargo-mutants across 6 critical crates
 #                                (1679+ mutants). Deliberate test-quality audit, not every nightly.
@@ -144,7 +147,12 @@ For overnight runs on a powerful machine. Will run:
   12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
   13.   example-smoke                           -- tests/example-smoke.rs (52 tests;
                                                    covers GHA smoke-suite + log-sinks
-                                                   + service-action + streaming + record-replay)
+                                                   + service-action + streaming + record-replay).
+                                                   Runs inside a scratch uv venv that
+                                                   has \`-e apis/python/node\` installed,
+                                                   matching the GHA Python setup exactly
+                                                   (so workspace Python bindings are used,
+                                                   NOT PyPI). Requires uv.
   14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    (covers GHA cluster-smoke + topic-and-top
                                                    + cpu-affinity + redb-backend + daemon-reconnect
@@ -270,13 +278,63 @@ case "$MODE" in
     run_optional "miri" "cargo +nightly miri --version" \
       cargo +nightly miri test -p dora-core -- metadata::tests
 
-    # CI-nightly parity: the GHA `smoke-suite` job runs exactly this
-    # command, and the log-sinks / service-action / streaming /
-    # record-replay jobs are all backed by tests in the same file.
-    # --test-threads=1 matches CI (the smoke tests share global
-    # coordinator ports and can't run in parallel).
-    run "example-smoke" cargo test -p dora-examples --test example-smoke \
-      -- --test-threads=1
+    # Ambient Python venv for example-smoke. CI smoke jobs all set one up
+    # with `uv pip install -e apis/python/node` before running cargo test;
+    # without it, `dora run --uv` creates isolated venvs that either fall
+    # through to system Python for `dora` bindings (ImportError on clean
+    # machines) or pull dora-rs from PyPI (#1710: PyPI 0.5.0 speaks message
+    # format v0.8.0, workspace speaks v0.2.1 -> mismatch).
+    #
+    # Without this step, `make qa-nightly` passes locally only when the
+    # user already has workspace bindings in some other ambient venv -- a
+    # hidden prerequisite that defeats the whole point of CI parity.
+    # Hard prereqs for this step: uv + an available Python 3.12 interpreter
+    # (matches .github/workflows/nightly.yml:56 which installs 3.12 via
+    # actions/setup-python before creating the venv). Checking both up
+    # front -- a missing 3.12 would otherwise fail at `uv venv -p 3.12`
+    # below with a raw uv error instead of our clear install hint.
+    nightly_py_missing() {
+      local name="$1"
+      echo
+      echo "=== example-smoke (FAIL: $name prerequisite missing) ==="
+      echo "Install with:"
+      if [ "$name" = "uv" ]; then
+        echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+      else
+        echo "  uv python install 3.12"
+      fi
+      echo "Alternative: skip Python smoke tests with \`make qa-deep\`"
+      echo "(Tier 1 gate; no Python smoke, no uv/3.12 requirement)."
+      FAILED+=("example-smoke: $name missing")
+    }
+
+    if ! command -v uv > /dev/null 2>&1; then
+      nightly_py_missing "uv"
+    elif ! uv python find 3.12 > /dev/null 2>&1; then
+      nightly_py_missing "Python 3.12"
+    else
+      NIGHTLY_VENV="$(pwd)/target/qa-nightly-venv"
+      echo
+      echo "=== preparing ambient Python venv at $NIGHTLY_VENV ==="
+      echo "=== (matches GHA smoke-suite's 'uv pip install -e apis/python/node') ==="
+      # Fresh venv each run so `-e apis/python/node` picks up workspace
+      # bindings rebuilt by maturin since the last run.
+      rm -rf "$NIGHTLY_VENV"
+      uv venv --seed -p 3.12 "$NIGHTLY_VENV" > /dev/null
+      VIRTUAL_ENV="$NIGHTLY_VENV" uv pip install --quiet pyarrow
+      VIRTUAL_ENV="$NIGHTLY_VENV" uv pip install --quiet -e apis/python/node
+
+      # CI-nightly parity: the GHA `smoke-suite` job runs exactly this
+      # command, and the log-sinks / service-action / streaming /
+      # record-replay jobs are all backed by tests in the same file.
+      # --test-threads=1 matches CI (the smoke tests share global
+      # coordinator ports and can't run in parallel).
+      run "example-smoke" env \
+        VIRTUAL_ENV="$NIGHTLY_VENV" \
+        PATH="$NIGHTLY_VENV/bin:$PATH" \
+        cargo test -p dora-examples --test example-smoke \
+        -- --test-threads=1
+    fi
 
     # Drive the 6 remaining GHA nightly jobs (cluster-smoke, topic-and-top,
     # cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
