@@ -552,6 +552,9 @@ fn smoke_local_python_multiple_arrays() {
 }
 
 #[test]
+#[ignore = "blocked by PyPI dora-rs drift (#1710): --uv pulls dora-rs 0.5.0 \
+(message format v0.8.0) from PyPI, workspace daemon speaks v0.2.1. Re-enable \
+once the workspace Python bindings are published to PyPI at a matching version."]
 fn smoke_local_python_concurrent_rw() {
     // 15s gives more headroom on slow CI runners — this example has two
     // Python nodes in circular data dependency with threaded publish/read,
