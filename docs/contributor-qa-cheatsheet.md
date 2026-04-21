@@ -97,7 +97,7 @@ they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 ### Overnight run on a powerful machine (full CI nightly parity)
 
 ```bash
-make qa-nightly    # ~100-120 min
+make qa-nightly    # ~3-4 hours
 ```
 
 Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code

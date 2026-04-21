@@ -10,7 +10,7 @@
 #   make qa-deep             ~15 min     target Tier 1 gate, stronger than today's CI
 #                                        (adds coverage, adversarial, mutants, semver -
 #                                        kept laptop-only, see strategy doc §5)
-#   make qa-nightly         ~100-120 m   Full parity with .github/workflows/nightly.yml
+#   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). example-smoke covers the 5
 #                                        example-backed GHA jobs; scripts/qa/ci-nightly-jobs.sh

@@ -11,7 +11,7 @@
 #                                (full + mutants on diff + semver; see strategy doc §5 for why the
 #                                extras are laptop-only)
 #   --tier1                      back-compat alias for --deep
-#   --nightly         ~100-120 m Full parity with .github/workflows/nightly.yml
+#   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
 #                                ci-nightly-jobs). example-smoke covers the 5
 #                                example-backed GHA jobs (smoke-suite, log-sinks,
@@ -134,7 +134,7 @@ Will run:
 EOF
       ;;
     --nightly)
-      header="qa-nightly -- Full parity with .github/workflows/nightly.yml (~100-120 min)"
+      header="qa-nightly -- Full parity with .github/workflows/nightly.yml (~3-4 hours)"
       cat <<EOF
 ============================================================
 $header
