@@ -90,6 +90,7 @@ Documented in `CLAUDE.md`. Invoke via `make`:
 | Target Tier 1 gate (qa-full + mutants + semver) | `make qa-deep` (alias: `make qa-tier1`) | stronger than today's CI — laptop-only extras (coverage, adversarial, mutants, semver) |
 | Tier 2 locally (qa-deep + proptest@1000 + miri) | `make qa-nightly` | overnight runs on a powerful machine; ~30-60 min |
 | Full-repo mutation audit (~10-18 hrs) | `make qa-mutation-audit` | deliberate test-quality audit, NOT every nightly |
+| All smoke-eligible example dataflows end-to-end (~15-20 min) | `make qa-examples` | orthogonal to ladder; wraps `scripts/smoke-all.sh`. Skips CUDA/ROS2/webcam/C++/interactive; qa-fast/full/deep `--exclude dora-examples` by design |
 | Tier 3 automatable (qa-deep + semver) | `make qa-release-gate` | before tagging a release |
 | Coverage (lcov report) | `make qa-coverage` | when investigating coverage |
 | Mutation testing | `make qa-mutants` | when auditing test quality |

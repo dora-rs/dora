@@ -16,9 +16,24 @@
 #   make qa-mutation-audit   ~10-18 hrs  full-repo cargo-mutants; deliberate
 #                                        test-quality audit, NOT every nightly
 #
+# Orthogonal to the ladder:
+#
+#   make qa-examples         ~15-20 min  run all smoke-eligible example
+#                                        dataflows end-to-end (wraps
+#                                        scripts/smoke-all.sh). The script
+#                                        skips examples that need CUDA, ROS2,
+#                                        webcam, multi-machine deploy, C/C++
+#                                        toolchains, or interactive CLI --
+#                                        run `scripts/smoke-all.sh -h` to see
+#                                        the SKIP list. Not part of qa-*
+#                                        ladder by design: the ladder
+#                                        excludes dora-examples tests to
+#                                        keep per-commit budgets tight.
+#
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
+        qa-examples \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-install
 
@@ -44,6 +59,15 @@ qa-release-gate:
 
 qa-mutation-audit:
 	@scripts/qa/all.sh --mutation-audit
+
+# Run all smoke-eligible example dataflows end-to-end via
+# scripts/smoke-all.sh. Skips examples requiring CUDA, ROS2, webcam,
+# multi-machine deploy, C/C++ toolchains, or interactive CLI.
+# Budget ~15-20 min. Pass flags through, e.g.
+#   make qa-examples ARGS="--rust-only"
+#   make qa-examples ARGS="-v"    # stream dora output live
+qa-examples:
+	@scripts/smoke-all.sh $(ARGS)
 
 # Individual gates
 

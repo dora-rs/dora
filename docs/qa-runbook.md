@@ -28,6 +28,11 @@ make qa-release-gate
 
 # Deliberate test-quality audit (NOT every nightly; takes 10-18 hrs)
 make qa-mutation-audit
+
+# Run all smoke-eligible example dataflows end-to-end (~15-20 min, orthogonal to ladder)
+# Skips CUDA/ROS2/webcam/C++/interactive examples -- run `scripts/smoke-all.sh -h` for the SKIP list
+make qa-examples
+# or scope it: make qa-examples ARGS="--rust-only"
 ```
 
 If you only remember one command: **`make qa-fast`**.
@@ -53,6 +58,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 | `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) | ~30-60 min | Tier 2 equivalent locally -- overnight runs on a powerful machine. Does NOT include full-repo mutation testing (see `qa-mutation-audit`) |
 | `make qa-release-gate` | `qa-deep` + semver | ~15 min | The automatable subset of Tier 3. Non-automatable: security audit + dogfood + migration validation (see strategy doc §7) |
 | `make qa-mutation-audit` | `cargo-mutants --full` on 6 critical crates | ~10-18 hrs | Deliberate test-quality audit, not every nightly |
+| `make qa-examples` | `scripts/smoke-all.sh` -- all smoke-eligible example dataflows end-to-end (skips CUDA/ROS2/webcam/C++/interactive) | ~15-20 min | When you want actual dataflows exercised. Orthogonal to ladder -- qa-fast/full/deep all `--exclude dora-examples`. Pass `ARGS="--rust-only"` etc. |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
 | `make qa-clippy` | `cargo clippy --all -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |
