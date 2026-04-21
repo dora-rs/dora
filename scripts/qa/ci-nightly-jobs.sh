@@ -17,6 +17,17 @@
 # changes, update the matching function here -- they must stay in lockstep so
 # a green local run predicts a green CI run.
 #
+# PROCESS SAFETY
+# The script never runs a broad `pkill -f 'dora (daemon|coordinator)'` --
+# that would terminate unrelated Dora processes the user happens to have
+# running on other ports. Instead, cleanup is scoped two ways:
+#   1. Explicit `$!` PIDs of dora processes this script started in the
+#      background are tracked in MANAGED_PIDS and killed by PID.
+#   2. For `dora up`-spawned children we don't directly `$!`, we match
+#      only processes whose command line includes our scratch CLI path
+#      ($CLI_ROOT/bin/dora, a unique mktemp dir per script run). Other
+#      dora binaries on the machine never match this path.
+#
 # See GitHub issue #1707 for design rationale.
 
 set -euo pipefail
@@ -28,14 +39,16 @@ cd "$(dirname "$0")/../.."
 # -----------------------------------------------------------------------------
 
 OS="$(uname -s)"
-LINUX_ONLY=()
 FAILED=()
 SKIPPED=()
+MANAGED_PIDS=()
 
 # Install dora CLI into a scratch root we own, so we don't clobber the user's
-# ~/.cargo/bin/dora. Prepend to PATH for this script only.
+# ~/.cargo/bin/dora. Prepend to PATH for this script only. CLI_ROOT is also
+# the unique pattern we use to identify our own processes (see PROCESS SAFETY
+# in the header).
 CLI_ROOT="$(mktemp -d -t dora-qa-XXXXXX)"
-trap 'rm -rf "$CLI_ROOT"' EXIT
+trap 'cleanup_all_managed; rm -rf "$CLI_ROOT"' EXIT
 
 echo
 echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
@@ -46,10 +59,88 @@ dora --version
 # Port 6013 is the default coordinator WS port. If something is already
 # listening, bail out with a clear message instead of racing.
 if command -v lsof > /dev/null 2>&1 && lsof -iTCP:6013 -sTCP:LISTEN > /dev/null 2>&1; then
-  echo "ERROR: port 6013 is already in use. Stop the running coordinator first:"
-  echo "  dora destroy   # or: pkill -f 'dora (coordinator|daemon)'"
+  echo "ERROR: port 6013 is already in use. A dora coordinator is likely already"
+  echo "running. Stop that coordinator with \`dora destroy\` before re-running."
   exit 1
 fi
+
+# -----------------------------------------------------------------------------
+# Safe process management (replaces broad pkill)
+# -----------------------------------------------------------------------------
+
+# Track a PID we just started in the background (typically the $! of the
+# most recent `dora ... &` invocation). Call immediately after launch.
+track_pid() {
+  MANAGED_PIDS+=("$1")
+}
+
+# Graceful kill for a specific PID. Safe on already-dead PIDs.
+terminate_pid() {
+  local pid="$1"
+  # SIGCONT first in case it was SIGSTOPped (daemon-reconnect-smoke does this
+  # deliberately); TERM would otherwise be queued but never delivered.
+  kill -CONT "$pid" 2>/dev/null || true
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+# Kill dora processes that were spawned by our scratch CLI but that we don't
+# have an explicit PID for (e.g., coord/daemon started via `dora up`, which
+# itself returns after forking them off). Matching on CLI_ROOT ensures we
+# never touch dora binaries installed elsewhere -- $CLI_ROOT is a unique
+# per-run mktemp path.
+terminate_our_dora_children() {
+  if ! command -v pgrep > /dev/null 2>&1; then
+    return 0
+  fi
+  local pids
+  pids=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
+  if [ -z "$pids" ]; then
+    return 0
+  fi
+  local pid
+  for pid in $pids; do
+    # Don't target ourselves or the parent shell.
+    if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
+      continue
+    fi
+    terminate_pid "$pid"
+  done
+}
+
+# Full cleanup between jobs and at exit: kill explicit tracked PIDs, then
+# sweep any leftover dora children that belong to our scratch CLI. Both
+# paths are scoped to this script -- nothing else on the machine is touched.
+cleanup_all_managed() {
+  local pid
+  if [ ${#MANAGED_PIDS[@]} -gt 0 ]; then
+    for pid in "${MANAGED_PIDS[@]}"; do
+      terminate_pid "$pid"
+    done
+  fi
+  terminate_our_dora_children
+  # Give TERM a moment; then KILL anything still alive that we started.
+  sleep 1
+  if [ ${#MANAGED_PIDS[@]} -gt 0 ]; then
+    for pid in "${MANAGED_PIDS[@]}"; do
+      kill -KILL "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    done
+  fi
+  if command -v pgrep > /dev/null 2>&1; then
+    local remaining
+    remaining=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
+    if [ -n "$remaining" ]; then
+      local rpid
+      for rpid in $remaining; do
+        if [ "$rpid" = "$$" ] || [ "$rpid" = "$PPID" ]; then
+          continue
+        fi
+        kill -KILL "$rpid" 2>/dev/null || true
+      done
+    fi
+  fi
+  MANAGED_PIDS=()
+}
 
 run_job() {
   local name="$1"
@@ -64,10 +155,9 @@ run_job() {
     echo "  FAIL: $name"
     FAILED+=("$name")
   fi
-  # Aggressive teardown between jobs. Some jobs leave background coord/daemon
-  # processes; don't let them contaminate the next job.
-  pkill -CONT -f "dora (daemon|coordinator)" 2>/dev/null || true
-  pkill -f    "dora (daemon|coordinator)" 2>/dev/null || true
+  # Between-jobs cleanup: only PIDs we started + only dora procs spawned from
+  # our scratch CLI. Unrelated dora processes on the machine are untouched.
+  cleanup_all_managed
   sleep 1
 }
 
@@ -113,11 +203,16 @@ job_cluster_smoke() {
     echo "ERROR: cluster status succeeded after 'cluster down'"
     return 1
   fi
+  # Leftover-process check: scoped to our scratch CLI path only.
   sleep 1
-  if pgrep -fa 'dora (daemon|coordinator)' > /dev/null; then
-    echo "ERROR: leftover dora processes after cluster down:"
-    pgrep -fa 'dora (daemon|coordinator)'
-    return 1
+  if command -v pgrep > /dev/null 2>&1; then
+    local leftover
+    leftover=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
+    if [ -n "$leftover" ]; then
+      echo "ERROR: leftover dora processes after cluster down (from our CLI):"
+      pgrep -fa "$CLI_ROOT/bin/dora" || true
+      return 1
+    fi
   fi
 }
 
@@ -232,7 +327,7 @@ assert any(r.get('node') == 'ticker' and r.get('name') == 'count' for r in rows)
   echo "$pub_out" | grep -q 'Published message 3/3' \
     || { echo "ERROR: pub didn't emit all 3 messages"; return 1; }
 
-  # Teardown
+  # Teardown (graceful; cleanup_all_managed in run_job will catch any leftover).
   dora stop --name tui-smoke --grace-duration 5s 2>/dev/null || true
   dora destroy 2>/dev/null || true
   deactivate 2>/dev/null || true
@@ -292,8 +387,11 @@ EOF
 
   # Session 1: write
   dora coordinator --store "redb:$STORE" > /tmp/coord1.log 2>&1 &
+  local COORD1_PID=$!
+  track_pid "$COORD1_PID"
   sleep 2
   dora daemon > /tmp/daemon1.log 2>&1 &
+  track_pid "$!"
   sleep 2
   dora start examples/rust-dataflow/redb-smoke.yml --name redb-smoke --detach
   sleep 6
@@ -309,12 +407,14 @@ EOF
     echo "OK: redb store contains dataflow record"
   fi
 
-  pkill -TERM -f "dora coordinator" 2>/dev/null || true
+  # Simulate coord crash by targeting only the coord we launched, by PID.
+  kill -TERM "$COORD1_PID" 2>/dev/null || true
   sleep 2
 
   if [ $failed -eq 0 ]; then
     # Session 2: read
     dora coordinator --store "redb:$STORE" > /tmp/coord2.log 2>&1 &
+    track_pid "$!"
     sleep 4
     echo "=== coord2 log ==="
     cat /tmp/coord2.log
@@ -344,9 +444,11 @@ job_daemon_reconnect() {
   fi
 
   dora coordinator > /tmp/coord.log 2>&1 &
+  track_pid "$!"
   sleep 2
   dora daemon > /tmp/daemon.log 2>&1 &
   local DAEMON_PID=$!
+  track_pid "$DAEMON_PID"
   sleep 3
 
   if ! grep -q "daemon.*reports.*running dataflow" /tmp/coord.log; then
@@ -362,6 +464,7 @@ job_daemon_reconnect() {
   if ! grep -q "Disconnecting daemons that failed watchdog" /tmp/coord.log; then
     echo "ERROR: coord did not log watchdog disconnect after 35s pause"
     cat /tmp/coord.log
+    # Resume the daemon so cleanup_all_managed's TERM is deliverable.
     kill -CONT "$DAEMON_PID" 2>/dev/null || true
     return 1
   fi
@@ -408,8 +511,11 @@ EOF
 
   # Session 1: run long-lived dataflow, kill coord
   dora coordinator --store "redb:$STORE" > /tmp/sr-c1.log 2>&1 &
+  local COORD1_PID=$!
+  track_pid "$COORD1_PID"
   sleep 2
   dora daemon > /tmp/sr-d1.log 2>&1 &
+  track_pid "$!"
   sleep 2
   dora start examples/rust-dataflow/long-running.yml --name sr-test --detach
   sleep 4
@@ -422,12 +528,14 @@ EOF
     echo "OK: Running dataflow persisted to store"
   fi
 
-  pkill -TERM -f "dora coordinator" 2>/dev/null || true
+  # Simulate coord crash: target only the coord we started, by PID.
+  kill -TERM "$COORD1_PID" 2>/dev/null || true
   sleep 2
 
   if [ $failed -eq 0 ]; then
     # Session 2: restart coord, assert Recovering transition
     dora coordinator --store "redb:$STORE" > /tmp/sr-c2.log 2>&1 &
+    track_pid "$!"
     sleep 4
     echo "=== sr-c2 log ==="
     cat /tmp/sr-c2.log
