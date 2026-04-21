@@ -359,11 +359,14 @@ case "$MODE" in
         -- --test-threads=1
     fi
 
-    # Drive the 6 remaining GHA nightly jobs (cluster-smoke, topic-and-top,
-    # cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
-    # The script installs dora CLI into a scratch dir, so it won't clobber
-    # the user's ~/.cargo/bin/dora. Linux-only jobs skip cleanly on other
-    # platforms. See #1707 for the alignment rationale.
+    # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
+    # (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
+    # redb-backend, daemon-reconnect [Linux], state-reconstruction,
+    # test-cross-platform, examples, cli-tests, bench-example, cross-check,
+    # ros2-bridge [Linux+ROS2], msrv). Jobs that can't run on the dev's OS
+    # SKIP cleanly. The script installs dora CLI into a scratch dir, so it
+    # won't clobber the user's ~/.cargo/bin/dora. See #1707 + #1716 for the
+    # alignment rationale.
     run "ci-nightly-jobs" scripts/qa/ci-nightly-jobs.sh
     ;;
   --mutation-audit)

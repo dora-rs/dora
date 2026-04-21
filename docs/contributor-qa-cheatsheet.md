@@ -104,11 +104,16 @@ Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code
 (skipped if `cargo +nightly miri` isn't installed), **plus the
 example-smoke suite** (`cargo test -p dora-examples --test example-smoke
 -- --test-threads=1`), **plus `scripts/qa/ci-nightly-jobs.sh`**, which
-drives the 6 CI-only GHA jobs locally (cluster-smoke, topic-and-top,
-cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
+drives the **14 CI-only GHA jobs** locally with platform-aware dispatch
+(record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
+redb-backend, daemon-reconnect [Linux], state-reconstruction,
+test-cross-platform [macOS+Windows], examples, cli-tests, bench-example,
+cross-check, ros2-bridge [Linux+ROS2], msrv).
 
-Together these cover all 11 GHA nightly test jobs. A green local run
-predicts a green CI nightly schedule.
+Together example-smoke + ci-nightly-jobs cover **all 18 GHA nightly
+test jobs** (4 + 14) after the #1716 rebalance. A green local run on
+platform X predicts a green CI nightly for platform X's jobs. Jobs
+that can't run on the dev's OS SKIP cleanly with a clear note.
 
 **Requires both `uv` and Python 3.12.** Before running example-smoke,
 `scripts/qa/all.sh` preflights both prerequisites, then creates a
