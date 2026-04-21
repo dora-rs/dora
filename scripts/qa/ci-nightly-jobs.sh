@@ -752,7 +752,7 @@ job_cli_tests() {
     uv pip install --quiet pyarrow "ruff>=0.9" pytest
     uv pip install --quiet -e apis/python/node
 
-    # Python template
+    # Python template: dora new + dora build + ruff + pytest + dora run
     local tmpd2
     tmpd2=$(mktemp -d -t dora-pytpl-XXXXXX)
     (
@@ -761,17 +761,71 @@ job_cli_tests() {
       cd test_python_project
       dora build dataflow.yml --uv
       uv run ruff check .
+      uv run pytest
       export OPERATING_MODE=SAVE
       dora build dataflow.yml --uv
       timeout 120s dora run dataflow.yml --uv --stop-after 10s
     )
     rm -rf "$tmpd2"
 
-    # Python Node, Multi-Arrays, Drain (fast subset)
+    # Python Node example
     dora build examples/python-dataflow/dataflow.yml --uv
     timeout 60s dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+
+    # Python Dynamic Node example
+    # dora-hub deps pull dora-rs from PyPI, overriding local build;
+    # re-install local version to avoid version mismatch (matches GHA).
+    dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+    uv pip install --quiet -e apis/python/node
+    dora up
+    sleep 2
+    dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+    timeout 60s uv run opencv-plot || true
+    sleep 10
+    dora stop --name ci-python-dynamic --grace-duration 30s 2>/dev/null || true
+    dora destroy 2>/dev/null || true
+
+    # Python Operator example
+    # dora-hub deps pull dora-rs from PyPI; re-install local version.
+    dora build examples/python-operator-dataflow/dataflow.yml --uv
+    uv pip install --quiet -e apis/python/node
+    timeout 120s dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+
+    # Python Multiple Arrays
     dora build examples/python-multiple-arrays/dataflow.yml --uv
     timeout 120s dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+
+    # Python Async example (5-min run; skipped on Windows per GHA)
+    case "$OS" in
+      MINGW*|CYGWIN*|MSYS*|Windows_NT)
+        echo "SKIP Python Async example: GHA runs this on non-Windows only"
+        SKIPPED+=("cli-tests: python-async on Windows")
+        ;;
+      *)
+        timeout 360s dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+        ;;
+    esac
+
+    # Python Drain example
+    OTEL_SDK_DISABLED=true timeout 120s dora run examples/python-drain/dataflow.yaml --uv
+
+    # Python Dataflow Builder API (YAML generation contract test)
+    # `simple_example.py` itself can't run here -- its build: directives
+    # pip-install hub packages (opencv-video-capture, dora-yolo, opencv-plot)
+    # which pull PyPI `dora-rs` 0.5.0 and clobber the local workspace version.
+    # Exercise the builder API itself via the hub-package-free YAML
+    # generation contract test (matches GHA's #1654 approach).
+    timeout 60s uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
+
+    # Python Queue Latency Test
+    timeout 120s dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+
+    # Python Queue Latency + Timeout Test
+    timeout 120s dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+
+    # Rust Queue Latency Test
+    dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+    timeout 120s dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
     deactivate 2>/dev/null || true
     rm -rf "$venv_dir"
