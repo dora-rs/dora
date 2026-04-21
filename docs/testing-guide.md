@@ -218,27 +218,43 @@ Topics covered: health check, list/stop/destroy requests, invalid JSON/params, c
 
 ## CI Pipeline
 
-CI runs on push/PR to `main`. See `.github/workflows/ci.yml`.
+Two workflows split by cadence (#1716):
+
+- **`.github/workflows/ci.yml`** — runs on every PR and push to `main`. Linux-only. **Blocks merge.** Target ~30-45 min critical path.
+- **`.github/workflows/nightly.yml`** — daily 06:40 UTC cron + manual dispatch. Cross-platform. **Does NOT block PRs**; auto-files `nightly-regression` issue on failure. ~3-4 hours wall-clock.
+
+### PR CI (`ci.yml`) — fast Linux-only gate
 
 | Job | Runner | What runs |
 |-----|--------|-----------|
 | **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
 | **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
-| **test** | ubuntu/macOS/windows | `cargo check`, `cargo build`, `cargo test --all ...` (excluding Python crates and `dora-examples`) plus fast CLI smoke/semantic checks |
-| **examples** | ubuntu/macOS/windows | `cargo run --example ...` for Rust, multiple-daemons, C, C++, C++ Arrow, and CMake examples |
-| **cli** | ubuntu/macOS/windows | `dora new` template projects, dynamic dataflows, Python examples, queue regressions |
+| **test** | ubuntu-latest | `cargo check`, `cargo build`, `cargo test --all ...` (excluding Python crates and `dora-examples`) plus fast CLI smoke/semantic checks |
 | **e2e** | ubuntu-latest | `ws-cli-e2e` and `fault-tolerance-e2e` |
-| **bench-example** | ubuntu/macOS/windows | `cargo run --example benchmark --release` |
+| **contract-tests** | ubuntu-latest | `tests/example-smoke.rs::contract_*` behavior contracts |
 | **bench** | ubuntu-latest | criterion benchmark regression check |
+| **typos** | ubuntu-latest | `crate-ci/typos@master` |
 | **audit** | ubuntu-latest | `cargo-audit` + `cargo-deny` via `make qa-audit` |
 | **unwrap-budget** | ubuntu-latest | `.unwrap()` / `.expect()` budget check |
-| **typos** | ubuntu-latest | `crate-ci/typos@master` |
-| **cross-check** | ubuntu/macOS | cross-compilation checks for key targets |
-| **ros2-bridge** | ubuntu-latest | ROS2 bridge tests and examples |
-| **msrv** | ubuntu-latest | minimum supported Rust version build/test |
-| **license** | ubuntu-latest | license validation |
+| **check-license** | ubuntu-latest | license validation |
 
-The heavier example, CLI, benchmark, E2E, cross-check, ROS2, MSRV, and license jobs depend on `test`. The full smoke suite in `tests/example-smoke.rs` runs in nightly, not in the per-PR CI lane.
+### Nightly CI (`nightly.yml`) — cross-platform breadth
+
+| Job | Runner | What runs |
+|-----|--------|-----------|
+| **smoke-suite** | ubuntu-latest | Full `tests/example-smoke.rs` (52 tests, all Python examples) |
+| **test-cross-platform** | macOS + Windows | Same steps as PR `test`, on the non-Linux matrix |
+| **examples** | ubuntu/macOS/windows | Rust, Rust Git, Multiple Daemons, C, C++, C++ Arrow, CMake |
+| **cli-tests** | ubuntu/macOS/windows | `dora new` template projects, Python dynamic node, queue latency, error-event |
+| **bench-example** | ubuntu/macOS/windows | `cargo run --example benchmark --release` |
+| **cross-check** | matrix (8 targets) | compile-only across x86_64/aarch64 linux-gnu + musl + pc-windows-gnu + apple-darwin |
+| **ros2-bridge** | ubuntu-22.04 | ROS2 Humble bridge tests + examples |
+| **msrv** | ubuntu-latest | `cargo-hack check --rust-version` |
+| **log-sinks / service-action / streaming / record-replay** | ubuntu-latest | Integration smoke against individual dataflow surfaces |
+| **cluster-smoke / topic-and-top-smoke / cpu-affinity-smoke / redb-backend-smoke / daemon-reconnect-smoke / state-reconstruction-smoke** | ubuntu-latest | Specialized lifecycle / regression smokes |
+| **file-issue-on-failure** | ubuntu-latest | Auto-files issue on any failure |
+
+The full smoke suite in `tests/example-smoke.rs` runs in nightly (`smoke-suite`), not in PR CI. Developers who need cross-platform or broader coverage before merge run `make qa-test` / `make qa-examples` / `make qa-nightly` locally — see [`qa-runbook.md`](qa-runbook.md).
 
 ## Writing New Tests
 

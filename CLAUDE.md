@@ -158,7 +158,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 
 - `make qa-full` (qa-fast + full tests + coverage) — ~5-10 minutes. Run before a significant push if you want extra confidence; coverage is too slow for every push.
 - `make qa-deep` (qa-full + mutation testing + semver) — ~15 minutes. The **target** Tier 1 local gate. Today's CI PR gate only runs the fast subset (fmt/clippy/typos/audit/unwrap-budget + tests); `qa-deep` adds coverage, adversarial review, diff-scoped mutation, and semver — kept laptop-only because they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5). Alias: `make qa-tier1`, kept for back-compat.
-- `make qa-nightly` (qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs) — ~100-120 minutes. **Full parity with `.github/workflows/nightly.yml`** (#1707, #1710). example-smoke covers the 5 example-backed GHA jobs (smoke-suite, log-sinks, service-action, streaming, record-replay); `scripts/qa/ci-nightly-jobs.sh` drives the 6 remaining (cluster-smoke, topic-and-top, cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction). A green local `qa-nightly` predicts a green CI nightly schedule. **Requires both `uv` and Python 3.12** (both preflighted; the script fails fast with a specific install hint for whichever is missing — `curl -LsSf https://astral.sh/uv/install.sh \| sh` for uv, `uv python install 3.12` for the interpreter, matching the GHA `actions/setup-python` step at `.github/workflows/nightly.yml:56`). example-smoke creates a scratch venv at `target/qa-nightly-venv` and installs `-e apis/python/node` into it so Python nodes use the workspace bindings (not PyPI `dora-rs`, whose message format has drifted from the workspace — #1710). The CI-jobs script installs the CLI into a scratch dir (won't clobber `~/.cargo/bin/dora`) and bails if port 6013 is in use; cpu-affinity + daemon-reconnect skip on non-Linux. Skips miri if `cargo +nightly miri` isn't installed. **Does not** include full-repo mutation testing — that's split into `qa-mutation-audit` because it takes 10-18 hours on this workspace.
+- `make qa-nightly` (qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs) — ~100-120 minutes. **Full parity with `.github/workflows/nightly.yml`** (#1707, #1710, #1716). After the #1716 rebalance, nightly.yml has **18 test jobs**. example-smoke covers the **4 example-backed** jobs (smoke-suite, log-sinks, service-action, streaming); `scripts/qa/ci-nightly-jobs.sh` drives the **14 remaining** with platform-aware dispatch (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux], redb-backend, daemon-reconnect [Linux], state-reconstruction, test-cross-platform [macOS+Windows], examples, cli-tests, bench-example, cross-check, ros2-bridge [Linux+ROS2], msrv). A green local `qa-nightly` on platform X predicts a green CI nightly for platform X's jobs. **Requires both `uv` and Python 3.12** (both preflighted; the script fails fast with a specific install hint for whichever is missing — `curl -LsSf https://astral.sh/uv/install.sh \| sh` for uv, `uv python install 3.12` for the interpreter, matching the GHA `actions/setup-python` step at `.github/workflows/nightly.yml:56`). example-smoke creates a scratch venv at `target/qa-nightly-venv` and installs `-e apis/python/node` into it so Python nodes use the workspace bindings (not PyPI `dora-rs`, whose message format has drifted from the workspace — #1710). The CI-jobs script installs the CLI into a scratch dir (won't clobber `~/.cargo/bin/dora`) and bails if port 6013 is in use; cpu-affinity + daemon-reconnect skip on non-Linux. Skips miri if `cargo +nightly miri` isn't installed. **Does not** include full-repo mutation testing — that's split into `qa-mutation-audit` because it takes 10-18 hours on this workspace.
 - `make qa-release-gate` (qa-deep + semver) — the automatable subset of Tier 3. The non-automatable parts (independent security audit, dogfood campaign, migration validation) are documented in `docs/plan-agentic-qa-strategy.md` §7 but not locally gateable.
 - `make qa-mutation-audit` — ~10-18 hours. Full-repo `cargo-mutants` across 6 critical crates. Deliberate test-quality audit; run before a release or when investigating a specific crate, not every nightly.
 - `make qa-examples` — ~15-20 min. Runs all **smoke-eligible** example dataflows end-to-end via `scripts/smoke-all.sh`. Skips examples that need CUDA, ROS2, webcam, multi-machine deploy, C/C++ toolchains, or interactive CLI (run `scripts/smoke-all.sh -h` to see the SKIP list). Orthogonal to the qa-fast/full/deep ladder: those targets `--exclude dora-examples` to keep per-commit / pre-push budgets tight. Run this when you want actual dataflows exercised (after touching node/operator APIs, CLI subcommands, or the descriptor surface). Pass flags via `ARGS`, e.g. `make qa-examples ARGS="--rust-only"` or `make qa-examples ARGS="-v"`.
@@ -166,17 +166,34 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.
 
-**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test, typos, supply chain audit, unwrap budget, E2E, benchmark regression) — so it stays fast and runner capacity is not a bottleneck. Do not expand remote CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
-CI runs on Ubuntu, macOS, and Windows. Key jobs:
+**PR CI (`.github/workflows/ci.yml`, ~30-45 min, #1716):** Linux-only. Blocks merge.
 - `cargo fmt --all -- --check`
 - `cargo clippy --all -- -D warnings` (excluding Python packages)
-- `cargo test --all` (excluding Python packages, on all 3 platforms)
+- `cargo test --all` on **ubuntu-latest only** (excluding Python packages)
 - E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
+- Semantic contract tests (`tests/example-smoke.rs::contract_*`)
+- Benchmark regression check (criterion baseline caching)
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
+- Supply-chain audit (`cargo-audit` + `cargo-deny`)
+- Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
+- License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.92 (see `.github/workflows/ci.yml`)
+
+**Nightly CI (`.github/workflows/nightly.yml`, ~3-4h, daily 06:40 UTC):** Broader coverage, does NOT block PRs. Auto-files an issue on failure (`nightly-regression` label).
+- Test on macOS + Windows
+- Examples end-to-end (all 3 platforms, incl. C/C++/CMake/Arrow/multi-daemon)
+- CLI Tests (all 3 platforms, incl. template projects + Python Dynamic Node + error-event)
+- Bench Example (all 3 platforms)
+- Cross-compilation matrix (8 targets)
+- ROS2 bridge examples (Humble, ubuntu-22.04)
+- MSRV check (`cargo-hack`)
+- Plus the integration smokes: record/replay, cluster, topic-and-top, cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction
+
+**Developer guidance:** for non-Linux verification before merge, run `make qa-test` or `make qa-examples` locally; `make qa-nightly` covers the full nightly matrix (except ROS2) locally in ~100-120 min.
 
 ## Test-Driven Development
 

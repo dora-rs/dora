@@ -154,12 +154,19 @@ For overnight runs on a powerful machine. Will run:
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
   14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
-                                                   (covers GHA record-replay + cluster-smoke
-                                                   + topic-and-top + cpu-affinity + redb-backend
-                                                   + daemon-reconnect + state-reconstruction)
+                                                   Platform-aware: runs the subset of GHA
+                                                   nightly jobs that applies to the dev's OS.
+                                                   Covers record-replay, cluster-smoke,
+                                                   topic-and-top, cpu-affinity [Linux],
+                                                   redb-backend, daemon-reconnect [Linux],
+                                                   state-reconstruction, test-cross-platform,
+                                                   examples, cli-tests, bench-example, msrv,
+                                                   cross-check, ros2-bridge [Linux+ROS2].
 
-Steps 13 + 14 together cover all 11 GHA nightly test jobs. A green
-local qa-nightly predicts a green CI nightly schedule.
+Steps 13 + 14 together cover all 18 GHA nightly test jobs. A green
+local qa-nightly on platform X predicts a green CI nightly schedule
+for platform X's jobs. (Cross-platform jobs that the dev's OS can't
+run -- e.g. ros2-bridge on macOS -- SKIP locally with a clear note.)
 
 Why record-replay lives in ci-nightly-jobs, not example-smoke:
 example-smoke's contract_record_replay_* uses a fixture that strips
@@ -170,8 +177,15 @@ path -- which has been a recurring regression site (#1673/#1674,
 stock examples/rust-dataflow/dataflow.yml with build directives
 INTACT, catching that class of regression locally.
 
-cpu-affinity-smoke and daemon-reconnect-smoke skip on non-Linux
-(they rely on sched_getaffinity / SIGSTOP+SIGCONT semantics).
+Platform-specific SKIP behavior:
+  - cpu-affinity-smoke, daemon-reconnect-smoke: Linux-only
+    (sched_getaffinity / SIGSTOP semantics).
+  - test-cross-platform: skipped on Linux (redundant with qa-test);
+    runs on macOS/Windows.
+  - examples: full on Linux, all-minus-cmake on macOS, Rust-only on Windows.
+  - cli-tests C/C++ template tests: Linux-only per GHA.
+  - cross-check: native target for dev's OS only; full cross matrix is CI.
+  - ros2-bridge: Linux + /opt/ros/humble/setup.bash required.
 
 Full-repo mutation testing is a SEPARATE target (qa-mutation-audit)
 because in practice it takes 10-18 hours on this workspace -- too long
@@ -345,11 +359,14 @@ case "$MODE" in
         -- --test-threads=1
     fi
 
-    # Drive the 6 remaining GHA nightly jobs (cluster-smoke, topic-and-top,
-    # cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
-    # The script installs dora CLI into a scratch dir, so it won't clobber
-    # the user's ~/.cargo/bin/dora. Linux-only jobs skip cleanly on other
-    # platforms. See #1707 for the alignment rationale.
+    # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
+    # (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
+    # redb-backend, daemon-reconnect [Linux], state-reconstruction,
+    # test-cross-platform, examples, cli-tests, bench-example, cross-check,
+    # ros2-bridge [Linux+ROS2], msrv). Jobs that can't run on the dev's OS
+    # SKIP cleanly. The script installs dora CLI into a scratch dir, so it
+    # won't clobber the user's ~/.cargo/bin/dora. See #1707 + #1716 for the
+    # alignment rationale.
     run "ci-nightly-jobs" scripts/qa/ci-nightly-jobs.sh
     ;;
   --mutation-audit)

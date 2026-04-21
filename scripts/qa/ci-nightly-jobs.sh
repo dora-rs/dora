@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
-# scripts/qa/ci-nightly-jobs.sh -- local driver for the 7 GHA-only nightly jobs.
+# scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 11 test jobs.
-# `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
-# example-smoke step) covers 4 of them (smoke-suite + log-sinks +
-# service-action + streaming). This script covers the other 7:
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 18 test jobs
+# post-#1716. `cargo test -p dora-examples --test example-smoke` (run by
+# qa-nightly's example-smoke step) covers 4 of them (smoke-suite + log-sinks
+# + service-action + streaming). This script covers the other 14, with
+# platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
+# on Linux it runs the Linux subset, etc. (#1716).
 #
+#   Integration smokes (all platforms unless noted):
 #   - record-replay             record + replay with build: directives INTACT.
-#                               example-smoke.rs's contract_record_replay_* uses
-#                               a fixture that strips build directives, so it's
-#                               blind to the /tmp cargo bug class (#1674, #1691).
-#                               This job IS the only local coverage for that path.
 #   - cluster-smoke             dora up + cluster status + start --detach + cluster down
 #   - topic-and-top-smoke       dora top/trace/topic/self update against a zenoh-debug fixture
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
 #   - daemon-reconnect-smoke    Linux-only. SIGSTOP+watchdog+SIGCONT reconnect (#254).
 #   - state-reconstruction-smoke Running -> Recovering on coord restart (#255, partial).
+#
+#   Moved from ci.yml in #1716 (now only run in nightly):
+#   - test-cross-platform       Full test/check/build/cargo test on macOS/Windows.
+#                               Linux dev: skipped (redundant with qa-test).
+#   - examples                  Rust/C/C++/CMake example dataflows.
+#                               Windows: Rust only. Linux: all (incl. cmake).
+#                               macOS: all minus cmake.
+#                               Arrow C++ skipped unless libarrow installed.
+#   - cli-tests                 `dora new` templates + Python dynamic node + queue
+#                               latency + error-event. C/C++ template: Linux only.
+#                               Python portion needs uv + Python 3.12.
+#   - bench-example             All platforms: cargo run --example benchmark --release.
+#   - msrv                      All platforms: cargo-hack check --rust-version.
+#                               Skipped if cargo-hack not installed.
+#   - cross-check               Native target for the dev's OS. Full cross-matrix
+#                               (mingw/musl/aarch64) is CI-only -- those need
+#                               toolchains not typically present on dev machines.
+#   - ros2-bridge               Linux + ROS2 Humble only. Skipped elsewhere.
 #
 # Each job is a shell function mirroring the GHA step bodies. When GHA nightly
 # changes, update the matching function here -- they must stay in lockstep so
@@ -608,6 +625,332 @@ EOF
   return $failed
 }
 
+# =============================================================================
+# Jobs moved from ci.yml to nightly.yml in #1716 -- these are the other half of
+# "local qa-nightly = CI nightly parity". Each runs the subset of coverage that
+# applies to the dev's OS, matching what the GHA nightly would test on that
+# same platform.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Job 8: test-cross-platform (non-Linux only; redundant with qa-test on Linux)
+# Mirrors nightly.yml `test-cross-platform` (macOS + Windows).
+# -----------------------------------------------------------------------------
+job_test_cross_platform() {
+  if [ "$OS" = "Linux" ]; then
+    echo "SKIP: test-cross-platform is redundant with qa-test on Linux (PR CI already covers ubuntu-latest)"
+    SKIPPED+=("test-cross-platform: redundant on Linux")
+    return 0
+  fi
+  cargo check --all
+  cargo check --examples
+  cargo build --all \
+    --exclude dora-node-api-python \
+    --exclude dora-operator-api-python \
+    --exclude dora-ros2-bridge-python
+  cargo test --all \
+    --exclude dora-node-api-python \
+    --exclude dora-operator-api-python \
+    --exclude dora-ros2-bridge-python \
+    --exclude dora-cli-api-python \
+    --exclude dora-examples
+}
+
+# -----------------------------------------------------------------------------
+# Job 9: examples (platform-aware)
+# Mirrors nightly.yml `examples`.
+# -----------------------------------------------------------------------------
+job_examples() {
+  cargo build --quiet --examples
+  cargo build --quiet -p dora-cli
+  # NOTE: $CLI_ROOT/bin/dora is already on PATH (set by the script
+  # preamble), so the daemon's which::which("dora") will find it. Do
+  # NOT prepend target/debug here -- a naive `export PATH=...` leaks
+  # past this function and subsequent jobs' spawned `dora up` children
+  # would end up at target/debug/dora, which `terminate_our_dora_children`
+  # (scoped to $CLI_ROOT/bin/dora via pgrep) can't see -> leaked procs.
+
+  timeout 600s cargo run --example rust-dataflow
+  timeout 600s cargo run --example rust-dataflow-git
+  timeout 600s cargo run --example multiple-daemons
+
+  case "$OS" in
+    MINGW*|CYGWIN*|MSYS*|Windows_NT)
+      echo "SKIP c/cxx dataflow examples: Windows local dev typically lacks the toolchain CI sets up"
+      SKIPPED+=("examples: C/C++ on Windows")
+      ;;
+    *)
+      # C / C++ examples need a working C/C++ toolchain reachable by cargo.
+      timeout 600s cargo run --example c-dataflow
+      timeout 600s cargo run --example cxx-dataflow
+
+      # Arrow C++ library: detect via pkg-config or brew. Skip if neither.
+      if command -v pkg-config > /dev/null 2>&1 && pkg-config --exists arrow 2>/dev/null; then
+        timeout 600s cargo run --example cxx-arrow-dataflow
+      elif [ "$OS" = "Darwin" ] && command -v brew > /dev/null 2>&1 && brew list apache-arrow > /dev/null 2>&1; then
+        timeout 600s cargo run --example cxx-arrow-dataflow
+      else
+        echo "SKIP cxx-arrow-dataflow: arrow C++ library not found (install libarrow-dev or 'brew install apache-arrow')"
+        SKIPPED+=("examples: cxx-arrow-dataflow (arrow C++ missing)")
+      fi
+      ;;
+  esac
+
+  if [ "$OS" = "Linux" ]; then
+    timeout 600s cargo run --example cmake-dataflow
+  else
+    echo "SKIP cmake-dataflow: GHA runs this on Linux only"
+    SKIPPED+=("examples: cmake-dataflow (non-Linux)")
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Job 10: cli-tests (platform-aware)
+# Mirrors nightly.yml `cli-tests` (was the `cli` job in old ci.yml).
+# -----------------------------------------------------------------------------
+job_cli_tests() {
+  # CLI already installed at $CLI_ROOT/bin/dora by this script's preamble.
+  # cargo install --path binaries/cli --locked is redundant here; skip it
+  # to save ~45 min per local run.
+
+  # Rust template project: all platforms
+  local tmpd
+  tmpd=$(mktemp -d -t dora-tpl-XXXXXX)
+  (
+    cd "$tmpd"
+    dora new test_rust_project --internal-create-with-path-dependencies
+    cd test_rust_project
+    cargo build --all
+    timeout 120s dora run dataflow.yml --stop-after 10s
+  )
+  rm -rf "$tmpd"
+
+  # Dynamic Rust Dataflow
+  dora up
+  sleep 2
+  dora build examples/rust-dataflow/dataflow_dynamic.yml
+  dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+  timeout 60s cargo run -p rust-dataflow-example-sink-dynamic
+  sleep 5
+  dora stop --name ci-rust-dynamic --grace-duration 5s 2>/dev/null || true
+  dora destroy 2>/dev/null || true
+
+  # Error Event Example
+  dora build examples/error-propagation/dataflow.yml
+  local err_out
+  err_out=$(timeout 60s dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+  echo "$err_out" | grep -q "Received error from node" \
+    || { echo "ERROR: error-propagation did not receive NodeFailed event"; return 1; }
+
+  # Python tests require uv + Python 3.12
+  if ! command -v uv > /dev/null 2>&1; then
+    echo "SKIP Python cli-tests: uv not installed"
+    SKIPPED+=("cli-tests: Python portion (uv missing)")
+  else
+    local venv_dir
+    venv_dir=$(mktemp -d -t dora-cli-venv-XXXXXX)
+    uv venv --seed -p 3.12 "$venv_dir" > /dev/null
+    # shellcheck disable=SC1091
+    source "$venv_dir/bin/activate"
+    uv pip install --quiet pyarrow "ruff>=0.9" pytest
+    uv pip install --quiet -e apis/python/node
+
+    # Python template: dora new + dora build + ruff + pytest + dora run
+    local tmpd2
+    tmpd2=$(mktemp -d -t dora-pytpl-XXXXXX)
+    (
+      cd "$tmpd2"
+      dora new test_python_project --lang python --internal-create-with-path-dependencies
+      cd test_python_project
+      dora build dataflow.yml --uv
+      uv run ruff check .
+      uv run pytest
+      export OPERATING_MODE=SAVE
+      dora build dataflow.yml --uv
+      timeout 120s dora run dataflow.yml --uv --stop-after 10s
+    )
+    rm -rf "$tmpd2"
+
+    # Python Node example
+    dora build examples/python-dataflow/dataflow.yml --uv
+    timeout 60s dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+
+    # Python Dynamic Node example
+    # dora-hub deps pull dora-rs from PyPI, overriding local build;
+    # re-install local version to avoid version mismatch (matches GHA).
+    dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+    uv pip install --quiet -e apis/python/node
+    dora up
+    sleep 2
+    dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+    timeout 60s uv run opencv-plot || true
+    sleep 10
+    dora stop --name ci-python-dynamic --grace-duration 30s 2>/dev/null || true
+    dora destroy 2>/dev/null || true
+
+    # Python Operator example
+    # dora-hub deps pull dora-rs from PyPI; re-install local version.
+    dora build examples/python-operator-dataflow/dataflow.yml --uv
+    uv pip install --quiet -e apis/python/node
+    timeout 120s dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+
+    # Python Multiple Arrays
+    dora build examples/python-multiple-arrays/dataflow.yml --uv
+    timeout 120s dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+
+    # Python Async example (5-min run; skipped on Windows per GHA)
+    case "$OS" in
+      MINGW*|CYGWIN*|MSYS*|Windows_NT)
+        echo "SKIP Python Async example: GHA runs this on non-Windows only"
+        SKIPPED+=("cli-tests: python-async on Windows")
+        ;;
+      *)
+        timeout 360s dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+        ;;
+    esac
+
+    # Python Drain example
+    OTEL_SDK_DISABLED=true timeout 120s dora run examples/python-drain/dataflow.yaml --uv
+
+    # Python Dataflow Builder API (YAML generation contract test)
+    # `simple_example.py` itself can't run here -- its build: directives
+    # pip-install hub packages (opencv-video-capture, dora-yolo, opencv-plot)
+    # which pull PyPI `dora-rs` 0.5.0 and clobber the local workspace version.
+    # Exercise the builder API itself via the hub-package-free YAML
+    # generation contract test (matches GHA's #1654 approach).
+    timeout 60s uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
+
+    # Python Queue Latency Test
+    timeout 120s dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+
+    # Python Queue Latency + Timeout Test
+    timeout 120s dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+
+    # Rust Queue Latency Test
+    dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+    timeout 120s dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+
+    deactivate 2>/dev/null || true
+    rm -rf "$venv_dir"
+  fi
+
+  # C / C++ template tests: Linux only per GHA (`if: runner.os == 'Linux'`)
+  if [ "$OS" = "Linux" ]; then
+    local tmpd3
+    tmpd3=$(mktemp -d -t dora-ctpl-XXXXXX)
+    (
+      cd "$tmpd3"
+      dora new test_c_project --lang c --internal-create-with-path-dependencies
+      cd test_c_project
+      cmake -B build
+      cmake --build build
+      cmake --install build
+      timeout 120s dora run dataflow.yml --stop-after 10s
+    )
+    rm -rf "$tmpd3"
+
+    local tmpd4
+    tmpd4=$(mktemp -d -t dora-cxxtpl-XXXXXX)
+    (
+      cd "$tmpd4"
+      dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+      cd test_cxx_project
+      cmake -B build
+      cmake --build build
+      cmake --install build
+      timeout 120s dora run dataflow.yml --stop-after 10s
+    )
+    rm -rf "$tmpd4"
+  else
+    echo "SKIP C/C++ template tests: GHA runs these on Linux only"
+    SKIPPED+=("cli-tests: C/C++ template (non-Linux)")
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Job 11: bench-example (all platforms)
+# Mirrors nightly.yml `bench-example`.
+# -----------------------------------------------------------------------------
+job_bench_example() {
+  timeout 2700s cargo run --example benchmark --release
+}
+
+# -----------------------------------------------------------------------------
+# Job 12: msrv (all platforms)
+# Mirrors nightly.yml `msrv`.
+# -----------------------------------------------------------------------------
+job_msrv() {
+  if ! command -v cargo-hack > /dev/null 2>&1; then
+    echo "SKIP msrv: cargo-hack not installed (cargo install cargo-hack)"
+    SKIPPED+=("msrv: cargo-hack missing")
+    return 0
+  fi
+  cargo hack check --rust-version --workspace --ignore-private --locked
+}
+
+# -----------------------------------------------------------------------------
+# Job 13: cross-check (native target for dev's OS)
+# Mirrors nightly.yml `cross-check`, but ONLY the native target -- the
+# cross-compile matrix (aarch64, musl, mingw) needs `cross` or mingw
+# toolchains that aren't always present locally. CI does the full matrix.
+# -----------------------------------------------------------------------------
+job_cross_check() {
+  case "$OS" in
+    Linux)
+      cargo check --target x86_64-unknown-linux-gnu --all \
+        --exclude dora-node-api-python \
+        --exclude dora-operator-api-python \
+        --exclude dora-ros2-bridge-python \
+        --exclude dora-cli-api-python
+      ;;
+    Darwin)
+      # uname -m is arm64 on Apple Silicon, x86_64 on Intel.
+      local arch
+      arch="$(uname -m)"
+      if [ "$arch" = "arm64" ]; then
+        cargo check --target aarch64-apple-darwin --all \
+          --exclude dora-node-api-python \
+          --exclude dora-operator-api-python \
+          --exclude dora-ros2-bridge-python \
+          --exclude dora-cli-api-python
+      else
+        cargo check --target x86_64-apple-darwin --all \
+          --exclude dora-node-api-python \
+          --exclude dora-operator-api-python \
+          --exclude dora-ros2-bridge-python \
+          --exclude dora-cli-api-python
+      fi
+      ;;
+    *)
+      echo "SKIP cross-check: native target for $OS not in the local matrix"
+      SKIPPED+=("cross-check: $OS not dispatched")
+      return 0
+      ;;
+  esac
+}
+
+# -----------------------------------------------------------------------------
+# Job 14: ros2-bridge (Linux + ROS2 Humble)
+# Mirrors nightly.yml `ros2-bridge`.
+# -----------------------------------------------------------------------------
+job_ros2_bridge() {
+  if [ "$OS" != "Linux" ]; then
+    echo "SKIP ros2-bridge: GHA runs this on ubuntu-22.04 only"
+    SKIPPED+=("ros2-bridge: non-Linux ($OS)")
+    return 0
+  fi
+  if [ ! -f /opt/ros/humble/setup.bash ]; then
+    echo "SKIP ros2-bridge: /opt/ros/humble/setup.bash not found"
+    echo "  install with: see https://docs.ros.org/en/humble/Installation.html"
+    SKIPPED+=("ros2-bridge: ROS2 Humble not installed")
+    return 0
+  fi
+  # shellcheck disable=SC1091
+  source /opt/ros/humble/setup.bash
+  timeout 600s cargo test -p dora-ros2-bridge-python
+  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+}
+
 # -----------------------------------------------------------------------------
 # Dispatch
 # -----------------------------------------------------------------------------
@@ -619,6 +962,13 @@ run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
 run_job "daemon-reconnect-smoke"    job_daemon_reconnect
 run_job "state-reconstruction-smoke" job_state_reconstruction
+run_job "test-cross-platform"       job_test_cross_platform
+run_job "examples"                  job_examples
+run_job "cli-tests"                 job_cli_tests
+run_job "bench-example"             job_bench_example
+run_job "msrv"                      job_msrv
+run_job "cross-check"               job_cross_check
+run_job "ros2-bridge"               job_ros2_bridge
 
 echo
 echo "============================================================"

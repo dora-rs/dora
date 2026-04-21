@@ -19,10 +19,11 @@ Fast gates. Must pass for every PR.
 |---|---|---|
 | Format | `.github/workflows/ci.yml` `fmt` | `cargo fmt --all -- --check` |
 | Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all -- -D warnings` |
-| Core tests | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) |
-| CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (3 platforms) |
-| Example dataflows (Rust/C/C++/Python) | `.github/workflows/ci.yml` `examples` | `cargo run --example ...` on 3 platforms |
-| CLI template + basic Python examples | `.github/workflows/ci.yml` `cli` | `dora new` + `dora run` on 3 platforms |
+| Core tests (Linux) | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) on ubuntu-latest |
+| CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (ubuntu-latest) |
+| Core tests (macOS + Windows) | `.github/workflows/nightly.yml` `test-cross-platform` | same steps as PR `test`, nightly-gated (#1716) |
+| Example dataflows (Rust/C/C++/Python) | `.github/workflows/nightly.yml` `examples` | `cargo run --example ...` on all 3 platforms, nightly-gated (#1716) |
+| CLI template + basic Python examples | `.github/workflows/nightly.yml` `cli-tests` | `dora new` + `dora run` on all 3 platforms, nightly-gated (#1716) |
 | E2E WS control plane | `.github/workflows/ci.yml` `e2e` | `cargo test --test ws-cli-e2e` |
 | Fault tolerance E2E | `.github/workflows/ci.yml` `e2e` | `cargo test --test fault-tolerance-e2e` |
 | Semantic contract tests (service, action, streaming, validated-pipeline) | `.github/workflows/ci.yml` `contract-tests` | `cargo test -p dora-examples --test example-smoke contract_` |
@@ -88,7 +89,7 @@ Documented in `CLAUDE.md`. Invoke via `make`:
 |---|---|---|
 | Full QA (fast + tests + coverage) | `make qa-full` | before significant push |
 | Target Tier 1 gate (qa-full + mutants + semver) | `make qa-deep` (alias: `make qa-tier1`) | stronger than today's CI — laptop-only extras (coverage, adversarial, mutants, semver) |
-| Full parity with `.github/workflows/nightly.yml` (qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs) | `make qa-nightly` | overnight runs on a powerful machine; ~100-120 min. example-smoke covers 5 example-backed GHA jobs; `scripts/qa/ci-nightly-jobs.sh` drives the 6 remaining |
+| Full parity with `.github/workflows/nightly.yml` after #1716 (qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs) | `make qa-nightly` | overnight runs on a powerful machine; ~100-120 min. Covers all **18 nightly test jobs**: example-smoke = 4 (smoke-suite, log-sinks, service-action, streaming); ci-nightly-jobs.sh = 14 (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux], redb-backend, daemon-reconnect [Linux], state-reconstruction, test-cross-platform, examples, cli-tests, bench-example, cross-check, ros2-bridge [Linux+ROS2], msrv). Platform-aware: green local run on platform X predicts green CI nightly for platform X's jobs |
 | Full-repo mutation audit (~10-18 hrs) | `make qa-mutation-audit` | deliberate test-quality audit, NOT every nightly |
 | All smoke-eligible example dataflows end-to-end (~15-20 min) | `make qa-examples` | orthogonal to ladder; wraps `scripts/smoke-all.sh`. Skips CUDA/ROS2/webcam/C++/interactive; qa-fast/full/deep `--exclude dora-examples` by design |
 | Tier 3 automatable (qa-deep + semver) | `make qa-release-gate` | before tagging a release |

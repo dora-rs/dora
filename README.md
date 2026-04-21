@@ -437,16 +437,21 @@ examples/               # Example dataflows
 
 | Platform | Rust / Python | C / C++ templates |
 |----------|---------------|-------------------|
-| Linux (x86_64, ARM64, ARM32) | First-class | First-class (CI-gated) |
-| macOS (ARM64) | First-class | Best effort (not CI-gated) |
-| Windows (x86_64) | Best effort | Best effort (not CI-gated) |
-| WSL (x86_64) | Best effort | Best effort (not CI-gated) |
+| Linux (x86_64, ARM64, ARM32) | First-class (PR-gated) | First-class (nightly-gated) |
+| macOS (ARM64) | First-class (nightly-gated) | Best effort (nightly-gated) |
+| Windows (x86_64) | Best effort (nightly-gated) | Best effort (not gated) |
+| WSL (x86_64) | Best effort | Best effort (not gated) |
 
-C/C++ template tests (`dora new --lang c/cxx` + CMake build) run in CI on Linux only.
-`dora new --lang rust/python` is smoke-tested on all three platforms, but the C/C++
-variants are not. macOS and Windows C/C++ regressions are caught by users rather
-than CI; report them via GitHub issues and we will promote the gate. See
-[`docs/testing-matrix.md`](docs/testing-matrix.md#platform-parity) for the full rationale.
+**Gate meanings (#1716):**
+
+- **PR-gated** — every PR to `main` runs these tests; merge is blocked on failure.
+- **Nightly-gated** — the daily scheduled run (`.github/workflows/nightly.yml`) runs these. A failure auto-files a `nightly-regression` issue but does NOT block PRs.
+- **Not gated** — no automated CI coverage. Regressions surface via user reports.
+
+`dora new --lang rust/python` template tests run in nightly across all three platforms;
+C/C++ variants run in nightly on Linux only. Developers who need cross-platform
+verification before merge can run `make qa-test` / `make qa-examples` / `make qa-nightly`
+locally. See [`docs/testing-matrix.md`](docs/testing-matrix.md#platform-parity) for the full rationale.
 
 ## Examples
 
