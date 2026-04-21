@@ -147,19 +147,28 @@ For overnight runs on a powerful machine. Will run:
   12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
   13.   example-smoke                           -- tests/example-smoke.rs (52 tests;
                                                    covers GHA smoke-suite + log-sinks
-                                                   + service-action + streaming + record-replay).
+                                                   + service-action + streaming).
                                                    Runs inside a scratch uv venv that
                                                    has \`-e apis/python/node\` installed,
                                                    matching the GHA Python setup exactly
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
   14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
-                                                   (covers GHA cluster-smoke + topic-and-top
-                                                   + cpu-affinity + redb-backend + daemon-reconnect
-                                                   + state-reconstruction)
+                                                   (covers GHA record-replay + cluster-smoke
+                                                   + topic-and-top + cpu-affinity + redb-backend
+                                                   + daemon-reconnect + state-reconstruction)
 
 Steps 13 + 14 together cover all 11 GHA nightly test jobs. A green
 local qa-nightly predicts a green CI nightly schedule.
+
+Why record-replay lives in ci-nightly-jobs, not example-smoke:
+example-smoke's contract_record_replay_* uses a fixture that strips
+`build:` directives to sidestep the /tmp cargo bug class. That means
+it exercises the data path but not the cargo-build-during-replay
+path -- which has been a recurring regression site (#1673/#1674,
+#1691). The ci-nightly-jobs record-replay function runs against the
+stock examples/rust-dataflow/dataflow.yml with build directives
+INTACT, catching that class of regression locally.
 
 cpu-affinity-smoke and daemon-reconnect-smoke skip on non-Linux
 (they rely on sched_getaffinity / SIGSTOP+SIGCONT semantics).
