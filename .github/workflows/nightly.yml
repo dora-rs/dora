@@ -45,7 +45,13 @@ jobs:
   smoke-suite:
     name: Smoke suite (tests/example-smoke.rs)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 52 tests run with --test-threads=1 because they share coord ports.
+    # Observed ~14.5 min locally on a warm workstation; GHA runners are
+    # slower and cold-cache cargo compiles add 5-10 min of overhead.
+    # 30 min was marginal and triggered "cancelled" on the 2026-04-19,
+    # 04-20, 04-21 nightly runs -- the suite was still making progress
+    # when the timeout fired. 60 min gives margin without being wasteful.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
