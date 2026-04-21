@@ -5,6 +5,13 @@
 # changed vs origin/main (--in-diff). Pass --full for the full repo.
 #
 # Install: cargo install cargo-mutants
+#
+# Timeout: 45s per mutant. 9x longer than a normal test, but short
+# enough that hang-inducing mutations (e.g. broken channels) fail
+# fast instead of burning 2 minutes each. Was 120s; lowered after an
+# observed --full run saw 52 120-second timeouts in the first 1008
+# mutants (= ~1h 44min pure timeout waste). If a real passing test
+# legitimately takes >45s, bump this back up.
 
 set -euo pipefail
 
@@ -24,12 +31,16 @@ CRITICAL_CRATES=(
   --package shared-memory-server
 )
 
+TIMEOUT=45
+
 if [[ "${1:-}" == "--full" ]]; then
-  echo "Running full-repo mutation test (this takes 1-4 hours)..."
+  echo "Running full-repo mutation test."
+  echo "On the dora workspace this has been measured at 10-18 hours."
+  echo "Use only when deliberately auditing test quality; not every nightly."
   cargo mutants \
     "${CRITICAL_CRATES[@]}" \
     --jobs 4 \
-    --timeout 120
+    --timeout "$TIMEOUT"
 else
   echo "Running diff mutation test vs origin/main..."
   DIFF_FILE="$(mktemp)"
@@ -39,5 +50,5 @@ else
     --in-diff "$DIFF_FILE" \
     "${CRITICAL_CRATES[@]}" \
     --jobs 4 \
-    --timeout 120
+    --timeout "$TIMEOUT"
 fi
