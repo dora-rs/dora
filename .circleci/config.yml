@@ -609,6 +609,14 @@ jobs:
             chmod +x ~/.cargo/bin/dora
       - setup-python-uv
       - run:
+          name: Install OpenCV system dependencies
+          # opencv-python (pulled by dora-hub packages) needs X11 libs
+          # that cimg/rust doesn't ship.
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libxcb1 libgl1-mesa-glx libglib2.0-0 \
+              libsm6 libxrender1 libxext6
+      - run:
           name: Test Python template project
           command: |
             dora new test_python_project --lang python --internal-create-with-path-dependencies
@@ -1047,7 +1055,7 @@ jobs:
           command: |
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
-            uv pip install --python python3.12 pyarrow
+            uv pip install --system --python python3.12 pyarrow
       - run:
           name: Test ROS2 bridge
           command: |
