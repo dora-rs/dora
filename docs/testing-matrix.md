@@ -19,10 +19,11 @@ Fast gates. Must pass for every PR.
 |---|---|---|
 | Format | `.github/workflows/ci.yml` `fmt` | `cargo fmt --all -- --check` |
 | Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all -- -D warnings` |
-| Core tests | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) |
-| CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (3 platforms) |
-| Example dataflows (Rust/C/C++/Python) | `.github/workflows/ci.yml` `examples` | `cargo run --example ...` on 3 platforms |
-| CLI template + basic Python examples | `.github/workflows/ci.yml` `cli` | `dora new` + `dora run` on 3 platforms |
+| Core tests (Linux) | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) on ubuntu-latest |
+| CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (ubuntu-latest) |
+| Core tests (macOS + Windows) | `.github/workflows/nightly.yml` `test-cross-platform` | same steps as PR `test`, nightly-gated (#1716) |
+| Example dataflows (Rust/C/C++/Python) | `.github/workflows/nightly.yml` `examples` | `cargo run --example ...` on all 3 platforms, nightly-gated (#1716) |
+| CLI template + basic Python examples | `.github/workflows/nightly.yml` `cli-tests` | `dora new` + `dora run` on all 3 platforms, nightly-gated (#1716) |
 | E2E WS control plane | `.github/workflows/ci.yml` `e2e` | `cargo test --test ws-cli-e2e` |
 | Fault tolerance E2E | `.github/workflows/ci.yml` `e2e` | `cargo test --test fault-tolerance-e2e` |
 | Semantic contract tests (service, action, streaming, validated-pipeline) | `.github/workflows/ci.yml` `contract-tests` | `cargo test -p dora-examples --test example-smoke contract_` |
