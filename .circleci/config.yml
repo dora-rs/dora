@@ -122,10 +122,11 @@ commands:
 # ────────────────────────────────────────────────────────────────────
 executors:
   # Heavy compilation (tests, examples, CLI)
+  # Note: upgrade to xlarge if your plan supports it for faster builds.
   linux:
     docker:
       - image: cimg/rust:1.92.0
-    resource_class: xlarge
+    resource_class: large
     environment:
       CARGO_TERM_COLOR: always
 
@@ -149,7 +150,7 @@ executors:
   linux-small:
     docker:
       - image: cimg/base:current
-    resource_class: small
+    resource_class: medium
     environment:
       CARGO_TERM_COLOR: always
 
@@ -200,8 +201,8 @@ jobs:
           name: Install typos-cli
           command: |
             # Asset names include the version (e.g. typos-v1.45.1-...), so
-            # resolve the latest tag first via the GitHub API redirect.
-            VERSION=$(basename "$(curl -sSfI -o /dev/null -w '%{url_effective}' \
+            # resolve the latest tag first via the GitHub /releases/latest redirect.
+            VERSION=$(basename "$(curl -sSfL -o /dev/null -w '%{url_effective}' \
               https://github.com/crate-ci/typos/releases/latest)")
             curl -sSfL \
               "https://github.com/crate-ci/typos/releases/download/${VERSION}/typos-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
