@@ -194,10 +194,13 @@ job_record_replay() {
   local DREC=examples/rust-dataflow/run.drec
   rm -f "$DREC"
 
-  # Bounded timeout: record+replay of rust-dataflow completes in ~5s warm;
-  # 300s absorbs cold-cache rebuild variance (#1705 context).
-  if ! dora record examples/rust-dataflow/dataflow.yml -o "$DREC"; then
-    echo "ERROR: dora record failed"
+  # Bound each step with a hard timeout so a hung daemon/node doesn't
+  # stall qa-nightly indefinitely. 300s matches the GHA
+  # record-replay job (.github/workflows/nightly.yml:261, tuned in
+  # #1705 for cold-cache rebuild variance). Replay is normally ~2s;
+  # 120s is generous but still bounded.
+  if ! timeout 300s dora record examples/rust-dataflow/dataflow.yml -o "$DREC"; then
+    echo "ERROR: dora record failed or exceeded 300s"
     return 1
   fi
   if [ ! -s "$DREC" ]; then
@@ -206,8 +209,8 @@ job_record_replay() {
   fi
   echo "OK: recording size: $(wc -c < "$DREC") bytes"
 
-  if ! dora replay "$DREC"; then
-    echo "ERROR: dora replay failed"
+  if ! timeout 120s dora replay "$DREC"; then
+    echo "ERROR: dora replay failed or exceeded 120s"
     rm -f "$DREC"
     return 1
   fi
