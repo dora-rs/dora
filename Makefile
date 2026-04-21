@@ -7,7 +7,9 @@
 #
 #   make qa-fast       ~1 min     pre-commit sanity
 #   make qa-full       ~5-10 min  pre-push
-#   make qa-deep       ~15 min    full Tier 1 PR gate (what CI runs on your PR)
+#   make qa-deep       ~15 min    target Tier 1 gate, stronger than today's CI
+#                                 (adds coverage, adversarial, mutants, semver -
+#                                 kept laptop-only, see strategy doc §5)
 #   make qa-nightly    ~4 hours   Tier 2 equivalent locally (proptest, miri, full mutants)
 #   make qa-release-gate          Tier 3 automatable parts (deep + semver; audit/dogfood are human)
 #
