@@ -587,10 +587,12 @@ cargo run --example benchmark --release
 Dora ships with a three-tier QA system designed for AI-authored code. Everything runs locally first; CI mirrors the same scripts.
 
 ```bash
-make qa-install     # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
-make qa-fast        # ~15s  -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
-make qa-full        # ~5-10 min -- qa-fast + tests + coverage (pre-push)
-make qa-tier1       # ~1-2 hrs  -- qa-full + mutation testing + semver (pre-release)
+make qa-install        # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
+make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
+make qa-full           # ~5-10m  -- qa-fast + tests + coverage (pre-push)
+make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target Tier 1 gate, stronger than today's CI; alias: qa-tier1)
+make qa-nightly        # ~4h     -- qa-deep + proptest@1000 + miri + full mutation (overnight runs)
+make qa-release-gate   #         -- qa-deep + semver (Tier 3 automatable; audit/dogfood are human)
 ```
 
 On Ubuntu, install `ripgrep` separately and install `typos-cli` with Cargo:

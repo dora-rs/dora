@@ -154,10 +154,12 @@ All three steps are required for every commit. Do NOT push without completing th
 
 ### Do NOT run the full QA suite on every commit/push
 
-The deeper QA gates — `make qa-full`, `make qa-tier1`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
+The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make qa-release-gate`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
 
 - `make qa-full` (qa-fast + full tests + coverage) — ~5-10 minutes. Run before a significant push if you want extra confidence; coverage is too slow for every push.
-- `make qa-tier1` (qa-full + mutation testing + semver) — ~1-2 hours. Run before a release or when auditing a specific crate.
+- `make qa-deep` (qa-full + mutation testing + semver) — ~15 minutes. The **target** Tier 1 local gate. Today's CI PR gate only runs the fast subset (fmt/clippy/typos/audit/unwrap-budget + tests); `qa-deep` adds coverage, adversarial review, diff-scoped mutation, and semver — kept laptop-only because they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5). Alias: `make qa-tier1`, kept for back-compat.
+- `make qa-nightly` (qa-deep + proptest@1000 + miri + full mutation testing) — ~4 hours. Tier 2 equivalent locally, for overnight runs on a powerful machine. Skips miri if `cargo +nightly miri` isn't installed.
+- `make qa-release-gate` (qa-deep + semver) — the automatable subset of Tier 3. The non-automatable parts (independent security audit, dogfood campaign, migration validation) are documented in `docs/plan-agentic-qa-strategy.md` §7 but not locally gateable.
 - `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.

@@ -17,8 +17,14 @@ make qa-fast
 # Before every push (~5-10 minutes)
 make qa-full
 
-# Before a release or a focused mutation audit (~1+ hour)
-make qa-tier1
+# Target Tier 1 gate -- stronger than today's CI (~15 minutes)
+make qa-deep
+
+# Overnight run on a beefy machine -- Tier 2 equivalent (~4 hours)
+make qa-nightly
+
+# Before tagging a release
+make qa-release-gate
 ```
 
 If you only remember one command: **`make qa-fast`**.
@@ -39,7 +45,10 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 |---|---|---|---|
 | `make qa-fast` | fmt + clippy + audit + unwrap-budget + typos | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
-| `make qa-tier1` | `qa-full` + mutation testing on diff + semver | ~1-2 hrs | Pre-release or focused audit |
+| `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
+| `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
+| `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) + full-repo mutation testing | ~4 hrs | Tier 2 equivalent locally -- overnight runs on a powerful machine |
+| `make qa-release-gate` | `qa-deep` + semver | ~15 min | The automatable subset of Tier 3. Non-automatable: security audit + dogfood + migration validation (see strategy doc §7) |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
 | `make qa-clippy` | `cargo clippy --all -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |

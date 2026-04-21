@@ -80,16 +80,39 @@ Runs `qa-fast` plus:
 - coverage report
 - optional adversarial review if supported tools are installed
 
-### Before release or deep audit
+### Target Tier 1 gate (stronger than today's CI)
 
 ```bash
-make qa-tier1
+make qa-deep    # alias: make qa-tier1
 ```
 
-Runs `qa-full` plus:
+Runs `qa-full` plus the Tier 1 extras that stay laptop-only because
+they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 
-- mutation testing
+- coverage (already in `qa-full`)
+- adversarial LLM review (already in `qa-full`; skipped if tools missing)
+- mutation testing (diff-scoped)
 - semver checks
+
+### Overnight run on a powerful machine (Tier 2 equivalent)
+
+```bash
+make qa-nightly    # ~4 hours
+```
+
+Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code
+(skipped if `cargo +nightly miri` isn't installed), and full-repo
+mutation testing.
+
+### Before tagging a release
+
+```bash
+make qa-release-gate
+```
+
+The automatable subset of Tier 3. The non-automatable parts (external
+security audit, dogfood campaign, migration validation) are documented
+in `docs/plan-agentic-qa-strategy.md` §7.
 
 ## 4. Most useful manual commands
 

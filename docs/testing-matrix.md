@@ -87,7 +87,9 @@ Documented in `CLAUDE.md`. Invoke via `make`:
 | Gate | Command | When |
 |---|---|---|
 | Full QA (fast + tests + coverage) | `make qa-full` | before significant push |
-| Tier 1 (qa-full + mutants + semver) | `make qa-tier1` | before release, or crate audit |
+| Target Tier 1 gate (qa-full + mutants + semver) | `make qa-deep` (alias: `make qa-tier1`) | stronger than today's CI — laptop-only extras (coverage, adversarial, mutants, semver) |
+| Tier 2 locally (qa-deep + proptest@1000 + miri + full mutants) | `make qa-nightly` | overnight runs on a powerful machine |
+| Tier 3 automatable (qa-deep + semver) | `make qa-release-gate` | before tagging a release |
 | Coverage (lcov report) | `make qa-coverage` | when investigating coverage |
 | Mutation testing | `make qa-mutants` | when auditing test quality |
 | Semver check | `make qa-semver` | before publishing to crates.io |
