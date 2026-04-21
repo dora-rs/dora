@@ -204,8 +204,16 @@ case "$MODE" in
       -- proptest
 
     # miri requires nightly Rust + miri component. Skip (with note) if missing.
+    #
+    # Scoped to the `metadata::tests::` module only. Those tests were
+    # specifically written to exercise the unsafe pointer-arithmetic
+    # path in `ArrowTypeInfoExt::from_array` under miri (see the
+    # module doc comment and docs/plan-agentic-qa-strategy.md §T2.3).
+    # Running `cargo miri test -p dora-core` without a filter tries
+    # every test in the crate; most fail because they use `tempfile`
+    # or other filesystem ops that miri's isolation sandbox rejects.
     run_optional "miri" "cargo +nightly miri --version" \
-      cargo +nightly miri test -p dora-core
+      cargo +nightly miri test -p dora-core -- metadata::tests
 
     # Full mutation testing (not diff-scoped). The default `qa-mutants` is
     # diff-scoped for the Tier 1 PR gate; --full runs every function.
