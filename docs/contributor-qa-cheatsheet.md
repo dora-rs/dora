@@ -94,31 +94,26 @@ they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 - mutation testing (diff-scoped)
 - semver checks
 
-### Overnight run on a powerful machine (full CI nightly parity)
+### Overnight run on a powerful machine (Tier 2 equivalent + CI-nightly smoke parity)
 
 ```bash
-make qa-nightly    # ~100-120 min
+make qa-nightly    # ~60-90 min
 ```
 
 Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code
 (skipped if `cargo +nightly miri` isn't installed), **plus the
 example-smoke suite** (`cargo test -p dora-examples --test example-smoke
--- --test-threads=1`), **plus `scripts/qa/ci-nightly-jobs.sh`**, which
-drives the 6 CI-only GHA jobs locally (cluster-smoke, topic-and-top,
-cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction).
-
-Together these cover all 11 GHA nightly test jobs. A green local run
-predicts a green CI nightly schedule.
-
-The script installs the dora CLI into a scratch dir (so it won't clobber
-your `~/.cargo/bin/dora`) and bails out if port 6013 is already in use.
-cpu-affinity-smoke and daemon-reconnect-smoke skip on non-Linux because
-they rely on `sched_getaffinity` / SIGSTOP+SIGCONT semantics. Python
-venv + `uv pip install -e apis/python/node` is set up only for the
-topic-and-top job.
+-- --test-threads=1`) -- which is exactly what the GHA nightly's
+smoke-suite / log-sinks / service-action / streaming / record-replay
+jobs exercise, so a green local `qa-nightly` maps to a green CI nightly
+on those jobs.
 
 **Does not** include full-repo mutation testing -- that's split into
 `qa-mutation-audit` because it takes 10-18 hours on this workspace.
+Also does not include the specialized CI-only jobs (cluster-smoke,
+cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke,
+state-reconstruction-smoke, topic-and-top-smoke) -- those need extra
+setup (dora CLI on PATH, reserved ports) and remain CI-only.
 
 ### Before tagging a release
 

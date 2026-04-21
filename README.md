@@ -591,7 +591,7 @@ make qa-install        # one-time: install cargo-audit, cargo-deny, cargo-llvm-c
 make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
 make qa-full           # ~5-10m  -- qa-fast + tests + coverage (pre-push)
 make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target Tier 1 gate, stronger than today's CI; alias: qa-tier1)
-make qa-nightly        # ~100-120m -- qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs (full parity with .github/workflows/nightly.yml)
+make qa-nightly        # ~60-90m -- qa-deep + proptest@1000 + miri + example-smoke (Tier 2 locally + CI-nightly smoke parity)
 make qa-release-gate   #         -- qa-deep + semver (Tier 3 automatable; audit/dogfood are human)
 make qa-mutation-audit # ~10-18h -- full-repo cargo-mutants; deliberate test-quality audit
 make qa-examples       # ~15-20m -- run all smoke-eligible example dataflows end-to-end (skips CUDA/ROS2/C++/interactive)
