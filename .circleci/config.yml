@@ -67,6 +67,11 @@ commands:
             } else {
               rustup default << parameters.version >>
             }
+      # Persist cargo PATH for subsequent bash.exe steps via BASH_ENV
+      - run:
+          name: Set Rust PATH for bash steps
+          shell: bash.exe
+          command: echo 'export PATH="$USERPROFILE/.cargo/bin:$PATH"' >> "$BASH_ENV"
 
   cargo-cache-restore:
     parameters:
@@ -194,10 +199,14 @@ jobs:
       - run:
           name: Install typos-cli
           command: |
-            curl -sSL \
-              "https://github.com/crate-ci/typos/releases/latest/download/typos-cli-x86_64-unknown-linux-musl.tar.gz" \
+            # Asset names include the version (e.g. typos-v1.45.1-...), so
+            # resolve the latest tag first via the GitHub API redirect.
+            VERSION=$(basename "$(curl -sSfI -o /dev/null -w '%{url_effective}' \
+              https://github.com/crate-ci/typos/releases/latest)")
+            curl -sSfL \
+              "https://github.com/crate-ci/typos/releases/download/${VERSION}/typos-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
               | tar xz -C /tmp
-            sudo mv /tmp/typos /usr/local/bin/
+            sudo install /tmp/typos /usr/local/bin/
       - run: typos
 
   audit:
