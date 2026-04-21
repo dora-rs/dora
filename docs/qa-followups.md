@@ -81,7 +81,7 @@ Expensive but unsupervised work. Kick off in a terminal, come back later.
 - **Trigger**: before citing the daemon/coordinator mutation scores in any formal report
 - **Owner**: heyong4725
 - **Why**: the current 5.8% / 26.1% numbers are scoping artifacts, not real scores. `test_workspace = true` is now the default in `.cargo/mutants.toml` but the re-run hasn't been done
-- **Command**: `cargo mutants --package dora-daemon --jobs 4 --timeout 120 --output /tmp/mutation/daemon-workspace` (similar for coordinator)
+- **Command**: `cargo mutants --package dora-daemon --jobs 4 --timeout 45 --output /tmp/mutation/daemon-workspace` (similar for coordinator; timeout was 120 → 45 after the qa-nightly split — see scripts/qa/mutants.sh)
 - **Expected outcome**: scores likely jump to 40-60%+ range based on the `fault_tolerance.rs` single-file experiment (21 missed → 21 caught)
 - **Reference**: `.cargo/mutants.toml` comment block, commit `9e0c2c6`
 

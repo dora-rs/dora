@@ -270,7 +270,10 @@ Failed proptest cases are saved in `libraries/message/proptest-regressions/` and
 
 ```bash
 # Mutation test a single file
-cargo mutants --package <pkg> --file <path/to/file.rs> --jobs 4 --timeout 120
+# (Timeout 45s mirrors scripts/qa/mutants.sh default. Was 120s until the
+# qa-nightly split; real passing tests fit comfortably under 45s and the
+# shorter cap prevents broken-channel mutations from burning 2m each.)
+cargo mutants --package <pkg> --file <path/to/file.rs> --jobs 4 --timeout 45
 
 # List mutations without running (fast)
 cargo mutants --package <pkg> --file <path/to/file.rs> --list
