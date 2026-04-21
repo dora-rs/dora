@@ -262,11 +262,20 @@ jobs:
           # re-compile inside the record step (#1691, 2026-04-21 nightly).
           # 300s absorbs that variance while still bounding genuine hangs
           # well under the 30-min job timeout.
-          timeout 300s dora record examples/rust-dataflow/dataflow.yml -o run.drec
-          test -f run.drec || { echo "record did not produce run.drec"; exit 1; }
-          echo "recording size: $(wc -c < run.drec) bytes"
+          #
+          # Write the .drec next to its dataflow, not at the workspace
+          # root: `dora replay` uses the .drec's parent as working_dir
+          # for the embedded build directives (mirrors the fix from
+          # #1674 for record). With the .drec at workspace root, replay
+          # would pick up $WORKSPACE/types/std/* and fail type-loading
+          # ("user types cannot use the 'std/' prefix" -- those are the
+          # workspace's own stdlib types, not user types).
+          timeout 300s dora record examples/rust-dataflow/dataflow.yml \
+            -o examples/rust-dataflow/run.drec
+          test -f examples/rust-dataflow/run.drec || { echo "record did not produce run.drec"; exit 1; }
+          echo "recording size: $(wc -c < examples/rust-dataflow/run.drec) bytes"
       - name: Replay
-        run: dora replay run.drec
+        run: dora replay examples/rust-dataflow/run.drec
 
   cluster-smoke:
     # Smoke-tests the cluster lifecycle commands that don't require SSH:

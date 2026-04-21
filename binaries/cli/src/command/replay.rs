@@ -7,7 +7,7 @@ use std::{
 
 use clap::Args;
 use dora_recording::RecordingReader;
-use eyre::{Context, bail};
+use eyre::{bail, Context};
 
 use crate::command::{Executable, Run};
 
@@ -228,7 +228,25 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     );
     eprintln!("Speed: {}x\n", args.speed);
 
-    let run = Run::new(tmp_path.to_string_lossy().to_string());
+    // The modified YAML lives in /tmp, but the original descriptor's
+    // `build: cargo build -p <node>` directives need to run in a dir where
+    // Cargo.toml is reachable and the descriptor's relative `path:` entries
+    // resolve. Mirror `dora record`'s fix (#1674) with the .drec file's
+    // parent as the working_dir.
+    //
+    // Convention: the .drec is expected to live next to (or under) the
+    // original dataflow directory -- i.e. `dora record foo.yml -o foo.drec`
+    // writes foo.drec into foo.yml's parent if invoked from that dir. If a
+    // user moves the .drec to a dir without the workspace visible (e.g.
+    // `/tmp`), they'll get the same confusing error they'd get from
+    // `cargo build` in that dir, which is expected -- build commands need
+    // to resolve against a workspace.
+    let recording_dir = PathBuf::from(&args.file)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
     run.execute()
 }
 
