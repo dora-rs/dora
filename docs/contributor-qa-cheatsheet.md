@@ -130,7 +130,7 @@ morning after. Use when:
 - Before a major release to score test-suite quality overall.
 - Adding a new critical crate and want a baseline.
 
-### Exercise every example dataflow end-to-end
+### Run all smoke-eligible example dataflows end-to-end
 
 ```bash
 make qa-examples                       # full run, ~15-20 min
@@ -138,10 +138,14 @@ make qa-examples ARGS="--rust-only"    # Rust examples only
 make qa-examples ARGS="-v"             # stream dora output live (debugging)
 ```
 
-Wraps `scripts/smoke-all.sh`. Orthogonal to the qa-fast/full/deep
-ladder: those explicitly `--exclude dora-examples` to keep per-commit
-and pre-push budgets tight. Run this when you've touched node/operator
-APIs, CLI subcommands, the descriptor (YAML) surface, or the
+Wraps `scripts/smoke-all.sh`. The script deliberately skips examples
+that need CUDA, ROS2, webcam, multi-machine deploy, C/C++ toolchains,
+or interactive CLI -- run `scripts/smoke-all.sh -h` for the SKIP list.
+
+Orthogonal to the qa-fast/full/deep ladder: those explicitly
+`--exclude dora-examples` to keep per-commit and pre-push budgets
+tight. Run this when you've touched node/operator APIs, CLI
+subcommands, the descriptor (YAML) surface, or the
 coordinator/daemon/runtime hot path -- anywhere an example dataflow
 could silently break without failing any unit/integration test.
 

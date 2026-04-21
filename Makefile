@@ -18,13 +18,17 @@
 #
 # Orthogonal to the ladder:
 #
-#   make qa-examples         ~15-20 min  run every example dataflow end-to-end
-#                                        (wraps scripts/smoke-all.sh). Not part
-#                                        of qa-* ladder by design -- the ladder
-#                                        explicitly excludes dora-examples tests
-#                                        to keep per-commit / pre-push budgets
-#                                        tight. Run this when you want actual
-#                                        dataflows exercised.
+#   make qa-examples         ~15-20 min  run all smoke-eligible example
+#                                        dataflows end-to-end (wraps
+#                                        scripts/smoke-all.sh). The script
+#                                        skips examples that need CUDA, ROS2,
+#                                        webcam, multi-machine deploy, C/C++
+#                                        toolchains, or interactive CLI --
+#                                        run `scripts/smoke-all.sh -h` to see
+#                                        the SKIP list. Not part of qa-*
+#                                        ladder by design: the ladder
+#                                        excludes dora-examples tests to
+#                                        keep per-commit budgets tight.
 #
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
@@ -56,7 +60,9 @@ qa-release-gate:
 qa-mutation-audit:
 	@scripts/qa/all.sh --mutation-audit
 
-# Exercise every example dataflow end-to-end. Wraps scripts/smoke-all.sh.
+# Run all smoke-eligible example dataflows end-to-end via
+# scripts/smoke-all.sh. Skips examples requiring CUDA, ROS2, webcam,
+# multi-machine deploy, C/C++ toolchains, or interactive CLI.
 # Budget ~15-20 min. Pass flags through, e.g.
 #   make qa-examples ARGS="--rust-only"
 #   make qa-examples ARGS="-v"    # stream dora output live
