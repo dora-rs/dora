@@ -66,4 +66,22 @@ exclude_re = [
     # The mutation name uniquely identifies this specific || → &&
     # replacement inside types_match (only one such mutation exists).
     "libraries/core/src/types\\.rs:.*replace \\|\\| with && in types_match",
+
+    # `bench_support` is gated behind `#[cfg(feature = "bench")]` and only
+    # called from `binaries/daemon/benches/routing.rs` (a criterion
+    # benchmark, not a test). No workspace test reaches these functions,
+    # so mutating them is guaranteed to MISS regardless of test quality
+    # -- adds noise to the mutation score and, when workspace tests are
+    # cache-invalidated, TIMEOUT noise too.
+    #
+    # See dora-rs/dora#1696 for the investigation. ~15 mutants skipped.
+    # Remove this waiver only if `bench_support::*` functions gain a
+    # caller inside the test build (i.e. no longer require the `bench`
+    # feature).
+    #
+    # Two regex flavors cover the two mutation text shapes:
+    # - "replace bench_support::<fn> -> <ty> with <expr>" (return-value mutations)
+    # - "delete ! in bench_support::<fn>" / "replace X with Y in bench_support::<fn>"
+    #   (operator/expr mutations inside the function body)
+    "binaries/daemon/src/lib\\.rs:.*bench_support::",
 ]
