@@ -7,7 +7,9 @@
 # Modes (increasing thoroughness):
 #   --fast          ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap, typos)
 #   --full          ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
-#   --deep          ~15 min    full Tier 1 PR gate (full + mutants on diff + semver)
+#   --deep          ~15 min    target Tier 1 gate, stronger than today's CI
+#                              (full + mutants on diff + semver; see strategy doc §5 for why the
+#                              extras are laptop-only)
 #   --tier1                    back-compat alias for --deep
 #   --nightly       ~4 hours   Tier 2 locally (deep + proptest@1000 + miri + full mutants)
 #   --release-gate             Tier 3 automatable (deep + semver; audit+dogfood are human gates)
