@@ -166,17 +166,34 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.
 
-**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test, typos, supply chain audit, unwrap budget, E2E, benchmark regression) — so it stays fast and runner capacity is not a bottleneck. Do not expand remote CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
-CI runs on Ubuntu, macOS, and Windows. Key jobs:
+**PR CI (`.github/workflows/ci.yml`, ~30-45 min, #1716):** Linux-only. Blocks merge.
 - `cargo fmt --all -- --check`
 - `cargo clippy --all -- -D warnings` (excluding Python packages)
-- `cargo test --all` (excluding Python packages, on all 3 platforms)
+- `cargo test --all` on **ubuntu-latest only** (excluding Python packages)
 - E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
+- Semantic contract tests (`tests/example-smoke.rs::contract_*`)
+- Benchmark regression check (criterion baseline caching)
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
+- Supply-chain audit (`cargo-audit` + `cargo-deny`)
+- Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
+- License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.92 (see `.github/workflows/ci.yml`)
+
+**Nightly CI (`.github/workflows/nightly.yml`, ~3-4h, daily 06:40 UTC):** Broader coverage, does NOT block PRs. Auto-files an issue on failure (`nightly-regression` label).
+- Test on macOS + Windows
+- Examples end-to-end (all 3 platforms, incl. C/C++/CMake/Arrow/multi-daemon)
+- CLI Tests (all 3 platforms, incl. template projects + Python Dynamic Node + error-event)
+- Bench Example (all 3 platforms)
+- Cross-compilation matrix (8 targets)
+- ROS2 bridge examples (Humble, ubuntu-22.04)
+- MSRV check (`cargo-hack`)
+- Plus the integration smokes: record/replay, cluster, topic-and-top, cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction
+
+**Developer guidance:** for non-Linux verification before merge, run `make qa-test` or `make qa-examples` locally; `make qa-nightly` covers the full nightly matrix (except ROS2) locally in ~100-120 min.
 
 ## Test-Driven Development
 

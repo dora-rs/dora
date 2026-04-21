@@ -870,10 +870,615 @@ jobs:
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
           rm -f examples/rust-dataflow/long-running.yml
 
+
+  # ===== Moved from ci.yml (#1716) =====
+  # Cross-platform Test + Examples + CLI Tests + Bench + Cross-check
+  # + ROS2 bridge + MSRV. Run once daily; use qa-test locally for
+  # mid-PR verification.
+
+  test-cross-platform:
+    name: Test (${{ matrix.platform }}) [nightly]
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      matrix:
+        platform: [macos-latest, windows-latest]
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-test
+      - name: Check
+        run: cargo check --all
+      # `cargo check --all` does NOT build `[[example]]` targets, so
+      # signature breaks in `dora_cli::build` / `dora_cli::run` ship
+      # silently otherwise — example binaries are a common integration
+      # surface and deserve their own compile gate.
+      - name: Check examples compile
+        run: cargo check --examples
+      - name: Build (excluding Python packages)
+        run: >
+          cargo build --all
+          --exclude dora-node-api-python
+          --exclude dora-operator-api-python
+          --exclude dora-ros2-bridge-python
+      - name: Test
+        run: >
+          cargo test --all
+          --exclude dora-node-api-python
+          --exclude dora-operator-api-python
+          --exclude dora-ros2-bridge-python
+          --exclude dora-cli-api-python
+          --exclude dora-examples
+
+      # ===== Tier 0 CLI smoke gates =====
+      # Fast per-platform checks against the 80% CLI coverage gap in #215.
+      # Each invocation uses the workspace binary built above (target/debug),
+      # so runtime is <10s per platform. Catches argparse regressions,
+      # schema validation drift, and rendering breaks immediately.
+      - name: CLI smoke — argparse & help text
+        shell: bash
+        run: |
+          set -e
+          for sub in run up down build start stop restart list logs top \
+                     topic node param record replay trace doctor status \
+                     new graph expand validate; do
+            cargo run --quiet -p dora-cli -- "$sub" --help > /dev/null
+          done
+          cargo run --quiet -p dora-cli -- --help > /dev/null
+      - name: CLI smoke — dora validate
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- validate examples/rust-dataflow/dataflow.yml
+          cargo run --quiet -p dora-cli -- validate examples/multiple-daemons/dataflow.yml
+      # Semantic: strict-types must accept a well-typed dataflow and reject
+      # a mismatched one. Protects against the validator silently passing
+      # both cases (e.g. strict mode accidentally becoming a no-op).
+      - name: CLI semantic — dora validate --strict-types
+        shell: bash
+        run: |
+          set -e
+          cargo run --quiet -p dora-cli -- validate --strict-types examples/typed-dataflow/dataflow.yml
+          # Negative: must exit non-zero on intentional type mismatch
+          if cargo run --quiet -p dora-cli -- validate --strict-types tests/fixtures/type-mismatch.yml; then
+            echo "ERROR: --strict-types accepted tests/fixtures/type-mismatch.yml — validator regression"
+            exit 1
+          fi
+      - name: CLI smoke — dora expand
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml > /dev/null
+      # Semantic: expand must flatten module references into named nodes
+      # (pipeline.doubler, pipeline.filter come from the pipeline module).
+      # If expand regresses and emits the `modules:` block without inlining,
+      # this catches it.
+      - name: CLI semantic — dora expand flattens modules
+        shell: bash
+        run: |
+          set -e
+          out=$(cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml)
+          for id in sender pipeline.doubler pipeline.filter receiver; do
+            echo "$out" | grep -q "^- id: $id" \
+              || { echo "ERROR: expand output missing node id '$id'"; exit 1; }
+          done
+          # The flattened output must not still contain a top-level modules: block
+          if echo "$out" | grep -q '^modules:'; then
+            echo "ERROR: expand output still contains 'modules:' block — not flattened"
+            exit 1
+          fi
+      - name: CLI smoke — dora graph (mermaid)
+        shell: bash
+        run: |
+          cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid > /dev/null
+          cargo run --quiet -p dora-cli -- graph examples/multiple-daemons/dataflow.yml --mermaid > /dev/null
+      # Semantic: graph output must contain the dataflow's actual node IDs
+      # and mermaid flowchart syntax. Catches renderer regressions that
+      # silently produce empty or malformed diagrams.
+      - name: CLI semantic — dora graph contains expected nodes
+        shell: bash
+        run: |
+          set -e
+          out=$(cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid)
+          echo "$out" | grep -q '^flowchart ' \
+            || { echo "ERROR: graph output missing 'flowchart' header"; exit 1; }
+          for id in rust-node rust-sink rust-status-node; do
+            echo "$out" | grep -q "$id" \
+              || { echo "ERROR: graph output missing node '$id'"; exit 1; }
+          done
+
+  # ===== Examples (cross-platform) =====
+  # Restored from upstream dora CI — runs actual dataflows end-to-end.
+  # Catches runtime issues that unit tests miss (e.g. #135, #136).
+  examples:
+    name: Examples (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    # (PR-CI gate removed; runs independently in nightly)
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Free Disk Space (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          Remove-Item "C:\Android" -Force -Recurse
+          Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
+          Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
+      # Examples call dora_cli as a library (via `examples/*/run.rs`) but the
+      # daemon still spawns runtime nodes as child processes via
+      # `which::which("dora")`. Build the CLI binary and add it to PATH so
+      # C/C++ runtime-node examples can find it.
+      - name: Build examples + CLI binary
+        timeout-minutes: 30
+        shell: bash
+        run: |
+          cargo build --examples
+          cargo build -p dora-cli
+          echo "${{ github.workspace }}/target/debug" >> $GITHUB_PATH
+      - name: Rust Dataflow example
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow
+      - name: Rust Git Dataflow example
+        timeout-minutes: 30
+        run: cargo run --example rust-dataflow-git
+      - name: Multiple Daemons example
+        timeout-minutes: 30
+        run: cargo run --example multiple-daemons
+      - name: C Dataflow example
+        timeout-minutes: 15
+        run: cargo run --example c-dataflow
+      - name: C++ Dataflow example
+        timeout-minutes: 15
+        run: cargo run --example cxx-dataflow
+      - name: Install Arrow C++ Library
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" == "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install -y -V ca-certificates lsb-release wget
+            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get update
+            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+          elif [ "$RUNNER_OS" == "macOS" ]; then
+            brew update
+            brew install apache-arrow
+          fi
+      - name: C++ Arrow Dataflow example
+        timeout-minutes: 15
+        run: cargo run --example cxx-arrow-dataflow
+      - name: CMake example
+        if: runner.os == 'Linux'
+        timeout-minutes: 30
+        run: cargo run --example cmake-dataflow
+      # Benchmark example runs in the dedicated `bench-example` job below
+      # across all 3 platforms — no duplication here.
+
+  # ===== CLI integration tests (cross-platform) =====
+  # Restored from upstream dora CI — tests template creation, Python examples,
+  # dynamic dataflows, and queue latency tests.
+  cli-tests:
+    name: CLI Tests (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    # (PR-CI gate removed; runs independently in nightly)
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    # Windows builds + Python Dynamic Node tests are slower than other
+    # platforms; 60 min is not enough when the runner is under load.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Build CLI
+        timeout-minutes: 45
+        shell: bash
+        run: cargo install --path binaries/cli --locked
+
+      - name: Test Rust template project
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          dora new test_rust_project --internal-create-with-path-dependencies
+          cd test_rust_project
+          cargo build --all
+          dora run dataflow.yml --stop-after 10s
+          cd ..
+
+      - name: Test Dynamic Rust Dataflow
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          dora up
+          dora list
+          dora build examples/rust-dataflow/dataflow_dynamic.yml
+          dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+          cargo run -p rust-dataflow-example-sink-dynamic
+          sleep 5
+          dora stop --name ci-rust-dynamic --grace-duration 5s
+          dora destroy
+
+      - name: Error Event Example
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          dora build examples/error-propagation/dataflow.yml
+          output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+          echo "$output"
+          echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        shell: bash
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            source .venv/bin/activate
+          else
+            source .venv/Scripts/activate
+          fi
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+          uv pip install ruff pytest
+
+      - name: Test Python template project
+        timeout-minutes: 80
+        shell: bash
+        run: |
+          dora new test_python_project --lang python --internal-create-with-path-dependencies
+          cd test_python_project
+          dora build dataflow.yml --uv
+          uv run ruff check .
+          uv run pytest
+          export OPERATING_MODE=SAVE
+          dora build dataflow.yml --uv
+          dora run dataflow.yml --uv --stop-after 10s
+          cd ..
+
+      - name: Test Python Node example
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          dora build examples/python-dataflow/dataflow.yml --uv
+          dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+
+      - name: Test Python Dynamic Node example
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+          # dora-hub deps pull dora-rs from PyPI, overriding local build;
+          # re-install local version to avoid version mismatch.
+          uv pip install -e apis/python/node
+          dora up
+          dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+          uv run opencv-plot
+          sleep 10
+          dora stop --name ci-python-dynamic --grace-duration 30s
+          dora destroy
+
+      - name: Test Python Operator example
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          dora build examples/python-operator-dataflow/dataflow.yml --uv
+          # dora-hub deps pull dora-rs from PyPI; re-install local version.
+          uv pip install -e apis/python/node
+          dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+
+      - name: Test Python Multiple Arrays
+        timeout-minutes: 30
+        run: |
+          dora build examples/python-multiple-arrays/dataflow.yml --uv
+          dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+
+      - name: Test Python Async example
+        timeout-minutes: 30
+        if: runner.os != 'Windows'
+        run: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+
+      - name: Test Python Drain example
+        timeout-minutes: 30
+        env:
+          OTEL_SDK_DISABLED: true
+        run: dora run examples/python-drain/dataflow.yaml --uv
+
+      # `simple_example.py` itself still can't run here — its `build:`
+      # directives pip-install hub packages (opencv-video-capture,
+      # dora-yolo, opencv-plot) which transitively pull the PyPI
+      # `dora-rs` 0.5.0 and clobber the locally-built workspace
+      # version. Re-enable that path after 1.0 PyPI publish.
+      #
+      # In the meantime, exercise the builder API itself (the part
+      # the capability matrix cares about) via a hub-package-free
+      # YAML generation contract test (#1654). This is fast and
+      # runs on every PR.
+      - name: Test Python Dataflow Builder API (YAML generation)
+        timeout-minutes: 5
+        shell: bash
+        # `uv run` is needed so the step uses the project venv from
+        # the "Set up Python venv" step above — `source .venv/bin/activate`
+        # doesn't persist to later steps. `--with PyYAML` provisions
+        # the one extra dep the contract test needs, without polluting
+        # the dora-rs install with a transitive upgrade from PyPI.
+        run: uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
+
+      - name: Python Queue Latency Test
+        timeout-minutes: 30
+        run: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+
+      - name: Python Queue Latency + Timeout Test
+        timeout-minutes: 30
+        run: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+
+      - name: Rust Queue Latency Test
+        timeout-minutes: 30
+        run: |
+          dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+
+      - name: Test C template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_c_project --lang c --internal-create-with-path-dependencies
+          cd test_c_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+      - name: Test C++ template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+          cd test_cxx_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+  # Benchmark example on 3 platforms (matches upstream dora bench job).
+  # Separate from the criterion regression job below.
+  bench-example:
+    name: Bench Example (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
+    # (PR-CI gate removed; runs independently in nightly)
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Benchmark example
+        timeout-minutes: 45
+        run: cargo run --example benchmark --release
+
+  # ===== Cross-compilation checks =====
+  # Restored from upstream dora CI — verifies the project compiles for
+  # key target architectures. Catches platform-specific compilation issues
+  # (conditional compilation, platform-dependent types).
+  cross-check:
+    name: Cross-check (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    # (PR-CI gate removed; runs independently in nightly)
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-latest
+            target: i686-unknown-linux-gnu
+            cross: true
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross: true
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            cross: true
+          - runner: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            cross: true
+          - runner: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            gcc: gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compilation toolchain
+        if: matrix.gcc
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }}
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+      - name: Check (native)
+        if: '!matrix.cross'
+        run: >
+          cargo check --target ${{ matrix.target }} --all
+          --exclude dora-node-api-python
+          --exclude dora-operator-api-python
+          --exclude dora-ros2-bridge-python
+          --exclude dora-cli-api-python
+      - name: Check (cross)
+        if: matrix.cross
+        run: >
+          cross check --target ${{ matrix.target }} --all
+          --exclude dora-node-api-python
+          --exclude dora-operator-api-python
+          --exclude dora-ros2-bridge-python
+          --exclude dora-cli-api-python
+
+  # ===== ROS2 bridge examples =====
+  # Restored from upstream dora CI — tests ROS2 integration on Ubuntu
+  # with ROS2 Humble.
+  ros2-bridge:
+    name: ROS2 Bridge Examples
+    runs-on: ubuntu-22.04
+    # (PR-CI gate removed; runs independently in nightly)
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: false
+      - uses: ros-tooling/setup-ros@v0.7
+        with:
+          required-ros-distributions: humble
+      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install pyarrow
+        run: pip install pyarrow
+      - name: Test ROS2 bridge
+        run: cargo test -p dora-ros2-bridge-python
+      - name: Rust ROS2 Bridge example
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python ROS2 Bridge example
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash &&
+          uv venv --seed -p 3.12
+          source .venv/bin/activate
+          uv pip install -e apis/python/node
+          uv pip install pyarrow
+          cargo run -p dora-ros2-bridge --example python-ros2-dataflow
+      - name: C++ ROS2 Bridge example
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
+
+  # ===== MSRV check =====
+  # Restored from upstream dora CI — verifies the minimum supported
+  # Rust version declared in Cargo.toml.
+  msrv:
+    name: MSRV check
+    runs-on: ubuntu-latest
+    # (PR-CI gate removed; runs independently in nightly)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      - run: cargo hack check --rust-version --workspace --ignore-private --locked
+
+
   file-issue-on-failure:
     name: File issue on nightly failure
     runs-on: ubuntu-latest
-    needs: [build-cli, smoke-suite, log-sinks, service-action, streaming, record-replay, cluster-smoke, topic-and-top-smoke, cpu-affinity-smoke, redb-backend-smoke, daemon-reconnect-smoke, state-reconstruction-smoke]
+    needs:
+      - build-cli
+      - smoke-suite
+      - log-sinks
+      - service-action
+      - streaming
+      - record-replay
+      - cluster-smoke
+      - topic-and-top-smoke
+      - cpu-affinity-smoke
+      - redb-backend-smoke
+      - daemon-reconnect-smoke
+      - state-reconstruction-smoke
+      - test-cross-platform
+      - examples
+      - cli-tests
+      - bench-example
+      - cross-check
+      - ros2-bridge
+      - msrv
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
