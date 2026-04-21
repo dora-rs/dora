@@ -11,16 +11,21 @@
 #                                (full + mutants on diff + semver; see strategy doc §5 for why the
 #                                extras are laptop-only)
 #   --tier1                      back-compat alias for --deep
-#   --nightly         ~100-120 m Full parity with .github/workflows/nightly.yml
+#   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
-#                                ci-nightly-jobs). example-smoke covers the 5
-#                                example-backed GHA jobs (smoke-suite, log-sinks,
-#                                service-action, streaming, record-replay).
-#                                ci-nightly-jobs.sh drives the remaining 6
-#                                (cluster-smoke, topic-and-top-smoke, cpu-affinity-
-#                                smoke, redb-backend-smoke, daemon-reconnect-smoke,
-#                                state-reconstruction-smoke). Green local qa-nightly
-#                                predicts a green CI nightly schedule.
+#                                ci-nightly-jobs). After the #1716 rebalance,
+#                                nightly.yml has 18 test jobs: example-smoke
+#                                covers 4 (smoke-suite, log-sinks, service-action,
+#                                streaming); ci-nightly-jobs.sh drives the 14
+#                                remaining with platform-aware dispatch
+#                                (record-replay, cluster-smoke, topic-and-top-smoke,
+#                                cpu-affinity-smoke [Linux], redb-backend-smoke,
+#                                daemon-reconnect-smoke [Linux],
+#                                state-reconstruction-smoke, test-cross-platform,
+#                                examples, cli-tests, bench-example, cross-check,
+#                                ros2-bridge [Linux+ROS2], msrv). Green local
+#                                qa-nightly on platform X predicts a green CI
+#                                nightly for platform X's jobs.
 #                                Requires BOTH `uv` AND Python 3.12 (preflighted
 #                                with specific install hints; matches GHA's
 #                                actions/setup-python@3.12 + uv setup).
@@ -134,7 +139,7 @@ Will run:
 EOF
       ;;
     --nightly)
-      header="qa-nightly -- Full parity with .github/workflows/nightly.yml (~100-120 min)"
+      header="qa-nightly -- Full parity with .github/workflows/nightly.yml (~3-4 hours)"
       cat <<EOF
 ============================================================
 $header
