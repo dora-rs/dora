@@ -2829,6 +2829,178 @@ async fn replay_persisted_params_for_daemon(
     summary
 }
 
+#[cfg(feature = "tracing")]
+fn handle_get_traces(span_store: &SpanStore) -> ControlRequestReply {
+    use dora_message::coordinator_to_cli::TraceSummary;
+    use std::collections::HashMap;
+
+    let Some(store) = span_store else {
+        return ControlRequestReply::TraceList(Vec::new());
+    };
+
+    // Snapshot spans under the lock, then release immediately.
+    let records: Vec<_> = match store.lock() {
+        Ok(store) => store.spans().iter().cloned().collect(),
+        Err(e) => {
+            tracing::warn!("span store mutex poisoned: {e}");
+            return ControlRequestReply::TraceList(Vec::new());
+        }
+    };
+
+    // Group spans by trace_id.
+    let mut groups: HashMap<&str, Vec<&dora_tracing::span_store::SpanRecord>> = HashMap::new();
+    for span in &records {
+        groups.entry(&span.trace_id).or_default().push(span);
+    }
+
+    let mut summaries: Vec<TraceSummary> = groups
+        .into_iter()
+        .map(|(trace_id, spans)| {
+            let root = spans
+                .iter()
+                .find(|s| s.parent_span_id.is_none())
+                .unwrap_or(&spans[0]);
+            let start_time = spans.iter().map(|s| s.start_time).min().unwrap_or(0);
+            TraceSummary {
+                trace_id: trace_id.to_string(),
+                root_span_name: root.name.clone(),
+                span_count: spans.len(),
+                start_time,
+                total_duration_us: root.duration_us,
+            }
+        })
+        .collect();
+
+    // Newest first.
+    summaries.sort_by(|a, b| b.start_time.cmp(&a.start_time));
+    ControlRequestReply::TraceList(summaries)
+}
+
+#[cfg(not(feature = "tracing"))]
+fn handle_get_traces(_span_store: &SpanStore) -> ControlRequestReply {
+    ControlRequestReply::TraceList(Vec::new())
+}
+
+#[cfg(feature = "tracing")]
+fn handle_get_trace_spans(span_store: &SpanStore, trace_id: &str) -> ControlRequestReply {
+    use dora_message::coordinator_to_cli::TraceSpan;
+
+    let Some(store) = span_store else {
+        return ControlRequestReply::TraceSpans(Vec::new());
+    };
+
+    // Snapshot matching spans under the lock, then release immediately.
+    let records: Vec<_> = match store.lock() {
+        Ok(store) => store
+            .spans()
+            .iter()
+            .filter(|s| s.trace_id == trace_id)
+            .cloned()
+            .collect(),
+        Err(e) => {
+            tracing::warn!("span store mutex poisoned: {e}");
+            return ControlRequestReply::TraceSpans(Vec::new());
+        }
+    };
+
+    let spans: Vec<TraceSpan> = records
+        .into_iter()
+        .map(|s| TraceSpan {
+            trace_id: s.trace_id,
+            span_id: s.span_id,
+            parent_span_id: s.parent_span_id,
+            name: s.name,
+            target: s.target,
+            level: s.level,
+            start_time: s.start_time,
+            duration_us: s.duration_us,
+            fields: s.fields,
+        })
+        .collect();
+
+    ControlRequestReply::TraceSpans(spans)
+}
+
+#[cfg(not(feature = "tracing"))]
+fn handle_get_trace_spans(_span_store: &SpanStore, _trace_id: &str) -> ControlRequestReply {
+    ControlRequestReply::TraceSpans(Vec::new())
+}
+
+/// Restart a running dataflow: stop it, then re-start with the stored descriptor.
+#[allow(clippy::too_many_arguments)]
+async fn restart_dataflow(
+    dataflow_uuid: uuid::Uuid,
+    grace_duration: Option<Duration>,
+    force: bool,
+    running_dataflows: &mut HashMap<uuid::Uuid, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+    store: &dyn CoordinatorStore,
+) -> eyre::Result<ControlRequestReply> {
+    // 1. Extract descriptor, name, and uv from the running dataflow
+    let (descriptor, name, uv) = {
+        let df = running_dataflows
+            .get(&dataflow_uuid)
+            .ok_or_else(|| eyre!("no running dataflow with UUID `{dataflow_uuid}`"))?;
+        (df.descriptor.clone(), df.name.clone(), df.uv)
+    };
+
+    // 2. Stop the old dataflow (scoped borrow so it drops before start_dataflow)
+    {
+        let dataflow = stop_dataflow(
+            running_dataflows,
+            dataflow_uuid,
+            daemon_connections,
+            clock.new_timestamp(),
+            grace_duration,
+            force,
+        )
+        .await?;
+
+        // Persist: dataflow stopping
+        if let Err(e) = dataflow
+            .make_record(StoreDataflowStatus::Stopping)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!("failed to persist dataflow stopping: {e}");
+        }
+    }
+
+    // 3. Start a new dataflow with the stored descriptor
+    let new_dataflow = start_dataflow(
+        None, // no build_id for restart
+        dora_message::SessionId::generate(),
+        descriptor,
+        None, // no local_working_dir for restart
+        name,
+        daemon_connections,
+        clock,
+        uv,
+        None, // no write_events_to
+    )
+    .await?;
+
+    let new_uuid = new_dataflow.uuid;
+
+    // 4. Only now remove old dataflow (after new one started successfully)
+    running_dataflows.remove(&dataflow_uuid);
+
+    // Persist: new dataflow started
+    let mut new_df = new_dataflow;
+    if let Err(e) = new_df
+        .make_record(StoreDataflowStatus::Pending)
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!("failed to persist restarted dataflow: {e}");
+    }
+    running_dataflows.insert(new_uuid, new_df);
+
+    Ok(ControlRequestReply::DataflowRestarted {
+        old_uuid: dataflow_uuid,
+        new_uuid,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3805,176 +3977,4 @@ mod tests {
             .expect_err("unexpected reply variant should fail strict forwarding");
         assert!(err.to_string().contains("unexpected daemon reply"));
     }
-}
-
-#[cfg(feature = "tracing")]
-fn handle_get_traces(span_store: &SpanStore) -> ControlRequestReply {
-    use dora_message::coordinator_to_cli::TraceSummary;
-    use std::collections::HashMap;
-
-    let Some(store) = span_store else {
-        return ControlRequestReply::TraceList(Vec::new());
-    };
-
-    // Snapshot spans under the lock, then release immediately.
-    let records: Vec<_> = match store.lock() {
-        Ok(store) => store.spans().iter().cloned().collect(),
-        Err(e) => {
-            tracing::warn!("span store mutex poisoned: {e}");
-            return ControlRequestReply::TraceList(Vec::new());
-        }
-    };
-
-    // Group spans by trace_id.
-    let mut groups: HashMap<&str, Vec<&dora_tracing::span_store::SpanRecord>> = HashMap::new();
-    for span in &records {
-        groups.entry(&span.trace_id).or_default().push(span);
-    }
-
-    let mut summaries: Vec<TraceSummary> = groups
-        .into_iter()
-        .map(|(trace_id, spans)| {
-            let root = spans
-                .iter()
-                .find(|s| s.parent_span_id.is_none())
-                .unwrap_or(&spans[0]);
-            let start_time = spans.iter().map(|s| s.start_time).min().unwrap_or(0);
-            TraceSummary {
-                trace_id: trace_id.to_string(),
-                root_span_name: root.name.clone(),
-                span_count: spans.len(),
-                start_time,
-                total_duration_us: root.duration_us,
-            }
-        })
-        .collect();
-
-    // Newest first.
-    summaries.sort_by(|a, b| b.start_time.cmp(&a.start_time));
-    ControlRequestReply::TraceList(summaries)
-}
-
-#[cfg(not(feature = "tracing"))]
-fn handle_get_traces(_span_store: &SpanStore) -> ControlRequestReply {
-    ControlRequestReply::TraceList(Vec::new())
-}
-
-#[cfg(feature = "tracing")]
-fn handle_get_trace_spans(span_store: &SpanStore, trace_id: &str) -> ControlRequestReply {
-    use dora_message::coordinator_to_cli::TraceSpan;
-
-    let Some(store) = span_store else {
-        return ControlRequestReply::TraceSpans(Vec::new());
-    };
-
-    // Snapshot matching spans under the lock, then release immediately.
-    let records: Vec<_> = match store.lock() {
-        Ok(store) => store
-            .spans()
-            .iter()
-            .filter(|s| s.trace_id == trace_id)
-            .cloned()
-            .collect(),
-        Err(e) => {
-            tracing::warn!("span store mutex poisoned: {e}");
-            return ControlRequestReply::TraceSpans(Vec::new());
-        }
-    };
-
-    let spans: Vec<TraceSpan> = records
-        .into_iter()
-        .map(|s| TraceSpan {
-            trace_id: s.trace_id,
-            span_id: s.span_id,
-            parent_span_id: s.parent_span_id,
-            name: s.name,
-            target: s.target,
-            level: s.level,
-            start_time: s.start_time,
-            duration_us: s.duration_us,
-            fields: s.fields,
-        })
-        .collect();
-
-    ControlRequestReply::TraceSpans(spans)
-}
-
-#[cfg(not(feature = "tracing"))]
-fn handle_get_trace_spans(_span_store: &SpanStore, _trace_id: &str) -> ControlRequestReply {
-    ControlRequestReply::TraceSpans(Vec::new())
-}
-
-/// Restart a running dataflow: stop it, then re-start with the stored descriptor.
-#[allow(clippy::too_many_arguments)]
-async fn restart_dataflow(
-    dataflow_uuid: uuid::Uuid,
-    grace_duration: Option<Duration>,
-    force: bool,
-    running_dataflows: &mut HashMap<uuid::Uuid, RunningDataflow>,
-    daemon_connections: &mut DaemonConnections,
-    clock: &HLC,
-    store: &dyn CoordinatorStore,
-) -> eyre::Result<ControlRequestReply> {
-    // 1. Extract descriptor, name, and uv from the running dataflow
-    let (descriptor, name, uv) = {
-        let df = running_dataflows
-            .get(&dataflow_uuid)
-            .ok_or_else(|| eyre!("no running dataflow with UUID `{dataflow_uuid}`"))?;
-        (df.descriptor.clone(), df.name.clone(), df.uv)
-    };
-
-    // 2. Stop the old dataflow (scoped borrow so it drops before start_dataflow)
-    {
-        let dataflow = stop_dataflow(
-            running_dataflows,
-            dataflow_uuid,
-            daemon_connections,
-            clock.new_timestamp(),
-            grace_duration,
-            force,
-        )
-        .await?;
-
-        // Persist: dataflow stopping
-        if let Err(e) = dataflow
-            .make_record(StoreDataflowStatus::Stopping)
-            .and_then(|r| store.put_dataflow(&r))
-        {
-            tracing::warn!("failed to persist dataflow stopping: {e}");
-        }
-    }
-
-    // 3. Start a new dataflow with the stored descriptor
-    let new_dataflow = start_dataflow(
-        None, // no build_id for restart
-        dora_message::SessionId::generate(),
-        descriptor,
-        None, // no local_working_dir for restart
-        name,
-        daemon_connections,
-        clock,
-        uv,
-        None, // no write_events_to
-    )
-    .await?;
-
-    let new_uuid = new_dataflow.uuid;
-
-    // 4. Only now remove old dataflow (after new one started successfully)
-    running_dataflows.remove(&dataflow_uuid);
-
-    // Persist: new dataflow started
-    let mut new_df = new_dataflow;
-    if let Err(e) = new_df
-        .make_record(StoreDataflowStatus::Pending)
-        .and_then(|r| store.put_dataflow(&r))
-    {
-        tracing::warn!("failed to persist restarted dataflow: {e}");
-    }
-    running_dataflows.insert(new_uuid, new_df);
-
-    Ok(ControlRequestReply::DataflowRestarted {
-        old_uuid: dataflow_uuid,
-        new_uuid,
-    })
 }

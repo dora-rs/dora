@@ -4369,6 +4369,35 @@ fn runtime_node_outputs(n: &RuntimeNode) -> BTreeSet<DataId> {
         .collect()
 }
 
+trait CoreNodeKindExt {
+    fn run_config(&self) -> NodeRunConfig;
+    fn dynamic(&self) -> bool;
+}
+
+impl CoreNodeKindExt for CoreNodeKind {
+    fn run_config(&self) -> NodeRunConfig {
+        match self {
+            CoreNodeKind::Runtime(n) => NodeRunConfig {
+                inputs: runtime_node_inputs(n),
+                outputs: runtime_node_outputs(n),
+                output_types: BTreeMap::new(),
+                output_framing: BTreeMap::new(),
+                input_types: BTreeMap::new(),
+            },
+            CoreNodeKind::Custom(n) => n.run_config.clone(),
+        }
+    }
+
+    fn dynamic(&self) -> bool {
+        match self {
+            CoreNodeKind::Runtime(_n) => false,
+            CoreNodeKind::Custom(n) => {
+                matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
@@ -4399,7 +4428,7 @@ mod fault_tolerance_tests {
         RunningNode {
             process: None,
             node_config: NodeConfig {
-                dataflow_id: Uuid::nil().into(),
+                dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
                 run_config: NodeRunConfig {
                     inputs: BTreeMap::new(),
@@ -5067,34 +5096,5 @@ mod fault_tolerance_tests {
         let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
             .expect_err("strict delivery should fail when node channel is full");
         assert!(err.to_string().contains("channel full"));
-    }
-}
-
-trait CoreNodeKindExt {
-    fn run_config(&self) -> NodeRunConfig;
-    fn dynamic(&self) -> bool;
-}
-
-impl CoreNodeKindExt for CoreNodeKind {
-    fn run_config(&self) -> NodeRunConfig {
-        match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-                output_types: BTreeMap::new(),
-                output_framing: BTreeMap::new(),
-                input_types: BTreeMap::new(),
-            },
-            CoreNodeKind::Custom(n) => n.run_config.clone(),
-        }
-    }
-
-    fn dynamic(&self) -> bool {
-        match self {
-            CoreNodeKind::Runtime(_n) => false,
-            CoreNodeKind::Custom(n) => {
-                matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
-            }
-        }
     }
 }

@@ -202,6 +202,44 @@ impl From<&str> for DataId {
     }
 }
 
+impl std::fmt::Display for DataId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::ops::Deref for DataId {
+    type Target = String;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<String> for DataId {
+    fn as_ref(&self) -> &String {
+        &self.0
+    }
+}
+
+impl AsRef<str> for DataId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<String> for DataId {
+    fn borrow(&self) -> &String {
+        &self.0
+    }
+}
+
+impl Borrow<str> for DataId {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,43 +322,5 @@ mod tests {
     fn data_id_deserialize_rejects_invalid() {
         let result: Result<DataId, _> = serde_json::from_str("\"bad;id\"");
         assert!(result.is_err());
-    }
-}
-
-impl std::fmt::Display for DataId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, f)
-    }
-}
-
-impl std::ops::Deref for DataId {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<String> for DataId {
-    fn as_ref(&self) -> &String {
-        &self.0
-    }
-}
-
-impl AsRef<str> for DataId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Borrow<String> for DataId {
-    fn borrow(&self) -> &String {
-        &self.0
-    }
-}
-
-impl Borrow<str> for DataId {
-    fn borrow(&self) -> &str {
-        &self.0
     }
 }
