@@ -1022,10 +1022,9 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
       QT_QPA_PLATFORM: offscreen
-      # Force PyO3 to compile against the deadsnakes Python, not the
-      # pyenv-shimmed Python 3.12 on the machine image (which has an
-      # incompatible numpy in its site-packages).
-      PYO3_PYTHON: /usr/bin/python3.12
+      # PYO3_PYTHON is set dynamically below to point to a venv whose
+      # sys.path is isolated from the machine image's pyenv Python 3.12
+      # (which ships an incompatible numpy 1.21.5 in its site-packages).
     steps:
       - checkout
       - install-rust:
@@ -1050,13 +1049,18 @@ jobs:
             sudo apt-get update
             sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions
       - run:
-          name: Install uv + Python dependencies
-          # Python 3.12 removed distutils; system pip depends on it.
-          # Use uv which has no such dependency.
+          name: Create isolated Python venv + install pyarrow
+          # A venv isolates sys.path from the machine image's Python
+          # (which has an old numpy that breaks Python 3.12 imports).
+          # PyO3 then compiles against this venv's Python.
           command: |
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
-            sudo "$HOME/.local/bin/uv" pip install --system --python /usr/bin/python3.12 pyarrow
+            uv venv --python /usr/bin/python3.12 "$HOME/ros2-venv"
+            "$HOME/.local/bin/uv" pip install --python "$HOME/ros2-venv/bin/python" pyarrow
+            echo "export PYO3_PYTHON=$HOME/ros2-venv/bin/python" >> "$BASH_ENV"
+            echo "export VIRTUAL_ENV=$HOME/ros2-venv" >> "$BASH_ENV"
+            echo "export PATH=$HOME/ros2-venv/bin:\$PATH" >> "$BASH_ENV"
       - run:
           name: Test ROS2 bridge
           command: |
