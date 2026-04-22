@@ -33,10 +33,6 @@ queue_rules:
     batch_size: 5
     batch_max_wait_time: 5 min
 
-    # Batching requires a dedicated queue branch, so inplace checks
-    # (running expensive CI directly on the PR branch) are not useful.
-    allow_inplace_checks: false
-
     # Conditions a PR must satisfy to be accepted into the queue.
     # These are the cheap per-PR checks from ci.yml.
     queue_conditions:
