@@ -105,10 +105,10 @@ async fn register_daemon_and_wait(
         )
         .unwrap();
         let resp = control_request_reply(&mut ctrl, params).await;
-        if let Some(result) = &resp.result {
-            if result.get("DaemonConnected") == Some(&json!(true)) {
-                break;
-            }
+        if let Some(result) = &resp.result
+            && result.get("DaemonConnected") == Some(&json!(true))
+        {
+            break;
         }
         if tokio::time::Instant::now() > deadline {
             panic!("daemon did not register within 2s");
@@ -172,10 +172,10 @@ async fn daemon_disconnect_cleanup() {
         )
         .unwrap();
         let resp = control_request_reply(&mut ctrl, params).await;
-        if let Some(result) = &resp.result {
-            if result.get("DaemonConnected") == Some(&json!(false)) {
-                break;
-            }
+        if let Some(result) = &resp.result
+            && result.get("DaemonConnected") == Some(&json!(false))
+        {
+            break;
         }
         if tokio::time::Instant::now() > deadline {
             panic!("daemon did not disconnect within 2s");
