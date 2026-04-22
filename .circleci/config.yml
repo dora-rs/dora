@@ -1047,7 +1047,11 @@ jobs:
               http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
               | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
             sudo apt-get update
-            sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions
+            # Include turtlesim + example_interfaces: the Rust ROS2 Bridge
+            # example's turtle.rs imports generated types from both. The
+            # dora-ros2-bridge codegen discovers them via AMENT_PREFIX_PATH.
+            sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions \
+              ros-humble-turtlesim ros-humble-example-interfaces
       - run:
           name: Create isolated Python venv + install pyarrow
           # A venv isolates sys.path from the machine image's Python
