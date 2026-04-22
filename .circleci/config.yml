@@ -1050,8 +1050,11 @@ jobs:
             # Include turtlesim + example_interfaces: the Rust ROS2 Bridge
             # example's turtle.rs imports generated types from both. The
             # dora-ros2-bridge codegen discovers them via AMENT_PREFIX_PATH.
+            # examples-rclcpp-minimal-service provides the add_two_ints
+            # service node spawned by the turtle example at runtime.
             sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions \
-              ros-humble-turtlesim ros-humble-example-interfaces
+              ros-humble-turtlesim ros-humble-example-interfaces \
+              ros-humble-examples-rclcpp-minimal-service
       - run:
           name: Create isolated Python venv + install pyarrow
           # A venv isolates sys.path from the machine image's Python
