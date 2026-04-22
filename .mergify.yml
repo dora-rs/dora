@@ -2,8 +2,10 @@
 #
 # Strategy: cheap checks gate queue entry; expensive checks run on the
 # batched queue branch (once per batch of up to 5 PRs), not on every PR.
-# With `speculative_checks: 1` only one batch is tested at a time, which
-# keeps within the limited CI parallelism budget.
+# Mergify tests one batch at a time per queue by default, which keeps
+# within the limited CI parallelism budget. (The old `speculative_checks`
+# knob has been removed from the schema; serial batching is now the
+# default behavior and is what we want.)
 #
 # How a PR gets merged:
 #   1. Open a PR against main.
@@ -30,11 +32,6 @@ queue_rules:
     # batch after `batch_max_wait_time`.
     batch_size: 5
     batch_max_wait_time: 5 min
-
-    # Only one speculative batch under test at a time — the repo's CI
-    # parallelism is capped, so running multiple batches concurrently
-    # would starve other workflows.
-    speculative_checks: 1
 
     # Batching requires a dedicated queue branch, so inplace checks
     # (running expensive CI directly on the PR branch) are not useful.
