@@ -139,7 +139,7 @@ tempfile = "3.23.0"
 
 [package]
 name = "dora-examples"
-rust-version = "1.85.0"
+rust-version.workspace = true
 version = "0.0.0"
 edition.workspace = true
 license = "Apache-2.0"
