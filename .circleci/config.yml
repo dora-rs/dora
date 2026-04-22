@@ -1022,9 +1022,10 @@ jobs:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
       QT_QPA_PLATFORM: offscreen
-      # Force PyO3 to compile against the Python we explicitly install,
-      # not whatever the machine image ships (which may lack libpython*.so).
-      PYO3_PYTHON: python3.12
+      # Force PyO3 to compile against the deadsnakes Python, not the
+      # pyenv-shimmed Python 3.12 on the machine image (which has an
+      # incompatible numpy in its site-packages).
+      PYO3_PYTHON: /usr/bin/python3.12
     steps:
       - checkout
       - install-rust:
@@ -1055,7 +1056,7 @@ jobs:
           command: |
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
-            sudo "$HOME/.local/bin/uv" pip install --system --python python3.12 pyarrow
+            sudo "$HOME/.local/bin/uv" pip install --system --python /usr/bin/python3.12 pyarrow
       - run:
           name: Test ROS2 bridge
           command: |
