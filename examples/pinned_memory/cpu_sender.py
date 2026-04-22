@@ -3,7 +3,7 @@
 
 # Disable resource tracker to avoid warnings about shared memory
 import os
-os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning:multiprocessing.resource_tracker'
+# os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning:multiprocessing.resource_tracker'
 
 import time
 
