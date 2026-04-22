@@ -43,7 +43,7 @@ fn main() -> eyre::Result<()> {
         "node_rust_api",
         &[
             "-I",
-            &node_cxxbridge.as_os_str().to_str().unwrap(),
+            node_cxxbridge.as_os_str().to_str().unwrap(),
             "-l",
             "dora_node_api_cxx",
             &arrow_config.cflags,

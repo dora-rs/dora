@@ -141,6 +141,33 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
     }
 }
 
+#[cfg(feature = "redb-backend")]
+fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    let dir = std::path::PathBuf::from(home).join(".dora");
+    // Set restrictive umask before creating directory to close the TOCTOU window
+    // between creation and set_permissions.
+    #[cfg(unix)]
+    {
+        // SAFETY: umask is always safe to call and has no undefined behavior.
+        let old = unsafe { libc::umask(0o077) };
+        let result = std::fs::create_dir_all(&dir);
+        unsafe { libc::umask(old) };
+        result?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir)?;
+    // Defense-in-depth: also set permissions explicitly.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(dir.join("coordinator.redb"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,31 +194,4 @@ mod tests {
     fn parse_store_spec_unknown() {
         assert!(parse_store_spec("sqlite").is_err());
     }
-}
-
-#[cfg(feature = "redb-backend")]
-fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    let dir = std::path::PathBuf::from(home).join(".dora");
-    // Set restrictive umask before creating directory to close the TOCTOU window
-    // between creation and set_permissions.
-    #[cfg(unix)]
-    {
-        // SAFETY: umask is always safe to call and has no undefined behavior.
-        let old = unsafe { libc::umask(0o077) };
-        let result = std::fs::create_dir_all(&dir);
-        unsafe { libc::umask(old) };
-        result?;
-    }
-    #[cfg(not(unix))]
-    std::fs::create_dir_all(&dir)?;
-    // Defense-in-depth: also set permissions explicitly.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
-    }
-    Ok(dir.join("coordinator.redb"))
 }
