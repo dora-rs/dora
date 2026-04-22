@@ -65,6 +65,30 @@ FAILED=()
 SKIPPED=()
 MANAGED_PIDS=()
 
+# -----------------------------------------------------------------------------
+# Portable `timeout` shim
+# -----------------------------------------------------------------------------
+# GNU coreutils `timeout` is standard on Linux but not on default macOS.
+# Homebrew's coreutils package installs it as `gtimeout` to avoid colliding
+# with BSD tools. If neither is available, fall back to running unbounded
+# with a loud warning so the user knows the time limit isn't enforced.
+if ! command -v timeout > /dev/null 2>&1; then
+  if command -v gtimeout > /dev/null 2>&1; then
+    timeout() { gtimeout "$@"; }
+  else
+    echo
+    echo "WARN: no 'timeout' or 'gtimeout' binary found."
+    echo "      On macOS, install via: brew install coreutils"
+    echo "      Jobs will run UNBOUNDED until they complete or you Ctrl-C."
+    echo
+    timeout() {
+      # Silently drop the duration arg and run the command unbounded.
+      shift
+      "$@"
+    }
+  fi
+fi
+
 # Install dora CLI into a scratch root we own, so we don't clobber the user's
 # ~/.cargo/bin/dora. Prepend to PATH for this script only. CLI_ROOT is also
 # the unique pattern we use to identify our own processes (see PROCESS SAFETY
