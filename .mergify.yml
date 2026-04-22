@@ -12,8 +12,8 @@
 #   2. Cheap per-PR checks (Format, Clippy, Check, Typos, Audit,
 #      Unwrap budget, License check) run via .github/workflows/ci.yml.
 #   3. Get at least one approval and add the `queue` label.
-#   4. Mergify enqueues the PR. Once up to 5 PRs are queued (or
-#      `batch_max_wait_time` elapses), Mergify creates a draft PR on a
+#   4. Mergify enqueues the PR. Once up to 5 PRs are queued (or 1
+#      minute elapses, `batch_max_wait_time`), Mergify creates a draft PR on a
 #      `mergify/merge-queue/...` branch containing all batched PRs.
 #   5. The expensive checks (Test, E2E Tests, Semantic contract tests,
 #      Benchmark regression check) run on that branch. If they pass,
@@ -31,7 +31,7 @@ queue_rules:
     # per PR. If fewer than 5 PRs are queued, Mergify still starts a
     # batch after `batch_max_wait_time`.
     batch_size: 5
-    batch_max_wait_time: 5 min
+    batch_max_wait_time: 1 min
 
     # Conditions a PR must satisfy to be accepted into the queue.
     # These are the cheap per-PR checks from ci.yml.
