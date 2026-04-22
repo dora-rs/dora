@@ -1802,11 +1802,13 @@ dependencies = [
  "eyre",
  "flume 0.10.14",
  "futures",
+ "libc",
  "pyo3",
  "pyo3-build-config",
  "pyo3_special_method_derive",
  "pythonize",
  "serde_yaml 0.9.34+deprecated",
+ "shared_memory_extended",
  "tokio",
  "tracing",
 ]

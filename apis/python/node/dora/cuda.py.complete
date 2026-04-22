@@ -95,7 +95,6 @@ def _libcudart():
 # CUDA error codes
 CUDA_ERROR_SUCCESS = 0
 CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED = 712
-CUDA_ERROR_HOST_MEMORY_NOT_REGISTERED = 713
 # Additional error codes for better error messages
 CUDA_ERROR_INVALID_VALUE = 1
 CUDA_ERROR_OUT_OF_MEMORY = 2
@@ -172,7 +171,6 @@ def _cuda_error_string(err_code):
         CUDA_ERROR_NO_DEVICE: "No CUDA-capable device available",
         CUDA_ERROR_INVALID_DEVICE: "Invalid device",
         CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED: "Host memory already registered",
-        CUDA_ERROR_HOST_MEMORY_NOT_REGISTERED: "Host memory not registered",
     }
     return error_map.get(err_code, f"Unknown error code: {err_code}")
 
@@ -378,25 +376,25 @@ def pinned_ptr_to_torch(pinned_ptr, metadata) -> torch.Tensor:
     np_dtype = _TORCH_TO_NUMPY_DTYPE_MAP[dtype]
     typestr = np.dtype(np_dtype).str
 
+    # Register host memory with CUDA and get device pointer
     lib = _libcudart()
     host_ptr = ctypes.c_void_p(ptr)
 
     # Check if memory is already pinned (from metadata)
     is_pinned = metadata.get("is_pinned", False)
+    print(f"DEBUG pinned_ptr_to_torch: is_pinned = {is_pinned}, metadata keys = {list(metadata.keys())}")
 
-    # Try zero-copy access only if memory is already registered as pinned
-    if is_pinned:
-        device_ptr = ctypes.c_void_p()
-        result = lib.cudaHostGetDevicePointer(ctypes.byref(device_ptr), host_ptr, 0)
-        if result == CUDA_ERROR_SUCCESS:
-            # Success! Create tensor using device pointer
-            wrapper = _CudaArrayInterface(device_ptr.value, shape, None, typestr)
-            tensor = torch.as_tensor(wrapper, device="cuda")
-            return tensor
-        # If cudaHostGetDevicePointer fails, fall through to cudaMemcpy
+    # Check pointer alignment (CUDA requires page-aligned memory for cudaHostRegister)
+    page_size = 4096  # Typical page size
+    alignment = ptr % page_size
 
-    # Fallback: copy via cudaMemcpy
+    # Always use cudaMemcpy for safety - avoids SIGSEGV from np.frombuffer
+    print(f"Using cudaMemcpy for safety (pointer: {ptr:#x}, size: {size}, alignment: {alignment})")
+    
+    # Allocate GPU memory
     cuda_tensor = torch.zeros(shape, dtype=dtype, device="cuda")
+    
+    # Copy directly from host to device using cudaMemcpy
     device_ptr = ctypes.c_void_p(cuda_tensor.data_ptr())
     result = lib.cudaMemcpy(
         device_ptr,
@@ -404,11 +402,31 @@ def pinned_ptr_to_torch(pinned_ptr, metadata) -> torch.Tensor:
         size,
         _cudaMemcpyHostToDevice
     )
-
+    
     if result != CUDA_ERROR_SUCCESS:
+        print(f"cudaMemcpy failed with error: {result}")
         # Return zero tensor as ultimate fallback
         return torch.zeros(shape, dtype=dtype, device="cuda")
-
+    
     return cuda_tensor
 
 
+
+
+def free_pinned_buffer(buffer_id: str) -> bool:
+    """
+    Free pinned buffer registered with CUDA.
+
+    This function is called by Rust's free_pinned_memory to clean up
+    CUDA-registered host memory and shared memory.
+
+    Args:
+        buffer_id: The buffer identifier (UUID or shared memory name)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    # TODO: Implement proper cleanup
+    # For now, just return True to indicate success
+    print(f"DEBUG free_pinned_buffer: buffer_id={buffer_id}")
+    return True

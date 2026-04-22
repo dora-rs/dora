@@ -11,7 +11,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import torch_to_ipc_buffer, torch_to_pinned_buffer
+from dora.cuda import torch_to_ipc_buffer, torch_to_pinned_ptr
 
 SIZES = [15000 * 512]
 mode = os.getenv("mode", "pinned")
@@ -36,15 +36,10 @@ for size in SIZES:  # 每次发送size形状的整数
             metadata["time"] = t_send
             metadata["size"] = torch_tensor.nbytes
             node.send_output("cpu_data", ipc_buffer, metadata)
-        elif mode == "pinned_direct": # 直接传递共享内存信息
-            pinned_buffer, metadata = torch_to_pinned_buffer(torch_tensor)
-            metadata["time"] = t_send
-            # 不调用register_pinned_memory，直接发送
-            node.send_output("cpu_data", pinned_buffer, metadata)
         else: # mode=pinned 速度期望40000MB/S
-            pinned_buffer, metadata = torch_to_pinned_buffer(torch_tensor)
+            pinned_ptr, metadata = torch_to_pinned_ptr(torch_tensor)
             metadata["time"] = t_send
-            node.register_pinned_memory(pinned_buffer, metadata)
+            pinned_buffer = node.register_pinned_memory(pinned_ptr, metadata)
             node.send_output("cpu_data", pinned_buffer, metadata)
 
         node.next()

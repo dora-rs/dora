@@ -16,6 +16,7 @@ dev = ["pytest >=7.1.1", "ruff >=0.9.1"]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
+module-name = "dora"
 
 [tool.ruff.lint]
 extend-select = [
