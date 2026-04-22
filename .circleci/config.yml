@@ -1032,11 +1032,13 @@ jobs:
       - cargo-cache-restore:
           prefix: ros2
       - run:
-          name: Install Python 3.12 + dev headers
+          name: Install Python 3.12 + dev headers + clang
           command: |
             sudo add-apt-repository -y ppa:deadsnakes/ppa
             sudo apt-get update
-            sudo apt-get install -y python3.12 python3.12-dev python3.12-venv libpython3.12
+            # clang is needed by the C++ ROS2 Bridge example's run.rs
+            # (machine image ships g++ but not clang by default).
+            sudo apt-get install -y python3.12 python3.12-dev python3.12-venv libpython3.12 clang
       - run:
           name: Install ROS2 Humble
           command: |
