@@ -560,7 +560,7 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "futures",
- "rand 0.8.6",
+ "rand 0.10.1",
  "tokio",
 ]
 
@@ -2131,7 +2131,7 @@ dependencies = [
  "futures",
  "futures-timer",
  "process-wrap",
- "rand 0.8.6",
+ "rand 0.10.1",
  "ros2-client",
  "rust-format",
  "rustdds",
@@ -4129,7 +4129,7 @@ dependencies = [
  "dora-node-api",
  "eyre",
  "futures",
- "rand 0.8.6",
+ "rand 0.10.1",
  "tokio",
 ]
 
@@ -5801,7 +5801,7 @@ dependencies = [
  "eyre",
  "futures",
  "futures-timer",
- "rand 0.8.6",
+ "rand 0.10.1",
  "serde_json",
  "tokio",
 ]

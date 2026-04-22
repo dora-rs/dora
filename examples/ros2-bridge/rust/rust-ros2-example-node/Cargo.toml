@@ -41,7 +41,7 @@ dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = { workspace = true }
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.3"
-rand = "0.8.5"
+rand = "0.10.1"
 tokio = { workspace = true, features = ["rt", "macros"] }
 dora-ros2-bridge = { workspace = true }
 serde_json = { workspace = true }

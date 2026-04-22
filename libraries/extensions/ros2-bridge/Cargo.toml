@@ -34,7 +34,7 @@ dora-daemon = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 dora-cli = { workspace = true }
 dunce = "1.0.2"
-rand = "0.8.5"
+rand = "0.10.1"
 futures = { workspace = true }
 process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
 
