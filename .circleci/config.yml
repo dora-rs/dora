@@ -1057,7 +1057,7 @@ jobs:
             curl -LsSf https://astral.sh/uv/install.sh | sh
             export PATH="$HOME/.local/bin:$PATH"
             uv venv --python /usr/bin/python3.12 "$HOME/ros2-venv"
-            "$HOME/.local/bin/uv" pip install --python "$HOME/ros2-venv/bin/python" pyarrow
+            "$HOME/.local/bin/uv" pip install --python "$HOME/ros2-venv/bin/python" pyarrow numpy
             echo "export PYO3_PYTHON=$HOME/ros2-venv/bin/python" >> "$BASH_ENV"
             echo "export VIRTUAL_ENV=$HOME/ros2-venv" >> "$BASH_ENV"
             echo "export PATH=$HOME/ros2-venv/bin:\$PATH" >> "$BASH_ENV"
