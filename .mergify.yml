@@ -53,6 +53,7 @@ queue_rules:
       - check-success=E2E Tests
       - check-success=Semantic contract tests
       - check-success=Benchmark regression check
+      - check-success=pip-release all green
 
 pull_request_rules:
   - name: queue approved PRs labelled `queue`
