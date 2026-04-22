@@ -1642,6 +1642,9 @@ impl Daemon {
                         .and_then(|p| bool::try_from(p).ok())
                         .unwrap_or(is_pinned);
 
+                    // Debug: print what we extracted
+                    // Removed excessive debug output per user request
+
                     let pinned_metadata = crate::memory_manager::PinnedMemoryMetadata {
                         ptr,
                         size,
@@ -1684,6 +1687,7 @@ impl Daemon {
                     let shape_i64: Vec<i64> = metadata.shape.iter().map(|&x| x as i64).collect();
                     parameters.insert("shape".to_string(), Parameter::ListInt(shape_i64));
                     parameters.insert("is_pinned".to_string(), Parameter::Bool(metadata.is_pinned));
+                    // Debug output removed per user request
                     if let Some(ref shared_memory_name) = metadata.shared_memory_name {
                         parameters.insert("shared_memory_name".to_string(), Parameter::String(shared_memory_name.clone()));
                     }

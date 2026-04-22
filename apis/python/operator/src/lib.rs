@@ -1,5 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    io::Write,
+    process,
     sync::{Arc, Mutex},
 };
 
@@ -203,7 +205,11 @@ impl PyEvent {
                     .unbind()
                     .into(),
             )),
-            _ => Ok(None),
+            _ => {
+                // Return empty dictionary for non-INPUT events to avoid KeyError in Python code
+                let empty_dict = PyDict::new(py);
+                Ok(Some(empty_dict.into()))
+            }
         }
     }
 
@@ -216,36 +222,45 @@ impl PyEvent {
 }
 
 pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataParameters> {
+    // 写入紧急调试文件
     let mut parameters = BTreeMap::default();
     if let Some(pymetadata) = dict {
         for (key, value) in pymetadata.iter() {
-            let key = key.extract::<String>().context("Parsing metadata keys")?;
+            let key_str = key.extract::<String>().context("Parsing metadata keys")?;
+            if key_str == "shared_memory_name" {
+                // 尝试提取字符串
+                match value.extract::<String>() {
+                    Ok(s) => (),
+                    Err(e) => (),
+                }
+            }
             if value.is_exact_instance_of::<PyBool>() {
-                parameters.insert(key, Parameter::Bool(value.extract()?))
+                parameters.insert(key_str, Parameter::Bool(value.extract()?))
             } else if value.is_instance_of::<PyInt>() {
-                parameters.insert(key, Parameter::Integer(value.extract::<i64>()?))
+                parameters.insert(key_str, Parameter::Integer(value.extract::<i64>()?))
             } else if value.is_instance_of::<PyFloat>() {
-                parameters.insert(key, Parameter::Float(value.extract::<f64>()?))
+                parameters.insert(key_str, Parameter::Float(value.extract::<f64>()?))
             } else if value.is_instance_of::<PyString>() {
-                parameters.insert(key, Parameter::String(value.extract()?))
+                let extracted: String = value.extract()?;
+                parameters.insert(key_str, Parameter::String(extracted))
             } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyInt>()
             {
                 let list: Vec<i64> = value.extract()?;
-                parameters.insert(key, Parameter::ListInt(list))
+                parameters.insert(key_str, Parameter::ListInt(list))
             } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyFloat>()
             {
                 let list: Vec<f64> = value.extract()?;
-                parameters.insert(key, Parameter::ListFloat(list))
+                parameters.insert(key_str, Parameter::ListFloat(list))
             } else if value.is_instance_of::<PyList>()
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyString>()
             {
                 let list: Vec<String> = value.extract()?;
-                parameters.insert(key, Parameter::ListString(list))
+                parameters.insert(key_str, Parameter::ListString(list))
             } else {
                 // Check if it's a datetime.datetime object
                 let datetime_module = cached_datetime_module(value.py())
@@ -274,10 +289,10 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
 
                     let dt = DateTime::<Utc>::from(system_time);
 
-                    parameters.insert(key, Parameter::Timestamp(dt))
+                    parameters.insert(key_str, Parameter::Timestamp(dt))
                 } else {
                     println!("could not convert type {value}");
-                    parameters.insert(key, Parameter::String(value.str()?.to_string()))
+                    parameters.insert(key_str, Parameter::String(value.str()?.to_string()))
                 }
             };
         }

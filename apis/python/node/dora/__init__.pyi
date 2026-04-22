@@ -172,6 +172,37 @@ class Node:
         ```
         """
 
+    def register_pinned_memory(
+            self, pinned_ptr: pyarrow.Array, metadata: dict) -> pyarrow.Array:
+        """
+        入参1：pinned_ptr为cpu上的tensor的指针。
+        入参2：metadata为字典，包括tensor的ptr,size,dtype,shape等。
+        调用该api后，memory_manager根据pinned_ptr, metadata将tensor数据注册为共享页锁内存；
+        然后在pinned_memory_table中记录pinned_buffer和metadata，
+        返回值：pinned_buffer为注册好的页锁内存标识符。
+        """
+
+    def read_pinned_memory(
+            self, pinned_buffer: pyarrow.Array, free: bool) -> tuple[pyarrow.Array, dict]:
+        """
+        入参1:pinned_buffer为用py.array包装的共享内存标识符。
+        调用该api后，memory_manager会根据pinned_buffer查询pinned_memory_table；
+        若查到，则根据表中数据填充metadata,并将该页锁内存数据通过DMA高速传输至cuda；
+        传输完后，若入参free为True，则调用free_pinned_memory释放原来的页锁内存；
+        若在pinned_memory_table没查到pinned_buffer，则输出提示。
+        返回值1:pinned_ptr为接收方进程的指针，供之后接收方通过pinned_ptr_to_torch转换为torch。
+        返回值2:metadata为字典，与register_pinned_memory时记录的metadata相同。
+        """
+
+    def free_pinned_memory(
+            self, pinned_buffer: pyarrow.Array) -> None:
+        """
+        入参：pinned_buffer为用py.array包装的共享内存标识符。
+        调用该api后，memory_manager会根据pinned_buffer查询pinned_memory_table；
+        若查到，则释放共享页锁内存，并在pinned_memory_table删除该条内存记录。
+        若在pinned_memory_table没查到pinned_buffer，则输出提示。
+        """
+
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""
 
