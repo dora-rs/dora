@@ -555,13 +555,10 @@ impl Node {
                 shared_memory_id.clone()
             };
 
-            // Call Python's free_pinned_buffer function to actually free the memory
-            let cuda_module = py.import("dora.cuda")?;
-            let free_pinned_buffer = cuda_module.getattr("free_pinned_buffer")?;
-            let result: bool = free_pinned_buffer.call1((buffer_id,))?.extract()?;
-
-            if !result {
-                tracing::warn!("free_pinned_buffer returned false for buffer_id: {}", buffer_id);
+            // Notify daemon to free the pinned memory
+            // Memory freeing is handled by daemon's memory manager
+            if let Err(e) = self.node.get_mut().free_pinned_memory(shared_memory_id.clone()) {
+                tracing::warn!("Failed to free pinned memory with daemon for buffer_id {}: {}", buffer_id, e);
             }
         }
 
@@ -608,17 +605,8 @@ impl Node {
             shared_memory_id.clone()
         };
 
-        // Call Python's free_pinned_buffer function to actually free the memory
-        // This handles CUDA unregistration and shared memory cleanup
-        let cuda_module = py.import("dora.cuda")?;
-        let free_pinned_buffer = cuda_module.getattr("free_pinned_buffer")?;
-        let result: bool = free_pinned_buffer.call1((buffer_id,))?.extract()?;
-
-        if !result {
-            tracing::warn!("free_pinned_buffer returned false for buffer_id: {}", buffer_id);
-        }
-
-        // Also notify daemon to remove the entry from its memory table
+        // Notify daemon to remove the entry from its memory table
+        // Memory freeing is handled by daemon's memory manager
         self.node.get_mut()
             .free_pinned_memory(shared_memory_id)
             .wrap_err("failed to free pinned memory with daemon")?;
