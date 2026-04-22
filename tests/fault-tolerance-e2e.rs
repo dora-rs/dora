@@ -524,8 +524,7 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
         .expect("hang-after-init should be in node_results");
     let err = node_result
         .as_ref()
-        .err()
-        .expect("hang-after-init should have errored — kill is a failure exit");
+        .expect_err("hang-after-init should have errored — kill is a failure exit");
     use dora_message::common::NodeExitStatus;
     assert!(
         matches!(err.exit_status, NodeExitStatus::Signal(9)),

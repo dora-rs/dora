@@ -506,6 +506,119 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     false
 }
 
+/// Subscribe to coordinator log stream with time/grep filtering.
+fn stream_logs_from_coordinator(
+    session: &WsSession,
+    uuid: Uuid,
+    level: &dora_core::build::LogLevelOrStdout,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    grep: Option<&str>,
+    config: &LogOutputConfig,
+) -> Result<()> {
+    let log_level = match level {
+        dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+        dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+    };
+
+    let now = Utc::now();
+    let since_threshold =
+        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let until_threshold =
+        until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id: uuid,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
+
+    while let Ok(raw) = log_rx.recv() {
+        let raw = match raw {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                tracing::warn!("log stream error: {err:?}");
+                continue;
+            }
+        };
+        let parsed: eyre::Result<LogMessage> =
+            serde_json::from_slice(&raw).context("failed to parse log message");
+        match parsed {
+            Ok(log_message) => {
+                if let Some(threshold) = since_threshold
+                    && log_message.timestamp < threshold
+                {
+                    continue;
+                }
+                if let Some(threshold) = until_threshold
+                    && log_message.timestamp > threshold
+                {
+                    continue;
+                }
+                if matches_grep(&log_message, grep) {
+                    print_log_message(log_message, config);
+                }
+            }
+            Err(err) => {
+                tracing::warn!("failed to parse log message: {err:?}")
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn logs(
+    session: &WsSession,
+    uuid: Uuid,
+    node: NodeId,
+    tail: Option<usize>,
+    follow: bool,
+    grep: Option<&str>,
+    level: &dora_core::build::LogLevelOrStdout,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    config: &LogOutputConfig,
+) -> Result<()> {
+    let logs = {
+        let reply = send_control_request(
+            session,
+            &ControlRequest::Logs {
+                uuid: Some(uuid),
+                name: None,
+                node: node.to_string(),
+                tail: if since.is_some() || until.is_some() || grep.is_some() {
+                    // Fetch all logs when filtering client-side, apply tail after
+                    None
+                } else {
+                    tail
+                },
+            },
+        )?;
+        expect_reply!(reply, Logs(data))?
+    };
+
+    // Unified filter pipeline: parse -> time_filter -> grep -> tail -> print
+    let now = Utc::now();
+    let content = String::from_utf8_lossy(&logs);
+    let messages: Vec<LogMessage> = content.lines().filter_map(parse_jsonl_line).collect();
+    let filtered = apply_time_filters(messages, since, until, now);
+    let grepped = apply_grep(filtered, grep);
+    let display = apply_tail(grepped, tail);
+    for msg in display {
+        print_log_message(msg, config);
+    }
+
+    if !follow {
+        return Ok(());
+    }
+
+    stream_logs_from_coordinator(session, uuid, level, since, until, grep, config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,117 +840,4 @@ mod tests {
         let msg = make_msg("hello", Some("sensor"), Some("target"), now);
         assert!(!matches_grep(&msg, Some("zzz_missing")));
     }
-}
-
-/// Subscribe to coordinator log stream with time/grep filtering.
-fn stream_logs_from_coordinator(
-    session: &WsSession,
-    uuid: Uuid,
-    level: &dora_core::build::LogLevelOrStdout,
-    since: Option<std::time::Duration>,
-    until: Option<std::time::Duration>,
-    grep: Option<&str>,
-    config: &LogOutputConfig,
-) -> Result<()> {
-    let log_level = match level {
-        dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
-        dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
-    };
-
-    let now = Utc::now();
-    let since_threshold =
-        since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
-    let until_threshold =
-        until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
-
-    let log_rx = session.subscribe_logs(
-        &serde_json::to_vec(&ControlRequest::LogSubscribe {
-            dataflow_id: uuid,
-            level: log_level,
-        })
-        .wrap_err("failed to serialize message")?,
-    )?;
-
-    while let Ok(raw) = log_rx.recv() {
-        let raw = match raw {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                tracing::warn!("log stream error: {err:?}");
-                continue;
-            }
-        };
-        let parsed: eyre::Result<LogMessage> =
-            serde_json::from_slice(&raw).context("failed to parse log message");
-        match parsed {
-            Ok(log_message) => {
-                if let Some(threshold) = since_threshold
-                    && log_message.timestamp < threshold
-                {
-                    continue;
-                }
-                if let Some(threshold) = until_threshold
-                    && log_message.timestamp > threshold
-                {
-                    continue;
-                }
-                if matches_grep(&log_message, grep) {
-                    print_log_message(log_message, config);
-                }
-            }
-            Err(err) => {
-                tracing::warn!("failed to parse log message: {err:?}")
-            }
-        }
-    }
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn logs(
-    session: &WsSession,
-    uuid: Uuid,
-    node: NodeId,
-    tail: Option<usize>,
-    follow: bool,
-    grep: Option<&str>,
-    level: &dora_core::build::LogLevelOrStdout,
-    since: Option<std::time::Duration>,
-    until: Option<std::time::Duration>,
-    config: &LogOutputConfig,
-) -> Result<()> {
-    let logs = {
-        let reply = send_control_request(
-            session,
-            &ControlRequest::Logs {
-                uuid: Some(uuid),
-                name: None,
-                node: node.to_string(),
-                tail: if since.is_some() || until.is_some() || grep.is_some() {
-                    // Fetch all logs when filtering client-side, apply tail after
-                    None
-                } else {
-                    tail
-                },
-            },
-        )?;
-        expect_reply!(reply, Logs(data))?
-    };
-
-    // Unified filter pipeline: parse -> time_filter -> grep -> tail -> print
-    let now = Utc::now();
-    let content = String::from_utf8_lossy(&logs);
-    let messages: Vec<LogMessage> = content.lines().filter_map(parse_jsonl_line).collect();
-    let filtered = apply_time_filters(messages, since, until, now);
-    let grepped = apply_grep(filtered, grep);
-    let display = apply_tail(grepped, tail);
-    for msg in display {
-        print_log_message(msg, config);
-    }
-
-    if !follow {
-        return Ok(());
-    }
-
-    stream_logs_from_coordinator(session, uuid, level, since, until, grep, config)
 }
