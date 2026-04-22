@@ -1,10 +1,24 @@
-# CI workflow — fast Linux-only PR gate (#1716).
+# CI workflow — fast Linux-only PR gate (#1716), plus merge-queue gate.
 #
-# Per-PR target budget: ~30-45 min critical path. Contains the blocking
-# correctness gates:
-#   - fmt, clippy, typos, audit, unwrap-budget, check-license
-#   - test (ubuntu-latest)
-#   - e2e, contract-tests, bench (perf regression)
+# Two tiers:
+#
+#   Cheap (every PR, ~5-10 min):
+#     fmt, clippy, check (cargo check --all + --examples),
+#     typos, audit, unwrap-budget, check-license.
+#     These gate entry into the Mergify queue (see .mergify.yml).
+#
+#   Expensive (push to main, merge-queue batches, workflow_dispatch):
+#     test (build + cargo test + CLI smoke gates),
+#     e2e, contract-tests, bench (perf regression).
+#     These gate the merge itself. Running them only on Mergify's
+#     batched queue branch means 5 PRs share one expensive CI run.
+#
+# Detection of merge-queue runs relies on Mergify's draft-PR queue
+# mode: the queue branch is named `mergify/merge-queue/...` and the
+# `pull_request` event fires with `github.head_ref` pointing at it.
+# If the repo ever switches to GitHub's native merge queue, add a
+# `merge_group` trigger and include `github.event_name == 'merge_group'`
+# in the expensive-job conditions.
 #
 # Moved to .github/workflows/nightly.yml (runs once daily, ~3-4h):
 #   - test on macos + windows
@@ -67,10 +81,11 @@ jobs:
           --exclude dora-ros2-bridge-python
           -- -D warnings
 
-  test:
-    # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
-    # Developers verify non-Linux platforms locally via `make qa-test`.
-    name: Test (ubuntu-latest)
+  # Cheap compile gate on every PR. `cargo check` skips codegen/link,
+  # so it's much faster than the full `test` job below. Exposed as the
+  # `Check` check to Mergify's `queue_conditions`.
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,7 +94,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-test
+          shared-key: workspace-check
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -88,6 +103,24 @@ jobs:
       # surface and deserve their own compile gate.
       - name: Check examples compile
         run: cargo check --examples
+
+  test:
+    # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
+    # Developers verify non-Linux platforms locally via `make qa-test`.
+    #
+    # Expensive — skipped on regular PRs. Runs on push to main,
+    # Mergify merge-queue batches, and manual workflow_dispatch.
+    name: Test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: workspace-test
       - name: Build (excluding Python packages)
         run: >
           cargo build --all
@@ -182,6 +215,7 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -224,6 +258,7 @@ jobs:
     name: Semantic contract tests
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -265,6 +300,7 @@ jobs:
     name: Benchmark regression check
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
