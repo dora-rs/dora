@@ -1,0 +1,23 @@
+[package]
+name = "dora-record-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description = "Record node binary for dora dataflow recordings"
+license.workspace = true
+repository.workspace = true
+publish = false  # binary, delivered via `dora` CLI
+
+[[bin]]
+name = "dora-record-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+dora-recording = { workspace = true }
+dora-message = { workspace = true }
+eyre = { workspace = true }
+aligned-vec = { version = "0.5.0", features = ["serde"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

@@ -1,0 +1,24 @@
+[package]
+name = "event-log-observer-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: appends one line per event to `$DORA_TEST_MARKER_FILE`
+# for the full `Event` variants that fault-tolerance coverage cares
+# about (`Input`, `InputClosed`, `InputRecovered`, `NodeRestarted`,
+# `Stop`). Exits on `Stop` so tests don't need to juggle separate
+# shutdown paths. More general than `input-closed-observer-node`
+# which exits on the first `InputClosed`.
+
+[[bin]]
+name = "event-log-observer-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

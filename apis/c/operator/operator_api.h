@@ -29,6 +29,9 @@ extern "C"
         DoraDropOperator_t __dora_drop_operator = {.drop_operator = dora_drop_operator};
         DoraOnEvent_t __dora_on_event = {.on_event = dora_on_event};
     }
+
+
+
 #ifdef __cplusplus
 } /* extern \"C\" */
 #endif

@@ -1,0 +1,30 @@
+# Streaming Pattern Example
+#
+# Demonstrates the streaming (session/segment/chunk) pattern for
+# token-by-token text generation with interruption support.
+#
+# Architecture:
+#   prompt-source (0.5 Hz) --> generator --> token stream --> sink
+#
+# Run:
+#   dora run examples/streaming-example/dataflow.yml --uv
+
+nodes:
+  - id: prompt-source
+    path: prompt_source.py
+    inputs:
+      tick: dora/timer/hz/0.5
+    outputs:
+      - prompt
+
+  - id: generator
+    path: generator.py
+    inputs:
+      prompt: prompt-source/prompt
+    outputs:
+      - tokens
+
+  - id: sink
+    path: sink.py
+    inputs:
+      tokens: generator/tokens

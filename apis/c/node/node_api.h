@@ -21,3 +21,22 @@ void read_dora_input_data(void *dora_event, char **out_ptr, size_t *out_len);
 unsigned long long read_dora_input_timestamp(void *dora_event);
 int dora_send_output(void *dora_context, const char *id_ptr, size_t id_len, const char *data_ptr, size_t data_len);
 int dora_log(void *dora_context, const char *level_ptr, size_t level_len, const char *msg_ptr, size_t msg_len);
+
+/* Backward-compatible aliases for dora-hub C nodes. */
+#define init_dora_context_from_env  init_dora_context_from_env
+#define free_dora_context           free_dora_context
+#define dora_next_event             dora_next_event
+#define free_dora_event             free_dora_event
+#define read_dora_event_type        read_dora_event_type
+#define read_dora_input_id          read_dora_input_id
+#define read_dora_input_data        read_dora_input_data
+#define read_dora_input_timestamp   read_dora_input_timestamp
+#define dora_send_output            dora_send_output
+#define dora_log                    dora_log
+
+typedef enum DoraEventType DoraEventType;
+#define DoraEventType_Stop        DoraEventType_Stop
+#define DoraEventType_Input       DoraEventType_Input
+#define DoraEventType_InputClosed DoraEventType_InputClosed
+#define DoraEventType_Error       DoraEventType_Error
+#define DoraEventType_Unknown     DoraEventType_Unknown

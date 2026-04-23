@@ -1,0 +1,14 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d1b466054d361dda81f512f12e2ae9ee7666ced13303e08a974752433c4f4b01 # shrinks to evt = WsEvent { event: "a", payload: Array [Number(-6.817887709944061e-104)] }
+cc 874456dc809be146279558c69b3e53823229f8575b8a1f13dce15bae88c04340 # shrinks to evt = WsEvent { event: "a", payload: Object {"a": Number(-2.1111814711509245e-308)} }
+cc 0f89203460ffa0aaa9d3973cb3667a20bda3ed3062b838470d1dde2b04889670 # shrinks to resp = WsResponse { id: 00000000-0000-0000-0000-000000000000, result: Some(Object {"A": Number(-2.545395619605833e+120)}), error: None }
+cc 6317020a94e3dc76a8328951fec4c2d8cb2a959f1fb983021bc26f1f5389e986 # shrinks to req = WsRequest { id: 00000000-0000-0000-0000-000000000000, method: "a", params: Object {"a": Number(-5.856609869115922e+256)} }
+cc 18296dca729a60a431507885875d1273edb13a5b0ea450e4f3ef90a1f60a76ee # shrinks to resp = WsResponse { id: 00000000-0000-0000-0000-000000000000, result: Some(Array [Number(3.121872553666507e+196)]), error: None }
+cc d8a5bd6d254e220e3d1d224990ae855a26330f3c57e421bdb00f0836da3796da # shrinks to req = WsRequest { id: 00000000-0000-0000-0000-000000000000, method: "a", params: Object {"A": Number(-5.784085039422397e+120)} }
+cc db4972b269e1dd9595510ad573156d2a8ff814b9d9860910b64869d0d0331dd6 # shrinks to resp = WsResponse { id: 00000000-0000-0000-0000-000000000000, result: Some(Null), error: None }
+cc d322f2c0b803b6707dd8e4afd0db507fec0127683a9a9a2baf024b2cbbe77934 # shrinks to resp = WsResponse { id: 00000000-0000-0000-0000-000000000000, result: Some(Null), error: None }

@@ -10,12 +10,16 @@ mod formatting;
 pub mod output;
 pub mod session;
 mod template;
+mod ws_client;
+pub use ws_client::WsSession;
 
-pub use command::{Executable, Run as RunCommand, run, run_func};
-pub use command::{build, build_async};
+pub use command::{BuildConfig, build};
+pub use command::{Executable, Run as RunCommand, run};
 
+/// Default address for *connecting* to a coordinator (client side).
 const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-const LISTEN_WILDCARD: IpAddr = IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0));
+/// Default address for the coordinator to *listen* on (server side).
+const LISTEN_DEFAULT: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
 #[derive(Debug, clap::Parser)]
 #[clap(version = get_version_info())]
@@ -29,63 +33,40 @@ fn get_version_info() -> clap::builder::Str {
 }
 
 fn build_version_string() -> String {
-    let cli_version = env!("CARGO_PKG_VERSION");
-
-    let mut version_output = format!("{}\n", cli_version);
-
-    version_output.push_str(&format!("dora-message: {}\n", dora_message::VERSION));
-
-    // Try to detect Python dora-rs version
-    match get_python_dora_version() {
-        Some(python_version) => {
-            version_output.push_str(&format!("dora-rs (Python): {}\n", python_version));
-
-            // Check for version mismatch
-            if python_version != cli_version {
-                version_output.push_str(&format!(
-                    "\n⚠️  WARNING: Version mismatch detected!\n   CLI version ({}) differs from Python dora-rs version ({})\n",
-                    cli_version,
-                    python_version
-                ));
-            }
-        }
-        None => {
-            version_output.push_str("dora-rs (Python): not found\n");
-        }
-    }
-
-    version_output
+    // Only return the CLI version for fast --version output.
+    // Python version check moved to `dora self check` to avoid spawning
+    // external processes on every --version invocation.
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Check if a Python dora-rs package is installed and return its version.
+#[allow(dead_code)] // used in tests; intended for future `dora self check` command
 pub(crate) fn get_python_dora_version() -> Option<String> {
     // Try with uv first
     if let Ok(output) = std::process::Command::new("uv")
         .args(["pip", "show", "dora-rs"])
         .output()
+        && output.status.success()
+        && let Some(version) = parse_version_from_pip_show(&output.stdout)
     {
-        if output.status.success() {
-            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
-                return Some(version);
-            }
-        }
+        return Some(version);
     }
 
     // Try with regular pip
     if let Ok(output) = std::process::Command::new("pip")
         .args(["show", "dora-rs"])
         .output()
+        && output.status.success()
+        && let Some(version) = parse_version_from_pip_show(&output.stdout)
     {
-        if output.status.success() {
-            if let Some(version) = parse_version_from_pip_show(&output.stdout) {
-                return Some(version);
-            }
-        }
+        return Some(version);
     }
 
     None
 }
 
-fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
+#[allow(dead_code)]
+pub(crate) fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
     let output_str = String::from_utf8_lossy(output);
     for line in output_str.lines() {
         if line.starts_with("Version:") {
@@ -93,6 +74,31 @@ fn parse_version_from_pip_show(output: &[u8]) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pip_show_valid_output() {
+        let output = b"Name: dora-rs\nVersion: 0.1.0\nSummary: some desc\n";
+        assert_eq!(
+            parse_version_from_pip_show(output),
+            Some("0.1.0".to_string())
+        );
+    }
+
+    #[test]
+    fn pip_show_missing_version_line() {
+        let output = b"Name: dora-rs\nSummary: some desc\n";
+        assert_eq!(parse_version_from_pip_show(output), None);
+    }
+
+    #[test]
+    fn pip_show_empty() {
+        assert_eq!(parse_version_from_pip_show(b""), None);
+    }
 }
 
 #[derive(Debug, clap::Args)]
@@ -124,50 +130,10 @@ enum Lang {
     Cxx,
 }
 
-pub async fn lib_main(args: Args) {
-    if let Err(err) = args.command.execute().await {
+pub fn lib_main(args: Args) {
+    if let Err(err) = args.command.execute() {
         eprintln!("\n\n{}", "[ERROR]".bold().red());
         eprintln!("{err:?}");
         std::process::exit(1);
     }
-}
-
-#[cfg(feature = "python")]
-use clap::Parser;
-#[cfg(feature = "python")]
-use pyo3::{
-    Bound, PyResult, Python, pyfunction, pymodule,
-    types::{PyModule, PyModuleMethods},
-    wrap_pyfunction,
-};
-
-#[cfg(feature = "python")]
-#[pyfunction]
-fn py_main(_py: Python) -> PyResult<()> {
-    pyo3::prepare_freethreaded_python();
-    // Skip first argument as it is a python call.
-    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
-
-    match Args::try_parse_from(args) {
-        Ok(args) => {
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .expect("failed to create tokio runtime");
-            rt.block_on(lib_main(args));
-        }
-        Err(err) => {
-            eprintln!("{err}");
-        }
-    }
-    Ok(())
-}
-
-/// A Python module implemented in Rust.
-#[cfg(feature = "python")]
-#[pymodule]
-fn dora_cli(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(py_main, &m)?)?;
-    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    Ok(())
 }

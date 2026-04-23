@@ -6,27 +6,18 @@ use super::{Executable, default_tracing};
 use crate::{
     command::start::attach::attach_dataflow,
     common::{
-        connect_and_check_version, local_working_dir, long_context, resolve_dataflow, rpc,
-        write_events_to,
+        CoordinatorOptions, connect_to_coordinator, error_indicates_dataflow_finished,
+        expect_reply, local_working_dir, resolve_dataflow, send_control_request, write_events_to,
     },
-    output::{abort_log_task_with_grace, subscribe_and_print_logs},
+    output::{LogOutputConfig, print_log_message},
     session::DataflowSession,
+    ws_client::WsSession,
 };
-use dora_core::{
-    descriptor::{Descriptor, DescriptorExt},
-    topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST},
-};
-use dora_message::{
-    cli_to_coordinator::{CoordinatorControlClient, StartRequest},
-    tarpc,
-};
+use dora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage};
 use eyre::Context;
-use std::{
-    net::{IpAddr, SocketAddr},
-    path::Path,
-};
-use tokio::task::JoinHandle;
-use uuid::{NoContext, Timestamp, Uuid};
+use std::{io::IsTerminal, net::SocketAddr, path::PathBuf};
+use uuid::Uuid;
 
 mod attach;
 
@@ -37,16 +28,12 @@ pub struct Start {
     #[clap(value_name = "PATH")]
     dataflow: String,
     /// Assign a name to the dataflow
-    #[clap(long)]
+    #[clap(long, short = 'n')]
     name: Option<String>,
-    /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
     /// Attach to the dataflow and wait for its completion
-    #[clap(long, action)]
+    #[clap(long, action, conflicts_with = "detach")]
     attach: bool,
     /// Run the dataflow in background
     #[clap(long, action)]
@@ -57,149 +44,184 @@ pub struct Start {
     // Use UV to run nodes.
     #[clap(long, action)]
     uv: bool,
+    /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
+    #[clap(long, action)]
+    debug: bool,
 }
 
 impl Executable for Start {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let coordinator_socket: SocketAddr = (self.coordinator_addr, self.coordinator_port).into();
+        let coordinator_socket = self.coordinator.socket_addr();
 
-        // Generate the dataflow ID on the CLI side so we can subscribe to
-        // zenoh log messages *before* triggering the start RPC, ensuring
-        // no early log messages are missed.
-        let dataflow_id = Uuid::new_v7(Timestamp::now(NoContext));
+        let (dataflow, dataflow_descriptor, session, dataflow_id) = start_dataflow(
+            self.dataflow,
+            self.name,
+            coordinator_socket,
+            self.uv,
+            self.debug,
+        )?;
 
         let attach = match (self.attach, self.detach) {
-            (true, true) => eyre::bail!("both `--attach` and `--detach` are given"),
-            (true, false) => true,
+            (true, _) => true,
             (false, true) => false,
             (false, false) => {
-                println!("attaching to dataflow (use `--detach` to run in background)");
-                true
+                if std::io::stdin().is_terminal() {
+                    eprintln!("attaching to dataflow (use `--detach` to run in background)");
+                    true
+                } else {
+                    eprintln!("non-interactive mode: running in background");
+                    false
+                }
             }
         };
 
-        let dataflow_path = resolve_dataflow(self.dataflow)
-            .await
-            .context("could not resolve dataflow")?;
-        let dataflow_descriptor =
-            Descriptor::blocking_read(&dataflow_path).wrap_err("Failed to read yaml dataflow")?;
-        let dataflow_session = DataflowSession::read_session(&dataflow_path)
-            .context("failed to read DataflowSession")?;
-        let client = connect_and_check_version(coordinator_socket.ip(), coordinator_socket.port())
-            .await
-            .wrap_err("failed to connect to dora coordinator")?;
-
-        let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
-        let log_level = if attach {
-            env_logger::Builder::new()
+        if attach {
+            let log_level = env_logger::Builder::new()
                 .filter_level(log::LevelFilter::Info)
                 .parse_default_env()
                 .build()
-                .filter()
-        } else {
-            log::LevelFilter::Info
-        };
+                .filter();
 
-        // Open the zenoh session and subscribe to logs *before* the start
-        // RPC so that no early log messages are missed.
-        let zenoh_session = dora_core::topics::open_zenoh_session(Some(self.coordinator_addr))
-            .await
-            .wrap_err("failed to open zenoh session for log subscription")?;
-        let base_log_topic = dora_core::topics::zenoh_log_base_topic_for_dataflow(dataflow_id);
-        let log_task = subscribe_and_print_logs(
-            &zenoh_session,
-            &base_log_topic,
-            log_level,
-            false,
-            print_daemon_name,
-        )
-        .await?;
-
-        // Now send the start RPC — the subscription is already active.
-        send_start_rpc(
-            &dataflow_path,
-            &dataflow_descriptor,
-            &dataflow_session,
-            &client,
-            self.name,
-            self.uv,
-            self.hot_reload,
-            dataflow_id,
-        )
-        .await?;
-
-        let result = if attach {
             attach_dataflow(
                 dataflow_descriptor,
-                dataflow_path,
+                dataflow,
                 dataflow_id,
-                &client,
+                &session,
                 self.hot_reload,
-                log_task,
+                log_level,
             )
-            .await
         } else {
-            wait_until_dataflow_started(dataflow_id, &client, log_task).await
-        };
-        // Close the zenoh session explicitly for clean shutdown.
-        // Note: zenoh 1.8.0 may still emit "Unable to publish transport
-        // event: session closed" — see https://github.com/eclipse-zenoh/zenoh/issues/2492
-        let _ = zenoh_session.close().await;
-        result
+            let print_daemon_name = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
+            // wait until dataflow is started
+            wait_until_dataflow_started(
+                dataflow_id,
+                &session,
+                log::LevelFilter::Info,
+                print_daemon_name,
+            )
+        }
     }
 }
 
-/// Send the start RPC to the coordinator.  The caller should have already
-/// subscribed to zenoh log topics before calling this.
-async fn send_start_rpc(
-    dataflow: &Path,
-    dataflow_descriptor: &Descriptor,
-    dataflow_session: &DataflowSession,
-    client: &CoordinatorControlClient,
+fn start_dataflow(
+    dataflow: String,
     name: Option<String>,
+    coordinator_socket: SocketAddr,
     uv: bool,
-    hot_reload: bool,
-    dataflow_id: Uuid,
-) -> Result<(), eyre::Error> {
-    let local_working_dir = local_working_dir(dataflow, dataflow_descriptor, client).await?;
+    debug: bool,
+) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
+    let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    let working_dir = dataflow
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow)
+        .wrap_err_with(|| {
+            format!(
+                "failed to read dataflow at `{}`\n\n  \
+                 hint: check the file exists and is valid YAML",
+                dataflow.display()
+            )
+        })?
+        .expand(working_dir)
+        .wrap_err("failed to expand modules in dataflow descriptor")?;
+    let dataflow_session =
+        DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
 
-    let returned_id = rpc(
-        "start dataflow",
-        client.start(
-            tarpc::context::current(),
-            StartRequest {
-                dataflow_id: Some(dataflow_id),
+    if debug {
+        dataflow_descriptor.debug.enable_debug_inspection = true;
+    }
+
+    let session = connect_to_coordinator(coordinator_socket)?;
+
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &session)?;
+
+    let dataflow_id = {
+        let dataflow = dataflow_descriptor.clone();
+        let reply = send_control_request(
+            &session,
+            &ControlRequest::Start {
                 build_id: dataflow_session.build_id,
                 session_id: dataflow_session.session_id,
-                dataflow: dataflow_descriptor.clone(),
+                dataflow,
                 name,
                 local_working_dir,
                 uv,
                 write_events_to: write_events_to(),
-                hot_reload,
             },
-        ),
-    )
-    .await?;
-    eprintln!("dataflow start triggered: {returned_id}");
-
-    Ok(())
+        )?;
+        let uuid = expect_reply!(reply, DataflowStartTriggered { uuid })?;
+        println!("dataflow start triggered: {uuid}");
+        uuid
+    };
+    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
 }
 
-async fn wait_until_dataflow_started(
+fn wait_until_dataflow_started(
     dataflow_id: Uuid,
-    client: &CoordinatorControlClient,
-    log_task: JoinHandle<()>,
+    session: &WsSession,
+    log_level: log::LevelFilter,
+    print_daemon_id: bool,
 ) -> eyre::Result<()> {
-    let result = rpc(
-        "wait for dataflow spawn",
-        client.wait_for_spawn(long_context(), dataflow_id),
-    )
-    .await;
-    abort_log_task_with_grace(log_task).await;
-    result?;
-    eprintln!("dataflow started: {dataflow_id}");
+    // Subscribe to log messages. This can race against sub-second
+    // dataflows: the coordinator drops the running-dataflow entry on
+    // completion, so a LogSubscribe that arrives after the dataflow
+    // finished fails with "no running dataflow with id X". That's a
+    // valid state — the dataflow ran and exited — not an error for
+    // the --detach caller. Warn and continue without a log stream.
+    match session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    ) {
+        Ok(log_rx) => {
+            std::thread::spawn(move || {
+                while let Ok(Ok(raw)) = log_rx.recv() {
+                    let parsed: eyre::Result<LogMessage> =
+                        serde_json::from_slice(&raw).context("failed to parse log message");
+                    match parsed {
+                        Ok(log_message) => {
+                            let config = LogOutputConfig {
+                                print_daemon_name: print_daemon_id,
+                                ..LogOutputConfig::default()
+                            };
+                            print_log_message(log_message, &config);
+                        }
+                        Err(err) => {
+                            tracing::warn!("failed to parse log message: {err:?}")
+                        }
+                    }
+                }
+            });
+        }
+        Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
+            tracing::debug!("dataflow {dataflow_id} completed before log subscribe arrived");
+        }
+        Err(err) => return Err(err).wrap_err("failed to subscribe to logs"),
+    }
 
+    // Same race on WaitForSpawn: a dataflow that exited before this
+    // request landed is reported as "unknown dataflow X". The
+    // DataflowStartTriggered reply we already observed is proof that
+    // the coordinator accepted the spawn — treat "unknown" as evidence
+    // the dataflow ran to completion, not as a startup failure.
+    match send_control_request(session, &ControlRequest::WaitForSpawn { dataflow_id }) {
+        Ok(reply) => {
+            let uuid = expect_reply!(reply, DataflowSpawned { uuid })?;
+            println!("dataflow started: {uuid}");
+        }
+        Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
+            println!("dataflow started and finished: {dataflow_id}");
+        }
+        Err(err) => {
+            return Err(err).wrap_err(
+                "dataflow failed to start\n\n  \
+                 hint: if nodes require building, run `dora build <dataflow.yml>` first",
+            );
+        }
+    }
     Ok(())
 }

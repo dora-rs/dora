@@ -1,5 +1,4 @@
-use std::convert::TryFrom;
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 
 use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
@@ -38,30 +37,10 @@ impl Metadata {
         self.timestamp
     }
 
-    /// Returns a raw metadata parameter by key.
-    ///
-    /// This method only accesses user-provided metadata parameters.
-    /// It does **not** return fields such as the timestamp or type information.
-    /// For example, `get("timestamp")` is not equivalent to [`Metadata::timestamp`].
-    pub fn get(&self, key: &str) -> Option<&Parameter> {
-        self.parameters.get(key)
-    }
-
-    /// Returns the parameter for `key` converted to `T`, or `default` if missing or wrong type.
-    pub fn get_or<'a, T>(&'a self, key: &str, default: T) -> T
-    where
-        T: TryFrom<&'a Parameter>,
-    {
-        self.parameters
-            .get(key)
-            .and_then(|p| T::try_from(p).ok())
-            .unwrap_or(default)
-    }
-
     pub fn open_telemetry_context(&self) -> String {
-        self.get("open_telemetry_context")
-            .and_then(|p| String::try_from(p).ok())
-            .unwrap_or_default()
+        get_string_param(&self.parameters, "open_telemetry_context")
+            .unwrap_or("")
+            .to_string()
     }
 }
 
@@ -77,21 +56,21 @@ pub struct ArrowTypeInfo {
     pub offset: usize,
     pub buffer_offsets: Vec<BufferOffset>,
     pub child_data: Vec<ArrowTypeInfo>,
+    /// Optional field names for struct types (enables schema introspection
+    /// without full Arrow IPC framing).
+    ///
+    /// NOTE: must not use `#[serde(skip_serializing_if)]`. The wire format
+    /// is bincode, which is positional and non-self-describing; skipping a
+    /// field at serialize time desyncs the deserializer (dora-rs/adora#135).
+    pub field_names: Option<Vec<String>>,
+    /// Hash of the full Arrow schema for fast type matching.
+    /// Populated when data is sent via the raw buffer path or Arrow IPC framing.
+    /// Receivers can compare this O(1) value before doing a full type check.
+    ///
+    /// NOTE: see `field_names` above — no `skip_serializing_if`.
+    pub schema_hash: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
-pub struct TryFromParameterError {
-    pub expected: &'static str,
-    pub found: &'static str,
-}
-
-impl fmt::Display for TryFromParameterError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "expected {}, found {}", self.expected, self.found)
-    }
-}
-
-impl std::error::Error for TryFromParameterError {}
 /// A metadata parameter that can be sent as part of output messages.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
@@ -105,174 +84,80 @@ pub enum Parameter {
     Timestamp(DateTime<Utc>),
 }
 
-impl Parameter {
-    pub(crate) fn variant_name(&self) -> &'static str {
-        match self {
-            Parameter::Bool(_) => "bool",
-            Parameter::Integer(_) => "integer",
-            Parameter::String(_) => "string",
-            Parameter::ListInt(_) => "list<i64>",
-            Parameter::Float(_) => "float",
-            Parameter::ListFloat(_) => "list<f64>",
-            Parameter::ListString(_) => "list<string>",
-            Parameter::Timestamp(_) => "timestamp",
-        }
-    }
+/// Extract a string parameter from metadata, returning `None` if missing or
+/// not a `Parameter::String`.
+pub fn get_string_param<'a>(params: &'a MetadataParameters, key: &str) -> Option<&'a str> {
+    params.get(key).and_then(|p| match p {
+        Parameter::String(s) => Some(s.as_str()),
+        _ => None,
+    })
 }
 
-impl TryFrom<&Parameter> for bool {
-    type Error = TryFromParameterError;
-
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::Bool(value) => Ok(*value),
-            other => Err(TryFromParameterError {
-                expected: "bool",
-                found: other.variant_name(),
-            }),
-        }
-    }
+/// Extract an integer parameter from metadata, returning `None` if missing or
+/// not a `Parameter::Integer`.
+pub fn get_integer_param(params: &MetadataParameters, key: &str) -> Option<i64> {
+    params.get(key).and_then(|p| match p {
+        Parameter::Integer(n) => Some(*n),
+        _ => None,
+    })
 }
 
-impl TryFrom<&Parameter> for String {
-    type Error = TryFromParameterError;
-
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::String(val) => Ok(val.clone()),
-            other => Err(TryFromParameterError {
-                expected: "string",
-                found: other.variant_name(),
-            }),
-        }
-    }
+/// Extract a bool parameter from metadata, returning `None` if missing or
+/// not a `Parameter::Bool`.
+pub fn get_bool_param(params: &MetadataParameters, key: &str) -> Option<bool> {
+    params.get(key).and_then(|p| match p {
+        Parameter::Bool(b) => Some(*b),
+        _ => None,
+    })
 }
 
-impl<'a> TryFrom<&'a Parameter> for &'a str {
-    type Error = TryFromParameterError;
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter keys for service and action patterns
+// ---------------------------------------------------------------------------
 
-    fn try_from(value: &'a Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::String(v) => Ok(v.as_str()),
-            other => Err(TryFromParameterError {
-                expected: "&str",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Metadata key for correlating a service request with its response.
+pub const REQUEST_ID: &str = "request_id";
 
-impl TryFrom<&Parameter> for i64 {
-    type Error = TryFromParameterError;
+/// Metadata key for identifying an action goal across feedback/result messages.
+pub const GOAL_ID: &str = "goal_id";
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::Integer(v) => Ok(*v),
-            other => Err(TryFromParameterError {
-                expected: "i64",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Metadata key for the completion status of an action goal.
+pub const GOAL_STATUS: &str = "goal_status";
 
-impl TryFrom<&Parameter> for f64 {
-    type Error = TryFromParameterError;
+/// Goal completed successfully.
+pub const GOAL_STATUS_SUCCEEDED: &str = "succeeded";
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::Float(val) => Ok(*val),
-            other => Err(TryFromParameterError {
-                expected: "f64",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Goal was aborted by the server.
+pub const GOAL_STATUS_ABORTED: &str = "aborted";
 
-impl TryFrom<&Parameter> for Vec<i64> {
-    type Error = TryFromParameterError;
+/// Goal was canceled by the client.
+pub const GOAL_STATUS_CANCELED: &str = "canceled";
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListInt(v) => Ok(v.clone()),
-            other => Err(TryFromParameterError {
-                expected: "list<i64>",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter keys for the streaming pattern
+// ---------------------------------------------------------------------------
 
-impl<'a> TryFrom<&'a Parameter> for &'a [i64] {
-    type Error = TryFromParameterError;
+/// Metadata key identifying the conversation/session.
+pub const SESSION_ID: &str = "session_id";
 
-    fn try_from(value: &'a Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListInt(v) => Ok(v.as_slice()),
-            other => Err(TryFromParameterError {
-                expected: "&[i64]",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Metadata key for the logical segment within a session (e.g. one utterance).
+pub const SEGMENT_ID: &str = "segment_id";
 
-impl TryFrom<&Parameter> for Vec<f64> {
-    type Error = TryFromParameterError;
+/// Metadata key for chunk sequence number within a segment.
+pub const SEQ: &str = "seq";
 
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListFloat(val) => Ok(val.clone()),
-            other => Err(TryFromParameterError {
-                expected: "list<f64>",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Metadata key marking the last chunk of a segment (`true` on final chunk).
+pub const FIN: &str = "fin";
 
-impl<'a> TryFrom<&'a Parameter> for &'a [f64] {
-    type Error = TryFromParameterError;
+/// Metadata key to discard older queued messages on this input (`true` to flush).
+pub const FLUSH: &str = "flush";
 
-    fn try_from(value: &'a Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListFloat(v) => Ok(v.as_slice()),
-            other => Err(TryFromParameterError {
-                expected: "&[f64]",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Metadata key indicating the wire framing of the data payload.
+/// When set to `"arrow-ipc"`, the payload is an Arrow IPC stream.
+pub const FRAMING: &str = "_framing";
 
-impl TryFrom<&Parameter> for Vec<String> {
-    type Error = TryFromParameterError;
-
-    fn try_from(value: &Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListString(v) => Ok(v.clone()),
-            other => Err(TryFromParameterError {
-                expected: "list<string>",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
-
-impl<'a> TryFrom<&'a Parameter> for &'a [String] {
-    type Error = TryFromParameterError;
-
-    fn try_from(value: &'a Parameter) -> Result<Self, Self::Error> {
-        match value {
-            Parameter::ListString(v) => Ok(v.as_slice()),
-            other => Err(TryFromParameterError {
-                expected: "&[String]",
-                found: other.variant_name(),
-            }),
-        }
-    }
-}
+/// Value for [`FRAMING`] indicating Arrow IPC stream framing.
+pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BufferOffset {
@@ -283,211 +168,124 @@ pub struct BufferOffset {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::TryFrom;
 
     #[test]
-    fn try_from_bool_ok() {
-        let p = Parameter::Bool(true);
-        let v = bool::try_from(&p).unwrap();
-        assert!(v);
+    fn well_known_keys_have_stable_values() {
+        // These string values are part of the cross-language protocol
+        // (Python nodes use the same literal strings). Do not change.
+        assert_eq!(REQUEST_ID, "request_id");
+        assert_eq!(GOAL_ID, "goal_id");
+        assert_eq!(GOAL_STATUS, "goal_status");
+        assert_eq!(GOAL_STATUS_SUCCEEDED, "succeeded");
+        assert_eq!(GOAL_STATUS_ABORTED, "aborted");
+        assert_eq!(GOAL_STATUS_CANCELED, "canceled");
+        assert_eq!(SESSION_ID, "session_id");
+        assert_eq!(SEGMENT_ID, "segment_id");
+        assert_eq!(SEQ, "seq");
+        assert_eq!(FIN, "fin");
+        assert_eq!(FLUSH, "flush");
     }
 
     #[test]
-    fn try_from_bool_type_mismatch() {
-        let p = Parameter::Integer(1);
-        let err = bool::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("expected bool"));
+    fn well_known_keys_are_distinct() {
+        let keys = [
+            REQUEST_ID,
+            GOAL_ID,
+            GOAL_STATUS,
+            SESSION_ID,
+            SEGMENT_ID,
+            SEQ,
+            FIN,
+            FLUSH,
+        ];
+        for (i, a) in keys.iter().enumerate() {
+            for b in &keys[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
     }
 
     #[test]
-    fn try_from_i64_ok() {
-        let p = Parameter::Integer(42);
-        let v = i64::try_from(&p).unwrap();
-        assert_eq!(v, 42);
+    fn goal_status_values_are_distinct() {
+        let vals = [
+            GOAL_STATUS_SUCCEEDED,
+            GOAL_STATUS_ABORTED,
+            GOAL_STATUS_CANCELED,
+        ];
+        for (i, a) in vals.iter().enumerate() {
+            for b in &vals[i + 1..] {
+                assert_ne!(a, b);
+            }
+        }
     }
 
     #[test]
-    fn try_from_i64_type_mismatch() {
-        let p = Parameter::Float(1.0);
-        let err = i64::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("expected i64"));
+    fn get_string_param_extracts_string() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::String("value".to_string()));
+        assert_eq!(get_string_param(&params, "key"), Some("value"));
+        assert_eq!(get_string_param(&params, "missing"), None);
     }
 
     #[test]
-    fn try_from_f64_ok() {
-        let p = Parameter::Float(1.0);
-        let val = f64::try_from(&p).unwrap();
-        assert_eq!(val, 1.0);
+    fn get_string_param_returns_none_for_non_string() {
+        let mut params = MetadataParameters::default();
+        params.insert("num".to_string(), Parameter::Integer(42));
+        assert_eq!(get_string_param(&params, "num"), None);
     }
 
     #[test]
-    fn try_from_f64_type_mismatch() {
-        let p = Parameter::Integer(50);
-        let err = f64::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("expected f64"));
+    fn get_integer_param_extracts_integer() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::Integer(42));
+        assert_eq!(get_integer_param(&params, "key"), Some(42));
+        assert_eq!(get_integer_param(&params, "missing"), None);
     }
 
     #[test]
-    fn try_from_string_ok() {
-        let p = Parameter::String(String::from("welcome"));
-        let val = String::try_from(&p).unwrap();
-        assert_eq!(val, String::from("welcome"));
+    fn get_integer_param_returns_none_for_non_integer() {
+        let mut params = MetadataParameters::default();
+        params.insert("s".to_string(), Parameter::String("hello".to_string()));
+        assert_eq!(get_integer_param(&params, "s"), None);
     }
 
     #[test]
-    fn try_from_string_type_mismatch() {
-        let p = Parameter::Integer(5);
-        let err = String::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("expected string"));
+    fn get_bool_param_extracts_bool() {
+        let mut params = MetadataParameters::default();
+        params.insert("key".to_string(), Parameter::Bool(true));
+        assert_eq!(get_bool_param(&params, "key"), Some(true));
+        assert_eq!(get_bool_param(&params, "missing"), None);
     }
 
     #[test]
-    fn try_from_str_ok() {
-        let p = Parameter::String("welcome".into());
-        let v: &str = <&str>::try_from(&p).unwrap();
-        assert_eq!(v, "welcome");
+    fn get_bool_param_returns_none_for_non_bool() {
+        let mut params = MetadataParameters::default();
+        params.insert("n".to_string(), Parameter::Integer(1));
+        assert_eq!(get_bool_param(&params, "n"), None);
     }
 
+    /// Regression test for dora-rs/adora#135: `ArrowTypeInfo` must survive a
+    /// bincode roundtrip even when the optional fields `field_names` and
+    /// `schema_hash` are mixed (one `None`, one `Some`). bincode is a
+    /// positional format, so `#[serde(skip_serializing_if)]` desyncs the
+    /// wire and the deserializer reads misaligned bytes.
     #[test]
-    fn try_from_str_type_mismatch() {
-        let p = Parameter::Integer(5);
-        let err = <&str>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("&str"));
-    }
-
-    #[test]
-    fn try_from_vec_i64_ok() {
-        let p = Parameter::ListInt(vec![1, 2, 3]);
-        let v = Vec::<i64>::try_from(&p).unwrap();
-        assert_eq!(v, vec![1, 2, 3]);
-    }
-
-    #[test]
-    fn try_from_vec_i64_type_mismatch() {
-        let p = Parameter::ListFloat(vec![1.0]);
-        let err = Vec::<i64>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("list<i64>"));
-    }
-
-    #[test]
-    fn try_from_vec_f64_ok() {
-        let p = Parameter::ListFloat(vec![1.0, 2.0]);
-        let v = Vec::<f64>::try_from(&p).unwrap();
-        assert_eq!(v, vec![1.0, 2.0]);
-    }
-
-    #[test]
-    fn try_from_vec_f64_type_mismatch() {
-        let p = Parameter::ListInt(vec![1, 2]);
-        let err = Vec::<f64>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("list<f64>"));
-    }
-
-    #[test]
-    fn try_from_vec_string_ok() {
-        let p = Parameter::ListString(vec!["a".into(), "b".into()]);
-        let v = Vec::<String>::try_from(&p).unwrap();
-        assert_eq!(v, vec!["a", "b"]);
-    }
-
-    #[test]
-    fn try_from_vec_string_type_mismatch() {
-        let p = Parameter::String("x".into());
-        let err = Vec::<String>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("list<string>"));
-    }
-
-    #[test]
-    fn try_from_slice_i64_ok() {
-        let p = Parameter::ListInt(vec![1, 2, 3]);
-        let v: &[i64] = <&[i64]>::try_from(&p).unwrap();
-        assert_eq!(v, &[1, 2, 3]);
-    }
-
-    #[test]
-    fn try_from_slice_i64_type_mismatch() {
-        let p = Parameter::ListFloat(vec![1.0]);
-        let err = <&[i64]>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("&[i64]"));
-    }
-
-    #[test]
-    fn try_from_slice_f64_ok() {
-        let p = Parameter::ListFloat(vec![1.0, 2.0]);
-        let v: &[f64] = <&[f64]>::try_from(&p).unwrap();
-        assert_eq!(v, &[1.0, 2.0]);
-    }
-
-    #[test]
-    fn try_from_slice_f64_type_mismatch() {
-        let p = Parameter::ListInt(vec![1, 2]);
-        let err = <&[f64]>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("&[f64]"));
-    }
-    #[test]
-    fn try_from_slice_string_ok() {
-        let p = Parameter::ListString(vec!["a".into(), "b".into()]);
-        let v: &[String] = <&[String]>::try_from(&p).unwrap();
-        assert_eq!(v, &["a", "b"]);
-    }
-
-    #[test]
-    fn try_from_slice_string_type_mismatch() {
-        let p = Parameter::String("x".into());
-        let err = <&[String]>::try_from(&p).unwrap_err();
-        assert!(err.to_string().contains("&[String]"));
-    }
-
-    #[test]
-    fn get_or_existing_key() {
-        let p = Parameter::Bool(false);
-        let mut params = MetadataParameters::new();
-        params.insert("wait".into(), p);
-        let ts = uhlc::HLC::default().new_timestamp();
-        let type_info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Null,
+    fn arrow_type_info_bincode_roundtrip() {
+        let value = ArrowTypeInfo {
+            data_type: DataType::Null,
             len: 0,
             null_count: 0,
             validity: None,
             offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
+            buffer_offsets: Vec::new(),
+            child_data: Vec::new(),
+            field_names: None,
+            schema_hash: Some(0xdead_beef_cafe_1234),
         };
-        let m = Metadata::from_parameters(ts, type_info, params);
-        assert!(!m.get_or("wait", true));
-    }
 
-    #[test]
-    fn get_or_missing_key_returns_default() {
-        let ts = uhlc::HLC::default().new_timestamp();
-        let type_info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-        };
-        let m = Metadata::new(ts, type_info);
-        assert_eq!(m.get_or("timeout", 42_i64), 42);
-    }
-
-    #[test]
-    fn get_or_type_mismatch_returns_default() {
-        let ts = uhlc::HLC::default().new_timestamp();
-        let type_info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-        };
-        let mut params = MetadataParameters::new();
-        params.insert("count".into(), Parameter::Integer(5));
-        let m = Metadata::from_parameters(ts, type_info, params);
-        assert!(m.get_or("count", true));
+        let bytes = bincode::serialize(&value).expect("serialize");
+        let decoded: ArrowTypeInfo = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(decoded.schema_hash, value.schema_hash);
+        assert_eq!(decoded.field_names, value.field_names);
     }
 }

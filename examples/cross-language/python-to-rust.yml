@@ -1,0 +1,15 @@
+nodes:
+  - id: python-sender
+    path: python_sender.py
+    outputs:
+      - values
+    output_types:
+      values: std/core/v1/Int64
+
+  - id: rust-receiver
+    build: cargo build -p cross-language-rust-receiver
+    path: ../../target/debug/cross-language-rust-receiver
+    inputs:
+      values: python-sender/values
+    input_types:
+      values: std/core/v1/Int64

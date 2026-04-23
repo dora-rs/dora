@@ -1,0 +1,596 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "dora-rs dataflow specification",
+  "description": "Defines an Dora dataflow: nodes, their connections, and execution parameters.\nSee https://dora-rs.ai/concepts/dataflow-yaml/ for the full guide.",
+  "type": "object",
+  "properties": {
+    "nodes": {
+      "description": "List of nodes in the dataflow. Each node must have a unique `id`.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/Node" }
+    },
+    "health_check_interval": {
+      "description": "How often (seconds) the daemon sweeps node health. For each node with `health_check_timeout`, the daemon checks whether it has communicated within its timeout; if not, the node is killed and its restart_policy evaluated. Default: 5.0.",
+      "type": "number",
+      "default": 5.0,
+      "minimum": 0
+    },
+    "_unstable_deploy": {
+      "description": "Root-level deployment configuration (unstable).",
+      "$ref": "#/$defs/Deploy"
+    },
+    "_unstable_debug": {
+      "description": "Debug options for development and troubleshooting (unstable).",
+      "$ref": "#/$defs/Debug"
+    }
+  },
+  "required": ["nodes"],
+  "additionalProperties": false,
+  "$defs": {
+    "Node": {
+      "title": "Dora Node",
+      "description": "A computational unit in a dataflow. Runs as a separate process (or hosts operators in a shared runtime).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Unique node identifier. Must not contain `/` characters.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable display name (metadata only, used in tooling and logs).",
+          "type": "string"
+        },
+        "description": {
+          "description": "Documentation string (metadata only, not used at runtime).",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path to the executable or script. Can be a local path or URL. On Windows, `.exe` is appended automatically if the file has no extension.",
+          "type": "string"
+        },
+        "args": {
+          "description": "Command-line arguments passed to the executable (space-separated).",
+          "type": "string"
+        },
+        "git": {
+          "description": "Git repository URL. `dora build` clones the repo and uses it as the working directory for `build` and `path`.",
+          "type": "string"
+        },
+        "branch": {
+          "description": "Git branch to checkout. Requires `git`. Mutually exclusive with `tag` and `rev`.",
+          "type": "string"
+        },
+        "tag": {
+          "description": "Git tag to checkout. Requires `git`. Mutually exclusive with `branch` and `rev`.",
+          "type": "string"
+        },
+        "rev": {
+          "description": "Git revision (commit hash) to checkout. Requires `git`. Mutually exclusive with `branch` and `tag`.",
+          "type": "string"
+        },
+        "build": {
+          "description": "Build commands run during `dora build`. Each line runs as a separate command. `pip`/`pip3` lines are replaced by `uv pip` when `--uv` is passed.",
+          "type": "string"
+        },
+        "inputs": {
+          "description": "Input subscriptions. Keys are local input IDs, values are `<node-id>/<output-id>` strings or objects with options.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/Input" }
+        },
+        "outputs": {
+          "description": "Output data identifiers produced by this node.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "output_types": {
+          "description": "Optional type annotations for outputs. Maps output IDs to type URNs (e.g. `std/media/v1/Image`).",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs. Maps input IDs to expected type URNs for validation.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "env": {
+          "description": "Environment variables for build and execution. Values can be strings, numbers, or booleans. Use `__dora_env` to read from host environment.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/EnvValue" }
+        },
+        "send_stdout_as": {
+          "description": "Route raw stdout/stderr lines as a data output with this ID. Each line is sent as a separate Arrow message.",
+          "type": "string"
+        },
+        "send_logs_as": {
+          "description": "Route structured log entries as a data output with this ID. Each entry is a JSON string with fields: timestamp, level, node_id, message, target, fields.",
+          "type": "string"
+        },
+        "min_log_level": {
+          "description": "Suppress logs below this level from file output, coordinator forwarding, and send_logs_as routing. From most to least verbose: stdout (all output including raw stdout), trace, debug, info, warn, error.",
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug", "trace", "stdout"]
+        },
+        "max_log_size": {
+          "description": "Maximum log file size before rotation (e.g. \"50MB\", \"1GB\").",
+          "type": "string"
+        },
+        "max_rotated_files": {
+          "description": "Maximum number of rotated log files to keep. Default: 5.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "restart_policy": {
+          "description": "When to restart the node on exit.",
+          "$ref": "#/$defs/RestartPolicy"
+        },
+        "max_restarts": {
+          "description": "Maximum restart attempts. 0 = unlimited. Combine with `restart_window` for \"N restarts per M seconds\".",
+          "type": "integer",
+          "minimum": 0,
+          "default": 0
+        },
+        "restart_delay": {
+          "description": "Initial delay (seconds) before restarting. Doubles each attempt (exponential backoff).",
+          "type": "number",
+          "minimum": 0
+        },
+        "max_restart_delay": {
+          "description": "Cap (seconds) for exponential backoff.",
+          "type": "number",
+          "minimum": 0
+        },
+        "restart_window": {
+          "description": "Time window (seconds) for counting restarts. Counter resets after this many seconds since the first restart in the current window. Combine with max_restarts for 'N restarts per M seconds'.",
+          "type": "number",
+          "minimum": 0
+        },
+        "health_check_timeout": {
+          "description": "If the node does not communicate with the daemon (send outputs, subscribe, etc.) for this many seconds, the daemon kills the process and evaluates the restart_policy.",
+          "type": "number",
+          "minimum": 0
+        },
+        "operator": {
+          "description": "Single operator configuration (shorthand for `operators` with one entry).",
+          "$ref": "#/$defs/SingleOperatorDefinition"
+        },
+        "operators": {
+          "description": "Multiple operators sharing a runtime process.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/OperatorDefinition" }
+        },
+        "ros2": {
+          "description": "ROS2 bridge configuration (unstable). Declares this node as an automatic ROS2 bridge.",
+          "$ref": "#/$defs/Ros2BridgeConfig"
+        },
+        "custom": {
+          "description": "Legacy node configuration. Deprecated -- use top-level fields instead.",
+          "type": "object"
+        },
+        "_unstable_deploy": {
+          "description": "Per-node deployment configuration (unstable).",
+          "$ref": "#/$defs/Deploy"
+        }
+      },
+      "required": ["id"],
+      "additionalProperties": false
+    },
+    "Input": {
+      "description": "An input subscription. Either a short-form string (`node-id/output-id`, `dora/timer/millis/N`, or `dora/logs[/level[/node]]`) or an object with `source`, `queue_size`, `queue_policy`, and `input_timeout`.",
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "Short form: `<node-id>/<output-id>`, `dora/timer/millis/<N>`, `dora/timer/hz/<N>`, or `dora/logs[/<level>[/<node-id>]]`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "description": "Source in the same format as the short form string.",
+              "type": "string"
+            },
+            "queue_size": {
+              "description": "Input buffer size. Default: 10.",
+              "type": "integer",
+              "minimum": 0
+            },
+            "queue_policy": {
+              "description": "Queue overflow policy. 'drop_oldest' (default) drops the oldest message when full. 'backpressure' buffers up to 10x queue_size without dropping (drops with ERROR log at hard cap).",
+              "type": "string",
+              "enum": ["drop_oldest", "backpressure"]
+            },
+            "input_timeout": {
+              "description": "Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an InputClosed event for graceful degradation.",
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "required": ["source"]
+        }
+      ]
+    },
+    "EnvValue": {
+      "description": "Environment variable value. Supports strings, integers, floats, and booleans. Environment variable expansion with `$VAR` syntax is supported.",
+      "anyOf": [
+        { "type": "boolean" },
+        { "type": "integer" },
+        { "type": "number" },
+        { "type": "string" },
+        {
+          "type": "object",
+          "description": "Read value from host environment variable.",
+          "properties": {
+            "__dora_env": {
+              "description": "Name of the host environment variable to read.",
+              "type": "string"
+            }
+          },
+          "required": ["__dora_env"]
+        }
+      ]
+    },
+    "RestartPolicy": {
+      "description": "When a node should be restarted.",
+      "type": "string",
+      "enum": ["never", "on-failure", "always"],
+      "default": "never"
+    },
+    "OperatorDefinition": {
+      "description": "An operator running inside a shared runtime process.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Unique operator identifier within the runtime node.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable operator name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Detailed description of the operator.",
+          "type": "string"
+        },
+        "inputs": {
+          "description": "Input subscriptions (same format as node inputs).",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/Input" }
+        },
+        "outputs": {
+          "description": "Output data identifiers.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "output_types": {
+          "description": "Optional type annotations for outputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "shared-library": {
+          "description": "Path to a shared library (.so/.dylib/.dll) implementing the operator.",
+          "type": "string"
+        },
+        "python": {
+          "description": "Python operator source. Either a path string or an object with `source` and optional `conda_env`.",
+          "$ref": "#/$defs/PythonSource"
+        },
+        "build": {
+          "description": "Build commands for this operator.",
+          "type": "string"
+        },
+        "send_stdout_as": {
+          "description": "Route stdout as a data output.",
+          "type": "string"
+        },
+        "send_logs_as": {
+          "description": "Route structured log entries as a data output.",
+          "type": "string"
+        },
+        "min_log_level": {
+          "description": "Minimum log level for this operator.",
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug", "trace", "stdout"]
+        },
+        "max_log_size": {
+          "description": "Maximum log file size before rotation.",
+          "type": "string"
+        },
+        "max_rotated_files": {
+          "description": "Maximum rotated log files to keep.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": ["id"],
+      "oneOf": [
+        { "required": ["shared-library"] },
+        { "required": ["python"] }
+      ]
+    },
+    "SingleOperatorDefinition": {
+      "description": "Single operator configuration (convenience for runtime nodes with one operator).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Operator identifier (optional for single operators).",
+          "type": "string"
+        },
+        "name": {
+          "description": "Human-readable operator name.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Detailed description of the operator.",
+          "type": "string"
+        },
+        "inputs": {
+          "description": "Input subscriptions.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/Input" }
+        },
+        "outputs": {
+          "description": "Output data identifiers.",
+          "type": "array",
+          "items": { "type": "string" },
+          "uniqueItems": true
+        },
+        "output_types": {
+          "description": "Optional type annotations for outputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "input_types": {
+          "description": "Optional type annotations for inputs.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "shared-library": {
+          "description": "Path to a shared library implementing the operator.",
+          "type": "string"
+        },
+        "python": {
+          "description": "Python operator source.",
+          "$ref": "#/$defs/PythonSource"
+        },
+        "build": {
+          "description": "Build commands for this operator.",
+          "type": "string"
+        },
+        "send_stdout_as": {
+          "description": "Route stdout as a data output.",
+          "type": "string"
+        },
+        "send_logs_as": {
+          "description": "Route structured log entries as a data output.",
+          "type": "string"
+        },
+        "min_log_level": {
+          "description": "Minimum log level.",
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug", "trace", "stdout"]
+        },
+        "max_log_size": {
+          "description": "Maximum log file size before rotation.",
+          "type": "string"
+        },
+        "max_rotated_files": {
+          "description": "Maximum rotated log files to keep.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "oneOf": [
+        { "required": ["shared-library"] },
+        { "required": ["python"] }
+      ]
+    },
+    "PythonSource": {
+      "description": "Python operator source. Either a path string or an object with `source` and optional `conda_env`.",
+      "anyOf": [
+        {
+          "type": "string",
+          "description": "Path to the Python script."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "description": "Path to the Python script.",
+              "type": "string"
+            },
+            "conda_env": {
+              "description": "Conda environment name to activate.",
+              "type": "string"
+            }
+          },
+          "required": ["source"]
+        }
+      ]
+    },
+    "Ros2BridgeConfig": {
+      "description": "ROS2 bridge configuration. Exactly one of `topic`, `topics`, `service`, or `action` must be set.",
+      "type": "object",
+      "properties": {
+        "topic": {
+          "description": "Single ROS2 topic name (e.g. \"/camera/image_raw\"). Mutually exclusive with `topics`, `service`, `action`.",
+          "type": "string"
+        },
+        "message_type": {
+          "description": "ROS2 message type (e.g. \"sensor_msgs/Image\"). Required when `topic` is set.",
+          "type": "string"
+        },
+        "direction": {
+          "description": "subscribe (ROS2 -> Dora) or publish (Dora -> ROS2). Default: subscribe.",
+          "type": "string",
+          "enum": ["subscribe", "publish"],
+          "default": "subscribe"
+        },
+        "topics": {
+          "description": "Multiple topics on a single ROS2 node context. Mutually exclusive with `topic`, `service`, `action`.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/Ros2TopicConfig" }
+        },
+        "service": {
+          "description": "ROS2 service name (e.g. \"/add_two_ints\"). Mutually exclusive with `topic`, `topics`, `action`.",
+          "type": "string"
+        },
+        "service_type": {
+          "description": "ROS2 service type (e.g. \"example_interfaces/AddTwoInts\"). Required when `service` is set.",
+          "type": "string"
+        },
+        "action": {
+          "description": "ROS2 action name (e.g. \"/navigate\"). Mutually exclusive with `topic`, `topics`, `service`.",
+          "type": "string"
+        },
+        "action_type": {
+          "description": "ROS2 action type (e.g. \"nav2_msgs/NavigateToPose\"). Required when `action` is set.",
+          "type": "string"
+        },
+        "role": {
+          "description": "Client or server. Required for `service` and `action`.",
+          "type": "string",
+          "enum": ["client", "server"]
+        },
+        "qos": {
+          "description": "QoS policies applied to all topics (can be overridden per-topic).",
+          "$ref": "#/$defs/Ros2QosConfig"
+        },
+        "namespace": {
+          "description": "ROS2 namespace. Default: \"/\".",
+          "type": "string",
+          "default": "/"
+        },
+        "node_name": {
+          "description": "ROS2 node name. Defaults to the dora node id.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Ros2TopicConfig": {
+      "description": "Configuration for a single ROS2 topic in multi-topic mode.",
+      "type": "object",
+      "properties": {
+        "topic": {
+          "description": "ROS2 topic name.",
+          "type": "string"
+        },
+        "message_type": {
+          "description": "ROS2 message type.",
+          "type": "string"
+        },
+        "direction": {
+          "description": "subscribe or publish. Default: subscribe.",
+          "type": "string",
+          "enum": ["subscribe", "publish"],
+          "default": "subscribe"
+        },
+        "output": {
+          "description": "Dora output id (for subscribe direction).",
+          "type": "string"
+        },
+        "input": {
+          "description": "Dora input id (for publish direction).",
+          "type": "string"
+        },
+        "qos": {
+          "description": "Per-topic QoS override.",
+          "$ref": "#/$defs/Ros2QosConfig"
+        }
+      },
+      "required": ["topic", "message_type"],
+      "additionalProperties": false
+    },
+    "Ros2QosConfig": {
+      "description": "ROS2 Quality of Service configuration.",
+      "type": "object",
+      "properties": {
+        "reliable": {
+          "description": "Use reliable transport. Default: false (best effort).",
+          "type": "boolean",
+          "default": false
+        },
+        "durability": {
+          "description": "Durability policy: \"volatile\" (default) or \"transient_local\".",
+          "type": "string",
+          "enum": ["volatile", "transient_local"]
+        },
+        "liveliness": {
+          "description": "Liveliness policy: \"automatic\" (default), \"manual_by_participant\", or \"manual_by_topic\".",
+          "type": "string",
+          "enum": ["automatic", "manual_by_participant", "manual_by_topic"]
+        },
+        "lease_duration": {
+          "description": "Lease duration in seconds. Default: infinity.",
+          "type": "number",
+          "minimum": 0
+        },
+        "max_blocking_time": {
+          "description": "Max blocking time in seconds for reliable transport.",
+          "type": "number",
+          "minimum": 0
+        },
+        "keep_last": {
+          "description": "History depth for KeepLast policy. Default: 1.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "keep_all": {
+          "description": "Use KeepAll history policy instead of KeepLast.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "Deploy": {
+      "description": "Deployment configuration for distributing nodes across machines.",
+      "type": "object",
+      "properties": {
+        "machine": {
+          "description": "Target machine/daemon ID. The coordinator routes the node to the daemon registered with this ID.",
+          "type": "string"
+        },
+        "working_dir": {
+          "description": "Working directory for the deployment.",
+          "type": "string"
+        },
+        "labels": {
+          "description": "Labels for label-based scheduling (e.g. `gpu: \"true\"`, `arch: arm64`). Matched against daemon labels.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "distribute": {
+          "description": "How built binaries reach remote daemons. local: each daemon builds from source; scp: CLI pushes binary via SSH/SCP; http: daemon pulls from coordinator artifact store.",
+          "type": "string",
+          "enum": ["local", "scp", "http"],
+          "default": "local"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Debug": {
+      "description": "Debug options for development.",
+      "type": "object",
+      "properties": {
+        "enable_debug_inspection": {
+          "description": "Mirror every node output to the coordinator WebSocket so `dora topic echo/hz/info` can inspect runtime messages. Previously named `publish_all_messages_to_zenoh`; the old name is still accepted as an alias for backward compatibility.",
+          "type": "boolean",
+          "default": false
+        },
+        "publish_all_messages_to_zenoh": {
+          "description": "Deprecated alias for `enable_debug_inspection`. Still accepted for backward compatibility; will be removed in a future release.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

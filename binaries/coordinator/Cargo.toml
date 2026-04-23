@@ -13,21 +13,36 @@ repository.workspace = true
 [features]
 default = ["tracing"]
 tracing = ["dep:dora-tracing"]
+redb-backend = ["dora-coordinator-store/redb-backend"]
+metrics = ["dep:opentelemetry", "dep:dora-metrics"]
 
 [dependencies]
-eyre = "0.6.7"
-futures = "0.3.21"
-tokio = { version = "1.24.2", features = ["full"] }
+eyre = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
-uuid = { version = "1.2.1" }
-dora-core = { workspace = true, features = ["build"] }
-tracing = "0.1.36"
+uuid = { workspace = true, features = ["v4"] }
+dora-core = { workspace = true, features = ["build", "zenoh"] }
+tracing = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 futures-concurrency = "7.1.0"
-serde_json = "1.0.86"
+serde = { workspace = true }
+serde_json = { workspace = true }
 petname = "2.0.2"
 ctrlc = "3.2.5"
 log = { version = "0.4.21", features = ["serde"] }
 dora-message = { workspace = true }
+dora-coordinator-store = { workspace = true }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+indexmap = "2"
 itertools = "0.14.0"
-dashmap = "6.1.0"
+zenoh = { workspace = true }
+bincode = { workspace = true }
+opentelemetry = { version = "0.31", features = ["metrics"], optional = true }
+dora-metrics = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-tungstenite = "0.28"

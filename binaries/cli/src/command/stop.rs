@@ -1,14 +1,13 @@
 use super::{Executable, default_tracing};
 use crate::common::{
-    connect_and_check_version, handle_dataflow_result, long_context, query_running_dataflows, rpc,
+    CoordinatorOptions, expect_reply, handle_dataflow_result, query_running_dataflows,
+    send_control_request,
 };
-use dora_core::topics::{DORA_COORDINATOR_PORT_CONTROL_DEFAULT, LOCALHOST};
-use dora_message::{
-    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::StopDataflowReply,
-};
+use crate::ws_client::WsSession;
+use dora_message::cli_to_coordinator::ControlRequest;
 use duration_str::parse;
-use eyre::Context;
-use std::net::IpAddr;
+use eyre::{Context, bail};
+use std::io::IsTerminal;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -17,11 +16,15 @@ use uuid::Uuid;
 ///
 /// You could specify the strategy to stop the dataflow with `--grace-duration` or `--force`.
 pub struct Stop {
-    /// UUID of the dataflow that should be stopped
-    uuid: Option<Uuid>,
-    /// Name of the dataflow that should be stopped
-    #[clap(long)]
+    /// Name or UUID of the dataflow that should be stopped
+    #[clap(value_name = "NAME_OR_UUID", conflicts_with = "all")]
+    identifier: Option<String>,
+    /// Name of the dataflow (alternative to positional; kept for back-compat)
+    #[clap(long, short = 'n', conflicts_with_all = ["identifier", "all"])]
     name: Option<String>,
+    /// Stop every running dataflow.
+    #[clap(long, conflicts_with_all = ["identifier", "name"])]
+    all: bool,
     /// Kill the dataflow if it doesn't stop after the given duration
     ///
     /// Specifically, it does the following:
@@ -39,75 +42,117 @@ pub struct Stop {
     /// Force stop the dataflow by immediately terminating all its processes
     #[clap(short, long, action, group = "strategy")]
     force: bool,
-    /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    coordinator_addr: IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
 }
 
 impl Executable for Stop {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        let client = connect_and_check_version(self.coordinator_addr, self.coordinator_port)
-            .await
-            .wrap_err("could not connect to dora coordinator")?;
-        match (self.uuid, self.name) {
-            (Some(uuid), _) => stop_dataflow(uuid, self.grace_duration, self.force, &client).await,
-            (None, Some(name)) => {
-                stop_dataflow_by_name(name, self.grace_duration, self.force, &client).await
-            }
-            (None, None) => {
-                stop_dataflow_interactive(self.grace_duration, self.force, &client).await
-            }
+        let session = self.coordinator.connect()?;
+
+        if self.all {
+            return stop_all(self.grace_duration, self.force, &session);
+        }
+
+        let ident = self.identifier.or(self.name);
+        match ident {
+            // Identifier parses as UUID -> dispatch by UUID. Otherwise treat
+            // as a dataflow name. Users who want strict name-only lookup can
+            // still use `-n/--name` (which takes the explicit-name path).
+            Some(s) => match Uuid::parse_str(&s) {
+                Ok(uuid) => stop_dataflow(uuid, self.grace_duration, self.force, &session),
+                Err(_) => stop_dataflow_by_name(s, self.grace_duration, self.force, &session),
+            },
+            None => stop_dataflow_interactive(self.grace_duration, self.force, &session),
         }
     }
 }
 
-async fn stop_dataflow_interactive(
+fn stop_all(
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CoordinatorControlClient,
+    session: &WsSession,
 ) -> eyre::Result<()> {
-    let list = query_running_dataflows(client)
-        .await
-        .wrap_err("failed to query running dataflows")?;
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
     let active = list.get_active();
     if active.is_empty() {
-        eprintln!("No dataflows are running");
+        println!("No dataflows are running.");
+        return Ok(());
+    }
+    let total = active.len();
+    let mut errors = Vec::new();
+    for entry in active {
+        if let Err(e) = stop_dataflow(entry.uuid, grace_duration, force, session) {
+            errors.push(format!("{}: {e}", entry.uuid));
+        }
+    }
+    if !errors.is_empty() {
+        bail!(
+            "{} of {total} dataflow(s) failed to stop:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        );
+    }
+    println!("Stopped {total} dataflow(s).");
+    Ok(())
+}
+
+fn stop_dataflow_interactive(
+    grace_duration: Option<Duration>,
+    force: bool,
+    session: &WsSession,
+) -> eyre::Result<()> {
+    let list = query_running_dataflows(session).wrap_err("failed to query running dataflows")?;
+    let active = list.get_active();
+    if active.is_empty() {
+        println!("No dataflows are running. Use `dora list` to check dataflow status.");
+    } else if active.len() == 1 {
+        stop_dataflow(active[0].uuid, grace_duration, force, session)?;
+    } else if !std::io::stdin().is_terminal() {
+        bail!(
+            "Multiple dataflows running. Specify one:\n  dora stop <UUID>\n  dora stop --name <NAME>"
+        );
     } else {
         let selection = inquire::Select::new("Choose dataflow to stop:", active).prompt()?;
-        stop_dataflow(selection.uuid, grace_duration, force, client).await?;
+        stop_dataflow(selection.uuid, grace_duration, force, session)?;
     }
 
     Ok(())
 }
 
-async fn stop_dataflow(
+fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CoordinatorControlClient,
+    session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
-    let StopDataflowReply { uuid, result } = rpc(
-        "stop dataflow",
-        client.stop(long_context(), uuid, grace_duration, force),
-    )
-    .await?;
+    let reply = send_control_request(
+        session,
+        &ControlRequest::Stop {
+            dataflow_uuid: uuid,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (uuid, result) = expect_reply!(reply, DataflowStopped { uuid, result })?;
     handle_dataflow_result(result, Some(uuid))
 }
 
-async fn stop_dataflow_by_name(
+fn stop_dataflow_by_name(
     name: String,
     grace_duration: Option<Duration>,
     force: bool,
-    client: &CoordinatorControlClient,
+    session: &WsSession,
 ) -> Result<(), eyre::ErrReport> {
-    let StopDataflowReply { uuid, result } = rpc(
-        "stop dataflow by name",
-        client.stop_by_name(long_context(), name, grace_duration, force),
-    )
-    .await?;
+    let reply = send_control_request(
+        session,
+        &ControlRequest::StopByName {
+            name,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (uuid, result) = expect_reply!(reply, DataflowStopped { uuid, result })?;
     handle_dataflow_result(result, Some(uuid))
 }

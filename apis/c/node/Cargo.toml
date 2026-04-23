@@ -20,9 +20,8 @@ default = ["tracing"]
 tracing = ["dora-node-api/tracing"]
 
 [dependencies]
-eyre = "0.6.8"
-tracing = "0.1.33"
-dora-tracing = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
 arrow-array = { workspace = true }
 
 [dependencies.dora-node-api]

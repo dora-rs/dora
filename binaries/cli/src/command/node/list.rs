@@ -7,12 +7,11 @@ use uuid::Uuid;
 
 use crate::{
     command::{Executable, default_tracing},
-    common::{CoordinatorOptions, rpc},
+    common::{CoordinatorOptions, expect_reply, send_control_request},
     formatting::OutputFormat,
+    ws_client::WsSession,
 };
-use dora_message::{
-    cli_to_coordinator::CoordinatorControlClient, coordinator_to_cli::NodeInfo, tarpc,
-};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo};
 
 /// List all currently running nodes and their status.
 ///
@@ -34,19 +33,23 @@ pub struct List {
     pub dataflow: Option<String>,
 
     /// Output format
-    #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
+    #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
+
+    /// Only print node IDs, one per line
+    #[clap(long, short = 'q', conflicts_with = "format")]
+    pub quiet: bool,
 
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
 }
 
 impl Executable for List {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        let client = self.coordinator.connect_rpc().await?;
-        list(&client, self.dataflow, self.format).await
+        let session = self.coordinator.connect()?;
+        list(&session, self.dataflow, self.format, self.quiet)
     }
 }
 
@@ -57,21 +60,20 @@ struct OutputEntry {
     pid: String,
     cpu: String,
     memory: String,
+    restarts: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     dataflow: Option<String>,
 }
 
-async fn list(
-    client: &CoordinatorControlClient,
+fn list(
+    session: &WsSession,
     dataflow_filter: Option<String>,
     format: OutputFormat,
+    quiet: bool,
 ) -> eyre::Result<()> {
     // Request node information from coordinator
-    let node_infos = rpc(
-        "get node info",
-        client.get_node_info(tarpc::context::current()),
-    )
-    .await?;
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
     // Filter by dataflow if specified
     let filtered_nodes: Vec<NodeInfo> = if let Some(ref filter) = dataflow_filter {
@@ -97,17 +99,18 @@ async fn list(
     let entries: Vec<OutputEntry> = filtered_nodes
         .into_iter()
         .map(|node| {
-            let (status, pid, cpu, memory) = if let Some(metrics) = node.metrics {
+            let (status, pid, cpu, memory, restarts) = if let Some(metrics) = &node.metrics {
                 (
-                    "Running".to_string(),
+                    metrics.status.to_string(),
                     metrics.pid.to_string(),
                     format!("{:.1}%", metrics.cpu_usage),
                     format!("{:.0} MB", metrics.memory_mb),
+                    metrics.restart_count.to_string(),
                 )
             } else {
-                // Node exists but no metrics available (might be starting or error state)
                 (
                     "Unknown".to_string(),
+                    "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
                     "-".to_string(),
@@ -120,6 +123,7 @@ async fn list(
                 pid,
                 cpu,
                 memory,
+                restarts,
                 dataflow: if dataflow_filter.is_none() {
                     Some(
                         node.dataflow_name
@@ -132,15 +136,22 @@ async fn list(
         })
         .collect();
 
+    if quiet {
+        for entry in &entries {
+            println!("{}", entry.node);
+        }
+        return Ok(());
+    }
+
     match format {
         OutputFormat::Table => {
             let mut tw = TabWriter::new(std::io::stdout().lock());
 
             // Write header
             if dataflow_filter.is_none() {
-                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tDATAFLOW\n")?;
+                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tRESTARTS\tDATAFLOW\n")?;
             } else {
-                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\n")?;
+                tw.write_all(b"NODE\tSTATUS\tPID\tCPU\tMEMORY\tRESTARTS\n")?;
             }
 
             // Write entries
@@ -148,16 +159,27 @@ async fn list(
                 if let Some(ref dataflow) = entry.dataflow {
                     tw.write_all(
                         format!(
-                            "{}\t{}\t{}\t{}\t{}\t{}\n",
-                            entry.node, entry.status, entry.pid, entry.cpu, entry.memory, dataflow
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                            entry.node,
+                            entry.status,
+                            entry.pid,
+                            entry.cpu,
+                            entry.memory,
+                            entry.restarts,
+                            dataflow
                         )
                         .as_bytes(),
                     )?;
                 } else {
                     tw.write_all(
                         format!(
-                            "{}\t{}\t{}\t{}\t{}\n",
-                            entry.node, entry.status, entry.pid, entry.cpu, entry.memory
+                            "{}\t{}\t{}\t{}\t{}\t{}\n",
+                            entry.node,
+                            entry.status,
+                            entry.pid,
+                            entry.cpu,
+                            entry.memory,
+                            entry.restarts
                         )
                         .as_bytes(),
                     )?;

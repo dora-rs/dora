@@ -1,0 +1,15 @@
+[package]
+name = "dora-ros2-bridge-arrow"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+description = "Apache Arrow conversion helpers for ROS2 messages in dora"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
+arrow = { workspace = true }
+eyre = { workspace = true }
+ros2-client = "0.8"
+serde = { workspace = true }

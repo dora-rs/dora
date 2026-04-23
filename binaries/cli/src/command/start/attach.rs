@@ -1,32 +1,35 @@
 use dora_core::descriptor::{CoreNodeKind, Descriptor, DescriptorExt, resolve_path};
-use dora_message::cli_to_coordinator::CoordinatorControlClient;
-use dora_message::coordinator_to_cli::{CheckDataflowReply, DataflowResult, StopDataflowReply};
-use dora_message::id::{NodeId, OperatorId};
-use dora_message::tarpc;
+use dora_message::cli_to_coordinator::ControlRequest;
+use dora_message::common::LogMessage;
+use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::Context;
 use notify::event::ModifyKind;
 use notify::{Config, Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use std::time::Duration;
-use std::{collections::HashMap, path::PathBuf};
-use tokio::task::JoinHandle;
-use tracing::info;
+use std::collections::HashMap;
+use std::{path::PathBuf, sync::mpsc, time::Duration};
+use tracing::{error, info};
 use uuid::Uuid;
 
-use crate::common::{handle_dataflow_result, long_context, rpc};
+use crate::common::handle_dataflow_result;
+use crate::output::{LogOutputConfig, print_log_message};
+use crate::ws_client::WsSession;
 
-pub async fn attach_dataflow(
+pub fn attach_dataflow(
     dataflow: Descriptor,
     dataflow_path: PathBuf,
     dataflow_id: Uuid,
-    client: &CoordinatorControlClient,
+    session: &WsSession,
     hot_reload: bool,
-    _log_task: JoinHandle<()>,
+    log_level: log::LevelFilter,
 ) -> Result<(), eyre::ErrReport> {
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel();
+
+    // Generate path hashmap
+    let mut node_path_lookup = HashMap::new();
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
 
-    let mut node_path_lookup: HashMap<PathBuf, (Uuid, NodeId, Option<OperatorId>)> = HashMap::new();
+    let print_daemon_name = nodes.values().any(|n| n.deploy.is_some());
 
     let working_dir = dataflow_path
         .canonicalize()
@@ -37,7 +40,7 @@ pub async fn attach_dataflow(
 
     for node in nodes.into_values() {
         match node.kind {
-            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+            // Reloading Custom Nodes is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
             CoreNodeKind::Custom(_cn) => (),
             CoreNodeKind::Runtime(rn) => {
                 for op in rn.operators.iter() {
@@ -51,7 +54,7 @@ pub async fn attach_dataflow(
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }
-                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                    // Reloading non-python operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                 }
             }
         }
@@ -72,14 +75,13 @@ pub async fn attach_dataflow(
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
                         watcher_tx
-                            .send(AttachEvent::Reload {
+                            .send(AttachEvent::Control(ControlRequest::Reload {
                                 dataflow_id: *dataflow_id,
                                 node_id: node_id.clone(),
                                 operator_id: operator_id.clone(),
-                            })
-                            .unwrap_or_else(|_| {
-                                panic!("Could not send reload request to the cli loop")
-                            });
+                            }))
+                            .context("Could not send reload request to the cli loop")
+                            .unwrap();
                     }
                 }
                 // TODO: Manage different file event
@@ -104,84 +106,86 @@ pub async fn attach_dataflow(
     let mut ctrlc_sent = false;
     ctrlc::set_handler(move || {
         if ctrlc_sent {
-            ctrlc_tx.send(AttachEvent::Stop { force: true }).ok();
-            std::process::abort();
+            ctrlc_tx
+                .send(AttachEvent::Control(ControlRequest::Stop {
+                    dataflow_uuid: dataflow_id,
+                    grace_duration: None,
+                    force: true,
+                }))
+                .ok();
+            std::process::exit(1);
         } else {
-            if ctrlc_tx.send(AttachEvent::Stop { force: false }).is_err() {
-                // bail!("failed to report ctrl-c event to dora-daemon");
-            }
+            let _ = ctrlc_tx.send(AttachEvent::Control(ControlRequest::Stop {
+                dataflow_uuid: dataflow_id,
+                grace_duration: None,
+                force: false,
+            }));
             ctrlc_sent = true;
         }
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
-    loop {
-        let event: AttachLoopEvent =
-            match tokio::time::timeout(Duration::from_secs(1), rx.recv()).await {
-                Err(_) => {
-                    // timeout - check if dataflow is still running
-                    let check_reply = rpc(
-                        "check dataflow status",
-                        client.check(tarpc::context::current(), dataflow_id),
-                    )
-                    .await?;
-                    match check_reply {
-                        CheckDataflowReply::Running { .. } => continue,
-                        CheckDataflowReply::Stopped { uuid, result } => {
-                            AttachLoopEvent::Stopped { uuid, result }
-                        }
-                    }
-                }
-                Ok(Some(AttachEvent::Reload {
-                    dataflow_id,
-                    node_id,
-                    operator_id,
-                })) => {
-                    let uuid = rpc(
-                        "reload operator",
-                        client.reload(tarpc::context::current(), dataflow_id, node_id, operator_id),
-                    )
-                    .await?;
-                    AttachLoopEvent::Reloaded { uuid }
-                }
-                Ok(Some(AttachEvent::Stop { force })) => {
-                    let StopDataflowReply { uuid, result } = rpc(
-                        "stop dataflow",
-                        client.stop(long_context(), dataflow_id, None, force),
-                    )
-                    .await?;
-                    AttachLoopEvent::Stopped { uuid, result }
-                }
-                Ok(None) => {
-                    // all senders dropped, channel closed
-                    break Ok(());
-                }
+    // subscribe to log messages
+    let log_rx = session.subscribe_logs(
+        &serde_json::to_vec(&ControlRequest::LogSubscribe {
+            dataflow_id,
+            level: log_level,
+        })
+        .wrap_err("failed to serialize message")?,
+    )?;
+    std::thread::spawn(move || {
+        while let Ok(raw) = log_rx.recv() {
+            let parsed: eyre::Result<LogMessage> = match raw {
+                Ok(bytes) => serde_json::from_slice(&bytes).context("failed to parse log message"),
+                Err(err) => Err(err),
             };
+            if tx.send(AttachEvent::Log(parsed)).is_err() {
+                break;
+            }
+        }
+    });
 
-        match event {
-            AttachLoopEvent::Stopped { uuid, result } => {
+    loop {
+        let control_request = match rx.recv_timeout(Duration::from_secs(1)) {
+            Err(_err) => ControlRequest::Check {
+                dataflow_uuid: dataflow_id,
+            },
+            Ok(AttachEvent::Control(control_request)) => control_request,
+            Ok(AttachEvent::Log(Ok(log_message))) => {
+                let config = LogOutputConfig {
+                    print_daemon_name,
+                    ..LogOutputConfig::default()
+                };
+                print_log_message(log_message, &config);
+                continue;
+            }
+            Ok(AttachEvent::Log(Err(err))) => {
+                tracing::warn!("failed to parse log message: {:#?}", err);
+                continue;
+            }
+        };
+
+        let reply_raw = session
+            .request(&serde_json::to_vec(&control_request)?)
+            .wrap_err("failed to send request message to coordinator")?;
+        let result: ControlRequestReply =
+            serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
+        match result {
+            ControlRequestReply::DataflowSpawned { uuid: _ } => (),
+            ControlRequestReply::DataflowStopped { uuid, result } => {
                 info!("dataflow {uuid} stopped");
                 break handle_dataflow_result(result, Some(uuid));
             }
-            AttachLoopEvent::Reloaded { uuid } => {
+            ControlRequestReply::DataflowReloaded { uuid } => {
                 info!("dataflow {uuid} reloaded")
             }
+            other => error!("Received unexpected Coordinator Reply: {:#?}", other),
         };
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum AttachEvent {
-    Reload {
-        dataflow_id: Uuid,
-        node_id: NodeId,
-        operator_id: Option<OperatorId>,
-    },
-    Stop {
-        force: bool,
-    },
-}
-
-enum AttachLoopEvent {
-    Stopped { uuid: Uuid, result: DataflowResult },
-    Reloaded { uuid: Uuid },
+    Control(ControlRequest),
+    Log(eyre::Result<LogMessage>),
 }

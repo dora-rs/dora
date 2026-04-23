@@ -1,5 +1,5 @@
 pub use git::GitManager;
-pub use logger::{BuildLogger, LogLevelOrStdout, TracingBuildLogger};
+pub use logger::{BuildLogger, LogLevelOrStdout};
 
 use std::{collections::BTreeMap, future::Future, path::PathBuf};
 
@@ -71,7 +71,7 @@ impl Builder {
                         tracing::warn!(
                             "using git clone directory as working dir: \
                             this behavior is unstable and might change \
-                            (see https://github.com/dora-rs/dora/pull/901)"
+                            (see https://github.com/dora-rs/adora/pull/901)"
                         );
                         clone_dir
                     }
@@ -111,18 +111,15 @@ async fn build_node(
     build: &String,
     uv: bool,
 ) -> eyre::Result<()> {
-    let build_log_message = if build.contains('\n') {
-        format!(
-            "running build commands in {}:\n{build}",
-            working_dir.display()
+    logger
+        .log_message(
+            LogLevel::Info,
+            format!(
+                "running build command: `{build}` in {}",
+                working_dir.display()
+            ),
         )
-    } else {
-        format!(
-            "running build command: `{build}` in {}",
-            working_dir.display()
-        )
-    };
-    logger.log_message(LogLevel::Info, build_log_message).await;
+        .await;
     let build = build.to_owned();
     let node_env = node_env.clone();
     let mut logger = logger.try_clone().await.context("failed to clone logger")?;

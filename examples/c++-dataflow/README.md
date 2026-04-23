@@ -10,7 +10,7 @@ To try it out, you can use the [`run.rs`](./run.rs) binary. It performs all requ
 
 For a manual build, follow these steps:
 
-- Create a `build` folder in this directory (i.e., next to the `node.c` file)
+- Create a `build` folder in this directory
 - Build the `cxx-dataflow-example-node-rust-api` and `cxx-dataflow-example-operator-rust-api` crates:
   ```
   cargo build -p cxx-dataflow-example-node-rust-api --release

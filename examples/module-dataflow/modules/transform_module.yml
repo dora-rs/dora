@@ -1,0 +1,19 @@
+module:
+  name: transform_pipeline
+  inputs: [raw_data]
+  outputs: [filtered]
+
+nodes:
+  - id: doubler
+    path: doubler.py
+    inputs:
+      data: _mod/raw_data
+    outputs:
+      - doubled
+
+  - id: filter
+    path: filter_even.py
+    inputs:
+      data: doubler/doubled
+    outputs:
+      - filtered

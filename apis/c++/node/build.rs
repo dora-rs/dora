@@ -15,10 +15,12 @@ fn main() {
 
     // rename header files
     let src_dir = origin_dir();
-    let target_dir = src_dir.parent().unwrap();
+    let target_dir = src_dir
+        .parent()
+        .expect("failed to get parent directory of source directory");
 
     let target_dir = if let Ok(target_path) = std::env::var("DORA_NODE_API_CXX_INSTALL") {
-        PathBuf::from_str(&target_path).unwrap()
+        PathBuf::from_str(&target_path).expect("failed to parse DORA_NODE_API_CXX_INSTALL path")
     } else {
         target_dir.join("install")
     };
@@ -51,7 +53,7 @@ fn origin_dir() -> PathBuf {
             let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .ancestors()
                 .nth(3)
-                .unwrap();
+                .expect("failed to get root directory from manifest path");
             root.join("target")
         });
     let cross_target = default_target
@@ -72,9 +74,9 @@ fn origin_dir() -> PathBuf {
 
 #[cfg(feature = "ros2-bridge")]
 mod ros2 {
-    use super::origin_dir;
+
     use std::{
-        io::{BufRead, BufReader},
+        io::BufRead,
         path::{Component, Path, PathBuf},
     };
 
@@ -173,19 +175,17 @@ mod ros2 {
     }
 
     pub fn generate_ros2_message_header(target_path: &Path) {
-        use std::io::Write as _;
-
         let default_target = std::env::var("CARGO_TARGET_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
                 let root = Path::new(env!("CARGO_MANIFEST_DIR"))
                     .ancestors()
                     .nth(3)
-                    .unwrap();
+                    .expect("failed to get root directory from manifest path");
                 root.join("target")
             });
         let out_dir_str = std::env::var("OUT_DIR").unwrap();
-        let out_dir = PathBuf::from(&out_dir_str);
+        let _out_dir = PathBuf::from(&out_dir_str);
         let relative_dir = PathBuf::from(out_dir_str.strip_prefix("/").unwrap());
         let header_path = default_target
             .join("cxxbridge")

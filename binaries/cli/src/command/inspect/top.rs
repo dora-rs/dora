@@ -1,21 +1,16 @@
 use std::{
-    io,
+    io::{self, IsTerminal},
     time::{Duration, Instant},
 };
 
 use clap::Args;
 use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-    },
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use dora_core::topics::DORA_COORDINATOR_PORT_CONTROL_DEFAULT;
-use dora_message::{coordinator_to_cli::NodeInfo, id::NodeId, tarpc};
-use eyre::Context;
-
-use crate::common::{connect_and_check_version, rpc};
+use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo, id::NodeId};
+use eyre::eyre;
 use ratatui::{
     Frame, Terminal,
     backend::{Backend, CrosstermBackend},
@@ -25,7 +20,9 @@ use ratatui::{
 };
 use uuid::Uuid;
 
-use crate::LOCALHOST;
+use crate::common::{
+    CoordinatorOptions, connect_to_coordinator, expect_reply, send_control_request,
+};
 
 use super::super::{Executable, default_tracing};
 
@@ -40,20 +37,27 @@ use super::super::{Executable, default_tracing};
 /// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
 pub struct Top {
-    /// Address of the dora coordinator
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST)]
-    pub coordinator_addr: std::net::IpAddr,
-    /// Port number of the coordinator control server
-    #[clap(long, value_name = "PORT", default_value_t = DORA_COORDINATOR_PORT_CONTROL_DEFAULT)]
-    pub coordinator_port: u16,
+    #[clap(flatten)]
+    coordinator: CoordinatorOptions,
     /// Refresh interval in seconds
-    #[clap(long, value_name = "SECONDS", default_value_t = 2)]
+    #[clap(long, value_name = "SECONDS", default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
     pub refresh_interval: u64,
+    /// Print a single JSON snapshot and exit (for scripting/CI)
+    #[clap(long, action)]
+    pub once: bool,
 }
 
 impl Executable for Top {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+
+        if self.once {
+            return query_once(self.coordinator.socket_addr());
+        }
+
+        if !io::stdout().is_terminal() {
+            eyre::bail!("`dora top` requires an interactive terminal");
+        }
 
         // Setup terminal
         enable_raw_mode()?;
@@ -66,11 +70,9 @@ impl Executable for Top {
         let refresh_duration = Duration::from_secs(self.refresh_interval);
         let res = run_app(
             &mut terminal,
-            self.coordinator_addr,
-            self.coordinator_port,
+            self.coordinator.socket_addr(),
             refresh_duration,
-        )
-        .await;
+        );
 
         // Restore terminal
         disable_raw_mode()?;
@@ -81,11 +83,7 @@ impl Executable for Top {
         )?;
         terminal.show_cursor()?;
 
-        if let Err(err) = res {
-            eprintln!("Error: {err:?}");
-        }
-
-        Ok(())
+        res
     }
 }
 
@@ -114,6 +112,11 @@ struct NodeStats {
     memory_mb: f64,
     disk_read_mb_s: Option<f64>,
     disk_write_mb_s: Option<f64>,
+    status: String,
+    restart_count: u32,
+    pending_messages: u64,
+    net_tx_bytes: u64,
+    net_rx_bytes: u64,
 }
 
 impl App {
@@ -218,18 +221,35 @@ impl App {
 
         // Use daemon-provided metrics (works for distributed nodes!)
         for node_info in node_infos {
-            let (pid, cpu_usage, memory_mb, disk_read_mb_s, disk_write_mb_s) =
-                if let Some(metrics) = &node_info.metrics {
-                    (
-                        Some(metrics.pid),
-                        metrics.cpu_usage,
-                        metrics.memory_mb,
-                        metrics.disk_read_mb_s,
-                        metrics.disk_write_mb_s,
-                    )
-                } else {
-                    (None, 0.0, 0.0, None, None)
-                };
+            let (
+                pid,
+                cpu_usage,
+                memory_mb,
+                disk_read_mb_s,
+                disk_write_mb_s,
+                status,
+                restart_count,
+                pending_messages,
+            ) = if let Some(metrics) = &node_info.metrics {
+                (
+                    Some(metrics.pid),
+                    metrics.cpu_usage,
+                    metrics.memory_mb,
+                    metrics.disk_read_mb_s,
+                    metrics.disk_write_mb_s,
+                    metrics.status.to_string(),
+                    metrics.restart_count,
+                    metrics.pending_messages,
+                )
+            } else {
+                (None, 0.0, 0.0, None, None, "Unknown".to_string(), 0, 0)
+            };
+
+            let (net_tx_bytes, net_rx_bytes) = node_info
+                .network
+                .as_ref()
+                .map(|n| (n.bytes_sent, n.bytes_received))
+                .unwrap_or((0, 0));
 
             self.node_stats.push(NodeStats {
                 dataflow_id: node_info.dataflow_id,
@@ -242,6 +262,11 @@ impl App {
                 memory_mb,
                 disk_read_mb_s,
                 disk_write_mb_s,
+                status,
+                restart_count,
+                pending_messages,
+                net_tx_bytes,
+                net_rx_bytes,
             });
         }
 
@@ -249,80 +274,78 @@ impl App {
     }
 }
 
-async fn run_app<B: Backend>(
+fn query_once(coordinator_addr: std::net::SocketAddr) -> eyre::Result<()> {
+    let session = connect_to_coordinator(coordinator_addr)?;
+    let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+    let infos = expect_reply!(reply, NodeInfoList(infos))?;
+    println!("{}", serde_json::to_string_pretty(&infos).unwrap());
+    Ok(())
+}
+
+fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    coordinator_addr: std::net::IpAddr,
-    coordinator_port: u16,
+    coordinator_addr: std::net::SocketAddr,
     refresh_duration: Duration,
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
 
     // Reuse coordinator connection
-    let client = connect_and_check_version(coordinator_addr, coordinator_port)
-        .await
-        .wrap_err("Failed to connect to coordinator")?;
+    let session = connect_to_coordinator(coordinator_addr)?;
+
+    // Query node info once initially
+    let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+    let mut node_infos = expect_reply!(reply, NodeInfoList(infos))?;
+    app.update_stats(node_infos.clone());
 
     loop {
-        terminal.draw(|f| ui(f, &mut app, refresh_duration))?;
+        terminal
+            .draw(|f| ui(f, &mut app, refresh_duration))
+            .map_err(|e| eyre!("terminal draw failed: {e}"))?;
 
         let timeout = refresh_duration
             .checked_sub(last_update.elapsed())
             .unwrap_or(Duration::from_millis(100));
 
-        let key_event: Option<KeyEvent> = tokio::task::spawn_blocking(move || {
-            if event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    return Ok(Some(key));
+        if event::poll(timeout)?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => {
+                    return Ok(());
                 }
-            }
-            Ok::<_, std::io::Error>(None)
-        })
-        .await??;
-
-        if let Some(key) = key_event {
-            if key.kind == KeyEventKind::Press {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
-                        return Ok(());
-                    }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        app.next();
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        app.previous();
-                    }
-                    KeyCode::Char('n') => {
-                        app.toggle_sort(SortColumn::Node);
-                    }
-                    KeyCode::Char('c') => {
-                        app.toggle_sort(SortColumn::Cpu);
-                    }
-                    KeyCode::Char('m') => {
-                        app.toggle_sort(SortColumn::Memory);
-                    }
-                    KeyCode::Char('r') => {
-                        // Force refresh by resetting last_update
-                        last_update = Instant::now()
-                            .checked_sub(refresh_duration)
-                            .unwrap_or(Instant::now());
-                    }
-                    _ => {}
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.next();
                 }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    app.previous();
+                }
+                KeyCode::Char('n') => {
+                    app.toggle_sort(SortColumn::Node);
+                }
+                KeyCode::Char('c') => {
+                    app.toggle_sort(SortColumn::Cpu);
+                }
+                KeyCode::Char('m') => {
+                    app.toggle_sort(SortColumn::Memory);
+                }
+                KeyCode::Char('r') => {
+                    // Force refresh by resetting last_update
+                    last_update = Instant::now() - refresh_duration;
+                }
+                _ => {}
             }
         }
 
         // Update data if refresh interval has passed
         if last_update.elapsed() >= refresh_duration {
             // Query node info every refresh interval to get updated metrics
-            let node_infos = rpc(
-                "refresh node info",
-                client.get_node_info(tarpc::context::current()),
-            )
-            .await?;
+            let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
+            node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
             // Update stats with current node info
-            app.update_stats(node_infos);
+            app.update_stats(node_infos.clone());
             last_update = Instant::now();
         }
     }
@@ -343,12 +366,17 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
 
     let header_strings = [
         format!("NODE{}", sort_indicator(SortColumn::Node)),
+        "STATUS".to_string(),
         "DATAFLOW".to_string(),
         "PID".to_string(),
         format!("CPU%{}", sort_indicator(SortColumn::Cpu)),
         format!("MEMORY (MB){}", sort_indicator(SortColumn::Memory)),
-        "I/O READ (MB/s)".to_string(),
-        "I/O WRITE (MB/s)".to_string(),
+        "RESTARTS".to_string(),
+        "QUEUE".to_string(),
+        "NET TX".to_string(),
+        "NET RX".to_string(),
+        "I/O READ".to_string(),
+        "I/O WRITE".to_string(),
     ];
 
     let header_cells = header_strings.iter().map(|h| {
@@ -362,8 +390,14 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     let header = Row::new(header_cells).height(1).bottom_margin(1);
 
     let rows = app.node_stats.iter().map(|stats| {
+        let status_style = match stats.status.as_str() {
+            "Degraded" => Style::default().fg(Color::Yellow),
+            "Failed" | "Restarting" => Style::default().fg(Color::Red),
+            _ => Style::default(),
+        };
         let cells = vec![
             Cell::from(stats.node_id.as_ref()),
+            Cell::from(stats.status.as_str()).style(status_style),
             Cell::from(stats.dataflow_name.as_str()),
             Cell::from(
                 stats
@@ -373,6 +407,10 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
             ),
             Cell::from(format!("{:.1}%", stats.cpu_usage)),
             Cell::from(format!("{:.1}", stats.memory_mb)),
+            Cell::from(stats.restart_count.to_string()),
+            Cell::from(stats.pending_messages.to_string()),
+            Cell::from(format_bytes(stats.net_tx_bytes)),
+            Cell::from(format_bytes(stats.net_rx_bytes)),
             Cell::from(
                 stats
                     .disk_read_mb_s
@@ -390,13 +428,18 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
     });
 
     let widths = [
-        Constraint::Percentage(20),
-        Constraint::Percentage(20),
+        Constraint::Percentage(12),
+        Constraint::Percentage(7),
+        Constraint::Percentage(10),
+        Constraint::Percentage(6),
+        Constraint::Percentage(7),
         Constraint::Percentage(8),
+        Constraint::Percentage(6),
+        Constraint::Percentage(5),
+        Constraint::Percentage(7),
+        Constraint::Percentage(7),
+        Constraint::Percentage(13),
         Constraint::Percentage(12),
-        Constraint::Percentage(12),
-        Constraint::Percentage(14),
-        Constraint::Percentage(14),
     ];
 
     let title = format!(
@@ -415,4 +458,18 @@ fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
         .highlight_symbol(">> ");
 
     f.render_stateful_widget(table, chunks[0], &mut app.table_state);
+}
+
+fn format_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        "-".to_string()
+    } else if bytes < 1024 {
+        format!("{bytes}B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else if bytes < 1024 * 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    } else {
+        format!("{:.1}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
 }

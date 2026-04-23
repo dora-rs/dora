@@ -1,58 +1,47 @@
-# Python Async Example
+# Python Async
 
-This example shows how to use Python's `asyncio` with dora nodes. Instead of the
-blocking synchronous API (`for event in node:` or `node.next()`), nodes can use
-`await node.recv_async()` to receive events without blocking the thread — allowing
-other coroutines to run concurrently.
+Demonstrates async/await patterns for Python nodes using `node.recv_async()` instead of blocking iteration.
 
-Use the async API when your node needs to integrate with async frameworks (e.g.
-`asyncio`, web servers, async I/O libraries).
-
-## Overview
-
-The [`dataflow.yaml`](./dataflow.yaml) defines two nodes:
-
-- **send_data** — triggered every 10ms by a built-in dora timer, sends the current
-  timestamp (nanoseconds, `uint64`) as output `data`. Stops after 100 sends.
-- **receive_data_with_sleep** — receives each timestamp using `await node.recv_async()`
-  inside an `asyncio` event loop. Processes 50 events, then prints `done!` and exits.
+## Architecture
 
 ```
-dora/timer/millis/10 ──► send_data ──► receive_data_with_sleep
+timer (10ms) --> send_data --> data --> receive_data_with_sleep (async)
 ```
 
-### Sync vs async API
+## Nodes
 
-| | Sync | Async |
-|---|---|---|
-| Receive next event | `for event in node:` or `node.next()` | `await node.recv_async()` |
-| Thread behaviour | Blocks until event arrives | Yields to event loop while waiting |
-| Use when | Simple scripts | Integrating with asyncio / async frameworks |
+**send_data** (`send_data.py`) -- Sends 100 messages containing uint64 nanosecond timestamps on each timer tick. Uses the standard synchronous `for event in node` loop.
 
-## Getting started
+**receive_data_with_sleep** (`receive_data.py`) -- Uses `await node.recv_async()` inside an async function to receive events without blocking the asyncio event loop. Processes 50 events then exits.
 
-Install dependencies and build the dataflow:
+```python
+async def main():
+    node = Node()
+    for _ in range(50):
+        event = await node.recv_async()
+        if event["type"] == "STOP":
+            break
+```
+
+## When to Use Async
+
+Use `recv_async()` when your node needs to:
+- Make HTTP/gRPC calls alongside event processing
+- Run multiple concurrent tasks (e.g., `asyncio.gather`)
+- Integrate with async libraries (aiohttp, asyncpg, etc.)
+
+For simple sequential processing, the synchronous `for event in node` loop is simpler.
+
+## Run
 
 ```bash
-cd examples/python-async
-uv venv --seed -p 3.11
-uv pip install -e ../../apis/python/node
-dora build dataflow.yaml --uv
+dora run dataflow.yaml
 ```
 
-Run the dataflow:
+## What This Demonstrates
 
-```bash
-dora run dataflow.yaml --uv
-```
-
-## Expected output
-
-The `receive_data_with_sleep` node prints a single line after processing 50 events:
-
-```
-done!
-```
-
-No output is produced by `send_data` — it sends timestamps silently and exits after
-100 sends.
+| Feature | Where |
+|---------|-------|
+| `await node.recv_async()` | Receiver |
+| asyncio event loop integration | Receiver |
+| Mixed sync sender + async receiver | Both nodes |

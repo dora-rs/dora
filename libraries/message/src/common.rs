@@ -74,13 +74,9 @@ impl From<LogMessageHelper> for LogMessage {
                     }
                 })),
             level: helper.level,
-            target: {
-                match helper.target {
-                    Some(t) if !t.is_empty() => Some(t),
-                    // try to fall back to fields if target is None or the empty string
-                    _ => fields.and_then(|f| f.get("target").cloned()),
-                }
-            },
+            target: helper
+                .target
+                .or(fields.and_then(|f| f.get("target").cloned())),
             module_path: helper
                 .module_path
                 .or(fields.and_then(|f| f.get("module_path").cloned())),
@@ -107,23 +103,25 @@ pub enum LogLevelOrStdout {
     LogLevel(LogLevel),
 }
 
+impl LogLevelOrStdout {
+    /// Returns true if a message at this level passes the given minimum level filter.
+    ///
+    /// Ordering: Stdout < Error < Warn < Info < Debug < Trace.
+    /// A message passes if its level is "at or above" (i.e. <=) the minimum.
+    pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
+        match (self, min) {
+            (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
+            (LogLevelOrStdout::Stdout, _) => false,
+            (LogLevelOrStdout::LogLevel(_), LogLevelOrStdout::Stdout) => true,
+            (LogLevelOrStdout::LogLevel(msg), LogLevelOrStdout::LogLevel(max)) => msg <= max,
+        }
+    }
+}
+
 impl From<LogLevel> for LogLevelOrStdout {
     fn from(level: LogLevel) -> Self {
         Self::LogLevel(level)
     }
-}
-
-/// Response from the `logs` RPC, containing the raw log file contents and
-/// the timestamp of the last log entry read by the daemon.  The CLI uses
-/// `last_timestamp` as a dedup cutoff when switching from historical to
-/// live (zenoh) log output.
-#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct LogsResponse {
-    pub content: Vec<u8>,
-    /// Timestamp captured on the daemon right after reading the log file.
-    /// Zenoh messages with an earlier timestamp are already covered by
-    /// `content`.
-    pub daemon_timestamp: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -253,8 +251,8 @@ impl<T> Timestamped<T>
 where
     T: serde::Serialize,
 {
-    pub fn serialize(&self) -> Vec<u8> {
-        bincode::serialize(self).unwrap()
+    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
+        bincode::serialize(self).wrap_err("failed to serialize timestamped message")
     }
 }
 
@@ -317,9 +315,7 @@ impl DropToken {
     }
 }
 
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize, Hash,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct DaemonId {
     machine_id: Option<String>,
     uuid: Uuid,
@@ -329,8 +325,24 @@ impl DaemonId {
     pub fn new(machine_id: Option<String>) -> Self {
         DaemonId {
             machine_id,
-            uuid: Uuid::new_v4(),
+            uuid: Uuid::now_v7(),
         }
+    }
+
+    /// Load a persisted daemon ID from `<working_dir>/.daemon-id`, or create and persist a new one.
+    pub fn load_or_create(
+        working_dir: &std::path::Path,
+        machine_id: Option<String>,
+    ) -> std::io::Result<Self> {
+        let path = working_dir.join(".daemon-id");
+        if let Ok(contents) = std::fs::read_to_string(&path)
+            && let Ok(uuid) = contents.trim().parse::<Uuid>()
+        {
+            return Ok(DaemonId { machine_id, uuid });
+        }
+        let id = Self::new(machine_id);
+        std::fs::write(&path, id.uuid.to_string())?;
+        Ok(id)
     }
 
     pub fn matches_machine_id(&self, machine_id: &str) -> bool {
@@ -352,15 +364,6 @@ impl std::fmt::Display for DaemonId {
         }
         write!(f, "{}", self.uuid)
     }
-}
-
-/// Returns a system-level unique machine identifier.
-///
-/// This is used to reliably determine whether two processes (e.g. CLI and
-/// daemon) are running on the same physical/virtual machine, even when a
-/// NAT maps multiple machines to the same public IP address.
-pub fn machine_uid() -> Option<String> {
-    machine_uid::get().ok()
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
@@ -392,5 +395,95 @@ mod tests {
         let serialized = serde_yaml::to_string(&log_message).unwrap();
         let deserialized: LogMessageHelper = serde_yaml::from_str(&serialized).unwrap();
         assert_eq!(log_message, LogMessage::from(deserialized));
+    }
+
+    #[test]
+    fn stdout_passes_stdout_filter() {
+        let stdout = LogLevelOrStdout::Stdout;
+        assert!(stdout.passes(&LogLevelOrStdout::Stdout));
+    }
+
+    #[test]
+    fn stdout_fails_non_stdout_filters() {
+        let stdout = LogLevelOrStdout::Stdout;
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Warn)));
+        assert!(!stdout.passes(&LogLevelOrStdout::LogLevel(LogLevel::Error)));
+    }
+
+    #[test]
+    fn any_log_level_passes_stdout_filter() {
+        let stdout_filter = LogLevelOrStdout::Stdout;
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            assert!(
+                LogLevelOrStdout::LogLevel(level).passes(&stdout_filter),
+                "{level:?} should pass stdout filter"
+            );
+        }
+    }
+
+    #[test]
+    fn error_passes_less_verbose_filters() {
+        let error = LogLevelOrStdout::LogLevel(LogLevel::Error);
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Error)));
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Warn)));
+        assert!(error.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+    }
+
+    #[test]
+    fn debug_fails_info_filter() {
+        let debug = LogLevelOrStdout::LogLevel(LogLevel::Debug);
+        assert!(!debug.passes(&LogLevelOrStdout::LogLevel(LogLevel::Info)));
+    }
+
+    #[test]
+    fn same_level_passes_itself() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let l = LogLevelOrStdout::LogLevel(level);
+            assert!(l.passes(&l), "{level:?} should pass itself");
+        }
+    }
+
+    #[test]
+    fn trace_passes_trace_fails_debug() {
+        let trace = LogLevelOrStdout::LogLevel(LogLevel::Trace);
+        assert!(trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Trace)));
+        assert!(!trace.passes(&LogLevelOrStdout::LogLevel(LogLevel::Debug)));
+    }
+
+    #[test]
+    fn daemon_id_uses_v7_uuid() {
+        let id = DaemonId::new(None);
+        // v7 UUIDs have version nibble = 7
+        assert_eq!(id.uuid.get_version_num(), 7);
+    }
+
+    #[test]
+    fn daemon_id_load_or_create_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let id1 = DaemonId::load_or_create(dir.path(), Some("m1".into())).unwrap();
+        let id2 = DaemonId::load_or_create(dir.path(), Some("m1".into())).unwrap();
+        assert_eq!(id1.uuid, id2.uuid);
+    }
+
+    #[test]
+    fn daemon_id_load_or_create_different_dirs() {
+        let dir1 = tempfile::tempdir().unwrap();
+        let dir2 = tempfile::tempdir().unwrap();
+        let id1 = DaemonId::load_or_create(dir1.path(), None).unwrap();
+        let id2 = DaemonId::load_or_create(dir2.path(), None).unwrap();
+        assert_ne!(id1.uuid, id2.uuid);
     }
 }

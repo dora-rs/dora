@@ -8,36 +8,37 @@ readme = "README.md"
 description.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs`, not crates.io
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["tracing", "metrics", "telemetry", "async"]
+default = ["tracing", "metrics", "async"]
 tracing = ["dora-node-api/tracing"]
 metrics = ["dora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
-telemetry = ["dora-runtime/telemetry"]
 
 [dependencies]
 dora-node-api = { workspace = true }
+dora-message = { workspace = true }
 dora-operator-api-python = { workspace = true }
+dora-runtime = { workspace = true, features = ["python"] }
+dora-cli = { workspace = true, features = ["python"] }
+chrono = { version = "0.4", features = ["serde"] }
 pyo3.workspace = true
-eyre = "0.6"
+eyre = { workspace = true }
+serde_json = { workspace = true }
 serde_yaml = { workspace = true }
-flume = "0.10.14"
-dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
-dora-cli = { workspace = true }
-dora-download = { workspace = true }
+flume = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
-futures = "0.3.28"
+futures = { workspace = true }
 dora-ros2-bridge-python = { workspace = true }
-pyo3_special_method_derive = "0.4.3"
-tokio = { version = "1.24.2", features = ["rt-multi-thread", "time", "macros"] }
-tracing = "0.1.36"
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
+tracing = { workspace = true }
 
 [build-dependencies]
-pyo3-build-config = "0.23"
+pyo3-build-config = "0.28"
 
 [lib]
 name = "dora"

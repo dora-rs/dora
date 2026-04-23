@@ -1,4 +1,5 @@
 use dora_core::config::DataId;
+use dora_message::config::QueuePolicy;
 use dora_node_api::Event;
 use futures::{
     FutureExt,
@@ -8,7 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 pub fn channel(
     runtime: &tokio::runtime::Handle,
-    queue_sizes: BTreeMap<DataId, usize>,
+    queue_sizes: BTreeMap<DataId, (usize, QueuePolicy)>,
 ) -> (flume::Sender<Event>, flume::Receiver<Event>) {
     let (incoming_tx, incoming_rx) = flume::bounded(10);
     let (outgoing_tx, outgoing_rx) = flume::bounded(0);
@@ -23,14 +24,19 @@ pub fn channel(
 
 struct InputBuffer {
     queue: VecDeque<Option<Event>>,
-    queue_sizes: BTreeMap<DataId, usize>,
+    /// Pre-computed effective cap per input ID.
+    effective_caps: BTreeMap<DataId, (usize, QueuePolicy)>,
 }
 
 impl InputBuffer {
-    pub fn new(queue_sizes: BTreeMap<DataId, usize>) -> Self {
+    pub fn new(queue_sizes: BTreeMap<DataId, (usize, QueuePolicy)>) -> Self {
+        let effective_caps = queue_sizes
+            .into_iter()
+            .map(|(id, (size, policy))| (id, (policy.effective_cap(size), policy)))
+            .collect();
         Self {
             queue: VecDeque::new(),
-            queue_sizes,
+            effective_caps,
         }
     }
 
@@ -99,7 +105,11 @@ impl InputBuffer {
     }
 
     fn drop_oldest_inputs(&mut self) {
-        let mut queue_size_remaining = self.queue_sizes.clone();
+        let mut remaining: BTreeMap<&DataId, usize> = self
+            .effective_caps
+            .iter()
+            .map(|(k, (cap, _))| (k, *cap))
+            .collect();
         let mut dropped = 0;
 
         // iterate over queued events, newest first
@@ -107,13 +117,19 @@ impl InputBuffer {
             let Some(Event::Input { id: input_id, .. }) = event.as_mut() else {
                 continue;
             };
-            match queue_size_remaining.get_mut(input_id) {
+            match remaining.get_mut(input_id) {
                 Some(0) => {
                     dropped += 1;
+                    if let Some((_, QueuePolicy::Backpressure)) = self.effective_caps.get(input_id)
+                    {
+                        tracing::error!(
+                            "backpressure input `{input_id}` hit hard cap, dropping oldest to prevent OOM"
+                        );
+                    }
                     *event = None;
                 }
-                Some(size_remaining) => {
-                    *size_remaining = size_remaining.saturating_sub(1);
+                Some(rem) => {
+                    *rem = rem.saturating_sub(1);
                 }
                 None => {
                     tracing::warn!("no queue size known for received operator input `{input_id}`");
@@ -122,7 +138,7 @@ impl InputBuffer {
         }
 
         if dropped > 0 {
-            tracing::debug!("dropped {dropped} operator inputs because event queue was too full");
+            tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
         }
     }
 }

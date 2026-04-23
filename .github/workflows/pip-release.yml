@@ -8,6 +8,16 @@
 
 name: pip-release
 
+# Triggers: release (publish to PyPI), workflow_dispatch (manual),
+# push to main (post-merge verification), and push to Mergify's
+# batched merge-queue branches. Building 24 wheels per PR push was
+# wasteful — now we build once per merge-queue batch (up to 5 PRs),
+# matching the expensive-job gating in .github/workflows/ci.yml.
+#
+# No `paths:` filter: pip-release is a required merge condition
+# (`pip-release all green` in .mergify.yml), so the check must always
+# be produced on merge-queue branches. A paths filter would cause
+# Mergify to wait forever on batches that don't touch Python/CLI.
 on:
   release:
     types:
@@ -16,16 +26,11 @@ on:
   push:
     branches:
       - main
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-    paths:
-      - "apis/python/node/**"
-      - "binaries/cli/**"
-      - "Cargo.toml"
+      - "mergify/merge-queue/**"
+
+env:
+  RUST_VERSION: "1.92.0"
+  RUST_TOOLCHAIN_DIR: "1.92.0-x86_64-unknown-linux-gnu"
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -63,8 +68,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: 3.8
-      - run: rustup default stable
-      - run: rustup update
+      - run: rustup default ${{ env.RUST_VERSION }}
+      - run: rustup update ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-provider: buildjet
@@ -80,12 +85,12 @@ jobs:
           before-script-linux: |
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libatomic1-i386-cross libatomic1-armhf-cross
-            mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/
-            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so
-            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1
+            mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/
+            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so
+            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1
             ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1
-            mkdir -p $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
-            ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
+            mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
+            ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
         if: github.event_name == 'release'
         uses: actions/upload-artifact@v4
@@ -247,7 +252,7 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -260,6 +265,23 @@ jobs:
         with:
           name: ${{ matrix.repository.name }}-sdist
           path: ${{ matrix.repository.path }}/dist
+
+  # Single aggregator check Mergify can gate on. Listing each matrix
+  # expansion in `.mergify.yml` merge_conditions is fragile (~24 names
+  # with generated suffixes); this one job fails if any build job
+  # failed and succeeds only when all matrix jobs succeeded.
+  pip-release-all-green:
+    name: pip-release all green
+    runs-on: ubuntu-22.04
+    needs: [linux, musllinux, musleabi, windows, macos, sdist]
+    if: always()
+    steps:
+      - name: Verify all build jobs succeeded
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more pip-release build jobs failed or were cancelled."
+            exit 1
+          fi
 
   release:
     name: Release

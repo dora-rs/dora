@@ -1,9 +1,4 @@
-"""Test utilities for the dora-rs ROS2 bridge.
-
-This module provides sample Apache Arrow data structures for various ROS2
-message types (std_msgs, visualization_msgs) and helper functions for
-validating message equivalence in automated tests.
-"""
+"""TODO: Add docstring."""
 
 import numpy as np
 import pyarrow as pa

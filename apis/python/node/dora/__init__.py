@@ -1,4 +1,4 @@
-""" 
+"""
 # dora-rs.
 
 This is the dora python client for interacting with dora dataflow.
@@ -24,8 +24,15 @@ from .dora import (
     Ros2Topic,
     __author__,
     __version__,
-    start_runtime,
 )
+
+# start_runtime is provided by the dora-cli package, not the node API.
+# Import it conditionally so that `from dora import Node` works without
+# requiring the full CLI to be installed.
+try:
+    from .dora import start_runtime
+except ImportError:
+    pass
 
 
 class DoraStatus(Enum):

@@ -29,7 +29,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{self, AtomicBool, AtomicU32},
+        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
     },
     time::Duration,
 };
@@ -38,6 +38,44 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+
+#[derive(Clone, Copy)]
+enum LogStream {
+    Stdout,
+    Stderr,
+}
+
+struct LogLine {
+    content: String,
+    stream: LogStream,
+}
+
+/// Maximum length of a single log line before truncation (1 MB).
+/// Prevents a malicious or buggy node from causing heap exhaustion via
+/// a single multi-GB stdout/stderr line.
+const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
+
+/// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
+fn truncate_log_line(content: &mut String) {
+    if content.len() > MAX_LOG_LINE_BYTES {
+        // Find the last valid UTF-8 char boundary at or before MAX_LOG_LINE_BYTES.
+        // This is equivalent to str::floor_char_boundary (stable in 1.91).
+        let mut boundary = MAX_LOG_LINE_BYTES;
+        while boundary > 0 && !content.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        content.truncate(boundary);
+        content.push_str("... [truncated]");
+    }
+}
+
+#[derive(Clone, Default)]
+struct RestartConfig {
+    max_restarts: u32,
+    restart_delay: Option<Duration>,
+    max_restart_delay: Option<Duration>,
+    restart_window: Option<Duration>,
+}
 
 #[derive(Clone)]
 pub struct PreparedNode {
@@ -50,12 +88,8 @@ pub struct PreparedNode {
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
-    /// Flag set before sending Stop(HotReload) to force restart regardless of policy.
-    pub(super) pending_hot_reload: Arc<AtomicBool>,
-    /// Abort handle for the node's listener task. Cloned into `RunningNode` so
-    /// the dataflow can cancel the listener when it finishes.
-    /// `AbortHandle` is `Clone`, so `#[derive(Clone)]` continues to work.
-    pub(super) listener_abort_handle: Option<tokio::task::AbortHandle>,
+    pub(super) last_activity: Arc<AtomicU64>,
+    pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
 impl PreparedNode {
@@ -77,6 +111,7 @@ impl PreparedNode {
 
         let disable_restart = Arc::new(AtomicBool::new(false));
         let pid = Arc::new(AtomicU32::new(0));
+        let restart_count = Arc::new(AtomicU32::new(0));
         let running_node = RunningNode {
             process: match &kind {
                 NodeKind::Dynamic => None,
@@ -85,7 +120,7 @@ impl PreparedNode {
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
-            pending_hot_reload: self.pending_hot_reload.clone(),
+            restart_count: restart_count.clone(),
             pid: match kind {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { pid: new_pid } => {
@@ -93,10 +128,11 @@ impl PreparedNode {
                     Some(pid.clone())
                 }
             },
-            listener_abort_handle: self.listener_abort_handle.clone(),
+            last_activity: self.last_activity.clone(),
+            health_check_timeout: self.health_check_timeout(),
         };
 
-        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid));
+        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid, restart_count));
 
         Ok(running_node)
     }
@@ -108,16 +144,42 @@ impl PreparedNode {
         }
     }
 
+    fn health_check_timeout(&self) -> Option<Duration> {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+                n.health_check_timeout.map(Duration::from_secs_f64)
+            }
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
+        }
+    }
+
+    fn restart_config(&self) -> RestartConfig {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+                max_restarts: n.max_restarts,
+                restart_delay: n.restart_delay.map(Duration::from_secs_f64),
+                max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
+                restart_window: n.restart_window.map(Duration::from_secs_f64),
+            },
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
+        }
+    }
+
     async fn restart_loop(
-        self,
+        mut self,
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
+        shared_restart_count: Arc<AtomicU32>,
     ) {
-        let mut last_spawn = std::time::Instant::now();
+        let config = self.restart_config();
+        let mut restart_count: u32 = 0;
+        let mut window_start = tokio::time::Instant::now();
+        let mut window_count: u32 = 0;
+
         loop {
-            let Ok(NodeProcessFinished { exit_status, op_rx }) = finished_rx.await else {
+            let Ok(NodeProcessFinished { exit_status }) = finished_rx.await else {
                 logger
                     .log(
                         LogLevel::Error,
@@ -128,18 +190,11 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = if self
-                .pending_hot_reload
-                .swap(false, atomic::Ordering::AcqRel)
-            {
-                true // Hot-reload requested: always restart regardless of policy
-            } else {
-                match self.restart_policy() {
-                    RestartPolicy::Always => true,
-                    RestartPolicy::OnFailure if exit_status.is_success() => false,
-                    RestartPolicy::OnFailure => true,
-                    RestartPolicy::Never => false,
-                }
+            let restart = match self.restart_policy() {
+                RestartPolicy::Always => true,
+                RestartPolicy::OnFailure if exit_status.is_success() => false,
+                RestartPolicy::OnFailure => true,
+                RestartPolicy::Never => false,
             };
 
             let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
@@ -165,12 +220,41 @@ impl PreparedNode {
                 tracing::error!("node exited with error: {:?}", exit_status);
             }
 
+            // Check restart limits before committing to restart
+            let restart = if restart {
+                // Reset window if expired
+                if let Some(window) = config.restart_window
+                    && window_start.elapsed() > window
+                {
+                    window_count = 0;
+                    window_start = tokio::time::Instant::now();
+                }
+                window_count += 1;
+
+                // Check max restarts
+                if config.max_restarts > 0 && window_count > config.max_restarts {
+                    logger
+                        .log(
+                            LogLevel::Error,
+                            Some("daemon".into()),
+                            format!("max restarts ({}) exceeded, giving up", config.max_restarts,),
+                        )
+                        .await;
+                    false
+                } else {
+                    true
+                }
+            } else {
+                false
+            };
+
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
                 exit_status,
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
+                restart_count,
             }
             .into();
             let event = Timestamped {
@@ -180,12 +264,56 @@ impl PreparedNode {
             let _ = self.daemon_tx.clone().send(event).await;
 
             if restart {
+                // Exponential backoff
+                if let Some(base_delay) = config.restart_delay {
+                    let exp = (window_count - 1).min(16); // cap exponent to avoid overflow
+                    let backoff = base_delay.mul_f64(2f64.powi(exp as i32));
+                    let backoff = config
+                        .max_restart_delay
+                        .map_or(backoff, |max| backoff.min(max));
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            format!(
+                                "waiting {backoff:?} before restart (attempt {})",
+                                restart_count + 1,
+                            ),
+                        )
+                        .await;
+                    tokio::time::sleep(backoff).await;
+
+                    // Re-check disable_restart after sleep (may have changed)
+                    if disable_restart.load(atomic::Ordering::Acquire) {
+                        logger
+                            .log(
+                                LogLevel::Info,
+                                Some("daemon".into()),
+                                "restart cancelled: inputs closed during backoff wait".to_string(),
+                            )
+                            .await;
+                        break;
+                    }
+                }
+
+                restart_count += 1;
+                // `node_config.restart_count` is serialized into DORA_NODE_CONFIG
+                // for the restarted child process. `shared_restart_count` is read by
+                // the daemon's metrics reporting path in lib.rs. Both must stay in sync.
+                self.node_config.restart_count = restart_count;
+                shared_restart_count.store(restart_count, atomic::Ordering::Release);
+                self.ft_stats
+                    .restarts
+                    .fetch_add(1, atomic::Ordering::Relaxed);
+
                 if success {
                     logger
                         .log(
                             LogLevel::Info,
                             Some("daemon".into()),
-                            "restarting node after successful exit".to_string(),
+                            format!(
+                                "restarting node after successful exit (attempt {restart_count})",
+                            ),
                         )
                         .await;
                 } else {
@@ -193,41 +321,38 @@ impl PreparedNode {
                         .log(
                             LogLevel::Warn,
                             Some("daemon".into()),
-                            "restarting node after failure".to_string(),
+                            format!("restarting node after failure (attempt {restart_count})"),
                         )
                         .await;
                 }
-                // Drain buffered operations from previous run
-                while op_rx.try_recv().is_ok() {}
-
-                // Cooldown to avoid rapid crash-restart loops
-                let min_restart_interval = Duration::from_secs(2);
-                let elapsed = last_spawn.elapsed();
-                if elapsed < min_restart_interval {
-                    let wait = min_restart_interval - elapsed;
-                    logger
-                        .log(
-                            LogLevel::Info,
-                            Some("daemon".into()),
-                            format!(
-                                "node crashed quickly, waiting {:.1}s before restarting",
-                                wait.as_secs_f64()
-                            ),
-                        )
-                        .await;
-                    tokio::time::sleep(wait).await;
-                }
-
-                last_spawn = std::time::Instant::now();
+                // Fresh `(op_tx, op_rx)` per incarnation so any
+                // grace-kill task holding an older `op_tx` cannot
+                // reach the new process — closes the race in
+                // dora-rs/adora#152.
+                let (op_tx_new, op_rx_new) = flume::bounded(2);
                 let (finished_tx, finished_rx_new) = oneshot::channel();
                 let result = self
                     .clone()
-                    .spawn_inner(&mut logger, op_rx, finished_tx)
+                    .spawn_inner(&mut logger, op_rx_new, finished_tx)
                     .await;
                 match result {
                     Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
                         pid.store(new_pid, atomic::Ordering::Release);
+                        // Install the new `ProcessHandle` in
+                        // `running_nodes` so subsequent stop/kill
+                        // operations target this incarnation.
+                        let handle_replaced = DoraEvent::ProcessHandleReplaced {
+                            dataflow_id: self.dataflow_id,
+                            node_id: self.node.id.clone(),
+                            new_handle: crate::ProcessHandle::new(op_tx_new),
+                        }
+                        .into();
+                        let msg = Timestamped {
+                            inner: handle_replaced,
+                            timestamp: self.clock.clone().new_timestamp(),
+                        };
+                        let _ = self.daemon_tx.clone().send(msg).await;
                     }
                     Ok(NodeKind::Dynamic) => {
                         logger
@@ -264,7 +389,20 @@ impl PreparedNode {
     ) -> eyre::Result<NodeKind> {
         let mut child = match &mut self.command {
             Some(command) => {
-                let std_command = command.to_std();
+                // Re-serialize DORA_NODE_CONFIG from the current
+                // node_config. The command was built once at initial
+                // spawn time with the initial config; the restart_loop
+                // updates self.node_config.restart_count between
+                // restarts but the command's baked-in env var was stale.
+                // Without this, restarted nodes always see
+                // restart_count=0 (pre-existing bug, first caught by
+                // the restart_recovers_from_failure E2E test).
+                if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
+                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
+                }
+
+                #[allow(unused_mut)]
+                let mut std_command = command.to_std();
                 logger
                     .log(
                         LogLevel::Info,
@@ -279,6 +417,40 @@ impl PreparedNode {
                         ),
                     )
                     .await;
+
+                #[cfg(target_os = "linux")]
+                if let Some(ref cores) = self.node.cpu_affinity {
+                    use std::os::unix::process::CommandExt;
+                    let cores = cores.clone();
+                    // SAFETY: sched_setaffinity is async-signal-safe on Linux.
+                    unsafe {
+                        std_command.pre_exec(move || {
+                            let mut set: libc::cpu_set_t = std::mem::zeroed();
+                            libc::CPU_ZERO(&mut set);
+                            const MAX_CPU: usize = std::mem::size_of::<libc::cpu_set_t>() * 8;
+                            for &core in &cores {
+                                if core >= MAX_CPU {
+                                    eprintln!("warning: cpu_affinity core {core} out of range (max {}), skipping", MAX_CPU - 1);
+                                    continue;
+                                }
+                                libc::CPU_SET(core, &mut set);
+                            }
+                            let ret = libc::sched_setaffinity(
+                                0,
+                                std::mem::size_of::<libc::cpu_set_t>(),
+                                &set,
+                            );
+                            if ret != 0 {
+                                eprintln!(
+                                    "warning: sched_setaffinity failed: {}",
+                                    std::io::Error::last_os_error()
+                                );
+                            }
+                            Ok(())
+                        });
+                    }
+                }
+
                 let mut command =
                     TokioCommandWrap::from(tokio::process::Command::from(std_command));
 
@@ -323,7 +495,7 @@ impl PreparedNode {
         if !dataflow_dir.exists() {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
-        let (tx, mut rx) = mpsc::channel(10);
+        let (tx, mut rx) = mpsc::channel::<LogLine>(100);
         let mut file = File::create(log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
@@ -331,8 +503,12 @@ impl PreparedNode {
         ))
         .await
         .context("failed to create log file")?;
-        let mut child_stdout =
-            tokio::io::BufReader::new(child.stdout().take().context("failed to take stdout")?);
+        let mut child_stdout = tokio::io::BufReader::new(
+            child
+                .stdout()
+                .take()
+                .ok_or_else(|| eyre::eyre!("failed to take stdout"))?,
+        );
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         let mut logger_c = logger.try_clone().await?;
@@ -376,17 +552,26 @@ impl PreparedNode {
                     }
                 };
 
-                // send the buffered lines
-                let lines = std::mem::take(&mut buffer);
-                let sent = stdout_tx.send(lines.clone()).await;
+                let mut content = std::mem::take(&mut buffer);
+                truncate_log_line(&mut content);
+                let sent = stdout_tx
+                    .send(LogLine {
+                        content: content.clone(),
+                        stream: LogStream::Stdout,
+                    })
+                    .await;
                 if sent.is_err() {
-                    println!("Could not log: {lines}");
+                    tracing::warn!("Could not log: {content}");
                 }
             }
         });
 
-        let mut child_stderr =
-            tokio::io::BufReader::new(child.stderr().take().context("failed to take stderr")?);
+        let mut child_stderr = tokio::io::BufReader::new(
+            child
+                .stderr()
+                .take()
+                .ok_or_else(|| eyre::eyre!("failed to take stderr"))?,
+        );
 
         // Stderr listener stream
         let stderr_tx = tx.clone();
@@ -427,11 +612,16 @@ impl PreparedNode {
 
                 self.node_stderr_most_recent.force_push(new);
 
-                // send the buffered lines
-                let lines = std::mem::take(&mut buffer);
-                let sent = stderr_tx.send(lines.clone()).await;
+                let mut content = std::mem::take(&mut buffer);
+                truncate_log_line(&mut content);
+                let sent = stderr_tx
+                    .send(LogLine {
+                        content: content.clone(),
+                        stream: LogStream::Stderr,
+                    })
+                    .await;
                 if sent.is_err() {
-                    println!("Could not log: {lines}");
+                    tracing::warn!("Could not log: {content}");
                 }
             }
         });
@@ -458,7 +648,12 @@ impl PreparedNode {
             };
 
             let _ = log_finish_rx.await;
-            let _ = finished_tx.send(NodeProcessFinished { exit_status, op_rx });
+            // Drop `op_rx` here so any grace-kill task still holding
+            // the paired `op_tx` sees a closed channel on the next
+            // `submit()` instead of routing operations to the
+            // subsequent incarnation (dora-rs/adora#152).
+            drop(op_rx);
+            let _ = finished_tx.send(NodeProcessFinished { exit_status });
         });
 
         let node_id = self.node.id.clone();
@@ -475,15 +670,46 @@ impl PreparedNode {
             .node
             .send_stdout_as()
             .context("Could not resolve `send_stdout_as` configuration")?;
+        let send_logs_to = self
+            .node
+            .send_logs_as()
+            .context("Could not resolve `send_logs_as` configuration")?;
+        let min_log_level = self
+            .node
+            .min_log_level()
+            .context("Could not resolve `min_log_level` configuration")?;
+        let max_log_size = self
+            .node
+            .max_log_size()
+            .context("Could not resolve `max_log_size` configuration")?;
+        let max_rotated_files = self
+            .node
+            .max_rotated_files()
+            .context("Could not resolve `max_rotated_files` configuration")?
+            .unwrap_or(log::DEFAULT_MAX_ROTATED_FILES);
+        let daemon_tx_logs_as = if send_logs_to.is_some() {
+            Some(self.daemon_tx.clone())
+        } else {
+            None
+        };
+        let daemon_tx_log_broadcast = self.daemon_tx.clone();
+        let working_dir_c = self.node_working_dir.clone();
         let uhlc = self.clock.clone();
         let mut logger_c = logger.try_clone().await?;
         // Log to file stream.
         tokio::spawn(async move {
-            while let Some(message) = rx.recv().await {
+            let mut bytes_written: u64 = 0;
+            while let Some(log_line) = rx.recv().await {
+                let LogLine { content, stream } = log_line;
+                let stream_str = match stream {
+                    LogStream::Stdout => "stdout",
+                    LogStream::Stderr => "stderr",
+                };
+
                 // If log is an output, we're sending the logs to the dataflow
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to DataMessage
-                    let array = message.as_str().into_arrow();
+                    let array = content.as_str().into_arrow();
 
                     let array: ArrayData = array.into();
                     let total_len = required_data_size(&array);
@@ -508,72 +734,185 @@ impl PreparedNode {
                         inner: event,
                         timestamp: uhlc.new_timestamp(),
                     };
-                    let _ = daemon_tx_log.send(event).await;
+                    // Use try_send to avoid blocking the log task when the
+                    // daemon event loop is busy (prevents deadlock chain:
+                    // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
+                    let _ = daemon_tx_log.try_send(event);
                 }
 
-                match file.write_all(message.as_bytes()).await {
-                    Ok(_) => {}
+                let formatted = content.lines().fold(String::default(), |mut output, line| {
+                    output.push_str(line);
+                    output
+                });
+
+                // Build a LogMessage for both file writing and channel forwarding
+                let log_message = match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
+                    Ok(log_msg) => {
+                        let mut message = LogMessage::from(log_msg);
+                        message.dataflow_id = Some(dataflow_id);
+                        message.node_id = Some(node_id.clone());
+                        message.daemon_id = Some(daemon_id.clone());
+                        message
+                    }
+                    Err(_) => LogMessage {
+                        daemon_id: Some(daemon_id.clone()),
+                        dataflow_id: Some(dataflow_id),
+                        build_id: None,
+                        level: dora_core::build::LogLevelOrStdout::Stdout,
+                        node_id: Some(node_id.clone()),
+                        target: None,
+                        message: formatted,
+                        file: None,
+                        line: None,
+                        module_path: None,
+                        timestamp: uhlc.new_timestamp().get_time().to_system_time().into(),
+                        fields: None,
+                    },
+                };
+
+                // Apply min_log_level filter
+                if let Some(min_level) = &min_log_level
+                    && !log_message.level.passes(min_level)
+                {
+                    continue;
+                }
+
+                // Broadcast to dora/logs subscribers (try_send to avoid
+                // blocking the log processing task if the daemon queue is full)
+                {
+                    let event = DoraEvent::LogBroadcast {
+                        dataflow_id,
+                        log_message: log_message.clone(),
+                    }
+                    .into();
+                    let event = Timestamped {
+                        inner: event,
+                        timestamp: uhlc.new_timestamp(),
+                    };
+                    if daemon_tx_log_broadcast.try_send(event).is_err() {
+                        tracing::debug!("dora/logs broadcast queue full, dropping log event");
+                    }
+                }
+
+                // Route structured logs via send_logs_as
+                if let (Some(logs_output_name), Some(daemon_tx)) =
+                    (&send_logs_to, &daemon_tx_logs_as)
+                    && let Ok(json) = serde_json::to_string(&log_message)
+                {
+                    let array = json.as_str().into_arrow();
+                    let array: ArrayData = array.into();
+                    let total_len = required_data_size(&array);
+                    let mut sample: AVec<u8, ConstAlign<128>> =
+                        AVec::__from_elem(128, 0, total_len);
+                    let type_info = copy_array_into_sample(&mut sample, &array);
+                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
+                    let output_id =
+                        OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
+                    let event = DoraEvent::Logs {
+                        dataflow_id,
+                        output_id,
+                        metadata,
+                        message: DataMessage::Vec(sample),
+                    }
+                    .into();
+                    let event = Timestamped {
+                        inner: event,
+                        timestamp: uhlc.new_timestamp(),
+                    };
+                    let _ = daemon_tx.try_send(event);
+                }
+
+                // Write JSONL to log file
+                let ts = log_message
+                    .timestamp
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+                let log_entry = serde_json::json!({
+                    "ts": ts,
+                    "level": match &log_message.level {
+                        dora_core::build::LogLevelOrStdout::LogLevel(l) => match l {
+                            LogLevel::Error => "error",
+                            LogLevel::Warn => "warn",
+                            LogLevel::Info => "info",
+                            LogLevel::Debug => "debug",
+                            LogLevel::Trace => "trace",
+                        },
+                        dora_core::build::LogLevelOrStdout::Stdout => "stdout",
+                    },
+                    "node": node_id.to_string(),
+                    "stream": stream_str,
+                    "msg": &log_message.message,
+                    "target": &log_message.target,
+                    "fields": &log_message.fields,
+                });
+                let mut json_bytes = serde_json::to_vec(&log_entry).unwrap_or_default();
+                json_bytes.push(b'\n');
+                let write_len = json_bytes.len() as u64;
+                match file.write_all(&json_bytes).await {
+                    Ok(_) => {
+                        bytes_written += write_len;
+                    }
                     Err(err) => {
                         logger_c
                             .log(
                                 LogLevel::Error,
                                 Some("daemon".into()),
-                                format!("Could not log {message} to file due to {err}"),
+                                format!("Could not write log to file: {err}"),
                             )
                             .await;
                     }
                 }
 
-                let formatted = message.lines().fold(String::default(), |mut output, line| {
-                    output.push_str(line);
-                    output
-                });
-
-                if std::env::var("DORA_QUIET").is_err() {
-                    match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
-                        Ok(log_msg) => {
-                            let mut message = LogMessage::from(log_msg);
-                            message.dataflow_id = Some(dataflow_id);
-                            message.node_id = Some(node_id.clone());
-                            message.daemon_id = Some(daemon_id.clone());
-                            cloned_logger.log(message, &daemon_id).await;
-                        }
-                        Err(_err) => {
-                            cloned_logger
+                // Rotate if max_log_size exceeded
+                if let Some(max_size) = max_log_size
+                    && bytes_written >= max_size
+                {
+                    // Flush and drop the current file handle
+                    let _ = file.flush().await;
+                    drop(file);
+                    if let Err(err) = log::rotate_log_files(
+                        &working_dir_c,
+                        &dataflow_id,
+                        &node_id,
+                        max_rotated_files,
+                    ) {
+                        logger_c
+                            .log(
+                                LogLevel::Error,
+                                Some("daemon".into()),
+                                format!("Could not rotate log files: {err}"),
+                            )
+                            .await;
+                    }
+                    // Create a fresh log file
+                    file = match File::create(log::log_path(&working_dir_c, &dataflow_id, &node_id))
+                        .await
+                    {
+                        Ok(f) => f,
+                        Err(err) => {
+                            logger_c
                                 .log(
-                                    LogMessage {
-                                        daemon_id: Some(daemon_id.clone()),
-                                        dataflow_id: Some(dataflow_id),
-                                        build_id: None,
-                                        level: dora_core::build::LogLevelOrStdout::Stdout,
-                                        node_id: Some(node_id.clone()),
-                                        target: None,
-                                        message: formatted,
-                                        file: None,
-                                        line: None,
-                                        module_path: None,
-                                        timestamp: uhlc
-                                            .new_timestamp()
-                                            .get_time()
-                                            .to_system_time()
-                                            .into(),
-                                        fields: None,
-                                    },
-                                    &daemon_id,
+                                    LogLevel::Error,
+                                    Some("daemon".into()),
+                                    format!("Could not create new log file after rotation: {err}"),
                                 )
                                 .await;
+                            break;
                         }
-                    }
+                    };
+                    bytes_written = 0;
                 }
-                // Make sure that all data has been synced to disk.
-                let _ = file.sync_all().await.map_err(|err| {
-                    logger_c.log(
-                        LogLevel::Error,
-                        Some("daemon".into()),
-                        format!("Could not sync logs to file due to {err}"),
-                    )
-                });
+
+                // Forward to channel/coordinator for live display
+                if std::env::var("DORA_QUIET").is_err() {
+                    cloned_logger.log(log_message).await;
+                }
+
+                // Note: no per-line sync_all() — OS write-back is sufficient
+                // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
+            // Note: file may have been rotated (drop+recreate) inside the loop.
+            // No explicit flush needed here — the file is flushed during rotation
+            // and will be flushed on drop when this task ends.
             let _ = log_finish_tx.send(()).map_err(|_| {
                 logger_c.log(
                     LogLevel::Error,
@@ -594,5 +933,11 @@ enum NodeKind {
 
 struct NodeProcessFinished {
     exit_status: NodeExitStatus,
-    op_rx: flume::Receiver<ProcessOperation>,
+    // Note: `op_rx` used to be returned here and recycled for the next
+    // incarnation. That allowed a grace-kill task holding the old
+    // `op_tx` to send SoftKill/Kill to the *new* process after a
+    // restart, because both incarnations shared the same channel
+    // (dora-rs/adora#152). The receiver is now dropped at the end of
+    // the spawn_inner task and each restart creates a fresh channel
+    // pair.
 }

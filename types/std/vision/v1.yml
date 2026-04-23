@@ -1,0 +1,37 @@
+types:
+  BoundingBox:
+    arrow: Struct
+    description: "2D bounding box with x, y, width, height, confidence, label"
+    fields:
+      - name: x
+        type: Float32
+      - name: "y"
+        type: Float32
+      - name: width
+        type: Float32
+      - name: height
+        type: Float32
+      - name: confidence
+        type: Float32
+      - name: label
+        type: Utf8
+  Detection:
+    arrow: Struct
+    description: "Object detection result (list of BoundingBox)"
+    fields:
+      - name: boxes
+        type: List<BoundingBox>
+  Segmentation:
+    arrow: Struct
+    description: "Pixel-level segmentation mask with class labels"
+    fields:
+      - name: width
+        type: UInt32
+      - name: height
+        type: UInt32
+      - name: num_classes
+        type: UInt32
+      - name: mask
+        type: LargeBinary
+      - name: class_names
+        type: List<Utf8>

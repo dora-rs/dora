@@ -1,0 +1,17 @@
+nodes:
+  - id: rust-sender
+    build: cargo build -p cross-language-rust-sender
+    path: ../../target/debug/cross-language-rust-sender
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - values
+    output_types:
+      values: std/core/v1/Int64
+
+  - id: python-receiver
+    path: python_receiver.py
+    inputs:
+      values: rust-sender/values
+    input_types:
+      values: std/core/v1/Int64

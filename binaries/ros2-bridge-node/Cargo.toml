@@ -1,0 +1,26 @@
+[package]
+name = "dora-ros2-bridge-node"
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+publish = false  # binary, delivered via `dora` CLI
+
+[[bin]]
+name = "dora-ros2-bridge-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true }
+dora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false }
+dora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
+dora-ros2-bridge-msg-gen = { workspace = true }
+dora-message = { workspace = true }
+arrow = { workspace = true }
+eyre = { workspace = true }
+flume = "0.11"
+futures = { workspace = true }
+futures-timer = "3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"

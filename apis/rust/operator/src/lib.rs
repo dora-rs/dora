@@ -32,9 +32,18 @@ pub mod raw;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
-    Input { id: &'a str, data: ArrowData },
-    InputParseError { id: &'a str, error: String },
-    InputClosed { id: &'a str },
+    Input {
+        id: &'a str,
+        metadata: &'a types::Metadata,
+        data: ArrowData,
+    },
+    InputParseError {
+        id: &'a str,
+        error: String,
+    },
+    InputClosed {
+        id: &'a str,
+    },
     Stop,
 }
 
@@ -47,35 +56,21 @@ pub trait DoraOperator: Default {
     ) -> Result<DoraStatus, String>;
 }
 
-pub struct DoraOutputSender<'a> {
-    send_output: &'a SendOutput,
-    open_telemetry_context: String,
-}
+pub struct DoraOutputSender<'a>(&'a SendOutput);
 
 impl DoraOutputSender<'_> {
-    pub(crate) fn new(send_output: &SendOutput) -> DoraOutputSender<'_> {
-        DoraOutputSender {
-            send_output,
-            open_telemetry_context: String::new(),
-        }
-    }
-
-    pub(crate) fn set_open_telemetry_context(&mut self, open_telemetry_context: &str) {
-        self.open_telemetry_context = open_telemetry_context.to_owned();
-    }
-
     ///  Send an output from the operator:
     ///  - `id` is the `output_id` as defined in your dataflow.
     ///  - `data` is the data that should be sent
-    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String> {
+    pub fn send(&mut self, id: &str, data: impl Array) -> Result<(), String> {
         let (data_array, schema) =
             arrow::ffi::to_ffi(&data.into_data()).map_err(|err| err.to_string())?;
-        let result = self.send_output.send_output.call(Output {
-            id: id.into(),
+        let result = self.0.send_output.call(Output {
+            id: id.to_owned().into(),
             data_array,
             schema,
             metadata: Metadata {
-                open_telemetry_context: self.open_telemetry_context.clone().into(),
+                open_telemetry_context: String::new().into(), // TODO
             },
         });
         result.into_result()

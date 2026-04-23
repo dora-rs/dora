@@ -1,39 +1,78 @@
-# Python Dataflow Example
+# Python Dataflow
 
-This examples shows how to create and connect dora nodes in Python.
+Basic three-node Python pipeline: sender produces messages, transformer enriches them, receiver consumes both streams.
 
-## Overview
+## Architecture
 
-The [`dataflow.yml`](./dataflow.yml) defines a simple dataflow graph with the following three nodes:
-
-- a webcam node, that connects to your webcam and feed the dataflow with webcam frame as jpeg compressed bytearray.
-- a window plotting node, that will retrieve the webcam image and plot it.
-
-The same dataflow is implemented for a `dynamic-node` in [`dataflow_dynamic.yml`](./dataflow_dynamic.yml). It contains
-the same nodes as the previous dataflow, but the plot node is a dynamic node. See the next section for more
-information on how to start such a dataflow.
-
-## Getting started
-
-After installing Rust, `dora-cli` and `uv` (if you installed the cli without pip), you will need to install the dependencies:
-
-```bash
-cd examples/python-dataflow
-uv pip install -e ../../apis/python/node --reinstall
-dora build ./dataflow.yml --uv (or dora build ./dataflow_dynamic.yml --uv)
+```
+sender --> message     --> receiver
+        -> message     --> transformer --> transformed --> receiver
 ```
 
-It will install the required dependencies for the Python nodes.
+The receiver has two inputs: raw `message` from sender and `transformed` from transformer.
 
-Then you can run the dataflow:
+## Nodes
+
+**sender** (`sender.py`) -- Sends 100 numbered messages as `pa.array([i])` with 100ms delays. Exits after the loop completes.
+
+**transformer** (`transformer.py`) -- Receives each message number and creates a `StructArray` with three fields:
+- `doubled`: the value times 2
+- `description`: a formatted string (`"Message #N"`)
+- `is_even`: boolean flag
+
+**receiver** (`receiver.py`) -- Iterates over events, distinguishing inputs by `event["id"]`:
+- `"message"`: prints the raw integer array
+- `"transformed"`: prints the struct fields
+- Breaks on `STOP` event
+
+## Variants
+
+| File | Description |
+|------|-------------|
+| `dataflow.yml` | Standard sender/transformer/receiver pipeline |
+| `dataflow_dynamic.yml` | Separate example: camera + opencv-plot vision pipeline with dynamic node loading |
+
+## Prerequisites
+
+Install the Python node API (the PyPI package is `dora-rs`, **not** `dora`):
 
 ```bash
-dora run ./dataflow.yml --uv (or dora start ./dataflow_dynamic.yml --uv)
+pip install dora-rs
 ```
 
-**Note**: if you're running the dynamic dataflow, you will need to start manually the opencv-plot node:
+> **Note:** The Python import name is `dora` (`from dora import Node`), but the
+> PyPI package name is **`dora-rs`**. Running `pip install dora` installs an
+> unrelated package and will cause `ImportError: cannot import name 'Node'`.
+
+## Run
 
 ```bash
-# activate your virtual environment in another terminal
-python opencv-plot --uv
+dora run dataflow.yml
 ```
+
+Or use `uv` to manage the Python environment automatically:
+
+```bash
+dora run dataflow.yml --uv
+```
+
+Expected output (receiver logs):
+
+```
+Received message: [0]
+Received transformed: [{'doubled': 0, 'description': 'Message #0', 'is_even': True}]
+Received message: [1]
+Received transformed: [{'doubled': 2, 'description': 'Message #1', 'is_even': False}]
+...
+```
+
+## What This Demonstrates
+
+| Feature | Where |
+|---------|-------|
+| `pa.array()` for simple values | Sender |
+| `pa.StructArray` for structured data | Transformer |
+| Multiple inputs on one node | Receiver (message + transformed) |
+| Event type handling (INPUT, STOP) | Receiver |
+| `event["id"]` to distinguish inputs | Receiver |
+| `event["value"].to_pylist()` for reading | Receiver |

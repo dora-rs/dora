@@ -1,7 +1,7 @@
 use clap::ValueEnum;
 use dora_message::{common::NodeErrorCause, coordinator_to_cli::DataflowResult};
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum OutputFormat {
     Table,
     Json,

@@ -1,0 +1,28 @@
+nodes:
+  # Crashes on first tick every incarnation. With max_restarts=1 the
+  # daemon restarts exactly once before giving up, so the observer
+  # downstream must see exactly one `NodeRestarted:crasher` event.
+  - id: crasher
+    build: cargo build -p always-crash-node
+    path: ../../target/debug/always-crash-node
+    restart_policy: on-failure
+    max_restarts: 1
+    restart_delay: 0.1
+    # Output is declared so the observer downstream can subscribe and
+    # therefore be entered into `mappings`, which is what the daemon
+    # iterates when emitting `NodeRestarted` (binaries/daemon/src/lib.rs:3628).
+    # The node itself never emits — it panics on the first tick — and
+    # that's fine for this test; we're asserting the lifecycle event,
+    # not data flow.
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - pulse
+
+  - id: observer
+    build: cargo build -p event-log-observer-node
+    path: ../../target/debug/event-log-observer-node
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-node-restarted-delivery.log
+    inputs:
+      pulse: crasher/pulse

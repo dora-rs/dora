@@ -1,7 +1,5 @@
 use ::dora_ros2_bridge::rustdds::{self, policy};
 use pyo3::prelude::{pyclass, pymethods};
-use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
-
 /// ROS2 QoS Policy
 ///
 /// :type durability: dora.Ros2Durability, optional
@@ -13,8 +11,8 @@ use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 /// :type keep_last: int, optional
 /// :rtype: dora.Ros2QosPolicies
 ///
-#[derive(Clone, Str, Repr, Dir, Dict)]
-#[pyclass]
+#[derive(Clone)]
+#[pyclass(from_py_object)]
 #[non_exhaustive]
 pub struct Ros2QosPolicies {
     pub durability: Ros2Durability,
@@ -79,8 +77,8 @@ impl From<Ros2QosPolicies> for rustdds::QosPolicies {
 /// DDS 2.2.3.4 DURABILITY
 ///
 /// :rtype: dora.Ros2Durability
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Str, Repr, Dir, Dict)]
-#[pyclass(eq, eq_int)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[pyclass(eq, eq_int, from_py_object)]
 pub enum Ros2Durability {
     Volatile,
     TransientLocal,
@@ -105,8 +103,8 @@ impl From<Ros2Durability> for policy::Durability {
 
 /// DDS 2.2.3.11 LIVELINESS
 /// :rtype: dora.Ros2Liveliness
-#[derive(Copy, Clone, PartialEq, Str, Repr, Dir, Dict)]
-#[pyclass(eq, eq_int)]
+#[derive(Copy, Clone, PartialEq)]
+#[pyclass(eq, eq_int, from_py_object)]
 pub enum Ros2Liveliness {
     Automatic,
     ManualByParticipant,

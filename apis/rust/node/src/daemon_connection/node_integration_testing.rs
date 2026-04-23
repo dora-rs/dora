@@ -14,7 +14,7 @@ use dora_core::{
 };
 use dora_message::{
     common::{DataMessage, Timestamped},
-    daemon_to_node::{DaemonReply, NodeEvent, NodeEventOrUnknown},
+    daemon_to_node::{DaemonReply, NodeEvent},
     integration_testing_format::{
         IncomingEvent, InputData, IntegrationTestInput, TimedIncomingEvent,
     },
@@ -137,10 +137,11 @@ impl IntegrationTestingEvents {
         let start_timestamp = self.start_timestamp;
         let skip_output_time_offsets = self.options.skip_output_time_offsets;
 
+        let arc_data = data.as_ref().map(|d| std::sync::Arc::new(d.clone()));
         let output = convert_output_to_json(
             output_id,
             metadata,
-            data,
+            &arc_data,
             start_timestamp,
             skip_output_time_offsets,
         )?;
@@ -159,7 +160,7 @@ impl IntegrationTestingEvents {
         Ok(DaemonReply::Empty)
     }
 
-    fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEventOrUnknown>>> {
+    fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
         let Some(event) = self.events.next() else {
             return Ok(None);
         };
@@ -180,7 +181,7 @@ impl IntegrationTestingEvents {
         );
 
         let converted = match event {
-            IncomingEvent::Stop => NodeEvent::Stop { reason: None },
+            IncomingEvent::Stop => NodeEvent::Stop,
             IncomingEvent::Input { id, metadata, data } => {
                 let (data, type_info) = if let Some(data) = data {
                     let array = read_input_data(*data).with_context(|| {
@@ -199,15 +200,17 @@ impl IntegrationTestingEvents {
                 meta.parameters = metadata.unwrap_or_default();
                 NodeEvent::Input {
                     id,
-                    metadata: meta,
-                    data: data.map(|d| DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d))),
+                    metadata: std::sync::Arc::new(meta),
+                    data: data.map(|d| {
+                        std::sync::Arc::new(DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d)))
+                    }),
                 }
             }
             IncomingEvent::InputClosed { id } => NodeEvent::InputClosed { id },
             IncomingEvent::AllInputsClosed => NodeEvent::AllInputsClosed,
         };
         Ok(Some(Timestamped {
-            inner: converted.into(),
+            inner: converted,
             timestamp,
         }))
     }
@@ -221,7 +224,7 @@ enum OutputWriter {
 pub fn convert_output_to_json(
     output_id: &dora_message::id::DataId,
     metadata: &Metadata,
-    data: &Option<DataMessage>,
+    data: &Option<std::sync::Arc<DataMessage>>,
     start_timestamp: Timestamp,
     skip_output_time_offsets: bool,
 ) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
@@ -233,8 +236,12 @@ pub fn convert_output_to_json(
     }
     if data.is_some() {
         let (drop_tx, drop_rx) = flume::unbounded();
-        let data_array = data_to_arrow_array(data.clone(), metadata, drop_tx)
-            .context("failed to convert output to arrow array")?;
+        let data_array = data_to_arrow_array(
+            data.clone().map(std::sync::Arc::unwrap_or_clone),
+            metadata,
+            drop_tx,
+        )
+        .context("failed to convert output to arrow array")?;
         // integration testing doesn't use shared memory -> no drop tokens
         let _ = drop_rx;
 

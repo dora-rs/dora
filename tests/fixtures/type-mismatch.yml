@@ -1,0 +1,19 @@
+# Intentional type-mismatch fixture for testing `dora validate --strict-types`.
+# The sink declares `reading: std/core/v1/String` but the sensor outputs
+# `std/core/v1/Float64`. strict-types validation must reject this dataflow.
+#
+# Used by the Tier 0 CLI smoke gates in .github/workflows/ci.yml.
+nodes:
+  - id: sensor
+    path: sensor.py
+    outputs:
+      - reading
+    output_types:
+      reading: std/core/v1/Float64
+
+  - id: sink
+    path: sink.py
+    inputs:
+      reading: sensor/reading
+    input_types:
+      reading: std/core/v1/String  # intentionally wrong: sensor emits Float64

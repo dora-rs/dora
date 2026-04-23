@@ -163,7 +163,9 @@ jobs:
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          REPO: ${{ github.repository }}
         run: |
           echo "Artifacts to upload:"
           ls -la artifacts/
-          gh release upload "${{ github.event.release.tag_name }}" artifacts/* --clobber --repo "${{ github.repository }}"
+          gh release upload "$RELEASE_TAG" artifacts/* --clobber --repo "$REPO"

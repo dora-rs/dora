@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use super::{Executable, default_tracing};
 use clap::Subcommand;
 use eyre::{Context, bail};
@@ -20,7 +22,7 @@ pub enum SelfSubCommand {
 }
 
 impl Executable for SelfSubCommand {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
         match self {
@@ -59,7 +61,7 @@ impl Executable for SelfSubCommand {
                                 );
                             }
                         }
-                        Err(e) => println!("Failed to check for updates: {e}"),
+                        Err(e) => bail!("failed to check for updates: {e}"),
                     }
                 } else {
                     // Perform the actual update
@@ -72,11 +74,14 @@ impl Executable for SelfSubCommand {
                                 println!("Successfully updated Dora CLI to version: {version}");
                             }
                         },
-                        Err(e) => println!("Failed to update: {e}"),
+                        Err(e) => bail!("failed to update: {e}"),
                     }
                 }
             }
             SelfSubCommand::Uninstall { force } => {
+                if !force && !std::io::stdin().is_terminal() {
+                    bail!("use --force for non-interactive uninstall");
+                }
                 if !force {
                     let confirmed =
                         inquire::Confirm::new("Are you sure you want to uninstall Dora CLI?")
@@ -100,11 +105,11 @@ impl Executable for SelfSubCommand {
                         .args(["pip", "uninstall", "dora-rs-cli"])
                         .status();
 
-                    if let Ok(status) = uv_status {
-                        if status.success() {
-                            println!("Dora CLI has been successfully uninstalled via uv pip.");
-                            return Ok(());
-                        }
+                    if let Ok(status) = uv_status
+                        && status.success()
+                    {
+                        println!("Dora CLI has been successfully uninstalled via uv pip.");
+                        return Ok(());
                     }
 
                     // Fall back to regular pip uninstall

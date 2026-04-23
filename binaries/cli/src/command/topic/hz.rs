@@ -1,18 +1,16 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
-use dora_core::topics::{open_zenoh_session, zenoh_output_publish_topic};
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
-use eyre::{Context, eyre};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    fmt,
+    io::{self, IsTerminal},
     iter,
-    net::IpAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use uuid::Uuid;
 
 use crate::{
     command::{
@@ -28,6 +26,13 @@ use crate::{
 /// (average, min, max, stddev) over a sliding window. Average frequency (Hz)
 /// is derived from the average interval.
 ///
+/// Topic inspection requires debug mode on the dataflow:
+///
+/// ```yaml
+/// _unstable_debug:
+///   enable_debug_inspection: true
+/// ```
+///
 /// If no `DATA` is provided, all outputs from the selected dataflow will be
 /// echoed.
 ///
@@ -42,13 +47,14 @@ use crate::{
 /// Measure all topics:
 ///   dora topic hz -d my-dataflow --window 10
 ///
-/// Note: The dataflow descriptor must include the following snippet so that
-/// runtime messages can be inspected:
-///
-/// ```yaml
-/// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
-/// ```
+fn parse_window(s: &str) -> Result<usize, String> {
+    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
+    if val == 0 {
+        return Err("window must be at least 1".to_string());
+    }
+    Ok(val)
+}
+
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Hz {
@@ -56,31 +62,110 @@ pub struct Hz {
     selector: TopicSelector,
 
     /// Sliding window size in seconds
-    #[clap(long, default_value_t = 10)]
+    #[clap(long, default_value_t = 10, value_parser = parse_window)]
     window: usize,
+
+    /// Run for this many seconds without TUI, print final stats, and exit.
+    /// Required when stdout is not a terminal (e.g. CI, scripting).
+    /// Must be at least 1.
+    #[clap(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..))]
+    duration: Option<u64>,
 
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
 }
 
 impl Executable for Hz {
-    async fn execute(self) -> eyre::Result<()> {
-        let client = self.coordinator.connect_rpc().await?;
-        let (dataflow_id, topics) = self.selector.resolve(&client).await?;
+    fn execute(self) -> eyre::Result<()> {
+        let session = self.coordinator.connect()?;
+        let (dataflow_id, topics) = self.selector.resolve(&session)?;
+
+        let ws_topics: Vec<_> = topics
+            .iter()
+            .map(|t| (t.node_id.clone(), t.data_id.clone()))
+            .collect();
+
+        let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+
+        // Non-interactive path: collect for `--duration`, print final stats.
+        if let Some(secs) = self.duration {
+            return run_hz_oneshot(self.window, topics, data_rx, secs);
+        }
+
+        if !io::stdout().is_terminal() {
+            eyre::bail!(
+                "`dora topic hz` requires an interactive terminal. \
+                 Pass `--duration <SECONDS>` for non-interactive use."
+            );
+        }
 
         let terminal = ratatui::init();
-        let result = run_hz(
-            terminal,
-            self.window,
-            dataflow_id,
-            topics,
-            self.coordinator.coordinator_addr,
-        )
-        .await;
-        result.inspect(|_| {
-            ratatui::restore();
-        })
+        let result = run_hz(terminal, self.window, topics, data_rx);
+        ratatui::restore();
+        result
     }
+}
+
+/// Non-interactive sampler: subscribes for `seconds`, then prints
+/// per-topic stats as a plain table and exits.
+fn run_hz_oneshot(
+    window: usize,
+    outputs: BTreeSet<TopicIdentifier>,
+    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
+    seconds: u64,
+) -> eyre::Result<()> {
+    let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
+    stats.push((HzLabel::Aggregate, Arc::new(HzStats::new(window))));
+    for topic in &outputs {
+        stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
+    }
+
+    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
+        if let HzLabel::Topic(topic) = label {
+            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+        }
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        match data_rx.recv_timeout(remaining) {
+            Ok(Ok(payload)) => {
+                let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if let InterDaemonEvent::Output {
+                    node_id, output_id, ..
+                } = event.inner
+                {
+                    let now = Instant::now();
+                    stats[0].1.record(now); // aggregate
+                    let key = (node_id.to_string(), output_id.to_string());
+                    if let Some(&idx) = topic_index.get(&key) {
+                        stats[idx].1.record(now);
+                    }
+                }
+            }
+            Ok(Err(_)) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
+    for (label, hz_stats) in &stats {
+        let samples = hz_stats.timestamps.lock().unwrap().len();
+        match hz_stats.calculate() {
+            Some(s) => println!(
+                "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
+                label, s.avg_ms, s.avg_hz, s.min_ms, s.max_ms, s.std_ms, samples
+            ),
+            None => println!("{}\t-\t-\t-\t-\t-\t{}", label, samples),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -98,7 +183,7 @@ impl HzStats {
     }
 
     fn record(&self, now: Instant) {
-        let mut timestamps = self.timestamps.lock().unwrap();
+        let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         timestamps.push_back(now);
         let cutoff = now - self.window_duration;
         while let Some(&first) = timestamps.front() {
@@ -111,7 +196,6 @@ impl HzStats {
     }
 
     fn intervals_ms(&self) -> Vec<f64> {
-        // Return inter-arrival times in milliseconds for the current window
         self.timestamps
             .lock()
             .unwrap()
@@ -161,32 +245,48 @@ struct Stats {
     std_ms: f64,
 }
 
-async fn run_hz(
+/// Label for hz stats entries. Avoids creating a fake `TopicIdentifier` for the
+/// aggregate row, which could collide with a real node name.
+enum HzLabel<'a> {
+    /// Aggregate of all topics.
+    Aggregate,
+    /// A specific topic.
+    Topic(&'a TopicIdentifier),
+}
+
+impl fmt::Display for HzLabel<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HzLabel::Aggregate => write!(f, "ALL"),
+            HzLabel::Topic(t) => write!(f, "{t}"),
+        }
+    }
+}
+
+fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
-    dataflow_id: Uuid,
     outputs: BTreeSet<TopicIdentifier>,
-    coordinator_addr: IpAddr,
+    data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
 ) -> eyre::Result<()> {
-    // Add a synthetic aggregate entry ("<ALL>") that merges all outputs
-    let mut topics_with_all = Vec::with_capacity(outputs.len() + 1);
-    topics_with_all.push(TopicIdentifier {
-        node_id: "<ALL>".to_string().into(),
-        data_id: "*".to_string().into(),
-    });
-    topics_with_all.extend(outputs.into_iter());
+    // Build stats vec: index 0 is the aggregate, rest are per-topic
+    let mut stats: Vec<(HzLabel<'_>, Arc<HzStats>)> = Vec::with_capacity(outputs.len() + 1);
+    stats.push((HzLabel::Aggregate, Arc::new(HzStats::new(window))));
+    for topic in &outputs {
+        stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
+    }
 
-    let stats = topics_with_all
-        .iter()
-        .map(|topic| (topic, Arc::new(HzStats::new(window))))
-        .collect::<Vec<_>>();
+    // Build lookup map: (node_id, data_id) -> index in stats (skip index 0 = aggregate)
+    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
+        if let HzLabel::Topic(topic) = label {
+            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
+        }
+    }
 
     let mut selected: usize = 0;
-    // Ssub-window for instantaneous rate (Hz)
     let sub_window = Duration::from_millis(1000);
-    // Keep a flowing sparkline per topic for recent rates
     let mut rate_series: Vec<VecDeque<u64>> = vec![VecDeque::with_capacity(240); stats.len()];
-    // Start time to decide whether full window elapsed
     let start = Instant::now();
 
     terminal.draw(|f| {
@@ -200,44 +300,42 @@ async fn run_hz(
         )
     })?;
 
-    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
-        .await
-        .context("failed to open zenoh session")?;
-
-    // Spawn subscribers for each output
-    // Aggregator is at index 0
+    // Spawn receiver thread to feed stats from WS data
     let all_stats = stats[0].1.clone();
-    for (i, (topic, hz_stats)) in stats.iter().enumerate() {
-        if i == 0 {
-            continue;
-        }
-        let zenoh_session = zenoh_session.clone();
-        let topic = (*topic).clone();
-        let hz_stats = hz_stats.clone();
-        let all_stats_cloned = all_stats.clone();
-        tokio::spawn(async move {
-            if let Err(e) = subscribe_output(
-                zenoh_session,
-                dataflow_id,
-                &topic,
-                hz_stats,
-                Some(all_stats_cloned),
-            )
-            .await
-            {
-                eprintln!("Error subscribing to {topic}: {e}");
+    let stats_clones: Vec<Arc<HzStats>> = stats.iter().map(|(_, s)| s.clone()).collect();
+    let topic_index_clone = topic_index.clone();
+    std::thread::spawn(move || {
+        while let Ok(result) = data_rx.recv() {
+            let payload = match result {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            match event.inner {
+                InterDaemonEvent::Output {
+                    node_id, output_id, ..
+                } => {
+                    let now = Instant::now();
+                    all_stats.record(now);
+                    let key = (node_id.to_string(), output_id.to_string());
+                    if let Some(&idx) = topic_index_clone.get(&key) {
+                        stats_clones[idx].record(now);
+                    }
+                }
+                InterDaemonEvent::OutputClosed { .. } => {}
             }
-        });
-    }
+        }
+    });
 
     loop {
-        // Update per-topic instantaneous rate and append to series
         let now = Instant::now();
         for (i, (_topic, s)) in stats.iter().enumerate() {
-            // count messages within sub_window
             let cutoff = now - sub_window;
             let mut count = 0usize;
-            let ts = s.timestamps.lock().unwrap();
+            let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
             for &t in ts.iter().rev() {
                 if t < cutoff {
                     break;
@@ -264,74 +362,31 @@ async fn run_hz(
             )
         })?;
 
-        if crossterm::event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = crossterm::event::read()? {
-                if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
-                    || (key.modifiers.contains(KeyModifiers::CONTROL)
-                        && key.code == KeyCode::Char('c'))
-                {
-                    break;
-                }
-
-                match key.code {
-                    KeyCode::Up => {
-                        if selected == 0 {
-                            selected = stats.len().saturating_sub(1);
-                        } else {
-                            selected -= 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if stats.is_empty() {
-                            selected = 0;
-                        } else {
-                            selected = (selected + 1) % stats.len();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn subscribe_output(
-    zenoh_session: zenoh::Session,
-    dataflow_id: Uuid,
-    topic: &TopicIdentifier,
-    hz_stats: Arc<HzStats>,
-    aggregate: Option<Arc<HzStats>>,
-) -> eyre::Result<()> {
-    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(subscribe_topic)
-        .await
-        .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {topic}"))?;
-
-    while let Ok(sample) = subscriber.recv_async().await {
-        let event = match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
+        if crossterm::event::poll(Duration::from_millis(50))?
+            && let Event::Key(key) = crossterm::event::read()?
         {
-            Ok(event) => event,
-            Err(_) => continue,
-        };
-
-        match event.inner {
-            InterDaemonEvent::Output { .. } => {
-                let now = Instant::now();
-                hz_stats.record(now);
-                if let Some(all) = &aggregate {
-                    all.record(now);
-                }
-            }
-            InterDaemonEvent::OutputClosed { .. } => {
+            if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+                || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
+            {
                 break;
             }
-            InterDaemonEvent::NodeFailed { .. } => {
-                // NodeFailed events are not relevant for topic hz
-                continue;
+
+            match key.code {
+                KeyCode::Up => {
+                    if selected == 0 {
+                        selected = stats.len().saturating_sub(1);
+                    } else {
+                        selected -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if stats.is_empty() {
+                        selected = 0;
+                    } else {
+                        selected = (selected + 1) % stats.len();
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -341,13 +396,21 @@ async fn subscribe_output(
 
 fn ui(
     f: &mut Frame<'_>,
-    stats: &[(&TopicIdentifier, Arc<HzStats>)],
+    stats: &[(HzLabel<'_>, Arc<HzStats>)],
     selected: usize,
     rate_series: &[VecDeque<u64>],
     start: Instant,
     window_dur: Duration,
 ) {
-    // Table header: interval stats in ms + derived avg Hz
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(55),
+            Constraint::Percentage(44),
+            Constraint::Length(1),
+        ])
+        .split(f.area());
+
     let header = Row::new([
         "Output", "Avg (ms)", "Avg (Hz)", "Min (ms)", "Max (ms)", "Std (ms)",
     ])
@@ -399,33 +462,22 @@ fn ui(
     )
     .header(header);
 
-    // Reserve space for a one-line footer with shortcut hints.
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(1)])
-        .split(f.area());
-
     f.render_widget(table, chunks[0]);
 
-    // Charts area split horizontally
     let chart_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
-    // Draw charts for the selected topic if available
     if let Some((name, selected_stats)) = stats.get(selected) {
-        // Prepare data
         let intervals = selected_stats.intervals_ms();
         let now = Instant::now();
 
-        // Left: Rolling rate sparkline (Hz within sub-window)
         let mut series: Vec<u64> = rate_series
             .get(selected)
             .map(|d| d.iter().copied().collect())
             .unwrap_or_default();
         if series.is_empty() {
-            // Show hint while not enough samples
             let info = Paragraph::new("Waiting for data...")
                 .style(Style::default().fg(Color::Gray).italic())
                 .block(
@@ -435,8 +487,7 @@ fn ui(
                 );
             f.render_widget(info, chart_chunks[0]);
         } else {
-            // Fit series to available width
-            let w = chart_chunks[0].width.saturating_sub(2) as usize; // borders
+            let w = chart_chunks[0].width.saturating_sub(2) as usize;
             if series.len() > w {
                 series = series[series.len() - w..].to_vec();
             }
@@ -451,7 +502,6 @@ fn ui(
             f.render_widget(spark, chart_chunks[0]);
         }
 
-        // Right: Histogram (s) using BarChart
         if intervals.is_empty() {
             let info = Paragraph::new("No samples for histogram")
                 .style(Style::default().fg(Color::Gray).italic())
@@ -486,7 +536,7 @@ fn ui(
                     let hi = lo + step;
                     Bar::default()
                         .value(c)
-                        .label(format!("{:.3}-{:.3}", lo, hi).into())
+                        .label(ratatui::text::Line::from(format!("{:.3}-{:.3}", lo, hi)))
                         .style(Style::default().fg(Color::Green))
                 })
                 .collect();
@@ -504,7 +554,6 @@ fn ui(
             f.render_widget(barchart, chart_chunks[1]);
         }
 
-        // If full window time not elapsed since start, render hint
         if now.duration_since(start) + Duration::from_millis(1) < window_dur {
             let warn = Paragraph::new(format!(
                 "Filling window: {:.0}/{:.0} ms",
@@ -516,7 +565,6 @@ fn ui(
             f.render_widget(warn, chunks[1]);
         }
     } else {
-        // Nothing selected or empty stats
         let info = Paragraph::new("No topics selected")
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center)
@@ -524,9 +572,33 @@ fn ui(
         f.render_widget(info, chunks[1]);
     }
 
-    // Footer with key hints
     let footer = Paragraph::new("Up/Down: Select  |  Exit: q / Ctrl-C / Esc")
         .style(Style::default().fg(Color::Yellow))
         .alignment(Alignment::Center);
     f.render_widget(footer, chunks[2]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_window_valid() {
+        assert_eq!(parse_window("10").unwrap(), 10);
+    }
+
+    #[test]
+    fn parse_window_one() {
+        assert_eq!(parse_window("1").unwrap(), 1);
+    }
+
+    #[test]
+    fn parse_window_zero() {
+        assert!(parse_window("0").is_err());
+    }
+
+    #[test]
+    fn parse_window_non_numeric() {
+        assert!(parse_window("abc").is_err());
+    }
 }

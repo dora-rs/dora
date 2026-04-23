@@ -4,44 +4,77 @@ members = [
     "apis/c/operator",
     "apis/c++/node",
     "apis/c++/operator",
+    "apis/python/cli",
     "apis/python/node",
     "apis/python/operator",
-    "apis/rust/*",
+    "apis/rust/node",
+    "apis/rust/operator",
     "apis/rust/operator/macros",
     "apis/rust/operator/types",
     "binaries/cli",
     "binaries/coordinator",
     "binaries/daemon",
     "binaries/runtime",
+    "binaries/ros2-bridge-node",
     "examples/rust-dataflow/node",
     "examples/rust-dataflow/status-node",
     "examples/rust-dataflow/sink",
     "examples/rust-dataflow/sink-dynamic",
     "examples/ros2-bridge/rust/rust-ros2-example-node",
+    "examples/ros2-bridge/yaml-bridge-service/requester-node",
+    "examples/ros2-bridge/yaml-bridge-service/handler-node",
+    "examples/ros2-bridge/yaml-bridge-action/goal-node",
+    "examples/ros2-bridge/yaml-bridge-action-server/handler-node",
     "examples/benchmark/node",
     "examples/benchmark/sink",
+    "examples/service-example/client",
+    "examples/service-example/server",
+    "examples/action-example/client",
+    "examples/action-example/server",
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "examples/cpu-affinity-probe",
+    "examples/log-sink-tcp",
+    "examples/log-sink-file",
+    "examples/log-sink-alert",
+    "examples/cross-language/rust-sender",
+    "examples/cross-language/rust-receiver",
+    "examples/validated-pipeline/source",
+    "examples/validated-pipeline/transform",
+    "examples/validated-pipeline/sink",
     "examples/error-propagation/producer",
     "examples/error-propagation/consumer",
     "libraries/arrow-convert",
-    "libraries/communication-layer/*",
+    "libraries/log-utils",
+    "libraries/coordinator-store",
     "libraries/core",
     "libraries/message",
+    "libraries/recording",
+    "binaries/replay-node",
+    "binaries/record-node",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
+    "libraries/extensions/ros2-bridge/arrow",
     "tests/queue_size_latest_data_rust/receive_data",
+    "tests/fault_tolerance/always_crash_node",
+    "tests/fault_tolerance/clean_exit_node",
+    "tests/fault_tolerance/delayed_crash_node",
+    "tests/fault_tolerance/event_log_observer_node",
+    "tests/fault_tolerance/hang_after_init_node",
+    "tests/fault_tolerance/input_closed_observer_node",
+    "tests/fault_tolerance/silent_source_node",
+    "tests/fault_tolerance/timed_burst_source_node",
 ]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85.0"
-# Make sure to also bump `apis/node/python/__init__.py` version.
-version = "0.5.0"
+rust-version = "1.88.0"
+# Python packages derive version from CARGO_PKG_VERSION automatically.
+version = "0.2.1"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
 readme = "./README.md"
@@ -49,50 +82,62 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "0.5.0", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "0.5.0", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "0.5.0", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "0.5.0", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "0.5.0", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "0.5.0", path = "apis/python/operator" }
-dora-operator-api-c = { version = "0.5.0", path = "apis/c/operator" }
-dora-node-api-c = { version = "0.5.0", path = "apis/c/node" }
-dora-core = { version = "0.5.0", path = "libraries/core" }
-dora-arrow-convert = { version = "0.5.0", path = "libraries/arrow-convert" }
-dora-tracing = { version = "0.5.0", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "0.5.0", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "0.5.0", path = "libraries/extensions/download" }
-communication-layer-request-reply = { version = "0.5.0", path = "libraries/communication-layer/request-reply" }
-dora-cli = { version = "0.5.0", path = "binaries/cli" }
-dora-runtime = { version = "0.5.0", path = "binaries/runtime" }
-dora-daemon = { version = "0.5.0", path = "binaries/daemon" }
-dora-coordinator = { version = "0.5.0", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "0.5.0", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "0.5.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "0.2.0", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "0.2.0", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "0.2.0", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "0.2.0", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "0.2.0", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "0.2.0", path = "apis/python/operator" }
+dora-operator-api-c = { version = "0.2.0", path = "apis/c/operator" }
+dora-node-api-c = { version = "0.2.0", path = "apis/c/node" }
+dora-core = { version = "0.2.0", path = "libraries/core" }
+dora-recording = { version = "0.2.0", path = "libraries/recording" }
+dora-arrow-convert = { version = "0.2.0", path = "libraries/arrow-convert" }
+dora-tracing = { version = "0.2.0", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "0.2.0", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "0.2.0", path = "libraries/extensions/download" }
+dora-log-utils = { version = "0.2.0", path = "libraries/log-utils" }
+dora-coordinator-store = { version = "0.2.0", path = "libraries/coordinator-store" }
+dora-cli = { version = "0.2.0", path = "binaries/cli" }
+dora-runtime = { version = "0.2.0", path = "binaries/runtime" }
+dora-daemon = { version = "0.2.0", path = "binaries/daemon" }
+dora-coordinator = { version = "0.2.0", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "0.2.0", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "0.2.0", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-# versioned independently from the other dora crates
-dora-message = { version = "0.8.0", path = "libraries/message" }
-arrow = { version = "54.2.1" }
-arrow-schema = { version = "54.2.1" }
-arrow-data = { version = "54.2.1" }
-arrow-array = { version = "54.2.1" }
-arrow-json = { version = "54.2.1" }
-parquet = { version = "54.2.1" }
-pyo3 = { version = "0.23", features = [
+dora-message = { version = "0.2.0", path = "libraries/message" }
+arrow = { version = "58", default-features = false }
+arrow-schema = { version = "58" }
+arrow-data = { version = "58" }
+arrow-array = { version = "58" }
+arrow-json = { version = "58" }
+parquet = { version = "58" }
+pyo3 = { version = "0.28", features = [
     "eyre",
     "abi3-py37",
     "multiple-pymethods",
-    "experimental-inspect"
 ] }
-pythonize = "0.23"
+pythonize = "0.28"
 git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
-zenoh = "1.1.1"
+zenoh = { version = "~1.8", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
 serde_json = "1.0.145"
+thiserror = "2.0"
+colored = "3.0.0"
+inquire = { version = "0.7.5", default-features = false }
+tokio = { version = "1.28", default-features = false }
+eyre = "0.6.8"
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1.36"
+uuid = { version = "1.7", features = ["serde", "v7"] }
+futures = { version = "0.3.28", default-features = false, features = ["std", "async-await"] }
+bincode = "1.3.3"
+flume = "0.10.14"
+tempfile = "3.23.0"
 
 [package]
 name = "dora-examples"
-rust-version = "1.85.0"
+rust-version.workspace = true
 version = "0.0.0"
 edition.workspace = true
 license = "Apache-2.0"
@@ -101,22 +146,25 @@ publish = false
 [features]
 
 [dev-dependencies]
-eyre = "0.6.8"
-tokio = "1.24.2"
+eyre = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
 dora-cli = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-core = { workspace = true }
+dora-daemon = { workspace = true }
 dora-message = { workspace = true }
 dora-tracing = { workspace = true }
 dora-download = { workspace = true }
 dunce = "1.0.2"
-serde_yaml = "0.8.23"
-uuid = { version = "1.7", features = ["v7", "serde"] }
-tracing = "0.1.36"
-futures = "0.3.25"
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
 tokio-stream = "0.1.11"
-tempfile = "3.23.0"
+tempfile = { workspace = true }
 assert2 = "0.3.16"
+tokio-tungstenite = "0.28"
 
 [[example]]
 name = "c-dataflow"
@@ -163,7 +211,19 @@ path = "examples/multiple-daemons/run.rs"
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
 
+[[test]]
+name = "ws-cli-e2e"
+path = "tests/ws-cli-e2e.rs"
+
+[[test]]
+name = "example-smoke"
+path = "tests/example-smoke.rs"
+
+[profile.release]
+lto = "thin"
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
-lto = "thin"
+lto = "fat"
+codegen-units = 1

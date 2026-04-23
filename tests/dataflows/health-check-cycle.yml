@@ -1,0 +1,22 @@
+# Fixture for the full health_check_timeout kill → respawn → kill → Err
+# cycle (#1668). Same node as `health-check-timeout.yml` but with
+# `restart_policy: on-failure` + `max_restarts: 1` so the daemon must
+# attempt exactly one respawn after the first SIGKILL and then give up.
+#
+# Why 2 s timeout (not tighter): `init_from_env` takes ~500 ms on a
+# cold spawn, so a shorter watchdog races the post-init marker write
+# (verified in #1648).
+health_check_interval: 0.1
+
+nodes:
+  - id: hang-after-init
+    build: cargo build -p hang-after-init-node
+    path: ../../target/debug/hang-after-init-node
+    restart_policy: on-failure
+    max_restarts: 1
+    restart_delay: 0.1
+    health_check_timeout: 2.0
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-health-check-cycle.log
+    inputs:
+      tick: dora/timer/millis/200

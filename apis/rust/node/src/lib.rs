@@ -91,28 +91,46 @@ pub use dora_arrow_convert::*;
 pub use dora_core::{self, uhlc};
 pub use dora_message::{
     DataflowId,
-    metadata::{Metadata, MetadataParameters, Parameter},
+    metadata::{
+        self, FIN, FLUSH, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
+        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID, SEGMENT_ID,
+        SEQ, SESSION_ID, get_bool_param, get_integer_param, get_string_param,
+    },
 };
 use dora_message::{
     common::Timestamped,
     daemon_to_node::{DaemonCommunication, DaemonReply},
     node_to_daemon::DaemonRequest,
 };
-pub use event_stream::{Event, EventScheduler, EventStream, StopCause, TryRecvError, merged};
+pub use event_stream::{
+    Event, EventScheduler, EventStream, StopCause, TryRecvError,
+    input_tracker::{InputState, InputTracker},
+    merged,
+};
 pub use flume;
 pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
-pub use node::{DataSample, DoraNode, ZERO_COPY_THRESHOLD, arrow_utils};
+pub use node::{
+    DataSample, DoraNode, DoraNodeBuilder, StreamSegment, ZERO_COPY_THRESHOLD, arrow_utils,
+};
+pub use uuid;
 
 pub use serde_json;
 use tokio::sync::oneshot;
 
 mod daemon_connection;
+mod error;
 mod event_stream;
 pub mod integration_testing;
 mod node;
+
+pub use error::{NodeError, NodeResult, PatternError};
+
+/// Backward-compatible alias so code using the old `DoraNode` name still compiles.
+/// Backward-compatible alias for [`Event`].
+pub use Event as DoraEvent;
 
 #[derive(Debug)]
 enum DaemonCommunicationWrapper {

@@ -1,0 +1,11 @@
+nodes:
+  - id: clean-exit
+    build: cargo build -p clean-exit-node
+    path: ../../target/debug/clean-exit-node
+    restart_policy: always
+    max_restarts: 2
+    restart_delay: 0.1
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-restart-policy-always.log
+    inputs:
+      tick: dora/timer/millis/50

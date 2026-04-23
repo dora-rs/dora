@@ -1,6 +1,6 @@
 nodes:
   - id: send_data
-    build: pip install asyncio
+    build: pip install numpy pyarrow
     path: ./send_data.py
     inputs:
       tick:

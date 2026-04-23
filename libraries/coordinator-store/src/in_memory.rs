@@ -1,0 +1,328 @@
+use std::collections::BTreeMap;
+use std::sync::RwLock;
+
+use dora_message::common::DaemonId;
+use eyre::{Result, eyre};
+use uuid::Uuid;
+
+use dora_message::id::NodeId;
+
+use crate::{BuildRecord, CoordinatorStore, DaemonInfo, DataflowRecord, validate_param_limits};
+
+/// In-memory implementation of [`CoordinatorStore`].
+///
+/// State lives only in-process and is lost on restart.
+/// This is the default store used by the coordinator.
+/// Composite key for node parameter storage: (dataflow_id, node_id, param_key).
+type ParamKey = (Uuid, NodeId, String);
+
+pub struct InMemoryStore {
+    daemons: RwLock<BTreeMap<DaemonId, DaemonInfo>>,
+    dataflows: RwLock<BTreeMap<Uuid, DataflowRecord>>,
+    builds: RwLock<BTreeMap<Uuid, BuildRecord>>,
+    params: RwLock<BTreeMap<ParamKey, Vec<u8>>>,
+}
+
+impl InMemoryStore {
+    pub fn new() -> Self {
+        Self {
+            daemons: RwLock::new(BTreeMap::new()),
+            dataflows: RwLock::new(BTreeMap::new()),
+            builds: RwLock::new(BTreeMap::new()),
+            params: RwLock::new(BTreeMap::new()),
+        }
+    }
+}
+
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CoordinatorStore for InMemoryStore {
+    // -- Daemon registry --
+
+    fn register_daemon(&self, info: DaemonInfo) -> Result<()> {
+        let mut daemons = self
+            .daemons
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        daemons.insert(info.daemon_id.clone(), info);
+        Ok(())
+    }
+
+    fn unregister_daemon(&self, id: &DaemonId) -> Result<()> {
+        let mut daemons = self
+            .daemons
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        daemons.remove(id);
+        Ok(())
+    }
+
+    fn list_daemons(&self) -> Result<Vec<DaemonInfo>> {
+        let daemons = self
+            .daemons
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(daemons.values().cloned().collect())
+    }
+
+    fn get_daemon(&self, id: &DaemonId) -> Result<Option<DaemonInfo>> {
+        let daemons = self
+            .daemons
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(daemons.get(id).cloned())
+    }
+
+    fn get_daemon_by_machine(&self, machine_id: &str) -> Result<Option<DaemonId>> {
+        let daemons = self
+            .daemons
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(daemons
+            .keys()
+            .find(|id| id.matches_machine_id(machine_id))
+            .cloned())
+    }
+
+    // -- Dataflow state --
+
+    fn put_dataflow(&self, record: &DataflowRecord) -> Result<()> {
+        let mut dataflows = self
+            .dataflows
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        dataflows.insert(record.uuid, record.clone());
+        Ok(())
+    }
+
+    fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>> {
+        let dataflows = self
+            .dataflows
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(dataflows.get(uuid).cloned())
+    }
+
+    fn list_dataflows(&self) -> Result<Vec<DataflowRecord>> {
+        let dataflows = self
+            .dataflows
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(dataflows.values().cloned().collect())
+    }
+
+    fn delete_dataflow(&self, uuid: &Uuid) -> Result<()> {
+        let mut dataflows = self
+            .dataflows
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        dataflows.remove(uuid);
+        Ok(())
+    }
+
+    // -- Build state --
+
+    fn put_build(&self, record: &BuildRecord) -> Result<()> {
+        let mut builds = self
+            .builds
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        builds.insert(record.build_id, record.clone());
+        Ok(())
+    }
+
+    fn get_build(&self, build_id: &Uuid) -> Result<Option<BuildRecord>> {
+        let builds = self
+            .builds
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(builds.get(build_id).cloned())
+    }
+
+    fn list_builds(&self) -> Result<Vec<BuildRecord>> {
+        let builds = self
+            .builds
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(builds.values().cloned().collect())
+    }
+
+    fn delete_build(&self, build_id: &Uuid) -> Result<()> {
+        let mut builds = self
+            .builds
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        builds.remove(build_id);
+        Ok(())
+    }
+
+    // -- Node parameters --
+
+    fn put_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        value: &[u8],
+    ) -> Result<()> {
+        validate_param_limits(key, value)?;
+        let mut params = self
+            .params
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        params.insert(
+            (*dataflow_id, node_id.clone(), key.to_string()),
+            value.to_vec(),
+        );
+        Ok(())
+    }
+
+    fn get_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let params = self
+            .params
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        Ok(params
+            .get(&(*dataflow_id, node_id.clone(), key.to_string()))
+            .cloned())
+    }
+
+    fn list_node_params(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let params = self
+            .params
+            .read()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        // Use range scan: BTreeMap keys are ordered by (Uuid, NodeId, String).
+        // Start at (dataflow_id, node_id, "") and take while the prefix matches.
+        let start = (*dataflow_id, node_id.clone(), String::new());
+        Ok(params
+            .range(start..)
+            .take_while(|((df, nid, _), _)| df == dataflow_id && nid == node_id)
+            .map(|((_, _, key), value)| (key.clone(), value.clone()))
+            .collect())
+    }
+
+    fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()> {
+        let mut params = self
+            .params
+            .write()
+            .map_err(|e| eyre!("lock poisoned: {e}"))?;
+        params.remove(&(*dataflow_id, node_id.clone(), key.to_string()));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BuildStatus, DataflowStatus};
+
+    #[test]
+    fn daemon_crud() {
+        let store = InMemoryStore::new();
+        let id = DaemonId::new(Some("m1".into()));
+        let info = DaemonInfo {
+            daemon_id: id.clone(),
+            machine_id: Some("m1".into()),
+            labels: Default::default(),
+        };
+
+        store.register_daemon(info).unwrap();
+        assert!(store.get_daemon(&id).unwrap().is_some());
+        assert_eq!(store.list_daemons().unwrap().len(), 1);
+        assert!(store.get_daemon_by_machine("m1").unwrap().is_some());
+
+        store.unregister_daemon(&id).unwrap();
+        assert!(store.get_daemon(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn dataflow_crud() {
+        let store = InMemoryStore::new();
+        let uuid = Uuid::new_v4();
+        let record = DataflowRecord {
+            uuid,
+            name: Some("test".into()),
+            descriptor_json: "{}".into(),
+            status: DataflowStatus::Pending,
+            daemon_ids: vec![],
+            generation: 0,
+            created_at: 0,
+            updated_at: 0,
+            node_to_daemon: Default::default(),
+            uv: false,
+        };
+
+        store.put_dataflow(&record).unwrap();
+        assert_eq!(store.list_dataflows().unwrap().len(), 1);
+
+        let loaded = store.get_dataflow(&uuid).unwrap().unwrap();
+        assert_eq!(loaded.name.as_deref(), Some("test"));
+
+        store.delete_dataflow(&uuid).unwrap();
+        assert!(store.get_dataflow(&uuid).unwrap().is_none());
+    }
+
+    #[test]
+    fn build_crud() {
+        let store = InMemoryStore::new();
+        let id = Uuid::new_v4();
+        let record = BuildRecord {
+            build_id: id,
+            status: BuildStatus::Pending,
+            errors: vec![],
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        store.put_build(&record).unwrap();
+        assert!(store.get_build(&id).unwrap().is_some());
+
+        store.delete_build(&id).unwrap();
+        assert!(store.get_build(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn param_crud() {
+        let store = InMemoryStore::new();
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+
+        // Put + get
+        store
+            .put_node_param(&df, &node, "threshold", b"42")
+            .unwrap();
+        assert_eq!(
+            store.get_node_param(&df, &node, "threshold").unwrap(),
+            Some(b"42".to_vec())
+        );
+
+        // List
+        store.put_node_param(&df, &node, "rate", b"10").unwrap();
+        let params = store.list_node_params(&df, &node).unwrap();
+        assert_eq!(params.len(), 2);
+
+        // Delete
+        store.delete_node_param(&df, &node, "threshold").unwrap();
+        assert!(
+            store
+                .get_node_param(&df, &node, "threshold")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
+    }
+}

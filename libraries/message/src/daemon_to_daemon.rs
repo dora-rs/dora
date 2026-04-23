@@ -21,9 +21,4 @@ pub enum InterDaemonEvent {
         node_id: NodeId,
         output_id: DataId,
     },
-    NodeFailed {
-        dataflow_id: DataflowId,
-        source_node_id: NodeId,
-        error: String,
-    },
 }

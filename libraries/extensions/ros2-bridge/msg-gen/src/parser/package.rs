@@ -79,7 +79,7 @@ fn get_ros_msgs_each_package<P: AsRef<Path>>(root_dirs: &[P]) -> Result<Vec<Pack
                     "action" => {
                         p.actions.push(parse_action_file(&package, path.clone())?);
                     }
-                    _ => todo!(),
+                    _ => unreachable!("ros_formats only contains msg, srv, action"),
                 }
             }
         }
@@ -189,7 +189,11 @@ fn parse_dependencies(path: PathBuf) -> Result<BTreeSet<String>> {
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf) {
-            Err(e) => panic!("Error at position {}: {:?}", reader.buffer_position(), e),
+            Err(e) => anyhow::bail!(
+                "XML parse error at position {}: {:?}",
+                reader.buffer_position(),
+                e
+            ),
             Ok(Event::Eof) => break, // Reached the end of file
 
             // Check for the start of any dependency tag

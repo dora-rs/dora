@@ -5,14 +5,10 @@ use std::{
 
 use arrow_schema::DataType;
 use clap::Args;
-use dora_core::{
-    config::InputMapping,
-    topics::{open_zenoh_session, zenoh_output_publish_topic},
-};
+use dora_core::config::InputMapping;
 use dora_message::{
     common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
 };
-use eyre::{Context, eyre};
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -24,19 +20,18 @@ use crate::{
 /// Shows topic type, publisher, subscribers, and statistics (message count,
 /// bandwidth, publishing frequency).
 ///
+/// Topic inspection requires debug mode on the dataflow:
+///
+/// ```yaml
+/// _unstable_debug:
+///   enable_debug_inspection: true
+/// ```
+///
 /// Examples:
 ///
 /// Get info for a single topic:
 ///   dora topic info -d my-dataflow camera_node/image
 ///
-/// Note: The dataflow descriptor must include the following snippet so that
-/// runtime messages can be inspected (or messages must cross machine
-/// boundaries so they are forwarded through zenoh):
-///
-/// ```yaml
-/// _unstable_debug:
-///   publish_all_messages_to_zenoh: true
-/// ```
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Info {
@@ -44,7 +39,7 @@ pub struct Info {
     selector: TopicSelector,
 
     /// Duration in seconds to collect statistics (default: 5)
-    #[clap(long, default_value_t = 5)]
+    #[clap(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
     duration: u64,
 
     #[clap(flatten)]
@@ -52,10 +47,10 @@ pub struct Info {
 }
 
 impl Executable for Info {
-    async fn execute(self) -> eyre::Result<()> {
+    fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
-        info(self.coordinator, self.selector, self.duration).await
+        info(self.coordinator, self.selector, self.duration)
     }
 }
 
@@ -67,16 +62,26 @@ struct TopicStats {
     data_type: Arc<Mutex<Option<ArrowTypeInfo>>>,
 }
 
+/// Maximum timestamps to keep for frequency calculation.
+const MAX_TIMESTAMPS: usize = 10_000;
+
 impl TopicStats {
     fn record(&self, data_size: usize, type_info: &ArrowTypeInfo, now: Instant) {
-        *self.message_count.lock().unwrap() += 1;
-        *self.total_bytes.lock().unwrap() += data_size as u64;
-        self.timestamps.lock().unwrap().push(now);
-        *self.data_type.lock().unwrap() = Some(type_info.clone());
+        *self.message_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *self.total_bytes.lock().unwrap_or_else(|e| e.into_inner()) += data_size as u64;
+        let mut ts = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
+        if ts.len() >= MAX_TIMESTAMPS {
+            // Keep the recent half
+            let drain_to = ts.len() / 2;
+            ts.drain(..drain_to);
+        }
+        ts.push(now);
+        drop(ts);
+        *self.data_type.lock().unwrap_or_else(|e| e.into_inner()) = Some(type_info.clone());
     }
 
     fn calculate_hz(&self, window: Duration) -> Option<f64> {
-        let timestamps = self.timestamps.lock().unwrap();
+        let timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         if timestamps.len() < 2 {
             return None;
         }
@@ -108,13 +113,13 @@ impl TopicStats {
     }
 }
 
-async fn info(
+fn info(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
     duration_secs: u64,
 ) -> eyre::Result<()> {
-    let client = coordinator.connect_rpc().await?;
-    let (dataflow_id, topics) = selector.resolve(&client).await?;
+    let session = coordinator.connect()?;
+    let (dataflow_id, topics) = selector.resolve(&session)?;
 
     if topics.is_empty() {
         eyre::bail!("No topics specified");
@@ -127,79 +132,70 @@ async fn info(
     let topic = topics.into_iter().next().unwrap();
 
     // Get dataflow descriptor to find subscribers
-    let (_, descriptor) = selector.dataflow.resolve(&client).await?;
+    let (_, descriptor) = selector.dataflow.resolve(&session)?;
 
     // Find subscribers
     let mut subscribers = Vec::new();
     for node in &descriptor.nodes {
         for (input_id, input) in &node.inputs {
-            if let InputMapping::User(user) = &input.mapping {
-                if user.source == topic.node_id && user.output == topic.data_id {
-                    subscribers.push(format!("{}/{}", node.id, input_id));
-                }
+            if let InputMapping::User(user) = &input.mapping
+                && user.source == topic.node_id
+                && user.output == topic.data_id
+            {
+                subscribers.push(format!("{}/{}", node.id, input_id));
             }
         }
     }
 
-    // Collect statistics by subscribing to messages
-    let stats = TopicStats::default();
+    // Subscribe via WS
+    let ws_topics = vec![(topic.node_id.clone(), topic.data_id.clone())];
+    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-    let coordinator_addr = coordinator.coordinator_addr;
+    let stats = Arc::new(TopicStats::default());
+    let stats_clone = stats.clone();
 
-    let zenoh_session = open_zenoh_session(Some(coordinator_addr))
-        .await
-        .context("failed to open zenoh session")?;
-
-    let subscribe_topic = zenoh_output_publish_topic(dataflow_id, &topic.node_id, &topic.data_id);
-    let subscriber = zenoh_session
-        .declare_subscriber(subscribe_topic)
-        .await
-        .map_err(|e| eyre!(e))
-        .wrap_err_with(|| format!("failed to subscribe to {}", topic))?;
-
-    let start_time = Instant::now();
+    // Collect messages for the specified duration in a background thread
     let duration = Duration::from_secs(duration_secs);
-    let end_time = start_time + duration;
-    let deadline = tokio::time::Instant::from_std(end_time);
-
-    // Collect messages for the specified duration
-    while Instant::now() < end_time {
-        let Ok(sample) = tokio::time::timeout_at(deadline, subscriber.recv_async()).await else {
-            break;
-        };
-
-        match sample {
-            Ok(sample) => {
-                let event =
-                    match Timestamped::deserialize_inter_daemon_event(&sample.payload().to_bytes())
-                    {
-                        Ok(event) => event,
-                        Err(_) => continue,
+    let start_time = Instant::now();
+    std::thread::spawn(move || {
+        while start_time.elapsed() < duration {
+            match data_rx.recv_timeout(duration.saturating_sub(start_time.elapsed())) {
+                Ok(Ok(payload)) => {
+                    let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("warning: failed to deserialize event: {e}");
+                            continue;
+                        }
                     };
-
-                match event.inner {
-                    InterDaemonEvent::Output { metadata, data, .. } => {
-                        let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                        let now = Instant::now();
-                        stats.record(data_size, &metadata.type_info, now);
-                    }
-                    InterDaemonEvent::OutputClosed { .. } => {
-                        break;
-                    }
-                    InterDaemonEvent::NodeFailed { .. } => {
-                        // Node failed, stop collecting statistics
-                        break;
+                    match event.inner {
+                        InterDaemonEvent::Output { metadata, data, .. } => {
+                            let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
+                            stats_clone.record(data_size, &metadata.type_info, Instant::now());
+                        }
+                        InterDaemonEvent::OutputClosed { .. } => break,
                     }
                 }
+                Ok(Err(_)) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
             }
-            Err(_) => break,
         }
-    }
+    })
+    .join()
+    .map_err(|_| eyre::eyre!("stats collection thread panicked"))?;
 
     // Display the information
-    let message_count = *stats.message_count.lock().unwrap();
-    let total_bytes = *stats.total_bytes.lock().unwrap();
-    let data_type = stats.data_type.lock().unwrap().clone();
+    let message_count = *stats
+        .message_count
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let total_bytes = *stats.total_bytes.lock().unwrap_or_else(|e| e.into_inner());
+    let data_type = stats
+        .data_type
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let hz = stats.calculate_hz(Duration::from_secs(duration_secs));
 
     println!("Topic: {}/{}", topic.node_id, topic.data_id);

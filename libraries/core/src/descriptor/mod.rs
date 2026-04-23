@@ -1,6 +1,6 @@
 use dora_message::{
     config::{Input, InputMapping, NodeRunConfig},
-    descriptor::{GitRepoRev, NodeSource},
+    descriptor::{EnvValue, GitRepoRev, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
@@ -10,26 +10,49 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
 };
+use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
 
-mod validate;
+mod expand;
+pub mod validate;
 mod visualize;
+
+pub use expand::{
+    ExpandedDescriptor, ModuleBoundaries, check_module_file, expand_modules,
+    expand_modules_with_boundaries,
+};
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
     fn visualize_as_mermaid(&self) -> eyre::Result<String>;
+    fn visualize_as_mermaid_with_boundaries(
+        &self,
+        boundaries: &ModuleBoundaries,
+    ) -> eyre::Result<String>;
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
+    /// Expand all module references into flat nodes.
+    ///
+    /// Module nodes are replaced by the inner nodes defined in their module
+    /// file. Internal IDs are prefixed with `{module_id}.` and input/output
+    /// wiring is rewritten accordingly.
+    fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor>;
+    /// Like [`expand`](Self::expand) but also returns module boundary metadata
+    /// for visualization.
+    fn expand_with_boundaries(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<(Descriptor, ModuleBoundaries)>;
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
@@ -50,6 +73,17 @@ impl DescriptorExt for Descriptor {
 
         let mut resolved = BTreeMap::new();
         for mut node in self.nodes.clone() {
+            // adjust ROS2 bridge input mappings early (before node_kind borrows node)
+            if node.ros2.is_some() {
+                for input in node.inputs.values_mut() {
+                    if let InputMapping::User(m) = &mut input.mapping
+                        && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
+                    {
+                        m.output = DataId::from(format!("{op_name}/{}", m.output));
+                    }
+                }
+            }
+
             // adjust input mappings
             let mut node_kind = node_kind_mut(&mut node)?;
             let input_mappings: Vec<_> = match &mut node_kind {
@@ -61,11 +95,12 @@ impl DescriptorExt for Descriptor {
                     .collect(),
                 NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
                 NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
+                NodeKindMut::Ros2Bridge(_) => vec![],
             };
             for mapping in input_mappings
                 .into_iter()
                 .filter_map(|i| match &mut i.mapping {
-                    InputMapping::Timer { .. } => None,
+                    InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
                     InputMapping::User(m) => Some(m),
                 })
             {
@@ -86,12 +121,25 @@ impl DescriptorExt for Descriptor {
                     args: node.args,
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
+                    send_logs_as: node.send_logs_as,
+                    min_log_level: node.min_log_level,
+                    max_log_size: node.max_log_size,
+                    max_rotated_files: node.max_rotated_files,
                     run_config: NodeRunConfig {
                         inputs: node.inputs,
                         outputs: node.outputs,
+                        output_types: node.output_types,
+                        output_framing: node.output_framing,
+                        input_types: node.input_types,
+                        shared_memory_pool_size: node.shared_memory_pool_size,
                     },
                     envs: None,
                     restart_policy: node.restart_policy,
+                    max_restarts: node.max_restarts,
+                    restart_delay: node.restart_delay,
+                    max_restart_delay: node.max_restart_delay,
+                    restart_window: node.restart_window,
+                    health_check_timeout: node.health_check_timeout,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
@@ -101,13 +149,42 @@ impl DescriptorExt for Descriptor {
                         config: op.config.clone(),
                     }],
                 }),
-            };
+                NodeKindMut::Ros2Bridge(config) => {
+                    let bridge_config_json = serde_json::to_string(&config)
+                        .context("failed to serialize ROS2 bridge config")?;
 
-            let env = match (self.env.clone(), node.env) {
-                (None, node_env) => node_env,
-                (Some(mut self_env), node_env) => {
-                    self_env.extend(node_env.unwrap_or_default());
-                    Some(self_env)
+                    let mut envs = BTreeMap::new();
+                    envs.insert(
+                        "DORA_ROS2_BRIDGE_CONFIG".to_string(),
+                        EnvValue::String(bridge_config_json),
+                    );
+
+                    CoreNodeKind::Custom(CustomNode {
+                        path: "dora-ros2-bridge-node".to_string(),
+                        source: NodeSource::Local,
+                        args: node.args,
+                        build: None,
+                        send_stdout_as: node.send_stdout_as,
+                        send_logs_as: node.send_logs_as,
+                        min_log_level: node.min_log_level,
+                        max_log_size: node.max_log_size,
+                        max_rotated_files: node.max_rotated_files,
+                        run_config: NodeRunConfig {
+                            inputs: node.inputs,
+                            outputs: node.outputs,
+                            output_types: node.output_types,
+                            output_framing: node.output_framing,
+                            input_types: node.input_types,
+                            shared_memory_pool_size: node.shared_memory_pool_size,
+                        },
+                        envs: Some(envs),
+                        restart_policy: node.restart_policy,
+                        max_restarts: node.max_restarts,
+                        restart_delay: node.restart_delay,
+                        max_restart_delay: node.max_restart_delay,
+                        restart_window: node.restart_window,
+                        health_check_timeout: node.health_check_timeout,
+                    })
                 }
             };
 
@@ -117,7 +194,12 @@ impl DescriptorExt for Descriptor {
                     id: node.id,
                     name: node.name,
                     description: node.description,
-                    env,
+                    // Merge the dataflow-level `env` into the per-node `env`.
+                    // Per-node keys win on conflict so a node can override a
+                    // shared default (e.g. global `RUST_LOG=info` with one
+                    // verbose node setting `RUST_LOG=debug`).
+                    env: merge_env(self.env.as_ref(), node.env),
+                    cpu_affinity: node.cpu_affinity,
                     deploy: node.deploy,
                     kind,
                 },
@@ -130,7 +212,15 @@ impl DescriptorExt for Descriptor {
     fn visualize_as_mermaid(&self) -> eyre::Result<String> {
         let resolved = self.resolve_aliases_and_set_defaults()?;
         let flowchart = visualize::visualize_nodes(&resolved);
+        Ok(flowchart)
+    }
 
+    fn visualize_as_mermaid_with_boundaries(
+        &self,
+        boundaries: &ModuleBoundaries,
+    ) -> eyre::Result<String> {
+        let resolved = self.resolve_aliases_and_set_defaults()?;
+        let flowchart = visualize::visualize_nodes_with_boundaries(&resolved, boundaries);
         Ok(flowchart)
     }
 
@@ -144,13 +234,47 @@ impl DescriptorExt for Descriptor {
     }
 
     fn check(&self, working_dir: &Path) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, false)
+        let expanded = self.expand(working_dir)?;
+        validate::check_dataflow(&expanded, working_dir, None, false)
             .wrap_err("Dataflow could not be validated.")
     }
 
     fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
-        validate::check_dataflow(self, working_dir, None, coordinator_is_remote)
+        let expanded = self.expand(working_dir)?;
+        validate::check_dataflow(&expanded, working_dir, None, coordinator_is_remote)
             .wrap_err("Dataflow could not be validated.")
+    }
+
+    fn expand(&self, working_dir: &Path) -> eyre::Result<Descriptor> {
+        expand::expand_modules(self, working_dir)
+    }
+
+    fn expand_with_boundaries(
+        &self,
+        working_dir: &Path,
+    ) -> eyre::Result<(Descriptor, ModuleBoundaries)> {
+        let expanded = expand::expand_modules_with_boundaries(self, working_dir)?;
+        Ok((expanded.descriptor, expanded.boundaries))
+    }
+}
+
+/// Merge dataflow-level `env` into a node's `env`, with per-node keys winning
+/// on conflict. Returns `None` when both inputs are empty so the resolved
+/// node serializes cleanly when no env vars are set anywhere.
+fn merge_env(
+    global: Option<&BTreeMap<String, EnvValue>>,
+    node: Option<BTreeMap<String, EnvValue>>,
+) -> Option<BTreeMap<String, EnvValue>> {
+    match (global, node) {
+        (None, node) => node,
+        (Some(global), None) if global.is_empty() => None,
+        (Some(global), None) => Some(global.clone()),
+        (Some(global), Some(node)) => {
+            let mut merged = global.clone();
+            // Per-node entries override global ones on key conflict.
+            merged.extend(node);
+            Some(merged)
+        }
     }
 }
 
@@ -163,6 +287,13 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
 
 fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     match node.kind()? {
+        NodeKind::Module(_) => {
+            eyre::bail!(
+                "module node `{}` must be expanded before resolution — \
+                 call expand_modules() first",
+                node.id
+            )
+        }
         NodeKind::Standard(_) => {
             let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
                 (None, None, None, None) => NodeSource::Local,
@@ -209,11 +340,16 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
             .as_mut()
             .map(NodeKindMut::Operator)
             .ok_or_eyre("no operator"),
+        NodeKind::Ros2Bridge(_) => node
+            .ros2
+            .as_ref()
+            .map(NodeKindMut::Ros2Bridge)
+            .ok_or_eyre("no ros2"),
     }
 }
 
 pub fn source_is_url(source: &str) -> bool {
-    source.contains("://")
+    source.starts_with("https://") || source.starts_with("http://")
 }
 
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
@@ -231,21 +367,14 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else if which::which("uv").is_ok() {
         // spawn: uv run which <path>
         let which = if cfg!(windows) { "where" } else { "which" };
-        let output = std::process::Command::new("uv")
+        let _output = Command::new("uv")
             .arg("run")
             .arg(which)
             .arg(&path)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .context("Could not run `uv run` to find binary")?;
-        if output.status.success() {
-            Ok(path)
-        } else if let Ok(abs_path) = which::which(&path) {
-            Ok(abs_path)
-        } else {
-            bail!("Could not find source path {}", path.display())
-        }
+            .spawn()
+            .context("Could not find binary within uv")?;
+        Ok(path)
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
     } else {
@@ -259,20 +388,29 @@ pub trait NodeExt {
 
 impl NodeExt for Node {
     fn kind(&self) -> eyre::Result<NodeKind<'_>> {
-        match (&self.path, &self.operators, &self.custom, &self.operator) {
-            (None, None, None, None) => {
+        match (
+            &self.path,
+            &self.operators,
+            &self.custom,
+            &self.operator,
+            &self.ros2,
+            &self.module,
+        ) {
+            (None, None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, or `operators` field",
+                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator)) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators` and `operator` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -287,6 +425,10 @@ pub enum NodeKind<'a> {
     Runtime(&'a RuntimeNode),
     Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
+    /// ROS2 bridge node
+    Ros2Bridge(&'a Ros2BridgeConfig),
+    /// Module (sub-dataflow) reference — must be expanded before resolution
+    Module(&'a String),
 }
 
 #[derive(Debug)]
@@ -300,4 +442,115 @@ enum NodeKindMut<'a> {
     Runtime(&'a mut RuntimeNode),
     Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),
+    /// ROS2 bridge node
+    Ros2Bridge(&'a Ros2BridgeConfig),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), EnvValue::String(v.to_string())))
+            .collect()
+    }
+
+    #[test]
+    fn merge_env_returns_none_when_both_absent() {
+        assert!(merge_env(None, None).is_none());
+    }
+
+    #[test]
+    fn merge_env_keeps_per_node_when_no_global() {
+        let node_env = env(&[("A", "1")]);
+        let merged = merge_env(None, Some(node_env.clone())).unwrap();
+        assert_eq!(merged, node_env);
+    }
+
+    #[test]
+    fn merge_env_keeps_global_when_no_per_node() {
+        let global = env(&[("A", "1")]);
+        let merged = merge_env(Some(&global), None).unwrap();
+        assert_eq!(merged, global);
+    }
+
+    #[test]
+    fn merge_env_per_node_overrides_global_on_conflict() {
+        let global = env(&[("A", "global"), ("B", "global")]);
+        let node_env = env(&[("A", "node"), ("C", "node")]);
+        let merged = merge_env(Some(&global), Some(node_env)).unwrap();
+        assert_eq!(merged.get("A"), Some(&EnvValue::String("node".into())));
+        assert_eq!(merged.get("B"), Some(&EnvValue::String("global".into())));
+        assert_eq!(merged.get("C"), Some(&EnvValue::String("node".into())));
+    }
+
+    #[test]
+    fn descriptor_global_env_parses_from_yaml() {
+        // Verify the new top-level `env:` field parses and the resolver
+        // hands merged envs to every node with per-node keys winning.
+        let yaml = r#"
+env:
+  RUST_LOG: info
+  OTEL_ENDPOINT: http://collector:4317
+nodes:
+  - id: a
+    path: ./a
+    env:
+      RUST_LOG: debug
+  - id: b
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+
+        let a = resolved.get(&NodeId::from("a".to_string())).unwrap();
+        let a_env = a.env.as_ref().expect("node a inherits env");
+        // Per-node RUST_LOG=debug wins over global RUST_LOG=info.
+        assert_eq!(
+            a_env.get("RUST_LOG"),
+            Some(&EnvValue::String("debug".into()))
+        );
+        // Global key not overridden on node a is still visible.
+        assert_eq!(
+            a_env.get("OTEL_ENDPOINT"),
+            Some(&EnvValue::String("http://collector:4317".into()))
+        );
+
+        let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
+        let b_env = b.env.as_ref().expect("node b inherits global env");
+        assert_eq!(
+            b_env.get("RUST_LOG"),
+            Some(&EnvValue::String("info".into()))
+        );
+        assert_eq!(
+            b_env.get("OTEL_ENDPOINT"),
+            Some(&EnvValue::String("http://collector:4317".into()))
+        );
+    }
+
+    #[test]
+    fn descriptor_without_global_env_preserves_per_node_env() {
+        // Regression guard: no top-level `env:` must leave per-node env
+        // semantics unchanged.
+        let yaml = r#"
+nodes:
+  - id: a
+    path: ./a
+    env:
+      FOO: bar
+  - id: b
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let a = resolved.get(&NodeId::from("a".to_string())).unwrap();
+        assert_eq!(
+            a.env.as_ref().and_then(|e| e.get("FOO")),
+            Some(&EnvValue::String("bar".into()))
+        );
+        let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
+        assert!(b.env.is_none(), "node b has no env anywhere");
+    }
 }

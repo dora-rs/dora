@@ -1,0 +1,23 @@
+[package]
+name = "delayed-crash-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: sleeps `$DORA_TEST_CRASH_AFTER_MS` ms then panics.
+# Appends an incarnation marker to `$DORA_TEST_MARKER_FILE` first so the
+# harness can count how many times the daemon re-spawned it. Paired with
+# `restart-window-reset.yml` to prove the `restart_window` counter reset
+# (strengthens #1631).
+
+[[bin]]
+name = "delayed-crash-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

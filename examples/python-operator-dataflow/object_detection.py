@@ -1,9 +1,4 @@
-"""Object detection operator for dora-rs dataflow using YOLOv8.
-
-This operator receives image frames, performs object detection using the
-ultralytics YOLOv8 model, and emits bounding box coordinates, confidence
-scores, and class labels for detected objects.
-"""
+"""TODO: Add docstring."""
 
 import numpy as np
 import pyarrow as pa
@@ -25,17 +20,7 @@ class Operator:
         dora_event,
         send_output,
     ) -> DoraStatus:
-        """Process incoming image frames and perform object detection.
-
-        Args:
-            dora_event (dict): The event from dora-rs, expected to contain
-                a raw image buffer.
-            send_output (Callable): Callback to emit detection results
-                (bounding boxes, scores, and labels).
-
-        Returns:
-            DoraStatus: CONTINUE to allow further image processing.
-        """
+        """TODO: Add docstring."""
         if dora_event["type"] == "INPUT":
             frame = (
                 dora_event["value"].to_numpy().reshape((CAMERA_HEIGHT, CAMERA_WIDTH, 3))

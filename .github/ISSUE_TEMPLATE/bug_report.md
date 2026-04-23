@@ -15,7 +15,7 @@ Steps to reproduce the behavior:
 1. Dora start daemon: `dora up` 
 2. Start a new dataflow: `dora start dataflow.yaml`
 3. Stop dataflow: `dora stop`
-4. Destroy dataflow: `dora destroy`
+4. Tear down: `dora down`
 
 **Expected behavior**
 A clear and concise description of what you expected to happen.

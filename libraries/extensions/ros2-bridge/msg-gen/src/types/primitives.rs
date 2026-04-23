@@ -238,10 +238,26 @@ impl GenericString {
     }
 
     fn value_tokens(self, value: &str) -> impl ToTokens {
-        // TODO: Assertion
+        match self {
+            Self::BoundedString(max) => {
+                assert!(
+                    value.len() <= max,
+                    "default value length {} exceeds bounded string max {max}",
+                    value.len()
+                );
+            }
+            Self::BoundedWString(max) => {
+                let utf16_len = value.encode_utf16().count();
+                assert!(
+                    utf16_len <= max,
+                    "default value UTF-16 length {utf16_len} exceeds bounded wstring max {max}",
+                );
+            }
+            _ => {}
+        }
         let value = Literal::string(value);
         if self.is_wide() {
-            quote! { ffi::U16String::from_str(#value) }
+            quote! { crate::messages::ffi::U16String::from_str(#value) }
         } else {
             quote! { ::std::string::String::from(#value) }
         }

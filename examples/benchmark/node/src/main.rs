@@ -1,7 +1,13 @@
 use dora_node_api::{self, DoraNode, dora_core::config::DataId};
-use eyre::Context;
 use rand::RngCore;
 use std::time::Duration;
+
+/// Number of latency samples per payload size.
+const LATENCY_SAMPLES: u32 = 100;
+/// Number of throughput messages per payload size.
+const THROUGHPUT_MESSAGES: u32 = 100;
+/// Sleep between latency samples to avoid queue buildup.
+const LATENCY_SLEEP: Duration = Duration::from_millis(5);
 
 fn main() -> eyre::Result<()> {
     let latency = DataId::from("latency".to_owned());
@@ -27,29 +33,27 @@ fn main() -> eyre::Result<()> {
         data
     });
 
-    // test latency first
+    // test latency first: LATENCY_SAMPLES per size bracket
     for data in &data {
-        for _ in 0..1 {
+        for _ in 0..LATENCY_SAMPLES {
             node.send_output_raw(latency.clone(), Default::default(), data.len(), |out| {
                 out.copy_from_slice(data);
             })?;
-
-            // sleep a bit to avoid queue buildup
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(LATENCY_SLEEP);
         }
     }
 
-    // wait a bit to ensure that all throughput messages reached their target
+    // wait for latency messages to drain before starting throughput
     std::thread::sleep(Duration::from_secs(2));
 
     // then throughput with full speed
     for data in &data {
-        for _ in 0..100 {
+        for _ in 0..THROUGHPUT_MESSAGES {
             node.send_output_raw(throughput.clone(), Default::default(), data.len(), |out| {
                 out.copy_from_slice(data);
             })?;
         }
-        // notify sink that all messages have been sent
+        // sentinel: single-byte marker signals end of this size bracket
         node.send_output_raw(throughput.clone(), Default::default(), 1, |out| {
             out.copy_from_slice(&[1]);
         })?;

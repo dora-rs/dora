@@ -98,10 +98,11 @@ impl IntoArrow for Vec<String> {
 impl IntoArrow for NaiveDateTime {
     type A = arrow::array::TimestampNanosecondArray;
     fn into_arrow(self) -> Self::A {
-        let timestamp = match arrow::datatypes::TimestampNanosecondType::make_value(self) {
-            Some(timestamp) => timestamp,
-            None => arrow::datatypes::TimestampNanosecondType::default_value(),
-        };
+        let timestamp =
+            match arrow::datatypes::TimestampNanosecondType::from_naive_datetime(self, None) {
+                Some(timestamp) => timestamp,
+                None => arrow::datatypes::TimestampNanosecondType::default_value(),
+            };
         TimestampNanosecondArray::from(vec![timestamp])
     }
 }

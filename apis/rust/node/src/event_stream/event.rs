@@ -1,6 +1,5 @@
 use dora_arrow_convert::ArrowData;
 use dora_core::config::{DataId, NodeId, OperatorId};
-pub use dora_message::daemon_to_node::StopCause;
 use dora_message::metadata::Metadata;
 
 /// Represents an incoming Dora event.
@@ -42,21 +41,23 @@ pub enum Event {
         /// assigned to the input in the YAML file.
         id: DataId,
     },
-    /// A node failed and exited with a non-zero exit code.
+    /// A previously closed input has recovered and will receive data again.
     ///
-    /// The daemon automatically creates this event when a node exits with a non-zero exit code.
-    /// This allows downstream nodes to handle the error gracefully (e.g., use cached data,
-    /// switch to backup source, log and continue).
-    NodeFailed {
-        /// The IDs of the inputs that are affected by the node failure, as specified in the YAML file.
-        ///
-        /// A node failure can affect multiple inputs if the failed node produced multiple outputs
-        /// that are consumed by this node.
-        affected_input_ids: Vec<DataId>,
-        /// The error message describing the failure.
-        error: String,
-        /// The ID of the node that failed.
-        source_node_id: NodeId,
+    /// This happens when an upstream node that timed out (via `input_timeout`)
+    /// starts producing data again. The circuit breaker automatically re-opens
+    /// the input.
+    InputRecovered {
+        /// The ID of the recovered input, as specified in the YAML file.
+        id: DataId,
+    },
+    /// An upstream node has restarted.
+    ///
+    /// Sent to downstream nodes when a node with a restart policy successfully
+    /// restarts after a failure. Nodes can use this to reset state, clear caches,
+    /// or log the recovery.
+    NodeRestarted {
+        /// The ID of the upstream node that restarted.
+        id: NodeId,
     },
     /// Notification that the event stream is about to close.
     ///
@@ -75,8 +76,57 @@ pub enum Event {
         /// There is currently no case where `operator_id` is `None`.
         operator_id: Option<OperatorId>,
     },
+    /// A runtime parameter has been updated via `dora param set`.
+    ///
+    /// Nodes can use this to dynamically adjust behavior (e.g., thresholds,
+    /// rates) without restarting.
+    ParamUpdate {
+        /// The parameter key that was set.
+        key: String,
+        /// The new JSON value.
+        value: serde_json::Value,
+    },
+    /// A runtime parameter has been deleted via `dora param delete`.
+    ///
+    /// Nodes can use this to remove local overrides and fall back to defaults.
+    ParamDeleted {
+        /// The parameter key that was deleted.
+        key: String,
+    },
+    /// An upstream node has failed.
+    ///
+    /// Sent to downstream nodes when an upstream node exits with a
+    /// non-zero exit code. Downstream nodes can use this to handle
+    /// the failure gracefully (e.g. switch to cached data, log, retry).
+    NodeFailed {
+        /// The IDs of the inputs affected by the failure.
+        affected_input_ids: Vec<DataId>,
+        /// Human-readable error message from the failed node.
+        error: String,
+        /// The ID of the node that failed.
+        source_node_id: NodeId,
+    },
     /// Notifies the node about an unexpected error that happened inside Dora.
     ///
     /// It's a good idea to output or log this error for debugging.
     Error(String),
+}
+
+/// The reason for closing the event stream.
+///
+/// This enum is marked as `non_exhaustive` because we might add additional
+/// variants in the future.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum StopCause {
+    /// The dataflow is stopped early after a `dora stop` command (or on `ctrl-c`).
+    ///
+    /// Nodes should exit as soon as possible if they receive a stop event of
+    /// this type. Dora will kill nodes that keep running for too long after
+    /// receiving such a stop event.
+    Manual,
+    /// The event stream is closed because all of the node's inputs were closed.
+    ///
+    /// This stop event type is only sent for nodes that have at least one input.
+    AllInputsClosed,
 }

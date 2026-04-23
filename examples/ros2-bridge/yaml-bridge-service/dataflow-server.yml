@@ -1,0 +1,33 @@
+# Service Server Dataflow
+#
+# Demonstrates using the YAML ROS2 bridge as a service SERVER.
+# The bridge receives AddTwoInts requests from ROS2 clients, forwards them
+# to the handler node (pure Arrow data, no ROS2 deps), and returns the response.
+#
+# Prerequisites:
+#   - ROS2 environment sourced (AMENT_PREFIX_PATH set)
+#   - A ROS2 AddTwoInts client running, e.g.:
+#       ros2 run examples_rclcpp_minimal_client client_main
+#     OR run the companion dataflow-client.yml
+#
+# Usage:
+#   dora run dataflow-server.yml
+
+nodes:
+  - id: add_server
+    ros2:
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: server
+    inputs:
+      response: handler/response
+    outputs:
+      - request
+
+  - id: handler
+    build: cargo build -p yaml-bridge-service-handler
+    path: ../../../target/debug/yaml-bridge-service-handler
+    inputs:
+      request: add_server/request
+    outputs:
+      - response

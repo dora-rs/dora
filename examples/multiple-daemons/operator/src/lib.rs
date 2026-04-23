@@ -18,7 +18,11 @@ impl DoraOperator for ExampleOperator {
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, String> {
         match event {
-            Event::Input { id, data } => match *id {
+            Event::Input {
+                id,
+                metadata: _,
+                data,
+            } => match *id {
                 "tick" => {
                     self.ticks += 1;
                 }
@@ -30,7 +34,7 @@ impl DoraOperator for ExampleOperator {
                         "operator received random value {data:#x} after {} ticks",
                         self.ticks
                     );
-                    output_sender.send("status".into(), output.into_arrow())?;
+                    output_sender.send("status", output.into_arrow())?;
                 }
                 other => eprintln!("ignoring unexpected input {other}"),
             },

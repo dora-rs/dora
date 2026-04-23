@@ -16,6 +16,16 @@ pub struct DropStream {
 }
 
 impl DropStream {
+    /// Create a no-op drop stream (for zenoh SHM mode where DropTokens are unused).
+    pub(crate) fn empty() -> Self {
+        let (_tx, rx) = flume::bounded(0);
+        // _tx is dropped immediately -> rx.recv() returns Disconnected
+        Self {
+            receiver: rx,
+            _thread_handle: DropStreamThreadHandle::empty(),
+        }
+    }
+
     #[tracing::instrument(level = "trace", skip(hlc))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
@@ -68,7 +78,7 @@ impl DropStream {
             other => eyre::bail!("unexpected drop subscribe reply: {other:?}"),
         }
 
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = flume::bounded(0);
         let node_id_cloned = node_id.clone();
 
         let handle = std::thread::spawn(|| drop_stream_loop(node_id_cloned, tx, channel, clock));
@@ -116,8 +126,8 @@ fn drop_stream_loop(
             }
             Err(err) => {
                 let err = eyre!(err).wrap_err("failed to receive incoming drop event");
-                tracing::error!("{err:?}");
-                break;
+                tracing::warn!("{err:?}");
+                continue;
             }
         };
         for Timestamped { inner, timestamp } in events {
@@ -145,6 +155,14 @@ struct DropStreamThreadHandle {
 }
 
 impl DropStreamThreadHandle {
+    fn empty() -> Self {
+        let (_tx, rx) = flume::bounded(1);
+        Self {
+            node_id: "none".to_string().into(),
+            handle: rx,
+        }
+    }
+
     fn new(node_id: NodeId, join_handle: std::thread::JoinHandle<()>) -> Self {
         let (tx, rx) = flume::bounded(1);
         std::thread::spawn(move || {

@@ -23,14 +23,14 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc::Sender, oneshot};
 use tracing::{field, span};
 
 pub fn run(
     _node_id: &NodeId,
     _operator_id: &OperatorId,
     source: &str,
-    events_tx: flume::Sender<OperatorEvent>,
+    events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<()> {
@@ -40,7 +40,7 @@ pub fn run(
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        rt.block_on(download_file(source, target_path))
+        rt.block_on(download_file(source, target_path, None))
             .wrap_err("failed to download shared library operator")?
     } else {
         adjust_shared_library_path(Path::new(source))?
@@ -76,13 +76,13 @@ pub fn run(
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.send(OperatorEvent::Finished { reason });
+            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.send(OperatorEvent::Error(err));
+            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.send(OperatorEvent::Panic(panic));
+            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
         }
     }
 
@@ -91,7 +91,7 @@ pub fn run(
 
 struct SharedLibraryOperator<'lib> {
     incoming_events: flume::Receiver<Event>,
-    events_tx: flume::Sender<OperatorEvent>,
+    events_tx: Sender<OperatorEvent>,
 
     bindings: Bindings<'lib>,
 }
@@ -152,7 +152,7 @@ impl SharedLibraryOperator<'_> {
 
             let result = self
                 .events_tx
-                .send(event)
+                .blocking_send(event)
                 .map_err(|_| eyre!("failed to send output to runtime"));
 
             match result {
@@ -178,21 +178,25 @@ impl SharedLibraryOperator<'_> {
                 ..
             } = &mut event
             {
-                use dora_tracing::telemetry::{deserialize_context, serialize_context};
-                use tracing_opentelemetry::OpenTelemetrySpanExt;
                 span.record("input_id", input_id.as_str());
 
-                let otel = metadata.open_telemetry_context();
-                let cx = deserialize_context(&otel);
-                span.set_parent(cx)
-                    .context("failed to set parent span")
-                    .unwrap_or_default();
-                let cx = span.context();
-                let string_cx = serialize_context(&cx);
-                metadata.parameters.insert(
-                    "open_telemetry_context".to_string(),
-                    Parameter::String(string_cx),
-                );
+                #[cfg(feature = "telemetry")]
+                {
+                    use dora_tracing::telemetry::{deserialize_context, serialize_context};
+                    use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+                    let otel = metadata.open_telemetry_context();
+                    let cx = deserialize_context(&otel);
+                    span.set_parent(cx)
+                        .context("failed to set parent span")
+                        .unwrap_or_default();
+                    let cx = span.context();
+                    let string_cx = serialize_context(&cx);
+                    metadata.parameters.insert(
+                        "open_telemetry_context".to_string(),
+                        Parameter::String(string_cx),
+                    );
+                }
             }
 
             let mut operator_event = match event {
@@ -231,7 +235,7 @@ impl SharedLibraryOperator<'_> {
                     error: None,
                 },
                 Event::Reload { .. } => {
-                    // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/dora/pull/239#discussion_r1154313139
+                    // Reloading shared lib operator is not supported. See: https://github.com/dora-rs/adora/pull/239#discussion_r1154313139
                     continue;
                 }
                 Event::Error(err) => dora_operator_api_types::RawEvent {

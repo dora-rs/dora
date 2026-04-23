@@ -8,7 +8,7 @@ nodes:
       - data
 
   - id: receive_data_with_sleep
-    build: pip install asyncio
+    build: pip install numpy pyarrow
     path: ./receive_data.py
     inputs:
       tick: send_data/data

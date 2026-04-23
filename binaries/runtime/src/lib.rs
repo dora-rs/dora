@@ -17,7 +17,11 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
 };
-use tokio::{runtime::Builder, sync::oneshot};
+use tokio::{
+    runtime::Builder,
+    sync::{mpsc, oneshot},
+};
+use tokio_stream::wrappers::ReceiverStream;
 mod operator;
 
 pub fn main() -> eyre::Result<()> {
@@ -51,16 +55,18 @@ pub fn main() -> eyre::Result<()> {
         ops.remove(0)
     };
 
-    let (operator_events_tx, events) = flume::bounded(1);
+    let (operator_events_tx, events) = mpsc::channel(1);
     let operator_id = operator_definition.id.clone();
-    let operator_events = events
-        .into_stream()
-        .map(move |event| RuntimeEvent::Operator {
-            id: operator_id.clone(),
-            event,
-        });
+    let operator_events = ReceiverStream::new(events).map(move |event| RuntimeEvent::Operator {
+        id: operator_id.clone(),
+        event,
+    });
 
-    let tokio_runtime = Builder::new_current_thread()
+    // Use multi-thread scheduler (with 1 worker) because Zenoh requires it
+    // for distributed cross-daemon communication. current_thread panics when
+    // Zenoh tries to spawn background tasks during session init.
+    let tokio_runtime = Builder::new_multi_thread()
+        .worker_threads(1)
         .enable_all()
         .build()
         .wrap_err("Could not build a tokio runtime.")?;
@@ -108,11 +114,16 @@ pub fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn queue_sizes(config: &OperatorConfig) -> std::collections::BTreeMap<DataId, usize> {
+fn queue_sizes(
+    config: &OperatorConfig,
+) -> std::collections::BTreeMap<DataId, (usize, dora_message::config::QueuePolicy)> {
     let mut sizes = BTreeMap::new();
     for (input_id, input) in &config.inputs {
-        let queue_size = input.queue_size.unwrap_or(10);
-        sizes.insert(input_id.clone(), queue_size);
+        let queue_size = input
+            .queue_size
+            .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE);
+        let policy = input.queue_policy.unwrap_or_default();
+        sizes.insert(input_id.clone(), (queue_size, policy));
     }
     sizes
 }
@@ -154,85 +165,75 @@ async fn run(
             RuntimeEvent::Operator {
                 id: operator_id,
                 event,
-            } => {
-                match event {
-                    OperatorEvent::Error(err) => {
-                        bail!(err.wrap_err(format!(
-                            "operator {}/{operator_id} raised an error",
-                            node.id()
-                        )))
+            } => match event {
+                OperatorEvent::Error(err) => {
+                    bail!(err.wrap_err(format!(
+                        "operator {}/{operator_id} raised an error",
+                        node.id()
+                    )))
+                }
+                OperatorEvent::Panic(payload) => {
+                    bail!("operator {operator_id} panicked: {payload:?}");
+                }
+                OperatorEvent::Finished { reason } => {
+                    if let StopReason::ExplicitStopAll = reason {
+                        bail!(
+                            "operator {operator_id} requested StopAll, which is not yet implemented"
+                        );
                     }
-                    OperatorEvent::Panic(payload) => {
-                        bail!("operator {operator_id} panicked: {payload:?}");
-                    }
-                    OperatorEvent::Finished { reason } => {
-                        if let StopReason::ExplicitStopAll = reason {
-                            // let hlc = dora_core::message::uhlc::HLC::default();
-                            // let metadata = dora_core::message::Metadata::new(hlc.new_timestamp());
-                            // let data = metadata
-                            // .serialize()
-                            // .wrap_err("failed to serialize stop message")?;
-                            todo!("instruct dora-daemon/dora-coordinator to stop other nodes");
-                            // manual_stop_publisher
-                            //     .publish(&data)
-                            //     .map_err(|err| eyre::eyre!(err))
-                            //     .wrap_err("failed to send stop message")?;
-                            // break;
-                        }
 
-                        let Some(config) = operators.get(&operator_id) else {
-                            tracing::warn!(
-                                "received Finished event for unknown operator `{operator_id}`"
-                            );
-                            continue;
-                        };
-                        let outputs = config
-                            .outputs
-                            .iter()
-                            .map(|output_id| operator_output_id(&operator_id, output_id))
-                            .collect();
-                        let result;
-                        (node, result) = tokio::task::spawn_blocking(move || {
-                            let result = node.close_outputs(outputs);
-                            (node, result)
-                        })
-                        .await
-                        .wrap_err("failed to wait for close_outputs task")?;
-                        result.wrap_err("failed to close outputs of finished operator")?;
+                    let Some(config) = operators.get(&operator_id) else {
+                        tracing::warn!(
+                            "received Finished event for unknown operator `{operator_id}`"
+                        );
+                        continue;
+                    };
+                    let outputs = config
+                        .outputs
+                        .iter()
+                        .map(|output_id| operator_output_id(&operator_id, output_id))
+                        .collect();
+                    let result;
+                    (node, result) = tokio::task::spawn_blocking(move || {
+                        let result = node.close_outputs(outputs);
+                        (node, result)
+                    })
+                    .await
+                    .wrap_err("failed to wait for close_outputs task")?;
+                    result.wrap_err("failed to close outputs of finished operator")?;
 
-                        operator_channels.remove(&operator_id);
+                    operator_channels.remove(&operator_id);
 
-                        if operator_channels.is_empty() {
-                            break;
-                        }
-                    }
-                    OperatorEvent::AllocateOutputSample { len, sample: tx } => {
-                        let sample = node.allocate_data_sample(len);
-                        if tx.send(sample).is_err() {
-                            tracing::warn!(
-                                "output sample requested, but operator {operator_id} exited already"
-                            );
-                        }
-                    }
-                    OperatorEvent::Output {
-                        output_id,
-                        type_info,
-                        parameters,
-                        data,
-                    } => {
-                        let output_id = operator_output_id(&operator_id, &output_id);
-                        let result;
-                        (node, result) = tokio::task::spawn_blocking(move || {
-                            let result =
-                                node.send_output_sample(output_id, type_info, parameters, data);
-                            (node, result)
-                        })
-                        .await
-                        .wrap_err("failed to wait for send_output task")?;
-                        result.wrap_err("failed to send node output")?;
+                    if operator_channels.is_empty() {
+                        break;
                     }
                 }
-            }
+                OperatorEvent::AllocateOutputSample { len, sample: tx } => {
+                    let sample = node.allocate_data_sample(len).map_err(eyre::Report::from);
+                    if tx.send(sample).is_err() {
+                        tracing::warn!(
+                            "output sample requested, but operator {operator_id} exited already"
+                        );
+                    }
+                }
+                OperatorEvent::Output {
+                    output_id,
+                    type_info,
+                    parameters,
+                    data,
+                } => {
+                    let output_id = operator_output_id(&operator_id, &output_id);
+                    let result;
+                    (node, result) = tokio::task::spawn_blocking(move || {
+                        let result =
+                            node.send_output_sample(output_id, type_info, parameters, data);
+                        (node, result)
+                    })
+                    .await
+                    .wrap_err("failed to wait for send_output task")?;
+                    result.wrap_err("failed to send node output")?;
+                }
+            },
             RuntimeEvent::Event(Event::Stop(cause)) => {
                 // forward stop event to all operators and close the event channels
                 for (_, channel) in operator_channels.drain() {
@@ -242,11 +243,9 @@ async fn run(
             RuntimeEvent::Event(Event::Reload {
                 operator_id: Some(operator_id),
             }) => {
-                let Some(channel) = operator_channels.get(&operator_id) else {
-                    tracing::warn!("received reload event for unknown operator `{operator_id}`");
-                    continue;
-                };
-                let _ = channel
+                let _ = operator_channels
+                    .get(&operator_id)
+                    .unwrap()
                     .send_async(Event::Reload {
                         operator_id: Some(operator_id),
                     })

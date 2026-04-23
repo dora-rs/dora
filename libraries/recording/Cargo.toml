@@ -1,0 +1,16 @@
+[package]
+name = "dora-recording"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description = "Recording format for dora dataflow message capture and replay"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+uuid = { workspace = true }
+eyre = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

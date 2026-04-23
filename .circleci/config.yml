@@ -1,0 +1,1208 @@
+# CircleCI CI configuration for dora-rs/dora
+#
+# Mirrors the GitHub Actions workflow (.github/workflows/ci.yml) with
+# CircleCI-native improvements:
+#   - Workspaces share the CLI binary across downstream jobs (no rebuild)
+#   - Fast gates and core tests run in parallel from the start
+#   - Windows integration tests gated to main branch (2x slower than Linux)
+#   - Cargo registry cached across runs; compilation is per-job
+
+
+version: 2.1
+
+orbs:
+  win: circleci/windows@5.0
+
+# ────────────────────────────────────────────────────────────────────
+# Reusable commands
+# ────────────────────────────────────────────────────────────────────
+commands:
+  install-rust:
+    description: Install Rust via rustup (for non-Docker executors)
+    parameters:
+      version:
+        type: string
+        default: "1.92.0"
+      components:
+        type: string
+        default: ""
+      targets:
+        type: string
+        default: ""
+    steps:
+      - run:
+          name: Install Rust << parameters.version >>
+          command: |
+            if ! command -v rustup &>/dev/null; then
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain << parameters.version >>
+              echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+              source "$BASH_ENV"
+            else
+              rustup default << parameters.version >>
+            fi
+            if [ -n "<< parameters.components >>" ]; then
+              rustup component add << parameters.components >>
+            fi
+            if [ -n "<< parameters.targets >>" ]; then
+              rustup target add << parameters.targets >>
+            fi
+
+  install-rust-windows:
+    description: Install Rust on Windows via rustup-init
+    parameters:
+      version:
+        type: string
+        default: "1.92.0"
+    steps:
+      - run:
+          name: Install Rust << parameters.version >>
+          shell: powershell.exe
+          command: |
+            if (-not (Get-Command rustup -ErrorAction SilentlyContinue)) {
+              Invoke-WebRequest -Uri https://win.rustup.rs/x86_64 -OutFile rustup-init.exe
+              .\rustup-init.exe -y --default-toolchain << parameters.version >> --default-host x86_64-pc-windows-msvc
+              $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+              [Environment]::SetEnvironmentVariable("PATH", $env:PATH, "User")
+            } else {
+              rustup default << parameters.version >>
+            }
+      # Persist cargo PATH for subsequent bash.exe steps via BASH_ENV
+      - run:
+          name: Set Rust PATH for bash steps
+          shell: bash.exe
+          command: echo 'export PATH="$USERPROFILE/.cargo/bin:$PATH"' >> "$BASH_ENV"
+
+  cargo-cache-restore:
+    parameters:
+      prefix:
+        type: string
+        default: cargo
+    steps:
+      - restore_cache:
+          keys:
+            - << parameters.prefix >>-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+            - << parameters.prefix >>-v1-{{ arch }}-
+
+  cargo-cache-save:
+    parameters:
+      prefix:
+        type: string
+        default: cargo
+    steps:
+      - save_cache:
+          key: << parameters.prefix >>-v1-{{ arch }}-{{ checksum "Cargo.lock" }}
+          paths:
+            - ~/.cargo/registry/index
+            - ~/.cargo/registry/cache
+            - ~/.cargo/git/db
+
+  setup-python-uv:
+    description: Install Python 3.12 + uv + dora-node-api-python into a venv
+    steps:
+      - run:
+          name: Install uv
+          command: |
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+      - run:
+          name: Create Python venv and install packages
+          # Building dora-rs (PyO3) from source takes >10m with no output.
+          no_output_timeout: 30m
+          command: |
+            uv venv --seed -p 3.12
+            echo "export VIRTUAL_ENV=$PWD/.venv" >> "$BASH_ENV"
+            echo "export PATH=$PWD/.venv/bin:\$PATH" >> "$BASH_ENV"
+            source "$BASH_ENV"
+            uv pip install pyarrow
+            uv pip install -e apis/python/node
+            uv pip install ruff pytest
+
+# ────────────────────────────────────────────────────────────────────
+# Executors
+# ────────────────────────────────────────────────────────────────────
+executors:
+  # Heavy compilation (tests, examples, CLI)
+  # Note: upgrade to xlarge if your plan supports it for faster builds.
+  linux:
+    docker:
+      - image: cimg/rust:1.92.0
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+
+  # Moderate compilation (clippy, bench, cross-check)
+  linux-large:
+    docker:
+      - image: cimg/rust:1.92.0
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+
+  # Light compilation or tool-only jobs
+  linux-medium:
+    docker:
+      - image: cimg/rust:1.92.0
+    resource_class: medium
+    environment:
+      CARGO_TERM_COLOR: always
+
+  # No-Rust jobs (typos, unwrap budget)
+  linux-small:
+    docker:
+      - image: cimg/base:current
+    resource_class: medium
+    environment:
+      CARGO_TERM_COLOR: always
+
+  # Cross-compilation with `cross` (needs native Docker)
+  linux-machine:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_VERSION: "1.92.0"
+
+# ────────────────────────────────────────────────────────────────────
+# Jobs
+# ────────────────────────────────────────────────────────────────────
+jobs:
+
+  # ===== Fast gates (no dependencies, run immediately) =====
+
+  fmt:
+    executor: linux-medium
+    steps:
+      - checkout
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    executor: linux-large
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: clippy
+      - run:
+          name: Clippy (warnings = errors)
+          command: >
+            cargo clippy --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            -- -D warnings
+      - cargo-cache-save:
+          prefix: clippy
+
+  typos:
+    executor: linux-small
+    steps:
+      - checkout
+      - run:
+          name: Install typos-cli
+          command: |
+            # Asset names include the version (e.g. typos-v1.45.1-...), so
+            # resolve the latest tag first via the GitHub /releases/latest redirect.
+            VERSION=$(basename "$(curl -sSfL -o /dev/null -w '%{url_effective}' \
+              https://github.com/crate-ci/typos/releases/latest)")
+            mkdir -p /tmp/typos-dl
+            curl -sSfL \
+              "https://github.com/crate-ci/typos/releases/download/${VERSION}/typos-${VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+              | tar xz -C /tmp/typos-dl
+            sudo install /tmp/typos-dl/typos /usr/local/bin/
+      - run: typos
+
+  audit:
+    executor: linux-medium
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - audit-tools-v1
+      - run:
+          name: Install cargo-audit + cargo-deny
+          command: |
+            command -v cargo-audit >/dev/null || cargo install cargo-audit
+            command -v cargo-deny  >/dev/null || cargo install cargo-deny
+      - save_cache:
+          key: audit-tools-v1
+          paths:
+            - ~/.cargo/bin/cargo-audit
+            - ~/.cargo/bin/cargo-deny
+      - run: make qa-audit
+
+  unwrap-budget:
+    executor: linux-small
+    steps:
+      - checkout
+      - run:
+          name: Install ripgrep
+          command: sudo apt-get update && sudo apt-get install -y ripgrep
+      - run: make qa-unwrap
+
+  check-license:
+    executor: linux-medium
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: license
+      - restore_cache:
+          keys:
+            - lichking-v1
+      - run:
+          name: Install cargo-lichking
+          command: command -v cargo-lichking >/dev/null || cargo install cargo-lichking
+      - save_cache:
+          key: lichking-v1
+          paths:
+            - ~/.cargo/bin/cargo-lichking
+      - run: cargo lichking check
+      - cargo-cache-save:
+          prefix: license
+
+  # ===== Core tests =====
+
+  test-linux:
+    executor: linux
+    steps:
+      - checkout
+      - cargo-cache-restore
+      - run:
+          name: Test (excluding Python)
+          # `cargo test --all` compiles everything, so separate
+          # `cargo check` and `cargo build` steps are unnecessary.
+          command: >
+            cargo test --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+            --exclude dora-examples
+          no_output_timeout: 30m
+      - run:
+          name: Check examples compile
+          # [[example]] targets are not built by `cargo test --all`
+          command: cargo check --examples
+
+      # ── Tier 0 CLI smoke gates ──
+      - run:
+          name: CLI smoke -- argparse & help text
+          command: |
+            for sub in run up down build start stop restart list logs top \
+                       topic node param record replay trace doctor status \
+                       new graph expand validate; do
+              cargo run --quiet -p dora-cli -- "$sub" --help > /dev/null
+            done
+            cargo run --quiet -p dora-cli -- --help > /dev/null
+      - run:
+          name: CLI smoke -- dora validate
+          command: |
+            cargo run --quiet -p dora-cli -- validate examples/rust-dataflow/dataflow.yml
+            cargo run --quiet -p dora-cli -- validate examples/multiple-daemons/dataflow.yml
+      - run:
+          name: CLI semantic -- dora validate --strict-types
+          command: |
+            cargo run --quiet -p dora-cli -- validate --strict-types examples/typed-dataflow/dataflow.yml
+            if cargo run --quiet -p dora-cli -- validate --strict-types tests/fixtures/type-mismatch.yml; then
+              echo "ERROR: --strict-types accepted type-mismatch.yml"
+              exit 1
+            fi
+      - run:
+          name: CLI smoke -- dora expand
+          command: cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml > /dev/null
+      - run:
+          name: CLI semantic -- dora expand flattens modules
+          command: |
+            out=$(cargo run --quiet -p dora-cli -- expand examples/module-dataflow/dataflow.yml)
+            for id in sender pipeline.doubler pipeline.filter receiver; do
+              echo "$out" | grep -q "^- id: $id" \
+                || { echo "ERROR: expand output missing node id '$id'"; exit 1; }
+            done
+            if echo "$out" | grep -q '^modules:'; then
+              echo "ERROR: expand output still contains 'modules:' block"
+              exit 1
+            fi
+      - run:
+          name: CLI smoke -- dora graph (mermaid)
+          command: |
+            cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid > /dev/null
+            cargo run --quiet -p dora-cli -- graph examples/multiple-daemons/dataflow.yml --mermaid > /dev/null
+      - run:
+          name: CLI semantic -- dora graph contains expected nodes
+          command: |
+            out=$(cargo run --quiet -p dora-cli -- graph examples/rust-dataflow/dataflow.yml --mermaid)
+            echo "$out" | grep -q '^flowchart ' \
+              || { echo "ERROR: graph output missing 'flowchart' header"; exit 1; }
+            for id in rust-node rust-sink rust-status-node; do
+              echo "$out" | grep -q "$id" \
+                || { echo "ERROR: graph output missing node '$id'"; exit 1; }
+            done
+
+      - cargo-cache-save
+      # Share CLI binary with downstream jobs via workspace
+      - persist_to_workspace:
+          root: .
+          paths:
+            - target/debug/dora
+
+  test-macos:
+    macos:
+      xcode: "15.4"
+    resource_class: macos.m1.medium.gen1
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-macos
+      - run:
+          name: Test (excluding Python)
+          command: >
+            cargo test --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+            --exclude dora-examples
+          no_output_timeout: 30m
+      - run:
+          name: Check examples compile
+          command: cargo check --examples
+      - cargo-cache-save:
+          prefix: cargo-macos
+
+  test-windows:
+    executor: win/default
+    environment:
+      CARGO_TERM_COLOR: always
+      # CircleCI Windows runners have less RAM than GitHub Actions;
+      # limit parallelism to avoid OOM during linking.
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - checkout
+      - install-rust-windows:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-win
+      - run:
+          name: Test (excluding Python)
+          shell: bash.exe
+          command: >
+            cargo test --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+            --exclude dora-examples
+          no_output_timeout: 45m
+      # Skip `cargo check --examples` on Windows — the full example set
+      # (including ROS2 bridge) exceeds the runner's memory budget.
+      # Linux and macOS still gate on it.
+      - cargo-cache-save:
+          prefix: cargo-win
+
+  # ===== Examples (cross-platform) =====
+
+  examples-linux:
+    executor: linux
+    steps:
+      - checkout
+      - cargo-cache-restore
+      - run:
+          name: Install C/C++ build tools
+          command: sudo apt-get update && sudo apt-get install -y clang cmake
+      - run:
+          name: Build examples + CLI binary
+          command: |
+            cargo build --examples
+            cargo build -p dora-cli
+            echo 'export PATH="'"$PWD"'/target/debug:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+          no_output_timeout: 30m
+      - run:
+          name: Rust Dataflow example
+          command: cargo run --example rust-dataflow
+          no_output_timeout: 30m
+      - run:
+          name: Rust Git Dataflow example
+          command: cargo run --example rust-dataflow-git
+          no_output_timeout: 30m
+      - run:
+          name: Multiple Daemons example
+          command: cargo run --example multiple-daemons
+          no_output_timeout: 30m
+      - run:
+          name: C Dataflow example
+          command: cargo run --example c-dataflow
+          no_output_timeout: 15m
+      - run:
+          name: C++ Dataflow example
+          command: cargo run --example cxx-dataflow
+          no_output_timeout: 15m
+      - run:
+          name: Install Arrow C++ library
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y -V ca-certificates lsb-release wget
+            wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
+            sudo apt-get update
+            sudo apt-get install -y -V libarrow-dev libarrow-glib-dev
+      - run:
+          name: C++ Arrow Dataflow example
+          command: cargo run --example cxx-arrow-dataflow
+          no_output_timeout: 15m
+      - run:
+          name: CMake example
+          command: cargo run --example cmake-dataflow
+          no_output_timeout: 30m
+      - cargo-cache-save
+
+  examples-macos:
+    macos:
+      xcode: "15.4"
+    resource_class: macos.m1.medium.gen1
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-macos-examples
+      - run:
+          name: Build examples + CLI binary
+          command: |
+            cargo build --examples
+            cargo build -p dora-cli
+            echo 'export PATH="'"$PWD"'/target/debug:$PATH"' >> "$BASH_ENV"
+            source "$BASH_ENV"
+          no_output_timeout: 30m
+      - run:
+          name: Rust Dataflow example
+          command: cargo run --example rust-dataflow
+          no_output_timeout: 30m
+      - run:
+          name: Rust Git Dataflow example
+          command: cargo run --example rust-dataflow-git
+          no_output_timeout: 30m
+      - run:
+          name: Multiple Daemons example
+          command: cargo run --example multiple-daemons
+          no_output_timeout: 30m
+      - run:
+          name: C Dataflow example
+          command: cargo run --example c-dataflow
+          no_output_timeout: 15m
+      # C++ examples skipped on macOS — Xcode 15.4's libc++ has a
+      # template incompatibility with CXX bridge's rust::Slice::iterator
+      # (std::pointer_traits_element_type). Tracked upstream in cxx.
+      # The C++ examples are covered on Linux.
+      - cargo-cache-save:
+          prefix: cargo-macos-examples
+
+  examples-windows:
+    executor: win/default
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust-windows:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-win-examples
+      - run:
+          name: Build examples + CLI binary
+          shell: bash.exe
+          command: |
+            cargo build --examples
+            cargo build -p dora-cli
+          no_output_timeout: 30m
+      - run:
+          name: Rust Dataflow example
+          shell: bash.exe
+          command: cargo run --example rust-dataflow
+          no_output_timeout: 30m
+      - run:
+          name: Rust Git Dataflow example
+          shell: bash.exe
+          command: cargo run --example rust-dataflow-git
+          no_output_timeout: 30m
+      - run:
+          name: Multiple Daemons example
+          shell: bash.exe
+          command: cargo run --example multiple-daemons
+          no_output_timeout: 30m
+      - run:
+          name: C Dataflow example
+          shell: bash.exe
+          command: cargo run --example c-dataflow
+          no_output_timeout: 15m
+      - run:
+          name: C++ Dataflow example
+          shell: bash.exe
+          command: cargo run --example cxx-dataflow
+          no_output_timeout: 15m
+      - cargo-cache-save:
+          prefix: cargo-win-examples
+
+  # ===== CLI integration tests =====
+  # Split into Rust-only and Python sub-jobs for parallelism.
+
+  cli-rust:
+    executor: linux
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cargo-cache-restore
+      - run:
+          name: Install CLI from workspace
+          command: |
+            cp target/debug/dora ~/.cargo/bin/dora
+            chmod +x ~/.cargo/bin/dora
+      - run:
+          name: Test Rust template project
+          command: |
+            dora new test_rust_project --internal-create-with-path-dependencies
+            cd test_rust_project
+            cargo build --all
+            dora run dataflow.yml --stop-after 10s
+          no_output_timeout: 45m
+      - run:
+          name: Test Dynamic Rust Dataflow
+          command: |
+            dora up
+            dora list
+            dora build examples/rust-dataflow/dataflow_dynamic.yml
+            dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+            cargo run -p rust-dataflow-example-sink-dynamic
+            sleep 5
+            dora stop --name ci-rust-dynamic --grace-duration 5s
+            dora destroy
+          no_output_timeout: 45m
+      - run:
+          name: Error Event example
+          command: |
+            dora build examples/error-propagation/dataflow.yml
+            output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+            echo "$output"
+            echo "$output" | grep -q "Received error from node" \
+              || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+          no_output_timeout: 10m
+      - cargo-cache-save
+
+  cli-python:
+    executor: linux
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cargo-cache-restore
+      - run:
+          name: Install CLI from workspace
+          command: |
+            cp target/debug/dora ~/.cargo/bin/dora
+            chmod +x ~/.cargo/bin/dora
+      - setup-python-uv
+      - run:
+          name: Install OpenCV system dependencies
+          # opencv-python (pulled by dora-hub packages) needs X11 libs
+          # that cimg/rust doesn't ship.
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libxcb1 libgl1-mesa-glx libglib2.0-0 \
+              libsm6 libxrender1 libxext6
+      - run:
+          name: Test Python template project
+          command: |
+            dora new test_python_project --lang python --internal-create-with-path-dependencies
+            cd test_python_project
+            dora build dataflow.yml --uv
+            uv run ruff check .
+            uv run pytest
+            export OPERATING_MODE=SAVE
+            dora build dataflow.yml --uv
+            dora run dataflow.yml --uv --stop-after 10s
+          no_output_timeout: 80m
+      - run:
+          name: Test Python Node example
+          command: |
+            dora build examples/python-dataflow/dataflow.yml --uv
+            dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+          no_output_timeout: 20m
+      - run:
+          name: Test Python Dynamic Node example
+          command: |
+            dora build examples/python-dataflow/dataflow_dynamic.yml --uv
+            uv pip install -e apis/python/node
+            dora up
+            dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
+            uv run opencv-plot
+            sleep 10
+            dora stop --name ci-python-dynamic --grace-duration 30s
+            dora destroy
+          no_output_timeout: 20m
+      - run:
+          name: Test Python Operator example
+          command: |
+            dora build examples/python-operator-dataflow/dataflow.yml --uv
+            uv pip install -e apis/python/node
+            dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+          no_output_timeout: 20m
+      - run:
+          name: Test Python Multiple Arrays
+          command: |
+            dora build examples/python-multiple-arrays/dataflow.yml --uv
+            dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+          no_output_timeout: 30m
+      - run:
+          name: Test Python Async example
+          command: dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+          no_output_timeout: 30m
+      - run:
+          name: Test Python Drain example
+          environment:
+            OTEL_SDK_DISABLED: "true"
+          command: dora run examples/python-drain/dataflow.yaml --uv
+          no_output_timeout: 30m
+      - run:
+          name: Test Python Dataflow Builder API (YAML generation)
+          command: uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
+          no_output_timeout: 5m
+      - run:
+          name: Python Queue Latency Test
+          command: dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+          no_output_timeout: 30m
+      - run:
+          name: Python Queue Latency + Timeout Test
+          command: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+          no_output_timeout: 30m
+      - run:
+          name: Rust Queue Latency Test
+          command: |
+            dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+            dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          no_output_timeout: 30m
+      - cargo-cache-save
+
+  cli-templates:
+    executor: linux
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cargo-cache-restore
+      - run:
+          name: Install CLI from workspace
+          command: |
+            cp target/debug/dora ~/.cargo/bin/dora
+            chmod +x ~/.cargo/bin/dora
+      - run:
+          name: Test C template project
+          command: |
+            dora new test_c_project --lang c --internal-create-with-path-dependencies
+            cd test_c_project
+            cmake -B build
+            cmake --build build
+            cmake --install build
+            dora run dataflow.yml --stop-after 10s
+          no_output_timeout: 45m
+      - run:
+          name: Test C++ template project
+          command: |
+            dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+            cd test_cxx_project
+            cmake -B build
+            cmake --build build
+            cmake --install build
+            dora run dataflow.yml --stop-after 10s
+          no_output_timeout: 45m
+      - cargo-cache-save
+
+  cli-macos:
+    macos:
+      xcode: "15.4"
+    resource_class: macos.m1.medium.gen1
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-macos-cli
+      - run:
+          name: Build + install CLI
+          command: cargo install --path binaries/cli --locked
+          no_output_timeout: 45m
+      - run:
+          name: Test Rust template project
+          command: |
+            dora new test_rust_project --internal-create-with-path-dependencies
+            cd test_rust_project
+            cargo build --all
+            dora run dataflow.yml --stop-after 10s
+          no_output_timeout: 45m
+      - run:
+          name: Test Dynamic Rust Dataflow
+          command: |
+            dora up
+            dora list
+            dora build examples/rust-dataflow/dataflow_dynamic.yml
+            dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+            cargo run -p rust-dataflow-example-sink-dynamic
+            sleep 5
+            dora stop --name ci-rust-dynamic --grace-duration 5s
+            dora destroy
+          no_output_timeout: 45m
+      - run:
+          name: Error Event example
+          command: |
+            dora build examples/error-propagation/dataflow.yml
+            output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+            echo "$output"
+            echo "$output" | grep -q "Received error from node" \
+              || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+          no_output_timeout: 10m
+      - cargo-cache-save:
+          prefix: cargo-macos-cli
+
+  cli-windows:
+    executor: win/default
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust-windows:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cargo-win-cli
+      - run:
+          name: Build + install CLI
+          shell: bash.exe
+          command: cargo install --path binaries/cli --locked
+          no_output_timeout: 45m
+      - run:
+          name: Test Rust template project
+          shell: bash.exe
+          command: |
+            dora new test_rust_project --internal-create-with-path-dependencies
+            cd test_rust_project
+            cargo build --all
+            dora run dataflow.yml --stop-after 10s
+          no_output_timeout: 45m
+      - run:
+          name: Test Dynamic Rust Dataflow
+          shell: bash.exe
+          command: |
+            dora up
+            dora list
+            dora build examples/rust-dataflow/dataflow_dynamic.yml
+            dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
+            cargo run -p rust-dataflow-example-sink-dynamic
+            sleep 5
+            dora stop --name ci-rust-dynamic --grace-duration 5s
+            dora destroy
+          no_output_timeout: 45m
+      - run:
+          name: Error Event example
+          shell: bash.exe
+          command: |
+            dora build examples/error-propagation/dataflow.yml
+            output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+            echo "$output"
+            echo "$output" | grep -q "Received error from node" \
+              || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
+          no_output_timeout: 10m
+      - cargo-cache-save:
+          prefix: cargo-win-cli
+
+  # ===== Benchmark example (Linux-only) =====
+  # Reduced from 3 platforms -- criterion regression job below is the
+  # authoritative benchmark gate; this is a "does it run" check.
+  bench-example:
+    executor: linux
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: bench-example
+      - run:
+          name: Benchmark example (release)
+          command: cargo run --example benchmark --release
+          no_output_timeout: 45m
+      - cargo-cache-save:
+          prefix: bench-example
+
+  # ===== E2E tests =====
+  e2e:
+    executor: linux
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cargo-cache-restore
+      - run:
+          name: Install CLI from workspace
+          command: |
+            sudo cp target/debug/dora /usr/local/bin/dora
+            sudo chmod +x /usr/local/bin/dora
+      - run:
+          name: Run ws-cli-e2e tests
+          command: cargo test --test ws-cli-e2e -- --test-threads=1
+          no_output_timeout: 10m
+      - run:
+          name: Run fault-tolerance tests
+          command: cargo test --test fault-tolerance-e2e -- --test-threads=1
+          no_output_timeout: 15m
+      - cargo-cache-save
+
+  # ===== Semantic contract tests =====
+  contract-tests:
+    executor: linux
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - cargo-cache-restore
+      - run:
+          name: Install CLI from workspace
+          command: |
+            cp target/debug/dora ~/.cargo/bin/dora
+            chmod +x ~/.cargo/bin/dora
+      - setup-python-uv
+      - run:
+          name: Run semantic contract tests
+          command: >
+            cargo test -p dora-examples --test example-smoke contract_
+            --
+            --test-threads=1
+            --nocapture
+          no_output_timeout: 30m
+      - cargo-cache-save
+
+  # ===== Benchmark regression check =====
+  bench:
+    executor: linux-large
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: bench
+      - restore_cache:
+          keys:
+            - bench-baseline-v1-{{ arch }}-
+      - run:
+          name: Compile benchmarks
+          command: |
+            cargo bench -p dora-message --no-run
+            cargo bench -p dora-daemon --features bench --no-run
+      - run:
+          name: Run benchmarks
+          command: |
+            cargo bench -p dora-message 2>/dev/null | tee bench-output.txt
+            cargo bench -p dora-daemon --features bench 2>/dev/null | tee -a bench-output.txt
+      - save_cache:
+          key: bench-baseline-v1-{{ arch }}-{{ .Revision }}
+          paths:
+            - target/criterion
+      - store_artifacts:
+          path: bench-output.txt
+          destination: benchmark-results.txt
+      - cargo-cache-save:
+          prefix: bench
+
+  # ===== Cross-compilation checks =====
+
+  cross-check-native:
+    parameters:
+      target:
+        type: string
+      resource:
+        type: string
+        default: large
+      gcc:
+        type: string
+        default: ""
+    docker:
+      - image: cimg/rust:1.92.0
+    resource_class: << parameters.resource >>
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: cross-<< parameters.target >>
+      - when:
+          condition: << parameters.gcc >>
+          steps:
+            - run:
+                name: Install cross-compilation toolchain
+                command: sudo apt-get update && sudo apt-get install -y << parameters.gcc >>
+      - run:
+          name: Install target << parameters.target >>
+          command: rustup target add << parameters.target >>
+      - run:
+          name: Cargo check --target << parameters.target >>
+          command: >
+            cargo check --target << parameters.target >> --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+      - cargo-cache-save:
+          prefix: cross-<< parameters.target >>
+
+  cross-check-macos:
+    parameters:
+      target:
+        type: string
+    macos:
+      xcode: "15.4"
+    resource_class: macos.m1.medium.gen1
+    environment:
+      CARGO_TERM_COLOR: always
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+          targets: << parameters.target >>
+      - cargo-cache-restore:
+          prefix: cross-macos-<< parameters.target >>
+      - run:
+          name: Cargo check --target << parameters.target >>
+          command: >
+            cargo check --target << parameters.target >> --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+      - cargo-cache-save:
+          prefix: cross-macos-<< parameters.target >>
+
+  cross-check-cross:
+    parameters:
+      target:
+        type: string
+    machine:
+      image: ubuntu-2204:current
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_VERSION: "1.92.0"
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: cross-<< parameters.target >>
+      - run:
+          name: Install cross
+          command: cargo install cross --locked
+      - run:
+          name: Cross check --target << parameters.target >>
+          command: >
+            cross check --target << parameters.target >> --all
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
+      - cargo-cache-save:
+          prefix: cross-<< parameters.target >>
+
+  # ===== ROS2 bridge =====
+  ros2-bridge:
+    # Use machine executor for ROS2 setup (needs system-level packages)
+    machine:
+      image: ubuntu-2204:current
+    resource_class: large
+    environment:
+      CARGO_TERM_COLOR: always
+      RUST_VERSION: "1.92.0"
+      QT_QPA_PLATFORM: offscreen
+      # PYO3_PYTHON is set dynamically below to point to a venv whose
+      # sys.path is isolated from the machine image's pyenv Python 3.12
+      # (which ships an incompatible numpy 1.21.5 in its site-packages).
+    steps:
+      - checkout
+      - install-rust:
+          version: "1.92.0"
+      - cargo-cache-restore:
+          prefix: ros2
+      - run:
+          name: Install Python 3.12 + dev headers + clang
+          command: |
+            sudo add-apt-repository -y ppa:deadsnakes/ppa
+            sudo apt-get update
+            # clang is needed by the C++ ROS2 Bridge example's run.rs
+            # (machine image ships g++ but not clang by default).
+            sudo apt-get install -y python3.12 python3.12-dev python3.12-venv libpython3.12 clang
+      - run:
+          name: Install ROS2 Humble
+          command: |
+            sudo apt-get install -y software-properties-common curl
+            sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+              -o /usr/share/keyrings/ros-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+              http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+              | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
+            sudo apt-get update
+            # Include turtlesim + example_interfaces: the Rust ROS2 Bridge
+            # example's turtle.rs imports generated types from both. The
+            # dora-ros2-bridge codegen discovers them via AMENT_PREFIX_PATH.
+            # examples-rclcpp-minimal-service provides the add_two_ints
+            # service node spawned by the turtle example at runtime.
+            sudo apt-get install -y ros-humble-ros-base python3-colcon-common-extensions \
+              ros-humble-turtlesim ros-humble-example-interfaces \
+              ros-humble-examples-rclcpp-minimal-service
+      - run:
+          name: Create isolated Python venv + install pyarrow
+          # A venv isolates sys.path from the machine image's Python
+          # (which has an old numpy that breaks Python 3.12 imports).
+          # PyO3 then compiles against this venv's Python.
+          command: |
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            uv venv --python /usr/bin/python3.12 "$HOME/ros2-venv"
+            "$HOME/.local/bin/uv" pip install --python "$HOME/ros2-venv/bin/python" pyarrow numpy
+            echo "export PYO3_PYTHON=$HOME/ros2-venv/bin/python" >> "$BASH_ENV"
+            echo "export VIRTUAL_ENV=$HOME/ros2-venv" >> "$BASH_ENV"
+            echo "export PATH=$HOME/ros2-venv/bin:\$PATH" >> "$BASH_ENV"
+      - run:
+          name: Test ROS2 bridge
+          command: |
+            source /opt/ros/humble/setup.bash
+            cargo test -p dora-ros2-bridge-python
+      - run:
+          name: Rust ROS2 Bridge example
+          command: |
+            source /opt/ros/humble/setup.bash
+            cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+          no_output_timeout: 30m
+      - run:
+          name: Python ROS2 Bridge example
+          command: |
+            source /opt/ros/humble/setup.bash
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            export PATH="$HOME/.local/bin:$PATH"
+            uv venv --seed -p 3.12
+            source .venv/bin/activate
+            uv pip install -e apis/python/node
+            uv pip install pyarrow
+            cargo run -p dora-ros2-bridge --example python-ros2-dataflow
+          no_output_timeout: 30m
+      - run:
+          name: C++ ROS2 Bridge example
+          command: |
+            source /opt/ros/humble/setup.bash
+            cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
+          no_output_timeout: 30m
+      - cargo-cache-save:
+          prefix: ros2
+
+  # ===== MSRV check =====
+  msrv:
+    executor: linux-large
+    steps:
+      - checkout
+      - cargo-cache-restore:
+          prefix: msrv
+      - restore_cache:
+          keys:
+            - hack-v1
+      - run:
+          name: Install cargo-hack
+          command: |
+            command -v cargo-hack >/dev/null || cargo install cargo-hack
+      - save_cache:
+          key: hack-v1
+          paths:
+            - ~/.cargo/bin/cargo-hack
+      - run:
+          name: MSRV check
+          command: cargo hack check --rust-version --workspace --ignore-private --locked
+      - cargo-cache-save:
+          prefix: msrv
+
+# ────────────────────────────────────────────────────────────────────
+# Workflows
+# ────────────────────────────────────────────────────────────────────
+workflows:
+  ci:
+    jobs:
+      # ── Fast gates (immediate, no dependencies) ──
+      - fmt
+      - clippy
+      - typos
+      - audit
+      - unwrap-budget
+      - check-license
+
+      # ── Core tests (immediate, no dependencies) ──
+      # Unlike the GitHub Actions config these do NOT wait for fast gates.
+      # Each job fails on its own if there's a compilation error.
+      - test-linux
+      - test-macos
+      - test-windows
+
+      # ── Linux integration (require test-linux for workspace artifact) ──
+      - e2e:
+          requires: [test-linux]
+      - contract-tests:
+          requires: [test-linux]
+      - cli-rust:
+          requires: [test-linux]
+      - cli-python:
+          requires: [test-linux]
+      - cli-templates:
+          requires: [test-linux]
+
+      # ── Linux integration (no dependency -- uses cargo cache only) ──
+      - examples-linux
+      - bench-example
+      - bench
+      - msrv
+      - ros2-bridge
+
+      # ── macOS integration ──
+      - examples-macos
+      - cli-macos
+
+      # ── Windows integration (main branch only -- 2x slower) ──
+      - examples-windows:
+          filters:
+            branches:
+              only: main
+      - cli-windows:
+          filters:
+            branches:
+              only: main
+
+      # ── Cross-compilation ──
+      - cross-check-native:
+          name: cross-check-x86_64-linux-gnu
+          target: x86_64-unknown-linux-gnu
+      - cross-check-native:
+          name: cross-check-x86_64-windows-gnu
+          target: x86_64-pc-windows-gnu
+          gcc: "gcc-mingw-w64-x86-64 g++-mingw-w64-x86-64"
+      - cross-check-cross:
+          name: cross-check-i686-linux-gnu
+          target: i686-unknown-linux-gnu
+      - cross-check-cross:
+          name: cross-check-aarch64-linux-gnu
+          target: aarch64-unknown-linux-gnu
+      - cross-check-cross:
+          name: cross-check-aarch64-linux-musl
+          target: aarch64-unknown-linux-musl
+      - cross-check-cross:
+          name: cross-check-armv7-linux-musleabihf
+          target: armv7-unknown-linux-musleabihf
+      - cross-check-macos:
+          name: cross-check-aarch64-apple-darwin
+          target: aarch64-apple-darwin
+      - cross-check-macos:
+          name: cross-check-x86_64-apple-darwin
+          target: x86_64-apple-darwin

@@ -1,145 +1,65 @@
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::time::Duration;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::Local;
 use colored::{Color, Colorize};
 use dora_core::build::LogLevelOrStdout;
 use dora_message::common::LogMessage;
-use eyre::Context;
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
 
-/// A zenoh log subscription that buffers incoming messages.
-///
-/// Messages are collected into an internal channel as they arrive.  Call
-/// [`LogSubscription::spawn_printer`] to start draining and printing them.
-/// Until then they are silently buffered, which is useful when the caller
-/// needs to fetch and display historical logs before live messages.
-pub struct LogSubscription {
-    rx: mpsc::UnboundedReceiver<LogMessage>,
-    /// Subscriber handles – must stay alive for the subscription to remain
-    /// active.  They are moved into the printer task by `spawn_printer`.
-    _subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum LogFormat {
+    #[default]
+    Pretty,
+    Json,
+    Compact,
 }
 
-impl LogSubscription {
-    /// Spawn a background task that drains buffered (and future) messages
-    /// and prints them.
-    ///
-    /// If `drop_before` is `Some(t)`, messages with `timestamp < t` are
-    /// silently skipped.  This is used to deduplicate against historical
-    /// logs that were fetched separately.
-    pub fn spawn_printer(
-        self,
-        print_dataflow_id: bool,
-        print_daemon_name: bool,
-        drop_before: Option<DateTime<Utc>>,
-    ) -> JoinHandle<()> {
-        let Self {
-            mut rx,
-            _subscribers,
-        } = self;
-        tokio::spawn(async move {
-            // Move subscribers into the task so they stay alive.
-            let _subscribers = _subscribers;
-            while let Some(log_message) = rx.recv().await {
-                if let Some(cutoff) = drop_before {
-                    if log_message.timestamp < cutoff {
-                        continue;
-                    }
-                }
-                print_log_message(log_message, print_dataflow_id, print_daemon_name);
-            }
-        })
+#[derive(Debug, Clone)]
+pub struct LogOutputConfig {
+    pub min_level: LogLevelOrStdout,
+    pub format: LogFormat,
+    pub node_filters: HashMap<String, LogLevelOrStdout>,
+    pub print_dataflow_id: bool,
+    pub print_daemon_name: bool,
+}
+
+impl Default for LogOutputConfig {
+    fn default() -> Self {
+        Self {
+            min_level: LogLevelOrStdout::Stdout,
+            format: LogFormat::Pretty,
+            node_filters: HashMap::new(),
+            print_dataflow_id: false,
+            print_daemon_name: false,
+        }
     }
 }
 
-/// Subscribe to zenoh log topics for each level that passes `log_level`.
-///
-/// Returns a [`LogSubscription`] that buffers incoming messages.  The
-/// caller decides when to start printing by calling
-/// [`LogSubscription::spawn_printer`].
-pub async fn subscribe_to_logs(
-    zenoh_session: &zenoh::Session,
-    base_topic: &str,
-    log_level: log::LevelFilter,
-) -> eyre::Result<LogSubscription> {
-    let suffixes = dora_core::topics::log_level_suffixes_for_filter(log_level);
-    let (tx, rx) = mpsc::unbounded_channel::<LogMessage>();
+fn should_display(
+    msg_level: &LogLevelOrStdout,
+    msg_node: Option<&str>,
+    config: &LogOutputConfig,
+) -> bool {
+    let effective_level = msg_node
+        .and_then(|n| config.node_filters.get(n))
+        .unwrap_or(&config.min_level);
+    msg_level.passes(effective_level)
+}
 
-    let mut _subscribers = Vec::new();
-
-    for suffix in &suffixes {
-        let topic = format!("{base_topic}/{suffix}");
-        let tx = tx.clone();
-        let subscriber = zenoh_session
-            .declare_subscriber(&topic)
-            .callback(move |sample| {
-                let payload = sample.payload().to_bytes();
-                match serde_json::from_slice::<LogMessage>(&payload) {
-                    Ok(log_message) => {
-                        let _ = tx.send(log_message);
-                    }
-                    Err(err) => {
-                        tracing::warn!("failed to parse log message: {err:?}");
-                    }
-                }
-            })
-            .await
-            .map_err(|e| eyre::eyre!(e))
-            .wrap_err_with(|| format!("failed to subscribe to log topic {topic}"))?;
-        _subscribers.push(subscriber);
+pub fn print_log_message(log_message: LogMessage, config: &LogOutputConfig) {
+    let node_id_str = log_message.node_id.as_ref().map(|n| n.to_string());
+    if !should_display(&log_message.level, node_id_str.as_deref(), config) {
+        return;
     }
 
-    // Drop the sender so the receiver will end when all subscriber
-    // callbacks are gone (i.e. when the subscribers are dropped).
-    drop(tx);
-
-    Ok(LogSubscription { rx, _subscribers })
+    match config.format {
+        LogFormat::Pretty => print_pretty(log_message, config),
+        LogFormat::Json => print_json(&log_message),
+        LogFormat::Compact => print_compact(&log_message),
+    }
 }
 
-/// Convenience: subscribe and immediately start printing.
-///
-/// Equivalent to calling [`subscribe_to_logs`] followed by
-/// [`LogSubscription::spawn_printer`] with `drop_before: None`.
-pub async fn subscribe_and_print_logs(
-    zenoh_session: &zenoh::Session,
-    base_topic: &str,
-    log_level: log::LevelFilter,
-    print_dataflow_id: bool,
-    print_daemon_name: bool,
-) -> eyre::Result<JoinHandle<()>> {
-    let subscription = subscribe_to_logs(zenoh_session, base_topic, log_level).await?;
-    Ok(subscription.spawn_printer(print_dataflow_id, print_daemon_name, None))
-}
-
-/// Abort a log printer task with a short grace period to allow in-flight
-/// messages to be printed before cancellation.
-pub async fn abort_log_task_with_grace(task: JoinHandle<()>) {
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    task.abort();
-    let _ = task.await;
-}
-
-/// Gracefully shut down a log printer task by closing the zenoh session first.
-///
-/// Closing the session invalidates the subscriber callbacks, which drops all
-/// channel senders and causes the printer loop to exit naturally.
-///
-/// Note: zenoh 1.8.0 still emits spurious "Unable to publish transport event:
-/// session closed" errors during `close()` due to an internal race — see
-/// <https://github.com/eclipse-zenoh/zenoh/issues/2492>.
-pub async fn close_log_session_and_wait(zenoh_session: zenoh::Session, task: JoinHandle<()>) {
-    let _ = zenoh_session.close().await;
-    // Give the printer a short window to drain remaining buffered messages.
-    let _ = tokio::time::timeout(Duration::from_millis(200), task).await;
-}
-
-pub fn print_log_message(
-    log_message: LogMessage,
-    print_dataflow_id: bool,
-    print_daemon_name: bool,
-) {
+fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
     let LogMessage {
         build_id: _,
         dataflow_id,
@@ -154,7 +74,10 @@ pub fn print_log_message(
         timestamp,
         fields: _,
     } = log_message;
-    let level = match level {
+
+    let is_system = node_id.is_none();
+
+    let level_str = match &level {
         LogLevelOrStdout::LogLevel(level) => match level {
             log::Level::Error => "ERROR ".red(),
             log::Level::Warn => "WARN  ".yellow(),
@@ -166,37 +89,168 @@ pub fn print_log_message(
     };
 
     let dataflow = match dataflow_id {
-        Some(dataflow_id) if print_dataflow_id => format!("dataflow `{dataflow_id}` ").cyan(),
+        Some(dataflow_id) if config.print_dataflow_id => {
+            format!("dataflow `{dataflow_id}` ").cyan()
+        }
         _ => String::new().cyan(),
     };
     let daemon = match daemon_id {
-        Some(id) if print_daemon_name => match id.machine_id() {
+        Some(id) if config.print_daemon_name => match id.machine_id() {
             Some(machine_id) => format!("on daemon `{machine_id}`"),
             None => "on default daemon ".to_string(),
         },
-        None if print_daemon_name => "on default daemon".to_string(),
+        None if config.print_daemon_name => "on default daemon".to_string(),
         _ => String::new(),
     }
     .bright_black();
     let time = format!("{}", timestamp.with_timezone(&Local).format("%H:%M:%S"));
     let colon = ":".bright_black().bold();
     let node = match node_id {
-        Some(node_id) => {
-            let node_id = node_id
+        Some(ref node_id) => {
+            let colored_id = node_id
                 .to_string()
                 .bold()
                 .color(word_to_color(node_id.as_ref()));
             let padding = if daemon.is_empty() { "" } else { " " };
-            format!("{node_id}{padding}{daemon}{colon} ")
+            format!("{colored_id}{padding}{daemon}{colon} ")
         }
-        None if daemon.is_empty() => "".into(),
-        None => format!("{daemon}{colon} "),
+        None => {
+            let prefix = "[dora]".dimmed();
+            if daemon.is_empty() {
+                format!("{prefix}{colon} ")
+            } else {
+                format!("{prefix} {daemon}{colon} ")
+            }
+        }
     };
     let target = match target {
         Some(target) => format!("{target} ").dimmed(),
         None => "".normal(),
     };
-    println!("{time} {level} {dataflow} {node}{target} {message}");
+
+    if is_system && is_lifecycle_message(&message) {
+        println!();
+    }
+    println!("{time} {level_str} {dataflow} {node}{target} {message}");
+    if is_system && is_lifecycle_message(&message) {
+        println!();
+    }
+}
+
+fn is_lifecycle_message(message: &str) -> bool {
+    message.contains("spawning")
+        || message.contains("node finished")
+        || message.contains("stopping")
+}
+
+fn print_json(log_message: &LogMessage) {
+    if let Ok(json) = serde_json::to_string(log_message) {
+        println!("{json}");
+    }
+}
+
+fn print_compact(log_message: &LogMessage) {
+    let time = log_message
+        .timestamp
+        .with_timezone(&Local)
+        .format("%H:%M:%S");
+    let level = match &log_message.level {
+        LogLevelOrStdout::LogLevel(l) => match l {
+            log::Level::Error => "ERROR",
+            log::Level::Warn => "WARN",
+            log::Level::Info => "INFO",
+            log::Level::Debug => "DEBUG",
+            log::Level::Trace => "TRACE",
+        },
+        LogLevelOrStdout::Stdout => "STDOUT",
+    };
+    let node = log_message
+        .node_id
+        .as_ref()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "dora".to_string());
+    println!("{time} {level} {node}: {}", log_message.message);
+}
+
+/// Parse a JSONL log line into a LogMessage.
+/// Handles both the daemon's compact format (ts/level/node/msg) and full LogMessage.
+pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
+    // Try full LogMessage format first
+    if let Ok(msg) = serde_json::from_str::<LogMessage>(line) {
+        return Some(msg);
+    }
+    // Try daemon compact JSONL format
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts = v.get("ts")?.as_str()?;
+    let timestamp = chrono::DateTime::parse_from_rfc3339(ts).ok()?.to_utc();
+    let level_str = v.get("level")?.as_str().unwrap_or("stdout");
+    let level = match level_str {
+        "error" => LogLevelOrStdout::LogLevel(log::Level::Error),
+        "warn" => LogLevelOrStdout::LogLevel(log::Level::Warn),
+        "info" => LogLevelOrStdout::LogLevel(log::Level::Info),
+        "debug" => LogLevelOrStdout::LogLevel(log::Level::Debug),
+        "trace" => LogLevelOrStdout::LogLevel(log::Level::Trace),
+        _ => LogLevelOrStdout::Stdout,
+    };
+    let node_id = v
+        .get("node")
+        .and_then(|n| n.as_str())
+        .map(|s| dora_message::id::NodeId::from(s.to_string()));
+    let message = v
+        .get("msg")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let target = v
+        .get("target")
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    Some(LogMessage {
+        build_id: None,
+        dataflow_id: None,
+        node_id,
+        daemon_id: None,
+        level,
+        target,
+        module_path: None,
+        file: None,
+        line: None,
+        message,
+        timestamp,
+        fields: None,
+    })
+}
+
+/// Parse a log filter string like "sensor=debug,processor=warn".
+pub fn parse_log_filter(s: &str) -> Result<HashMap<String, LogLevelOrStdout>, String> {
+    let mut map = HashMap::new();
+    for pair in s.split(',') {
+        let pair = pair.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let (node, level) = pair
+            .split_once('=')
+            .ok_or_else(|| format!("invalid filter: '{pair}', expected 'node=level'"))?;
+        let level = parse_log_level_str(level.trim())?;
+        map.insert(node.trim().to_string(), level);
+    }
+    Ok(map)
+}
+
+pub fn parse_log_level_str(s: &str) -> Result<LogLevelOrStdout, String> {
+    match s.to_lowercase().as_str() {
+        "error" => Ok(LogLevelOrStdout::LogLevel(log::Level::Error)),
+        "warn" => Ok(LogLevelOrStdout::LogLevel(log::Level::Warn)),
+        "info" => Ok(LogLevelOrStdout::LogLevel(log::Level::Info)),
+        "debug" => Ok(LogLevelOrStdout::LogLevel(log::Level::Debug)),
+        "trace" => Ok(LogLevelOrStdout::LogLevel(log::Level::Trace)),
+        "stdout" => Ok(LogLevelOrStdout::Stdout),
+        _ => Err(format!(
+            "invalid log level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
+        )),
+    }
 }
 
 /// Generate a color for a word based on its semantic features
@@ -261,6 +315,17 @@ fn calculate_char_diversity(s: &str) -> f32 {
     unique.len() as f32 / s.len() as f32
 }
 
+/// Exposed for testing. Returns true if a log message should be displayed
+/// given the output config.
+#[cfg(test)]
+pub(crate) fn should_display_test(
+    msg_level: &LogLevelOrStdout,
+    msg_node: Option<&str>,
+    config: &LogOutputConfig,
+) -> bool {
+    should_display(msg_level, msg_node, config)
+}
+
 /// Calculate normalized sum of character positions (a=1, z=26)
 fn calculate_char_sum(s: &str) -> f32 {
     if s.is_empty() {
@@ -276,4 +341,179 @@ fn calculate_char_sum(s: &str) -> f32 {
     // Normalize by max possible sum for this length
     let max_sum = s.len() as u32 * 26;
     (sum as f32 / max_sum as f32).min(1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- parse_log_level_str ---
+
+    #[test]
+    fn parse_level_valid_strings() {
+        assert!(matches!(
+            parse_log_level_str("error"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Error))
+        ));
+        assert!(matches!(
+            parse_log_level_str("warn"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Warn))
+        ));
+        assert!(matches!(
+            parse_log_level_str("info"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Info))
+        ));
+        assert!(matches!(
+            parse_log_level_str("debug"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Debug))
+        ));
+        assert!(matches!(
+            parse_log_level_str("trace"),
+            Ok(LogLevelOrStdout::LogLevel(log::Level::Trace))
+        ));
+        assert!(matches!(
+            parse_log_level_str("stdout"),
+            Ok(LogLevelOrStdout::Stdout)
+        ));
+    }
+
+    #[test]
+    fn parse_level_case_insensitive() {
+        assert!(parse_log_level_str("INFO").is_ok());
+        assert!(parse_log_level_str("Info").is_ok());
+        assert!(parse_log_level_str("info").is_ok());
+    }
+
+    #[test]
+    fn parse_level_invalid() {
+        assert!(parse_log_level_str("invalid").is_err());
+        assert!(parse_log_level_str("").is_err());
+    }
+
+    // --- parse_log_filter ---
+
+    #[test]
+    fn parse_filter_single_pair() {
+        let map = parse_log_filter("sensor=debug").unwrap();
+        assert_eq!(map.len(), 1);
+        assert!(matches!(
+            map.get("sensor"),
+            Some(LogLevelOrStdout::LogLevel(log::Level::Debug))
+        ));
+    }
+
+    #[test]
+    fn parse_filter_multiple_pairs() {
+        let map = parse_log_filter("sensor=debug,planner=warn").unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(matches!(
+            map.get("planner"),
+            Some(LogLevelOrStdout::LogLevel(log::Level::Warn))
+        ));
+    }
+
+    #[test]
+    fn parse_filter_empty_string() {
+        let map = parse_log_filter("").unwrap();
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn parse_filter_trailing_comma() {
+        let map = parse_log_filter("sensor=debug,").unwrap();
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn parse_filter_invalid_no_equals() {
+        assert!(parse_log_filter("sensorDEBUG").is_err());
+    }
+
+    #[test]
+    fn parse_filter_whitespace_trimming() {
+        let map = parse_log_filter("sensor = debug , planner = warn").unwrap();
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("sensor"));
+        assert!(map.contains_key("planner"));
+    }
+
+    // --- parse_jsonl_line ---
+
+    #[test]
+    fn parse_jsonl_daemon_compact() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"info","node":"sensor","msg":"hello"}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert_eq!(msg.message, "hello");
+        assert!(matches!(
+            msg.level,
+            LogLevelOrStdout::LogLevel(log::Level::Info)
+        ));
+        assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_invalid_json() {
+        assert!(parse_jsonl_line("not json at all").is_none());
+    }
+
+    #[test]
+    fn parse_jsonl_empty_string() {
+        assert!(parse_jsonl_line("").is_none());
+    }
+
+    // --- should_display ---
+
+    #[test]
+    fn should_display_passes_global_min_level() {
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            ..Default::default()
+        };
+        // Error is more severe than Info -> passes
+        assert!(should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Error),
+            None,
+            &config,
+        ));
+    }
+
+    #[test]
+    fn should_display_blocked_by_global_min_level() {
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            ..Default::default()
+        };
+        // Debug is more verbose than Info -> blocked
+        assert!(!should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            None,
+            &config,
+        ));
+    }
+
+    #[test]
+    fn should_display_per_node_override() {
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "sensor".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Debug),
+        );
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Error),
+            node_filters,
+            ..Default::default()
+        };
+        // Global says Error-only, but sensor override allows Debug
+        assert!(should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            Some("sensor"),
+            &config,
+        ));
+        // Other nodes still use global Error filter
+        assert!(!should_display_test(
+            &LogLevelOrStdout::LogLevel(log::Level::Debug),
+            Some("other"),
+            &config,
+        ));
+    }
 }

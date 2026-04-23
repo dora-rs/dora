@@ -1,0 +1,27 @@
+nodes:
+  - id: sensor
+    path: sensor.py
+    send_logs_as: log_entries
+    inputs:
+      tick: dora/timer/millis/200
+    outputs:
+      - reading
+      - log_entries
+
+  - id: processor
+    path: processor.py
+    send_logs_as: log_entries
+    inputs:
+      reading: sensor/reading
+    outputs:
+      - result
+      - log_entries
+
+  - id: file_sink
+    build: cargo build -p log-sink-file
+    path: ../../target/debug/log-sink-file
+    inputs:
+      sensor_logs: sensor/log_entries
+      processor_logs: processor/log_entries
+    env:
+      LOG_FILE: "./combined.jsonl"

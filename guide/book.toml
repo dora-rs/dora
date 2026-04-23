@@ -1,0 +1,16 @@
+[book]
+title = "Dora User Guide"
+authors = ["Dora Contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[preprocessor.gettext]
+after = ["links"]
+
+[output.html]
+git-repository-url = "https://github.com/dora-rs/dora"
+edit-url-template = "https://github.com/dora-rs/dora/edit/main/guide/{path}"
