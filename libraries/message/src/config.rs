@@ -82,6 +82,17 @@ pub struct NodeRunConfig {
     /// Optional type annotations for inputs
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub input_types: BTreeMap<DataId, String>,
+
+    /// Size of the zenoh shared memory pool for zero-copy output publishing.
+    ///
+    /// Accepts an integer (raw bytes) or a string with a unit suffix
+    /// (`KB`, `MB`, `GB`, case-insensitive).
+    ///
+    /// e.g.
+    ///
+    /// shared_memory_pool_size: 128MB
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared_memory_pool_size: Option<ByteSize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -434,6 +445,127 @@ pub enum RemoteCommunicationConfig {
     Tcp,
 }
 
+/// A byte size that can be deserialized from either an integer (raw bytes) or a
+/// string with a unit suffix (`KB`, `MB`, `GB`, case-insensitive).
+///
+/// Examples: `67108864`, `"64MB"`, `"1 GB"`, `"512kb"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ByteSize(pub usize);
+
+impl ByteSize {
+    /// Returns the size in raw bytes.
+    pub fn as_bytes(&self) -> usize {
+        self.0
+    }
+}
+
+impl FromStr for ByteSize {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let (num_part, unit_part) = match s.find(|c: char| c.is_alphabetic()) {
+            Some(pos) => (s[..pos].trim(), s[pos..].trim()),
+            None => {
+                let bytes: usize = s.parse().map_err(|_| format!("invalid byte size: `{s}`"))?;
+                return Ok(ByteSize(bytes));
+            }
+        };
+
+        let num: f64 = num_part
+            .parse()
+            .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
+
+        let multiplier: usize = match unit_part.to_uppercase().as_str() {
+            "B" => 1,
+            "KB" | "K" => 1024,
+            "MB" | "M" => 1024 * 1024,
+            "GB" | "G" => 1024 * 1024 * 1024,
+            other => return Err(format!("unknown byte size unit: `{other}`")),
+        };
+
+        Ok(ByteSize((num * multiplier as f64) as usize))
+    }
+}
+
+impl fmt::Display for ByteSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.0;
+        if bytes == 0 {
+            write!(f, "0B")
+        } else if bytes.is_multiple_of(1024 * 1024 * 1024) {
+            write!(f, "{}GB", bytes / (1024 * 1024 * 1024))
+        } else if bytes.is_multiple_of(1024 * 1024) {
+            write!(f, "{}MB", bytes / (1024 * 1024))
+        } else if bytes.is_multiple_of(1024) {
+            write!(f, "{}KB", bytes / 1024)
+        } else {
+            write!(f, "{bytes}")
+        }
+    }
+}
+
+impl Serialize for ByteSize {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ByteSize {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de;
+
+        struct ByteSizeVisitor;
+
+        impl de::Visitor<'_> for ByteSizeVisitor {
+            type Value = ByteSize;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a byte size as integer or string (e.g. 67108864, \"64MB\")")
+            }
+
+            fn visit_u64<E: de::Error>(self, v: u64) -> Result<ByteSize, E> {
+                Ok(ByteSize(v as usize))
+            }
+
+            fn visit_i64<E: de::Error>(self, v: i64) -> Result<ByteSize, E> {
+                if v < 0 {
+                    return Err(E::custom("byte size cannot be negative"));
+                }
+                Ok(ByteSize(v as usize))
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<ByteSize, E> {
+                v.parse().map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_any(ByteSizeVisitor)
+    }
+}
+
+impl JsonSchema for ByteSize {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ByteSize".into()
+    }
+
+    fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "anyOf": [
+                { "type": "integer" },
+                { "type": "string" }
+            ],
+            "description": "Byte size: integer (raw bytes) or string with unit (e.g. \"128MB\", \"1GB\")"
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -675,5 +807,73 @@ mod tests {
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed.local, LocalCommunicationConfig::Shmem);
+    }
+
+    #[test]
+    fn byte_size_parses_raw_bytes() {
+        assert_eq!("1024".parse::<ByteSize>().unwrap(), ByteSize(1024));
+        assert_eq!("0".parse::<ByteSize>().unwrap(), ByteSize(0));
+    }
+
+    #[test]
+    fn byte_size_parses_units_case_insensitively() {
+        assert_eq!("1KB".parse::<ByteSize>().unwrap(), ByteSize(1024));
+        assert_eq!("1kb".parse::<ByteSize>().unwrap(), ByteSize(1024));
+        assert_eq!("1MB".parse::<ByteSize>().unwrap(), ByteSize(1024 * 1024));
+        assert_eq!(
+            "1GB".parse::<ByteSize>().unwrap(),
+            ByteSize(1024 * 1024 * 1024)
+        );
+        assert_eq!(
+            "128 MB".parse::<ByteSize>().unwrap(),
+            ByteSize(128 * 1024 * 1024)
+        );
+        assert_eq!("512B".parse::<ByteSize>().unwrap(), ByteSize(512));
+    }
+
+    #[test]
+    fn byte_size_rejects_unknown_unit() {
+        assert!("1TB".parse::<ByteSize>().is_err());
+        assert!("abc".parse::<ByteSize>().is_err());
+    }
+
+    #[test]
+    fn byte_size_deserializes_int_or_string() {
+        let from_int: ByteSize = serde_yaml::from_str("67108864").unwrap();
+        assert_eq!(from_int, ByteSize(64 * 1024 * 1024));
+
+        let from_str: ByteSize = serde_yaml::from_str(r#""64MB""#).unwrap();
+        assert_eq!(from_str, ByteSize(64 * 1024 * 1024));
+    }
+
+    #[test]
+    fn byte_size_serializes_as_integer() {
+        let yaml = serde_yaml::to_string(&ByteSize(1024)).unwrap();
+        assert_eq!(yaml.trim(), "1024");
+    }
+
+    #[test]
+    fn byte_size_display_uses_largest_exact_unit() {
+        assert_eq!(ByteSize(1024).to_string(), "1KB");
+        assert_eq!(ByteSize(1024 * 1024).to_string(), "1MB");
+        assert_eq!(ByteSize(2 * 1024 * 1024 * 1024).to_string(), "2GB");
+        assert_eq!(ByteSize(1500).to_string(), "1500");
+    }
+
+    #[test]
+    fn node_run_config_parses_shared_memory_pool_size() {
+        let yaml = "shared_memory_pool_size: 128MB\n";
+        let config: NodeRunConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.shared_memory_pool_size,
+            Some(ByteSize(128 * 1024 * 1024))
+        );
+    }
+
+    #[test]
+    fn node_run_config_shared_memory_pool_size_optional() {
+        let yaml = "outputs:\n  - foo\n";
+        let config: NodeRunConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.shared_memory_pool_size, None);
     }
 }
