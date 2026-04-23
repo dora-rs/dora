@@ -130,6 +130,37 @@ pub struct DoraNode {
     /// Runtime type checking state. `None` when off (zero overhead).
     /// When `Some`, holds the mode (Warn/Error) and a map of output DataId -> expected Arrow DataType.
     runtime_type_checks: Option<(RuntimeTypeCheck, HashMap<DataId, arrow_schema::DataType>)>,
+
+    /// Tokio runtime owned by the node. Populated only when the embedder did
+    /// not provide an ambient runtime and opted in via
+    /// [`DORA_CREATE_OWNED_TOKIO_RUNTIME`]. Must drop after the zenoh session
+    /// (which is drained explicitly at the top of [`Drop`]) so that any
+    /// async cleanup triggered by session shutdown can still run.
+    _owned_runtime: Option<tokio::runtime::Runtime>,
+}
+
+/// Env var that opts in to having the node create its own multi-threaded
+/// tokio runtime when no ambient one is available. Accepts `1`, `true`, `yes`,
+/// `on` (case-insensitive). Any other value — including absence — leaves the
+/// strict behavior: the node errors at init if no runtime is available.
+pub const DORA_CREATE_OWNED_TOKIO_RUNTIME: &str = "DORA_CREATE_OWNED_TOKIO_RUNTIME";
+
+fn owned_runtime_opt_in() -> bool {
+    parse_owned_runtime_opt_in(
+        std::env::var(DORA_CREATE_OWNED_TOKIO_RUNTIME)
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_owned_runtime_opt_in(value: Option<&str>) -> bool {
+    match value {
+        Some(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        None => false,
+    }
 }
 
 impl DoraNode {
@@ -552,16 +583,32 @@ impl DoraNode {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(ZERO_COPY_THRESHOLD);
-        let (zenoh_session, zenoh_shm_provider) = if !is_standard_mode {
-            (None, None)
+        let (zenoh_session, zenoh_shm_provider, owned_runtime) = if !is_standard_mode {
+            (None, None, None)
         } else {
-            let handle = tokio::runtime::Handle::try_current().map_err(|_| {
-                NodeError::Init(
-                    "no tokio runtime available — dora nodes require a tokio runtime \
-                     for the zenoh SHM data plane"
-                        .into(),
-                )
-            })?;
+            let (handle, owned_runtime) = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => (handle, None),
+                Err(_) if owned_runtime_opt_in() => {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .thread_name("dora-node-runtime")
+                        .build()
+                        .map_err(|e| {
+                            NodeError::Init(format!("failed to create owned tokio runtime: {e}"))
+                        })?;
+                    let handle = rt.handle().clone();
+                    (handle, Some(rt))
+                }
+                Err(_) => {
+                    return Err(NodeError::Init(
+                        "no tokio runtime available — dora nodes require a tokio runtime \
+                         for the zenoh SHM data plane. Set \
+                         DORA_CREATE_OWNED_TOKIO_RUNTIME=1 to have the node create one \
+                         automatically."
+                            .into(),
+                    ));
+                }
+            };
             // Use scope + spawn to avoid panicking when called from a tokio
             // worker thread (block_on panics in that context on
             // current-thread runtimes).
@@ -586,7 +633,7 @@ impl DoraNode {
                         NodeError::Init(format!("failed to create zenoh SHM provider: {e}"))
                     })?
             };
-            (Some(session), Some(provider))
+            (Some(session), Some(provider), owned_runtime)
         };
 
         let event_stream = EventStream::init(
@@ -645,6 +692,7 @@ impl DoraNode {
             interactive: false,
             restart_count,
             runtime_type_checks,
+            _owned_runtime: owned_runtime,
         };
 
         if dynamic {
@@ -1627,6 +1675,23 @@ mod tests {
     fn new_goal_id_returns_valid_uuid() {
         let id = DoraNode::new_goal_id();
         uuid::Uuid::parse_str(&id).expect("should be valid UUID");
+    }
+
+    #[test]
+    fn owned_runtime_opt_in_parsing() {
+        for truthy in ["1", "true", "yes", "on", "TRUE", "On", " 1 ", "Yes"] {
+            assert!(
+                parse_owned_runtime_opt_in(Some(truthy)),
+                "{truthy:?} should enable owned runtime"
+            );
+        }
+        for falsy in ["", "0", "false", "no", "off", "enabled", "2"] {
+            assert!(
+                !parse_owned_runtime_opt_in(Some(falsy)),
+                "{falsy:?} should not enable owned runtime"
+            );
+        }
+        assert!(!parse_owned_runtime_opt_in(None));
     }
 
     /// Helper: create a minimal test node with a channel output.
