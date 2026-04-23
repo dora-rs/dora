@@ -55,6 +55,9 @@ queue_rules:
       - check-success=Benchmark regression check
       - check-success=pip-release all green
 
+merge_queue:
+  max_parallel_checks: 1
+
 pull_request_rules:
   - name: queue approved PRs labelled `queue`
     conditions:
