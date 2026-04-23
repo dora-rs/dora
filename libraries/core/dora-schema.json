@@ -50,6 +50,17 @@
     "nodes"
   ],
   "$defs": {
+    "ByteSize": {
+      "description": "Byte size: integer (raw bytes) or string with unit (e.g. \"128MB\", \"1GB\")",
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
     "CustomNode": {
       "description": "Contains the input and output configuration of the node.",
       "type": "object",
@@ -197,6 +208,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "shared_memory_pool_size": {
+          "description": "Size of the zenoh shared memory pool for zero-copy output publishing.\n\nAccepts an integer (raw bytes) or a string with a unit suffix\n(`KB`, `MB`, `GB`, case-insensitive).\n\ne.g.\n\nshared_memory_pool_size: 128MB",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ByteSize"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "source": {
@@ -683,6 +705,17 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "shared_memory_pool_size": {
+          "description": "Size of the zenoh shared memory pool for zero-copy output publishing.\n\nAccepts an integer (raw bytes) or a string with a unit suffix\n(`KB`, `MB`, `GB`, case-insensitive). If unset, the\n`DORA_NODE_SHM_POOL_SIZE` env var is used, falling back to a\nbuilt-in default.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera-node\n    shared_memory_pool_size: 128MB\n```",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ByteSize"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "tag": {
