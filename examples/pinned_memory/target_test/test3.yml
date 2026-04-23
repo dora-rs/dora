@@ -1,0 +1,20 @@
+# 测试cuda接收时，读完直接释放，不显示释放。
+nodes:
+  - id: sender_node
+    path: sender1.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - cpu_data
+    env:
+      mode: pinned
+      massage_num: 10
+  - id: receiver_node
+    path: receiver3.py
+    inputs:
+      latency: sender_node/cpu_data
+    outputs:
+      - next_require
+    env:
+      mode: pinned
+      massage_num: 10

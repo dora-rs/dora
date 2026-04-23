@@ -7,7 +7,7 @@ import time
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle, pinned_ptr_to_torch
+from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle, ptr_to_torch
 from tqdm import tqdm
 
 
@@ -34,9 +34,9 @@ while True:
         torch_tensor = scope.__enter__() # 读取句柄的数据
     else: # mode==pinned
         pinned_buffer = event["value"]
-        pinned_ptr, metadata = node.read_pinned_memory(pinned_buffer, free=False)
-        torch_tensor = pinned_ptr_to_torch(pinned_ptr, metadata)
         node.free_pinned_memory(pinned_buffer)
+        data_ptr, metadata = node.read_pinned_memory(pinned_buffer)
+        torch_tensor = ptr_to_torch(data_ptr, metadata)
 
     t_received = time.perf_counter_ns() # ns级别高精度计时
     deta_t = t_received - t_send

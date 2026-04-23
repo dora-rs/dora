@@ -12,7 +12,7 @@ from dora.cuda import torch_to_pinned_ptr
 
 node = Node("test_node")
 
-# Create large tensor similar to cpu_sender.py
+# Create large tensor similar to sender1.py
 size = 15000 * 512  # 7,680,000 elements
 random_data = np.random.default_rng().integers(1000, size=size, dtype=np.int64)
 torch_tensor = torch.tensor(random_data, dtype=torch.int64, device="cpu")

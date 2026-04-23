@@ -40,6 +40,8 @@ pub struct PinnedMemoryEntry {
     pub in_use: bool,
     /// Node that registered this memory
     pub registered_by: String,
+    /// Whether this entry has been freed (kept for double-free detection)
+    pub freed: bool,
 }
 
 /// Manager for pinned memory allocations
@@ -79,6 +81,7 @@ impl MemoryManager {
                 metadata,
                 in_use: true,
                 registered_by,
+                freed: false,
             },
         );
 
@@ -91,50 +94,56 @@ impl MemoryManager {
         table.get(id).map(|entry| entry.metadata.clone())
     }
 
-    /// Free pinned memory by ID
-    pub fn free_pinned_memory(&self, id: &PinnedMemoryId) -> Result<(), String> {
+    /// Free pinned memory by ID.
+    ///
+    /// The entry is kept in the table (marked as freed) rather than removed,
+    /// so that subsequent operations can detect double-free and retrieve
+    /// metadata (e.g. size) for proper warning messages.
+    ///
+    /// Returns `Ok(metadata)` on first free, `Err("already freed,size=N")` on double-free.
+    pub fn free_pinned_memory(&self, id: &PinnedMemoryId) -> Result<PinnedMemoryMetadata, String> {
         let mut table = self.pinned_memory_table.lock().unwrap();
 
-        // Get the entry before removing it
-        let entry = match table.remove(id) {
-            Some(entry) => entry,
-            None => return Err(format!("Pinned memory with ID {} not found", id.id)),
+        let entry = match table.get_mut(id) {
+            Some(entry) if !entry.freed => {
+                // First free: mark as freed
+                entry.freed = true;
+                entry.clone()
+            }
+            Some(entry) => {
+                // Double-free: return error with size from stored metadata
+                let size = entry.metadata.size;
+                return Err(format!("already freed,size={}", size));
+            }
+            None => {
+                return Err("already freed,size=0".to_string());
+            }
         };
 
         // Try to free the shared memory if it exists
-        // Note: Daemon now attempts to free shared memory directly.
-        // CUDA memory registration (if any) will be handled separately.
         if let Some(shm_name) = &entry.metadata.shared_memory_name {
             if !shm_name.is_empty() {
-                // Attempt to free the shared memory
-                // This is a best-effort attempt
                 let _ = self.free_shared_memory(shm_name, &entry.metadata);
             }
         }
 
-        Ok(())
+        Ok(entry.metadata)
     }
 
     /// Attempt to free shared memory
     fn free_shared_memory(
         &self,
         shm_name: &str,
-        metadata: &PinnedMemoryMetadata,
+        _metadata: &PinnedMemoryMetadata,
     ) -> Result<(), String> {
         // Try to unlink shared memory file on Linux
         #[cfg(target_os = "linux")]
         {
-            // Shared memory files are typically in /dev/shm/
             let shm_path = format!("/dev/shm/{}", shm_name);
             match std::fs::remove_file(&shm_path) {
-                Ok(_) => {
-                    // Successfully unlinked shared memory file
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    // File already removed, that's fine
-                }
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                 Err(e) => {
-                    // Log warning but don't fail - other processes may still have it open
                     tracing::warn!(
                         "Failed to unlink shared memory file {}: {}. The file may still be in use by other processes.",
                         shm_path,
@@ -145,14 +154,7 @@ impl MemoryManager {
         }
 
         #[cfg(not(target_os = "linux"))]
-        {
-            // Cannot directly unlink shared memory on this platform
-        }
-
-        // Note: CUDA memory registration (if any) is not unregistered here.
-        // The original allocating process should have handled CUDA registration.
-        // If CUDA host memory was registered, it should have been unregistered
-        // before the memory was freed. We assume that has already been done.
+        {}
 
         Ok(())
     }
@@ -169,19 +171,21 @@ impl MemoryManager {
     /// Cleanup all pinned memory on shutdown
     pub fn cleanup_all(&self) -> Result<(), Vec<String>> {
         let mut table = self.pinned_memory_table.lock().unwrap();
-        let mut errors = Vec::new();
         let ids: Vec<PinnedMemoryId> = table.keys().cloned().collect();
 
-        for id in ids {
-            if let Err(e) = self.free_pinned_memory(&id) {
-                errors.push(format!("Failed to free pinned memory {}: {}", id.id, e));
+        for id in &ids {
+            if let Some(entry) = table.remove(id) {
+                if entry.freed {
+                    continue;
+                }
+                if let Some(shm_name) = &entry.metadata.shared_memory_name {
+                    if !shm_name.is_empty() {
+                        let _ = self.free_shared_memory(shm_name, &entry.metadata);
+                    }
+                }
             }
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
-        }
+        Ok(())
     }
 }

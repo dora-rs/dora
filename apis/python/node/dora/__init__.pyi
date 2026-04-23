@@ -177,20 +177,23 @@ class Node:
         """
         入参1：pinned_ptr为cpu上的tensor的指针。
         入参2：metadata为字典，包括tensor的ptr,size,dtype,shape等。
-        调用该api后，memory_manager根据pinned_ptr, metadata将tensor数据注册为共享页锁内存；
-        然后在pinned_memory_table中记录pinned_buffer和metadata，
-        返回值：pinned_buffer为注册好的页锁内存标识符。
+        调用该api后，node根据pinned_ptr, metadata将tensor数据注册为页锁内存（尽量只注册，不复制），注册后生成pinned_buffer（跨进程不变的内存标识符）。
+        然后node将pinned_buffer和metadata作为DaemonRequest发给daemon。
+        daemon收到DaemonRequest之后，会让memory_manager将pinned_buffer, metadata写入pinned_memory_table；
+        返回值：pinned_buffer为py.array包装的共享内存标识符。
         """
 
     def read_pinned_memory(
-            self, pinned_buffer: pyarrow.Array, free: bool) -> tuple[pyarrow.Array, dict]:
+            self, pinned_buffer: pyarrow.Array, free=True) -> tuple[pyarrow.Array, dict]:
         """
         入参1:pinned_buffer为用py.array包装的共享内存标识符。
-        调用该api后，memory_manager会根据pinned_buffer查询pinned_memory_table；
-        若查到，则根据表中数据填充metadata,并将该页锁内存数据通过DMA高速传输至cuda；
-        传输完后，若入参free为True，则调用free_pinned_memory释放原来的页锁内存；
-        若在pinned_memory_table没查到pinned_buffer，则输出提示。
-        返回值1:pinned_ptr为接收方进程的指针，供之后接收方通过pinned_ptr_to_torch转换为torch。
+        调用该api后，node会将pinned_buffer作为DaemonRequest发给daemon。
+        daemon收到DaemonRequest之后，会让memory_manager会根据pinned_buffer查询pinned_memory_table；
+        查询之后，daemon向node发送DaemonReply（如果查询成功，DaemonReply为查到的metadata；如果没查到，DaemonReply为查询失败枚举）。
+        node接收到DaemonReply之后，如果为查询失败枚举，则直接输出日志（没有查到页锁内存数据），如果查到，则根据pinned_buffer和metadata将该页锁内存数据通过DMA高速传输至cuda；
+        传输完后，若入参free为True，则调用free_pinned_memory释放传输前的页锁内存（效果相当于node.free_pinned_memory）；
+        最后对外返回传输后的cuda数据的当前进程指针和metadata。
+        返回值1:data_ptr为接收节点的进程指针，供之后接收节点通过ptr_to_torch转换为torch。
         返回值2:metadata为字典，与register_pinned_memory时记录的metadata相同。
         """
 
@@ -198,9 +201,11 @@ class Node:
             self, pinned_buffer: pyarrow.Array) -> None:
         """
         入参：pinned_buffer为用py.array包装的共享内存标识符。
-        调用该api后，memory_manager会根据pinned_buffer查询pinned_memory_table；
-        若查到，则释放共享页锁内存，并在pinned_memory_table删除该条内存记录。
-        若在pinned_memory_table没查到pinned_buffer，则输出提示。
+        调用该api后，node会将pinned_buffer作为DaemonRequest发给daemon。
+        daemon收到DaemonRequest之后，会让memory_manager会根据pinned_buffer查询pinned_memory_table；
+        查询之后，daemon向node发送DaemonReply（如果查询成功，DaemonReply为查到的metadata，并在pinned_memory_table删除该条内存记录；如果没查到，DaemonReply为查询失败枚举）。
+        node接收到DaemonReply之后，如果为查询失败枚举，则直接输出日志（没有查到页锁内存数据），如果为metadata，则根据pinned_buffer和metadata将该页锁内存数据释放；
+        无返回值。
         """
 
     def __iter__(self) -> typing.Any:

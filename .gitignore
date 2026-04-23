@@ -184,3 +184,5 @@ yolo.yml
 
 # Git worktrees
 .worktrees/
+
+.idea/

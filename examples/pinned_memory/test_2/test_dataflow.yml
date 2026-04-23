@@ -1,4 +1,0 @@
-nodes:
-  - id: test_node
-    operator:
-      python: test_node.py

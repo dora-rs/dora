@@ -1699,11 +1699,12 @@ impl Daemon {
                             format!("pinned memory with ID {} not found", shared_memory_id)
                         })?;
 
-                    // If free is true, free the pinned memory after reading
+                    // Free pinned memory after reading if free parameter is true
+                    // According to plan.md: "传输完后，若入参free为True，则调用free_pinned_memory释放传输前的页锁内存"
                     if free {
                         if let Err(err) = self.state.memory_manager.free_pinned_memory(&id) {
-                            tracing::warn!(
-                                "Failed to free pinned memory {} after reading: {}",
+                            tracing::debug!(
+                                "Failed to free pinned memory {} after reading (may already be freed): {}",
                                 shared_memory_id,
                                 err
                             );
@@ -1763,13 +1764,14 @@ impl Daemon {
                 shared_memory_id,
                 reply_sender,
             } => {
-                let result = (|| -> Result<(), String> {
-                    let id = memory_manager::PinnedMemoryId {
-                        id: shared_memory_id.clone(),
+                let id = memory_manager::PinnedMemoryId {
+                    id: shared_memory_id.clone(),
+                };
+                let result: Result<(), String> =
+                    match self.state.memory_manager.free_pinned_memory(&id) {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
                     };
-                    self.state.memory_manager.free_pinned_memory(&id)
-                })();
-
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }

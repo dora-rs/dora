@@ -277,6 +277,20 @@ def ipc_buffer_to_ipc_handle(handle_buffer: pa.array, metadata: dict) -> IpcHand
     )
 
 
+class _ArrayInterface:
+    """Minimal object implementing ``__array_interface__`` so that
+    ``torch.as_tensor`` can wrap raw CPU memory as a tensor (zero-copy)."""
+
+    def __init__(self, ptr, shape, strides, dtype_str):
+        self.__array_interface__ = {
+            "shape": tuple(shape),
+            "strides": tuple(strides) if strides else None,
+            "typestr": dtype_str,
+            "data": (ptr, False),
+            "version": 3,
+        }
+
+
 class _CudaArrayInterface:
     """Minimal object implementing ``__cuda_array_interface__`` so that
     ``torch.as_tensor`` can wrap raw GPU memory as a tensor (zero-copy)."""
@@ -326,89 +340,111 @@ def open_ipc_handle(
 # Pinned memory API
 # ---------------------------------------------------------------------------
 
-def torch_to_pinned_ptr(tensor: torch.Tensor) -> tuple[pa.array, dict]:
+def torch_to_ptr(tensor: torch.Tensor) -> tuple[pa.array, dict]:
     """
-    只负责将tensor解析为当前进程的数据指针和meatadata。
-    
-    注意：接收方使用cudaMemcpy，不需要页面对齐的内存。
+    只负责将tensor解析为当前进程的数据指针和metadata。
+
+    根据指针位置判断设备：CPU或CUDA。
     """
-    if tensor.is_cuda:
-        raise ValueError("Tensor must be on CPU for pinned memory allocation")
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
 
-    # Get the pointer - no need to check alignment since receiver uses cudaMemcpy
+    # Get the pointer
     ptr = tensor.data_ptr()
-    
+
     metadata = {
         "size": tensor.nbytes,
         "dtype": str(tensor.dtype),
         "shape": list(tensor.shape),
+        "is_cuda": tensor.is_cuda,
+        "device": str(tensor.device),
     }
     # Wrap pointer in a list to create pyarrow array
     return pa.array([ptr]), metadata
 
-def pinned_ptr_to_torch(pinned_ptr, metadata) -> torch.Tensor:
+def ptr_to_torch(data_ptr, metadata) -> torch.Tensor:
     """
-    只负责根据数据指针生成tensor,不要用numpy中转，不要额外复制数据
+    只负责根据数据指针生成tensor，零拷贝。
 
-    注意：根据设计，这个函数不应该负责注册内存。但是当前实现中，
-    如果内存没有注册，我们需要处理非页面对齐的内存。
+    根据指针位置判断设备：如果指针在CPU上，生成CPU tensor；
+    如果指针在CUDA上，生成CUDA tensor。
     """
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is not available")
-    size = metadata.get("size")
-    dtype_str = metadata.get("dtype", "int64")
-    shape = metadata.get("shape", [])
-    dtype = _DTYPE_MAP.get(dtype_str, torch.int64)
-
     # Extract pointer value from pyarrow array
-    # pinned_ptr is expected to be a pyarrow array containing a single integer (pointer)
-    ptr_list = pinned_ptr.to_pylist()
+    # data_ptr is expected to be a pyarrow array containing a single integer (pointer)
+    ptr_list = data_ptr.to_pylist()
     if len(ptr_list) != 1:
-        raise ValueError(f"Expected pinned_ptr array with one element, got {len(ptr_list)}")
+        raise ValueError(f"Expected data_ptr array with one element, got {len(ptr_list)}")
     ptr = ptr_list[0]
     if ptr == 0:
+        size = metadata.get("size", 0)
+        if size == 0:
+            # Read-after-free case: return an empty tensor
+            shape = metadata.get("shape", [0])
+            return torch.empty(*shape, dtype=torch.int64)
         raise ValueError("Invalid pointer (NULL)")
 
+    # Get metadata
+    dtype_str = metadata.get("dtype", "int64")
+    shape = metadata.get("shape", [])
+    is_cuda = metadata.get("is_cuda", False)
+    device_str = metadata.get("device", "cpu")
+    size = metadata.get("size")
+
+    dtype = _DTYPE_MAP.get(dtype_str, torch.int64)
+
     # Convert torch dtype to numpy dtype string (typestr)
-    # Use _TORCH_TO_NUMPY_DTYPE_MAP to get numpy dtype, then its str
     if dtype not in _TORCH_TO_NUMPY_DTYPE_MAP:
-        raise ValueError(f"Unsupported dtype for pinned memory: {dtype}")
+        raise ValueError(f"Unsupported dtype: {dtype}")
     np_dtype = _TORCH_TO_NUMPY_DTYPE_MAP[dtype]
     typestr = np.dtype(np_dtype).str
 
-    lib = _libcudart()
-    host_ptr = ctypes.c_void_p(ptr)
+    if is_cuda:
+        # CUDA tensor - use zero-copy via _CudaArrayInterface
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available for CUDA tensor")
 
-    # Check if memory is already pinned (from metadata)
-    is_pinned = metadata.get("is_pinned", False)
+        wrapper = _CudaArrayInterface(ptr, shape, None, typestr)
+        tensor = torch.as_tensor(wrapper, device="cuda")
+        return tensor
+    else:
+        # CPU pointer - try to get device pointer for zero-copy CUDA access
+        if torch.cuda.is_available():
+            lib = _libcudart()
+            host_ptr = ctypes.c_void_p(ptr)
+            device_ptr = ctypes.c_void_p()
+            result = lib.cudaHostGetDevicePointer(ctypes.byref(device_ptr), host_ptr, 0)
+            if result == CUDA_ERROR_SUCCESS:
+                # Success! Create CUDA tensor using device pointer
+                try:
+                    wrapper = _CudaArrayInterface(device_ptr.value, shape, None, typestr)
+                    tensor = torch.as_tensor(wrapper, device="cuda")
+                    return tensor
+                except RuntimeError:
+                    # CUDA tensor creation failed, fall back to CPU
+                    pass
 
-    # Try zero-copy access only if memory is already registered as pinned
-    if is_pinned:
-        device_ptr = ctypes.c_void_p()
-        result = lib.cudaHostGetDevicePointer(ctypes.byref(device_ptr), host_ptr, 0)
-        if result == CUDA_ERROR_SUCCESS:
-            # Success! Create tensor using device pointer
-            wrapper = _CudaArrayInterface(device_ptr.value, shape, None, typestr)
-            tensor = torch.as_tensor(wrapper, device="cuda")
+        # Fallback: CPU tensor - create via numpy array (zero-copy)
+        if size is None:
+            # Calculate size from shape and dtype
+            nelement = 1
+            for dim in shape:
+                nelement *= dim
+            size = nelement * torch.tensor([], dtype=dtype).element_size()
+
+        # Create ctypes array pointing to the memory
+        c_array = (ctypes.c_byte * size).from_address(ptr)
+
+        # For bfloat16, numpy doesn't have native support, use torch directly
+        if dtype == torch.bfloat16:
+            # Create from byte buffer, then view as bfloat16
+            byte_tensor = torch.frombuffer(c_array, dtype=torch.uint8)
+            tensor = byte_tensor.view(dtype=torch.bfloat16).reshape(shape)
             return tensor
-        # If cudaHostGetDevicePointer fails, fall through to cudaMemcpy
 
-    # Fallback: copy via cudaMemcpy
-    cuda_tensor = torch.zeros(shape, dtype=dtype, device="cuda")
-    device_ptr = ctypes.c_void_p(cuda_tensor.data_ptr())
-    result = lib.cudaMemcpy(
-        device_ptr,
-        host_ptr,
-        size,
-        _cudaMemcpyHostToDevice
-    )
-
-    if result != CUDA_ERROR_SUCCESS:
-        # Return zero tensor as ultimate fallback
-        return torch.zeros(shape, dtype=dtype, device="cuda")
-
-    return cuda_tensor
+        # Create numpy array from buffer (zero-copy)
+        np_array = np.frombuffer(c_array, dtype=np_dtype).reshape(shape)
+        # Convert to torch tensor (zero-copy, shares memory with numpy array)
+        tensor = torch.from_numpy(np_array)
+        return tensor
 
 

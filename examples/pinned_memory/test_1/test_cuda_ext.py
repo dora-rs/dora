@@ -11,11 +11,11 @@ os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning:multiprocessing.resource_tra
 
 import torch
 import numpy as np
-from dora.cuda import torch_to_pinned_ptr, pinned_ptr_to_torch
+from dora.cuda import torch_to_ptr, ptr_to_torch
 
 def test_tensor_conversion():
     """Test that tensor -> pinned_ptr -> tensor conversion works."""
-    print("Testing torch_to_pinned_ptr and pinned_ptr_to_torch...")
+    print("Testing torch_to_ptr and ptr_to_torch...")
 
     # Create test tensor
     tensor = torch.tensor([1, 2, 3, 4, 5], dtype=torch.float32)
@@ -23,7 +23,7 @@ def test_tensor_conversion():
     print(f"Tensor dtype: {tensor.dtype}, shape: {tensor.shape}")
 
     # Convert to pinned pointer
-    pinned_ptr, metadata = torch_to_pinned_ptr(tensor)
+    pinned_ptr, metadata = torch_to_ptr(tensor)
     print(f"Pinned pointer type: {type(pinned_ptr)}")
     print(f"Metadata: {metadata}")
 
@@ -37,33 +37,44 @@ def test_tensor_conversion():
 
     # Convert back to tensor
     try:
-        recovered_tensor = pinned_ptr_to_torch(pinned_ptr, metadata)
+        recovered_tensor = ptr_to_torch(pinned_ptr, metadata)
         print(f"Recovered tensor: {recovered_tensor}")
         print(f"Recovered tensor device: {recovered_tensor.device}")
 
-        # Compare tensors (original on CPU, recovered on CUDA)
-        # Move original to CUDA for comparison
-        if torch.cuda.is_available():
-            tensor_cuda = tensor.to("cuda")
-            if torch.allclose(tensor_cuda, recovered_tensor):
+        # Compare tensors based on recovered tensor device
+        if recovered_tensor.device.type == "cuda":
+            # Recovered tensor is on CUDA, move original to CUDA for comparison
+            if torch.cuda.is_available():
+                tensor_cuda = tensor.to("cuda")
+                if torch.allclose(tensor_cuda, recovered_tensor):
+                    print("SUCCESS: Tensors match (within tolerance)")
+                    return True
+                else:
+                    print("ERROR: Tensors do not match")
+                    print(f"Original (CUDA): {tensor_cuda}")
+                    print(f"Recovered (CUDA): {recovered_tensor}")
+                    return False
+            else:
+                print("WARNING: CUDA not available but recovered tensor is on CUDA")
+                # Fallback: check shape and dtype
+                if recovered_tensor.shape == tensor.shape and recovered_tensor.dtype == tensor.dtype:
+                    print("SUCCESS: Shape and dtype match")
+                    return True
+                else:
+                    print("ERROR: Shape or dtype mismatch")
+                    return False
+        else:
+            # Recovered tensor is on CPU, compare directly
+            if torch.allclose(tensor, recovered_tensor):
                 print("SUCCESS: Tensors match (within tolerance)")
                 return True
             else:
                 print("ERROR: Tensors do not match")
-                print(f"Original (CUDA): {tensor_cuda}")
-                print(f"Recovered: {recovered_tensor}")
-                return False
-        else:
-            print("WARNING: CUDA not available, cannot compare tensors directly")
-            # Fallback: check shape and dtype
-            if recovered_tensor.shape == tensor.shape and recovered_tensor.dtype == tensor.dtype:
-                print("SUCCESS: Shape and dtype match")
-                return True
-            else:
-                print("ERROR: Shape or dtype mismatch")
+                print(f"Original (CPU): {tensor}")
+                print(f"Recovered (CPU): {recovered_tensor}")
                 return False
     except Exception as e:
-        print(f"ERROR: pinned_ptr_to_torch failed: {e}")
+        print(f"ERROR: ptr_to_torch failed: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -96,34 +107,56 @@ def test_various_dtypes():
             tensor = torch.tensor([1, 2, 3], dtype=dtype)
 
             # Convert to pinned pointer
-            pinned_ptr, metadata = torch_to_pinned_ptr(tensor)
+            pinned_ptr, metadata = torch_to_ptr(tensor)
 
             # Check metadata
             assert metadata["dtype"] == str(dtype), f"Metadata dtype mismatch: {metadata['dtype']} != {dtype}"
             assert metadata["shape"] == list(tensor.shape), f"Shape mismatch: {metadata['shape']} != {list(tensor.shape)}"
             assert metadata["size"] == tensor.nbytes, f"Size mismatch: {metadata['size']} != {tensor.nbytes}"
 
-            # Convert back (if CUDA is available)
-            if torch.cuda.is_available():
-                recovered_tensor = pinned_ptr_to_torch(pinned_ptr, metadata)
-                # Move original to CUDA for comparison
-                tensor_cuda = tensor.to("cuda")
+            # Convert back
+            recovered_tensor = ptr_to_torch(pinned_ptr, metadata)
 
-                # For boolean tensors, need to use equality instead of allclose
+            # Compare based on recovered tensor device
+            if recovered_tensor.device.type == "cuda":
+                # Recovered tensor is on CUDA, move original to CUDA for comparison
+                if torch.cuda.is_available():
+                    tensor_cuda = tensor.to("cuda")
+                    # For boolean tensors, need to use equality instead of allclose
+                    if dtype == torch.bool:
+                        if torch.equal(tensor_cuda, recovered_tensor):
+                            print(f"  ✓ {dtype}: Passed")
+                        else:
+                            print(f"  ✗ {dtype}: Failed - tensors not equal")
+                            return False
+                    else:
+                        if torch.allclose(tensor_cuda, recovered_tensor):
+                            print(f"  ✓ {dtype}: Passed")
+                        else:
+                            print(f"  ✗ {dtype}: Failed - tensors not close")
+                            return False
+                else:
+                    print(f"  ⚠ {dtype}: CUDA not available but recovered tensor is on CUDA")
+                    # Fallback: check shape and dtype
+                    if recovered_tensor.shape == tensor.shape and recovered_tensor.dtype == tensor.dtype:
+                        print(f"  ✓ {dtype}: Shape and dtype match")
+                    else:
+                        print(f"  ✗ {dtype}: Shape or dtype mismatch")
+                        return False
+            else:
+                # Recovered tensor is on CPU, compare directly
                 if dtype == torch.bool:
-                    if torch.equal(tensor_cuda, recovered_tensor):
+                    if torch.equal(tensor, recovered_tensor):
                         print(f"  ✓ {dtype}: Passed")
                     else:
                         print(f"  ✗ {dtype}: Failed - tensors not equal")
                         return False
                 else:
-                    if torch.allclose(tensor_cuda, recovered_tensor):
+                    if torch.allclose(tensor, recovered_tensor):
                         print(f"  ✓ {dtype}: Passed")
                     else:
                         print(f"  ✗ {dtype}: Failed - tensors not close")
                         return False
-            else:
-                print(f"  ⚠ {dtype}: CUDA not available, skipping comparison")
 
         except Exception as e:
             print(f"  ✗ {dtype}: Failed with error: {e}")
@@ -151,14 +184,14 @@ def test_different_shapes():
             tensor = torch.randn(*shape, dtype=torch.float32)
 
             # Convert to pinned pointer
-            pinned_ptr, metadata = torch_to_pinned_ptr(tensor)
+            pinned_ptr, metadata = torch_to_ptr(tensor)
 
             # Check metadata
             assert metadata["shape"] == shape, f"Shape mismatch: {metadata['shape']} != {shape}"
 
             # Convert back (if CUDA is available)
             if torch.cuda.is_available():
-                recovered_tensor = pinned_ptr_to_torch(pinned_ptr, metadata)
+                recovered_tensor = ptr_to_torch(pinned_ptr, metadata)
                 tensor_cuda = tensor.to("cuda")
 
                 if torch.allclose(tensor_cuda, recovered_tensor):

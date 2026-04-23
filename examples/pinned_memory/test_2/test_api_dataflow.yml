@@ -1,5 +1,0 @@
-nodes:
-  - id: test_node
-    path: test_memory_api_node.py
-    env:
-      PYTHONWARNINGS: ignore::UserWarning:multiprocessing.resource_tracker

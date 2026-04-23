@@ -8,7 +8,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import torch_to_ipc_buffer, torch_to_pinned_ptr
+from dora.cuda import torch_to_ipc_buffer, torch_to_ptr
 
 SIZES = [15000 * 512]
 mode = os.getenv("mode", "pinned")
@@ -34,7 +34,7 @@ for size in SIZES:  # 每次发送size形状的整数
             metadata["size"] = torch_tensor.nbytes
             node.send_output("cpu_data", ipc_buffer, metadata)
         else: # mode=pinned
-            pinned_ptr, metadata = torch_to_pinned_ptr(torch_tensor)
+            pinned_ptr, metadata = torch_to_ptr(torch_tensor)
             metadata["time"] = t_send
             pinned_buffer = node.register_pinned_memory(pinned_ptr, metadata)
             node.send_output("cpu_data", pinned_buffer, metadata)
