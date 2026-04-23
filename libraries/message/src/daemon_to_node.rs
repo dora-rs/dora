@@ -10,7 +10,7 @@ use crate::{
     metadata::Metadata,
 };
 
-pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
+pub use crate::common::{DataMessage, SharedMemoryId, Timestamped};
 
 // Passed via env variable
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -44,9 +44,7 @@ pub enum DaemonCommunication {
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
-    PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
 }
@@ -104,9 +102,4 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum NodeDropEvent {
-    OutputDropped { drop_token: DropToken },
 }

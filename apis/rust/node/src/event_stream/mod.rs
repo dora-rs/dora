@@ -24,7 +24,7 @@ use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
-    event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
+    event_stream::data_conversion::RawData,
 };
 use dora_core::{
     config::{Input, NodeId},
@@ -921,7 +921,7 @@ where
 impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event, ack_channel } => match event {
+            EventItem::NodeEvent { event } => match event {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
@@ -929,7 +929,7 @@ impl EventStream {
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data_inner = data.map(Arc::unwrap_or_clone);
-                    let result = data_to_arrow_array(data_inner, &metadata, ack_channel);
+                    let result = data_to_arrow_array(data_inner, &metadata);
                     match result {
                         Ok(data) => Event::Input {
                             id,
@@ -1142,23 +1142,10 @@ fn zenoh_payload_to_arrow_array(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
     metadata: &dora_message::metadata::Metadata,
-    drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data = match data {
+    let data: eyre::Result<Option<RawData>> = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token: _, // handled in `event_stream_loop`
-        }) => unsafe {
-            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                Some(RawData::SharedMemory(SharedMemoryData {
-                    data,
-                    _drop: drop_channel,
-                }))
-            })
-        },
     };
 
     let is_ipc = dora_message::metadata::get_string_param(
@@ -1312,12 +1299,6 @@ impl EventStream {
 mod tests {
     use super::*;
 
-    /// Create a dummy ack channel for testing event conversion.
-    fn dummy_ack() -> flume::Sender<()> {
-        let (tx, _rx) = flume::bounded(1);
-        tx
-    }
-
     #[test]
     fn convert_param_update() {
         let item = EventItem::NodeEvent {
@@ -1325,7 +1306,6 @@ mod tests {
                 key: "fps".into(),
                 value: serde_json::json!(60),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1341,7 +1321,6 @@ mod tests {
     fn convert_param_deleted() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamDeleted { key: "fps".into() },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1356,7 +1335,6 @@ mod tests {
     fn convert_stop_event() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::Stop,
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::Manual)));
@@ -1366,7 +1344,6 @@ mod tests {
     fn convert_all_inputs_closed() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::AllInputsClosed,
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::AllInputsClosed)));
@@ -1378,7 +1355,6 @@ mod tests {
             event: NodeEvent::InputClosed {
                 id: "input_1".to_string().into(),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1393,7 +1369,6 @@ mod tests {
             event: NodeEvent::NodeRestarted {
                 id: "upstream".to_string().into(),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
