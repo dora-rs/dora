@@ -83,9 +83,14 @@ pub enum NodeEvent {
     /// A runtime parameter has been updated.
     ///
     /// Sent when `dora param set` changes a parameter for this node.
+    ///
+    /// `value_json` carries JSON-encoded bytes rather than `serde_json::Value`:
+    /// this message is serialized with bincode on the daemon↔node TCP channel,
+    /// and `serde_json::Value::deserialize` uses `deserialize_any`, which
+    /// bincode does not support.
     ParamUpdate {
         key: String,
-        value: serde_json::Value,
+        value_json: Vec<u8>,
     },
     /// A runtime parameter has been deleted.
     ///

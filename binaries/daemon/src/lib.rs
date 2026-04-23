@@ -208,7 +208,9 @@ fn deliver_param_update_strict(
         .subscribe_channels
         .get(node_id)
         .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
-    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value }, clock) {
+    let value_json = serde_json::to_vec(&value)
+        .map_err(|e| eyre!("failed to serialize param value for node `{node_id}`: {e}"))?;
+    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value_json }, clock) {
         Ok(true) => {
             dataflow.inc_pending(node_id);
             Ok(())
@@ -3782,11 +3784,21 @@ fn apply_state_catch_up_entries(
                     );
                     break;
                 };
+                let value_json = match serde_json::to_vec(value) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        tracing::warn!(
+                            "catch-up: failed to serialize param value for node `{node_id}` at seq {}: {err}",
+                            entry.sequence
+                        );
+                        break;
+                    }
+                };
                 match send_with_timestamp(
                     channel,
                     NodeEvent::ParamUpdate {
                         key: key.clone(),
-                        value: value.clone(),
+                        value_json,
                     },
                     clock,
                 ) {
@@ -4814,7 +4826,7 @@ mod fault_tolerance_tests {
             &tx,
             NodeEvent::ParamUpdate {
                 key: "threshold".into(),
-                value: serde_json::json!(42),
+                value_json: serde_json::to_vec(&serde_json::json!(42)).unwrap(),
             },
             &clock,
         );
@@ -4823,9 +4835,10 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NodeEvent::ParamUpdate { key, value } => {
+            NodeEvent::ParamUpdate { key, value_json } => {
                 assert_eq!(key, "threshold");
-                assert_eq!(value, &serde_json::json!(42));
+                let value: serde_json::Value = serde_json::from_slice(value_json).unwrap();
+                assert_eq!(value, serde_json::json!(42));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
         }
@@ -4841,7 +4854,7 @@ mod fault_tolerance_tests {
             &tx,
             NodeEvent::ParamUpdate {
                 key: "rate".into(),
-                value: serde_json::json!(10),
+                value_json: serde_json::to_vec(&serde_json::json!(10)).unwrap(),
             },
             &clock,
         );
@@ -4945,9 +4958,10 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx_a);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NodeEvent::ParamUpdate { key, value } => {
+            NodeEvent::ParamUpdate { key, value_json } => {
                 assert_eq!(key, "threshold");
-                assert_eq!(value, &serde_json::json!(42));
+                let value: serde_json::Value = serde_json::from_slice(value_json).unwrap();
+                assert_eq!(value, serde_json::json!(42));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
         }

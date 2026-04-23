@@ -940,7 +940,14 @@ impl EventStream {
                     }
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
-                NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
+                NodeEvent::ParamUpdate { key, value_json } => {
+                    match serde_json::from_slice(&value_json) {
+                        Ok(value) => Event::ParamUpdate { key, value },
+                        Err(err) => Event::Error(format!(
+                            "failed to deserialize ParamUpdate value for `{key}`: {err}"
+                        )),
+                    }
+                }
                 NodeEvent::ParamDeleted { key } => Event::ParamDeleted { key },
                 NodeEvent::NodeFailed {
                     affected_input_ids,
@@ -1304,7 +1311,7 @@ mod tests {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamUpdate {
                 key: "fps".into(),
-                value: serde_json::json!(60),
+                value_json: serde_json::to_vec(&serde_json::json!(60)).unwrap(),
             },
         };
         let event = EventStream::convert_event_item(item);
@@ -1314,6 +1321,42 @@ mod tests {
                 assert_eq!(value, serde_json::json!(60));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
+        }
+    }
+
+    /// Regression test for the daemon↔node wire protocol: `NodeEvent`
+    /// is sent over TCP with bincode, so any field type that uses
+    /// `Deserializer::deserialize_any` (like `serde_json::Value`)
+    /// breaks the channel and kills the node at the next receive.
+    /// `NodeEvent::ParamUpdate` carries its value as JSON-encoded
+    /// bytes for that reason. This test pins the invariant so we
+    /// don't regress back to a `deserialize_any` field.
+    #[test]
+    fn node_event_param_update_round_trips_through_bincode() {
+        let cases = [
+            serde_json::json!(42),
+            serde_json::json!(1.5),
+            serde_json::json!("hello"),
+            serde_json::json!(null),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!({"nested": {"array": [true, false]}}),
+        ];
+        for value in cases {
+            let event = NodeEvent::ParamUpdate {
+                key: "rate".into(),
+                value_json: serde_json::to_vec(&value).unwrap(),
+            };
+            let bytes = bincode::serialize(&event).expect("bincode serialize");
+            let back: NodeEvent = bincode::deserialize(&bytes).expect("bincode deserialize");
+            match back {
+                NodeEvent::ParamUpdate { key, value_json } => {
+                    assert_eq!(key, "rate");
+                    let decoded: serde_json::Value =
+                        serde_json::from_slice(&value_json).expect("value_json is JSON");
+                    assert_eq!(decoded, value);
+                }
+                other => panic!("expected ParamUpdate, got {other:?}"),
+            }
         }
     }
 
