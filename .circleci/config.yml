@@ -897,12 +897,12 @@ jobs:
       - run:
           name: Compile benchmarks
           command: |
-            cargo bench -p dora-message -p shared-memory-server --no-run
+            cargo bench -p dora-message --no-run
             cargo bench -p dora-daemon --features bench --no-run
       - run:
           name: Run benchmarks
           command: |
-            cargo bench -p dora-message -p shared-memory-server 2>/dev/null | tee bench-output.txt
+            cargo bench -p dora-message 2>/dev/null | tee bench-output.txt
             cargo bench -p dora-daemon --features bench 2>/dev/null | tee -a bench-output.txt
       - save_cache:
           key: bench-baseline-v1-{{ arch }}-{{ .Revision }}

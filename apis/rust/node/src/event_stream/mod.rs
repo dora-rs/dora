@@ -70,6 +70,12 @@ pub struct EventStream {
     // waker when a Python coroutine polls this stream
     // (upstream dora-rs/dora#1603).
     receiver: tokio::sync::mpsc::Receiver<EventItem>,
+    /// Dropping this sender disconnects the shutdown channel so the
+    /// `select!` inside each zenoh subscriber thread wakes immediately,
+    /// instead of blocking on `subscriber.recv_async()` until the zenoh
+    /// session tears down. Kept alongside `_zenoh_thread_handles` so
+    /// subscribers notice drop before we join the threads.
+    _zenoh_shutdown_tx: flume::Sender<()>,
     _thread_handle: EventStreamThreadHandle,
     _zenoh_thread_handles: Vec<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
@@ -87,6 +93,13 @@ pub struct EventStream {
     /// the caller's main event loop never loses intermediate events
     /// (dora-rs/adora#148).
     pending_passthrough: std::collections::VecDeque<Event>,
+    /// Set to true after an `Event::Stop` has been delivered. Zenoh
+    /// subscriber threads hold clones of the event channel sender, so
+    /// the daemon thread's sender drop alone is not enough to close
+    /// the receiver — subsequent `recv_async`/`poll_next` would hang.
+    /// Returning `None` here lets the caller exit and drops the
+    /// `EventStream`, which signals subscriber shutdown.
+    stop_received: bool,
 }
 
 impl EventStream {
@@ -105,13 +118,6 @@ impl EventStream {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
-                        .wrap_err_with(|| {
-                            format!("failed to create shmem event stream for node `{node_id}`")
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event stream for node `{node_id}`")
@@ -132,15 +138,6 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_close_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
-                        .wrap_err_with(|| {
-                            format!(
-                                "failed to create shmem event close channel for node `{node_id}`"
-                            )
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")
@@ -308,9 +305,12 @@ impl EventStream {
         };
 
         // Spawn zenoh subscribers for each input that has a source node.
-        // These feed events directly into the same flume channel as daemon events.
-        // Subscriber threads are tracked for cleanup in EventStream::drop.
+        // These feed events directly into the same tokio mpsc channel as
+        // daemon events. Subscriber threads are tracked for cleanup in
+        // EventStream::drop; dropping `zenoh_shutdown_tx` disconnects the
+        // shutdown channel so each thread's `select!` wakes up and exits.
         let mut zenoh_thread_handles = Vec::new();
+        let (zenoh_shutdown_tx, zenoh_shutdown_rx) = flume::bounded::<()>(0);
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -351,63 +351,35 @@ impl EventStream {
 
                     let tx_clone = tx.clone();
                     let input_id = input_id.clone();
-                    let handle =
-                        std::thread::Builder::new()
-                            .name(format!("zenoh-sub-{input_id}"))
-                            .spawn(move || {
-                                while let Ok(sample) = subscriber.recv() {
-                                    // Extract metadata from attachment
-                                    let metadata = match sample.attachment() {
-                                        Some(att) => {
-                                            match bincode::deserialize::<
-                                                dora_message::metadata::Metadata,
-                                            >(
-                                                &att.to_bytes()
-                                            ) {
-                                                Ok(m) => m,
-                                                Err(e) => {
-                                                    tracing::warn!(
-                                                        "zenoh metadata deserialization failed: {e}"
-                                                    );
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        None => {
-                                            tracing::warn!(
-                                                "zenoh sample missing metadata attachment"
-                                            );
-                                            continue;
-                                        }
-                                    };
-
-                                    // Send the raw ZBytes payload to the event
-                                    // loop for zero-copy Arrow conversion.
-                                    // The old path copied SHM payloads into an
-                                    // AVec; this path holds the ZBytes directly
-                                    // so `convert_event_item` can wrap it in an
-                                    // Arrow Buffer backed by the original zenoh
-                                    // buffer (dora-rs/adora#132).
-                                    let payload = sample.payload().clone();
-
-                                    // blocking_send: this thread is a plain
-                                    // std::thread (synchronous subscriber.recv
-                                    // loop), so calling the async Sender::send
-                                    // would require an executor. blocking_send
-                                    // is the documented primitive for this.
-                                    if tx_clone
-                                        .blocking_send(EventItem::ZenohInput {
-                                            id: input_id.clone(),
-                                            metadata: std::sync::Arc::new(metadata),
-                                            payload,
-                                        })
-                                        .is_err()
-                                    {
-                                        break; // receiver dropped
-                                    }
-                                }
-                                tracing::trace!("zenoh subscriber thread exiting");
-                            });
+                    let shutdown_rx = zenoh_shutdown_rx.clone();
+                    let handle = std::thread::Builder::new()
+                        .name(format!("zenoh-sub-{input_id}"))
+                        .spawn(move || {
+                            let input_id_for_panic = input_id.clone();
+                            let tx_for_panic = tx_clone.clone();
+                            // catch_unwind: a panic anywhere in the subscriber
+                            // loop would otherwise silently kill delivery for
+                            // this input. Surface it as a FatalError so the
+                            // node sees the failure.
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    zenoh_subscriber_loop(
+                                        subscriber,
+                                        input_id,
+                                        tx_clone,
+                                        shutdown_rx,
+                                    );
+                                }));
+                            if result.is_err() {
+                                tracing::error!(
+                                    "zenoh subscriber thread for input {input_id_for_panic} panicked"
+                                );
+                                let _ = tx_for_panic.blocking_send(EventItem::FatalError(eyre!(
+                                    "zenoh subscriber thread for input {input_id_for_panic} panicked"
+                                )));
+                            }
+                            tracing::trace!("zenoh subscriber thread exiting");
+                        });
                     match handle {
                         Ok(h) => zenoh_thread_handles.push(h),
                         Err(e) => {
@@ -425,6 +397,7 @@ impl EventStream {
         Ok(EventStream {
             node_id: node_id.clone(),
             receiver: rx,
+            _zenoh_shutdown_tx: zenoh_shutdown_tx,
             _thread_handle: thread_handle,
             _zenoh_thread_handles: zenoh_thread_handles,
             close_channel,
@@ -435,6 +408,7 @@ impl EventStream {
             use_scheduler,
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
+            stop_received: false,
         })
     }
 
@@ -503,6 +477,12 @@ impl EventStream {
         if let Some(event) = self.pending_passthrough.pop_front() {
             return Some(event);
         }
+        // Close the stream after a Stop event: the daemon thread has
+        // already dropped its sender, but zenoh subscriber threads
+        // hold clones that would otherwise keep `receiver` open.
+        if self.stop_received {
+            return None;
+        }
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
@@ -564,6 +544,9 @@ impl EventStream {
             }
         }
 
+        if matches!(&event, Some(Event::Stop(_))) {
+            self.stop_received = true;
+        }
         event
     }
 
@@ -1016,8 +999,73 @@ pub enum TryRecvError {
 /// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
 /// achieving true zero-copy. For `Cow::Owned` (normal network path),
 /// the owned `Vec` is wrapped via the same mechanism at zero cost.
+/// Body of a zenoh subscriber thread.
 ///
-/// (dora-rs/adora#132)
+/// Receives samples from a declared subscriber, extracts the metadata
+/// attachment, and forwards each sample as an [`EventItem::ZenohInput`]
+/// to the event channel. Exits cleanly when the shutdown channel is
+/// disconnected (via [`EventStream`]'s `_zenoh_shutdown_tx` drop) or
+/// when the event channel receiver is dropped.
+fn zenoh_subscriber_loop(
+    subscriber: zenoh::pubsub::Subscriber<
+        zenoh::handlers::FifoChannelHandler<zenoh::sample::Sample>,
+    >,
+    input_id: DataId,
+    tx: tokio::sync::mpsc::Sender<EventItem>,
+    shutdown_rx: flume::Receiver<()>,
+) {
+    // block_on + select: race the subscriber against the shutdown
+    // channel so dropping the EventStream wakes us immediately,
+    // instead of blocking on a sync `subscriber.recv()` that only
+    // unblocks when the underlying zenoh session tears down.
+    futures::executor::block_on(async {
+        loop {
+            let recv_fut = subscriber.recv_async();
+            let shutdown_fut = shutdown_rx.recv_async();
+            match select(std::pin::pin!(recv_fut), std::pin::pin!(shutdown_fut)).await {
+                Either::Left((Ok(sample), _)) => {
+                    let metadata = match sample.attachment() {
+                        Some(att) => {
+                            match bincode::deserialize::<dora_message::metadata::Metadata>(
+                                &att.to_bytes(),
+                            ) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    tracing::warn!("zenoh metadata deserialization failed: {e}");
+                                    continue;
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!("zenoh sample missing metadata attachment");
+                            continue;
+                        }
+                    };
+
+                    // Forward the raw ZBytes payload; the event loop wraps
+                    // it in an Arrow Buffer backed by the original zenoh
+                    // buffer for zero-copy conversion (dora-rs/adora#132).
+                    let payload = sample.payload().clone();
+                    if tx
+                        .send(EventItem::ZenohInput {
+                            id: input_id.clone(),
+                            metadata: std::sync::Arc::new(metadata),
+                            payload,
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break; // receiver dropped
+                    }
+                }
+                // Subscriber side error or shutdown signal — both mean stop.
+                _ => break,
+            }
+        }
+    });
+}
+
+/// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
 fn zenoh_payload_to_arrow_array(
     payload: zenoh::bytes::ZBytes,
     metadata: &dora_message::metadata::Metadata,
@@ -1130,6 +1178,12 @@ impl Stream for EventStream {
             return std::task::Poll::Ready(Some(event));
         }
 
+        // Close the stream after a Stop event: zenoh subscriber threads
+        // hold sender clones that would otherwise keep `receiver` open.
+        if self.stop_received {
+            return std::task::Poll::Ready(None);
+        }
+
         let poll = self
             .receiver
             .poll_recv(cx)
@@ -1170,6 +1224,9 @@ impl Stream for EventStream {
             }
         }
 
+        if matches!(&poll, std::task::Poll::Ready(Some(Event::Stop(_)))) {
+            self.stop_received = true;
+        }
         poll
     }
 }
@@ -1614,6 +1671,44 @@ mod tests {
         assert!(
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
+        );
+    }
+
+    /// After a `Stop` event is delivered, subsequent `recv` calls must
+    /// return `None` so the node can exit cleanly even when zenoh
+    /// subscriber threads still hold clones of the event channel
+    /// sender (which would otherwise keep the receiver open).
+    #[test]
+    fn recv_returns_none_after_stop() {
+        let (_node, mut events) = test_event_stream();
+
+        // First recv delivers the seeded Stop.
+        let first = events.recv();
+        assert!(matches!(first, Some(Event::Stop(_))));
+
+        // Second recv must return None even though the underlying
+        // receiver may still have live senders.
+        let second = events.recv();
+        assert!(
+            second.is_none(),
+            "recv must return None after Stop, got {second:?}"
+        );
+    }
+
+    /// Same invariant as `recv_returns_none_after_stop`, verified via
+    /// the `Stream` impl (`StreamExt::next`).
+    #[test]
+    fn stream_returns_none_after_stop() {
+        use futures::StreamExt;
+        let (_node, mut events) = test_event_stream();
+
+        let first = futures::executor::block_on(events.next());
+        assert!(matches!(first, Some(Event::Stop(_))));
+
+        let second = futures::executor::block_on(events.next());
+        assert!(
+            second.is_none(),
+            "Stream::next must yield None after Stop, got {second:?}"
         );
     }
 }

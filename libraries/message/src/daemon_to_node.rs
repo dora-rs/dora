@@ -35,14 +35,7 @@ pub struct NodeConfig {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonCommunication {
-    Shmem {
-        daemon_control_region_id: SharedMemoryId,
-        daemon_events_region_id: SharedMemoryId,
-        daemon_events_close_region_id: SharedMemoryId,
-    },
-    Tcp {
-        socket_addr: SocketAddr,
-    },
+    Tcp { socket_addr: SocketAddr },
     Interactive,
 }
 

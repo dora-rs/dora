@@ -418,6 +418,7 @@ impl DoraNode {
                 output_types: Default::default(),
                 output_framing: Default::default(),
                 input_types: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -453,6 +454,7 @@ impl DoraNode {
                 output_types: Default::default(),
                 output_framing: Default::default(),
                 input_types: Default::default(),
+                shared_memory_pool_size: None,
             },
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
@@ -536,9 +538,15 @@ impl DoraNode {
             daemon_communication,
             DaemonCommunicationWrapper::Standard(_)
         );
-        let shm_pool_size = std::env::var("DORA_NODE_SHM_POOL_SIZE")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
+        // Pool size priority: per-node YAML config > env var > built-in default.
+        let shm_pool_size = run_config
+            .shared_memory_pool_size
+            .map(|bs| bs.as_bytes())
+            .or_else(|| {
+                std::env::var("DORA_NODE_SHM_POOL_SIZE")
+                    .ok()
+                    .and_then(|s| s.parse::<usize>().ok())
+            })
             .unwrap_or(8 * 1024 * 1024); // 8 MB default
         let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
             .ok()
@@ -1052,6 +1060,17 @@ impl DoraNode {
     /// Returns the input and output configuration of this node.
     pub fn node_config(&self) -> &NodeRunConfig {
         &self.node_config
+    }
+
+    /// Returns the zero-copy SHM threshold in bytes.
+    ///
+    /// Outputs whose raw payload is at least this many bytes are published
+    /// via zenoh shared memory (zero-copy for local subscribers); smaller
+    /// outputs go through the daemon path. Configured via the
+    /// `DORA_ZERO_COPY_THRESHOLD` env var, defaulting to
+    /// [`ZERO_COPY_THRESHOLD`].
+    pub fn zero_copy_threshold(&self) -> usize {
+        self.zenoh_zero_copy_threshold
     }
 
     /// Returns true if this node was restarted after a previous exit or failure.

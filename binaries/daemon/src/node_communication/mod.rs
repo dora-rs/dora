@@ -12,7 +12,6 @@ use dora_message::{
 };
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
-use shared_memory_server::{ShmemConf, ShmemServer};
 use std::{
     collections::VecDeque,
     mem,
@@ -30,8 +29,6 @@ use tokio::{
     },
 };
 
-// TODO unify and avoid duplication;
-pub mod shmem;
 pub mod tcp;
 
 pub fn current_millis() -> u64 {
@@ -73,93 +70,6 @@ pub async fn spawn_listener_loop(
             });
 
             Ok(DaemonCommunication::Tcp { socket_addr })
-        }
-        LocalCommunicationConfig::Shmem => {
-            // Set restrictive umask before creating shmem regions to avoid a
-            // TOCTOU window where the region is briefly world-readable.
-            #[cfg(unix)]
-            let old_umask = unsafe { libc::umask(0o077) };
-
-            let shmem_result = (|| -> eyre::Result<_> {
-                let daemon_control_region = ShmemConf::new()
-                    .size(4096)
-                    .create()
-                    .wrap_err("failed to allocate daemon_control_region")?;
-                let daemon_events_region = ShmemConf::new()
-                    .size(4096)
-                    .create()
-                    .wrap_err("failed to allocate daemon_events_region")?;
-                let daemon_events_close_region = ShmemConf::new()
-                    .size(4096)
-                    .create()
-                    .wrap_err("failed to allocate daemon_events_close_region")?;
-                Ok((
-                    daemon_control_region,
-                    daemon_events_region,
-                    daemon_events_close_region,
-                ))
-            })();
-
-            // Restore umask immediately, regardless of success or failure.
-            #[cfg(unix)]
-            unsafe {
-                libc::umask(old_umask);
-            }
-
-            let (daemon_control_region, daemon_events_region, daemon_events_close_region) =
-                shmem_result?;
-            let daemon_control_region_id = daemon_control_region.get_os_id().to_owned();
-            let daemon_events_region_id = daemon_events_region.get_os_id().to_owned();
-            let daemon_events_close_region_id = daemon_events_close_region.get_os_id().to_owned();
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_control_region) }
-                    .wrap_err("failed to create control server")?;
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                let last_activity = last_activity.clone();
-                tokio::spawn(shmem::listener_loop(
-                    server,
-                    daemon_tx,
-                    clock,
-                    last_activity,
-                    shutdown.clone(),
-                ));
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_region) }
-                    .wrap_err("failed to create events server")?;
-                let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                let last_activity = last_activity.clone();
-                let shutdown = shutdown.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, clock, last_activity, shutdown).await;
-                    tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-                });
-            }
-
-            {
-                let server = unsafe { ShmemServer::new(daemon_events_close_region) }
-                    .wrap_err("failed to create events close server")?;
-                let close_loop_node_id = format!("{dataflow_id}/{node_id}");
-                let daemon_tx = daemon_tx.clone();
-                let clock = clock.clone();
-                tokio::task::spawn(async move {
-                    shmem::listener_loop(server, daemon_tx, clock, last_activity, shutdown).await;
-                    tracing::debug!(
-                        "events close listener loop finished for `{close_loop_node_id}`"
-                    );
-                });
-            }
-
-            Ok(DaemonCommunication::Shmem {
-                daemon_control_region_id,
-                daemon_events_region_id,
-                daemon_events_close_region_id,
-            })
         }
     }
 }

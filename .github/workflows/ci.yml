@@ -323,14 +323,14 @@ jobs:
       # Compile benchmarks first (separates build errors from bench issues)
       - name: Compile benchmarks
         run: |
-          cargo bench -p dora-message -p shared-memory-server --no-run
+          cargo bench -p dora-message --no-run
           cargo bench -p dora-daemon --features bench --no-run
 
       # Run benchmarks. Criterion automatically compares against any
       # existing data in target/criterion/ (restored from cache above).
       - name: Run benchmarks
         run: |
-          cargo bench -p dora-message -p shared-memory-server 2>/dev/null | tee bench-output.txt
+          cargo bench -p dora-message 2>/dev/null | tee bench-output.txt
           cargo bench -p dora-daemon --features bench 2>/dev/null | tee -a bench-output.txt
 
       # Always post results to step summary

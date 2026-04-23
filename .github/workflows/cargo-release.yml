@@ -80,7 +80,6 @@ jobs:
           publish_if_not_exists dora-download
           publish_if_not_exists dora-core
           publish_if_not_exists dora-arrow-convert
-          publish_if_not_exists shared-memory-server
           publish_if_not_exists dora-coordinator-store
           publish_if_not_exists dora-recording
 
