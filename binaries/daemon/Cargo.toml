@@ -38,7 +38,7 @@ dora-message = { workspace = true }
 serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
-shared-memory-server = { workspace = true }
+shared_memory_extended = "0.13.0"
 bincode = { workspace = true }
 aligned-vec = "0.5.0"
 ctrlc = "3.2.5"
