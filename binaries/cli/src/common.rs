@@ -232,7 +232,10 @@ pub(crate) fn working_dir_or_parent<'a>(
 ) -> &'a Path {
     match override_ {
         Some(p) => p,
-        None => dataflow_path.parent().unwrap_or_else(|| Path::new(".")),
+        None => dataflow_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
     }
 }
 
@@ -323,7 +326,7 @@ mod tests {
         // `Path::parent()` on "dataflow.yml" returns `Some("")` not `None`.
         // The helper should ultimately treat this as "." (current dir).
         let dataflow = Path::new("dataflow.yml");
-        assert_eq!(working_dir_or_parent(None, dataflow), Path::new(""));
+        assert_eq!(working_dir_or_parent(None, dataflow), Path::new("."));
     }
 
     #[test]
