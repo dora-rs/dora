@@ -34,7 +34,6 @@ jobs:
           CRATES=(
             dora-message
             dora-arrow-convert
-            shared-memory-server
             dora-coordinator-store
             dora-core
             dora-recording

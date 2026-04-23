@@ -38,7 +38,7 @@ use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
-use shared_memory_server::ShmemConf;
+use shared_memory_extended::ShmemConf;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},

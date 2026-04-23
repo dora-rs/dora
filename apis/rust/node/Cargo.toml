@@ -17,7 +17,6 @@ metrics = ["dep:dora-metrics"]
 [dependencies]
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
-shared-memory-server = { workspace = true }
 eyre = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }

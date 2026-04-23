@@ -4,7 +4,7 @@ use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
 use dora_message::metadata::ArrowTypeInfo;
 use eyre::Context;
-use shared_memory_server::{Shmem, ShmemConf};
+use shared_memory_extended::{Shmem, ShmemConf};
 
 use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
 
