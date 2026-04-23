@@ -1695,6 +1695,7 @@ impl Daemon {
                             output_framing: Default::default(),
                             inputs: inputs.into_iter().collect(),
                             input_types: Default::default(),
+                            shared_memory_pool_size: None,
                             output_metadata: Default::default(),
                             pattern: None,
                             send_stdout_as: None,
@@ -4383,6 +4384,7 @@ impl CoreNodeKindExt for CoreNodeKind {
                 output_types: BTreeMap::new(),
                 output_framing: BTreeMap::new(),
                 input_types: BTreeMap::new(),
+                shared_memory_pool_size: None,
             },
             CoreNodeKind::Custom(n) => n.run_config.clone(),
         }
@@ -4436,6 +4438,7 @@ mod fault_tolerance_tests {
                     output_types: BTreeMap::new(),
                     input_types: BTreeMap::new(),
                     output_framing: BTreeMap::new(),
+                    shared_memory_pool_size: None,
                 },
                 daemon_communication: None,
                 dataflow_descriptor: serde_yaml::Value::Null,
