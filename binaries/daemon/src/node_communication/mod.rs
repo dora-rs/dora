@@ -338,19 +338,33 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::RegisterPinnedMemory { shared_memory_id, metadata } => {
+            DaemonRequest::RegisterPinnedMemory {
+                shared_memory_id,
+                metadata,
+            } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::RegisterPinnedMemory { shared_memory_id, metadata, reply_sender },
+                    DaemonNodeEvent::RegisterPinnedMemory {
+                        shared_memory_id,
+                        metadata,
+                        reply_sender,
+                    },
                     Some(reply),
                     connection,
                 )
                 .await?;
             }
-            DaemonRequest::ReadPinnedMemory { shared_memory_id, free } => {
+            DaemonRequest::ReadPinnedMemory {
+                shared_memory_id,
+                free,
+            } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::ReadPinnedMemory { shared_memory_id, free, reply_sender },
+                    DaemonNodeEvent::ReadPinnedMemory {
+                        shared_memory_id,
+                        free,
+                        reply_sender,
+                    },
                     Some(reply),
                     connection,
                 )
@@ -359,7 +373,10 @@ impl Listener {
             DaemonRequest::FreePinnedMemory { shared_memory_id } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::FreePinnedMemory { shared_memory_id, reply_sender },
+                    DaemonNodeEvent::FreePinnedMemory {
+                        shared_memory_id,
+                        reply_sender,
+                    },
                     Some(reply),
                     connection,
                 )

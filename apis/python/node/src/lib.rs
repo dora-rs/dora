@@ -18,16 +18,21 @@ use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::dora_core::metadata::ArrowTypeInfoExt;
 use dora_node_api::dora_core::uhlc;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
-use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, Metadata, MetadataParameters, Parameter, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, metadata_to_pydict, pydict_to_metadata};
+use dora_node_api::{
+    DataflowId, DoraNode, EventStream, Metadata, MetadataParameters, Parameter, TryRecvError,
+    init_tracing,
+};
+use dora_operator_api_python::{
+    DelayedCleanup, NodeCleanupHandle, PyEvent, metadata_to_pydict, pydict_to_metadata,
+};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
-use shared_memory_extended::ShmemConf;
 use libc;
+use shared_memory_extended::ShmemConf;
 
 use futures::{Stream, StreamExt};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString, PyTuple, PyList};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use pyo3_special_method_derive::{Dict, Dir, Repr, Str};
 use tokio::runtime::{Builder, Runtime};
 use tracing::{Level, span};
@@ -475,25 +480,37 @@ impl Node {
     ) -> eyre::Result<PyObject> {
         // Extract pointer value from pyarrow array
         let array_data_result = arrow::array::ArrayData::from_pyarrow_bound(pinned_ptr.bind(py));
-        let array_data = array_data_result
-            .wrap_err("failed to convert pinned_ptr to arrow array")?;
+        let array_data =
+            array_data_result.wrap_err("failed to convert pinned_ptr to arrow array")?;
         let array = arrow::array::make_array(array_data);
 
         // The array should contain a single integer (pointer value)
-        let ptr_value = if let Some(int64_array) = array.as_any().downcast_ref::<arrow::array::Int64Array>() {
+        let ptr_value = if let Some(int64_array) =
+            array.as_any().downcast_ref::<arrow::array::Int64Array>()
+        {
             if int64_array.len() != 1 {
-                eyre::bail!("expected Int64 array with exactly one element, got {}", int64_array.len());
+                eyre::bail!(
+                    "expected Int64 array with exactly one element, got {}",
+                    int64_array.len()
+                );
             }
             let val = int64_array.value(0) as u64;
             val
-        } else if let Some(int32_array) = array.as_any().downcast_ref::<arrow::array::Int32Array>() {
+        } else if let Some(int32_array) = array.as_any().downcast_ref::<arrow::array::Int32Array>()
+        {
             if int32_array.len() != 1 {
-                eyre::bail!("expected Int32 array with exactly one element, got {}", int32_array.len());
+                eyre::bail!(
+                    "expected Int32 array with exactly one element, got {}",
+                    int32_array.len()
+                );
             }
             let val = int32_array.value(0) as u64;
             val
         } else {
-            eyre::bail!("pinned_ptr must be an integer array (Int32 or Int64), got {:?}", array.data_type())
+            eyre::bail!(
+                "pinned_ptr must be an integer array (Int32 or Int64), got {:?}",
+                array.data_type()
+            )
         };
 
         // Extract size from metadata
@@ -505,10 +522,9 @@ impl Node {
             .wrap_err("failed to extract size as usize")?;
 
         // Create shared memory with explicit options
-        let shmem_conf = ShmemConf::new()
-            .size(size)
-            .writable(true); // Sender needs to write to shared memory
-        let mut shmem = shmem_conf.create()
+        let shmem_conf = ShmemConf::new().size(size).writable(true); // Sender needs to write to shared memory
+        let mut shmem = shmem_conf
+            .create()
             .wrap_err("failed to create shared memory")?;
         let shmem_name = shmem.get_os_id().to_string();
 
@@ -519,7 +535,11 @@ impl Node {
             eyre::bail!("Shared memory pointer is NULL");
         }
         if shmem.len() < size {
-            eyre::bail!("Shared memory size {} is smaller than required size {}", shmem.len(), size);
+            eyre::bail!(
+                "Shared memory size {} is smaller than required size {}",
+                shmem.len(),
+                size
+            );
         }
 
         // Check if pointer is valid (not null)
@@ -551,7 +571,6 @@ impl Node {
         set_result1.wrap_err("failed to add shared_memory_name to metadata dict")?;
         let set_result2 = metadata.set_item("ptr", ptr_value);
         set_result2.wrap_err("failed to add ptr to metadata dict")?;
-
 
         // Create a new dictionary with all metadata including shared_memory_name
         let new_dict = PyDict::new(py);
@@ -605,8 +624,7 @@ impl Node {
                             let val = s.to_string();
                             parameters.insert(key_str.clone(), Parameter::String(val.clone()));
                         }
-                        Err(_) => {
-                        }
+                        Err(_) => {}
                     }
                 }
             } else {
@@ -616,26 +634,28 @@ impl Node {
                         let val = s.to_string();
                         parameters.insert(key_str.clone(), Parameter::String(val.clone()));
                     }
-                    Err(_) => {
-                    }
+                    Err(_) => {}
                 }
             }
         }
 
         // 确保shared_memory_name在参数中 - 强制添加
-        parameters.insert("shared_memory_name".to_string(), Parameter::String(shmem_name.clone()));
+        parameters.insert(
+            "shared_memory_name".to_string(),
+            Parameter::String(shmem_name.clone()),
+        );
 
         // Create Metadata object with empty type info and current timestamp
         let timestamp = uhlc::HLC::default().new_timestamp();
         let type_info = ArrowTypeInfoExt::empty();
         let metadata_obj = Metadata::from_parameters(timestamp, type_info, parameters);
 
-
         // Generate buffer ID from pointer (hex string)
         let buffer_id = format!("pinned_{:x}", ptr_value);
 
         // Call DoraNode's register_pinned_memory method
-        self.node.get_mut()
+        self.node
+            .get_mut()
             .register_pinned_memory(buffer_id.clone(), metadata_obj)
             .wrap_err("failed to register pinned memory with daemon")?;
 
@@ -658,8 +678,8 @@ impl Node {
     ) -> eyre::Result<PyObject> {
         // Extract shared memory ID from pyarrow array
         let array_data_result = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py));
-        let array_data = array_data_result
-            .wrap_err("failed to convert pinned_buffer to arrow array")?;
+        let array_data =
+            array_data_result.wrap_err("failed to convert pinned_buffer to arrow array")?;
         let array = arrow::array::make_array(array_data);
 
         // The array should be a binary array containing the shared memory ID
@@ -667,7 +687,10 @@ impl Node {
             DataType::Utf8 => {
                 if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
                     if string_array.len() != 1 {
-                        eyre::bail!("expected string array with exactly one element, got {}", string_array.len());
+                        eyre::bail!(
+                            "expected string array with exactly one element, got {}",
+                            string_array.len()
+                        );
                     }
                     let id = string_array.value(0).to_string();
                     id
@@ -678,21 +701,30 @@ impl Node {
             DataType::Binary => {
                 if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
                     if binary_array.len() != 1 {
-                        eyre::bail!("expected binary array with exactly one element, got {}", binary_array.len());
+                        eyre::bail!(
+                            "expected binary array with exactly one element, got {}",
+                            binary_array.len()
+                        );
                     }
                     let bytes = binary_array.value(0);
-                    String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
+                    String::from_utf8(bytes.to_vec())
+                        .wrap_err("shared memory ID is not valid UTF-8")?
                 } else {
                     eyre::bail!("failed to downcast Binary array to BinaryArray")
                 }
             }
             _ => {
-                eyre::bail!("READ/FREE: pinned_buffer must be a binary or string array, got {:?}", array.data_type())
+                eyre::bail!(
+                    "READ/FREE: pinned_buffer must be a binary or string array, got {:?}",
+                    array.data_type()
+                )
             }
         };
 
         // Call DoraNode's read_pinned_memory method
-        let metadata = self.node.get_mut()
+        let metadata = self
+            .node
+            .get_mut()
             .read_pinned_memory(shared_memory_id.clone(), free)
             .wrap_err("failed to read pinned memory from daemon")?;
 
@@ -742,14 +774,24 @@ impl Node {
         if free {
             // Extract buffer ID from shared memory name
             let buffer_id = if shared_memory_id.starts_with("dora_pinned_") {
-                shared_memory_id.trim_start_matches("dora_pinned_").to_string()
+                shared_memory_id
+                    .trim_start_matches("dora_pinned_")
+                    .to_string()
             } else {
                 shared_memory_id.clone()
             };
 
             // Call daemon to free the pinned memory
-            if let Err(e) = self.node.get_mut().free_pinned_memory(shared_memory_id.clone()) {
-                tracing::warn!("Failed to free pinned memory with daemon for buffer_id {}: {}", buffer_id, e);
+            if let Err(e) = self
+                .node
+                .get_mut()
+                .free_pinned_memory(shared_memory_id.clone())
+            {
+                tracing::warn!(
+                    "Failed to free pinned memory with daemon for buffer_id {}: {}",
+                    buffer_id,
+                    e
+                );
             }
         }
 
@@ -764,44 +806,52 @@ impl Node {
     /// :param pinned_buffer: pyarrow array containing shared memory identifier
     /// :rtype: None
     #[pyo3(signature = (pinned_buffer,))]
-    pub fn free_pinned_memory(
-        &self,
-        pinned_buffer: PyObject,
-        py: Python,
-    ) -> eyre::Result<()> {
+    pub fn free_pinned_memory(&self, pinned_buffer: PyObject, py: Python) -> eyre::Result<()> {
         // Extract shared memory ID from pyarrow array
         let array_data = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py))
             .wrap_err("failed to convert pinned_buffer to arrow array")?;
         let array = arrow::array::make_array(array_data);
 
         // The array should be a binary array containing the shared memory ID
-        let shared_memory_id = if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
-            if binary_array.len() != 1 {
-                eyre::bail!("expected binary array with exactly one element, got {}", binary_array.len());
-            }
-            let bytes = binary_array.value(0);
-            String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
-        } else if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
-            if string_array.len() != 1 {
-                eyre::bail!("expected string array with exactly one element, got {}", string_array.len());
-            }
-            string_array.value(0).to_string()
-        } else {
-            eyre::bail!("READ/FREE: pinned_buffer must be a binary or string array, got {:?}", array.data_type())
-        };
+        let shared_memory_id =
+            if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
+                if binary_array.len() != 1 {
+                    eyre::bail!(
+                        "expected binary array with exactly one element, got {}",
+                        binary_array.len()
+                    );
+                }
+                let bytes = binary_array.value(0);
+                String::from_utf8(bytes.to_vec()).wrap_err("shared memory ID is not valid UTF-8")?
+            } else if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+                if string_array.len() != 1 {
+                    eyre::bail!(
+                        "expected string array with exactly one element, got {}",
+                        string_array.len()
+                    );
+                }
+                string_array.value(0).to_string()
+            } else {
+                eyre::bail!(
+                    "READ/FREE: pinned_buffer must be a binary or string array, got {:?}",
+                    array.data_type()
+                )
+            };
 
         // Extract buffer ID from shared memory name
         // shared_memory_id is like "dora_pinned_<uuid>"
         let _buffer_id = if shared_memory_id.starts_with("dora_pinned_") {
-            shared_memory_id.trim_start_matches("dora_pinned_").to_string()
+            shared_memory_id
+                .trim_start_matches("dora_pinned_")
+                .to_string()
         } else {
             // If it's already a UUID, use it directly
             shared_memory_id.clone()
         };
 
-
         // Also notify daemon to remove the entry from its memory table
-        self.node.get_mut()
+        self.node
+            .get_mut()
             .free_pinned_memory(shared_memory_id)
             .wrap_err("failed to free pinned memory with daemon")?;
 
@@ -1041,9 +1091,7 @@ mod tests {
     fn test_shmem_creation() {
         // Test that ShmemConf can create and write to shared memory
         let size = 8000;
-        let shmem_conf = ShmemConf::new()
-            .size(size)
-            .writable(true);
+        let shmem_conf = ShmemConf::new().size(size).writable(true);
 
         let mut shmem = shmem_conf.create().expect("failed to create shared memory");
 
@@ -1061,6 +1109,5 @@ mod tests {
         for i in 0..size.min(100) {
             assert_eq!(slice[i], (i % 256) as u8);
         }
-
     }
 }

@@ -1,17 +1,11 @@
 #!/usr/bin/env python
 """TODO: Add docstring."""
 
-# Disable resource tracker to avoid warnings about shared memory
 import os
-# os.environ['PYTHONWARNINGS'] = 'ignore::UserWarning:multiprocessing.resource_tracker'
-
 import time
 
 import pyarrow as pa
 import torch
-import numpy as np
-import ctypes
-from multiprocessing.shared_memory import SharedMemory
 from dora import Node
 from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle, pinned_ptr_to_torch
 from tqdm import tqdm

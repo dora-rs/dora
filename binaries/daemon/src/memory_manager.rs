@@ -67,14 +67,20 @@ impl MemoryManager {
         let mut table = self.pinned_memory_table.lock().unwrap();
 
         if table.contains_key(&id) {
-            return Err(format!("Pinned memory with ID {} already registered", id.id));
+            return Err(format!(
+                "Pinned memory with ID {} already registered",
+                id.id
+            ));
         }
 
-        table.insert(id, PinnedMemoryEntry {
-            metadata,
-            in_use: true,
-            registered_by,
-        });
+        table.insert(
+            id,
+            PinnedMemoryEntry {
+                metadata,
+                in_use: true,
+                registered_by,
+            },
+        );
 
         Ok(())
     }
@@ -110,8 +116,11 @@ impl MemoryManager {
     }
 
     /// Attempt to free shared memory
-    fn free_shared_memory(&self, shm_name: &str, metadata: &PinnedMemoryMetadata) -> Result<(), String> {
-
+    fn free_shared_memory(
+        &self,
+        shm_name: &str,
+        metadata: &PinnedMemoryMetadata,
+    ) -> Result<(), String> {
         // Try to unlink shared memory file on Linux
         #[cfg(target_os = "linux")]
         {
@@ -126,7 +135,11 @@ impl MemoryManager {
                 }
                 Err(e) => {
                     // Log warning but don't fail - other processes may still have it open
-                    tracing::warn!("Failed to unlink shared memory file {}: {}. The file may still be in use by other processes.", shm_path, e);
+                    tracing::warn!(
+                        "Failed to unlink shared memory file {}: {}. The file may still be in use by other processes.",
+                        shm_path,
+                        e
+                    );
                 }
             }
         }
@@ -147,7 +160,10 @@ impl MemoryManager {
     /// Get all pinned memory entries (for cleanup on shutdown)
     pub fn get_all_entries(&self) -> Vec<(PinnedMemoryId, PinnedMemoryEntry)> {
         let table = self.pinned_memory_table.lock().unwrap();
-        table.iter().map(|(id, entry)| (id.clone(), entry.clone())).collect()
+        table
+            .iter()
+            .map(|(id, entry)| (id.clone(), entry.clone()))
+            .collect()
     }
 
     /// Cleanup all pinned memory on shutdown

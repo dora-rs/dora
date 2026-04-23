@@ -2,69 +2,69 @@
 
 ## 概述
 
-本文档记录了在Dora框架中实现CPU到CUDA零拷贝张量传输功能的开发过程。该功能通过页锁内存（Pinned Memory）和DMA高速读取机制实现跨进程传输，目标传输速度达到30000MB/s。
+本文档记录了在Dora框架中实现CPU到CUDA零拷贝张量传输功能的开发过程。该功能通过页锁内存（Pinned Memory）和DMA高速读取机制实现跨进程传输。
 
 ## 功能架构
 
 ### 整体架构图
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Python Node (Sender)                   │
-│  ┌─────────────────────────────────────────────────────┐  │
+┌───────────────────────────────────────────────────────────────┐
+│                      Python Node (Sender)                     │
+│  ┌─────────────────────────────────────────────────────────┐  │
 │  │ 1. torch_to_pinned_ptr(tensor) → (pinned_ptr, metadata) │  │
 │  │ 2. node.register_pinned_memory(pinned_ptr, metadata)    │  │
-│  │    → pinned_buffer (shared memory identifier)          │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                            │                               │
-│                            ▼                               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │          Dora Node API (Python Bindings)            │  │
-│  │  - register_pinned_memory_internal()                │  │
-│  │  - read_pinned_memory()                             │  │
-│  │  - free_pinned_memory()                             │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                            │                               │
-│                            ▼                               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │           Rust Node Implementation                  │  │
-│  │  - DoraNode::register_pinned_memory()               │  │
-│  │  - DoraNode::read_pinned_memory()                   │  │
-│  │  - DoraNode::free_pinned_memory()                   │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                            │                               │
-│                            ▼                               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │          Control Channel (TCP/Unix Socket)          │  │
-│  │  - DaemonRequest::RegisterPinnedMemory              │  │
-│  │  - DaemonRequest::ReadPinnedMemory                  │  │
-│  │  - DaemonRequest::FreePinnedMemory                  │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                            │                               │
-│                            ▼                               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │              Dora Daemon (Memory Manager)           │  │
-│  │  - MemoryManager::register_pinned_memory()          │  │
-│  │  - MemoryManager::read_pinned_memory()              │  │
-│  │  - MemoryManager::free_pinned_memory()              │  │
-│  │  - pinned_memory_table (HashMap跟踪内存分配)          │  │
-│  └─────────────────────────────────────────────────────┘  │
-│                            │                               │
-│                            ▼                               │
-│  ┌─────────────────────────────────────────────────────┐  │
-│  │          Python Node (Receiver)                     │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │ node.read_pinned_memory(pinned_buffer, free)│  │  │
-│  │  │ → (pinned_ptr, metadata)                    │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  │                            │                       │  │
-│  │                            ▼                       │  │
-│  │  ┌─────────────────────────────────────────────┐  │  │
-│  │  │ pinned_ptr_to_torch(pinned_ptr, metadata)   │  │  │
-│  │  │ → torch.Tensor (CUDA device)                │  │  │
-│  │  └─────────────────────────────────────────────┘  │  │
-│  └─────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+│  │    → pinned_buffer (shared memory identifier)           │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                            │                                  │
+│                            ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │          Dora Node API (Python Bindings)            │      │
+│  │  - register_pinned_memory_internal()                │      │
+│  │  - read_pinned_memory()                             │      │
+│  │  - free_pinned_memory()                             │      │
+│  └─────────────────────────────────────────────────────┘      │
+│                            │                                  │
+│                            ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │           Rust Node Implementation                  │      │
+│  │  - DoraNode::register_pinned_memory()               │      │
+│  │  - DoraNode::read_pinned_memory()                   │      │
+│  │  - DoraNode::free_pinned_memory()                   │      │
+│  └─────────────────────────────────────────────────────┘      │
+│                            │                                  │
+│                            ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │          Control Channel (TCP/Unix Socket)          │      │
+│  │  - DaemonRequest::RegisterPinnedMemory              │      │
+│  │  - DaemonRequest::ReadPinnedMemory                  │      │
+│  │  - DaemonRequest::FreePinnedMemory                  │      │
+│  └─────────────────────────────────────────────────────┘      │
+│                            │                                  │
+│                            ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │              Dora Daemon (Memory Manager)           │      │
+│  │  - MemoryManager::register_pinned_memory()          │      │
+│  │  - MemoryManager::read_pinned_memory()              │      │
+│  │  - MemoryManager::free_pinned_memory()              │      │
+│  │  - pinned_memory_table (HashMap跟踪内存分配)          │      │
+│  └─────────────────────────────────────────────────────┘      │
+│                            │                                  │
+│                            ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐      │
+│  │          Python Node (Receiver)                     │      │
+│  │  ┌─────────────────────────────────────────────┐    │      │
+│  │  │ node.read_pinned_memory(pinned_buffer, free)│    │      │
+│  │  │ → (pinned_ptr, metadata)                    │    │      │
+│  │  └─────────────────────────────────────────────┘    │      │
+│  │                            │                        │      │
+│  │                            ▼                        │      │
+│  │  ┌─────────────────────────────────────────────┐    │      │
+│  │  │ pinned_ptr_to_torch(pinned_ptr, metadata)   │    │      │
+│  │  │ → torch.Tensor (CUDA device)                │    │      │
+│  │  └─────────────────────────────────────────────┘    │      │
+│  └─────────────────────────────────────────────────────┘      │
+└───────────────────────────────────────────────────────────────┘
 ```
 
 ## 修改的文件列表
@@ -205,6 +205,9 @@ import torch
 import dora
 from dora.cuda import torch_to_pinned_ptr
 
+# 创建节点
+node = dora.Node()
+
 # 创建CPU张量
 tensor = torch.randn(1000, 1000, dtype=torch.float32)
 
@@ -224,11 +227,13 @@ import torch
 import dora
 from dora.cuda import pinned_ptr_to_torch
 
+# 创建节点
+node = dora.Node()
+
 # 接收标识符
 event = node.next()
 if event["id"] == "tensor_data":
     pinned_buffer = event["value"]
-    metadata = event["metadata"]
     
     # 读取页锁内存
     pinned_ptr, metadata = node.read_pinned_memory(pinned_buffer, free=True)

@@ -733,10 +733,7 @@ impl DoraNode {
     }
 
     /// Free pinned memory registered with daemon.
-    pub fn free_pinned_memory(
-        &mut self,
-        shared_memory_id: String,
-    ) -> eyre::Result<()> {
+    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> eyre::Result<()> {
         self.control_channel
             .free_pinned_memory(shared_memory_id)
             .wrap_err("failed to free pinned memory with daemon")?;
