@@ -1575,6 +1575,11 @@ async fn start_inner(
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
                         let _ = found_tx.send(true);
+                    } else if archived_dataflows.contains_key(&dataflow_id) {
+                        // Dataflow already finished before the CLI could subscribe.
+                        // Acknowledge the subscription so the CLI doesn't error, then
+                        // drop `sender` immediately — the closed channel signals EOF.
+                        let _ = found_tx.send(true);
                     } else {
                         let _ = found_tx.send(false);
                     }
@@ -2034,6 +2039,10 @@ async fn start_inner(
                     if let Some(last) = df.last_recovery_attempt.get(&daemon_id)
                         && now.duration_since(*last) < RECOVERY_BACKOFF
                     {
+                        continue;
+                    }
+                    // Skip if a spawn is already in-flight for this daemon
+                    if df.pending_spawn_results.contains(&daemon_id) {
                         continue;
                     }
                     // Collect nodes assigned to this daemon
