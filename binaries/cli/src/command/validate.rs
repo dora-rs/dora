@@ -25,6 +25,7 @@ impl Executable for Validate {
         let working_dir = self
             .dataflow
             .parent()
+            .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| std::path::Path::new("."));
 
         println!("Validating {}...", self.dataflow.display());
