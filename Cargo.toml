@@ -51,7 +51,6 @@ members = [
     "libraries/core",
     "libraries/message",
     "libraries/recording",
-    "libraries/shared-memory-server",
     "binaries/replay-node",
     "binaries/record-node",
     "libraries/extensions/download",
@@ -98,7 +97,6 @@ dora-tracing = { version = "0.2.0", path = "libraries/extensions/telemetry/traci
 dora-metrics = { version = "0.2.0", path = "libraries/extensions/telemetry/metrics" }
 dora-download = { version = "0.2.0", path = "libraries/extensions/download" }
 dora-log-utils = { version = "0.2.0", path = "libraries/log-utils" }
-shared-memory-server = { version = "0.2.0", path = "libraries/shared-memory-server" }
 dora-coordinator-store = { version = "0.2.0", path = "libraries/coordinator-store" }
 dora-cli = { version = "0.2.0", path = "binaries/cli" }
 dora-runtime = { version = "0.2.0", path = "binaries/runtime" }

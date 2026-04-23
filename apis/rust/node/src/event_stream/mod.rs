@@ -105,13 +105,6 @@ impl EventStream {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_region_id) }
-                        .wrap_err_with(|| {
-                            format!("failed to create shmem event stream for node `{node_id}`")
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event stream for node `{node_id}`")
@@ -132,15 +125,6 @@ impl EventStream {
         let close_channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
-                    DaemonCommunication::Shmem {
-                        daemon_events_close_region_id,
-                        ..
-                    } => unsafe { DaemonChannel::new_shmem(daemon_events_close_region_id) }
-                        .wrap_err_with(|| {
-                            format!(
-                                "failed to create shmem event close channel for node `{node_id}`"
-                            )
-                        })?,
                     DaemonCommunication::Tcp { socket_addr } => {
                         DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
                             format!("failed to connect event close channel for node `{node_id}`")

@@ -7,11 +7,7 @@ use dora_message::{
 };
 use eyre::{Context, bail, eyre};
 pub use node_integration_testing::IntegrationTestingEvents;
-use shared_memory_server::{ShmemClient, ShmemConf};
-use std::{
-    net::{SocketAddr, TcpStream},
-    time::Duration,
-};
+use std::net::{SocketAddr, TcpStream};
 use tokio::sync::oneshot;
 
 mod interactive;
@@ -21,7 +17,6 @@ mod tcp;
 mod json_to_arrow;
 
 pub enum DaemonChannel {
-    Shmem(ShmemClient<Timestamped<DaemonRequest>, DaemonReply>),
     Tcp(TcpStream),
     Interactive(InteractiveEvents),
     IntegrationTestChannel(
@@ -38,19 +33,6 @@ impl DaemonChannel {
         let stream = TcpStream::connect(socket_addr).wrap_err("failed to open TCP connection")?;
         stream.set_nodelay(true).context("failed to set nodelay")?;
         Ok(DaemonChannel::Tcp(stream))
-    }
-
-    #[tracing::instrument(level = "trace")]
-    pub unsafe fn new_shmem(daemon_control_region_id: &str) -> eyre::Result<Self> {
-        let daemon_events_region = ShmemConf::new()
-            .os_id(daemon_control_region_id)
-            .open()
-            .wrap_err("failed to connect to dora-daemon")?;
-        let channel = DaemonChannel::Shmem(
-            unsafe { ShmemClient::new(daemon_events_region, Some(Duration::from_secs(5))) }
-                .wrap_err("failed to create ShmemChannel")?,
-        );
-        Ok(channel)
     }
 
     pub fn register(
@@ -78,7 +60,6 @@ impl DaemonChannel {
 
     pub fn request(&mut self, request: &Timestamped<DaemonRequest>) -> eyre::Result<DaemonReply> {
         match self {
-            DaemonChannel::Shmem(client) => client.request(request),
             DaemonChannel::Tcp(stream) => tcp::request(stream, request),
             DaemonChannel::Interactive(events) => events.request(request),
             DaemonChannel::IntegrationTestChannel(channel) => {

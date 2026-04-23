@@ -414,14 +414,12 @@ pub struct CommunicationConfig {
 pub enum LocalCommunicationConfig {
     #[default]
     Tcp,
-    Shmem,
 }
 
 impl fmt::Display for LocalCommunicationConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Tcp => write!(f, "tcp"),
-            Self::Shmem => write!(f, "shmem"),
         }
     }
 }
@@ -641,13 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn communication_config_local_shmem_lowercase() {
-        let yaml = "_unstable_local: shmem\n";
-        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.local, LocalCommunicationConfig::Shmem);
-    }
-
-    #[test]
     fn communication_config_remote_tcp_lowercase() {
         let yaml = "_unstable_remote: tcp\n";
         let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
@@ -663,17 +654,16 @@ mod tests {
     #[test]
     fn local_communication_config_display() {
         assert_eq!(LocalCommunicationConfig::Tcp.to_string(), "tcp");
-        assert_eq!(LocalCommunicationConfig::Shmem.to_string(), "shmem");
     }
 
     #[test]
     fn communication_config_roundtrip_local() {
         let config = CommunicationConfig {
-            local: LocalCommunicationConfig::Shmem,
+            local: LocalCommunicationConfig::Tcp,
             remote: RemoteCommunicationConfig::Tcp,
         };
         let yaml = serde_yaml::to_string(&config).unwrap();
         let parsed: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.local, LocalCommunicationConfig::Shmem);
+        assert_eq!(parsed.local, LocalCommunicationConfig::Tcp);
     }
 }

@@ -1830,7 +1830,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "shared-memory-server",
+ "shared_memory_extended",
  "shellexpand 3.1.2",
  "shlex",
  "sysinfo 0.36.1",
@@ -1960,7 +1960,6 @@ dependencies = [
  "opentelemetry",
  "serde_json",
  "serde_yaml",
- "shared-memory-server",
  "shared_memory_extended",
  "thiserror 2.0.18",
  "tokio",
@@ -4032,15 +4031,6 @@ checksum = "a64a92489e2744ce060c349162be1c5f33c6969234104dbd99ddb5feb08b8c15"
 
 [[package]]
 name = "memoffset"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce"
-dependencies = [
- "autocfg",
-]
-
-[[package]]
-name = "memoffset"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
@@ -4229,19 +4219,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.23.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c"
-dependencies = [
- "bitflags 1.3.2",
- "cc",
- "cfg-if 1.0.4",
- "libc",
- "memoffset 0.6.5",
-]
-
-[[package]]
-name = "nix"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "598beaf3cc6fdd9a5dfb1630c2800c7acd31df7aaf0f565796fba2b53ca1af1b"
@@ -4261,7 +4238,7 @@ dependencies = [
  "cfg-if 1.0.4",
  "cfg_aliases 0.2.1",
  "libc",
- "memoffset 0.9.1",
+ "memoffset",
 ]
 
 [[package]]
@@ -5512,19 +5489,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2ff9a1f06a88b01621b7ae906ef0211290d1c8a168a15542486a8f61c0833b9"
 
 [[package]]
-name = "raw_sync_2"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f067b45fa17e31d15636789c2638bd562da5496d498876cf0495df78f7e4fdcb"
-dependencies = [
- "cfg-if 1.0.4",
- "libc",
- "nix 0.23.2",
- "rand 0.8.6",
- "winapi 0.3.9",
-]
-
-[[package]]
 name = "rayon"
 version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6335,19 +6299,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "shared-memory-server"
-version = "0.2.1"
-dependencies = [
- "bincode 1.3.3",
- "criterion",
- "eyre",
- "raw_sync_2",
- "serde",
- "shared_memory_extended",
- "tracing",
-]
-
-[[package]]
 name = "shared_memory_extended"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6502,7 +6453,7 @@ version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da1992073f0e55aab599f4483c460598219b4f9ff0affa124b33580ab511e25a"
 dependencies = [
- "memoffset 0.9.1",
+ "memoffset",
  "speedy-derive",
 ]
 
