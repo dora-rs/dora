@@ -6,7 +6,7 @@ class Operator
 {
 public:
     Operator();
-    unsigned char counter;
+    unsigned char counter = 0;
 };
 
 #include "../build/dora-operator-api.h"
