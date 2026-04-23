@@ -87,11 +87,6 @@ impl NodeRegisterRequest {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub enum InputData {
-    Vec(Vec<u8>),
-}
-
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DynamicNodeEvent {
     NodeConfig { node_id: NodeId },

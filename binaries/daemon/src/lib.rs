@@ -4073,12 +4073,10 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    // Extract data bytes for remote receivers (Zenoh). The data plane no
-    // longer uses custom SHM, so `data` is always `DataMessage::Vec` (or
-    // `None`).
     let data_bytes = if need_data_bytes {
-        data.as_ref().map(|arc| match arc.as_ref() {
-            DataMessage::Vec(v) => v.clone(),
+        data.as_ref().map(|arc| {
+            let DataMessage::Vec(v) = arc.as_ref();
+            v.clone()
         })
     } else {
         None
