@@ -114,6 +114,7 @@ fn start_dataflow(
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let working_dir = dataflow
         .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow)
         .wrap_err_with(|| {

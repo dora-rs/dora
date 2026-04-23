@@ -25,6 +25,7 @@ impl Executable for Expand {
         let working_dir = self
             .dataflow
             .parent()
+            .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| std::path::Path::new("."));
         let descriptor = Descriptor::blocking_read(&self.dataflow)
             .with_context(|| format!("failed to read dataflow at `{}`", self.dataflow.display()))?
