@@ -87,6 +87,7 @@ pub fn visualize_as_html(dataflow: &Path) -> eyre::Result<String> {
 pub fn visualize_as_mermaid(dataflow: &Path) -> eyre::Result<String> {
     let working_dir = dataflow
         .parent()
+        .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
     let raw = Descriptor::blocking_read(dataflow)
         .with_context(|| format!("failed to read dataflow at `{}`", dataflow.display()))?;
