@@ -1961,7 +1961,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "shared-memory-server",
- "shared_memory_extended",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
