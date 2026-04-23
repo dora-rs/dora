@@ -168,10 +168,26 @@ impl MemoryManager {
             .collect()
     }
 
-    /// Cleanup all pinned memory on shutdown
+    /// Cleanup all pinned memory on shutdown.
+    ///
+    /// Counts unfreed entries, logs info about them, frees them, and logs the result.
+    /// This is called automatically when the daemon exits.
     pub fn cleanup_all(&self) -> Result<(), Vec<String>> {
         let mut table = self.pinned_memory_table.lock().unwrap();
         let ids: Vec<PinnedMemoryId> = table.keys().cloned().collect();
+
+        // Count entries that were not freed by the node
+        let unfreed_count = table
+            .values()
+            .filter(|entry| !entry.freed)
+            .count();
+
+        if unfreed_count > 0 {
+            tracing::info!(
+                "memory manager检测到{}条未释放的页锁内存数据，正在释放......",
+                unfreed_count
+            );
+        }
 
         for id in &ids {
             if let Some(entry) = table.remove(id) {
@@ -184,6 +200,13 @@ impl MemoryManager {
                     }
                 }
             }
+        }
+
+        if unfreed_count > 0 {
+            tracing::info!(
+                "memory manager已成功释放{}条未释放的页锁内存数据",
+                unfreed_count
+            );
         }
 
         Ok(())

@@ -655,6 +655,9 @@ impl Daemon {
             }
         }
 
+        // Clean up any unfreed pinned memory entries on daemon exit
+        let _ = self.state.memory_manager.cleanup_all();
+
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
             if let Err(err) = client.daemon_exit(ctx).await {

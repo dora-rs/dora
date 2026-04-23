@@ -1,6 +1,6 @@
 # 任务要求
 基于dora开发通过页锁内存和DMA高速读取机制完成cpu->cuda跨进程传输tensor的功能。 
-请根据整体设计重新进行开发，并达到零拷贝的传输效果（当前传输速度为1500MB/S，目标约为30000MB/S）
+请根据整体设计重新进行开发，并达到零拷贝的传输效果（当前传输速度为1800MB/S，目标约为30000MB/S）
 
 # 开发要点（重要）
 ## docs/pinned_memory_development.md为页锁内存开发文档，当你修改代码或更改架构时，同步在该文件中修改，以方便后来参考。你开发时也可以参考它，以减少盲目思考。
@@ -12,25 +12,19 @@
 ## 步骤一：检查页锁内存是否正确释放
 问题：我测试dora run test1.yml时，一开始的速度为8.82it/s，到后面的速度为1.18it/s。
 请找出原因，我怀疑是你的页锁内存只是解注册，并未正确释放，导致一开始传输速度很快，到后面越来越慢。
-## 步骤二：集成测试 -> 目前，test3和test4均崩溃，测试失败。
-步骤二和三成功之后，使用dora run完成对target_test中的的测试。
+你可以通过在每次注册页锁内存时，memory_manager debug出 pinned_memory_table中有几条页锁内存数据，或者debug出页锁内存的大小占用量，从而发现是哪个环节出了问题。
+## 步骤二：自释放测试
+我在target_test中新增了自释放测试test5，memory_manager需要在daemon结束时根据pinned_memory_table，将未释放的页锁内存释放，并输出INFO。
+发送节点注册五条页锁内存数据，接收节点只接收并释放了2条，需要在daemon结束时，由memory_manager释放剩余三条。
+## 步骤三：集成测试
+完成前面的任务后，最后统一测试一下所有的测试文件。如果测试过程中有问题，找到原因并修改，直到通过测试。
 test1.yml为大型数据速度测试，需要无内存问题，且速度高达30000MB/S。
 test2.yml为read_pinned_memory的free=True测试，需要无内存问题。
-test3.yml为重复释放测试，需要输出警告“[节点名]重复释放页锁内存[pinned_buffer],size=[size]”，且程序不崩溃。
-test4.yml为释放后读取测试，需要输出警告“[节点名]读取不存在的页锁内存[pinned_buffer]”，且程序不崩溃。
-如果测试过程中有问题，找到原因，并修改，直到通过测试。
-## 步骤三：整理代码
+test3.yml为重复释放测试，需要由节点输出警告“重复释放页锁内存[pinned_buffer],size=[size]”，且程序不崩溃。
+test4.yml为释放后读取测试，需要由节点输出警告“读取不存在的页锁内存[pinned_buffer]”，且程序不崩溃。
+test5.yml为自释放测试，发送节点注册5条页锁内存数据，接收节点只释放了2条，需要在daemon结束时，由memory_manager释放，并输出INFO“memory manager检测到3条未释放的页锁内存数据，正在释放......”，“memory manager已成功释放3条未释放的页锁内存数据”。
+## 步骤四：整理代码
 测试任务完成后，应注意精简代码，删除死代码、过程注释和调试信息，整理统一导入声明，清理你创建的不必要的测试文件，以提高可读性。
-### 目前，仍有大量如下调试信息，应该删去：
-19:49:55 stdout  receiver_node:  [CUDA] Extracted size from metadata: 61440000
-19:49:55 stdout  receiver_node:  [CUDA] pin_and_dma_to_gpu: host_ptr=0x7ad146568000, size=61440000
-19:49:55 stdout  receiver_node:  [CUDA] DMA transfer to GPU complete: 61440000 bytes to device ptr=0x7ad142000000
-19:49:55 stdout  receiver_node:  [CUDA] DMA transfer to GPU complete. Device ptr: 0x7ad142000000
-19:49:55 stdout  receiver_node:  [CUDA] read_pinned_memory called
-19:49:55 stdout  receiver_node:  [CUDA] Extracted size from metadata: 61440000
-19:49:55 stdout  receiver_node:  [CUDA] pin_and_dma_to_gpu: host_ptr=0x7ad13e568000, size=61440000
-19:49:55 stdout  receiver_node:  [CUDA] DMA transfer to GPU complete: 61440000 bytes to device ptr=0x7ad13a000000
-19:49:55 stdout  receiver_node:  [CUDA] DMA transfer to GPU complete. Device ptr: 0x7ad13a000000
 
 # 整体设计
 ## dora核心（rust）

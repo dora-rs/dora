@@ -47,8 +47,8 @@
 
 | 文件 | 内容 |
 |------|------|
-| `dora/binaries/daemon/src/memory_manager.rs` | 页锁内存管理器：pinned_memory_table 注册/读取/释放，freed:bool double-free 检测 |
-| `dora/binaries/daemon/src/lib.rs` | 处理 RegisterPinnedMemory / ReadPinnedMemory / FreePinnedMemory 事件 |
+| `dora/binaries/daemon/src/memory_manager.rs` | 页锁内存管理器：pinned_memory_table 注册/读取/释放，freed:bool double-free 检测，cleanup_all 统计并日志记录未释放条目数 |
+| `dora/binaries/daemon/src/lib.rs` | 处理 RegisterPinnedMemory / ReadPinnedMemory / FreePinnedMemory 事件；daemon 退出时调用 memory_manager.cleanup_all() 自动清理未释放页锁内存 |
 | `dora/apis/rust/node/src/node/mod.rs` | DoraNode 的 register/read/free_pinned_memory 方法 |
 | `dora/apis/rust/node/src/node/control_channel.rs` | ControlChannel 的页锁内存通信方法 |
 | `dora/libraries/message/src/node_to_daemon.rs` | DaemonRequest 枚举变体 |
@@ -121,6 +121,7 @@
 - `test2.yml`: sender1 + receiver2（默认 free=True 自动清理 daemon 表项），10 轮迭代
 - `test3.yml`: sender1 + receiver3 — 先 free_pinned_memory 释放，再 read_pinned_memory（free=True），测试重复释放警告
 - `test4.yml`: sender1 + receiver4 — 同 receiver3，测试读取不存在的页锁内存警告
+- `test5.yml`: sender1 + receiver1 — 发送端注册 5 条页锁内存，接收端只释放 2 条，daemon 退出时 memory_manager 自动清理剩余 3 条并输出 INFO 日志
 
 ### 扩展模块测试
 - `examples/pinned_memory/test_1/test_cuda_ext.py`: 测试 torch_to_ptr / ptr_to_torch 正确性
@@ -143,3 +144,4 @@
 3. 发送端可能无 CUDA 设备，因此 cudaHostRegister 在接收端执行
 4. 跨进程共享内存在不同进程中物理地址不同，cudaHostGetDevicePointer 不适用
 5. 重复释放（double-free）检测：daemon 的 `PinnedMemoryEntry` 有 `freed: bool` 字段，标记释放而非删除条目，使 double-free 和 read-after-free 都能正确返回错误信息而不崩溃
+6. Daemon 退出时自动调用 `memory_manager.cleanup_all()`，统计 pinned_memory_table 中未释放的条目数，输出 `memory manager检测到N条未释放的页锁内存数据，正在释放......` 和 `memory manager已成功释放N条未释放的页锁内存数据` 两条 INFO 日志，然后逐一清理共享内存文件

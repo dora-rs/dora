@@ -1,0 +1,20 @@
+# 自释放测试，发送5次，接收2次，应自动释放3次
+nodes:
+  - id: sender_node
+    path: sender1.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - cpu_data
+    env:
+      mode: pinned
+      massage_num: 5
+  - id: receiver_node
+    path: receiver1.py
+    inputs:
+      latency: sender_node/cpu_data
+    outputs:
+      - next_require
+    env:
+      mode: pinned
+      massage_num: 2
