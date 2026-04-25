@@ -1,8 +1,6 @@
-use dora_message::{
-    arrow_data::ArrayData,
-    arrow_schema::DataType,
-    metadata::{ArrowTypeInfo, BufferOffset},
-};
+pub use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
+
+use dora_message::{arrow_data::ArrayData, arrow_schema::DataType};
 use eyre::Context;
 
 pub trait ArrowTypeInfoExt {

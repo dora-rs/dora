@@ -130,12 +130,22 @@ impl MemoryManager {
         Ok(entry.metadata)
     }
 
-    /// Attempt to free shared memory
+    /// Attempt to free shared memory.
+    ///
+    /// Pool-mode shmems (`dora_pool_*`) are managed by the ring buffer lifecycle
+    /// and must NOT be unlinked during normal free — the sender reuses them via
+    /// `create()`→`open()` fallback. They are cleaned up at daemon shutdown in
+    /// `cleanup_all` via direct filesystem unlink.
     fn free_shared_memory(
         &self,
         shm_name: &str,
         _metadata: &PinnedMemoryMetadata,
     ) -> Result<(), String> {
+        // Skip unlink for pool-mode shmems — persistent ring buffer
+        if shm_name.starts_with("dora_pool_") {
+            return Ok(());
+        }
+
         // Try to unlink shared memory file on Linux
         #[cfg(target_os = "linux")]
         {
@@ -199,6 +209,18 @@ impl MemoryManager {
                         let _ = self.free_shared_memory(shm_name, &entry.metadata);
                     }
                 }
+            }
+        }
+
+        // Clean up pool-mode shmems (dora_pool_0..N) that were skipped by
+        // free_shared_memory during normal operation. These are persistent ring
+        // buffers and must be unlinked at daemon shutdown.
+        #[cfg(target_os = "linux")]
+        {
+            for i in 0..3 {
+                let shm_name = format!("dora_pool_{}", i);
+                let shm_path = format!("/dev/shm/{}", shm_name);
+                let _ = std::fs::remove_file(&shm_path);
             }
         }
 
