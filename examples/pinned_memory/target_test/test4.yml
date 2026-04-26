@@ -1,4 +1,4 @@
-# 测试cuda接收时，读完直接释放，不显示释放。
+# 释放后读取测试。
 nodes:
   - id: sender_node
     path: sender1.py

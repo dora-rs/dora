@@ -34,9 +34,9 @@ while True:
         torch_tensor = scope.__enter__() # 读取句柄的数据
     else: # mode==pinned
         pinned_buffer = event["value"]
-        data_ptr, metadata = node.read_pinned_memory(pinned_buffer, free=True)
+        data_ptr, metadata = node.get_memory(pinned_buffer, free=True)
         torch_tensor = ptr_to_torch(data_ptr, metadata)
-        node.free_pinned_memory(pinned_buffer)
+        node.free_memory(pinned_buffer)
 
     t_received = time.perf_counter_ns() # ns级别高精度计时
     deta_t = t_received - t_send

@@ -16,7 +16,7 @@ mode = os.getenv("mode", "pinned")
 massage_num = int(os.getenv("massage_num", "100"))
 if not torch.cuda.is_available():
     raise RuntimeError("CUDA is not available.")
-device = "cuda"
+device = "cpu"
 pbar = tqdm(total=massage_num)
 i = 0
 velocities = []
@@ -32,6 +32,7 @@ while True:
         ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"]) # 解析获得句柄
         scope = open_ipc_handle(ipc_handle, event["metadata"]) # 根据句柄获得内存对象
         torch_tensor = scope.__enter__() # 读取句柄的数据
+        torch_tensor = torch_tensor.to(device)
     else: # mode==pinned
         pinned_buffer = event["value"]
         pinned_ptr, metadata = node.get_memory(pinned_buffer, free=False)

@@ -408,7 +408,9 @@ def ptr_to_torch(data_ptr, metadata) -> torch.Tensor:
         return tensor
     else:
         # CPU pointer - try to get device pointer for zero-copy CUDA access
-        if torch.cuda.is_available():
+        # Only attempt if the memory was explicitly registered with cudaHostRegister
+        cuda_registered = metadata.get("cuda_registered", True)
+        if cuda_registered and torch.cuda.is_available():
             lib = _libcudart()
             host_ptr = ctypes.c_void_p(ptr)
             device_ptr = ctypes.c_void_p()

@@ -15,7 +15,7 @@ use dora_node_api::dora_core::config::NodeId;
 use dora_node_api::dora_core::descriptor::source_is_url;
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{
-    DataflowId, DoraNode, EventStream, Metadata, MetadataParameters, Parameter, TryRecvError,
+    DataflowId, DoraNode, EventStream, Parameter, TryRecvError,
     init_tracing,
 };
 use dora_operator_api_python::{
@@ -90,6 +90,21 @@ unsafe impl Sync for RecvGpuSlot {}
 /// Set up lazily in try_doradma_read: open shmem, cudaHostRegister,
 /// cudaHostGetDevicePointer, then cache both Shmem and GPU VA.
 static RECV_GPU_VA: LazyLock<std::sync::Mutex<[Option<RecvGpuSlot>; DMA_POOL_SIZE]>> =
+    LazyLock::new(|| std::sync::Mutex::new([None, None, None]));
+
+/// Receiver-side per-slot Shmem cache for CPU receivers.
+/// Keeps Shmem alive to prevent munmap of the CPU pointer returned
+/// by the as_cuda=False path in try_doradma_read.
+struct RecvCpuSlot {
+    _shmem: shared_memory_extended::Shmem,
+}
+unsafe impl Send for RecvCpuSlot {}
+unsafe impl Sync for RecvCpuSlot {}
+
+/// Receiver-side per-slot cache keeping Shmem alive for CPU zero-copy reads.
+/// Without this cache, the Shmem handle drops at the end of try_doradma_read,
+/// triggering munmap and making the returned CPU pointer a dangling pointer.
+static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<[Option<RecvCpuSlot>; DMA_POOL_SIZE]>> =
     LazyLock::new(|| std::sync::Mutex::new([None, None, None]));
 
 /// Get (or compile) the persistent CUDA DMA helper module.
@@ -664,12 +679,32 @@ impl Node {
     /// :param pinned_ptr: pyarrow array containing pointer to CPU tensor
     /// :param metadata: dictionary with tensor size, dtype, shape
     /// :rtype: pyarrow array containing shared memory identifier
-    #[pyo3(signature = (pinned_ptr, metadata), name = "register_pinned_memory")]
+    #[pyo3(signature = (data_ptr, metadata), name = "pinned_memory_to_cuda")]
     pub fn register_pinned_memory_internal(
+        &self,
+        data_ptr: PyObject,
+        metadata: &Bound<'_, PyDict>,
+        py: Python,
+    ) -> eyre::Result<PyObject> {
+        self.pinned_memory_common(data_ptr, metadata, py, false)
+    }
+
+    #[pyo3(signature = (data_ptr, metadata), name = "pinned_memory_to_cpu")]
+    pub fn pinned_memory_to_cpu_internal(
+        &self,
+        data_ptr: PyObject,
+        metadata: &Bound<'_, PyDict>,
+        py: Python,
+    ) -> eyre::Result<PyObject> {
+        self.pinned_memory_common(data_ptr, metadata, py, true)
+    }
+
+    fn pinned_memory_common(
         &self,
         pinned_ptr: PyObject,
         metadata: &Bound<'_, PyDict>,
         py: Python,
+        cpu_mode: bool,
     ) -> eyre::Result<PyObject> {
         // Extract pointer value from pyarrow array
         let array_data_result = arrow::array::ArrayData::from_pyarrow_bound(pinned_ptr.bind(py));
@@ -728,6 +763,13 @@ impl Node {
         const HEADER_SIZE: usize = 256;
         const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
 
+        // Tag metadata with pinned type for receiver auto-detection.
+        // pinned_memory_to_cuda → "cuda": receiver can use GPU VA for zero-copy.
+        // pinned_memory_to_cpu → "cpu": receiver reads directly as CPU pointer.
+        // This is serialized into the DORADMA header so the receiver can
+        // read it without any daemon round-trip.
+        metadata.set_item("pinned_type", if cpu_mode { "cpu" } else { "cuda" })?;
+
         // Serialize metadata dict to JSON
         let json_bytes = py
             .import("json")
@@ -745,137 +787,111 @@ impl Node {
         let padded_json_len = ((json_len + METADATA_ALIGN - 1) / METADATA_ALIGN) * METADATA_ALIGN;
         let data_offset = HEADER_SIZE + padded_json_len;
 
-        // --- Pool hit detection ---
-        // Check if ptr_value falls within any existing pool slot's mmap range.
-        // If so, data is already in shared memory → skip copy (true zero-copy registration).
-        let pool_hit = {
-            let pool = PINNED_POOL.lock().unwrap();
-            let mut found = None;
-            for (i, slot) in pool.iter().enumerate() {
-                if let Some(ps) = slot {
-                    let range_end = ps.base + ps.size as u64;
-                    if ptr_value >= ps.base && ptr_value + size as u64 <= range_end {
-                        found = Some(i);
-                        break;
-                    }
-                }
-            }
-            found
-        };
-
-        // Slot: pool hit → reuse hit slot; miss → round-robin
-        let pool_slot_idx = if let Some(hit) = pool_hit {
-            hit
-        } else {
+        // --- Pool slot assignment (always round-robin) ---
+        // Each iteration reuses the same 3-slot ring buffer. When a slot already
+        // has a suitable Shmem, we extract and reuse it — skipping mmap,
+        // cudaHostRegister (17ms), and cudaHostGetDevicePointer.
+        let pool_slot_idx = {
             let mut s = DMA_SLOT.lock().unwrap();
             let current = *s;
             *s = (current + 1) % DMA_POOL_SIZE;
             current
         };
         let shmem_name = format!("dora_pool_{}", pool_slot_idx);
+        let total_size_needed = data_offset + size;
 
-        // Data offset: pool hit → actual offset in pool; miss → standard (header + json)
-        let data_offset_actual = if let Some(hit) = pool_hit {
-            let pool = PINNED_POOL.lock().unwrap();
-            let ps = pool[hit].as_ref().unwrap();
-            (ptr_value - ps.base) as usize
-        } else {
-            data_offset
-        };
-        let total_size_actual = data_offset_actual + size;
+        let (shmem, shmem_ptr, sender_gpu_va) = 'pool: loop {
+            // Try to reuse existing pool slot shmem
+            let mut pool = PINNED_POOL.lock().unwrap();
+            if let Some(slot) = pool[pool_slot_idx].take() {
+                if slot.size >= total_size_needed {
+                    break 'pool (slot._shmem, slot.base as *mut u8, slot.gpu_va);
+                }
+                // Size mismatch → drop old shmem (falls through to create)
+            }
+            drop(pool);
 
-        // Create or reuse shmem
-        let mut shmem = match ShmemConf::new()
-            .os_id(&shmem_name)
-            .size(total_size_actual)
-            .writable(true)
-            .create()
-        {
-            Ok(s) => s,
-            Err(_) => {
-                ShmemConf::new()
+            // No valid shmem in slot → create new shared memory
+            let mut new_shmem = match ShmemConf::new()
+                .os_id(&shmem_name)
+                .size(total_size_needed)
+                .writable(true)
+                .create()
+            {
+                Ok(s) => s,
+                Err(_) => ShmemConf::new()
                     .os_id(&shmem_name)
                     .writable(true)
                     .open()
-                    .wrap_err("failed to open existing pool shared memory")?
+                    .wrap_err("failed to open pool shared memory")?,
+            };
+            let new_ptr = unsafe { new_shmem.as_slice_mut().as_mut_ptr() };
+
+            // Register with CUDA + get GPU VA for receiver zero-copy
+            let mut gpu_va = 0u64;
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1(
+                    "_register_host",
+                    (new_ptr as u64, total_size_needed),
+                );
+                if !cpu_mode {
+                    if let Ok(va) = bound.call_method1(
+                        "_get_device_ptr",
+                        (new_ptr as u64,),
+                    ) {
+                        gpu_va = va.extract::<u64>().unwrap_or(0);
+                    }
+                }
             }
+
+            new_shmem.set_owner(false);
+            break 'pool (new_shmem, new_ptr, gpu_va);
         };
 
-        let shmem_ptr = unsafe { shmem.as_slice_mut().as_mut_ptr() };
         // Write DORADMA header (always: magic, json_len, data_offset, JSON)
         unsafe {
             std::ptr::copy_nonoverlapping(HEADER_MAGIC.as_ptr(), shmem_ptr, 8);
             let json_len_le = (json_len as u64).to_le_bytes();
             std::ptr::copy_nonoverlapping(json_len_le.as_ptr(), shmem_ptr.add(8), 8);
-            let data_off_le = (data_offset_actual as u64).to_le_bytes();
+            let data_off_le = (data_offset as u64).to_le_bytes();
             std::ptr::copy_nonoverlapping(data_off_le.as_ptr(), shmem_ptr.add(16), 8);
-            // Write JSON metadata at offset 256
             std::ptr::copy_nonoverlapping(json_bytes.as_ptr(), shmem_ptr.add(HEADER_SIZE), json_len);
         }
 
-        // Pin pool memory with CUDA (sender-side page-locking, idempotent).
-        // Gets GPU VA for zero-copy receiver reads and for cudaMemcpy (CUDA tensors).
-        let mut sender_gpu_va = 0u64;
-        let mut cuda_registered = false;
-        if let Ok(helpers) = get_cuda_helpers(py) {
-            let bound = helpers.bind(py);
-            let _ = bound.call_method1(
-                "_register_host",
-                (shmem_ptr as u64, total_size_actual),
-            );
-            if let Ok(va) = bound.call_method1(
-                "_get_device_ptr",
-                (shmem_ptr as u64,),
-            ) {
-                sender_gpu_va = va.extract::<u64>().unwrap_or(0);
-                cuda_registered = sender_gpu_va != 0;
-            }
-        }
-
-        // Write tensor data only on pool miss (pool hit = data already in shmem).
-        // For CUDA tensors: DMA GPU→shmem via cudaMemcpy DeviceToHost (one copy).
+        // Copy tensor data to shmem (always — new data every iteration).
+        // For CUDA tensors: DMA GPU→shmem via cudaMemcpy DeviceToHost.
         // For CPU tensors: direct memcpy to shmem.
-        if pool_hit.is_none() {
-            let is_cuda = metadata
-                .get_item("is_cuda")
-                .ok()
-                .flatten()
-                .and_then(|v| v.extract::<bool>().ok())
-                .unwrap_or(false);
+        let is_cuda = metadata
+            .get_item("is_cuda")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<bool>().ok())
+            .unwrap_or(false);
 
-            if is_cuda && cuda_registered {
-                // DMA copy: GPU VRAM → shmem (via GPU VA, single copy).
-                // This implements the user's design:
-                // "发送节点将页锁内存数据DMA拷贝到CUDA上"
-                if let Ok(helpers) = get_cuda_helpers(py) {
-                    let bound = helpers.bind(py);
-                    let _ = bound.call_method1(
-                        "_cuda_memcpy",
-                        (sender_gpu_va + data_offset_actual as u64, ptr_value, size, 2u32), // DeviceToHost
-                    );
-                }
-            } else {
-                // CPU tensor or fallback: direct memcpy to shmem
-                unsafe {
-                    std::ptr::copy_nonoverlapping(ptr_value as *const u8, shmem_ptr.add(data_offset_actual), size);
-                }
+        if is_cuda {
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1(
+                    "_cuda_memcpy",
+                    (shmem_ptr as u64 + data_offset as u64, ptr_value, size, 2u32),
+                );
+            }
+        } else {
+            unsafe {
+                std::ptr::copy_nonoverlapping(ptr_value as *const u8, shmem_ptr.add(data_offset), size);
             }
         }
 
-        shmem.set_owner(false);
-
-        // Store in PINNED_POOL on first miss for future zero-copy.
-        // Keeping Shmem alive prevents munmap → stable mmap addresses.
-        if pool_hit.is_none() {
+        // Store shmem back in pool (keep alive for next iteration)
+        {
             let mut pool = PINNED_POOL.lock().unwrap();
-            if pool[pool_slot_idx].is_none() {
-                pool[pool_slot_idx] = Some(PoolSlot {
-                    _shmem: shmem,
-                    base: shmem_ptr as u64,
-                    size: total_size_actual,
-                    gpu_va: sender_gpu_va,
-                });
-            }
+            pool[pool_slot_idx] = Some(PoolSlot {
+                _shmem: shmem,
+                base: shmem_ptr as u64,
+                size: total_size_needed,
+                gpu_va: sender_gpu_va,
+            });
         }
 
         // Tag metadata for send_output event metadata
@@ -930,20 +946,22 @@ impl Node {
         Ok(buffer_id_array.to_data().to_pyarrow(py).unwrap())
     }
 
-    /// Read pinned memory from daemon and transfer to CUDA.
+    /// Read pinned memory from daemon, returning a pointer and metadata.
     ///
     /// :param pinned_buffer: pyarrow array containing shared memory identifier
     /// :param free: if True, free the pinned memory after reading
-    /// :rtype: dictionary with cuda ptr, size, dtype, shape
-    #[pyo3(signature = (pinned_buffer, free=true))]
-    pub fn read_pinned_memory(
+    /// :param as_cuda: if True (default), set up GPU VA for CUDA tensor access;
+    ///                 if False, return CPU pointer directly
+    /// :rtype: dictionary with ptr, size, dtype, shape
+    #[pyo3(signature = (buffer, free=true))]
+    pub fn get_memory(
         &self,
-        pinned_buffer: PyObject,
+        buffer: PyObject,
         free: bool,
         py: Python,
     ) -> eyre::Result<PyObject> {
         // Extract shared memory ID from pyarrow array
-        let array_data_result = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py));
+        let array_data_result = arrow::array::ArrayData::from_pyarrow_bound(buffer.bind(py));
         let array_data =
             array_data_result.wrap_err("failed to convert pinned_buffer to arrow array")?;
         let array = arrow::array::make_array(array_data);
@@ -981,7 +999,7 @@ impl Node {
             }
             _ => {
                 eyre::bail!(
-                    "READ/FREE: pinned_buffer must be a binary or string array, got {:?}",
+                    "READ/FREE: buffer must be a binary or string array, got {:?}",
                     array.data_type()
                 )
             }
@@ -989,8 +1007,11 @@ impl Node {
 
         // --- DORADMA fast path: bypass daemon for pool-mode buffers ---
         // Buffer ID format: "pool_{slot}_{counter}" — metadata is embedded in shmem header.
+        // Auto-detects CPU vs CUDA via pinned_type field in DORADMA header.
         if shared_memory_id.starts_with("pool_") {
-            if let Some(result) = self.try_doradma_read(&shared_memory_id, free, py)? {
+            // as_cuda=true is the default; pinned_type auto-detection in try_doradma_read
+            // overrides to CPU path when sender used pinned_memory_to_cpu.
+            if let Some(result) = self.try_doradma_read(&shared_memory_id, free, true, py)? {
                 return Ok(result);
             }
             // DORADMA path failed (shmem missing, invalid header, etc.), fall through to daemon
@@ -1058,19 +1079,23 @@ impl Node {
                 Ok(Some(v)) => v.extract::<usize>().unwrap_or(0),
                 _ => 0,
             };
-            let cuda_result = if size > 0 {
-                dma_to_gpu_pooled(py, host_ptr, size)
+            if size > 0 {
+                // DMA host→GPU buffer (daemon fallback path)
+                match dma_to_gpu_pooled(py, host_ptr, size) {
+                    Ok(device_ptr) => {
+                        dict.set_item("ptr", device_ptr as i64).ok();
+                        dict.set_item("is_cuda", true).ok();
+                        dict.set_item("device", "cuda").ok();
+                        ptr_value = device_ptr;
+                    }
+                    Err(_) => {
+                        ptr_value = host_ptr;
+                    }
+                }
             } else {
-                Err("size is 0".to_string())
-            };
-
-            if let Ok(device_ptr) = cuda_result {
-                dict.set_item("ptr", device_ptr as i64).ok();
-                dict.set_item("is_cuda", true).ok();
-                dict.set_item("device", "cuda").ok();
-                ptr_value = device_ptr;
-            } else {
+                // CPU receiver: use host pointer directly (zero-copy)
                 ptr_value = host_ptr;
+                dict.set_item("cuda_registered", false).ok();
             }
 
             // Drop shmem — DMA is complete, no need to keep the mmap alive.
@@ -1114,10 +1139,10 @@ impl Node {
     ///
     /// :param pinned_buffer: pyarrow array containing shared memory identifier
     /// :rtype: None
-    #[pyo3(signature = (pinned_buffer,))]
-    pub fn free_pinned_memory(&self, pinned_buffer: PyObject, py: Python) -> eyre::Result<()> {
+    #[pyo3(signature = (buffer,), name = "free_memory")]
+    pub fn free_pinned_memory_impl(&self, buffer: PyObject, py: Python) -> eyre::Result<()> {
         // Extract shared memory ID from pyarrow array
-        let array_data = arrow::array::ArrayData::from_pyarrow_bound(pinned_buffer.bind(py))
+        let array_data = arrow::array::ArrayData::from_pyarrow_bound(buffer.bind(py))
             .wrap_err("failed to convert pinned_buffer to arrow array")?;
         let array = arrow::array::make_array(array_data);
 
@@ -1315,7 +1340,7 @@ impl Node {
         self.node_id.to_string()
     }
 
-    /// DORADMA fast path for read_pinned_memory: reads metadata directly from
+    /// DORADMA fast path for get_memory: reads metadata directly from
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
     /// Buffer ID format: "pool_{slot}_{counter}" → shmem name: "dora_pool_{slot}"
@@ -1325,6 +1350,7 @@ impl Node {
         &self,
         shared_memory_id: &str,
         free: bool,
+        as_cuda: bool,
         py: Python<'_>,
     ) -> eyre::Result<Option<PyObject>> {
         // Check local freed tracking — if this buffer was already freed,
@@ -1417,44 +1443,66 @@ impl Node {
             return Ok(None);
         }
 
-        // --- Zero-copy receiver read via GPU VA ---
-        // Instead of DMA copy shmem→VRAM, get the receiver's own GPU VA
-        // for the shmem pages (via cudaHostRegister + cudaHostGetDevicePointer).
-        // Cache both GPU VA and Shmem handle per slot:
-        // keeping Shmem alive prevents munmap → stable mmap addresses and valid GPU VA.
-        let device_ptr = {
-            let cache = RECV_GPU_VA.lock().unwrap();
-            match &cache[slot] {
-                Some(slot_data) => slot_data.gpu_va + data_offset as u64,
-                None => {
-                    // First access: register shmem + get GPU VA + cache both
-                    drop(cache);
-                    let helpers = get_cuda_helpers(py)
-                        .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
-                    let bound = helpers.bind(py);
-                    // Must register before getting device pointer
-                    bound
-                        .call_method1("_register_host", (shmem_ptr as u64, shmem_size))
-                        .map_err(|e| eyre::eyre!("_register_host: {}", e))?;
-                    let va: u64 = bound
-                        .call_method1("_get_device_ptr", (shmem_ptr as u64,))
-                        .map_err(|e| eyre::eyre!("_get_device_ptr: {}", e))?
-                        .extract()
-                        .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
-                    let mut cache = RECV_GPU_VA.lock().unwrap();
-                    cache[slot] = Some(RecvGpuSlot { _shmem: shmem, gpu_va: va });
-                    va + data_offset as u64
-                }
-            }
-        };
+        // --- Auto-detect read path from pinned_type ---
+        // If the sender used pinned_memory_to_cpu, the data is in CPU shared
+        // memory and should be read as CPU pointer (no GPU VA needed).
+        // The receiver can still force CUDA by passing as_cuda=True explicitly,
+        // but the default respects the sender's intent.
+        let pinned_type: Option<String> = metadata_dict
+            .get_item("pinned_type").ok().flatten()
+            .and_then(|v| v.extract::<String>().ok());
+        let effective_as_cuda = as_cuda && pinned_type.as_deref() != Some("cpu");
 
-        // Update metadata with device info
-        metadata_dict.set_item("ptr", device_ptr as i64).ok();
-        metadata_dict.set_item("is_cuda", true).ok();
-        metadata_dict.set_item("device", "cuda").ok();
+        let read_ptr: u64;
+        if effective_as_cuda {
+            read_ptr = {
+                let cache = RECV_GPU_VA.lock().unwrap();
+                match &cache[slot] {
+                    Some(slot_data) => slot_data.gpu_va + data_offset as u64,
+                    None => {
+                        // First access: register shmem + get GPU VA + cache both
+                        drop(cache);
+                        let helpers = get_cuda_helpers(py)
+                            .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
+                        let bound = helpers.bind(py);
+                        // Must register before getting device pointer
+                        bound
+                            .call_method1("_register_host", (shmem_ptr as u64, shmem_size))
+                            .map_err(|e| eyre::eyre!("_register_host: {}", e))?;
+                        let va: u64 = bound
+                            .call_method1("_get_device_ptr", (shmem_ptr as u64,))
+                            .map_err(|e| eyre::eyre!("_get_device_ptr: {}", e))?
+                            .extract()
+                            .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
+                        let mut cache = RECV_GPU_VA.lock().unwrap();
+                        cache[slot] = Some(RecvGpuSlot { _shmem: shmem, gpu_va: va });
+                        va + data_offset as u64
+                    }
+                }
+            };
+            metadata_dict.set_item("is_cuda", true).ok();
+            metadata_dict.set_item("device", "cuda").ok();
+        } else {
+            // CPU path: return shmem CPU pointer + data_offset directly.
+            // No cudaHostRegister or GPU VA needed — just read from host memory.
+            read_ptr = shmem_ptr as u64 + data_offset as u64;
+            metadata_dict.set_item("is_cuda", false).ok();
+            metadata_dict.set_item("device", "cpu").ok();
+            metadata_dict.set_item("cuda_registered", false).ok();
+            // Cache shmem to prevent munmap — the returned CPU pointer must
+            // stay valid across iterations. Same approach as RECV_GPU_VA
+            // but without GPU VA registration.
+            let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap();
+            if cpu_cache[slot].is_none() {
+                cpu_cache[slot] = Some(RecvCpuSlot { _shmem: shmem });
+            }
+        }
+
+        // Update metadata with pointer
+        metadata_dict.set_item("ptr", read_ptr as i64).ok();
 
         // Free pool-mode buffer: local tracking only (daemon lifecycle handled
-        // by free_pinned_memory or read_pinned_memory free=True fallback path).
+        // by free_memory or get_memory free=True fallback path).
         if free {
             let mut freed = FREED_POOL_BUFFERS.lock().unwrap();
             if freed.contains_key(shared_memory_id) {
@@ -1468,7 +1516,7 @@ impl Node {
         }
 
         // Build return tuple: (ptr_array, metadata_dict)
-        let ptr_array = arrow::array::Int64Array::from(vec![device_ptr as i64]);
+        let ptr_array = arrow::array::Int64Array::from(vec![read_ptr as i64]);
         let pinned_ptr = ptr_array.to_data().to_pyarrow(py).map_err(|e| eyre::eyre!("{}", e))?;
         let tuple = PyTuple::new(py, &[pinned_ptr, metadata_dict.into()])?;
         Ok(Some(tuple.into()))

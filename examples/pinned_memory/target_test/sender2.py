@@ -13,7 +13,7 @@ from dora.cuda import torch_to_ipc_buffer, torch_to_ptr
 SIZES = [15000 * 512]
 mode = os.getenv("mode", "pinned")
 massage_num = int(os.getenv("massage_num", "100"))
-device = "cpu"
+device = "cuda"
 node = Node("sender_node")
 data_generation = np.random.default_rng()
 
@@ -25,17 +25,17 @@ for size in SIZES:  # 每次发送size形状的整数
             print(f"发送方前五个数据：{torch_tensor[:5]}")
         t_send = time.perf_counter_ns() # ns级别高精度计时
         if mode == "torch":
+            torch_tensor = torch_tensor.to("cpu")
             metadata = {"time": t_send, "size": torch_tensor.nbytes}
             node.send_output("cpu_data", pa.array(torch_tensor.numpy()), metadata)
         elif mode == "ipc":
-            torch_tensor = torch_tensor.to("cuda")
             ipc_buffer, metadata = torch_to_ipc_buffer(torch_tensor)
             metadata["time"] = t_send
             node.send_output("cpu_data", ipc_buffer, metadata)
         else: # mode=pinned
             pinned_ptr, metadata = torch_to_ptr(torch_tensor)
             metadata["time"] = t_send
-            pinned_buffer = node.pinned_memory_to_cuda(pinned_ptr, metadata)
+            pinned_buffer = node.pinned_memory_to_cpu(pinned_ptr, metadata)
             node.send_output("cpu_data", pinned_buffer, metadata)
 
         node.next()

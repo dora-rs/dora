@@ -1,20 +1,22 @@
-# 重复释放测试。
+# CUDA→CPU DMA传输 + 零拷贝读取测试
+# 发送方用pinned_memory_to_cpu将CUDA tensor DMA到共享内存
+# 接收方用get_memory(as_cuda=False)读取CPU指针，零拷贝
 nodes:
   - id: sender_node
-    path: sender1.py
+    path: sender2.py
     inputs:
       next_require: receiver_node/next_require
     outputs:
       - cpu_data
     env:
       mode: pinned
-      massage_num: 10
+      massage_num: 100
   - id: receiver_node
-    path: receiver3.py
+    path: receiver5.py
     inputs:
       latency: sender_node/cpu_data
     outputs:
       - next_require
     env:
       mode: pinned
-      massage_num: 10
+      massage_num: 100
