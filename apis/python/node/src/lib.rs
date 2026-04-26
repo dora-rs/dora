@@ -66,6 +66,7 @@ struct PoolSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
     size: usize,
+    gpu_va: u64,
 }
 
 unsafe impl Send for PoolSlot {}
@@ -73,6 +74,22 @@ unsafe impl Sync for PoolSlot {}
 
 /// Persistent pool storage — stable mmap addresses for zero-copy detection.
 static PINNED_POOL: LazyLock<std::sync::Mutex<[Option<PoolSlot>; DMA_POOL_SIZE]>> =
+    LazyLock::new(|| std::sync::Mutex::new([None, None, None]));
+
+/// Receiver-side GPU VA cache per pool slot.
+/// Keeps Shmem alive to prevent munmap, preserving stable mmap addresses
+/// and valid GPU VAs for zero-copy reads across iterations.
+struct RecvGpuSlot {
+    _shmem: shared_memory_extended::Shmem,
+    gpu_va: u64,
+}
+unsafe impl Send for RecvGpuSlot {}
+unsafe impl Sync for RecvGpuSlot {}
+
+/// Receiver-side per-slot cache keeping Shmem alive + GPU VA for zero-copy reads.
+/// Set up lazily in try_doradma_read: open shmem, cudaHostRegister,
+/// cudaHostGetDevicePointer, then cache both Shmem and GPU VA.
+static RECV_GPU_VA: LazyLock<std::sync::Mutex<[Option<RecvGpuSlot>; DMA_POOL_SIZE]>> =
     LazyLock::new(|| std::sync::Mutex::new([None, None, None]));
 
 /// Get (or compile) the persistent CUDA DMA helper module.
@@ -107,6 +124,9 @@ _lib.cudaFree.argtypes = [ctypes.c_void_p]
 
 _lib.cudaDeviceSynchronize.restype = ctypes.c_int
 
+_lib.cudaHostGetDevicePointer.restype = ctypes.c_int
+_lib.cudaHostGetDevicePointer.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p, ctypes.c_uint]
+
 cudaMemcpyHostToDevice = 1
 
 # Persistent state: pinned host pointers and pre-allocated GPU buffers
@@ -122,6 +142,27 @@ def _register_host(ptr, size):
     if err != 0 and err != 712:
         raise RuntimeError(f'cudaHostRegister(0x{ptr:x}, {size}) failed: {err}')
     _pinned[key] = True
+
+def _get_device_ptr(host_ptr):
+    """Get a GPU virtual address for a pinned host memory region.
+
+    Returns a GPU VA that can be used in cudaMemcpy and CUDA kernels.
+    Must be called AFTER _register_host on the same host_ptr.
+    The GPU VA is valid in the current CUDA context only.
+    """
+    d_ptr = ctypes.c_void_p()
+    err = _lib.cudaHostGetDevicePointer(ctypes.byref(d_ptr), ctypes.c_void_p(host_ptr), 0)
+    if err != 0:
+        raise RuntimeError(f'cudaHostGetDevicePointer(0x{host_ptr:x}) failed: {err}')
+    return d_ptr.value
+
+
+def _cuda_memcpy(dst, src, size, kind):
+    """cudaMemcpy wrapper. kind: 1=H2D, 2=D2H, 3=D2D."""
+    err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src), size, kind)
+    if err != 0:
+        raise RuntimeError(f"cudaMemcpy(0x{dst:x}, 0x{src:x}, {size}, {kind}) failed: {err}")
+    _lib.cudaDeviceSynchronize()
 
 def _get_gpu_buf(slot, size):
     """Get or allocate a GPU buffer for the given slot. Reuses when size matches."""
@@ -152,20 +193,6 @@ def dma_copy(ptr, size, slot):
     _lib.cudaDeviceSynchronize()
     return d_ptr
 
-def dma_copy_from_offset(shmem_ptr, shmem_size, data_offset, data_size, slot):
-    """DMA transfer: register full shmem (page-aligned), copy data from offset."""
-    _register_host(shmem_ptr, shmem_size)
-    d_ptr = _get_gpu_buf(slot, data_size)
-    err = _lib.cudaMemcpy(
-        ctypes.c_void_p(d_ptr),
-        ctypes.c_void_p(shmem_ptr + data_offset),
-        data_size,
-        cudaMemcpyHostToDevice,
-    )
-    if err != 0:
-        raise RuntimeError(f'cudaMemcpy failed: {err}')
-    _lib.cudaDeviceSynchronize()
-    return d_ptr
 "#;
 
     let code_cstr = std::ffi::CString::new(code)
@@ -711,7 +738,12 @@ impl Node {
             .wrap_err("failed to extract JSON string")?
             .into_bytes();
         let json_len = json_bytes.len();
-        let data_offset = HEADER_SIZE + json_len;
+        // Pad metadata to 256-byte boundary for GPU tensor alignment requirements.
+        // Without padding, CUDA kernels (e.g., torch_tensor[:5] += 100) may fail
+        // with "misaligned address" on pinned host memory.
+        const METADATA_ALIGN: usize = 256;
+        let padded_json_len = ((json_len + METADATA_ALIGN - 1) / METADATA_ALIGN) * METADATA_ALIGN;
+        let data_offset = HEADER_SIZE + padded_json_len;
 
         // --- Pool hit detection ---
         // Check if ptr_value falls within any existing pool slot's mmap range.
@@ -779,18 +811,55 @@ impl Node {
             std::ptr::copy_nonoverlapping(data_off_le.as_ptr(), shmem_ptr.add(16), 8);
             // Write JSON metadata at offset 256
             std::ptr::copy_nonoverlapping(json_bytes.as_ptr(), shmem_ptr.add(HEADER_SIZE), json_len);
-            // Write tensor data only on pool miss (pool hit = data already in shmem)
-            if pool_hit.is_none() {
-                std::ptr::copy_nonoverlapping(ptr_value as *const u8, shmem_ptr.add(data_offset_actual), size);
-            }
         }
 
-        // Pin pool memory with CUDA (sender-side page-locking, idempotent)
+        // Pin pool memory with CUDA (sender-side page-locking, idempotent).
+        // Gets GPU VA for zero-copy receiver reads and for cudaMemcpy (CUDA tensors).
+        let mut sender_gpu_va = 0u64;
+        let mut cuda_registered = false;
         if let Ok(helpers) = get_cuda_helpers(py) {
-            let _ = helpers.bind(py).call_method1(
+            let bound = helpers.bind(py);
+            let _ = bound.call_method1(
                 "_register_host",
                 (shmem_ptr as u64, total_size_actual),
             );
+            if let Ok(va) = bound.call_method1(
+                "_get_device_ptr",
+                (shmem_ptr as u64,),
+            ) {
+                sender_gpu_va = va.extract::<u64>().unwrap_or(0);
+                cuda_registered = sender_gpu_va != 0;
+            }
+        }
+
+        // Write tensor data only on pool miss (pool hit = data already in shmem).
+        // For CUDA tensors: DMA GPU→shmem via cudaMemcpy DeviceToHost (one copy).
+        // For CPU tensors: direct memcpy to shmem.
+        if pool_hit.is_none() {
+            let is_cuda = metadata
+                .get_item("is_cuda")
+                .ok()
+                .flatten()
+                .and_then(|v| v.extract::<bool>().ok())
+                .unwrap_or(false);
+
+            if is_cuda && cuda_registered {
+                // DMA copy: GPU VRAM → shmem (via GPU VA, single copy).
+                // This implements the user's design:
+                // "发送节点将页锁内存数据DMA拷贝到CUDA上"
+                if let Ok(helpers) = get_cuda_helpers(py) {
+                    let bound = helpers.bind(py);
+                    let _ = bound.call_method1(
+                        "_cuda_memcpy",
+                        (sender_gpu_va + data_offset_actual as u64, ptr_value, size, 2u32), // DeviceToHost
+                    );
+                }
+            } else {
+                // CPU tensor or fallback: direct memcpy to shmem
+                unsafe {
+                    std::ptr::copy_nonoverlapping(ptr_value as *const u8, shmem_ptr.add(data_offset_actual), size);
+                }
+            }
         }
 
         shmem.set_owner(false);
@@ -804,6 +873,7 @@ impl Node {
                     _shmem: shmem,
                     base: shmem_ptr as u64,
                     size: total_size_actual,
+                    gpu_va: sender_gpu_va,
                 });
             }
         }
@@ -1347,30 +1417,35 @@ impl Node {
             return Ok(None);
         }
 
-        // DMA from shmem + data_offset to pre-allocated GPU buffer
-        let cuda_result = (|| -> Result<u64, String> {
-            let helpers = get_cuda_helpers(py)?;
-            let slot = {
-                let mut s = DMA_SLOT.lock().unwrap();
-                let current = *s;
-                *s = (current + 1) % DMA_POOL_SIZE;
-                current
-            };
-            let bound = helpers.bind(py);
-            let result = bound
-                .call_method1(
-                    "dma_copy_from_offset",
-                    (shmem_ptr as u64, shmem_size, data_offset as u64, size, slot),
-                )
-                .map_err(|e| format!("dma_copy_from_offset failed: {}", e))?;
-            result
-                .extract::<u64>()
-                .map_err(|e| format!("extract device_ptr: {}", e))
-        })();
-
-        let device_ptr = match cuda_result {
-            Ok(dp) => dp,
-            Err(_) => return Ok(None),
+        // --- Zero-copy receiver read via GPU VA ---
+        // Instead of DMA copy shmem→VRAM, get the receiver's own GPU VA
+        // for the shmem pages (via cudaHostRegister + cudaHostGetDevicePointer).
+        // Cache both GPU VA and Shmem handle per slot:
+        // keeping Shmem alive prevents munmap → stable mmap addresses and valid GPU VA.
+        let device_ptr = {
+            let cache = RECV_GPU_VA.lock().unwrap();
+            match &cache[slot] {
+                Some(slot_data) => slot_data.gpu_va + data_offset as u64,
+                None => {
+                    // First access: register shmem + get GPU VA + cache both
+                    drop(cache);
+                    let helpers = get_cuda_helpers(py)
+                        .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
+                    let bound = helpers.bind(py);
+                    // Must register before getting device pointer
+                    bound
+                        .call_method1("_register_host", (shmem_ptr as u64, shmem_size))
+                        .map_err(|e| eyre::eyre!("_register_host: {}", e))?;
+                    let va: u64 = bound
+                        .call_method1("_get_device_ptr", (shmem_ptr as u64,))
+                        .map_err(|e| eyre::eyre!("_get_device_ptr: {}", e))?
+                        .extract()
+                        .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
+                    let mut cache = RECV_GPU_VA.lock().unwrap();
+                    cache[slot] = Some(RecvGpuSlot { _shmem: shmem, gpu_va: va });
+                    va + data_offset as u64
+                }
+            }
         };
 
         // Update metadata with device info
