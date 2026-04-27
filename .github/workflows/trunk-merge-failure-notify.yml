@@ -1,0 +1,55 @@
+# Posts a *new* comment on a PR when Trunk's sticky merge-status comment
+# transitions into a failed state. Trunk edits one sticky comment as the
+# batch moves through queued/testing/failed/merged states; GitHub does
+# not send email on comment edits, so authors silently miss merge
+# failures. Reacting to the edit and posting a fresh @-mention restores
+# the email notification.
+name: Trunk merge failure notification
+
+on:
+  issue_comment:
+    types: [edited]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  notify:
+    if: >
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.user.login, 'trunk-io') &&
+      contains(github.event.comment.body, 'failed')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Only fire on the transition into a failed state — skip
+            // subsequent edits that happen while the comment is already
+            // failed, otherwise every Trunk re-render would re-notify.
+            const prev = context.payload.changes?.body?.from ?? '';
+            if (prev.includes('failed')) {
+              core.info('Previous comment body already contained "failed"; skipping.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.issue.number;
+            const author = context.payload.issue.user.login;
+            const stickyUrl = context.payload.comment.html_url;
+
+            const body = [
+              `@${author} the Trunk merge queue failed for this PR.`,
+              ``,
+              `See the [Trunk merge-status comment](${stickyUrl}) for details.`,
+              ``,
+              `_Posted as a new comment so GitHub sends an email — Trunk's sticky comment is edited in place and won't trigger a notification._`,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body,
+            });
