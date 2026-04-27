@@ -1,0 +1,32 @@
+version: 0.1
+
+# Trunk Merge Queue config. Only `merge.required_statuses` is supported
+# in this file today — batching (size 5, 1 min wait), optimistic merging,
+# squash strategy, etc. live in the Trunk dashboard
+# (Settings > Repositories > dora-rs/dora > Merge Queue).
+#
+# `required_statuses` overrides GitHub branch protection's required-checks
+# list for the queue: while Trunk tests a `trunk-merge/...` batch branch,
+# these are the names it waits on before merging. Names must match the
+# GitHub Actions check names exactly.
+#
+# Two tiers, mirroring `.github/workflows/ci.yml`:
+#   - Cheap checks run on every PR (gate queue entry via branch protection).
+#   - Expensive checks are guarded by `if: ... startsWith(github.head_ref,
+#     'trunk-merge/')` and run only on the batch branch.
+merge:
+  required_statuses:
+    # Cheap (always run)
+    - Format
+    - Clippy
+    - Check
+    - Typos
+    - Audit (cargo-audit + cargo-deny)
+    - Unwrap budget
+    - License check
+    # Expensive (run on trunk-merge/* batches)
+    - Test (ubuntu-latest)
+    - E2E Tests
+    - Semantic contract tests
+    - Benchmark regression check
+    - pip-release all green

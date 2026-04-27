@@ -9,15 +9,15 @@
 name: pip-release
 
 # Triggers: release (publish to PyPI), workflow_dispatch (manual),
-# push to main (post-merge verification), and push to Mergify's
-# batched merge-queue branches. Building 24 wheels per PR push was
+# push to main (post-merge verification), and push to Trunk Merge
+# Queue's batched branches. Building 24 wheels per PR push was
 # wasteful — now we build once per merge-queue batch (up to 5 PRs),
 # matching the expensive-job gating in .github/workflows/ci.yml.
 #
-# No `paths:` filter: pip-release is a required merge condition
-# (`pip-release all green` in .mergify.yml), so the check must always
-# be produced on merge-queue branches. A paths filter would cause
-# Mergify to wait forever on batches that don't touch Python/CLI.
+# No `paths:` filter: pip-release is a required merge condition,
+# so the check must always be produced on merge-queue branches. A
+# paths filter would cause Trunk to wait forever on batches that
+# don't touch Python/CLI.
 on:
   release:
     types:
@@ -26,7 +26,7 @@ on:
   push:
     branches:
       - main
-      - "mergify/merge-queue/**"
+      - "trunk-merge/**"
 
 env:
   RUST_VERSION: "1.92.0"
@@ -266,10 +266,10 @@ jobs:
           name: ${{ matrix.repository.name }}-sdist
           path: ${{ matrix.repository.path }}/dist
 
-  # Single aggregator check Mergify can gate on. Listing each matrix
-  # expansion in `.mergify.yml` merge_conditions is fragile (~24 names
-  # with generated suffixes); this one job fails if any build job
-  # failed and succeeds only when all matrix jobs succeeded.
+  # Single aggregator check the merge queue can gate on. Listing each
+  # matrix expansion in the queue's required-checks config is fragile
+  # (~24 names with generated suffixes); this one job fails if any
+  # build job failed and succeeds only when all matrix jobs succeeded.
   pip-release-all-green:
     name: pip-release all green
     runs-on: ubuntu-22.04
