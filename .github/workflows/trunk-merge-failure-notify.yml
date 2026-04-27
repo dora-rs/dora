@@ -1,0 +1,140 @@
+# Posts a *new* comment on each PR in a Trunk merge-queue batch when the
+# batch's CI fails. Trunk only edits a single sticky comment as the batch
+# moves through states, and GitHub does not send email notifications for
+# comment edits — so authors miss merge failures unless they happen to be
+# watching the PR live. This workflow restores email notifications by
+# creating a fresh comment that mentions the author.
+#
+# Trigger: any of the merge-gating workflows finishing with conclusion
+# `failure` on a `trunk-merge/...` head branch. Runs in the default
+# branch's context (workflow_run semantics), so it has the permissions
+# below regardless of the originating PR.
+name: Trunk merge failure notification
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - pip-release
+    types: [completed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  notify:
+    if: >
+      github.event.workflow_run.conclusion == 'failure' &&
+      startsWith(github.event.workflow_run.head_branch, 'trunk-merge/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on affected PRs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const { owner, repo } = context.repo;
+
+            // Recover the PRs in this batch by diffing the trunk-merge
+            // head against main and pulling `#NNN` references out of
+            // each commit message — Trunk's queue commits include the
+            // original PR numbers in their squash titles.
+            const prNumbers = new Set();
+            try {
+              const comparison = await github.paginate(
+                github.rest.repos.compareCommitsWithBasehead,
+                {
+                  owner,
+                  repo,
+                  basehead: `main...${run.head_sha}`,
+                  per_page: 100,
+                },
+                (response) => response.data.commits ?? [],
+              );
+              for (const commit of comparison) {
+                for (const m of (commit.commit?.message ?? '').matchAll(/#(\d+)/g)) {
+                  prNumbers.add(Number(m[1]));
+                }
+              }
+            } catch (err) {
+              core.warning(`compareCommitsWithBasehead failed: ${err.message}`);
+            }
+
+            // Fallback: trunk-merge branch names sometimes encode PR
+            // numbers directly (e.g. `trunk-merge/pr-123-pr-456`).
+            for (const m of run.head_branch.matchAll(/(?:^|[^0-9])(\d+)/g)) {
+              prNumbers.add(Number(m[1]));
+            }
+
+            if (prNumbers.size === 0) {
+              core.warning(
+                `Could not infer any PR numbers from ${run.head_branch} (${run.head_sha}); nothing to notify.`,
+              );
+              return;
+            }
+
+            const stamp = `<!-- trunk-merge-failure-notify:${run.id} -->`;
+
+            for (const number of prNumbers) {
+              let pr;
+              try {
+                ({ data: pr } = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: number,
+                }));
+              } catch (err) {
+                core.info(`Skipping #${number}: ${err.message}`);
+                continue;
+              }
+              if (pr.state !== 'open') {
+                core.info(`Skipping #${number}: state is ${pr.state}`);
+                continue;
+              }
+
+              const comments = await github.paginate(
+                github.rest.issues.listComments,
+                { owner, repo, issue_number: number, per_page: 100 },
+              );
+
+              // Idempotency: don't double-post for the same workflow run.
+              if (comments.some((c) => (c.body ?? '').includes(stamp))) {
+                core.info(`Skipping #${number}: notification already posted for run ${run.id}`);
+                continue;
+              }
+
+              // Locate Trunk's sticky merge-status comment so we can
+              // deep-link it. Match on the bot login plus a body
+              // keyword to avoid grabbing unrelated bot comments.
+              const trunkComment = [...comments].reverse().find((c) => {
+                const login = (c.user?.login ?? '').toLowerCase();
+                const body = c.body ?? '';
+                return (
+                  c.user?.type === 'Bot' &&
+                  login.includes('trunk') &&
+                  /merge/i.test(body)
+                );
+              });
+
+              const stickyLine = trunkComment
+                ? `- [Trunk merge-status comment](${trunkComment.html_url})`
+                : `- _Trunk merge-status comment not found — see the PR timeline._`;
+
+              const body = [
+                stamp,
+                `@${pr.user.login} the Trunk merge queue failed on \`${run.head_branch}\`.`,
+                ``,
+                stickyLine,
+                `- [Failed \`${run.name}\` run](${run.html_url})`,
+                ``,
+                `_Posted as a new comment so GitHub sends an email — Trunk's sticky comment is edited in place and won't trigger a notification._`,
+              ].join('\n');
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: number,
+                body,
+              });
+            }
