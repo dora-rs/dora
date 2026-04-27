@@ -1960,7 +1960,6 @@ dependencies = [
  "opentelemetry",
  "serde_json",
  "serde_yaml",
- "shared_memory_extended",
  "thiserror 2.0.18",
  "tokio",
  "tracing",

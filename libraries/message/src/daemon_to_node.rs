@@ -10,7 +10,7 @@ use crate::{
     metadata::Metadata,
 };
 
-pub use crate::common::{DataMessage, DropToken, SharedMemoryId, Timestamped};
+pub use crate::common::{DataMessage, SharedMemoryId, Timestamped};
 
 // Passed via env variable
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -44,9 +44,7 @@ pub enum DaemonCommunication {
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonReply {
     Result(Result<(), String>),
-    PreparedMessage { shared_memory_id: SharedMemoryId },
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NextDropEvents(Vec<Timestamped<NodeDropEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
 }
@@ -85,9 +83,14 @@ pub enum NodeEvent {
     /// A runtime parameter has been updated.
     ///
     /// Sent when `dora param set` changes a parameter for this node.
+    ///
+    /// `value_json` carries JSON-encoded bytes rather than `serde_json::Value`:
+    /// this message is serialized with bincode on the daemon↔node TCP channel,
+    /// and `serde_json::Value::deserialize` uses `deserialize_any`, which
+    /// bincode does not support.
     ParamUpdate {
         key: String,
-        value: serde_json::Value,
+        value_json: Vec<u8>,
     },
     /// A runtime parameter has been deleted.
     ///
@@ -104,9 +107,4 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub enum NodeDropEvent {
-    OutputDropped { drop_token: DropToken },
 }
