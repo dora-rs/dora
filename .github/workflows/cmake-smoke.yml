@@ -1,0 +1,71 @@
+name: CMake Smoke Test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apis/c/node/**'
+      - 'binaries/cli/src/template/c/**'
+      - '.github/workflows/cmake-smoke.yml'
+  pull_request:
+    paths:
+      - 'apis/c/node/**'
+      - 'binaries/cli/src/template/c/**'
+      - '.github/workflows/cmake-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  cmake-smoke:
+    name: Test find_package (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: macos-latest
+          - os: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build dora-node-api-c
+        run: cargo build --release --package dora-node-api-c
+
+      - name: Install dora CLI
+        run: cargo install --path binaries/cli
+
+      - name: Create test node
+        run: dora new test-node --kind node --lang c
+
+      - name: Configure CMake (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd test-node
+          mkdir build && cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/target/release
+
+      - name: Configure CMake (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd test-node
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/target/release
+
+      - name: Build node
+        run: |
+          cd test-node/build
+          cmake --build . --config Release
+
+      - name: Verify build output (Unix)
+        if: runner.os != 'Windows'
+        run: ls -la test-node/bin/
+
+      - name: Verify build output (Windows)
+        if: runner.os == 'Windows'
+        run: ls test-node/bin/
