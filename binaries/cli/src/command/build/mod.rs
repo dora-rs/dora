@@ -54,7 +54,11 @@ use dora_core::{
 };
 use dora_message::{BuildId, descriptor::NodeSource};
 use eyre::Context;
-use std::{collections::BTreeMap, net::IpAddr, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    net::IpAddr,
+    path::{Path, PathBuf},
+};
 
 use crate::ws_client::WsSession;
 
@@ -406,8 +410,13 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         BuildKind::ThroughCoordinator {
             coordinator_session,
         } => {
-            let local_working_dir =
+            let inferred_local_working_dir =
                 local_working_dir(&dataflow_path, &dataflow_descriptor, &coordinator_session)?;
+            let local_working_dir = select_distributed_working_dir(
+                working_dir_override.as_deref(),
+                inferred_local_working_dir,
+                &dataflow_path,
+            )?;
             let build_id = build_distributed_dataflow(
                 &coordinator_session,
                 dataflow_descriptor,
@@ -449,6 +458,23 @@ fn connect_to_coordinator_with_defaults(
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     connect_to_coordinator((coordinator_addr, coordinator_port).into())
+}
+
+fn select_distributed_working_dir(
+    working_dir_override: Option<&Path>,
+    inferred_local_working_dir: Option<PathBuf>,
+    dataflow_path: &Path,
+) -> eyre::Result<Option<PathBuf>> {
+    match (working_dir_override, inferred_local_working_dir) {
+        (Some(override_), Some(_)) => {
+            let canonical = canonicalize_working_dir(Some(override_), dataflow_path)?;
+            Ok(Some(canonical))
+        }
+        (Some(_), None) => eyre::bail!(
+            "`working_dir_override` can only be used for single-machine coordinator builds where CLI and daemon run on the same machine"
+        ),
+        (None, inferred) => Ok(inferred),
+    }
 }
 
 #[cfg(test)]
@@ -499,5 +525,60 @@ mod tests {
         let cfg =
             BuildConfig::from_str_args("dataflow.yml".into(), None, None, None, false).unwrap();
         assert!(!cfg.uv, "uv should default to false when None");
+    }
+
+    fn unique_temp_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "dora-build-mod-tests-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn distributed_override_is_used_when_local_working_dir_allowed() {
+        let root = unique_temp_path("override-ok");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let selected = select_distributed_working_dir(
+            Some(root.as_path()),
+            Some(PathBuf::from("/tmp/inferred")),
+            Path::new("/tmp/dataflow.yml"),
+        )
+        .unwrap();
+
+        assert_eq!(selected, Some(dunce::canonicalize(&root).unwrap()));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn distributed_override_is_rejected_for_non_local_builds() {
+        let root = unique_temp_path("override-reject");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = select_distributed_working_dir(
+            Some(root.as_path()),
+            None,
+            Path::new("/tmp/dataflow.yml"),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("can only be used for single-machine coordinator builds")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn distributed_without_override_uses_inferred_working_dir() {
+        let inferred = Some(PathBuf::from("/tmp/inferred"));
+        let selected =
+            select_distributed_working_dir(None, inferred.clone(), Path::new("/tmp/dataflow.yml"))
+                .unwrap();
+        assert_eq!(selected, inferred);
     }
 }
