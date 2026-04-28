@@ -1209,6 +1209,12 @@ jobs:
           dora build examples/python-operator-dataflow/dataflow.yml --uv
           # dora-hub deps pull dora-rs from PyPI; re-install local version.
           uv pip install -e apis/python/node
+          # Pre-fetch yolov8n.pt so flaky GitHub asset CDN 502s don't fail the run
+          # (ultralytics' built-in 3-attempt retry is too short; pin v8.4.0 to match
+          # the URL ultralytics resolves today).
+          curl -fL --retry 10 --retry-delay 10 --retry-all-errors \
+            -o examples/python-operator-dataflow/yolov8n.pt \
+            https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt
           dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
       - name: Test Python Multiple Arrays
