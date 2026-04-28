@@ -1672,8 +1672,6 @@ dependencies = [
  "dora-daemon",
  "dora-download",
  "dora-message",
- "dora-node-api-c",
- "dora-operator-api-c",
  "dora-recording",
  "dora-runtime",
  "dora-tracing",
