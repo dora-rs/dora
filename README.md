@@ -18,7 +18,7 @@
 
 <div align="center">
   <a href="https://github.com/dora-rs/dora/actions"><img src="https://github.com/dora-rs/dora/workflows/CI/badge.svg" alt="Build and test"/></a>
-  <a href="https://crates.io/crates/dora-rs"><img src="https://img.shields.io/crates/v/dora_node_api.svg" alt="crates.io"/></a>
+  <a href="https://crates.io/crates/dora-cli"><img src="https://img.shields.io/crates/v/dora-cli.svg" alt="crates.io"/></a>
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/"><img src="https://docs.rs/dora-node-api/badge.svg" alt="docs.rs"/></a>
   <a href="https://pypi.org/project/dora-rs/"><img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPI"/></a>
   <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
@@ -133,7 +133,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
 | `metrics` | OpenTelemetry metrics collection | Yes |
-| `python` | Python operator support (PyO3) | Yes |
+| `python` | Python operator support (PyO3) | No |
 | `redb-backend` | Persistent coordinator state (redb) | Yes |
 
 ```bash

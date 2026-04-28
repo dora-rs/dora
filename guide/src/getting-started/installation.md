@@ -40,9 +40,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 | Feature | Description | Default |
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
-| `metrics` | OpenTelemetry metrics collection | No |
+| `metrics` | OpenTelemetry metrics collection | Yes |
 | `python` | Python operator support (PyO3) | No |
-| `redb-backend` | Persistent coordinator state (redb) | No |
+| `redb-backend` | Persistent coordinator state (redb) | Yes |
 
 ```bash
 cargo install dora-cli --features redb-backend

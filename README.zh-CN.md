@@ -18,7 +18,7 @@
 
 <div align="center">
   <a href="https://github.com/dora-rs/dora/actions"><img src="https://github.com/dora-rs/dora/workflows/CI/badge.svg" alt="Build and test"/></a>
-  <a href="https://crates.io/crates/dora-rs"><img src="https://img.shields.io/crates/v/dora_node_api.svg" alt="crates.io"/></a>
+  <a href="https://crates.io/crates/dora-cli"><img src="https://img.shields.io/crates/v/dora-cli.svg" alt="crates.io"/></a>
   <a href="https://docs.rs/dora-node-api/latest/dora_node_api/"><img src="https://docs.rs/dora-node-api/badge.svg" alt="docs.rs"/></a>
   <a href="https://pypi.org/project/dora-rs/"><img src="https://img.shields.io/pypi/v/dora-rs.svg" alt="PyPI"/></a>
   <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
@@ -127,10 +127,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 | 特性 | 描述 | 默认开启 |
 |------|------|----------|
 | `tracing` | OpenTelemetry 追踪支持 | 是 |
-| `metrics` | OpenTelemetry 指标收集 | 否 |
+| `metrics` | OpenTelemetry 指标收集 | 是 |
 | `python` | Python 算子支持（PyO3） | 否 |
-| `redb-backend` | 持久化协调器状态（redb） | 否 |
-| `prometheus` | 协调器上的 Prometheus `/metrics` 端点 | 否 |
+| `redb-backend` | 持久化协调器状态（redb） | 是 |
 
 ```bash
 cargo install dora-cli --features redb-backend
