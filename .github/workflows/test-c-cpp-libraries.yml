@@ -1,22 +1,30 @@
-name: CMake Smoke Test
+name: Test C/C++ Libraries
 
 on:
   push:
     branches: [main]
     paths:
       - 'apis/c/node/**'
+      - 'apis/c/operator/**'
+      - 'apis/c++/**'
       - 'binaries/cli/src/template/c/**'
-      - '.github/workflows/cmake-smoke.yml'
+      - 'binaries/cli/src/template/cxx/**'
+      - 'scripts/c-cpp-libraries/**'
+      - '.github/workflows/test-c-cpp-libraries.yml'
   pull_request:
     paths:
       - 'apis/c/node/**'
+      - 'apis/c/operator/**'
+      - 'apis/c++/**'
       - 'binaries/cli/src/template/c/**'
-      - '.github/workflows/cmake-smoke.yml'
+      - 'binaries/cli/src/template/cxx/**'
+      - 'scripts/c-cpp-libraries/**'
+      - '.github/workflows/test-c-cpp-libraries.yml'
   workflow_dispatch:
 
 jobs:
-  cmake-smoke:
-    name: Test find_package (${{ matrix.os }})
+  test-c-node:
+    name: Test C Node API (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,15 +47,26 @@ jobs:
       - name: Install dora CLI
         run: cargo install --path binaries/cli
 
+      - name: Stage C library files (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          chmod +x scripts/c-cpp-libraries/stage-c-node.sh
+          ./scripts/c-cpp-libraries/stage-c-node.sh target/release dora-test-prefix
+
+      - name: Stage C library files (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/c-cpp-libraries/stage-c-node.ps1 -BuildDir target/release -Prefix dora-test-prefix
+
       - name: Create test node
         run: dora new test-node --kind node --lang c
 
       - name: Configure CMake (Unix)
         if: runner.os != 'Windows'
         run: |
-          cd test-node
-          mkdir build && cd build
-          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/target/release
+          cd test-node && mkdir build && cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-test-prefix
 
       - name: Configure CMake (Windows)
         if: runner.os == 'Windows'
@@ -55,9 +74,9 @@ jobs:
           cd test-node
           mkdir build
           cd build
-          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/target/release
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-test-prefix
 
-      - name: Build node
+      - name: Build test node
         run: |
           cd test-node/build
           cmake --build . --config Release
