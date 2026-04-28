@@ -43,7 +43,14 @@ fn get_target_dir() -> PathBuf {
 }
 
 fn generate_config_cmake(cmake_dir: &Path) {
-    fs::write(cmake_dir.join("dora-node-api-cConfig.cmake"), CONFIG_CMAKE)
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| "unknown".into());
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".into());
+    let target = format!("{}-{}", target_os, target_arch);
+
+    println!("cargo:warning=dora-node-api-c: built for {}", target);
+
+    let content = CONFIG_CMAKE.replace("@TARGET@", &target);
+    fs::write(cmake_dir.join("dora-node-api-cConfig.cmake"), content)
         .expect("failed to write Config.cmake");
 }
 
@@ -66,9 +73,7 @@ fn copy_header(include_dir: &Path) {
 #[cfg(unix)]
 fn link_library(lib_dir: &Path) {
     let lib_symlink = lib_dir.join("libdora_node_api_c.a");
-    if lib_symlink.exists() {
-        fs::remove_file(&lib_symlink).expect("failed to remove old symlink");
-    }
+    let _ = fs::remove_file(&lib_symlink);
     std::os::unix::fs::symlink("../libdora_node_api_c.a", &lib_symlink)
         .expect("failed to create symlink");
 }
@@ -76,9 +81,7 @@ fn link_library(lib_dir: &Path) {
 #[cfg(windows)]
 fn link_library(lib_dir: &Path) {
     let lib_symlink = lib_dir.join("dora_node_api_c.lib");
-    if lib_symlink.exists() {
-        fs::remove_file(&lib_symlink).expect("failed to remove old symlink");
-    }
+    let _ = fs::remove_file(&lib_symlink);
     let target_dir = lib_dir.parent().expect("failed to get parent");
     let lib_target = target_dir.join("dora_node_api_c.lib");
     if lib_target.exists() {
