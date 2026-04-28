@@ -14,3 +14,22 @@ if(NOT TARGET dora-node-api-c::dora-node-api-c)
         IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/${_lib_name}"
     )
 endif()
+
+# Platform-specific system libraries
+if(NOT TARGET dora-node-api-c::extra)
+    add_library(dora-node-api-c::extra INTERFACE IMPORTED)
+    
+    if(WIN32)
+        target_link_libraries(dora-node-api-c::extra INTERFACE
+            advapi32 userenv kernel32 ws2_32 bcrypt ncrypt schannel ntdll iphlpapi
+            cfgmgr32 credui crypt32 cryptnet fwpuclnt gdi32 msimg32 mswsock ole32
+            oleaut32 opengl32 secur32 shell32 synchronization user32 winspool)
+    elseif(APPLE)
+        target_link_libraries(dora-node-api-c::extra INTERFACE
+            "-framework CoreServices" "-framework Security"
+            pthread m c resolv)
+    else()
+        target_link_libraries(dora-node-api-c::extra INTERFACE
+            pthread dl m rt)
+    endif()
+endif()

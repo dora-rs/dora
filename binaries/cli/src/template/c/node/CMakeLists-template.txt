@@ -6,6 +6,6 @@ set(CMAKE_C_STANDARD 11)
 find_package(dora-node-api-c REQUIRED)
 
 add_executable(___name___-node node.c)
-target_link_libraries(___name___-node PRIVATE dora-node-api-c::dora-node-api-c m)
+target_link_libraries(___name___-node PRIVATE dora-node-api-c::dora-node-api-c dora-node-api-c::extra)
 
 install(TARGETS ___name___-node DESTINATION ${CMAKE_CURRENT_SOURCE_DIR}/bin)
