@@ -54,8 +54,6 @@ fn generate_config_cmake(cmake_dir: &Path) {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".into());
     let target = format!("{}-{}", target_os, target_arch);
 
-    println!("cargo:warning=dora-node-api-c: built for {}", target);
-
     let content = CONFIG_CMAKE.replace("@TARGET@", &target);
     fs::write(cmake_dir.join("dora-node-api-cConfig.cmake"), content)
         .expect("failed to write Config.cmake");
