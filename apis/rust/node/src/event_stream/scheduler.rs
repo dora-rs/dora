@@ -344,14 +344,12 @@ mod tests {
         };
         let ts = uhlc::HLC::default().new_timestamp();
         let metadata = Metadata::from_parameters(ts, type_info, params);
-        let (tx, _rx) = flume::bounded(1);
         EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: DataId::from(id.to_string()),
                 metadata: std::sync::Arc::new(metadata),
                 data: None,
             },
-            ack_channel: tx,
         }
     }
 

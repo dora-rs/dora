@@ -24,7 +24,7 @@ use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
-    event_stream::data_conversion::{MappedInputData, RawData, SharedMemoryData},
+    event_stream::data_conversion::RawData,
 };
 use dora_core::{
     config::{Input, NodeId},
@@ -921,7 +921,7 @@ where
 impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event, ack_channel } => match event {
+            EventItem::NodeEvent { event } => match event {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
@@ -929,7 +929,7 @@ impl EventStream {
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data_inner = data.map(Arc::unwrap_or_clone);
-                    let result = data_to_arrow_array(data_inner, &metadata, ack_channel);
+                    let result = data_to_arrow_array(data_inner, &metadata);
                     match result {
                         Ok(data) => Event::Input {
                             id,
@@ -940,7 +940,14 @@ impl EventStream {
                     }
                 }
                 NodeEvent::AllInputsClosed => Event::Stop(event::StopCause::AllInputsClosed),
-                NodeEvent::ParamUpdate { key, value } => Event::ParamUpdate { key, value },
+                NodeEvent::ParamUpdate { key, value_json } => {
+                    match serde_json::from_slice(&value_json) {
+                        Ok(value) => Event::ParamUpdate { key, value },
+                        Err(err) => Event::Error(format!(
+                            "failed to deserialize ParamUpdate value for `{key}`: {err}"
+                        )),
+                    }
+                }
                 NodeEvent::ParamDeleted { key } => Event::ParamDeleted { key },
                 NodeEvent::NodeFailed {
                     affected_input_ids,
@@ -1142,23 +1149,10 @@ fn zenoh_payload_to_arrow_array(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
     metadata: &dora_message::metadata::Metadata,
-    drop_channel: flume::Sender<()>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data = match data {
+    let data: eyre::Result<Option<RawData>> = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-        Some(DataMessage::SharedMemory {
-            shared_memory_id,
-            len,
-            drop_token: _, // handled in `event_stream_loop`
-        }) => unsafe {
-            MappedInputData::map(&shared_memory_id, len).map(|data| {
-                Some(RawData::SharedMemory(SharedMemoryData {
-                    data,
-                    _drop: drop_channel,
-                }))
-            })
-        },
     };
 
     let is_ipc = dora_message::metadata::get_string_param(
@@ -1312,20 +1306,13 @@ impl EventStream {
 mod tests {
     use super::*;
 
-    /// Create a dummy ack channel for testing event conversion.
-    fn dummy_ack() -> flume::Sender<()> {
-        let (tx, _rx) = flume::bounded(1);
-        tx
-    }
-
     #[test]
     fn convert_param_update() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamUpdate {
                 key: "fps".into(),
-                value: serde_json::json!(60),
+                value_json: serde_json::to_vec(&serde_json::json!(60)).unwrap(),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1337,11 +1324,46 @@ mod tests {
         }
     }
 
+    /// Regression test for the daemon↔node wire protocol: `NodeEvent`
+    /// is sent over TCP with bincode, so any field type that uses
+    /// `Deserializer::deserialize_any` (like `serde_json::Value`)
+    /// breaks the channel and kills the node at the next receive.
+    /// `NodeEvent::ParamUpdate` carries its value as JSON-encoded
+    /// bytes for that reason. This test pins the invariant so we
+    /// don't regress back to a `deserialize_any` field.
+    #[test]
+    fn node_event_param_update_round_trips_through_bincode() {
+        let cases = [
+            serde_json::json!(42),
+            serde_json::json!(1.5),
+            serde_json::json!("hello"),
+            serde_json::json!(null),
+            serde_json::json!([1, 2, 3]),
+            serde_json::json!({"nested": {"array": [true, false]}}),
+        ];
+        for value in cases {
+            let event = NodeEvent::ParamUpdate {
+                key: "rate".into(),
+                value_json: serde_json::to_vec(&value).unwrap(),
+            };
+            let bytes = bincode::serialize(&event).expect("bincode serialize");
+            let back: NodeEvent = bincode::deserialize(&bytes).expect("bincode deserialize");
+            match back {
+                NodeEvent::ParamUpdate { key, value_json } => {
+                    assert_eq!(key, "rate");
+                    let decoded: serde_json::Value =
+                        serde_json::from_slice(&value_json).expect("value_json is JSON");
+                    assert_eq!(decoded, value);
+                }
+                other => panic!("expected ParamUpdate, got {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn convert_param_deleted() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamDeleted { key: "fps".into() },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1356,7 +1378,6 @@ mod tests {
     fn convert_stop_event() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::Stop,
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::Manual)));
@@ -1366,7 +1387,6 @@ mod tests {
     fn convert_all_inputs_closed() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::AllInputsClosed,
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::AllInputsClosed)));
@@ -1378,7 +1398,6 @@ mod tests {
             event: NodeEvent::InputClosed {
                 id: "input_1".to_string().into(),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -1393,7 +1412,6 @@ mod tests {
             event: NodeEvent::NodeRestarted {
                 id: "upstream".to_string().into(),
             },
-            ack_channel: dummy_ack(),
         };
         let event = EventStream::convert_event_item(item);
         match event {

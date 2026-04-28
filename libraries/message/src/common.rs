@@ -267,20 +267,6 @@ pub type SharedMemoryId = String;
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
     Vec(AVec<u8, ConstAlign<128>>),
-    SharedMemory {
-        shared_memory_id: String,
-        len: usize,
-        drop_token: DropToken,
-    },
-}
-
-impl DataMessage {
-    pub fn drop_token(&self) -> Option<DropToken> {
-        match self {
-            DataMessage::Vec(_) => None,
-            DataMessage::SharedMemory { drop_token, .. } => Some(*drop_token),
-        }
-    }
 }
 
 impl fmt::Debug for DataMessage {
@@ -290,28 +276,7 @@ impl fmt::Debug for DataMessage {
                 .debug_struct("Vec")
                 .field("len", &v.len())
                 .finish_non_exhaustive(),
-            Self::SharedMemory {
-                shared_memory_id,
-                len,
-                drop_token,
-            } => f
-                .debug_struct("SharedMemory")
-                .field("shared_memory_id", shared_memory_id)
-                .field("len", len)
-                .field("drop_token", drop_token)
-                .finish(),
         }
-    }
-}
-
-#[derive(
-    Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct DropToken(Uuid);
-
-impl DropToken {
-    pub fn generate() -> Self {
-        Self(Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)))
     }
 }
 
