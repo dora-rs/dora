@@ -60,7 +60,7 @@ fn accepts_valid_status_messages() -> eyre::Result<()> {
 fn rejects_message_missing_prefix() {
     let events = vec![message_input(0.001, "totally unrelated payload")];
 
-    let err = run_sink(events).expect_err("sink must reject mis-formatted messages");
+    let err = run_sink(events).expect_err("sink must reject malformed messages");
     let chain: Vec<String> = err.chain().map(|e| e.to_string()).collect();
     assert!(
         chain
