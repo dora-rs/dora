@@ -64,8 +64,8 @@ jobs:
 
       - name: Verify build output (Unix)
         if: runner.os != 'Windows'
-        run: ls -la test-node/bin/
+        run: ls -la test-node/build/test-node
 
       - name: Verify build output (Windows)
         if: runner.os == 'Windows'
-        run: ls test-node/bin/
+        run: ls test-node/build/test-node.exe
