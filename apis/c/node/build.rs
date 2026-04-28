@@ -5,9 +5,9 @@ const CONFIG_CMAKE: &str = include_str!("cmake/dora-node-api-cConfig.cmake.in");
 const CONFIG_VERSION_CMAKE: &str = include_str!("cmake/dora-node-api-cConfigVersion.cmake.in");
 
 fn main() {
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
-    let cmake_dir = out_dir.join("lib").join("cmake").join("dora-node-api-c");
-    let include_dir = out_dir.join("include");
+    let target_dir = get_target_dir();
+    let cmake_dir = target_dir.join("lib").join("cmake").join("dora-node-api-c");
+    let include_dir = target_dir.join("include");
 
     fs::create_dir_all(&cmake_dir).expect("failed to create cmake directory");
     fs::create_dir_all(&include_dir).expect("failed to create include directory");
@@ -22,6 +22,33 @@ fn main() {
     println!("cargo:rerun-if-changed=cmake/dora-node-api-cConfig.cmake.in");
     println!("cargo:rerun-if-changed=cmake/dora-node-api-cConfigVersion.cmake.in");
     println!("cargo:rerun-if-changed=node_api.h");
+}
+
+fn get_target_dir() -> PathBuf {
+    let profile = std::env::var("PROFILE").expect("PROFILE not set");
+
+    // Get base target directory
+    let base_target_dir = std::env::var("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            // Fallback: derive from manifest_dir
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            manifest_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .expect("failed to get workspace root")
+                .join("target")
+        });
+
+    // Check if --target was specified
+    if let Ok(build_target) = std::env::var("CARGO_BUILD_TARGET") {
+        // With --target: target/<target>/<profile>
+        base_target_dir.join(build_target).join(profile)
+    } else {
+        // Without --target: target/<profile>
+        base_target_dir.join(profile)
+    }
 }
 
 fn generate_config_cmake(cmake_dir: &Path) {
