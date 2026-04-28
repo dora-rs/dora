@@ -4,22 +4,16 @@ on:
   push:
     branches: [main]
     paths:
-      - 'apis/c/node/**'
-      - 'apis/c/operator/**'
-      - 'apis/c++/**'
-      - 'binaries/cli/src/template/c/**'
-      - 'binaries/cli/src/template/cxx/**'
-      - 'scripts/c-cpp-libraries/**'
-      - '.github/workflows/test-c-cpp-libraries.yml'
+      - 'apis/**'
+      - 'binaries/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
   pull_request:
     paths:
-      - 'apis/c/node/**'
-      - 'apis/c/operator/**'
-      - 'apis/c++/**'
-      - 'binaries/cli/src/template/c/**'
-      - 'binaries/cli/src/template/cxx/**'
-      - 'scripts/c-cpp-libraries/**'
-      - '.github/workflows/test-c-cpp-libraries.yml'
+      - 'apis/**'
+      - 'binaries/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -57,7 +51,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          ./scripts/c-cpp-libraries/stage-c-node.ps1 -BuildDir target/release -Prefix dora-test-prefix
+          ./scripts/c-cpp-libraries/stage-c-node.ps1 -TargetDir target/release -Prefix dora-test-prefix
 
       - name: Create test node
         run: dora new test-node --kind node --lang c
