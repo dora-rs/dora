@@ -1,11 +1,17 @@
-use dora_node_api::{self, DoraNode, Event, IntoArrow, dora_core::config::DataId};
+use dora_node_api::{self, DoraNode, Event, EventStream, IntoArrow, dora_core::config::DataId};
+
+#[cfg(test)]
+mod tests;
 
 fn main() -> eyre::Result<()> {
     println!("hello");
 
-    let output = DataId::from("random".to_owned());
+    let (node, events) = DoraNode::init_from_env()?;
+    run(node, events)
+}
 
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
+    let output = DataId::from("random".to_owned());
 
     for i in 0..100 {
         let event = match events.recv() {

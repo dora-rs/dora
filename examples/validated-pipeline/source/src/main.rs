@@ -1,8 +1,15 @@
-use dora_node_api::{DoraNode, Event, IntoArrow, dora_core::config::DataId};
+use dora_node_api::{DoraNode, Event, EventStream, IntoArrow, dora_core::config::DataId};
 use eyre::Context;
 
+#[cfg(test)]
+mod tests;
+
 fn main() -> eyre::Result<()> {
-    let (mut node, mut events) = DoraNode::init_from_env()?;
+    let (node, events) = DoraNode::init_from_env()?;
+    run(node, events)
+}
+
+fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
     let output = DataId::from("value".to_owned());
 
     let mut sent: i64 = 0;

@@ -1,9 +1,15 @@
-use dora_node_api::{self, DoraNode, Event};
+use dora_node_api::{self, DoraNode, Event, EventStream};
 use eyre::{Context, bail};
 
-fn main() -> eyre::Result<()> {
-    let (_node, mut events) = DoraNode::init_from_env()?;
+#[cfg(test)]
+mod tests;
 
+fn main() -> eyre::Result<()> {
+    let (node, events) = DoraNode::init_from_env()?;
+    run(node, events)
+}
+
+fn run(_node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
     while let Some(event) = events.recv() {
         match event {
             Event::Input {
