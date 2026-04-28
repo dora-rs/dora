@@ -1,8 +1,15 @@
-use dora_node_api::{DoraNode, Event, arrow};
+use dora_node_api::{DoraNode, Event, EventStream, arrow};
 use eyre::{ContextCompat, bail};
 
+#[cfg(test)]
+mod tests;
+
 fn main() -> eyre::Result<()> {
-    let (_node, mut events) = DoraNode::init_from_env()?;
+    let (node, events) = DoraNode::init_from_env()?;
+    run(node, events)
+}
+
+fn run(_node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
     let mut received_count: i64 = 0;
 
     while let Some(event) = events.recv() {
