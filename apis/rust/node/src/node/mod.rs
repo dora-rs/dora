@@ -590,16 +590,25 @@ impl DoraNode {
                     Err(_panic) => Err(NodeError::Init("zenoh session init panicked".into())),
                 }
             })?;
+            // SHM provider is best-effort: if the OS rejects the segment
+            // allocation (e.g. `/dev/shm` exhausted in CI), fall back to
+            // `None`. `send_output_sample` already publishes via heap
+            // buffers when the provider is missing.
             let provider = {
                 use zenoh::Wait;
                 use zenoh::shm::ShmProviderBuilder;
-                ShmProviderBuilder::default_backend(shm_pool_size)
-                    .wait()
-                    .map_err(|e| {
-                        NodeError::Init(format!("failed to create zenoh SHM provider: {e}"))
-                    })?
+                match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
+                    Ok(provider) => Some(provider),
+                    Err(e) => {
+                        warn!(
+                            "failed to create zenoh SHM provider ({e}); \
+                             falling back to heap-buffered publishes"
+                        );
+                        None
+                    }
+                }
             };
-            (Some(session), Some(provider), owned_runtime)
+            (Some(session), provider, owned_runtime)
         };
 
         let event_stream = EventStream::init(
