@@ -22,7 +22,6 @@ serde_yaml = { workspace = true }
 tracing = { workspace = true }
 flume = { workspace = true }
 bincode = { workspace = true }
-shared_memory_extended = "0.13.0"
 zenoh = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-metrics = { workspace = true, optional = true }

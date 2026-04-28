@@ -85,8 +85,7 @@ impl IntegrationTestingEvents {
         let reply = match &request.inner {
             DaemonRequest::Register(_) => DaemonReply::Result(Ok(())),
             DaemonRequest::Subscribe => DaemonReply::Result(Ok(())),
-            DaemonRequest::SubscribeDrop => DaemonReply::Result(Ok(())),
-            DaemonRequest::NextEvent { .. } => {
+            DaemonRequest::NextEvent => {
                 let events = if let Some(event) = self.next_event()? {
                     vec![event]
                 } else {
@@ -106,14 +105,6 @@ impl IntegrationTestingEvents {
             DaemonRequest::OutputsDone => {
                 println!("{}", "node reports OutputsDone".blue());
                 DaemonReply::Result(Ok(()))
-            }
-            DaemonRequest::ReportDropTokens { drop_tokens } => {
-                println!("{} {drop_tokens:?}", "node reports drop tokens".blue());
-                DaemonReply::Empty
-            }
-            DaemonRequest::NextFinishedDropTokens => {
-                // interactive nodes don't use shared memory -> no drop tokens
-                DaemonReply::NextDropEvents(vec![])
             }
             DaemonRequest::EventStreamDropped => {
                 println!("{}", "node reports EventStreamDropped".blue());
@@ -233,15 +224,9 @@ pub fn convert_output_to_json(
         output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
     }
     if data.is_some() {
-        let (drop_tx, drop_rx) = flume::unbounded();
-        let data_array = data_to_arrow_array(
-            data.clone().map(std::sync::Arc::unwrap_or_clone),
-            metadata,
-            drop_tx,
-        )
-        .context("failed to convert output to arrow array")?;
-        // integration testing doesn't use shared memory -> no drop tokens
-        let _ = drop_rx;
+        let data_array =
+            data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone), metadata)
+                .context("failed to convert output to arrow array")?;
 
         let data_type_json = serde_json::to_value(data_array.data_type())
             .context("failed to serialize data type as JSON")?;
