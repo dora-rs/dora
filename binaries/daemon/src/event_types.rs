@@ -8,8 +8,8 @@ use std::{
 use dora_core::uhlc::HLC;
 use dora_message::{
     BuildId, DataflowId, SessionId,
-    common::{DataMessage, DropToken, LogMessage},
-    daemon_to_node::{DaemonReply, NodeDropEvent, NodeEvent},
+    common::{DataMessage, LogMessage},
+    daemon_to_node::{DaemonReply, NodeEvent},
     id::{DataId, NodeId},
     metadata,
     node_to_daemon::Timestamped,
@@ -108,10 +108,6 @@ pub enum DaemonNodeEvent {
         pending_counter: Arc<AtomicU64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    SubscribeDrop {
-        event_sender: mpsc::UnboundedSender<Timestamped<NodeDropEvent>>,
-        reply_sender: oneshot::Sender<DaemonReply>,
-    },
     CloseOutputs {
         outputs: Vec<DataId>,
         reply_sender: oneshot::Sender<DaemonReply>,
@@ -120,9 +116,6 @@ pub enum DaemonNodeEvent {
         output_id: DataId,
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
-    },
-    ReportDrop {
-        tokens: Vec<DropToken>,
     },
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
@@ -223,18 +216,6 @@ pub(crate) fn send_with_timestamp(
             Ok(false)
         }
     }
-}
-
-/// Send a drop event with timestamp (unbounded — critical for shmem cleanup).
-pub(crate) fn send_drop_with_timestamp(
-    sender: &mpsc::UnboundedSender<Timestamped<NodeDropEvent>>,
-    event: NodeDropEvent,
-    clock: &HLC,
-) -> Result<(), mpsc::error::SendError<Timestamped<NodeDropEvent>>> {
-    sender.send(Timestamped {
-        inner: event,
-        timestamp: clock.new_timestamp(),
-    })
 }
 
 /// Outbound Zenoh message for the drain task.

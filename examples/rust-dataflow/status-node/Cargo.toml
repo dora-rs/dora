@@ -12,3 +12,6 @@ publish = false
 [dependencies]
 dora-node-api = { workspace = true }
 eyre = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

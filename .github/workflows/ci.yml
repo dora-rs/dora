@@ -5,20 +5,17 @@
 #   Cheap (every PR, ~5-10 min):
 #     fmt, clippy, check (cargo check --all + --examples),
 #     typos, audit, unwrap-budget, check-license.
-#     These gate entry into the Mergify queue (see .mergify.yml).
+#     These gate entry into the Trunk Merge Queue.
 #
 #   Expensive (push to main, merge-queue batches, workflow_dispatch):
 #     test (build + cargo test + CLI smoke gates),
 #     e2e, contract-tests, bench (perf regression).
-#     These gate the merge itself. Running them only on Mergify's
+#     These gate the merge itself. Running them only on Trunk's
 #     batched queue branch means 5 PRs share one expensive CI run.
 #
-# Detection of merge-queue runs relies on Mergify's draft-PR queue
-# mode: the queue branch is named `mergify/merge-queue/...` and the
+# Detection of merge-queue runs relies on Trunk's draft-PR queue
+# mode: the queue branch is named `trunk-merge/...` and the
 # `pull_request` event fires with `github.head_ref` pointing at it.
-# If the repo ever switches to GitHub's native merge queue, add a
-# `merge_group` trigger and include `github.event_name == 'merge_group'`
-# in the expensive-job conditions.
 #
 # Moved to .github/workflows/nightly.yml (runs once daily, ~3-4h):
 #   - test on macos + windows
@@ -41,6 +38,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # GitHub's default `pull_request` activity types are
+    # `opened, synchronize, reopened`. Including `ready_for_review`
+    # makes the draft -> ready transition fire CI, which gives
+    # us a way to run tests on CI-created PRs (which don't trigger push events)
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
@@ -83,7 +85,7 @@ jobs:
 
   # Cheap compile gate on every PR. `cargo check` skips codegen/link,
   # so it's much faster than the full `test` job below. Exposed as the
-  # `Check` check to Mergify's `queue_conditions`.
+  # `Check` check to the merge queue's required-status-check config.
   check:
     name: Check
     runs-on: ubuntu-latest
@@ -109,10 +111,10 @@ jobs:
     # Developers verify non-Linux platforms locally via `make qa-test`.
     #
     # Expensive — skipped on regular PRs. Runs on push to main,
-    # Mergify merge-queue batches, and manual workflow_dispatch.
+    # Trunk merge-queue batches, and manual workflow_dispatch.
     name: Test (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -215,7 +217,7 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -258,7 +260,7 @@ jobs:
     name: Semantic contract tests
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -300,7 +302,7 @@ jobs:
     name: Benchmark regression check
     runs-on: ubuntu-latest
     needs: test
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'mergify/merge-queue/')
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

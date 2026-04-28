@@ -2,7 +2,7 @@
 
 use crate::{
     DoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
-    pending::PendingNodes, send_drop_with_timestamp, send_with_timestamp,
+    pending::PendingNodes, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId},
@@ -10,8 +10,8 @@ use dora_core::{
     uhlc::HLC,
 };
 use dora_message::{
-    common::{DaemonId, DropToken},
-    daemon_to_node::{NodeConfig, NodeDropEvent, NodeEvent},
+    common::DaemonId,
+    daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::RestartPolicy,
     metadata::{self},
     node_to_daemon::Timestamped,
@@ -22,7 +22,7 @@ const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(10_000);
 const DEFAULT_RESTART_GRACE: Duration = Duration::from_millis(5_000);
 
 use crossbeam::queue::ArrayQueue;
-use eyre::{Context, eyre};
+use eyre::eyre;
 use futures::FutureExt;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -162,11 +162,6 @@ impl Drop for ProcessHandle {
     }
 }
 
-pub(crate) struct DropTokenInformation {
-    pub owner: NodeId,
-    pub pending_nodes: BTreeSet<NodeId>,
-}
-
 /// A subscriber to the `dora/logs` virtual input.
 pub struct LogSubscriber {
     pub node_id: NodeId,
@@ -182,7 +177,6 @@ pub struct RunningDataflow {
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
-    pub(crate) drop_channels: HashMap<NodeId, mpsc::UnboundedSender<Timestamped<NodeDropEvent>>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
@@ -193,7 +187,6 @@ pub struct RunningDataflow {
     pub(crate) running_nodes: BTreeMap<NodeId, RunningNode>,
     pub(crate) dynamic_nodes: BTreeSet<NodeId>,
     pub(crate) open_external_mappings: BTreeSet<OutputId>,
-    pub(crate) pending_drop_tokens: HashMap<DropToken, DropTokenInformation>,
     pub(crate) _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
     pub(crate) stop_sent: bool,
     pub(crate) empty_set: BTreeSet<DataId>,
@@ -249,7 +242,6 @@ impl RunningDataflow {
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
-            drop_channels: HashMap::new(),
             mappings: HashMap::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
@@ -259,7 +251,6 @@ impl RunningDataflow {
             running_nodes: BTreeMap::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
-            pending_drop_tokens: HashMap::new(),
             _timer_handles: BTreeMap::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
@@ -532,42 +523,6 @@ impl RunningDataflow {
 
     pub(crate) fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
-    }
-
-    pub(crate) async fn check_drop_token(
-        &mut self,
-        token: DropToken,
-        clock: &HLC,
-    ) -> eyre::Result<()> {
-        match self.pending_drop_tokens.entry(token) {
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                if entry.get().pending_nodes.is_empty() {
-                    let (drop_token, info) = entry.remove_entry();
-                    let result = match self.drop_channels.get_mut(&info.owner) {
-                        Some(channel) => send_drop_with_timestamp(
-                            channel,
-                            NodeDropEvent::OutputDropped { drop_token },
-                            clock,
-                        )
-                        .wrap_err("send failed"),
-                        None => Err(eyre!("no subscribe channel for node `{}`", &info.owner)),
-                    };
-                    if let Err(err) = result.wrap_err_with(|| {
-                        format!(
-                            "failed to report drop token `{drop_token:?}` to owner `{}`",
-                            &info.owner
-                        )
-                    }) {
-                        tracing::warn!("{err:?}");
-                    }
-                }
-            }
-            std::collections::hash_map::Entry::Vacant(_) => {
-                tracing::warn!("check_drop_token called with already closed token")
-            }
-        }
-
-        Ok(())
     }
 }
 

@@ -38,7 +38,6 @@ use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{DaemonLogger, DataflowLogger, Logger};
-use shared_memory_extended::ShmemConf;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -181,13 +180,12 @@ mod spawn;
 
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
-    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_drop_with_timestamp,
-    send_with_timestamp,
+    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use running_dataflow::{
-    DropTokenInformation, FinishDataflowWhen, InputDeadline, ProcessHandle, ProcessOperation,
-    RunningDataflow, RunningNode,
+    FinishDataflowWhen, InputDeadline, ProcessHandle, ProcessOperation, RunningDataflow,
+    RunningNode,
 };
 
 use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
@@ -210,7 +208,9 @@ fn deliver_param_update_strict(
         .subscribe_channels
         .get(node_id)
         .ok_or_else(|| eyre!("node `{node_id}` not connected"))?;
-    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value }, clock) {
+    let value_json = serde_json::to_vec(&value)
+        .map_err(|e| eyre!("failed to serialize param value for node `{node_id}`: {e}"))?;
+    match send_with_timestamp(channel, NodeEvent::ParamUpdate { key, value_json }, clock) {
         Ok(true) => {
             dataflow.inc_pending(node_id);
             Ok(())
@@ -1770,7 +1770,6 @@ impl Daemon {
                     dataflow.running_nodes.remove(&node_id);
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
-                    dataflow.drop_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
@@ -2750,22 +2749,6 @@ impl Daemon {
                     }
                 }
             }
-            DaemonNodeEvent::SubscribeDrop {
-                event_sender,
-                reply_sender,
-            } => {
-                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!("failed to subscribe: no running dataflow with ID `{dataflow_id}`")
-                });
-                let result = match dataflow {
-                    Ok(dataflow) => {
-                        dataflow.drop_channels.insert(node_id, event_sender);
-                        Ok(())
-                    }
-                    Err(err) => Err(err.to_string()),
-                };
-                let _ = reply_sender.send(DaemonReply::Result(result));
-            }
             DaemonNodeEvent::CloseOutputs {
                 outputs,
                 reply_sender,
@@ -2809,34 +2792,6 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
-            DaemonNodeEvent::ReportDrop { tokens } => {
-                let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-                    format!(
-                        "failed to get handle drop tokens: \
-                        no running dataflow with ID `{dataflow_id}`"
-                    )
-                });
-
-                match dataflow {
-                    Ok(dataflow) => {
-                        for token in tokens {
-                            match dataflow.pending_drop_tokens.get_mut(&token) {
-                                Some(info) => {
-                                    if info.pending_nodes.remove(&node_id) {
-                                        dataflow.check_drop_token(token, &self.clock).await?;
-                                    } else {
-                                        tracing::warn!(
-                                            "node `{node_id}` is not pending for drop token `{token:?}`"
-                                        );
-                                    }
-                                }
-                                None => tracing::warn!("unknown drop token `{token:?}`"),
-                            }
-                        }
-                    }
-                    Err(err) => tracing::warn!("{err:?}"),
-                }
-            }
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
                 let inner = async {
                     let dataflow = self
@@ -3256,11 +3211,6 @@ impl Daemon {
                 .await?;
         }
 
-        let dataflow = self
-            .running
-            .get_mut(&dataflow_id)
-            .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
-        dataflow.drop_channels.remove(node_id);
         Ok(())
     }
 
@@ -3892,11 +3842,21 @@ fn apply_state_catch_up_entries(
                     );
                     break;
                 };
+                let value_json = match serde_json::to_vec(value) {
+                    Ok(bytes) => bytes,
+                    Err(err) => {
+                        tracing::warn!(
+                            "catch-up: failed to serialize param value for node `{node_id}` at seq {}: {err}",
+                            entry.sequence
+                        );
+                        break;
+                    }
+                };
                 match send_with_timestamp(
                     channel,
                     NodeEvent::ParamUpdate {
                         key: key.clone(),
-                        value: value.clone(),
+                        value_json,
                     },
                     clock,
                 ) {
@@ -4089,7 +4049,6 @@ async fn send_output_to_local_receivers(
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
     let is_vec_message = matches!(data, Some(DataMessage::Vec(_)));
-    let OutputId(node_id, _) = &output_id;
     // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
     let metadata = Arc::new(metadata.clone());
     let data = data.map(Arc::new);
@@ -4176,17 +4135,6 @@ async fn send_output_to_local_receivers(
                             }
                         }
                     }
-                    if let Some(token) = data.as_ref().and_then(|d| d.drop_token()) {
-                        dataflow
-                            .pending_drop_tokens
-                            .entry(token)
-                            .or_insert_with(|| DropTokenInformation {
-                                owner: node_id.clone(),
-                                pending_nodes: Default::default(),
-                            })
-                            .pending_nodes
-                            .insert(receiver_id.clone());
-                    }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     closed.push(receiver_id);
@@ -4204,50 +4152,14 @@ async fn send_output_to_local_receivers(
     for id in closed {
         dataflow.subscribe_channels.remove(id);
     }
-    // Extract data bytes for remote receivers (Zenoh). Skip the expensive shmem
-    // mmap + copy when there are no remote receivers (local-only optimization).
-    let (data_bytes, drop_token) = if need_data_bytes {
-        let data_owned = data.as_ref().map(|arc| (**arc).clone());
-        match data_owned {
-            None => (None, None),
-            Some(DataMessage::SharedMemory {
-                shared_memory_id,
-                len,
-                drop_token,
-            }) => {
-                let memory = ShmemConf::new()
-                    .os_id(shared_memory_id)
-                    .open()
-                    .wrap_err("failed to map shared memory output")?;
-                let mem_slice = unsafe { memory.as_slice() };
-                if len > mem_slice.len() {
-                    eyre::bail!(
-                        "shared memory length {len} exceeds region size {}",
-                        mem_slice.len()
-                    );
-                }
-                let data = Some(AVec::from_slice(1, &mem_slice[..len]));
-                (data, Some(drop_token))
-            }
-            Some(DataMessage::Vec(v)) => (Some(v), None),
-        }
+    let data_bytes = if need_data_bytes {
+        data.as_ref().map(|arc| {
+            let DataMessage::Vec(v) = arc.as_ref();
+            v.clone()
+        })
     } else {
-        // Extract drop token without copying data
-        let drop_token = data.as_ref().and_then(|d| d.drop_token());
-        (None, drop_token)
+        None
     };
-    if let Some(token) = drop_token {
-        // insert token into `pending_drop_tokens` even if there are no local subscribers
-        dataflow
-            .pending_drop_tokens
-            .entry(token)
-            .or_insert_with(|| DropTokenInformation {
-                owner: node_id.clone(),
-                pending_nodes: Default::default(),
-            });
-        // check if all local subscribers are finished with the token
-        dataflow.check_drop_token(token, clock).await?;
-    }
     Ok(data_bytes)
 }
 
@@ -4981,7 +4893,7 @@ mod fault_tolerance_tests {
             &tx,
             NodeEvent::ParamUpdate {
                 key: "threshold".into(),
-                value: serde_json::json!(42),
+                value_json: serde_json::to_vec(&serde_json::json!(42)).unwrap(),
             },
             &clock,
         );
@@ -4990,9 +4902,10 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NodeEvent::ParamUpdate { key, value } => {
+            NodeEvent::ParamUpdate { key, value_json } => {
                 assert_eq!(key, "threshold");
-                assert_eq!(value, &serde_json::json!(42));
+                let value: serde_json::Value = serde_json::from_slice(value_json).unwrap();
+                assert_eq!(value, serde_json::json!(42));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
         }
@@ -5008,7 +4921,7 @@ mod fault_tolerance_tests {
             &tx,
             NodeEvent::ParamUpdate {
                 key: "rate".into(),
-                value: serde_json::json!(10),
+                value_json: serde_json::to_vec(&serde_json::json!(10)).unwrap(),
             },
             &clock,
         );
@@ -5112,9 +5025,10 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx_a);
         assert_eq!(events.len(), 1);
         match &events[0] {
-            NodeEvent::ParamUpdate { key, value } => {
+            NodeEvent::ParamUpdate { key, value_json } => {
                 assert_eq!(key, "threshold");
-                assert_eq!(value, &serde_json::json!(42));
+                let value: serde_json::Value = serde_json::from_slice(value_json).unwrap();
+                assert_eq!(value, serde_json::json!(42));
             }
             other => panic!("expected ParamUpdate, got {other:?}"),
         }
