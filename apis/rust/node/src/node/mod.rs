@@ -1003,6 +1003,12 @@ impl DoraNode {
 
     /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
     /// Uses SHM for zero-copy when possible, falls back to heap buffer.
+    ///
+    /// The publisher is declared with `express(true)` to bypass zenoh's adaptive
+    /// batch timer (the single biggest small-message latency win — without it,
+    /// per-put delivery on the bare local config collapses to a few msg/s) and
+    /// with `Priority::RealTime` so data-plane messages don't share queues with
+    /// bulk traffic.
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
@@ -1010,10 +1016,19 @@ impl DoraNode {
         data: &[u8],
     ) -> eyre::Result<()> {
         use zenoh::Wait;
+        use zenoh::qos::Priority;
 
         let session = self.zenoh_session.as_ref().unwrap();
 
-        // Get or create publisher for this output
+        // Get or create publisher for this output. QoS is configured at
+        // declare time so it applies to every put: `express(true)` bypasses
+        // zenoh's adaptive batch timer (the single biggest small-message
+        // latency win — without it, per-put delivery on the bare local config
+        // collapses to a few msg/s), and `Priority::RealTime` keeps data-plane
+        // messages off the bulk-data queues. We leave `CongestionControl` at
+        // its default (`Drop`) so a stalled subscriber cannot back-pressure
+        // the publishing node; per-publication QoS setters are only available
+        // on session-level `Session::put` builders in zenoh 1.8.
         if !self.zenoh_publishers.contains_key(output_id) {
             let topic = dora_core::topics::zenoh_output_publish_topic(
                 self.dataflow_id,
@@ -1025,6 +1040,8 @@ impl DoraNode {
                 .into_owned();
             let publisher = session
                 .declare_publisher(key_expr)
+                .express(true)
+                .priority(Priority::RealTime)
                 .wait()
                 .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
             self.zenoh_publishers.insert(output_id.clone(), publisher);

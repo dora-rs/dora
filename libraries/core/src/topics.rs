@@ -33,6 +33,17 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
                     .unwrap();
             }
 
+            // Latency note: each data-plane publisher in
+            // `apis/rust/node/src/node/mod.rs::zenoh_publish` is declared with
+            // `express(true)`, which bypasses zenoh's adaptive batch timer per
+            // publication. We deliberately do NOT enable Zenoh's inter-peer
+            // SHM transport (`transport/shared_memory/enabled`) — it is
+            // page-aligned and its setup overhead does not pay off below
+            // 4 KiB, where the existing daemon-relay path is used instead.
+            // Zenoh's TCP link layer already sets TCP_NODELAY unconditionally
+            // (see `zenoh-link-tcp::unicast::set_nodelay(true)`), so no
+            // tcp_nodelay knob is needed here.
+
             if let Some(addr) = coordinator_addr {
                 zenoh_config
                     .insert_json5(
