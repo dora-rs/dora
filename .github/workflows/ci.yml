@@ -38,6 +38,11 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+    # GitHub's default `pull_request` activity types are
+    # `opened, synchronize, reopened`. Including `ready_for_review`
+    # makes the draft -> ready transition fire CI, which gives
+    # us a way to run tests on CI-created PRs (which don't trigger push events)
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 concurrency:
