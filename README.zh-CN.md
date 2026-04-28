@@ -127,10 +127,9 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 | 特性 | 描述 | 默认开启 |
 |------|------|----------|
 | `tracing` | OpenTelemetry 追踪支持 | 是 |
-| `metrics` | OpenTelemetry 指标收集 | 否 |
+| `metrics` | OpenTelemetry 指标收集 | 是 |
 | `python` | Python 算子支持（PyO3） | 否 |
-| `redb-backend` | 持久化协调器状态（redb） | 否 |
-| `prometheus` | 协调器上的 Prometheus `/metrics` 端点 | 否 |
+| `redb-backend` | 持久化协调器状态（redb） | 是 |
 
 ```bash
 cargo install dora-cli --features redb-backend

@@ -133,7 +133,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://github.com/dora-rs/dora/relea
 |---------|-------------|---------|
 | `tracing` | OpenTelemetry tracing support | Yes |
 | `metrics` | OpenTelemetry metrics collection | Yes |
-| `python` | Python operator support (PyO3) | Yes |
+| `python` | Python operator support (PyO3) | No |
 | `redb-backend` | Persistent coordinator state (redb) | Yes |
 
 ```bash
