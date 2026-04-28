@@ -98,6 +98,15 @@ impl RuntimeTypeCheck {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
+/// Minimum payload size for which a zenoh data-plane publish goes through the
+/// SHM provider. Below this, we publish the raw heap buffer directly: zenoh's
+/// SHM provider is page-aligned (4 KiB on Linux), so allocating a full page
+/// for a few hundred bytes is pure waste, and skipping it gives a measurable
+/// throughput win on sub-512-byte bursts. Sizes between 512 B and 4 KiB still
+/// use SHM — large enough to amortize the page allocation, small enough to
+/// keep the SHM provider warm for the ≥4 KiB path that actually benefits.
+const ZENOH_SHM_MIN_PAYLOAD: usize = 512;
+
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -1035,8 +1044,14 @@ impl DoraNode {
         let metadata_bytes = bincode::serialize(metadata)
             .wrap_err("failed to serialize metadata for zenoh attachment")?;
 
-        // Try SHM allocation, fall back to heap
-        if let Some(provider) = &self.zenoh_shm_provider {
+        // Try SHM allocation, fall back to heap. Skip the SHM path entirely
+        // for very small payloads — the SHM provider is page-aligned (4 KiB
+        // on Linux), so allocating a full page for a few hundred bytes is
+        // pure waste; the heap-buffered zenoh put is faster for bursts of
+        // tiny messages. See `ZENOH_SHM_MIN_PAYLOAD` for the rationale.
+        if data.len() >= ZENOH_SHM_MIN_PAYLOAD
+            && let Some(provider) = &self.zenoh_shm_provider
+        {
             use zenoh::shm::{BlockOn, GarbageCollect};
             match provider
                 .alloc(data.len())
