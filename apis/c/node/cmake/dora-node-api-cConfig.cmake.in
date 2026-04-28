@@ -1,0 +1,16 @@
+get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+if(NOT TARGET dora-node-api-c::dora-node-api-c)
+    add_library(dora-node-api-c::dora-node-api-c STATIC IMPORTED)
+    
+    if(WIN32)
+        set(_lib_name "dora_node_api_c.lib")
+    else()
+        set(_lib_name "libdora_node_api_c.a")
+    endif()
+    
+    set_target_properties(dora-node-api-c::dora-node-api-c PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/${_lib_name}"
+    )
+endif()
