@@ -1350,7 +1350,10 @@ async fn start_inner(
                                                                     .send_and_receive(&msg)
                                                                     .await
                                                                 {
-                                                                    Ok(_) => {
+                                                                    Ok(reply_raw) => {
+                                                                        ensure_add_node_applied(
+                                                                            &reply_raw, &node_id,
+                                                                        )?;
                                                                         dataflow
                                                                             .node_to_daemon
                                                                             .insert(
@@ -2682,6 +2685,21 @@ fn build_set_param_message_from_raw_json(
     .map_err(Into::into)
 }
 
+fn ensure_add_node_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::AddNodeResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::AddNodeResult(Err(err)) => {
+            Err(eyre!("daemon failed to add node `{node_id}`: {err}"))
+        }
+        other => Err(eyre!(
+            "unexpected daemon reply for AddNode on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
 fn ensure_set_param_forward_applied(
     reply_raw: &[u8],
     node_id: &dora_core::config::NodeId,
@@ -3962,6 +3980,37 @@ mod tests {
         // But a daemon at seq 7 can
         let delta = df.state_log_delta(7).expect("should succeed");
         assert_eq!(delta.len(), 3); // entries 8, 9, 10
+    }
+
+    #[test]
+    fn add_node_forward_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        ensure_add_node_applied(&reply, &node_id).expect("successful AddNode reply should pass");
+    }
+
+    #[test]
+    fn add_node_forward_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Err(
+            "failed to spawn node".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_add_node_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail AddNode forwarding");
+        assert!(err.to_string().contains("failed to add node"));
+    }
+
+    #[test]
+    fn add_node_forward_reply_rejects_unexpected_reply_variant() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_add_node_applied(&reply, &node_id)
+            .expect_err("unexpected reply variant should fail AddNode forwarding");
+        assert!(err.to_string().contains("unexpected daemon reply"));
     }
 
     #[test]
