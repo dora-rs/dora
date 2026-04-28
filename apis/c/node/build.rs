@@ -28,7 +28,7 @@ fn main() {
 }
 
 fn get_target_dir() -> PathBuf {
-    std::env::var("CARGO_TARGET_DIR")
+    let base_target_dir = std::env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -38,8 +38,15 @@ fn get_target_dir() -> PathBuf {
                 .and_then(|p| p.parent())
                 .expect("failed to get workspace root")
                 .join("target")
-                .join(std::env::var("PROFILE").unwrap())
-        })
+        });
+
+    let profile = std::env::var("PROFILE").expect("PROFILE not set");
+
+    if let Ok(target) = std::env::var("TARGET") {
+        base_target_dir.join(target).join(profile)
+    } else {
+        base_target_dir.join(profile)
+    }
 }
 
 fn generate_config_cmake(cmake_dir: &Path) {
