@@ -8609,6 +8609,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xtask"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
 name = "yaml-bridge-action-goal"
 version = "0.2.1"
 dependencies = [

@@ -72,7 +72,7 @@ jobs:
         if: runner.os != 'Windows'
         run: |     
           # Stage node API files
-          ./scripts/c-cpp-libraries/stage-c-node.sh \
+          cargo run -p xtask -- stage-c-node \
             target/${{ matrix.target }}/release \
             dora-c-libraries-${{ matrix.target }}
           
@@ -107,10 +107,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # Stage node API files
-          ./scripts/c-cpp-libraries/stage-c-node.ps1 `
-            -TargetDir target/${{ matrix.target }}/release `
-            -Prefix dora-c-libraries-${{ matrix.target }}
+          cargo run -p xtask -- stage-c-node `
+            target/${{ matrix.target }}/release `
+            dora-c-libraries-${{ matrix.target }}
           
           # Add operator API files
           Copy-Item "apis/c/operator/operator_api.h" "dora-c-libraries-${{ matrix.target }}/include/"

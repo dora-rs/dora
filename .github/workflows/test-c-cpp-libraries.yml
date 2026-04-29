@@ -3,17 +3,7 @@ name: Test C/C++ Libraries
 on:
   push:
     branches: [main]
-    paths:
-      - 'apis/**'
-      - 'binaries/**'
-      - 'scripts/**'
-      - '.github/workflows/**'
   pull_request:
-    paths:
-      - 'apis/**'
-      - 'binaries/**'
-      - 'scripts/**'
-      - '.github/workflows/**'
   workflow_dispatch:
 
 jobs:
@@ -41,17 +31,8 @@ jobs:
       - name: Install dora CLI
         run: cargo install --path binaries/cli
 
-      - name: Stage C library files (Unix)
-        if: runner.os != 'Windows'
-        run: |
-          chmod +x scripts/c-cpp-libraries/stage-c-node.sh
-          ./scripts/c-cpp-libraries/stage-c-node.sh target/release dora-test-prefix
-
-      - name: Stage C library files (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          ./scripts/c-cpp-libraries/stage-c-node.ps1 -TargetDir target/release -Prefix dora-test-prefix
+      - name: Stage C library files
+        run: cargo run -p xtask -- stage-c-node target/release dora-test-prefix
 
       - name: Create test node
         run: dora new test-node --kind node --lang c
@@ -74,11 +55,3 @@ jobs:
         run: |
           cd test-node/build
           cmake --build . --config Release
-
-      - name: Verify build output (Unix)
-        if: runner.os != 'Windows'
-        run: ls -la test-node/build/test-node
-
-      - name: Verify build output (Windows)
-        if: runner.os == 'Windows'
-        run: ls test-node/build/test-node.exe
