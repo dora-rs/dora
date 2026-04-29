@@ -1,12 +1,12 @@
-# Smoke-tests git-sourced nodes. Pins to an adora commit (not a released
+# Smoke-tests git-sourced nodes. Pins to a dora commit (not a released
 # tag) so the example runs against matching message-format versions
 # without needing a release. Update `rev:` when a message-format-breaking
 # change lands on main — otherwise the CI job catches the mismatch and
 # signals a compatibility break, which is the whole point of this test.
 nodes:
   - id: rust-node
-    git: https://github.com/dora-rs/adora.git
-    rev: c38d5882b3df99ed9dbf632bd89bd7609fc05ca1
+    git: https://github.com/dora-rs/dora.git
+    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
@@ -15,8 +15,8 @@ nodes:
       - random
 
   - id: rust-status-node
-    git: https://github.com/dora-rs/adora.git
-    rev: c38d5882b3df99ed9dbf632bd89bd7609fc05ca1
+    git: https://github.com/dora-rs/dora.git
+    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -26,8 +26,8 @@ nodes:
       - status
 
   - id: rust-sink
-    git: https://github.com/dora-rs/adora.git
-    rev: c38d5882b3df99ed9dbf632bd89bd7609fc05ca1
+    git: https://github.com/dora-rs/dora.git
+    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:
