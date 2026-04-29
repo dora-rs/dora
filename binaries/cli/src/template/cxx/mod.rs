@@ -1,4 +1,4 @@
-use eyre::{Context, ContextCompat, bail};
+use eyre::{bail, Context};
 use std::{
     fs,
     path::{Path, PathBuf},
