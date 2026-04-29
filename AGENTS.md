@@ -48,7 +48,7 @@ Important packages:
 ## Rename Transition Rules
 
 - Default to `dora` naming in code, docs, examples, and user-facing text.
-- The `adora` → `dora` rename is a clean break in 1.0: env vars, YAML virtual inputs, and CLI/crate/package names are `dora` only. The single remaining transition surface is the `apis/python/compat/adora-rs/` PyPI shim, which re-exports `dora-rs` and emits a `DeprecationWarning`. Per `docs/migration-from-0.x.md`, that shim is maintained until 1.1 (~6 months from 1.0); do not touch it without removing both the package and the migration-doc commitment together.
+- The `adora` → `dora` rename is a clean break in 1.0: env vars, YAML virtual inputs, CLI/crate/package names, and the PyPI surface are `dora` only. There is no compat shim or alias to preserve.
 
 ## Agent Working Rules
 
