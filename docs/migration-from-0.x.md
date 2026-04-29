@@ -33,7 +33,7 @@ Additional fixes and hardening items from the 2026-03-21 audit are closed in 1.0
 4. **Rename existing recordings.** `mv capture.adorec capture.drec` — the file format itself is unchanged, only the extension differs.
 5. **Update CLI usage.** Any tooling that pipes files into `dora replay` should use `.drec` going forward. Shell completions and aliases referencing `*.adorec` need updating.
 6. **Coordinate the restart.** In a distributed deployment, bring down all 0.x daemons before starting 1.0 daemons. A fork CLI connecting to an upstream 0.x coordinator (or vice versa) will fail at the TCP handshake with a low-level framing error, not a graceful version-mismatch message.
-7. **If you installed the `adora-rs` PyPI package** (from the fork-era 0.x releases): uninstall it and install `dora-rs` directly. `pip install adora-rs` will still work after 1.0 ships — it's kept as a deprecated shim at `adora-rs 0.3.0` that depends on `dora-rs>=1.0.0` and emits a `DeprecationWarning` on import. The shim is maintained for ~6 months; switching to `dora-rs` avoids the warning and future-proofs your install. Rust users on crates.io are unaffected — the fork never published `adora-*` crates.
+7. **If you installed the `adora-rs` PyPI package** (from the fork-era 0.x releases): uninstall it and install `dora-rs` directly. 1.0 is a clean break — `adora-rs` is not republished, so `pip install adora-rs` resolves to the last fork-era 0.x release and will not pull 1.0. Rust users on crates.io are unaffected — the fork never published `adora-*` crates.
 
 ## New features in 1.0
 
