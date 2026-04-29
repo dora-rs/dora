@@ -40,11 +40,21 @@ jobs:
       - name: Create C test node
         run: dora new test-node-c --kind node --lang c
 
-      - name: Build C test node
-        shell: bash
+      - name: Build C test node (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd test-node-c
           mkdir -p build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-c-prefix
+          cmake --build . --config Release
+
+      - name: Build C test node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd test-node-c
+          mkdir build
           cd build
           cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-c-prefix
           cmake --build . --config Release
@@ -61,11 +71,21 @@ jobs:
       - name: Create C++ test node
         run: dora new test-node-cpp --kind node --lang cxx
 
-      - name: Build C++ test node
-        shell: bash
+      - name: Build C++ test node (Unix)
+        if: runner.os != 'Windows'
         run: |
           cd test-node-cpp
           mkdir -p build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-cpp-prefix
+          cmake --build . --config Release
+
+      - name: Build C++ test node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd test-node-cpp
+          mkdir build
           cd build
           cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-cpp-prefix
           cmake --build . --config Release
