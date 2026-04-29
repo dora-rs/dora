@@ -98,15 +98,6 @@ impl RuntimeTypeCheck {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-/// Minimum payload size for which a zenoh data-plane publish goes through the
-/// SHM provider. Below this, we publish the raw heap buffer directly: zenoh's
-/// SHM provider is page-aligned (4 KiB on Linux), so allocating a full page
-/// for a few hundred bytes is pure waste, and skipping it gives a measurable
-/// throughput win on sub-512-byte bursts. Sizes between 512 B and 4 KiB still
-/// use SHM — large enough to amortize the page allocation, small enough to
-/// keep the SHM provider warm for the ≥4 KiB path that actually benefits.
-const ZENOH_SHM_MIN_PAYLOAD: usize = 512;
-
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -951,19 +942,18 @@ impl DoraNode {
 
         let data = sample.map(|sample| sample.finalize());
 
-        // Try zenoh SHM publish for data-plane messages.
-        // If zenoh session is available, publish data directly via zenoh
-        // (zero-copy SHM for local subscribers, network for remote).
-        // The daemon still receives a data-less notification for routing awareness.
-        let zenoh_published = if let (Some(_), Some(DataMessage::Vec(v))) =
-            (&self.zenoh_session, data.as_ref())
-        {
-            let raw_bytes = v.as_ref();
-            if !raw_bytes.is_empty() && raw_bytes.len() >= self.zenoh_zero_copy_threshold {
+        // Always publish data-plane messages via zenoh when a session is
+        // available. The control channel is only used as a fallback when the
+        // zenoh session could not be opened (e.g. interactive/testing modes).
+        // Zenoh internally chooses SHM (zero-copy) vs heap based on
+        // `self.zenoh_zero_copy_threshold` (see `zenoh_publish`).
+        let zenoh_published =
+            if let (Some(_), Some(DataMessage::Vec(v))) = (&self.zenoh_session, data.as_ref()) {
+                let raw_bytes = v.as_ref();
                 tracing::trace!(
                     output = %output_id,
                     size = raw_bytes.len(),
-                    "publishing via zenoh SHM"
+                    "publishing via zenoh"
                 );
                 match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
                     Ok(()) => true,
@@ -974,15 +964,10 @@ impl DoraNode {
                 }
             } else {
                 false
-            }
-        } else {
-            false
-        };
+            };
 
         if !zenoh_published {
-            // Data delivered via daemon. (When zenoh publishes, the daemon
-            // fan-out would produce a duplicate NodeEvent::Input for local
-            // subscribers, so we skip the daemon path entirely.)
+            // Fallback: no zenoh session, deliver via daemon.
             self.control_channel
                 .send_message(output_id.clone(), metadata, data)
                 .wrap_err_with(|| format!("failed to send output {output_id}"))?;
@@ -1062,11 +1047,10 @@ impl DoraNode {
             .wrap_err("failed to serialize metadata for zenoh attachment")?;
 
         // Try SHM allocation, fall back to heap. Skip the SHM path entirely
-        // for very small payloads — the SHM provider is page-aligned (4 KiB
-        // on Linux), so allocating a full page for a few hundred bytes is
-        // pure waste; the heap-buffered zenoh put is faster for bursts of
-        // tiny messages. See `ZENOH_SHM_MIN_PAYLOAD` for the rationale.
-        if data.len() >= ZENOH_SHM_MIN_PAYLOAD
+        // for payloads below `zenoh_zero_copy_threshold` — the SHM provider is
+        // page-aligned (4 KiB on Linux), so allocating a full page for smaller
+        // payloads is pure waste; the heap-buffered zenoh put is faster.
+        if data.len() >= self.zenoh_zero_copy_threshold
             && let Some(provider) = &self.zenoh_shm_provider
         {
             use zenoh::shm::{BlockOn, GarbageCollect};
@@ -1119,9 +1103,9 @@ impl DoraNode {
 
     /// Returns the zero-copy SHM threshold in bytes.
     ///
-    /// Outputs whose raw payload is at least this many bytes are published
-    /// via zenoh shared memory (zero-copy for local subscribers); smaller
-    /// outputs go through the daemon path. Configured via the
+    /// Outputs whose raw payload is at least this many bytes are published via
+    /// zenoh shared memory (zero-copy for local subscribers); smaller outputs
+    /// are published via zenoh with a heap-buffered put. Configured via the
     /// `DORA_ZERO_COPY_THRESHOLD` env var, defaulting to
     /// [`ZERO_COPY_THRESHOLD`].
     pub fn zero_copy_threshold(&self) -> usize {
