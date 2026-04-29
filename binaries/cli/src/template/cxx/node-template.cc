@@ -2,6 +2,7 @@
 
 #include <iostream>
 #include <vector>
+#include <cstdint>
 
 int main()
 {
@@ -12,18 +13,19 @@ int main()
 
     while (1)
     {
-        auto input = next_input(dora_node.inputs);
-        if (input.end_of_input)
+        auto event = next_event(dora_node.events);
+        if (event_type(event) != DoraEventType::Input)
         {
             break;
         }
+
+        auto input = event_as_input(std::move(event));
         counter += 1;
 
         std::cout << "Received input " << std::string(input.id) << " (counter: " << (unsigned int)counter << ")" << std::endl;
 
-        std::vector<unsigned char> out_vec{counter};
-        rust::Slice<const uint8_t> out_slice{out_vec.data(), out_vec.size()};
-        auto result = send_output(dora_node.send_output, "counter", out_slice);
+        std::vector<uint8_t> out_vec{counter};
+        auto result = send_output(dora_node.send_output, "counter", rust::Slice<const uint8_t>{out_vec.data(), out_vec.size()});
         auto error = std::string(result.error);
         if (!error.empty())
         {

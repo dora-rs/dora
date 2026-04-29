@@ -7,6 +7,7 @@ use std::{
 const NODE: &str = include_str!("node-template.cc");
 const TALKER: &str = include_str!("talker-template.cc");
 const LISTENER: &str = include_str!("listener-template.cc");
+const NODE_CMAKE: &str = include_str!("node/CMakeLists-template.txt");
 
 pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
@@ -17,7 +18,7 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
     } = args;
 
     match kind {
-        crate::Kind::Node => create_custom_node(name, path, NODE),
+        crate::Kind::Node => create_custom_node(name, path, NODE, use_path_deps),
         crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
@@ -46,9 +47,24 @@ fn create_dataflow(
     fs::write(&dataflow_yml_path, dataflow_yml)
         .with_context(|| format!("failed to write `{}`", dataflow_yml_path.display()))?;
 
-    create_custom_node("talker_1".into(), Some(root.join("talker_1")), TALKER)?;
-    create_custom_node("talker_2".into(), Some(root.join("talker_2")), TALKER)?;
-    create_custom_node("listener_1".into(), Some(root.join("listener_1")), LISTENER)?;
+    create_custom_node(
+        "talker_1".into(),
+        Some(root.join("talker_1")),
+        TALKER,
+        use_path_deps,
+    )?;
+    create_custom_node(
+        "talker_2".into(),
+        Some(root.join("talker_2")),
+        TALKER,
+        use_path_deps,
+    )?;
+    create_custom_node(
+        "listener_1".into(),
+        Some(root.join("listener_1")),
+        LISTENER,
+        use_path_deps,
+    )?;
     create_cmakefile(root.to_path_buf(), use_path_deps)?;
 
     println!(
@@ -86,6 +102,7 @@ fn create_custom_node(
     name: String,
     path: Option<PathBuf>,
     template_scripts: &str,
+    use_path_deps: bool,
 ) -> Result<(), eyre::ErrReport> {
     if name.contains('/') {
         bail!("node name must not contain `/` separators");
@@ -103,12 +120,31 @@ fn create_custom_node(
     fs::write(&node_path, template_scripts)
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
-    // TODO: Makefile?
+    create_node_cmakefile(&name, root, use_path_deps)?;
 
     println!(
         "Created new C++ custom node `{name}` at {}",
         Path::new(".").join(root).display()
     );
 
+    Ok(())
+}
+
+fn create_node_cmakefile(
+    name: &str,
+    root: &Path,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
+    let cmake_file = NODE_CMAKE.replace("___name___", name);
+
+    let cmake_path = root.join("CMakeLists.txt");
+    fs::write(&cmake_path, cmake_file)
+        .with_context(|| format!("failed to write `{}`", cmake_path.display()))?;
+
+    if use_path_deps {
+        println!("Note: Use `-DCMAKE_PREFIX_PATH=<dora-target-dir>` when running cmake");
+    }
+
+    println!("Created new CMakeLists.txt at {}", cmake_path.display());
     Ok(())
 }

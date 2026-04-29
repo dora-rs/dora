@@ -114,6 +114,7 @@ fn stage_cxx_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow
 
     let cmake_src = cxxbridge_dir.join("lib/cmake").join(crate_name);
     let include_src = cxxbridge_dir.join("include");
+    let src_src = cxxbridge_dir.join("src");
 
     if !cmake_src.exists() {
         bail!("CMake config directory not found: {}", cmake_src.display());
@@ -129,14 +130,21 @@ fn stage_cxx_crate(crate_name: &str, target_dir: &Path, prefix: &Path) -> anyhow
 
     let lib_cmake_dir = prefix.join("lib/cmake");
     let include_dir = prefix.join("include");
+    let src_dir = prefix.join("src");
     fs::create_dir_all(&lib_cmake_dir)?;
     fs::create_dir_all(&include_dir)?;
+    fs::create_dir_all(&src_dir)?;
 
     copy_dir_contents(&cmake_src, &lib_cmake_dir.join(crate_name))
         .with_context(|| format!("Failed to copy cmake config for {crate_name}"))?;
 
     copy_dir_contents(&include_src, &include_dir)
         .with_context(|| format!("Failed to copy headers for {crate_name}"))?;
+
+    if src_src.exists() {
+        copy_dir_contents(&src_src, &src_dir)
+            .with_context(|| format!("Failed to copy cxxbridge source for {crate_name}"))?;
+    }
 
     copy_library(crate_name, target_dir, prefix)?;
 

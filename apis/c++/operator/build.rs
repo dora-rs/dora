@@ -18,9 +18,11 @@ fn main() {
 
     let cmake_dir = cxxbridge_crate_dir.join("lib/cmake").join(PACKAGE);
     let include_dir = cxxbridge_crate_dir.join("include");
+    let src_cmake_dir = cxxbridge_crate_dir.join("src");
 
     std::fs::create_dir_all(&cmake_dir).expect("failed to create cmake directory");
     std::fs::create_dir_all(&include_dir).expect("failed to create include directory");
+    std::fs::create_dir_all(&src_cmake_dir).expect("failed to create src directory");
 
     let version = env!("CARGO_PKG_VERSION");
     let target = compute_target();
@@ -28,6 +30,7 @@ fn main() {
     generate_config_cmake(&cmake_dir, &target);
     generate_config_version_cmake(&cmake_dir, version);
     copy_cxx_header(&src_dir, &include_dir);
+    copy_cxx_source(&src_dir, &src_cmake_dir);
 }
 
 fn compute_target() -> String {
@@ -41,7 +44,11 @@ fn generate_config_cmake(cmake_dir: &Path, target: &str) {
         .replace("@PACKAGE@", PACKAGE)
         .replace("@TARGET@", target)
         .replace("@LIB_UNIX@", LIB_UNIX)
-        .replace("@LIB_WIN@", LIB_WIN);
+        .replace("@LIB_WIN@", LIB_WIN)
+        .replace(
+            "@CXX_BRIDGE_FILES@",
+            "${PACKAGE_PREFIX_DIR}/src/dora-operator-api.cc",
+        );
     std::fs::write(cmake_dir.join(format!("{}Config.cmake", PACKAGE)), content)
         .expect("failed to write Config.cmake");
 }
@@ -59,6 +66,12 @@ fn copy_cxx_header(src_dir: &Path, include_dir: &Path) {
     let header_src = src_dir.join("lib.rs.h");
     let header_dst = include_dir.join("dora-operator-api.h");
     std::fs::copy(&header_src, &header_dst).expect("failed to copy cxx header");
+}
+
+fn copy_cxx_source(src_dir: &Path, src_cmake_dir: &Path) {
+    let source_src = src_dir.join("lib.rs.cc");
+    let source_dst = src_cmake_dir.join("dora-operator-api.cc");
+    std::fs::copy(&source_src, &source_dst).expect("failed to copy cxx source");
 }
 
 fn origin_dir() -> PathBuf {

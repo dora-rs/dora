@@ -37,6 +37,8 @@ if(NOT TARGET @PACKAGE@::@PACKAGE@)
         set(_lib_name "@LIB_UNIX@")
     endif()
     
+    set(@PACKAGE@_CXX_BRIDGE_FILES "@CXX_BRIDGE_FILES@")
+    
     set_target_properties(@PACKAGE@::@PACKAGE@ PROPERTIES
         INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
         IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/${_lib_name}"

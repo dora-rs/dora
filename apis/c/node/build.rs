@@ -53,7 +53,8 @@ fn generate_config_cmake(cmake_dir: &Path, target: &str) {
         .replace("@PACKAGE@", PACKAGE)
         .replace("@TARGET@", target)
         .replace("@LIB_UNIX@", LIB_UNIX)
-        .replace("@LIB_WIN@", LIB_WIN);
+        .replace("@LIB_WIN@", LIB_WIN)
+        .replace("@CXX_BRIDGE_FILES@", "");
     fs::write(cmake_dir.join(format!("{}Config.cmake", PACKAGE)), content)
         .expect("failed to write Config.cmake");
 }
