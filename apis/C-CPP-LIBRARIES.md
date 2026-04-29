@@ -23,6 +23,51 @@ Pre-built C and C++ static libraries are published as GitHub release artifacts f
 
 Intel macOS (`x86_64-apple-darwin`) is not published as a pre-built artifact — build from source with `cargo build --release -p dora-node-api-c -p dora-operator-api-c -p dora-node-api-cxx -p dora-operator-api-cxx`.
 
+## Obtaining the API Libraries
+
+There are two ways to obtain the C/C++ API libraries:
+
+### Method 1: Download Pre-built Archives
+
+Download the pre-built `.tar.gz` (Unix) or `.zip` (Windows) archives from the [Dora releases page](https://github.com/dora-rs/dora/releases). This is the recommended approach for most users.
+
+```bash
+# Download and extract C API for Linux x86_64
+tar xzf dora-c-libraries-x86_64-unknown-linux-gnu.tar.gz
+```
+
+See [Download](#download) for the full list of available targets.
+
+### Method 2: Build with `xtask`
+
+Build from source and use the `xtask` tool to stage artifacts. Use this when building for an unsupported target (e.g., Intel macOS) or when you need a specific commit.
+
+```bash
+git clone https://github.com/dora-rs/dora.git
+cd dora
+
+# Build all C/C++ libraries
+cargo build --release \
+    -p dora-node-api-c \
+    -p dora-operator-api-c \
+    -p dora-node-api-cxx \
+    -p dora-operator-api-cxx
+
+# Stage to prefix directory (produces the same structure as the download archives)
+TARGET=$(rustc -vV | sed -n 's/host: //p')
+
+cargo run -p xtask -- stage dora-node-api-c \
+    target/release "dora-c-libraries-$TARGET"
+cargo run -p xtask -- stage dora-operator-api-c \
+    target/release "dora-c-libraries-$TARGET"
+cargo run -p xtask -- stage dora-node-api-cxx \
+    target/release "dora-cpp-libraries-$TARGET"
+cargo run -p xtask -- stage dora-operator-api-cxx \
+    target/release "dora-cpp-libraries-$TARGET"
+```
+
+Both methods produce the same directory structure, so the CMake integration examples below work identically regardless of how you obtained the libraries.
+
 ## Download
 
 1. Go to the [Dora releases page](https://github.com/dora-rs/dora/releases)
@@ -191,36 +236,11 @@ clang++ -std=c++20 -o my_node main.cpp \
 
 ## Building from Source
 
-If you prefer to build the libraries yourself:
+See [Method 2: Build with `xtask`](#method-2-build-with-xtask) above for the complete build and staging workflow.
 
-```bash
-git clone https://github.com/dora-rs/dora.git
-cd dora
+### Build Output Structure
 
-cargo build --release \
-    -p dora-node-api-c \
-    -p dora-operator-api-c \
-    -p dora-node-api-cxx \
-    -p dora-operator-api-cxx
-```
-
-After building, use the `xtask` tool to stage artifacts to a prefix directory:
-
-```bash
-# Stage C libraries
-cargo run -p xtask -- stage dora-node-api-c \
-    target/release dora-c-libraries-$(rustc -vV | sed -n 's/host: //p')
-cargo run -p xtask -- stage dora-operator-api-c \
-    target/release dora-c-libraries-$(rustc -vV | sed -n 's/host: //p')
-
-# Stage C++ libraries
-cargo run -p xtask -- stage dora-node-api-cxx \
-    target/release dora-cpp-libraries-$(rustc -vV | sed -n 's/host: //p')
-cargo run -p xtask -- stage dora-operator-api-cxx \
-    target/release dora-cpp-libraries-$(rustc -vV | sed -n 's/host: //p')
-```
-
-Output structure in `target/release/<crate>/` (C crates) or `target/cxxbridge/<crate>/` (C++ crates):
+After `cargo build --release`, build artifacts are in `target/release/` (C crates) or `target/cxxbridge/<crate>/` (C++ crates):
 
 ```
 target/release/
@@ -233,6 +253,8 @@ target/release/
     ├── lib/cmake/dora-operator-api-c/*.cmake
     └── include/{operator_api.h, operator_types.h}
 ```
+
+> **Note:** The `xtask stage` command copies artifacts from these locations to a unified prefix directory matching the download archive structure.
 
 ## Versioning
 
