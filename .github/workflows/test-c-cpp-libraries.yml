@@ -7,8 +7,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-c-node:
-    name: Test C Node API (${{ matrix.os }})
+  test-apis:
+    name: Test C/C++ Node APIs (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -25,33 +25,47 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build dora-node-api-c
-        run: cargo build --release --package dora-node-api-c
-
       - name: Install dora CLI
         run: cargo install --path binaries/cli
 
-      - name: Stage C library files
-        run: cargo run -p xtask -- stage-c-node target/release dora-test-prefix
+      # ============================================================================
+      # C Node API Test
+      # ============================================================================
+      - name: Build C API
+        run: cargo build --release --package dora-node-api-c
 
-      - name: Create test node
-        run: dora new test-node --kind node --lang c
+      - name: Stage C libraries
+        run: cargo run -p xtask -- stage dora-node-api-c target/release dora-c-prefix
 
-      - name: Configure CMake (Unix)
-        if: runner.os != 'Windows'
+      - name: Create C test node
+        run: dora new test-node-c --kind node --lang c
+
+      - name: Build C test node
+        shell: bash
         run: |
-          cd test-node && mkdir build && cd build
-          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-test-prefix
-
-      - name: Configure CMake (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          cd test-node
-          mkdir build
+          cd test-node-c
+          mkdir -p build
           cd build
-          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-test-prefix
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-c-prefix
+          cmake --build . --config Release
 
-      - name: Build test node
+      # ============================================================================
+      # C++ Node API Test
+      # ============================================================================
+      - name: Build C++ API
+        run: cargo build --release --package dora-node-api-cxx
+
+      - name: Stage C++ libraries
+        run: cargo run -p xtask -- stage dora-node-api-cxx target/release dora-cpp-prefix
+
+      - name: Create C++ test node
+        run: dora new test-node-cpp --kind node --lang cxx
+
+      - name: Build C++ test node
+        shell: bash
         run: |
-          cd test-node/build
+          cd test-node-cpp
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-cpp-prefix
           cmake --build . --config Release
