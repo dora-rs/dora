@@ -48,15 +48,7 @@ Important packages:
 ## Rename Transition Rules
 
 - Default to `dora` naming in code, docs, examples, and user-facing text.
-- Do not remove `adora` compatibility aliases lightly. If a path currently supports old `adora` prefixes, env vars, imports, or crate/package shims, assume that compatibility is intentional unless the task explicitly removes it.
-- When touching renamed surfaces, verify both:
-  - the new `dora` path works
-  - any documented transition compatibility still works
-- Treat these as compatibility-sensitive areas:
-  - `DORA_*` / `ADORA_*` environment variables
-  - `dora/...` / `adora/...` virtual YAML inputs
-  - public API aliases and shim crates/packages
-  - CLI binary/package/import names across Rust, Python, C, and C++
+- The `adora` → `dora` rename is a clean break in 1.0: env vars, YAML virtual inputs, and CLI/crate/package names are `dora` only. The single remaining transition surface is the `apis/python/compat/adora-rs/` PyPI shim, which re-exports `dora-rs` and emits a `DeprecationWarning`. Per `docs/migration-from-0.x.md`, that shim is maintained until 1.1 (~6 months from 1.0); do not touch it without removing both the package and the migration-doc commitment together.
 
 ## Agent Working Rules
 
