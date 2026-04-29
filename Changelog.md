@@ -40,7 +40,7 @@ First official release of Dora (AI-Dora) -- a 100% Rust framework for building r
 - `dora top` TUI for per-node CPU, memory, queue depth, network I/O
 - `topic echo/hz/info` for live data inspection
 - `trace list/view` for coordinator span inspection
-- Record/replay to `.adorec` files with node substitution
+- Record/replay to `.drec` files with node substitution
 
 ### CLI
 
