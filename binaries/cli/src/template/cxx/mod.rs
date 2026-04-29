@@ -65,7 +65,7 @@ fn create_dataflow(
         LISTENER,
         use_path_deps,
     )?;
-    create_cmakefile(root.to_path_buf(), use_path_deps)?;
+    create_cmakefile(&name, root.to_path_buf(), use_path_deps)?;
 
     println!(
         "Created new C++ dataflow at `{name}` at {}",
@@ -75,20 +75,14 @@ fn create_dataflow(
     Ok(())
 }
 
-fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrReport> {
+fn create_cmakefile(
+    name: &str,
+    root: PathBuf,
+    _use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const CMAKEFILE: &str = include_str!("cmake-template.txt");
 
-    let cmake_file = if use_path_deps {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir
-            .parent()
-            .context("Could not get manifest parent folder")?
-            .parent()
-            .context("Could not get manifest grandparent folder")?;
-        CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
-    } else {
-        CMAKEFILE.replace("__DORA_PATH__", "")
-    };
+    let cmake_file = CMAKEFILE.replace("___name___", name);
 
     let cmake_path = root.join("CMakeLists.txt");
     fs::write(&cmake_path, cmake_file)
