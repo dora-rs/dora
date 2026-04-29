@@ -9,6 +9,7 @@ use crossbeam::queue::ArrayQueue;
 use dora_core::{
     descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
     get_python_path,
+    topics::DORA_ZENOH_CONNECT_ENV,
     uhlc::HLC,
 };
 use dora_message::{
@@ -69,9 +70,20 @@ pub struct Spawner {
     pub ft_stats: Arc<crate::FaultToleranceStats>,
     /// Signals listener loops to shut down when the dataflow finishes.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
+    /// Loopback endpoint of the daemon's zenoh listener. Forwarded to spawned
+    /// nodes via `DORA_ZENOH_CONNECT` so the >=4 KiB zenoh data path works
+    /// without multicast scouting (#1778).
+    pub zenoh_connect_endpoint: Option<String>,
 }
 
 impl Spawner {
+    fn maybe_inject_zenoh_connect(&self, command: Command) -> Command {
+        match &self.zenoh_connect_endpoint {
+            Some(ep) => command.env(DORA_ZENOH_CONNECT_ENV, ep),
+            None => command,
+        }
+    }
+
     pub async fn spawn_node(
         self,
         node: ResolvedNode,
@@ -161,6 +173,7 @@ impl Spawner {
                         serde_yaml::to_string(&node_config.clone())
                             .wrap_err("failed to serialize node config")?,
                     );
+                    command = self.maybe_inject_zenoh_connect(command);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
@@ -323,6 +336,7 @@ impl Spawner {
                         serde_yaml::to_string(&runtime_config)
                             .wrap_err("failed to serialize runtime config")?,
                     );
+                    command = self.maybe_inject_zenoh_connect(command);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
