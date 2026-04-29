@@ -9,8 +9,8 @@ use dora_core::{
         read_as_descriptor,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session,
-        zenoh_output_publish_topic,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
+        reserve_loopback_zenoh_endpoint, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -257,6 +257,11 @@ pub struct Daemon {
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
+    /// Loopback endpoint that the daemon's zenoh session listens on. Injected
+    /// into spawned nodes via `DORA_ZENOH_CONNECT` so they can find their
+    /// peer without multicast (#1778). `None` when the OS rejected the
+    /// reservation; nodes then fall back to multicast scouting.
+    pub(crate) zenoh_listen_endpoint: Option<String>,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -777,7 +782,20 @@ impl Daemon {
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
     ) -> eyre::Result<DaemonRunResult> {
-        let zenoh_session = open_zenoh_session(None)
+        // Reserve a loopback port and have zenoh listen on it. The endpoint is
+        // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
+        // discovery works without multicast (#1778).
+        let zenoh_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
+            Ok(ep) => Some(ep),
+            Err(err) => {
+                tracing::warn!(
+                    "failed to reserve loopback zenoh listen endpoint: {err}; \
+                     falling back to multicast scouting only"
+                );
+                None
+            }
+        };
+        let zenoh_session = open_zenoh_session_with_listen(None, zenoh_listen_endpoint.as_deref())
             .await
             .wrap_err("failed to open zenoh session")?;
         // Use a large channel capacity to prevent deadlock
@@ -825,6 +843,7 @@ impl Daemon {
             clock,
             ft_stats: Default::default(),
             zenoh_session,
+            zenoh_listen_endpoint,
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -1587,6 +1606,7 @@ impl Daemon {
                         uv,
                         ft_stats: self.ft_stats.clone(),
                         shutdown: dataflow.listener_shutdown_rx.clone(),
+                        zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -2336,6 +2356,7 @@ impl Daemon {
             uv,
             ft_stats: self.ft_stats.clone(),
             shutdown: dataflow.listener_shutdown_rx.clone(),
+            zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
         };
 
         let mut tasks = Vec::new();
