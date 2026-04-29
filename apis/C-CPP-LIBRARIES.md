@@ -45,9 +45,15 @@ dora-c-libraries-<target>/
 │   ├── operator_api.h
 │   └── operator_types.h
 └── lib/
-    ├── libdora_node_api_c.a          # Unix
-    └── libdora_operator_api_c.a      # Unix
-    # or dora_node_api_c.lib etc. on Windows
+    ├── cmake/
+    │   ├── dora-node-api-c/
+    │   │   ├── dora-node-api-cConfig.cmake
+    │   │   └── dora-node-api-cConfigVersion.cmake
+    │   └── dora-operator-api-c/
+    │       ├── dora-operator-api-cConfig.cmake
+    │       └── dora-operator-api-cConfigVersion.cmake
+    ├── libdora_node_api_c.a
+    └── libdora_operator_api_c.a
 ```
 
 **C++ libraries:**
@@ -56,100 +62,106 @@ dora-cpp-libraries-<target>/
 ├── include/
 │   ├── dora-node-api.h
 │   └── dora-operator-api.h
-├── src/
-│   ├── dora-node-api.cc              # Bridge source (compile with your code)
-│   └── dora-operator-api.cc
 └── lib/
-    ├── libdora_node_api_cxx.a        # Unix
-    └── libdora_operator_api_cxx.a    # Unix
+    ├── cmake/
+    │   ├── dora-node-api-cxx/
+    │   │   ├── dora-node-api-cxxConfig.cmake
+    │   │   └── dora-node-api-cxxConfigVersion.cmake
+    │   └── dora-operator-api-cxx/
+    │       ├── dora-operator-api-cxxConfig.cmake
+    │       └── dora-operator-api-cxxConfigVersion.cmake
+    ├── libdora_node_api_cxx.a
+    └── libdora_operator_api_cxx.a
 ```
 
-> **Note:** The C++ API uses [cxx](https://cxx.rs/) for Rust-C++ interop. The `src/*.cc` bridge files must be compiled alongside your code -- they are not included in the static library.
+> **Note:** The C++ API uses [cxx](https://cxx.rs/) for Rust-C++ interop. The `dora-node-api-cxx_CXX_BRIDGE_FILES` CMake variable (set by `find_package`) points to the cxxbridge source that must be compiled alongside your code.
+
+## Using `dora new`
+
+The easiest way to get started is with the Dora CLI. It generates project scaffolding with `CMakeLists.txt` ready for `find_package`.
+
+### Single Node
+
+```bash
+# Create a C node
+dora new my-robot --kind node --lang c
+cd my-robot
+mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-c-libraries-<target>
+cmake --build .
+
+# Create a C++ node
+dora new my-robot --kind node --lang cxx
+cd my-robot
+mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-cpp-libraries-<target>
+cmake --build .
+```
+
+### Dataflow
+
+```bash
+# Create a C dataflow (3 nodes: talker_1, talker_2, listener_1)
+dora new my-dataflow --kind dataflow --lang c
+cd my-dataflow
+mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-c-libraries-<target>
+cmake --build .
+
+# Create a C++ dataflow
+dora new my-dataflow --kind dataflow --lang cxx
+cd my-dataflow
+mkdir build && cd build
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-cpp-libraries-<target>
+cmake --build .
+```
 
 ## CMake Integration
 
-### C Node Example
+### C Node
 
 ```cmake
 cmake_minimum_required(VERSION 3.15)
 project(my_dora_node C)
 
-# Detect target triple for the correct library directory
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        set(DORA_TARGET "aarch64-unknown-linux-gnu")
-    else()
-        set(DORA_TARGET "x86_64-unknown-linux-gnu")
-    endif()
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-        set(DORA_TARGET "aarch64-apple-darwin")
-    else()
-        # No pre-built artifact for Intel macOS (x86_64-apple-darwin) —
-        # the publish workflow only targets Apple Silicon. Build from
-        # source with `cargo build --release -p dora-node-api-c` on x86_64 Macs.
-        message(FATAL_ERROR
-            "No pre-built dora C/C++ artifact for Intel macOS. "
-            "Build from source or run on Apple Silicon.")
-    endif()
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Windows")
-    set(DORA_TARGET "x86_64-pc-windows-msvc")
-endif()
-
-set(DORA_C_DIR "${CMAKE_SOURCE_DIR}/dora-c-libraries-${DORA_TARGET}")
+find_package(dora-node-api-c REQUIRED)
 
 add_executable(my_node main.c)
-target_include_directories(my_node PRIVATE ${DORA_C_DIR}/include)
-
-if(WIN32)
-    target_link_libraries(my_node ${DORA_C_DIR}/lib/dora_node_api_c.lib
-        advapi32 userenv kernel32 ws2_32 bcrypt ncrypt schannel ntdll iphlpapi
-        cfgmgr32 credui crypt32 cryptnet fwpuclnt gdi32 msimg32 mswsock ole32
-        oleaut32 opengl32 secur32 shell32 synchronization user32 winspool)
-elseif(APPLE)
-    target_link_libraries(my_node ${DORA_C_DIR}/lib/libdora_node_api_c.a
-        "-framework CoreServices" "-framework Security"
-        pthread m c resolv)
-else()
-    target_link_libraries(my_node ${DORA_C_DIR}/lib/libdora_node_api_c.a
-        pthread dl m rt)
-endif()
+target_link_libraries(my_node PRIVATE
+    dora-node-api-c::dora-node-api-c
+    dora-node-api-c::extra)
 ```
 
-### C++ Node Example
+### C++ Node
 
 ```cmake
 cmake_minimum_required(VERSION 3.15)
 project(my_dora_node CXX)
 set(CMAKE_CXX_STANDARD 20)
 
-# ... same platform detection as above ...
+find_package(dora-node-api-cxx REQUIRED)
 
-set(DORA_CPP_DIR "${CMAKE_SOURCE_DIR}/dora-cpp-libraries-${DORA_TARGET}")
-
-# The bridge source file must be compiled with your code
-add_executable(my_node
-    main.cpp
-    ${DORA_CPP_DIR}/src/dora-node-api.cc
-)
-target_include_directories(my_node PRIVATE ${DORA_CPP_DIR}/include)
-
-if(WIN32)
-    target_link_libraries(my_node ${DORA_CPP_DIR}/lib/dora_node_api_cxx.lib
-        advapi32 userenv kernel32 ws2_32 bcrypt ncrypt schannel ntdll iphlpapi
-        cfgmgr32 credui crypt32 cryptnet fwpuclnt gdi32 msimg32 mswsock ole32
-        oleaut32 opengl32 secur32 shell32 synchronization user32 winspool)
-elseif(APPLE)
-    target_link_libraries(my_node ${DORA_CPP_DIR}/lib/libdora_node_api_cxx.a
-        "-framework CoreServices" "-framework Security"
-        pthread m c resolv)
-else()
-    target_link_libraries(my_node ${DORA_CPP_DIR}/lib/libdora_node_api_cxx.a
-        pthread dl m rt)
-endif()
+add_executable(my_node main.cpp ${dora-node-api-cxx_CXX_BRIDGE_FILES})
+target_link_libraries(my_node PRIVATE
+    dora-node-api-cxx::dora-node-api-cxx
+    dora-node-api-cxx::extra)
 ```
 
-## Manual Linking
+### Build
+
+```bash
+# For C projects
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-c-libraries-<target>
+
+# For C++ projects
+cmake .. -DCMAKE_PREFIX_PATH=/path/to/dora-cpp-libraries-<target>
+
+cmake --build . --config Release
+```
+
+## Manual Linking (Advanced)
+
+If you do not use CMake `find_package`, you can link manually. The targets (`dora-node-api-c::extra` etc.) handle platform-specific system libraries automatically.
 
 ### GCC/Clang (Linux)
 
@@ -160,8 +172,8 @@ gcc -o my_node main.c \
     -Ldora-c-libraries-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_c -lpthread -ldl -lm -lrt
 
-# C++ node (must compile the bridge source too)
-g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-x86_64-unknown-linux-gnu/src/dora-node-api.cc \
+# C++ node (must compile the cxxbridge source too)
+g++ -std=c++20 -o my_node main.cpp \
     -Idora-cpp-libraries-x86_64-unknown-linux-gnu/include \
     -Ldora-cpp-libraries-x86_64-unknown-linux-gnu/lib \
     -ldora_node_api_cxx -lpthread -ldl -lm -lrt
@@ -170,8 +182,7 @@ g++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-x86_64-unknown-linux-gnu/s
 ### Clang (macOS)
 
 ```bash
-# C++ node
-clang++ -std=c++20 -o my_node main.cpp dora-cpp-libraries-aarch64-apple-darwin/src/dora-node-api.cc \
+clang++ -std=c++20 -o my_node main.cpp \
     -Idora-cpp-libraries-aarch64-apple-darwin/include \
     -Ldora-cpp-libraries-aarch64-apple-darwin/lib \
     -ldora_node_api_cxx \
@@ -191,10 +202,36 @@ cargo build --release \
     -p dora-operator-api-c \
     -p dora-node-api-cxx \
     -p dora-operator-api-cxx
+```
 
-# Static libraries:   target/release/
-# C headers:          apis/c/node/, apis/c/operator/
-# C++ bridge files:   target/cxxbridge/dora-{node,operator}-api-cxx/src/lib.rs.{h,cc}
+After building, use the `xtask` tool to stage artifacts to a prefix directory:
+
+```bash
+# Stage C libraries
+cargo run -p xtask -- stage dora-node-api-c \
+    target/release dora-c-libraries-$(rustc -vV | sed -n 's/host: //p')
+cargo run -p xtask -- stage dora-operator-api-c \
+    target/release dora-c-libraries-$(rustc -vV | sed -n 's/host: //p')
+
+# Stage C++ libraries
+cargo run -p xtask -- stage dora-node-api-cxx \
+    target/release dora-cpp-libraries-$(rustc -vV | sed -n 's/host: //p')
+cargo run -p xtask -- stage dora-operator-api-cxx \
+    target/release dora-cpp-libraries-$(rustc -vV | sed -n 's/host: //p')
+```
+
+Output structure in `target/release/<crate>/` (C crates) or `target/cxxbridge/<crate>/` (C++ crates):
+
+```
+target/release/
+├── libdora_node_api_c.a
+├── dora-node-api-c/
+│   ├── lib/cmake/dora-node-api-c/*.cmake
+│   └── include/node_api.h
+├── libdora_operator_api_c.a
+└── dora-operator-api-c/
+    ├── lib/cmake/dora-operator-api-c/*.cmake
+    └── include/{operator_api.h, operator_types.h}
 ```
 
 ## Versioning
