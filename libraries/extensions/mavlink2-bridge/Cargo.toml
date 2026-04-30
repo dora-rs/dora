@@ -1,0 +1,20 @@
+[package]
+name = "dora-mavlink2-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+documentation.workspace = true
+readme.workspace = true
+description = "MAVLink 2 bridge for dora-rs"
+
+[dependencies]
+mavlink = { workspace = true }
+arrow = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+eyre = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
