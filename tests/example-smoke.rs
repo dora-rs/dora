@@ -1448,6 +1448,9 @@ fn smoke_local_queue_size_latest_data_rust() {
 // | mavlink2-bridge-cxx       | covered: `examples` job via                          | covered  |
 // |                           | `[[example]] mavlink2-bridge-cxx` (cargo run         |          |
 // |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
+// | mavlink2-bridge-sitl-     | blocker: needs ArduPilot SITL                        | —        |
+// |   mission                 | (Ubuntu / macOS only, local-only by design;          |          |
+// |                           | see examples/mavlink2-bridge-sitl-mission/README)    |          |
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.

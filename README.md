@@ -544,6 +544,7 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [mavlink2-bridge (Rust)](examples/mavlink2-bridge/dataflow-rust.yml) | MAVLink 2 ↔ dora bridge, Rust telemetry consumer |
 | [mavlink2-bridge (Python)](examples/mavlink2-bridge/dataflow-python.yml) | Same bridge, Python telemetry consumer (`--uv`) |
 | [mavlink2-bridge (C++)](examples/mavlink2-bridge/dataflow-cxx.yml) | Same bridge, C++ telemetry consumer (`cargo run --example mavlink2-bridge-cxx`) |
+| [mavlink2-bridge-sitl-mission](examples/mavlink2-bridge-sitl-mission) | Closed-loop ArduCopter SITL: arm + takeoff + hover + land driven from a Python dora node (Ubuntu / macOS, local-only) |
 
 ## Development
 
