@@ -1753,7 +1753,9 @@ impl Daemon {
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
                 }
-                let _ = reply_tx.send(None);
+                let reply =
+                    DaemonCoordinatorReply::AddNodeResult(result.map_err(|err| format!("{err:?}")));
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::RemoveNode {
