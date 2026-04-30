@@ -4100,6 +4100,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "mavlink2-bridge-example-heartbeat-emitter"
+version = "0.2.1"
+dependencies = [
+ "arrow",
+ "dora-mavlink2-bridge",
+ "dora-node-api",
+ "eyre",
+ "tracing",
+]
+
+[[package]]
+name = "mavlink2-bridge-example-mavlink-sim"
+version = "0.2.1"
+dependencies = [
+ "dora-mavlink2-bridge",
+ "dora-node-api",
+ "eyre",
+ "mavlink",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "mavlink2-bridge-example-telemetry-printer-rust"
+version = "0.2.1"
+dependencies = [
+ "arrow",
+ "dora-mavlink2-bridge",
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "md5"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

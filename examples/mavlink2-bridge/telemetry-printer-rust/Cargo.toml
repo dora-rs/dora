@@ -1,0 +1,12 @@
+[package]
+name = "mavlink2-bridge-example-telemetry-printer-rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+dora-mavlink2-bridge = { workspace = true }
+dora-node-api = { workspace = true }
+arrow = { workspace = true }
+eyre = { workspace = true }

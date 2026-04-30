@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **MAVLink 2 bridge** (`dora-mavlink2-bridge` extension + `dora-mavlink2-bridge-node` binary): Apache Arrow ↔ MAVLink 2 conversion for the common dialect (HEARTBEAT, SYS_STATUS, SYSTEM_TIME, ATTITUDE, ATTITUDE_QUATERNION, LOCAL_POSITION_NED, GLOBAL_POSITION_INT, GPS_RAW_INT, RC_CHANNELS, SERVO_OUTPUT_RAW, COMMAND_LONG, COMMAND_ACK, MISSION_CURRENT). TCP/UDP/serial transports, daemon-spawnable bridge node, and a self-contained `examples/mavlink2-bridge` dataflow with an in-process UDP simulator (no SITL/MAVProxy required). The example ships three consumer variants — Rust (`dataflow-rust.yml`), Python (`dataflow-python.yml`, `--uv`), and C++ (`dataflow-cxx.yml` via `cargo run --example mavlink2-bridge-cxx`) — all reading the same `bridge/heartbeat` Arrow output. See [#1786](https://github.com/dora-rs/dora/issues/1786).
+
 ## 0.1.0 (2026-03-13)
 
 First official release of Dora (AI-Dora) -- a 100% Rust framework for building real-time robotics and AI applications.

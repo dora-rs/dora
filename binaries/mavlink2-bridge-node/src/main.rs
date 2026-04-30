@@ -60,6 +60,13 @@ use std::{sync::Arc, time::Duration};
 use url::Url;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Total time to wait for a MAVLink endpoint to become reachable on
+/// initial bridge startup. A real autopilot can be slower to come up
+/// than the dora daemon, and the example dataflow spawns the bridge
+/// in parallel with an in-process simulator — both cases need a
+/// budgeted retry rather than a one-shot connect.
+const CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(5);
+const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -181,6 +188,32 @@ fn handle_input(
     Ok(())
 }
 
+/// Open the MAVLink transport, retrying briefly if the peer is not yet
+/// listening. Returns once a connection succeeds or the budget elapses.
+fn connect_with_retry(url: &Url) -> Result<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
+    let deadline = std::time::Instant::now() + CONNECT_RETRY_BUDGET;
+    let mut last_err: Option<eyre::Report> = None;
+    loop {
+        match transport::connect(url) {
+            Ok(conn) => return Ok(conn),
+            Err(e) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Err(eyre!(
+                        "failed to open MAVLink transport at {url} within {:?}: {} (last attempt: {})",
+                        CONNECT_RETRY_BUDGET,
+                        last_err.unwrap_or_else(|| eyre!("(none)")),
+                        e
+                    ));
+                }
+                tracing::debug!(%url, "waiting for MAVLink endpoint: {e}");
+                last_err = Some(eyre!("{e}"));
+                std::thread::sleep(CONNECT_RETRY_INTERVAL);
+            }
+        }
+    }
+}
+
 fn main() -> Result<()> {
     tracing_subscriber::fmt::try_init().ok();
 
@@ -188,7 +221,7 @@ fn main() -> Result<()> {
     let url = cfg.parsed_endpoint()?;
     tracing::info!(endpoint = %url, "opening MAVLink 2 transport");
 
-    let conn_box = transport::connect(&url)?;
+    let conn_box = connect_with_retry(&url)?;
     let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
 
     let header = MavHeader {
@@ -229,6 +262,11 @@ fn main() -> Result<()> {
         }
     }
 
+    // Drop the rx end first: the reader thread blocks in `conn.recv()`
+    // and only notices shutdown when its next successful decode tries to
+    // `tx.send()` and finds the channel closed. Without this, `join()`
+    // below would wait until the daemon SIGKILLs us at the grace deadline.
+    drop(rx);
     drop(node);
     drop(events);
     match reader_handle.join() {

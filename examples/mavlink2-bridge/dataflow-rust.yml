@@ -1,0 +1,46 @@
+nodes:
+  # In-process MAVLink simulator. See dataflow-python.yml for full
+  # context; same node, same wiring, only the consumer differs.
+  - id: mavlink-sim
+    build: cargo build -p mavlink2-bridge-example-mavlink-sim
+    path: ../../target/debug/mavlink2-bridge-example-mavlink-sim
+    env:
+      MAVLINK_SIM_PEER: 127.0.0.1:14550
+
+  - id: bridge
+    build: cargo build -p dora-mavlink2-bridge-node
+    path: ../../target/debug/dora-mavlink2-bridge-node
+    env:
+      MAVLINK_BRIDGE_CONFIG: |
+        endpoint: udp://127.0.0.1:14550
+    inputs:
+      heartbeat_cmd: heartbeat-emitter/heartbeat_cmd
+    outputs:
+      - heartbeat
+      - sys_status
+      - system_time
+      - attitude
+      - attitude_quaternion
+      - local_position_ned
+      - global_position_int
+      - gps_raw_int
+      - rc_channels
+      - servo_output_raw
+      - command_long
+      - command_ack
+      - mission_current
+
+  - id: heartbeat-emitter
+    build: cargo build -p mavlink2-bridge-example-heartbeat-emitter
+    path: ../../target/debug/mavlink2-bridge-example-heartbeat-emitter
+    inputs:
+      tick: dora/timer/secs/1
+    outputs:
+      - heartbeat_cmd
+
+  # Rust consumer: prints each decoded HEARTBEAT.
+  - id: telemetry-printer
+    build: cargo build -p mavlink2-bridge-example-telemetry-printer-rust
+    path: ../../target/debug/mavlink2-bridge-example-telemetry-printer-rust
+    inputs:
+      heartbeat: bridge/heartbeat

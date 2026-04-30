@@ -46,6 +46,9 @@ members = [
     "examples/validated-pipeline/sink",
     "examples/error-propagation/producer",
     "examples/error-propagation/consumer",
+    "examples/mavlink2-bridge/heartbeat-emitter",
+    "examples/mavlink2-bridge/mavlink-sim",
+    "examples/mavlink2-bridge/telemetry-printer-rust",
     "libraries/arrow-convert",
     "libraries/log-utils",
     "libraries/coordinator-store",
@@ -196,6 +199,10 @@ path = "examples/c++-dataflow/run.rs"
 [[example]]
 name = "cxx-arrow-dataflow"
 path = "examples/c++-arrow-dataflow/run.rs"
+
+[[example]]
+name = "mavlink2-bridge-cxx"
+path = "examples/mavlink2-bridge/run-cxx.rs"
 
 [[example]]
 name = "python-dataflow"
