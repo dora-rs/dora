@@ -1,17 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const CONFIG_TEMPLATE: &str = include_str!("../node/cmake/dora-api-config.cmake.in");
-const CONFIG_VERSION: &str = include_str!("../node/cmake/dora-api-version.cmake.in");
+const CONFIG_TEMPLATE: &str = include_str!("cmake/dora-api-config.cmake.in");
+const CONFIG_VERSION: &str = include_str!("cmake/dora-api-version.cmake.in");
 
-const PACKAGE: &str = "dora-operator-api-c";
-const LIB_UNIX: &str = "libdora_operator_api_c.a";
-const LIB_WIN: &str = "dora_operator_api_c.lib";
+const PACKAGE: &str = "dora-node-api-c";
+const LIB_UNIX: &str = "libdora_node_api_c.a";
+const LIB_WIN: &str = "dora_node_api_c.lib";
 
 fn main() {
-    dora_operator_api_types::generate_headers(Path::new("operator_types.h"))
-        .expect("failed to create operator_types.h");
-
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
     let cmake_dir = out_dir.join("lib").join("cmake").join(PACKAGE);
     let include_dir = out_dir.join("include");
@@ -24,7 +21,7 @@ fn main() {
 
     generate_config_cmake(&cmake_dir, &target);
     generate_config_version_cmake(&cmake_dir, version);
-    copy_headers(&include_dir);
+    copy_header(&include_dir);
 
     // Also stage artifacts next to the .a library in the target directory
     let target_dir = out_dir
@@ -39,10 +36,10 @@ fn main() {
     );
     copy_dir_contents(&out_dir.join("include"), &staging.join("include"));
 
-    // don't rebuild on changes (otherwise we rebuild on every run as we're
-    // writing the `operator_types.h` file; cargo will still rerun this script
-    // when the `dora_operator_api_types` crate changes)
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=cmake/dora-api-config.cmake.in");
+    println!("cargo:rerun-if-changed=cmake/dora-api-version.cmake.in");
+    println!("cargo:rerun-if-changed=node_api.h");
 }
 
 fn compute_target() -> String {
@@ -71,16 +68,11 @@ fn generate_config_version_cmake(cmake_dir: &Path, version: &str) {
     .expect("failed to write ConfigVersion.cmake");
 }
 
-fn copy_headers(include_dir: &Path) {
+fn copy_header(include_dir: &Path) {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-
-    let types_src = manifest_dir.join("operator_types.h");
-    let types_dst = include_dir.join("operator_types.h");
-    fs::copy(&types_src, &types_dst).expect("failed to copy operator_types.h");
-
-    let api_src = manifest_dir.join("operator_api.h");
-    let api_dst = include_dir.join("operator_api.h");
-    fs::copy(&api_src, &api_dst).expect("failed to copy operator_api.h");
+    let header_src = manifest_dir.join("node_api.h");
+    let header_dst = include_dir.join("node_api.h");
+    fs::copy(&header_src, &header_dst).expect("failed to copy header");
 }
 
 fn copy_dir_contents(src: &Path, dst: &Path) {

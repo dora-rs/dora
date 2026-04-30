@@ -3,6 +3,13 @@ use std::{
     str::FromStr,
 };
 
+const CONFIG_TEMPLATE: &str = include_str!("../../c/node/cmake/dora-api-config.cmake.in");
+const CONFIG_VERSION: &str = include_str!("../../c/node/cmake/dora-api-version.cmake.in");
+
+const PACKAGE: &str = "dora-node-api-cxx";
+const LIB_UNIX: &str = "libdora_node_api_cxx.a";
+const LIB_WIN: &str = "dora_node_api_cxx.lib";
+
 fn main() {
     let mut bridge_files = vec![PathBuf::from("src/lib.rs")];
     #[cfg(feature = "ros2-bridge")]
@@ -19,7 +26,7 @@ fn main() {
         .parent()
         .expect("failed to get parent directory of source directory");
 
-    let target_dir = if let Ok(target_path) = std::env::var("DORA_NODE_API_CXX_INSTALL") {
+    let install_dir = if let Ok(target_path) = std::env::var("DORA_NODE_API_CXX_INSTALL") {
         PathBuf::from_str(&target_path).expect("failed to parse DORA_NODE_API_CXX_INSTALL path")
     } else {
         target_dir.join("install")
@@ -27,23 +34,89 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DORA_NODE_API_CXX_INSTALL");
 
     // recreate target dir
-    if target_dir.exists() {
-        std::fs::remove_dir_all(&target_dir).unwrap();
+    if install_dir.exists() {
+        std::fs::remove_dir_all(&install_dir).unwrap();
     }
-    std::fs::create_dir(&target_dir).unwrap();
+    std::fs::create_dir(&install_dir).unwrap();
 
-    std::fs::copy(src_dir.join("lib.rs.h"), target_dir.join("dora-node-api.h")).unwrap();
+    std::fs::copy(
+        src_dir.join("lib.rs.h"),
+        install_dir.join("dora-node-api.h"),
+    )
+    .unwrap();
     std::fs::copy(
         src_dir.join("lib.rs.cc"),
-        target_dir.join("dora-node-api.cc"),
+        install_dir.join("dora-node-api.cc"),
     )
     .unwrap();
 
     #[cfg(feature = "ros2-bridge")]
-    ros2::generate_ros2_message_header(&target_dir);
+    ros2::generate_ros2_message_header(&install_dir);
+
+    // Generate cmake config files in cxxbridge directory
+    let cxxbridge_crate_dir = src_dir
+        .parent()
+        .expect("failed to get cxxbridge crate directory");
+
+    let cmake_dir = cxxbridge_crate_dir.join("lib/cmake").join(PACKAGE);
+    let include_dir = cxxbridge_crate_dir.join("include");
+    let src_cmake_dir = cxxbridge_crate_dir.join("src");
+
+    std::fs::create_dir_all(&cmake_dir).expect("failed to create cmake directory");
+    std::fs::create_dir_all(&include_dir).expect("failed to create include directory");
+    std::fs::create_dir_all(&src_cmake_dir).expect("failed to create src directory");
+
+    let version = env!("CARGO_PKG_VERSION");
+    let target = compute_target();
+
+    generate_config_cmake(&cmake_dir, &target);
+    generate_config_version_cmake(&cmake_dir, version);
+    copy_cxx_header(&src_dir, &include_dir);
+    copy_cxx_source(&src_dir, &src_cmake_dir);
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
+}
+
+fn compute_target() -> String {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_else(|_| "unknown".into());
+    let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".into());
+    format!("{}-{}", target_os, target_arch)
+}
+
+fn generate_config_cmake(cmake_dir: &Path, target: &str) {
+    let content = CONFIG_TEMPLATE
+        .replace("@PACKAGE@", PACKAGE)
+        .replace("@TARGET@", target)
+        .replace("@LIB_UNIX@", LIB_UNIX)
+        .replace("@LIB_WIN@", LIB_WIN)
+        .replace(
+            "@CXX_BRIDGE_FILES@",
+            "${PACKAGE_PREFIX_DIR}/src/dora-node-api.cc",
+        );
+    std::fs::write(cmake_dir.join(format!("{}Config.cmake", PACKAGE)), content)
+        .expect("failed to write Config.cmake");
+}
+
+fn generate_config_version_cmake(cmake_dir: &Path, version: &str) {
+    let content = CONFIG_VERSION.replace("@VERSION@", version);
+    std::fs::write(
+        cmake_dir.join(format!("{}ConfigVersion.cmake", PACKAGE)),
+        content,
+    )
+    .expect("failed to write ConfigVersion.cmake");
+}
+
+fn copy_cxx_header(src_dir: &Path, include_dir: &Path) {
+    let header_src = src_dir.join("lib.rs.h");
+    let header_dst = include_dir.join("dora-node-api.h");
+    std::fs::copy(&header_src, &header_dst).expect("failed to copy cxx header");
+}
+
+fn copy_cxx_source(src_dir: &Path, src_cmake_dir: &Path) {
+    let source_src = src_dir.join("lib.rs.cc");
+    let source_dst = src_cmake_dir.join("dora-node-api.cc");
+    std::fs::copy(&source_src, &source_dst).expect("failed to copy cxx source");
 }
 
 fn origin_dir() -> PathBuf {
@@ -59,16 +132,13 @@ fn origin_dir() -> PathBuf {
     let cross_target = default_target
         .join(std::env::var("TARGET").unwrap())
         .join("cxxbridge")
-        .join("dora-node-api-cxx")
+        .join(PACKAGE)
         .join("src");
 
     if cross_target.exists() {
         cross_target
     } else {
-        default_target
-            .join("cxxbridge")
-            .join("dora-node-api-cxx")
-            .join("src")
+        default_target.join("cxxbridge").join(PACKAGE).join("src")
     }
 }
 
@@ -165,9 +235,6 @@ mod ros2 {
 
                     let origin_header = dst.as_ref().join(entry_name);
                     std::fs::copy(entry.path(), dst.as_ref().join(origin_header))?;
-                    // let mut origin_file = std::fs::OpenOptions::new()
-                    //     .append(true)
-                    //     .open(origin_header)?;
                 }
             }
         }
@@ -189,7 +256,7 @@ mod ros2 {
         let relative_dir = PathBuf::from(out_dir_str.strip_prefix("/").unwrap());
         let header_path = default_target
             .join("cxxbridge")
-            .join("dora-node-api-cxx")
+            .join(PACKAGE)
             .join(&relative_dir);
 
         let target_path = target_path.join("ros2-bridge");

@@ -1,0 +1,65 @@
+get_filename_component(PACKAGE_PREFIX_DIR "${CMAKE_CURRENT_LIST_DIR}/../../.." ABSOLUTE)
+
+# Target matching check
+set(DORA_BUILT_TARGET "@TARGET@")
+
+# Normalize CMAKE_SYSTEM_PROCESSOR to match Cargo arch naming
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
+    set(_normalized_arch "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+    set(_normalized_arch "aarch64")
+else()
+    set(_normalized_arch "${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+    set(DORA_CURRENT_TARGET "windows-${_normalized_arch}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+    set(DORA_CURRENT_TARGET "macos-${_normalized_arch}")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(DORA_CURRENT_TARGET "linux-${_normalized_arch}")
+else()
+    message(FATAL_ERROR "@PACKAGE@: unsupported platform ${CMAKE_SYSTEM_NAME}")
+endif()
+
+message(STATUS "@PACKAGE@: built for ${DORA_BUILT_TARGET}, current is ${DORA_CURRENT_TARGET}")
+
+if(NOT DORA_CURRENT_TARGET STREQUAL DORA_BUILT_TARGET)
+    message(FATAL_ERROR "@PACKAGE@: target mismatch! built for ${DORA_BUILT_TARGET}, but current is ${DORA_CURRENT_TARGET}")
+endif()
+
+if(NOT TARGET @PACKAGE@::@PACKAGE@)
+    add_library(@PACKAGE@::@PACKAGE@ STATIC IMPORTED)
+    
+    if(WIN32)
+        set(_lib_name "@LIB_WIN@")
+    else()
+        set(_lib_name "@LIB_UNIX@")
+    endif()
+    
+    set(@PACKAGE@_CXX_BRIDGE_FILES "@CXX_BRIDGE_FILES@")
+    
+    set_target_properties(@PACKAGE@::@PACKAGE@ PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/include"
+        IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/lib/${_lib_name}"
+    )
+endif()
+
+# Platform-specific system libraries
+if(NOT TARGET @PACKAGE@::extra)
+    add_library(@PACKAGE@::extra INTERFACE IMPORTED)
+    
+    if(WIN32)
+        target_link_libraries(@PACKAGE@::extra INTERFACE
+            advapi32 userenv kernel32 ws2_32 bcrypt ncrypt schannel ntdll iphlpapi
+            cfgmgr32 credui crypt32 cryptnet fwpuclnt gdi32 msimg32 mswsock ole32
+            oleaut32 opengl32 secur32 shell32 synchronization user32 winspool)
+    elseif(APPLE)
+        target_link_libraries(@PACKAGE@::extra INTERFACE
+            "-framework CoreServices" "-framework Security"
+            pthread m c resolv)
+    elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(@PACKAGE@::extra INTERFACE
+            pthread dl m rt)
+    endif()
+endif()

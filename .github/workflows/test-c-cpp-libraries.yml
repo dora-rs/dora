@@ -1,0 +1,91 @@
+name: Test C/C++ Libraries
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test-apis:
+    name: Test C/C++ Node APIs (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: macos-latest
+          - os: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dora CLI
+        run: cargo install --path binaries/cli
+
+      # ============================================================================
+      # C Node API Test
+      # ============================================================================
+      - name: Build C API
+        run: cargo build --release --package dora-node-api-c
+
+      - name: Stage C libraries
+        run: cargo run -p xtask -- stage dora-node-api-c target/release dora-c-prefix
+
+      - name: Create C test node
+        run: dora new test-node-c --kind node --lang c
+
+      - name: Build C test node (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd test-node-c
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-c-prefix
+          cmake --build . --config Release
+
+      - name: Build C test node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd test-node-c
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-c-prefix
+          cmake --build . --config Release
+
+      # ============================================================================
+      # C++ Node API Test
+      # ============================================================================
+      - name: Build C++ API
+        run: cargo build --release --package dora-node-api-cxx
+
+      - name: Stage C++ libraries
+        run: cargo run -p xtask -- stage dora-node-api-cxx target/release dora-cpp-prefix
+
+      - name: Create C++ test node
+        run: dora new test-node-cpp --kind node --lang cxx
+
+      - name: Build C++ test node (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd test-node-cpp
+          mkdir -p build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-cpp-prefix
+          cmake --build . --config Release
+
+      - name: Build C++ test node (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cd test-node-cpp
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_PREFIX_PATH=${{ github.workspace }}/dora-cpp-prefix
+          cmake --build . --config Release

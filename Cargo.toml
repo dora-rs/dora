@@ -68,6 +68,7 @@ members = [
     "tests/fault_tolerance/input_closed_observer_node",
     "tests/fault_tolerance/silent_source_node",
     "tests/fault_tolerance/timed_burst_source_node",
+    "xtask",
 ]
 
 [workspace.package]

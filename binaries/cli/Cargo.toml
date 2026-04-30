@@ -35,8 +35,6 @@ eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
-dora-node-api-c = { workspace = true }
-dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
