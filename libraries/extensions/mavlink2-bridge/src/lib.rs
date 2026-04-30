@@ -8,6 +8,7 @@
 
 mod arrow_convert;
 mod error;
+pub mod transport;
 
 pub use arrow_convert::MavlinkArrow;
 pub use error::{BridgeError, BridgeResult};

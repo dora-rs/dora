@@ -1912,6 +1912,24 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "url",
+]
+
+[[package]]
+name = "dora-mavlink2-bridge-node"
+version = "0.2.1"
+dependencies = [
+ "arrow",
+ "dora-mavlink2-bridge",
+ "dora-node-api",
+ "eyre",
+ "mavlink",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
