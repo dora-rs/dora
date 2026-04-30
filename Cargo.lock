@@ -1907,6 +1907,7 @@ dependencies = [
  "arrow",
  "eyre",
  "mavlink",
+ "num-traits",
  "serde",
  "thiserror 2.0.18",
  "tokio",

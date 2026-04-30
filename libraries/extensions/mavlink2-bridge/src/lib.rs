@@ -6,8 +6,10 @@
 //!
 //! See <https://github.com/dora-rs/dora/issues/1786> for the design RFC.
 
+mod arrow_convert;
 mod error;
 
+pub use arrow_convert::MavlinkArrow;
 pub use error::{BridgeError, BridgeResult};
 pub use mavlink::{self, MavlinkVersion};
 

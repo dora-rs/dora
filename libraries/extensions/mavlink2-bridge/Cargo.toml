@@ -15,6 +15,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 eyre = { workspace = true }
+num-traits = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }
