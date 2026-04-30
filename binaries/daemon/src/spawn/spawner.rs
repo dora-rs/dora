@@ -310,8 +310,9 @@ impl Spawner {
                         ]);
                         Some(cmd)
                     } else {
-                        let mut cmd =
-                            Command::new(which::which("dora").wrap_err("failed to get dora path")?);
+                        let current_exe = std::env::current_exe()
+                            .wrap_err("failed to get current executable path")?;
+                        let mut cmd = Command::new(current_exe);
                         cmd = cmd.arg("runtime");
                         Some(cmd)
                     }
