@@ -92,6 +92,22 @@ impl ControlChannel {
         Ok(())
     }
 
+    pub fn query_direct_routes(
+        &mut self,
+    ) -> eyre::Result<Vec<dora_message::node_to_node::DirectRouteInfo>> {
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: DaemonRequest::QueryDirectRoutes,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to query direct routes from dora-daemon")?;
+        match reply {
+            DaemonReply::DirectRoutes(routes) => Ok(routes),
+            other => bail!("unexpected QueryDirectRoutes reply: {other:?}"),
+        }
+    }
+
     pub fn send_message(
         &mut self,
         output_id: DataId,

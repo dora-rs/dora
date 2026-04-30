@@ -111,12 +111,25 @@ const ZENOH_SHM_MIN_PAYLOAD: usize = 512;
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
 /// for retrieving the node configuration.
+/// A direct TCP connection to a receiver node for small message delivery.
+struct DirectConnection {
+    input_id: DataId,
+    stream: std::net::TcpStream,
+}
+
+/// Allows sending outputs and retrieving node information.
+///
+/// The main purpose of this struct is to send outputs via Dora. There are also functions available
+/// for retrieving the node configuration.
 pub struct DoraNode {
     id: NodeId,
     dataflow_id: DataflowId,
     node_config: NodeRunConfig,
     control_channel: ControlChannel,
     clock: Arc<uhlc::HLC>,
+
+    /// Direct TCP connections to receiver nodes, keyed by output_id.
+    direct_connections: HashMap<DataId, Vec<DirectConnection>>,
 
     /// Zenoh session for direct node-to-node pub/sub (data plane).
     /// `None` in interactive/testing mode.
@@ -631,9 +644,45 @@ impl DoraNode {
             zenoh_session.as_ref(),
         )
         .wrap_err("failed to init event stream")?;
-        let control_channel =
+        let mut control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
+
+        // Query direct routes and establish connections to receiver nodes
+        let mut direct_connections: HashMap<DataId, Vec<DirectConnection>> = HashMap::new();
+        if !run_config.outputs.is_empty() {
+            match control_channel.query_direct_routes() {
+                Ok(routes) => {
+                    for route in routes {
+                        // Only use direct connections for local receivers
+                        if !route.receiver_addr.ip().is_loopback() {
+                            continue;
+                        }
+                        match std::net::TcpStream::connect(route.receiver_addr) {
+                            Ok(stream) => {
+                                let _ = stream.set_nodelay(true);
+                                direct_connections.entry(route.output_id).or_default().push(
+                                    DirectConnection {
+                                        input_id: route.input_id,
+                                        stream,
+                                    },
+                                );
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "failed to connect directly to receiver at {}: {err}",
+                                    route.receiver_addr
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!("failed to query direct routes: {err}");
+                }
+            }
+        }
+
         let runtime_type_checks = match RuntimeTypeCheck::from_env() {
             RuntimeTypeCheck::Off => None,
             mode => {
@@ -667,6 +716,7 @@ impl DoraNode {
             node_config: run_config.clone(),
             control_channel,
             clock,
+            direct_connections,
             zenoh_session,
             zenoh_shm_provider,
             zenoh_publishers: HashMap::new(),
@@ -951,12 +1001,38 @@ impl DoraNode {
 
         let data = sample.map(|sample| sample.finalize());
 
+        // For small Vec messages with direct connections, bypass the daemon.
+        // Direct TCP covers the small-message path; zenoh SHM (below) covers
+        // the large-message path.
+        let sent_directly = if let Some(DataMessage::Vec(ref vec_data)) = data {
+            if let Some(connections) = self.direct_connections.get_mut(&output_id) {
+                let mut all_ok = true;
+                for conn in connections.iter_mut() {
+                    let direct_msg = dora_message::DirectMessage {
+                        input_id: conn.input_id.clone(),
+                        metadata: metadata.clone(),
+                        data: vec_data.clone(),
+                    };
+                    if let Err(err) = send_direct_message(&mut conn.stream, &direct_msg) {
+                        tracing::warn!("direct send failed: {err}");
+                        all_ok = false;
+                        break;
+                    }
+                }
+                all_ok
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
         // Try zenoh SHM publish for data-plane messages.
         // If zenoh session is available, publish data directly via zenoh
         // (zero-copy SHM for local subscribers, network for remote).
         // The daemon still receives a data-less notification for routing awareness.
-        let zenoh_published = if let (Some(_), Some(DataMessage::Vec(v))) =
-            (&self.zenoh_session, data.as_ref())
+        let zenoh_published = if !sent_directly
+            && let (Some(_), Some(DataMessage::Vec(v))) = (&self.zenoh_session, data.as_ref())
         {
             let raw_bytes = v.as_ref();
             if !raw_bytes.is_empty() && raw_bytes.len() >= self.zenoh_zero_copy_threshold {
@@ -979,10 +1055,11 @@ impl DoraNode {
             false
         };
 
-        if !zenoh_published {
-            // Data delivered via daemon. (When zenoh publishes, the daemon
-            // fan-out would produce a duplicate NodeEvent::Input for local
-            // subscribers, so we skip the daemon path entirely.)
+        if !sent_directly && !zenoh_published {
+            // Data delivered via daemon. (When zenoh publishes or direct TCP
+            // delivers, the daemon fan-out would produce a duplicate
+            // NodeEvent::Input for local subscribers, so we skip the daemon
+            // path entirely.)
             self.control_channel
                 .send_message(output_id.clone(), metadata, data)
                 .wrap_err_with(|| format!("failed to send output {output_id}"))?;
@@ -1412,6 +1489,17 @@ impl DoraNodeBuilder {
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
+        // Shutdown direct connections (write side) and give receivers
+        // time to drain remaining data before signaling InputClosed.
+        for conns in self.direct_connections.values_mut() {
+            for conn in conns {
+                let _ = conn.stream.shutdown(std::net::Shutdown::Write);
+            }
+        }
+        // Brief delay to let receivers process remaining buffered data
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        self.direct_connections.clear();
+
         // Undeclare zenoh publishers to clean up network resources
         // before closing daemon channels.
         self.zenoh_publishers.clear();
@@ -1482,6 +1570,18 @@ impl std::fmt::Debug for DataSample {
             .field("len", &self.len)
             .finish_non_exhaustive()
     }
+}
+
+fn send_direct_message(
+    stream: &mut std::net::TcpStream,
+    msg: &dora_message::DirectMessage,
+) -> eyre::Result<()> {
+    use std::io::Write;
+    let serialized = bincode::serialize(msg).wrap_err("failed to serialize DirectMessage")?;
+    let len_raw = (serialized.len() as u64).to_le_bytes();
+    stream.write_all(&len_raw)?;
+    stream.write_all(&serialized)?;
+    Ok(())
 }
 
 /// Returns `true` if the given metadata carries any pattern-correlation

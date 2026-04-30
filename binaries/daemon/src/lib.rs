@@ -2826,6 +2826,64 @@ impl Daemon {
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
             }
+            DaemonNodeEvent::RegisterDirectListener {
+                listen_addr,
+                reply_sender,
+            } => {
+                let reply = match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        dataflow
+                            .direct_listeners
+                            .insert(node_id.clone(), listen_addr);
+                        Ok(())
+                    }
+                    None => Err(format!("no running dataflow with ID `{dataflow_id}`")),
+                };
+                let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            DaemonNodeEvent::QueryDirectRoutes { reply_sender } => {
+                let routes = match self.running.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        let mut routes = Vec::new();
+                        // Collect all (output_id, receiver_id, input_id) tuples first
+                        let mut route_entries: Vec<(DataId, NodeId, DataId)> = Vec::new();
+                        let output_ids: Vec<DataId> = dataflow
+                            .mappings
+                            .keys()
+                            .filter(|o| o.0 == node_id)
+                            .map(|o| o.1.clone())
+                            .collect();
+                        for output_id in &output_ids {
+                            let key = OutputId(node_id.clone(), output_id.clone());
+                            if let Some(receivers) = dataflow.mappings.get(&key) {
+                                for (receiver_id, input_id) in receivers {
+                                    route_entries.push((
+                                        output_id.clone(),
+                                        receiver_id.clone(),
+                                        input_id.clone(),
+                                    ));
+                                }
+                            }
+                        }
+                        // Now build routes and mark direct pairs
+                        for (output_id, receiver_id, input_id) in route_entries {
+                            if let Some(addr) = dataflow.direct_listeners.get(&receiver_id) {
+                                routes.push(dora_message::node_to_node::DirectRouteInfo {
+                                    output_id: output_id.clone(),
+                                    input_id,
+                                    receiver_addr: *addr,
+                                });
+                                dataflow
+                                    .direct_pairs
+                                    .insert((OutputId(node_id.clone(), output_id), receiver_id));
+                            }
+                        }
+                        routes
+                    }
+                    None => Vec::new(),
+                };
+                let _ = reply_sender.send(DaemonReply::DirectRoutes(routes));
+            }
         }
         Ok(())
     }
@@ -4011,11 +4069,20 @@ async fn send_output_to_local_receivers(
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
+    let is_vec_message = matches!(data, Some(DataMessage::Vec(_)));
     // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
     let metadata = Arc::new(metadata.clone());
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
+        // Skip receivers that use direct connections for small Vec messages
+        if is_vec_message
+            && dataflow
+                .direct_pairs
+                .contains(&(output_id.clone(), receiver_id.clone()))
+        {
+            continue;
+        }
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             // Reserve headroom for control events (Stop, InputClosed, etc.)
             if channel.capacity() < CONTROL_EVENT_HEADROOM {

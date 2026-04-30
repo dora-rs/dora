@@ -275,6 +275,34 @@ impl EventStream {
         input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
+
+        // Bind a direct listener for node-to-node small message delivery
+        let direct_listener = if matches!(channel, DaemonChannel::Tcp(_)) {
+            let listener = std::net::TcpListener::bind((dora_core::topics::LOCALHOST, 0))
+                .wrap_err("failed to bind direct listener")?;
+            let listen_addr = listener
+                .local_addr()
+                .wrap_err("failed to get direct listener address")?;
+            // Register the direct listener with the daemon
+            let reply = channel
+                .request(&Timestamped {
+                    inner: DaemonRequest::RegisterDirectListener { listen_addr },
+                    timestamp: clock.new_timestamp(),
+                })
+                .map_err(|e| eyre!(e))
+                .wrap_err("failed to register direct listener with daemon")?;
+            match reply {
+                DaemonReply::Result(Ok(())) => {}
+                DaemonReply::Result(Err(err)) => {
+                    tracing::warn!("failed to register direct listener: {err}");
+                }
+                _ => {}
+            }
+            Some(listener)
+        } else {
+            None
+        };
+
         let reply = channel
             .request(&Timestamped {
                 inner: DaemonRequest::Subscribe,
@@ -392,7 +420,8 @@ impl EventStream {
             }
         }
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        let thread_handle =
+            thread::init(node_id.clone(), tx, channel, clock.clone(), direct_listener)?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -494,10 +523,16 @@ impl EventStream {
                         break;
                     }
                 } else {
-                    match self.receiver.try_recv() {
-                        Ok(event) => self.add_event(event),
-                        Err(_) => break, // empty or disconnected
-                    };
+                    // Drain a bounded number of ready events so the scheduler
+                    // can make fair decisions, but avoid spinning indefinitely
+                    // when direct node-to-node connections keep the channel busy.
+                    for _ in 0..100 {
+                        match self.receiver.try_recv() {
+                            Ok(event) => self.add_event(event),
+                            Err(_) => break,
+                        };
+                    }
+                    break;
                 }
             }
             self.scheduler.next().map(Self::convert_event_item)

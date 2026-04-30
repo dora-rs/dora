@@ -47,6 +47,7 @@ pub enum DaemonReply {
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
     Empty,
+    DirectRoutes(Vec<crate::node_to_node::DirectRouteInfo>),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

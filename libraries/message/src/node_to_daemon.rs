@@ -24,6 +24,10 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
+    RegisterDirectListener {
+        listen_addr: std::net::SocketAddr,
+    },
+    QueryDirectRoutes,
 }
 
 impl DaemonRequest {
@@ -36,7 +40,9 @@ impl DaemonRequest {
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
-            | DaemonRequest::EventStreamDropped => true,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterDirectListener { .. }
+            | DaemonRequest::QueryDirectRoutes => true,
         }
     }
 
@@ -50,7 +56,9 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::SendMessage { .. }
-            | DaemonRequest::EventStreamDropped => false,
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterDirectListener { .. }
+            | DaemonRequest::QueryDirectRoutes => false,
         }
     }
 }
