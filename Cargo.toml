@@ -137,7 +137,7 @@ futures = { version = "0.3.28", default-features = false, features = ["std", "as
 bincode = "1.3.3"
 flume = "0.10.14"
 tempfile = "3.23.0"
-mavlink = { version = "0.13", default-features = false, features = ["std", "serde", "common", "tcp"] }
+mavlink = { version = "0.13", default-features = false, features = ["std", "serde", "common", "tcp", "udp", "direct-serial"] }
 serialport = "4.6"
 url = "2.5"
 
