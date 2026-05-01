@@ -1142,6 +1142,15 @@ impl DoraNode {
         self.restart_count
     }
 
+    /// Returns the current timestamp from the node's Hybrid Logical Clock.
+    ///
+    /// This generates a new HLC timestamp, which combines the physical
+    /// wall-clock time with a logical counter to ensure uniqueness and
+    /// monotonicity even across nodes.
+    pub fn timestamp(&self) -> uhlc::Timestamp {
+        self.clock.new_timestamp()
+    }
+
     /// Send a structured log message.
     ///
     /// Outputs a JSONL line to stdout that the daemon parses automatically.
