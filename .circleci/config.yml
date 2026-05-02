@@ -1044,15 +1044,31 @@ jobs:
           # Symlink to /usr/bin/python3.12 so the downstream venv step
           # (uv venv --python /usr/bin/python3.12) keeps working.
           no_output_timeout: 10m
+          environment:
+            # Stop apt-get from triggering the interactive `needrestart`
+            # TUI on Ubuntu 22.04, which hangs forever waiting for input
+            # whenever a package update touches a shared library
+            # (libc-dev etc., transitively pulled by clang). Setting it
+            # in the step env applies to every command in this run.
+            NEEDRESTART_MODE: a
+            NEEDRESTART_SUSPEND: "1"
+            DEBIAN_FRONTEND: noninteractive
           command: |
             curl -LsSf https://astral.sh/uv/install.sh | sh
             "$HOME/.local/bin/uv" python install 3.12
             PYTHON312=$("$HOME/.local/bin/uv" python find 3.12)
             sudo ln -sf "$PYTHON312" /usr/bin/python3.12
+            # Persist the noninteractive env for downstream steps so the
+            # ROS2 Humble apt install doesn't re-trigger the same prompt.
+            {
+              echo "export NEEDRESTART_MODE=a"
+              echo "export NEEDRESTART_SUSPEND=1"
+              echo "export DEBIAN_FRONTEND=noninteractive"
+            } >> "$BASH_ENV"
             # clang is needed by the C++ ROS2 Bridge example's run.rs
             # (machine image ships g++ but not clang by default).
             sudo apt-get update
-            sudo apt-get install -y clang
+            sudo -E apt-get install -y clang
       - run:
           name: Install ROS2 Humble
           command: |
