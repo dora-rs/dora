@@ -1033,6 +1033,11 @@ jobs:
           prefix: ros2
       - run:
           name: Install Python 3.12 + dev headers + clang
+          # deadsnakes PPA + apt-get update + apt-get install can stall
+          # silently for >10 min during peak hours, tripping CircleCI's
+          # default 10-minute no-output timeout. Bump to 20 min so a slow
+          # mirror doesn't kill the job before package install completes.
+          no_output_timeout: 20m
           command: |
             sudo add-apt-repository -y ppa:deadsnakes/ppa
             sudo apt-get update
