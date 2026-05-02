@@ -209,3 +209,16 @@ out/
 yolo.yml
 
 ~*
+
+# ArduPilot SITL runtime artifacts (dropped in cwd by sim_vehicle.py /
+# dronekit-sitl). These regenerate every SITL run; not source.
+/eeprom.bin
+/mav.parm
+/mav.tlog
+/mav.tlog.raw
+/logs/
+/terrain/
+
+# Session-local working notes (per-session handoff docs, run findings,
+# upstream PR drafts). Not part of the source.
+.project_notes/
