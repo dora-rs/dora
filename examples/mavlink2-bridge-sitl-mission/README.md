@@ -131,6 +131,42 @@ to `grep` if you want to script success/failure detection.
 | `ARM: ACK = TEMPORARILY_REJECTED` | EKF not yet healthy. Wait longer after boot before launching the dataflow, or raise `MAVLINK_SITL_COMMAND_TIMEOUT`. |
 | `altitude did not reach … within 30s` | SITL physics paused (Ctrl-Z?), or the autopilot rejected GUIDED mode silently |
 | `ACK = DENIED` on `SET_MODE GUIDED` | Vehicle isn't ArduCopter (or copter version is too old for `MAV_CMD_DO_SET_MODE`) |
+| `writer error on input 'set_mode_cmd': … SET_MODE base_mode=1 … not representable as mavlink-rust 0.13's strict MavMode enum …` | mavlink-rust 0.13 limitation. See "Known limitations" below. |
+
+## Known limitations
+
+### `set_mode_cmd` cannot drive ArduPilot custom modes (mavlink-rust 0.13)
+
+The MAVLink spec defines `SET_MODE.base_mode` as a `uint8_t` bitfield, but
+mavlink-rust 0.13 generates `MavMode` as a strict Rust enum with only
+11 named variants `{0, 64, 66, 80, 88, 92, 192, 194, 208, 216, 220}`.
+None has bit `0x01` (`MAV_MODE_FLAG_CUSTOM_MODE_ENABLED`) set, which is
+exactly the bit ArduPilot uses for **every** custom-mode entry
+(GUIDED = `base_mode=0x01, custom_mode=4`, AUTO = `base_mode=0x01,
+custom_mode=3`, …). PX4 also relies on the `0x01` path for any
+non-bootstrap mode.
+
+Effect on this example:
+
+* The `set_mode_cmd` input on the bridge will return an error
+  ("`SET_MODE base_mode=1 … not representable as MavMode enum`") and
+  the message is dropped before reaching the autopilot. The error is
+  logged at `error` level so it shows up in default log filters.
+* For ArduCopter `>= 3.6` and recent PX4, use `MAV_CMD_DO_SET_MODE`
+  through the existing `command_long_cmd` input instead. That's what
+  `mission.py` does (`MAV_CMD_DO_SET_MODE = 176`, `p1=1.0`,
+  `p2=ARDUCOPTER_GUIDED_CUSTOM_MODE`).
+* For older firmware that only accepts the legacy `SET_MODE` message
+  (e.g. ArduCopter `3.3` in dronekit-sitl), the workaround is to open a
+  side-channel `pymavlink` connection and send `SET_MODE` through that
+  — see `mission_long.py` and `mission_rover.py` for the pattern.
+  Remove the side-channel once mavlink-rust accepts `base_mode` as raw
+  `uint8`.
+
+Tracked upstream at <https://github.com/mavlink/rust-mavlink>. Once
+that lands and crates.io updates, bump the workspace `mavlink`
+dependency, drop the side-channel from the missions, and this section
+goes away.
 
 ## Extending it
 

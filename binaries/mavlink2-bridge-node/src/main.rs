@@ -44,7 +44,9 @@
 
 use dora_mavlink2_bridge::{
     MavlinkArrow,
-    mavlink::common::{COMMAND_LONG_DATA, HEARTBEAT_DATA, RC_CHANNELS_OVERRIDE_DATA, SET_MODE_DATA},
+    mavlink::common::{
+        COMMAND_LONG_DATA, HEARTBEAT_DATA, RC_CHANNELS_OVERRIDE_DATA, SET_MODE_DATA,
+    },
     transport,
 };
 use dora_node_api::{
@@ -245,9 +247,9 @@ fn main() -> Result<()> {
     // legacy REQUEST_DATA_STREAM and prefer SET_MESSAGE_INTERVAL).
     let req = mavlink::common::REQUEST_DATA_STREAM_DATA {
         req_message_rate: 5,
-        target_system: 0,    // 0 = broadcast to whichever autopilot answers
+        target_system: 0, // 0 = broadcast to whichever autopilot answers
         target_component: 0,
-        req_stream_id: 0,    // MAV_DATA_STREAM_ALL
+        req_stream_id: 0, // MAV_DATA_STREAM_ALL
         start_stop: 1,
     };
     if let Err(e) = conn.send(&header, &MavMessage::REQUEST_DATA_STREAM(req)) {
@@ -279,7 +281,10 @@ fn main() -> Result<()> {
             Some(Event::Input { id, data, .. }) => {
                 let array_ref: ArrayRef = data.into();
                 if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
-                    tracing::warn!("writer error on input '{id}': {e:#}");
+                    // Writer errors mean the dora node's command did NOT reach the
+                    // autopilot. Surface at error level so users debugging missions see
+                    // it in default log filters rather than treating it as routine noise.
+                    tracing::error!("writer error on input '{id}': {e:#}");
                 }
             }
             Some(Event::Stop(_)) => break,

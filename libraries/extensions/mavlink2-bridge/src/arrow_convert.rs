@@ -835,6 +835,17 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
 // SET_MODE — used by mission drivers to request a flight mode on autopilots
 // that don't accept MAV_CMD_DO_SET_MODE via COMMAND_LONG (e.g. legacy
 // ArduCopter <= 3.5).
+//
+// Known limitation (mavlink-rust 0.13): the spec defines `base_mode` as a
+// uint8 bitfield, but mavlink-rust generates `MavMode` as a strict enum with
+// only 11 named variants {0, 64, 66, 80, 88, 92, 192, 194, 208, 216, 220}.
+// None has bit 0x01 (CUSTOM_MODE_ENABLED) set, so any ArduPilot custom-mode
+// entry (base_mode=0x01 + custom_mode=N for GUIDED/AUTO/RTL/...) cannot be
+// encoded or decoded through this path. For ArduPilot custom modes, prefer
+// MAV_CMD_DO_SET_MODE via the `command_long_cmd` input on autopilots that
+// support it (ArduCopter >= 3.6, recent PX4); on older firmware the bridge
+// can't speak custom-mode SET_MODE until mavlink-rust accepts base_mode as
+// raw u8 (tracked at https://github.com/mavlink/rust-mavlink).
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SET_MODE_DATA {
@@ -862,10 +873,26 @@ impl MavlinkArrow for common::SET_MODE_DATA {
     }
 
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
+        let raw_base_mode = read_u8(batch, "base_mode")?;
+        // Surface the mavlink-rust 0.13 enum-vs-bitfield mismatch with a
+        // pointer to the workaround instead of the bare "invalid base_mode
+        // discriminant" that decode_enum would produce, since this hits any
+        // user trying to enter an ArduPilot custom mode.
+        let base_mode = decode_enum(raw_base_mode as u32, "base_mode").map_err(|_| {
+            BridgeError::Mavlink(format!(
+                "SET_MODE base_mode={raw_base_mode} (0x{raw_base_mode:02x}) is a valid \
+                 uint8 per MAVLink spec but not representable as mavlink-rust 0.13's \
+                 strict MavMode enum (variants: 0, 64, 66, 80, 88, 92, 192, 194, 208, \
+                 216, 220). For ArduPilot custom-mode entry (base_mode=0x01 + \
+                 custom_mode=N), use MAV_CMD_DO_SET_MODE via the `command_long_cmd` \
+                 input on autopilots that support it (ArduCopter >= 3.6, recent PX4). \
+                 Tracked upstream at https://github.com/mavlink/rust-mavlink."
+            ))
+        })?;
         Ok(Self {
             custom_mode: read_u32(batch, "custom_mode")?,
             target_system: read_u8(batch, "target_system")?,
-            base_mode: decode_enum(read_u8(batch, "base_mode")? as u32, "base_mode")?,
+            base_mode,
         })
     }
 }
