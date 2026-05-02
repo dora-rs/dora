@@ -19,6 +19,14 @@ ser = "ser"
 BA = "BA"
 # Windows system library name (used by the C/C++ publish workflow)
 secur = "secur"
+# ArduPilot Software-In-The-Loop simulator; standard acronym in the
+# flight-controller community. Introduced by the mavlink2-bridge example.
+SITL = "SITL"
+sitl = "sitl"
+# MAVLink coordinate frame: North-East-Down. Field/message name in
+# common-dialect MAVLink messages such as LOCAL_POSITION_NED.
+NED = "NED"
+ned = "ned"
 
 [default]
 # Scoped allow: GitHub user name "YOR-robot" appears in the downstream-user
