@@ -1058,6 +1058,19 @@ jobs:
             "$HOME/.local/bin/uv" python install 3.12
             PYTHON312=$("$HOME/.local/bin/uv" python find 3.12)
             sudo ln -sf "$PYTHON312" /usr/bin/python3.12
+            # Make uv's libpython3.12 visible to the dynamic linker.
+            # PyO3 dynamically links against libpython3.12.so.1.0; the
+            # deadsnakes apt package previously installed it under
+            # /usr/lib/x86_64-linux-gnu (a standard ld.so search path)
+            # but uv lays it out under <prefix>/lib in its data dir,
+            # which isn't on the default search path. Symlink the
+            # versioned + unversioned soname into the system lib dir
+            # and refresh ld.so.cache so cargo-test binaries can load
+            # them at runtime.
+            PYTHON312_PREFIX=$(dirname "$(dirname "$PYTHON312")")
+            sudo ln -sf "$PYTHON312_PREFIX/lib/libpython3.12.so.1.0" /usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0
+            sudo ln -sf "$PYTHON312_PREFIX/lib/libpython3.12.so" /usr/lib/x86_64-linux-gnu/libpython3.12.so
+            sudo ldconfig
             # Persist the noninteractive env for downstream steps so the
             # ROS2 Humble apt install doesn't re-trigger the same prompt.
             {
