@@ -49,7 +49,8 @@ fn connect_tcp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Se
         .host_str()
         .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
     let port = url.port().unwrap_or(DEFAULT_TCP_PORT);
-    open_mavlink(&format!("tcpout:{host}:{port}"))
+    let version = parse_proto_query(url).unwrap_or(MavlinkVersion::V2);
+    open_mavlink_versioned(&format!("tcpout:{host}:{port}"), version)
 }
 
 fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
@@ -57,7 +58,8 @@ fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Se
         .host_str()
         .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
     let port = url.port().unwrap_or(DEFAULT_UDP_PORT);
-    open_mavlink(&format!("udpin:{host}:{port}"))
+    let version = parse_proto_query(url).unwrap_or(MavlinkVersion::V2);
+    open_mavlink_versioned(&format!("udpin:{host}:{port}"), version)
 }
 
 fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
@@ -84,10 +86,27 @@ fn parse_baud(url: &Url) -> Option<u32> {
 }
 
 fn open_mavlink(addr: &str) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
+    open_mavlink_versioned(addr, MavlinkVersion::V2)
+}
+
+fn open_mavlink_versioned(
+    addr: &str,
+    version: MavlinkVersion,
+) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
     let mut conn = mavlink::connect::<MavMessage>(addr)
         .map_err(|e| BridgeError::Config(format!("failed to connect mavlink to '{addr}': {e}")))?;
-    conn.set_protocol_version(MavlinkVersion::V2);
+    conn.set_protocol_version(version);
     Ok(conn)
+}
+
+fn parse_proto_query(url: &Url) -> Option<MavlinkVersion> {
+    url.query_pairs()
+        .find(|(k, _)| k == "proto")
+        .and_then(|(_, v)| match v.to_ascii_lowercase().as_str() {
+            "v1" | "1" | "1.0" => Some(MavlinkVersion::V1),
+            "v2" | "2" | "2.0" => Some(MavlinkVersion::V2),
+            _ => None,
+        })
 }
 
 #[cfg(test)]
