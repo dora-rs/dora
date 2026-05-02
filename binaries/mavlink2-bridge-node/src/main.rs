@@ -44,7 +44,7 @@
 
 use dora_mavlink2_bridge::{
     MavlinkArrow,
-    mavlink::common::{COMMAND_LONG_DATA, HEARTBEAT_DATA},
+    mavlink::common::{COMMAND_LONG_DATA, HEARTBEAT_DATA, RC_CHANNELS_OVERRIDE_DATA, SET_MODE_DATA},
     transport,
 };
 use dora_node_api::{
@@ -181,6 +181,14 @@ fn handle_input(
             let d: COMMAND_LONG_DATA = decode_input(data, id.as_str())?;
             MavMessage::COMMAND_LONG(d)
         }
+        "set_mode_cmd" => {
+            let d: SET_MODE_DATA = decode_input(data, id.as_str())?;
+            MavMessage::SET_MODE(d)
+        }
+        "rc_channels_override_cmd" => {
+            let d: RC_CHANNELS_OVERRIDE_DATA = decode_input(data, id.as_str())?;
+            MavMessage::RC_CHANNELS_OVERRIDE(d)
+        }
         _ => return Ok(()), // unknown input id, ignore
     };
     conn.send(header, &outgoing)
@@ -229,6 +237,24 @@ fn main() -> Result<()> {
         component_id: cfg.component_id,
         sequence: 0,
     };
+
+    // Request all data streams from the autopilot at 5 Hz so HEARTBEAT,
+    // GLOBAL_POSITION_INT, GPS_RAW_INT, COMMAND_ACK, etc. start flowing
+    // on this link. Without this, ArduCopter 3.x sends only HEARTBEAT
+    // until a GCS asks. Failure is non-fatal (some autopilots ignore the
+    // legacy REQUEST_DATA_STREAM and prefer SET_MESSAGE_INTERVAL).
+    let req = mavlink::common::REQUEST_DATA_STREAM_DATA {
+        req_message_rate: 5,
+        target_system: 0,    // 0 = broadcast to whichever autopilot answers
+        target_component: 0,
+        req_stream_id: 0,    // MAV_DATA_STREAM_ALL
+        start_stop: 1,
+    };
+    if let Err(e) = conn.send(&header, &MavMessage::REQUEST_DATA_STREAM(req)) {
+        tracing::warn!("REQUEST_DATA_STREAM send failed (non-fatal): {e}");
+    } else {
+        tracing::info!("requested all data streams at 5 Hz");
+    }
 
     let (mut node, mut events) =
         DoraNode::init_from_env().map_err(|e| eyre!("DoraNode init: {e}"))?;

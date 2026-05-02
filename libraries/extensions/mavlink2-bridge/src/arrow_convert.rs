@@ -632,6 +632,62 @@ impl MavlinkArrow for common::RC_CHANNELS_DATA {
 }
 
 // -----------------------------------------------------------------------------
+// RC_CHANNELS_OVERRIDE — used by missions that drive vehicles in MANUAL
+// mode by emulating an RC transmitter. Required for ArduRover 2.50 which
+// does not accept COMMAND_LONG ARM / DO_REPOSITION / NAV_WAYPOINT.
+// -----------------------------------------------------------------------------
+
+impl MavlinkArrow for common::RC_CHANNELS_OVERRIDE_DATA {
+    fn schema() -> Schema {
+        let mut fields = vec![
+            Field::new("target_system", DataType::UInt8, false),
+            Field::new("target_component", DataType::UInt8, false),
+        ];
+        for n in 1..=8 {
+            fields.push(Field::new(format!("chan{n}_raw"), DataType::UInt16, false));
+        }
+        Schema::new(fields)
+    }
+
+    fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
+        build(
+            Self::schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect(),
+            vec![
+                arr_u8(self.target_system),
+                arr_u8(self.target_component),
+                arr_u16(self.chan1_raw),
+                arr_u16(self.chan2_raw),
+                arr_u16(self.chan3_raw),
+                arr_u16(self.chan4_raw),
+                arr_u16(self.chan5_raw),
+                arr_u16(self.chan6_raw),
+                arr_u16(self.chan7_raw),
+                arr_u16(self.chan8_raw),
+            ],
+        )
+    }
+
+    fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
+        Ok(Self {
+            target_system: read_u8(batch, "target_system")?,
+            target_component: read_u8(batch, "target_component")?,
+            chan1_raw: read_u16(batch, "chan1_raw")?,
+            chan2_raw: read_u16(batch, "chan2_raw")?,
+            chan3_raw: read_u16(batch, "chan3_raw")?,
+            chan4_raw: read_u16(batch, "chan4_raw")?,
+            chan5_raw: read_u16(batch, "chan5_raw")?,
+            chan6_raw: read_u16(batch, "chan6_raw")?,
+            chan7_raw: read_u16(batch, "chan7_raw")?,
+            chan8_raw: read_u16(batch, "chan8_raw")?,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
 // SERVO_OUTPUT_RAW
 // -----------------------------------------------------------------------------
 
@@ -771,6 +827,45 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
         Ok(Self {
             command: decode_enum(read_u32(batch, "command")?, "command")?,
             result: decode_enum(read_u32(batch, "result")?, "result")?,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
+// SET_MODE — used by mission drivers to request a flight mode on autopilots
+// that don't accept MAV_CMD_DO_SET_MODE via COMMAND_LONG (e.g. legacy
+// ArduCopter <= 3.5).
+// -----------------------------------------------------------------------------
+
+impl MavlinkArrow for common::SET_MODE_DATA {
+    fn schema() -> Schema {
+        Schema::new(vec![
+            Field::new("custom_mode", DataType::UInt32, false),
+            Field::new("target_system", DataType::UInt8, false),
+            Field::new("base_mode", DataType::UInt8, false),
+        ])
+    }
+
+    fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
+        build(
+            Self::schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect(),
+            vec![
+                arr_u32(self.custom_mode),
+                arr_u8(self.target_system),
+                arr_u8(self.base_mode as u8),
+            ],
+        )
+    }
+
+    fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
+        Ok(Self {
+            custom_mode: read_u32(batch, "custom_mode")?,
+            target_system: read_u8(batch, "target_system")?,
+            base_mode: decode_enum(read_u8(batch, "base_mode")? as u32, "base_mode")?,
         })
     }
 }
