@@ -1032,18 +1032,27 @@ jobs:
       - cargo-cache-restore:
           prefix: ros2
       - run:
-          name: Install Python 3.12 + dev headers + clang
-          # deadsnakes PPA + apt-get update + apt-get install can stall
-          # silently for >10 min during peak hours, tripping CircleCI's
-          # default 10-minute no-output timeout. Bump to 20 min so a slow
-          # mirror doesn't kill the job before package install completes.
-          no_output_timeout: 20m
+          name: Install Python 3.12 (via uv) + clang
+          # Install Python 3.12 via uv's prebuilt distributions
+          # (python-build-standalone, hosted on GitHub Releases) instead
+          # of the deadsnakes PPA. Avoids the Launchpad dependency:
+          # `add-apt-repository ppa:deadsnakes/ppa` calls the Launchpad
+          # API via httplib2, which on PR #1790 timed out twice with
+          # `TimeoutError: [Errno 110] Connection timed out` reaching
+          # api.launchpad.net. uv's distributions are versioned, ship
+          # dev headers, and pull from GitHub's CDN — orthogonal infra.
+          # Symlink to /usr/bin/python3.12 so the downstream venv step
+          # (uv venv --python /usr/bin/python3.12) keeps working.
+          no_output_timeout: 10m
           command: |
-            sudo add-apt-repository -y ppa:deadsnakes/ppa
-            sudo apt-get update
+            curl -LsSf https://astral.sh/uv/install.sh | sh
+            "$HOME/.local/bin/uv" python install 3.12
+            PYTHON312=$("$HOME/.local/bin/uv" python find 3.12)
+            sudo ln -sf "$PYTHON312" /usr/bin/python3.12
             # clang is needed by the C++ ROS2 Bridge example's run.rs
             # (machine image ships g++ but not clang by default).
-            sudo apt-get install -y python3.12 python3.12-dev python3.12-venv libpython3.12 clang
+            sudo apt-get update
+            sudo apt-get install -y clang
       - run:
           name: Install ROS2 Humble
           command: |
