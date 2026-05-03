@@ -898,6 +898,88 @@ impl MavlinkArrow for common::SET_MODE_DATA {
 }
 
 // -----------------------------------------------------------------------------
+// SET_POSITION_TARGET_GLOBAL_INT — used by ground stations and apps to
+// command a vehicle to a global lat/lon/alt with a position-only or
+// velocity-only or acceleration-only intent (per type_mask). All
+// position fields are int32 deg*1e7; vel/accel are f32 m/s and m/s^2.
+// -----------------------------------------------------------------------------
+
+impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
+    fn schema() -> Schema {
+        Schema::new(vec![
+            Field::new("time_boot_ms", DataType::UInt32, false),
+            Field::new("lat_int", DataType::Int32, false),
+            Field::new("lon_int", DataType::Int32, false),
+            Field::new("alt", DataType::Float32, false),
+            Field::new("vx", DataType::Float32, false),
+            Field::new("vy", DataType::Float32, false),
+            Field::new("vz", DataType::Float32, false),
+            Field::new("afx", DataType::Float32, false),
+            Field::new("afy", DataType::Float32, false),
+            Field::new("afz", DataType::Float32, false),
+            Field::new("yaw", DataType::Float32, false),
+            Field::new("yaw_rate", DataType::Float32, false),
+            Field::new("type_mask", DataType::UInt16, false),
+            Field::new("target_system", DataType::UInt8, false),
+            Field::new("target_component", DataType::UInt8, false),
+            Field::new("coordinate_frame", DataType::UInt32, false),
+        ])
+    }
+
+    fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
+        build(
+            Self::schema()
+                .fields()
+                .iter()
+                .map(|f| f.as_ref().clone())
+                .collect(),
+            vec![
+                arr_u32(self.time_boot_ms),
+                arr_i32(self.lat_int),
+                arr_i32(self.lon_int),
+                arr_f32(self.alt),
+                arr_f32(self.vx),
+                arr_f32(self.vy),
+                arr_f32(self.vz),
+                arr_f32(self.afx),
+                arr_f32(self.afy),
+                arr_f32(self.afz),
+                arr_f32(self.yaw),
+                arr_f32(self.yaw_rate),
+                arr_u16(self.type_mask.bits()),
+                arr_u8(self.target_system),
+                arr_u8(self.target_component),
+                arr_u32(self.coordinate_frame as u32),
+            ],
+        )
+    }
+
+    fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
+        Ok(Self {
+            time_boot_ms: read_u32(batch, "time_boot_ms")?,
+            lat_int: read_i32(batch, "lat_int")?,
+            lon_int: read_i32(batch, "lon_int")?,
+            alt: read_f32(batch, "alt")?,
+            vx: read_f32(batch, "vx")?,
+            vy: read_f32(batch, "vy")?,
+            vz: read_f32(batch, "vz")?,
+            afx: read_f32(batch, "afx")?,
+            afy: read_f32(batch, "afy")?,
+            afz: read_f32(batch, "afz")?,
+            yaw: read_f32(batch, "yaw")?,
+            yaw_rate: read_f32(batch, "yaw_rate")?,
+            type_mask: common::PositionTargetTypemask::from_bits_truncate(read_u16(
+                batch,
+                "type_mask",
+            )?),
+            target_system: read_u8(batch, "target_system")?,
+            target_component: read_u8(batch, "target_component")?,
+            coordinate_frame: decode_enum(read_u32(batch, "coordinate_frame")?, "coordinate_frame")?,
+        })
+    }
+}
+
+// -----------------------------------------------------------------------------
 // MISSION_CURRENT
 // -----------------------------------------------------------------------------
 

@@ -34,10 +34,13 @@
 //!
 //! ## Inputs (commands, dora → MAVLink)
 //!
-//! | dora input             | MAVLink message       |
-//! |------------------------|-----------------------|
-//! | `heartbeat_cmd`        | HEARTBEAT             |
-//! | `command_long_cmd`     | COMMAND_LONG          |
+//! | dora input                          | MAVLink message                  |
+//! |-------------------------------------|----------------------------------|
+//! | `heartbeat_cmd`                     | HEARTBEAT                        |
+//! | `command_long_cmd`                  | COMMAND_LONG                     |
+//! | `set_mode_cmd`                      | SET_MODE                         |
+//! | `rc_channels_override_cmd`          | RC_CHANNELS_OVERRIDE             |
+//! | `set_position_target_global_int_cmd`| SET_POSITION_TARGET_GLOBAL_INT   |
 //!
 //! Other message types are read-only telemetry; sending them inbound is
 //! out of scope for this PR.
@@ -45,7 +48,8 @@
 use dora_mavlink2_bridge::{
     MavlinkArrow,
     mavlink::common::{
-        COMMAND_LONG_DATA, HEARTBEAT_DATA, RC_CHANNELS_OVERRIDE_DATA, SET_MODE_DATA,
+        COMMAND_LONG_DATA, HEARTBEAT_DATA, RC_CHANNELS_OVERRIDE_DATA,
+        SET_MODE_DATA, SET_POSITION_TARGET_GLOBAL_INT_DATA,
     },
     transport,
 };
@@ -190,6 +194,10 @@ fn handle_input(
         "rc_channels_override_cmd" => {
             let d: RC_CHANNELS_OVERRIDE_DATA = decode_input(data, id.as_str())?;
             MavMessage::RC_CHANNELS_OVERRIDE(d)
+        }
+        "set_position_target_global_int_cmd" => {
+            let d: SET_POSITION_TARGET_GLOBAL_INT_DATA = decode_input(data, id.as_str())?;
+            MavMessage::SET_POSITION_TARGET_GLOBAL_INT(d)
         }
         _ => return Ok(()), // unknown input id, ignore
     };
