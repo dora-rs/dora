@@ -14,12 +14,12 @@
 
 use crate::{BridgeError, BridgeResult};
 use arrow::array::{
-    ArrayRef, AsArray, Float32Array, Int8Array, Int16Array, Int32Array, RecordBatch, UInt8Array,
-    UInt16Array, UInt32Array, UInt64Array,
+    Array, ArrayRef, Float32Array, Int8Array, Int16Array, Int32Array, PrimitiveArray, RecordBatch,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{
-    DataType, Field, Float32Type, Int8Type, Int16Type, Int32Type, Schema, UInt8Type, UInt16Type,
-    UInt32Type, UInt64Type,
+    ArrowPrimitiveType, DataType, Field, Float32Type, Int8Type, Int16Type, Int32Type, Schema,
+    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use mavlink::common;
 use num_traits::FromPrimitive;
@@ -55,61 +55,70 @@ fn build(fields: Vec<Field>, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch
 }
 
 // readers
+//
+// `read_primitive` validates everything a malformed dora input could
+// throw at us before unwrapping row 0:
+//
+//   * wrong column dtype  → `as_primitive` would panic; downcast_ref
+//     returns None and we return a `BridgeError::Mavlink` instead.
+//   * zero-row batch      → `value(0)` would panic on out-of-bounds.
+//   * null at row 0       → `value(0)` returns the slot but ignores the
+//     null bit, which silently invents a value; reject it.
+//
+// Without these checks a hostile or buggy producer on an input like
+// `command_long_cmd` could panic the bridge node; `handle_input`
+// expects decode failures to be `Err`, not aborts.
+fn read_primitive<T: ArrowPrimitiveType>(batch: &RecordBatch, name: &str) -> BridgeResult<T::Native>
+where
+    T::Native: Copy,
+{
+    let col = batch.column_by_name(name).ok_or_else(|| missing(name))?;
+    let arr = col
+        .as_any()
+        .downcast_ref::<PrimitiveArray<T>>()
+        .ok_or_else(|| {
+            BridgeError::Mavlink(format!(
+                "column '{name}' has wrong type: expected {:?}, got {:?}",
+                T::DATA_TYPE,
+                col.data_type()
+            ))
+        })?;
+    if arr.is_empty() {
+        return Err(BridgeError::Mavlink(format!(
+            "column '{name}' has zero rows; expected ≥1 row"
+        )));
+    }
+    if arr.is_null(0) {
+        return Err(BridgeError::Mavlink(format!(
+            "column '{name}' is null at row 0"
+        )));
+    }
+    Ok(arr.value(0))
+}
+
 fn read_u8(batch: &RecordBatch, name: &str) -> BridgeResult<u8> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<UInt8Type>()
-        .value(0))
+    read_primitive::<UInt8Type>(batch, name)
 }
 fn read_u16(batch: &RecordBatch, name: &str) -> BridgeResult<u16> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<UInt16Type>()
-        .value(0))
+    read_primitive::<UInt16Type>(batch, name)
 }
 fn read_u32(batch: &RecordBatch, name: &str) -> BridgeResult<u32> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<UInt32Type>()
-        .value(0))
+    read_primitive::<UInt32Type>(batch, name)
 }
 fn read_u64(batch: &RecordBatch, name: &str) -> BridgeResult<u64> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<UInt64Type>()
-        .value(0))
+    read_primitive::<UInt64Type>(batch, name)
 }
 fn read_i8(batch: &RecordBatch, name: &str) -> BridgeResult<i8> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<Int8Type>()
-        .value(0))
+    read_primitive::<Int8Type>(batch, name)
 }
 fn read_i16(batch: &RecordBatch, name: &str) -> BridgeResult<i16> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<Int16Type>()
-        .value(0))
+    read_primitive::<Int16Type>(batch, name)
 }
 fn read_i32(batch: &RecordBatch, name: &str) -> BridgeResult<i32> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<Int32Type>()
-        .value(0))
+    read_primitive::<Int32Type>(batch, name)
 }
 fn read_f32(batch: &RecordBatch, name: &str) -> BridgeResult<f32> {
-    Ok(batch
-        .column_by_name(name)
-        .ok_or_else(|| missing(name))?
-        .as_primitive::<Float32Type>()
-        .value(0))
+    read_primitive::<Float32Type>(batch, name)
 }
 // builders (single-row Arrow arrays from a single value)
 fn arr_u8(v: u8) -> ArrayRef {
@@ -974,7 +983,10 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
             )?),
             target_system: read_u8(batch, "target_system")?,
             target_component: read_u8(batch, "target_component")?,
-            coordinate_frame: decode_enum(read_u32(batch, "coordinate_frame")?, "coordinate_frame")?,
+            coordinate_frame: decode_enum(
+                read_u32(batch, "coordinate_frame")?,
+                "coordinate_frame",
+            )?,
         })
     }
 }
@@ -1055,7 +1067,10 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_LOCAL_NED_DATA {
             )?),
             target_system: read_u8(batch, "target_system")?,
             target_component: read_u8(batch, "target_component")?,
-            coordinate_frame: decode_enum(read_u32(batch, "coordinate_frame")?, "coordinate_frame")?,
+            coordinate_frame: decode_enum(
+                read_u32(batch, "coordinate_frame")?,
+                "coordinate_frame",
+            )?,
         })
     }
 }

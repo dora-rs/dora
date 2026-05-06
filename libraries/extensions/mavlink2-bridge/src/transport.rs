@@ -1,6 +1,7 @@
 //! Open MAVLink 2 transports from a `url::Url`.
 //!
-//! Supported URL schemes:
+//! Supported URL schemes (this PR's scope, **not** a fully general
+//! "open MAVLink transport from URL" surface):
 //!
 //! | URL form                              | mavlink address              | Mode      |
 //! |---------------------------------------|------------------------------|-----------|
@@ -9,13 +10,21 @@
 //! | `serial:///dev/path?baud=N` (Unix)    | `serial:/dev/path:N`         | n/a       |
 //! | `serial://COM1?baud=N` (Windows)      | `serial:COM1:N`              | n/a       |
 //!
-//! UDP defaults to *server* mode (listening) because the typical
-//! use case is receiving Pixhawk telemetry on a fixed port. Override by
-//! constructing the URL with a query that future PRs may add. For now,
-//! callers needing UDP client mode can drop down to `mavlink::connect`
-//! directly.
+//! ## Known limitations (intentional, not bugs)
 //!
-//! Serial baud defaults to 115200 if the `?baud=` query is omitted.
+//! * **`tcp://` is always `tcpout:` (client mode).** There is no way
+//!   to bind a TCP server with this builder; the autopilot must be
+//!   the listener. Callers needing `tcpin:` (acting as a TCP server)
+//!   must drop down to `mavlink::connect` directly.
+//! * **`udp://` is always `udpin:` (server mode — bind + listen).**
+//!   The typical use case is receiving Pixhawk telemetry on a fixed
+//!   local port, so we hard-wire that. `udpout:` (client) and
+//!   `udpbcast:` (broadcast) are out of scope; callers needing them
+//!   must drop down to `mavlink::connect` directly. The shutdown
+//!   wake-up logic in the bridge node assumes server mode (it sends
+//!   a self-loopback HEARTBEAT to the bound port), so flipping this
+//!   would require revisiting that path too.
+//! * **Serial** baud defaults to `115_200` when `?baud=` is omitted.
 
 use crate::{BridgeError, BridgeResult};
 use mavlink::{MavConnection, MavlinkVersion, common::MavMessage};
