@@ -65,6 +65,8 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
 | `apis/rust/operator` | dora-operator-api | Rust API for writing in-process operators |
 | `apis/python/node` | dora-node-api-python | Python node API (PyO3) |
+| `libraries/extensions/mavlink2-bridge` | dora-mavlink2-bridge | MAVLink 2 ↔ Apache Arrow conversion (common dialect) |
+| `binaries/mavlink2-bridge-node` | dora-mavlink2-bridge-node | Daemon-spawnable MAVLink 2 bridge (TCP/UDP/serial) |
 
 ## Architecture
 

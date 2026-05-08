@@ -1,0 +1,14 @@
+[package]
+name = "mavlink2-bridge-example-mavlink-sim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+dora-mavlink2-bridge = { workspace = true }
+dora-node-api = { workspace = true }
+mavlink = { workspace = true }
+eyre = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = "0.3"

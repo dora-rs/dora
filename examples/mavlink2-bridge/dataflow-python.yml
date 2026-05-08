@@ -1,0 +1,52 @@
+nodes:
+  # In-process MAVLink 2 simulator. Replaces an autopilot/SITL/MAVProxy
+  # for examples and smoke tests; sends a HEARTBEAT every 500 ms over
+  # UDP to whatever endpoint MAVLINK_SIM_PEER points at.
+  - id: mavlink-sim
+    build: cargo build -p mavlink2-bridge-example-mavlink-sim
+    path: ../../target/debug/mavlink2-bridge-example-mavlink-sim
+    env:
+      MAVLINK_SIM_PEER: 127.0.0.1:14550
+
+  # The bridge node. Listens on udp://127.0.0.1:14550 (mavlink udpin),
+  # decodes incoming MAVLink frames into per-message Arrow outputs, and
+  # forwards Arrow inputs named `<message>_cmd` back over the same
+  # connection as MAVLink frames.
+  - id: bridge
+    build: cargo build -p dora-mavlink2-bridge-node
+    path: ../../target/debug/dora-mavlink2-bridge-node
+    env:
+      MAVLINK_BRIDGE_CONFIG: |
+        endpoint: udp://127.0.0.1:14550
+    inputs:
+      heartbeat_cmd: heartbeat-emitter/heartbeat_cmd
+    outputs:
+      - heartbeat
+      - sys_status
+      - system_time
+      - attitude
+      - attitude_quaternion
+      - local_position_ned
+      - global_position_int
+      - gps_raw_int
+      - rc_channels
+      - servo_output_raw
+      - command_long
+      - command_ack
+      - mission_current
+
+  # dora -> MAVLink direction: emits a HEARTBEAT_DATA Arrow row each
+  # second; the bridge serialises it and writes it back over UDP.
+  - id: heartbeat-emitter
+    build: cargo build -p mavlink2-bridge-example-heartbeat-emitter
+    path: ../../target/debug/mavlink2-bridge-example-heartbeat-emitter
+    inputs:
+      tick: dora/timer/secs/1
+    outputs:
+      - heartbeat_cmd
+
+  # MAVLink -> dora direction: prints each decoded HEARTBEAT.
+  - id: telemetry-printer
+    path: telemetry_printer.py
+    inputs:
+      heartbeat: bridge/heartbeat

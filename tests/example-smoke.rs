@@ -23,6 +23,7 @@ static BUILD_ACTION_NODES: Once = Once::new();
 static BUILD_CROSS_LANGUAGE_NODES: Once = Once::new();
 static BUILD_VALIDATED_PIPELINE_NODES: Once = Once::new();
 static BUILD_QUEUE_LATEST_RUST: Once = Once::new();
+static BUILD_MAVLINK2_BRIDGE_NODES: Once = Once::new();
 
 fn dora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
@@ -1306,6 +1307,83 @@ fn smoke_local_queue_size_latest_data_python() {
     );
 }
 
+fn ensure_mavlink2_bridge_nodes_built() {
+    BUILD_MAVLINK2_BRIDGE_NODES.call_once(|| {
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "dora-mavlink2-bridge-node",
+                "-p",
+                "mavlink2-bridge-example-mavlink-sim",
+                "-p",
+                "mavlink2-bridge-example-heartbeat-emitter",
+                "-p",
+                "mavlink2-bridge-example-telemetry-printer-rust",
+            ])
+            .status()
+            .expect("failed to run cargo build for mavlink2-bridge example");
+        assert!(status.success(), "failed to build mavlink2-bridge nodes");
+    });
+}
+
+// ---------------------------------------------------------------------------
+// MAVLink 2 bridge example (#1786)
+//
+// Three variants share the same bridge + UDP simulator + Rust HEARTBEAT
+// emitter; only the consumer that reads `bridge/heartbeat` differs:
+//
+//   * dataflow-rust.yml   -- pure Rust (no Python toolchain required)
+//   * dataflow-python.yml -- Python printer via `--uv`
+//   * dataflow-cxx.yml    -- C++ printer; built+run via the
+//                            `mavlink2-bridge-cxx` cargo example
+//                            (mirrors `cxx-arrow-dataflow`). NOT in
+//                            the smoke harness — see audit table.
+//
+// UDP avoids `TIME_WAIT` between successive smoke runs and keeps these
+// tests CI-friendly without a SITL/MAVProxy dependency.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_mavlink2_bridge_rust() {
+    ensure_mavlink2_bridge_nodes_built();
+    run_smoke_test(
+        "mavlink2-bridge-rust",
+        "examples/mavlink2-bridge/dataflow-rust.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_mavlink2_bridge_rust() {
+    ensure_mavlink2_bridge_nodes_built();
+    run_smoke_test_local(
+        "local-mavlink2-bridge-rust",
+        "examples/mavlink2-bridge/dataflow-rust.yml",
+        10,
+    );
+}
+
+#[test]
+fn smoke_mavlink2_bridge_python() {
+    ensure_mavlink2_bridge_nodes_built();
+    run_smoke_test(
+        "mavlink2-bridge-python",
+        "examples/mavlink2-bridge/dataflow-python.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_local_mavlink2_bridge_python() {
+    ensure_mavlink2_bridge_nodes_built();
+    run_smoke_test_local(
+        "local-mavlink2-bridge-python",
+        "examples/mavlink2-bridge/dataflow-python.yml",
+        10,
+    );
+}
+
 fn ensure_queue_latest_rust_built() {
     BUILD_QUEUE_LATEST_RUST.call_once(|| {
         let status = Command::new("cargo")
@@ -1367,6 +1445,12 @@ fn smoke_local_queue_size_latest_data_rust() {
 // |                           | testing-capabilities.md                              |          |
 // | python-operator-dataflow  | covered: `cli` job .github/workflows/ci.yml:393      | covered  |
 // | rust-dataflow-git         | covered: `examples` job (3 OS)                       | covered  |
+// | mavlink2-bridge-cxx       | covered: `examples` job via                          | covered  |
+// |                           | `[[example]] mavlink2-bridge-cxx` (cargo run         |          |
+// |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
+// | mavlink2-bridge-sitl-     | blocker: needs ArduPilot SITL                        | —        |
+// |   mission                 | (Ubuntu / macOS only, local-only by design;          |          |
+// |                           | see examples/mavlink2-bridge-sitl-mission/README)    |          |
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.

@@ -1,0 +1,39 @@
+nodes:
+  # MAVLink bridge talking to ArduPilot SITL on udp:14550.
+  # SITL is *not* spawned by dora -- start it separately via
+  # scripts/start_sitl.sh before running this dataflow.
+  - id: bridge
+    build: cargo build -p dora-mavlink2-bridge-node
+    path: ../../target/debug/dora-mavlink2-bridge-node
+    env:
+      MAVLINK_BRIDGE_CONFIG: |
+        endpoint: udp://127.0.0.1:14550
+    inputs:
+      command_long_cmd: mission/command_long_cmd
+    outputs:
+      - heartbeat
+      - global_position_int
+      - command_ack
+      # The bridge publishes more outputs (sys_status, attitude, gps,
+      # etc.); declared here only so the schema validates -- mission.py
+      # does not subscribe to them.
+      - sys_status
+      - system_time
+      - attitude
+      - attitude_quaternion
+      - local_position_ned
+      - gps_raw_int
+      - rc_channels
+      - servo_output_raw
+      - command_long
+      - mission_current
+
+  # Closed-loop mission driver: arms, takes off, hovers, lands.
+  - id: mission
+    path: mission.py
+    inputs:
+      heartbeat: bridge/heartbeat
+      global_position_int: bridge/global_position_int
+      command_ack: bridge/command_ack
+    outputs:
+      - command_long_cmd

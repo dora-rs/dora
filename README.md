@@ -396,6 +396,7 @@ binaries/
   daemon/               # Node manager + IPC
   runtime/              # In-process operator runtime
   ros2-bridge-node/     # ROS2 bridge binary
+  mavlink2-bridge-node/ # MAVLink 2 bridge binary
   record-node/          # Dataflow message recorder
   replay-node/          # Recorded message replayer
 libraries/
@@ -409,6 +410,7 @@ libraries/
   extensions/
     telemetry/          # OpenTelemetry tracing + metrics
     ros2-bridge/        # ROS2 interop (bridge, msg-gen, arrow, python)
+    mavlink2-bridge/    # MAVLink 2 interop (Arrow ↔ MAVLink, TCP/UDP/serial)
     download/           # Download utilities
 apis/
   rust/node/            # Rust node API (dora-node-api)
@@ -534,6 +536,15 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [ros2-bridge/yaml-bridge-service](examples/ros2-bridge/yaml-bridge-service) | YAML ROS2 service bridge |
 | [ros2-bridge/yaml-bridge-action](examples/ros2-bridge/yaml-bridge-action) | YAML ROS2 action client |
 | [ros2-bridge/yaml-bridge-action-server](examples/ros2-bridge/yaml-bridge-action-server) | YAML ROS2 action server |
+
+### MAVLink 2 integration
+
+| Example | Description |
+|---------|-------------|
+| [mavlink2-bridge (Rust)](examples/mavlink2-bridge/dataflow-rust.yml) | MAVLink 2 ↔ dora bridge, Rust telemetry consumer |
+| [mavlink2-bridge (Python)](examples/mavlink2-bridge/dataflow-python.yml) | Same bridge, Python telemetry consumer (`--uv`) |
+| [mavlink2-bridge (C++)](examples/mavlink2-bridge/dataflow-cxx.yml) | Same bridge, C++ telemetry consumer (`cargo run --example mavlink2-bridge-cxx`) |
+| [mavlink2-bridge-sitl-mission](examples/mavlink2-bridge-sitl-mission) | Closed-loop ArduCopter SITL: arm + takeoff + hover + land driven from a Python dora node (Ubuntu / macOS, local-only) |
 
 ## Development
 
