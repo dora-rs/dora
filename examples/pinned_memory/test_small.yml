@@ -1,5 +1,0 @@
-nodes:
-  - id: test_node
-    path: test_small.py
-    env:
-      PYTHONWARNINGS: ignore::UserWarning:multiprocessing.resource_tracker

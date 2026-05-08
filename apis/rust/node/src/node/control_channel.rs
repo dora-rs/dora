@@ -176,4 +176,5 @@ impl ControlChannel {
             other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
         }
     }
+
 }

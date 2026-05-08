@@ -1,147 +1,191 @@
-# Dora 页锁内存功能开发文档
+# Dora 页锁内存池开发文档
 
 ## 概述
 
-本文档记录了在Dora框架中实现CPU到CUDA跨进程张量高速传输功能的开发过程。通过页锁内存（Pinned Memory）和DMA传输机制，从共享内存中读取数据后经由DMA传输至GPU。
+本文档记录了在Dora框架中通过页锁内存池实现跨进程CPU↔CUDA张量高速传输的设计与实现。核心设计为**共享状态（shared-state）API**替代旧的每轮迭代"消息传递"模式：发送端注册一次内存池，之后只需写入新数据；接收端一次读取获得持久化tensor，其内容随发送端写入自动更新。
 
-当前传输速率约1500MB/s（受限于PCIe带宽和共享内存复制开销），目标为30000MB/s。
-
-## 功能架构
+## 架构概览
 
 ```
-┌───────────────────────────────────────────────────────────────┐
-│                     Python Node (Sender)                      │
-│  1. torch_to_ptr(tensor) → (ptr_array, metadata)              │
-│  2. node.register_pinned_memory(ptr_array, metadata)          │
-│     → pinned_buffer (shared memory identifier)                │
-│     Create shmem, copy data, register with daemon             │
-└──────────────────────────┬────────────────────────────────────┘
-                           │
-┌──────────────────────────▼────────────────────────────────────┐
-│              Dora Daemon (Memory Manager)                     │
-│  pinned_memory_table: HashMap<Id, PinnedMemoryMetadata>       │
-│  - register: stores metadata keyed by buffer ID               │
-│  - read: returns metadata for a given buffer ID               │
-│  - free: removes entry from table                             │
-└──────────────────────────┬────────────────────────────────────┘
-                           │
-┌──────────────────────────▼────────────────────────────────────┐
-│                     Python Node (Receiver)                     │
-│  node.read_pinned_memory(pinned_buffer, free=True)             │
-│    → (ptr_array, metadata)                                    │
-│    1. Query daemon for metadata (free=false to avoid race)    │
-│    2. Map shared memory from /dev/shm                         │
-│    3. cudaHostRegister + cudaMalloc + cudaMemcpy (DMA)        │
-│    4. If free=True, notify daemon to remove entry             │
-│    5. Return device pointer and metadata                      │
-│                                                               │
-│  ptr_to_torch(ptr_array, metadata) → torch.Tensor             │
-│    - Zero-copy wraps pointer as tensor via __cuda_array_iface__│
-│    - Supports CPU and CUDA pointers                           │
-└───────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│                  Sender Node                                 │
+│  1. tensor_info = get_tensor_info(tensor)                    │
+│  2. memory_pool_id = node.register_memory_pool(tensor_info,  │
+│                            receiver_device)                   │
+│     → Pool slot assignment (round-robin 3 slots)             │
+│     → DORADMA header write + data copy (DMA if CUDA)        │
+│     → Register with daemon for lifecycle tracking            │
+│     → Returns buffer_id like "pool_0_1"                     │
+│  3. node.send_output("data", pa.array([memory_pool_id]))     │
+│   ...                                                        │
+│  4. tensor_info = get_tensor_info(new_tensor)                │
+│  5. node.write_memory_pool(memory_pool_id, tensor_info)      │
+│     → Fast path: DORADMA (open shmem, copy data)            │
+│     → Slow path: daemon RPC                                 │
+└───────────────────────┬──────────────────────────────────────┘
+                        │ send_output(memory_pool_id)
+┌───────────────────────▼──────────────────────────────────────┐
+│              Dora Daemon (MemoryPoolManager)                  │
+│  memory_pool: HashMap<MemoryPoolId, MemoryPoolEntry>         │
+│  - register_memory_pool: stores metadata keyed by buffer ID  │
+│  - free_memory_pool: removes entry from table                │
+│  - cleanup_all: lists remaining entries at shutdown          │
+│                                                              │
+│  Pool shmems (dora_pool_0..2) are persistent ring buffers   │
+└───────────────────────┬──────────────────────────────────────┘
+                        │
+┌───────────────────────▼──────────────────────────────────────┐
+│                Receiver Node                                 │
+│  1. memory_pool_id = event["value"]                          │
+│  2. tensor_info = node.read_memory_pool(memory_pool_id)      │
+│     → Fast path (DORADMA, pool_* buffers):                  │
+│       1. Extract slot from buffer_id → "dora_pool_{slot}"   │
+│       2. Open shmem, validate DORADMA magic header           │
+│       3. Read JSON metadata from shmem header (no daemon!)   │
+│       4. Resolve pointer: CUDA→GPU VA cache, CPU→shmem ptr  │
+│       5. Return tensor_info dict {ptr, size, dtype, shape,   │
+│                                    device}                    │
+│     → Slow path: query daemon for metadata                   │
+│  3. torch_tensor = tensor_from_info(tensor_info)             │
+│     → Zero-copy wraps pointer via __cuda_array_interface__   │
+│  4. torch_tensor auto-updates as sender calls write_...      │
+│  5. node.free_memory_pool(memory_pool_id)                    │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-## 修改的文件列表
+## DORADMA 共享内存头格式
+
+Pool-mode shmem 在头部嵌入元数据，消除 daemon 往返查询：
+
+```
+Offset  Size  Field
+0       8     magic: b"DORADMA\x00"
+8       8     json_len: u64 LE
+16      8     data_offset: u64 LE
+24      232   reserved (zeroed)
+256     N     JSON metadata (size, dtype, shape, pinned_type)
+256+N   M     tensor data
+```
+
+接收端打开 shmem 后：
+1. 验证 magic → 不匹配则 fallback daemon 查询
+2. 读取 json_len → JSON metadata → 获取 dtype/shape/size/pinned_type
+3. 根据 pinned_type 决定 CPU/CUDA 指针解析路径
+
+## 文件结构
 
 ### Rust 核心文件
 
 | 文件 | 内容 |
 |------|------|
-| `dora/binaries/daemon/src/memory_manager.rs` | 页锁内存管理器：pinned_memory_table 注册/读取/释放，freed:bool double-free 检测，cleanup_all 统计并日志记录未释放条目数 |
-| `dora/binaries/daemon/src/lib.rs` | 处理 RegisterPinnedMemory / ReadPinnedMemory / FreePinnedMemory 事件；daemon 退出时调用 memory_manager.cleanup_all() 自动清理未释放页锁内存 |
-| `dora/apis/rust/node/src/node/mod.rs` | DoraNode 的 register/read/free_pinned_memory 方法 |
-| `dora/apis/rust/node/src/node/control_channel.rs` | ControlChannel 的页锁内存通信方法 |
-| `dora/libraries/message/src/node_to_daemon.rs` | DaemonRequest 枚举变体 |
-| `dora/libraries/message/src/daemon_to_node.rs` | DaemonReply::PinnedMemoryMetadata |
+| `binaries/daemon/src/memory_manager.rs` | MemoryPoolManager：register_memory_pool / read_memory_pool / free_memory_pool；cleanup_all 统计清理；pool shmem 持久化管理 |
+| `binaries/daemon/src/lib.rs` | 处理 RegisterPinnedMemory / ReadPinnedMemory / FreePinnedMemory 事件；daemon 退出时调用 cleanup_all |
+| `apis/rust/node/src/node/mod.rs` | DoraNode 的 register/read/free_pinned_memory 方法（底层 Rust API 保持原名） |
+| `apis/rust/node/src/node/control_channel.rs` | ControlChannel 的页锁内存通信方法 |
+| `libraries/message/src/node_to_daemon.rs` | DaemonRequest 枚举变体 |
+| `libraries/message/src/daemon_to_node.rs` | DaemonReply 枚举变体 |
 
 ### Python API 文件
 
 | 文件 | 内容 |
 |------|------|
-| `dora/apis/python/node/src/lib.rs` | Python 绑定：register_pinned_memory_internal, read_pinned_memory, free_pinned_memory, pin_and_dma_to_gpu；全局静态：GPU_ALLOCATIONS, LAST_HOST_PTR, PINNED_COUNTER |
-| `dora/apis/python/node/dora/cuda.py` | 辅助函数：torch_to_ptr, ptr_to_torch |
+| `apis/python/node/src/lib.rs` | Python 绑定：register_memory_pool, write_memory_pool, read_memory_pool, free_memory_pool, try_doradma_read；预编译 CUDA helper 模块，持久化 GPU buffer pool |
+| `apis/python/node/dora/cuda.py` | 辅助函数：get_tensor_info, tensor_from_info |
 
 ## API 参考
 
 ### dora.cuda 模块
 
-#### `torch_to_ptr(tensor) -> (pa.array, dict)`
-将 PyTorch 张量解析为指针数组和元数据字典。仅负责解析，不涉及内存注册。
+#### `get_tensor_info(tensor) -> dict`
+将 PyTorch 张量解析为字典，包含 ptr, size, dtype, shape, device。仅负责解析，不涉及内存注册。
 
-#### `ptr_to_torch(ptr_array, metadata) -> torch.Tensor`
-根据指针和元数据创建 PyTorch 张量（零拷贝）。自动判断指针位置：CPU 指针生成 CPU 张量，CUDA 指针生成 CUDA 张量。
+#### `tensor_from_info(tensor_info) -> dict`
+根据 tensor_info 字典创建 PyTorch 张量（零拷贝）。自动判断指针位置：CPU 指针→CPU 张量，CUDA 指针→CUDA 张量（通过 `__cuda_array_interface__`）。
 
 ### Node 类方法
 
-#### `node.register_pinned_memory(ptr_array, metadata) -> pinned_buffer`
-1. 从 ptr_array 提取数据指针
-2. 创建共享内存（/dev/shm），通过 ptr::copy_nonoverlapping 复制数据
-3. 向 daemon 注册内存元数据（存入 pinned_memory_table）
-4. 返回共享内存标识符（StringArray）
+#### `node.register_memory_pool(tensor_info, device) -> memory_pool_id`
+1. 从 tensor_info 提取 ptr/size/dtype/shape/device
+2. 轮询选择 pool slot（3 槽），创建/复用共享内存
+3. 写入 DORADMA header（magic + json_len + data_offset + JSON metadata）
+4. 拷贝数据：CUDA 源→cudaMemcpy，CPU 源→ptr::copy_nonoverlapping
+5. cudaHostRegister 锁定 pool 内存（发送端预 pin）
+6. 向 daemon 注册元数据
+7. 返回 buffer_id（格式 `pool_{slot}_{counter}`，pyarrow StringArray）
 
-#### `node.read_pinned_memory(pinned_buffer, free=True) -> (ptr_array, metadata)`
-1. 向 daemon 查询元数据（固定传 free=false 避免竞态）
-2. 映射共享内存获取 host 指针
-3. 执行 cudaHostRegister + cudaMalloc + cudaMemcpy（DMA 传输至 GPU）
-4. 若 free=True，通知 daemon 删除表项
-5. 返回 device 指针和元数据
+#### `node.write_memory_pool(memory_pool_id, tensor_info)`
+快速路径（DORADMA）：
+1. 从 buffer_id 提取 slot 号，打开对应 shmem
+2. 验证 DORADMA magic → 读取 data_offset
+3. 拷贝数据到 data_offset 位置（cudaMemcpy 或 ptr::copy）
+4. 失败时 fallback daemon 查询路径
 
-#### `node.free_pinned_memory(pinned_buffer)`
-通知 daemon 从 pinned_memory_table 删除对应表项。
+#### `node.read_memory_pool(memory_pool_id) -> tensor_info`
+快速路径（DORADMA）：
+1. 从 buffer_id 提取 slot 号，打开对应 shmem
+2. 验证 DORADMA magic → 读取 JSON 元数据
+3. 根据 pinned_type 决定 CUDA/CPU 指针：
+   - CUDA：RECV_GPU_VA cache → GPU VA + data_offset
+   - CPU：RECV_CPU_SHMEM cache → shmem CPU ptr + data_offset
+4. 返回 tensor_info dict {ptr, size, dtype, shape, device}
 
-## 传输机制
+失败时 fallback daemon 查询路径。
 
-### 数据流
-1. **发送端**: 创建共享内存 → 复制数据 → 向 daemon 注册元数据 → 发送 buffer_id 给接收端
-2. **接收端**: 通过 buffer_id 查询 daemon → 映射共享内存 → DMA 传输至 GPU → 返回 device 指针
+#### `node.free_memory_pool(memory_pool_id)`
+通知 daemon 从 memory_pool 表删除对应条目。daemon 返回未找到时输出警告。
 
-### DMA 传输（pin_and_dma_to_gpu）
-通过 Python ctypes 内联执行 CUDA 操作：
-1. `free_old_gpu_allocations` — 释放前一次迭代的 GPU 缓冲区（防止内存泄漏）
-2. `cudaHostRegister` — 将 host 内存注册为页锁内存（最大化 DMA 带宽）
-3. `cudaMalloc` — 在 GPU 上分配设备内存
-4. `cudaMemcpy` — 从页锁内存 DMA 传输至 GPU（HostToDevice）
-5. `cudaDeviceSynchronize` — 等待传输完成
+## 数据传输流程
 
-结果通过 Python 模块变量（`result_ptr`）返回，不再使用 stdout 捕获。
+### 发送端
+1. 首帧：`get_tensor_info` → `register_memory_pool` → `send_output`
+2. 后续帧：`get_tensor_info` → `write_memory_pool` → `send_output`
 
-### 内存管理
-### 内存管理
-- **共享内存（发送端）**: 使用 shared_memory_extended 库在 /dev/shm 上创建。通过 `shmem.set_owner(false)` 允许 Drop 执行 munmap+close(fd) 但跳过 shm_unlink，确保共享内存名存活供接收端打开。不使用 `mem::forget`，否则每轮迭代泄漏约 61MB mmap 内存，100 轮后导致 SIGBUS 崩溃。
-- **共享内存（接收端）**: 在 `read_pinned_memory` 中通过 `ShmemConf::new().os_id()` 打开共享内存，DMA 传输完成后不再 `mem::forget`，让 Drop 自然执行 munmap+close（该进程为打开者，owner 默认 false，不会 shm_unlink）。
-- **Daemon 表项**: pinned_memory_table 跟踪所有注册。释放时条目标记为 `freed=true` 而非删除，以便检测重复释放和保留 size 信息用于警告日志。daemon 退出时自动清理所有未释放条目。`free_pinned_memory` 在 daemon 中同时清除 /dev/shm 文件。
-- **GPU 内存**: `pin_and_dma_to_gpu` 中通过 cudaMalloc 分配设备内存。分配前调用 `free_old_gpu_allocations` 释放前一次迭代的所有 GPU 指针（全局列表 `GPU_ALLOCATIONS` 跟踪），确保同时最多仅有一个 GPU 缓冲区存活，防止 GPU 内存泄漏导致的性能衰减（此前导致 8.82→1.18 it/s 速度衰减的根因）。
-- **cudaHostRegister 累积**: 每轮迭代的 `pin_and_dma_to_gpu` 调用 `cudaHostRegister` 将共享内存注册为页锁内存。全局 `LAST_HOST_PTR` 跟踪上一轮 host 指针，在新注册前调用 `cudaHostUnregister` 释放旧注册，防止页锁内存累积。
-- **Buffer ID 唯一性**: 全局 `PINNED_COUNTER` 生成自增计数，buffer ID 格式为 `pinned_{ptr}_{counter}`。PyTorch 可能在 GC 后复用同一数据指针，若仅用 `pinned_{ptr}` 会导致 daemon 拒绝重复注册。
+### 接收端
+1. 首帧：收到 memory_pool_id → `read_memory_pool` → `tensor_from_info`
+2. 后续帧：tensor 自动更新（同一指针，数据已覆盖），无需重新读取
+3. 结束：`free_memory_pool`
 
-## 测试
+## 内存管理
 
-### 集成测试（target_test）
-- `test1.yml`: sender1 + receiver1（显式 free=False + 显式 free_pinned_memory），100 轮迭代，大型数据速度测试
-- `test2.yml`: sender1 + receiver2（默认 free=True 自动清理 daemon 表项），10 轮迭代
-- `test3.yml`: sender1 + receiver3 — 先 free_pinned_memory 释放，再 read_pinned_memory（free=True），测试重复释放警告
-- `test4.yml`: sender1 + receiver4 — 同 receiver3，测试读取不存在的页锁内存警告
-- `test5.yml`: sender1 + receiver1 — 发送端注册 5 条页锁内存，接收端只释放 2 条，daemon 退出时 memory_manager 自动清理剩余 3 条并输出 INFO 日志
+### 共享内存（Pool 模式）
+- 预分配 3 个持久化 shmem（`dora_pool_0`、`dora_pool_1`、`dora_pool_2`）
+- 首次使用创建，后续迭代直接复用
+- `shmem.set_owner(false)` — Drop 执行 munmap+close 但跳过 shm_unlink
+- Pool shmem 在 daemon shutdown 时通过 `cleanup_all` 清理
 
-### 扩展模块测试
-- `examples/pinned_memory/test_1/test_cuda_ext.py`: 测试 torch_to_ptr / ptr_to_torch 正确性
+### Daemon 表项
+- `memory_pool` 跟踪所有注册的 buffer
+- `free_memory_pool` 删除条目；再次 free 输出"未找到"警告
+- `cleanup_all` 统计剩余条目，输出 INFO 日志
 
-## 性能
+### 接收端缓存
+- `RECV_GPU_VA[3]`：GPU VA cache，防止 munmap 导致 GPU VA 失效
+- `RECV_CPU_SHMEM[3]`：CPU Shmem cache，防止 munmap 导致 CPU 指针悬空
+- 首次访问时注册+缓存，后续复用
 
-当前传输速率约 1500MB/s，瓶颈分析：
-- 共享内存读/写各一次复制
-- PCIe Gen3 x16 理论带宽约 16GB/s
-- 页锁内存 DMA 可达接近 PCIe 理论带宽
+### GPU 内存
+- 预编译 CUDA helper 模块维护 `_gpu_bufs: dict[slot→(d_ptr, size)]`
+- 3 个 GPU buffer 对应 3 个 shmem slot，按 slot 复用
+- `_register_host` 幂等 pinning（`_pinned` dict 去重）
+- 无需 per-iteration 的 cudaMalloc/cudaFree
 
-要达到 30000MB/s 需要根本性架构变更：
-- GPU IPC（cudaIpcGetMemHandle / cudaIpcOpenMemHandle）跨进程直接 GPU 访问
-- 或利用同一 GPU 内存分配跨进程共享
+## 快速/慢速路径
+
+| 操作 | 快速路径 | 慢速路径 |
+|------|----------|----------|
+| write_memory_pool | DORADMA header → 直接写 shmem data | daemon read_pinned_memory RPC |
+| read_memory_pool | DORADMA header → 直接读 shmem metadata | daemon read_pinned_memory RPC |
+| free_memory_pool | — | daemon free_pinned_memory RPC |
+| register_memory_pool | — | daemon register_pinned_memory RPC |
 
 ## 开发注意事项
 
-1. `read_pinned_memory` 向 daemon 查询时始终传 free=false，随后通过独立调用 free_pinned_memory 清理，避免共享内存在接收方尚未 mmap 时被删除的竞态
-2. GPU 内存在每次新分配前通过 `free_old_gpu_allocations` 释放前一批缓冲区。全局列表 `GPU_ALLOCATIONS` 跟踪所有未释放的设备指针，确保同时最多只有一个 GPU 缓冲区存活。进程退出时 CUDA 驱动自动回收剩余内存。
-3. 发送端可能无 CUDA 设备，因此 cudaHostRegister 在接收端执行
-4. 跨进程共享内存在不同进程中物理地址不同，cudaHostGetDevicePointer 不适用
-5. 重复释放（double-free）检测：daemon 的 `PinnedMemoryEntry` 有 `freed: bool` 字段，标记释放而非删除条目，使 double-free 和 read-after-free 都能正确返回错误信息而不崩溃
-6. Daemon 退出时自动调用 `memory_manager.cleanup_all()`，统计 pinned_memory_table 中未释放的条目数，输出 `memory manager检测到N条未释放的页锁内存数据，正在释放......` 和 `memory manager已成功释放N条未释放的页锁内存数据` 两条 INFO 日志，然后逐一清理共享内存文件
+1. Pool 模式 free_memory_pool 通知 daemon 删除条目；再次 free 输出警告而非崩溃
+2. try_doradma_read 中检测到无效 head 时返回 None 触发 fallback，而非 panic
+3. read_memory_pool 的 daemon fallback 路径返回 tensor_info dict（与快速路径格式一致）
+4. Python CUDA helper 模块一旦编译就缓存到 `CUDA_HELPERS` 静态变量
+5. `cudaHostRegister` 去重：`_pinned` dict 防止同一 shmem 被重复 register
+6. Pool shmem 的 `create` 在已有 shmem 时失败 → fallback `open`
+7. RECV_GPU_VA 和 RECV_CPU_SHMEM cache 防止 Shmem 被 Drop 导致地址失效
+8. Daemon 退出时自动 `cleanup_all`，输出 INFO 日志记录未释放条目数
+9. `PINNED_POOL` 使用 `unsafe impl Send + Sync` 因为 `Shmem` 内部包含裸指针

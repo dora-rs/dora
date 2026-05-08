@@ -655,8 +655,8 @@ impl Daemon {
             }
         }
 
-        // Clean up any unfreed pinned memory entries on daemon exit
-        let _ = self.state.memory_manager.cleanup_all();
+        // Clean up any unfreed memory pool entries on daemon exit
+        let _ = self.state.memory_pool.cleanup_all();
 
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
@@ -1663,7 +1663,7 @@ impl Daemon {
                     // Debug: print what we extracted
                     // Removed excessive debug output per user request
 
-                    let pinned_metadata = crate::memory_manager::PinnedMemoryMetadata {
+                    let pool_metadata = crate::memory_manager::MemoryPoolMetadata {
                         ptr,
                         size,
                         dtype,
@@ -1675,11 +1675,11 @@ impl Daemon {
                         cuda_registered,
                     };
 
-                    self.state.memory_manager.register_pinned_memory(
-                        crate::memory_manager::PinnedMemoryId {
+                    self.state.memory_pool.register_memory_pool(
+                        crate::memory_manager::MemoryPoolId {
                             id: shared_memory_id,
                         },
-                        pinned_metadata,
+                        pool_metadata,
                         node_id.to_string(),
                     )
                 })();
@@ -1690,24 +1690,38 @@ impl Daemon {
                 free,
                 reply_sender,
             } => {
+                tracing::debug!(
+                    "[ReadPinnedMemory] looking up pool {}, table has {} entries",
+                    shared_memory_id,
+                    self.state.memory_pool.table_size(),
+                );
                 let result = (|| -> Result<metadata::Metadata, String> {
-                    let id = memory_manager::PinnedMemoryId {
+                    let id = memory_manager::MemoryPoolId {
                         id: shared_memory_id.clone(),
                     };
                     let metadata = self
                         .state
-                        .memory_manager
-                        .read_pinned_memory(&id)
+                        .memory_pool
+                        .read_memory_pool(&id)
                         .ok_or_else(|| {
-                            format!("pinned memory with ID {} not found", shared_memory_id)
+                            tracing::debug!(
+                                "[ReadPinnedMemory] pool {} NOT FOUND in table",
+                                shared_memory_id,
+                            );
+                            format!("memory pool with ID {} not found", shared_memory_id)
                         })?;
 
-                    // Free pinned memory after reading if free parameter is true
-                    // According to plan.md: "传输完后，若入参free为True，则调用free_pinned_memory释放传输前的页锁内存"
+                    tracing::debug!(
+                        "[ReadPinnedMemory] pool {} FOUND, size={}",
+                        shared_memory_id,
+                        metadata.size,
+                    );
+
+                    // Free memory pool after reading if free parameter is true
                     if free {
-                        if let Err(err) = self.state.memory_manager.free_pinned_memory(&id) {
+                        if let Err(err) = self.state.memory_pool.free_memory_pool(&id) {
                             tracing::debug!(
-                                "Failed to free pinned memory {} after reading (may already be freed): {}",
+                                "Failed to free memory pool {} after reading (may already be freed): {}",
                                 shared_memory_id,
                                 err
                             );
@@ -1767,13 +1781,29 @@ impl Daemon {
                 shared_memory_id,
                 reply_sender,
             } => {
-                let id = memory_manager::PinnedMemoryId {
+                let id = memory_manager::MemoryPoolId {
                     id: shared_memory_id.clone(),
                 };
+                let table_size_before = self.state.memory_pool.table_size();
                 let result: Result<(), String> =
-                    match self.state.memory_manager.free_pinned_memory(&id) {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(e),
+                    match self.state.memory_pool.free_memory_pool(&id) {
+                        Ok(_) => {
+                            tracing::debug!(
+                                "[FreePinnedMemory] removed pool {}, table size: {} -> {}",
+                                shared_memory_id,
+                                table_size_before,
+                                self.state.memory_pool.table_size(),
+                            );
+                            Ok(())
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "[FreePinnedMemory] failed to remove pool {}: {}",
+                                shared_memory_id,
+                                e,
+                            );
+                            Err(e)
+                        }
                     };
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }

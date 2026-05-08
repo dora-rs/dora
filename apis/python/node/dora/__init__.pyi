@@ -172,51 +172,61 @@ class Node:
         ```
         """
 
-    def pinned_memory_to_cuda(
-            self, data_ptr: pyarrow.Array, metadata: dict) -> pyarrow.Array:
+    def register_memory_pool(
+            self, tensor_info: dict, device: str = "cpu") -> pyarrow.Array:
         """
-        入参1：pinned_ptr为cpu上的tensor的指针。
-        入参2：metadata为字典，包括tensor的ptr,size,dtype,shape等。
-        调用该api后，node根据pinned_ptr, metadata将tensor数据注册为页锁内存，并通过DMA传输至CUDA注册后生成buffer（跨进程不变的内存标识符）。
-        然后node将buffer和metadata作为DaemonRequest发给daemon。
-        daemon收到DaemonRequest之后，会让memory_manager将buffer, metadata写入pinned_memory_table；
-        返回值：buffer为py.array包装的共享内存标识符。
+        Register a tensor's pinned memory as a shared memory pool and
+        return a persistent buffer_id (pyarrow string array).
+
+        The tensor data is copied into page-locked shared memory (via DMA
+        if CUDA). The returned buffer_id can be sent to another node,
+        which can call read_memory_pool() to get a zero-copy tensor_info
+        pointing to the same shared memory.
+
+        Args:
+            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
+            device: "cpu" or "cuda" — the receiver's device (controls DMA path)
+
+        Returns:
+            pyarrow string array containing the buffer_id
         """
 
-    def pinned_memory_to_cpu(
-            self, data_ptr: pyarrow.Array, metadata: dict) -> pyarrow.Array:
+    def write_memory_pool(
+            self, memory_pool_id: pyarrow.Array, tensor_info: dict) -> None:
         """
-        入参1：pinned_ptr为cpu上的tensor的指针。
-        入参2：metadata为字典，包括tensor的ptr,size,dtype,shape等。
-        调用该api后，node根据pinned_ptr, metadata将tensor数据注册为页锁内存（尽量只注册，不复制），注册后生成buffer（跨进程不变的内存标识符）。
-        然后node将buffer和metadata作为DaemonRequest发给daemon。
-        daemon收到DaemonRequest之后，会让memory_manager将buffer, metadata写入pinned_memory_table；
-        返回值：buffer为py.array包装的共享内存标识符。
+        Write new tensor data into an existing memory pool.
+
+        Fast path: DORADMA header read from shmem, then memcpy data.
+        Slow path: falls back to daemon RPC.
+
+        Args:
+            memory_pool_id: pyarrow string array from register_memory_pool
+            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
         """
 
-    def get_memory(
-            self, buffer: pyarrow.Array, free=True) -> tuple[pyarrow.Array, dict]:
+    def read_memory_pool(
+            self, memory_pool_id: pyarrow.Array) -> dict:
         """
-        入参1:buffer为用py.array包装的共享内存标识符。
-        调用该api后，node会将buffer作为DaemonRequest发给daemon。
-        daemon收到DaemonRequest之后，会让memory_manager会根据buffer查询pinned_memory_table；
-        查询之后，daemon向node发送DaemonReply（如果查询成功，DaemonReply为查到的metadata；如果没查到，DaemonReply为查询失败枚举）。
-        node接收到DaemonReply之后，如果为查询失败枚举，则直接输出日志（没有查到页锁内存数据），如果查到，则根据buffer和metadata将该页锁内存数据通过DMA高速传输至cuda；
-        传输完后，若入参free为True，则调用free_pinned_memory释放传输前的页锁内存（效果相当于node.free_pinned_memory）；
-        最后对外返回传输后的cuda数据的当前进程指针和metadata。
-        返回值1:data_ptr为接收节点的进程指针，供之后接收节点通过ptr_to_torch转换为torch。
-        返回值2:metadata为字典，与pinned_memory_to_xx时记录的metadata相同。
+        Read tensor metadata from a memory pool.
+
+        Fast path: DORADMA header read from shmem (zero-copy, no daemon).
+        Slow path: falls back to daemon RPC.
+
+        Returns a tensor_info dict with keys:
+            "ptr": int — pointer to the data
+            "size": int — data size in bytes
+            "dtype": str — e.g. "float32"
+            "shape": list[int] — tensor shape
+            "device": str — "cpu" or "cuda"
         """
 
-    def free_memory(
-            self, buffer: pyarrow.Array) -> None:
+    def free_memory_pool(
+            self, memory_pool_id: pyarrow.Array) -> None:
         """
-        入参：buffer为用py.array包装的共享内存标识符。
-        调用该api后，node会将buffer作为DaemonRequest发给daemon。
-        daemon收到DaemonRequest之后，会让memory_manager会根据buffer查询pinned_memory_table；
-        查询之后，daemon向node发送DaemonReply（如果查询成功，DaemonReply为查到的metadata，并在pinned_memory_table删除该条内存记录；如果没查到，DaemonReply为查询失败枚举）。
-        node接收到DaemonReply之后，如果为查询失败枚举，则直接输出日志（没有查到页锁内存数据），如果为metadata，则根据buffer和metadata将该页锁内存数据释放；
-        无返回值。
+        Free a memory pool by removing it from the daemon's tracking table.
+
+        Args:
+            memory_pool_id: pyarrow string array from register_memory_pool
         """
 
     def __iter__(self) -> typing.Any:
