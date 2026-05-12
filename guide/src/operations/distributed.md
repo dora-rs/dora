@@ -553,7 +553,7 @@ This means a node that crashes immediately will only be re-spawned once every 30
 
 - Auto-recovery only applies to dataflows started via `dora start` (coordinator-managed). Local `dora run` dataflows are not tracked by the coordinator.
 - Recovery re-spawns all nodes assigned to the reconnecting daemon, not individual nodes. For per-node restart on crash, use [restart policies](fault-tolerance.md#restart-policies).
-- **Known issue ([#260](https://github.com/dora-rs/adora/issues/260)):** when the daemon's WebSocket connection to the coordinator drops, the daemon currently kills all running node processes before reconnecting. This means the coordinator's auto-recovery path re-spawns the nodes from scratch rather than reclaiming still-running processes. The net effect is a brief disruption (nodes restart) rather than seamless continuity. A fix to preserve running processes across reconnect cycles is planned.
+- **Known issue ([#1799](https://github.com/dora-rs/dora/issues/1799)):** when the daemon's WebSocket connection to the coordinator drops, the daemon currently kills all running node processes before reconnecting. This means the coordinator's auto-recovery path re-spawns the nodes from scratch rather than reclaiming still-running processes. The net effect is a brief disruption (nodes restart) rather than seamless continuity. A fix to preserve running processes across reconnect cycles is planned (see [`docs/plan-coordinator-ha.md`](../../../docs/plan-coordinator-ha.md) Phase 1.4).
 
 ---
 
