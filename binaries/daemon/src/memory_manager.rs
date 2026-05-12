@@ -187,15 +187,19 @@ impl MemoryPoolManager {
             }
         }
 
-        // Clean up pool-mode shmems (dora_pool_0..N) that were skipped by
-        // free_shared_memory during normal operation. These are persistent ring
+        // Clean up pool-mode shmems (dora_pool_*) that were skipped by
+        // free_shared_memory during normal operation. These are persistent
         // buffers and must be unlinked at daemon shutdown.
         #[cfg(target_os = "linux")]
         {
-            for i in 0..3 {
-                let shm_name = format!("dora_pool_{}", i);
-                let shm_path = format!("/dev/shm/{}", shm_name);
-                let _ = std::fs::remove_file(&shm_path);
+            if let Ok(entries) = std::fs::read_dir("/dev/shm") {
+                for entry in entries.flatten() {
+                    let file_name = entry.file_name();
+                    let name = file_name.to_string_lossy();
+                    if name.starts_with("dora_pool_") {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
             }
         }
 

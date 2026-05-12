@@ -38,6 +38,5 @@ for i in range(massage_num):
     pbar.update(1)
 pbar.close()
 velocity = torch.mean(torch.tensor(velocities))
-print(f"已成功接收{i}次数据")
 print(f"平均传输速率为{velocity:1f}MB/s")
 node.free_memory_pool(memory_pool_id)

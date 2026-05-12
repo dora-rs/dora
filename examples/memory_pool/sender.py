@@ -28,6 +28,7 @@ for i in range(massage_num): # 发送100次
         memory_pool_id = node.register_memory_pool(tensor_info, receiver_device)
         node.send_output("data", memory_pool_id, metadata)
     else:
+        # print(f"发送方前五个数据：{torch_tensor[:5]}")
         tensor_info = get_tensor_info(torch_tensor)
         node.write_memory_pool(memory_pool_id, tensor_info)
         node.send_output("data", pa.array([]), metadata)
