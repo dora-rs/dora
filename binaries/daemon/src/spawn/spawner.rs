@@ -309,14 +309,23 @@ impl Spawner {
                             format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
                         ]);
                         Some(cmd)
-                    } else {
-                        // Use the daemon's own executable so we always spawn
-                        // a matching runtime. A PATH lookup for the dora
-                        // binary would pick whatever appears first on PATH,
-                        // which can be a different install (system vs cargo
-                        // install, or a daemon launched from a venv). See
-                        // #1797.
+                    } else if file_name == "dora" {
+                        // current_exe is the dora binary — use it so the
+                        // spawned runtime always matches the daemon version.
+                        // See #1797.
                         let mut cmd = Command::new(&current_exe);
+                        cmd = cmd.arg("runtime");
+                        Some(cmd)
+                    } else {
+                        // current_exe is something else, e.g. an embedded
+                        // example runner that calls `dora_cli::run()` —
+                        // see examples/c-dataflow/run.rs:21. Spawning
+                        // current_exe with `runtime` would recurse into
+                        // the example runner. Fall back to PATH lookup
+                        // for the dora binary. See #1805.
+                        let mut cmd = Command::new(
+                            which::which("dora").wrap_err("failed to find dora binary on PATH")?,
+                        );
                         cmd = cmd.arg("runtime");
                         Some(cmd)
                     }
@@ -380,26 +389,5 @@ impl Spawner {
             last_activity,
             ft_stats: self.ft_stats,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    /// Regression guard for #1797: the daemon must spawn its runtime via
-    /// `std::env::current_exe()`, not the PATH-resolved `dora` binary, so
-    /// that a daemon launched from a non-PATH location (cargo install, venv,
-    /// etc.) always spawns a matching runtime.
-    ///
-    /// Built at runtime so the source file does not itself contain the
-    /// forbidden literal — otherwise `include_str!` would always trip.
-    #[test]
-    fn runtime_spawn_does_not_use_which_dora() {
-        let src = include_str!("spawner.rs");
-        let forbidden = ["which", "::", "which", "(\"", "dora", "\")"].concat();
-        assert!(
-            !src.contains(&forbidden),
-            "spawner.rs must not resolve the runtime binary via PATH lookup; \
-             use std::env::current_exe() instead (see #1797)"
-        );
     }
 }
