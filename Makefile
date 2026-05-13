@@ -48,7 +48,7 @@
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
-        qa-adversarial qa-install
+        qa-adversarial qa-pgo qa-install qa-pgo-install
 
 qa: qa-fast
 
@@ -121,8 +121,22 @@ qa-semver:
 qa-adversarial:
 	@scripts/qa/adversarial.sh
 
+# Profile-Guided Optimization measurement. Build dora-cli with cargo-pgo
+# (instrument -> train on examples/benchmark -> optimize), then run the
+# benchmark twice (baseline vs PGO) and print a side-by-side comparison.
+# Budget ~30-40 min wall time, ~5-10 GB extra target/ artifacts. PGO results
+# don't transfer across OS/arch — run this on your target platform to find
+# out if PGO helps. See dora-rs/dora#331 for the methodology and the
+# macOS-arm64 baseline data point (+25% throughput geomean).
+qa-pgo:
+	@scripts/qa/pgo.sh
+
 # One-shot tool installation
 
 qa-install:
 	cargo install cargo-audit cargo-deny cargo-llvm-cov cargo-mutants cargo-semver-checks
+	rustup component add llvm-tools-preview
+
+qa-pgo-install:
+	cargo install cargo-pgo
 	rustup component add llvm-tools-preview
