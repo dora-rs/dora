@@ -48,7 +48,7 @@
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
-        qa-adversarial qa-install
+        qa-adversarial qa-pgo qa-install qa-pgo-install
 
 qa: qa-fast
 

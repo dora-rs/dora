@@ -86,14 +86,31 @@ echo "=== [2/5] Running baseline benchmark (~2 min) ==="
 echo "Baseline CSV: $OUT_DIR/baseline.csv"
 
 # ---- 3/5: PGO instrumented build ----
+# Force --target $HOST so the instrumented binary always overwrites the
+# baseline at target/$HOST/dist/dora. Without it, if cargo-pgo's behavior
+# or the user's cargo config sends output elsewhere, the existence check
+# below would pass against the stale baseline binary from step 1, and
+# steps 4-5 would silently train+benchmark the baseline instead of the
+# instrumented build — producing a meaningless +0% comparison.
 echo ""
 echo "=== [3/5] PGO instrumented build (~10 min) ==="
 cargo pgo instrument build -- \
+  --target "$HOST" \
   -p dora-cli \
   --profile dist
 
 if [ ! -x "$PGO_DORA" ]; then
   echo "ERROR: instrumented dora not at $PGO_DORA"
+  exit 1
+fi
+
+# Sanity check: the instrumented binary must differ from the baseline copy
+# we made in step 1, otherwise step 3 silently produced the wrong artifact
+# (e.g., empty profiles, no relink, etc.) and the comparison would be a no-op.
+if cmp -s "$BASELINE_DORA" "$PGO_DORA"; then
+  echo "ERROR: instrumented binary at $PGO_DORA is byte-identical to baseline"
+  echo "       at $BASELINE_DORA — instrumentation did not take effect."
+  echo "       Check 'cargo pgo instrument build' output for issues."
   exit 1
 fi
 
@@ -107,6 +124,7 @@ echo "=== [4/5] Training run + PGO optimize build (~7 min) ==="
     > "$OUT_DIR/training.txt" 2>&1
 )
 cargo pgo optimize build -- \
+  --target "$HOST" \
   -p dora-cli \
   --profile dist
 
