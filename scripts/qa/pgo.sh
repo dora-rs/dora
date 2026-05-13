@@ -48,22 +48,32 @@ fi
 
 HOST=$(rustc -vV | awk '/host:/ {print $2}')
 OUT_DIR="$REPO_ROOT/target/pgo-bench"
-BASELINE_DORA="$REPO_ROOT/target/dist/dora"
-PGO_DORA="$REPO_ROOT/target/$HOST/dist/dora"
+# Force --target $HOST for both baseline and PGO builds so paths are
+# predictable regardless of user's cargo config. Step 3 (instrument) will
+# overwrite the binary at target/$HOST/dist/dora, but step 2 has already
+# captured the baseline CSV by then, so we also copy the binary to OUT_DIR
+# so it survives the overwrite and can be re-inspected.
+HOST_DIST_DORA="$REPO_ROOT/target/$HOST/dist/dora"
+BASELINE_DORA="$OUT_DIR/baseline-dora"
+PGO_DORA="$HOST_DIST_DORA"
 
 mkdir -p "$OUT_DIR"
 
 # ---- 1/5: baseline build ----
 echo "=== [1/5] Building baseline (--profile dist) ==="
-cargo build --profile dist \
+cargo build --target "$HOST" --profile dist \
   -p dora-cli \
   -p benchmark-example-node \
   -p benchmark-example-sink
 
-if [ ! -x "$BASELINE_DORA" ]; then
-  echo "ERROR: baseline dora not built at $BASELINE_DORA"
+if [ ! -x "$HOST_DIST_DORA" ]; then
+  echo "ERROR: baseline dora not built at $HOST_DIST_DORA"
   exit 1
 fi
+
+# Preserve the baseline binary so step 3's instrument build doesn't clobber
+# the only copy we have for re-inspection / re-running step 2.
+cp "$HOST_DIST_DORA" "$BASELINE_DORA"
 
 # ---- 2/5: baseline benchmark ----
 echo ""
@@ -178,12 +188,18 @@ print(f"  throughput   pgo/baseline = {gmean(throughput_ratios):.3f}  ({(gmean(t
 # --- Decision ---
 print()
 throughput_delta = (gmean(throughput_ratios) - 1) * 100
+single_run_caveat = (
+    "        Single run with n=100/size — the geomean itself has ~5% noise floor."
+    "\n        Re-run 3-5 times and take the median to confirm the signal is real."
+)
 if throughput_delta >= 5:
     print(f"VERDICT: PGO improves throughput by {throughput_delta:+.1f}% geomean on this platform.")
     print("        Worth integrating into the release pipeline if the +5% rule applies.")
+    print(single_run_caveat)
 elif throughput_delta <= -5:
     print(f"VERDICT: PGO regresses throughput by {throughput_delta:+.1f}% geomean on this platform.")
     print("        Do NOT ship PGO for this platform.")
+    print(single_run_caveat)
 else:
     print(f"VERDICT: PGO throughput change is {throughput_delta:+.1f}% geomean — within noise floor.")
     print("        Inconclusive — re-run with multiple iterations for stable medians.")

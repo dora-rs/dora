@@ -137,6 +137,8 @@ PGO trains the compiler on real execution traces and can give 5-15% wins on i-ca
 | p99 latency | 1.010 | +1.0% (noise) |
 | **Throughput** | **1.256** | **+25.6%** |
 
+Numbers above are from a **single** `make qa-pgo` run with n=100 per payload size. Geomean across sizes is the load-bearing metric; individual size rows have ~10-20% single-run noise, and the geomean itself has roughly ±5% noise floor. Re-run 3-5 times and take the median before drawing a conclusion either way.
+
 **Run the measurement on your platform.** Results don't transfer across OS/arch — Linux x86 may show different numbers, and only your-platform numbers should drive your-platform decisions.
 
 ```bash
