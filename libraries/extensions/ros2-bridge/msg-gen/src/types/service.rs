@@ -102,6 +102,10 @@ impl Service {
         let downcast = format_ident!("downcast__{package_name}__{}", self.name);
         let cxx_downcast = format_ident!("downcast");
 
+        // Pick the ROS2 service mapping based on RMW_IMPLEMENTATION /
+        // ROS_DISTRO at codegen time. See dora-rs/dora#449.
+        let ros_service_mapping = crate::detect_ros_service_mapping_ident();
+
         let def = quote! {
             #[namespace = #package_name]
             #[cxx_name = #cxx_client_name]
@@ -130,7 +134,7 @@ impl Service {
                 use futures::StreamExt as _;
 
                 let client = node.node.create_client::< service :: #self_name >(
-                    crate::ros2_client::ServiceMapping::Enhanced,
+                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                     &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
                     &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                     qos.clone().into(),

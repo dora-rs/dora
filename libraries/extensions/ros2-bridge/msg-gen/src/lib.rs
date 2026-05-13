@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use proc_macro2::Ident;
 use quote::{format_ident, quote};
 
 pub mod parser;
@@ -16,6 +17,57 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 use crate::types::Package;
+
+/// Pick the `ros2_client::ServiceMapping` variant for the user's ROS2 middleware.
+///
+/// Reads `RMW_IMPLEMENTATION` (primary) and `ROS_DISTRO` (fallback). Falls
+/// back to `Enhanced` with a warning if neither env var gives a usable
+/// answer — `Enhanced` is the historical default and keeps existing builds
+/// working when env is unset.
+///
+/// Restores the logic from `dora-rs/dora@e2c1370f`, which was lost during
+/// the 1.0 consolidation. See dora-rs/dora#449.
+pub fn detect_ros_service_mapping_ident() -> Ident {
+    let enhanced = || format_ident!("Enhanced");
+    let cyclone = || format_ident!("Cyclone");
+
+    match std::env::var("RMW_IMPLEMENTATION") {
+        Ok(middleware) => match middleware.as_str() {
+            "rmw_fastrtps_cpp" => return enhanced(),
+            "rmw_cyclonedds_cpp" => return cyclone(),
+            other => {
+                eprintln!(
+                    "cargo:warning=unknown RMW_IMPLEMENTATION `{other}`, \
+                     falling back to ServiceMapping::Enhanced (see dora-rs/dora#449)"
+                );
+                return enhanced();
+            }
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!(
+                "cargo:warning=RMW_IMPLEMENTATION is not valid unicode, \
+                 falling back to ServiceMapping::Enhanced"
+            );
+            return enhanced();
+        }
+        Err(std::env::VarError::NotPresent) => {}
+    }
+
+    std::env::var("ROS_DISTRO").map_or_else(
+        |_| enhanced(),
+        |distro| match distro.as_str() {
+            "humble" | "iron" | "jazzy" | "kilted" | "rolling" => enhanced(),
+            "galactic" => cyclone(),
+            other => {
+                eprintln!(
+                    "cargo:warning=unknown ROS_DISTRO `{other}`, \
+                     falling back to ServiceMapping::Enhanced (see dora-rs/dora#449)"
+                );
+                enhanced()
+            }
+        },
+    )
+}
 
 #[allow(clippy::cognitive_complexity)]
 pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macro2::TokenStream {
