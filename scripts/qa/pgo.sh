@@ -34,10 +34,18 @@ if ! command -v cargo-pgo >/dev/null; then
   exit 1
 fi
 
-if ! cargo pgo info 2>&1 | grep -q "llvm-profdata.*found at"; then
+# cargo-pgo's `info` exits non-zero when *optional* BOLT tools are missing,
+# even if llvm-profdata is found. We only need llvm-profdata for the PGO
+# (no-BOLT) path, so capture the output without letting pipefail abort us
+# on a BOLT-only failure, then grep for what we actually need.
+PGO_INFO=$(cargo pgo info 2>&1 || true)
+if ! grep -q "llvm-profdata.*found at" <<<"$PGO_INFO"; then
   echo "ERROR: llvm-profdata not found (needed for PGO profile merging)."
   echo "Install the rustup component:"
   echo "  rustup component add llvm-tools-preview"
+  echo ""
+  echo "cargo pgo info output was:"
+  echo "$PGO_INFO"
   exit 1
 fi
 
