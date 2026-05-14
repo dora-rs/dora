@@ -1,5 +1,5 @@
 use heck::SnakeCase;
-use quote::{format_ident, quote, ToTokens};
+use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
 use super::Message;
