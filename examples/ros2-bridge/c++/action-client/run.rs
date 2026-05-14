@@ -1,7 +1,9 @@
 use eyre::{Context, bail};
 use std::{env::consts::EXE_SUFFIX, path::Path};
 
-use process_wrap::std::{StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap};
+use process_wrap::std::{
+    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
+};
 
 fn main() -> eyre::Result<()> {
     if cfg!(windows) {
@@ -29,10 +31,7 @@ fn main() -> eyre::Result<()> {
         &[
             &dunce::canonicalize(Path::new("./").join("main.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/sensor_msgs.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/geometry_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/example_interfaces.cc"))?,
-            &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/turtlesim.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/impl.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/action_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/builtin_interfaces.cc"))?,
@@ -51,17 +50,17 @@ fn main() -> eyre::Result<()> {
         dora_cli::run("dataflow.yml".to_string(), false).unwrap();
     });
 
-    let mut add_service_task = run_ros_node("examples_rclcpp_minimal_service", "service_main")?;
-    let mut turtle_task = run_ros_node("turtlesim", "turtlesim_node")?;
+    let mut ros_task = run_ros_node(
+        "examples_rclcpp_minimal_action_server",
+        "action_server_member_functions",
+    )?;
 
-    let dataflow_result = dataflow_task
-        .join()
-        .map_err(|_| eyre::eyre!("Failed to run dataflow"));
+    let dataflow_task_res = dataflow_task.join();
 
-    add_service_task.kill()?;
-    turtle_task.kill()?;
+    ros_task.kill()?;
 
-    dataflow_result
+    dataflow_task_res.map_err(|e| eyre::eyre!("the dataflow thread failed: {:?}", e))?;
+    Ok(())
 }
 
 fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>> {
@@ -69,10 +68,7 @@ fn run_ros_node(package: &str, node: &str) -> eyre::Result<Box<dyn ChildWrapper>
         cmd.arg("run");
         cmd.arg(package).arg(node);
     });
-    #[cfg(unix)]
-    command.wrap(process_wrap::std::ProcessGroup::leader());
-    #[cfg(windows)]
-    command.wrap(process_wrap::std::JobObject);
+    command.wrap(ProcessGroup::leader());
     command
         .spawn()
         .map_err(|e| eyre::eyre!("failed to spawn ros node: {}", e))
@@ -95,7 +91,7 @@ fn build_package(package: &str, features: &[&str]) -> eyre::Result<()> {
 fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -> eyre::Result<()> {
     let mut clang = std::process::Command::new("clang++");
     clang.args(paths);
-    clang.arg("-std=c++20");
+    clang.arg("-std=c++17");
     #[cfg(target_os = "linux")]
     {
         clang.arg("-l").arg("m");
