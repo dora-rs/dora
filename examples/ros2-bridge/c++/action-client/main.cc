@@ -88,20 +88,25 @@ int main()
 
             auto feedback_event = client->downcast_feedback(std::move(event));
 
+            // A late feedback event for a goal that already completed
+            // would arrive *after* we cleared goal_id on Succeeded above.
+            // Skip rather than dereferencing a null goal_id.
+            if (!goal_id) {
+                std::cout << "Feedback arrived after goal completed; skipping" << std::endl;
+                continue;
+            }
+
             if (!feedback_event->matches_goal(*goal_id)) { // skip if the goal id does not match
                 std::cout << "Feedback not belongs to current requesting goal" << std::endl;
                 continue;
             }
 
-            if(feedback_event->matches_goal(*goal_id)) {
-                auto feedback = feedback_event->get_feedback();
-                std::cout << "Feedback: ";
-                for(auto& num: feedback.sequence) {
-                    std::cout << num << " ";
-                }
+            auto feedback = feedback_event->get_feedback();
+            std::cout << "Feedback: ";
+            for(auto& num: feedback.sequence) {
+                std::cout << num << " ";
             }
             std::cout << std::endl;
-
         }
     }
     std::cout << "GOODBYE FROM C++ node (using Rust API)" << std::endl;

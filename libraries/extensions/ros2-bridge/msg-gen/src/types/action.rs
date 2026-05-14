@@ -221,6 +221,7 @@ impl Action {
         let send_goal = format_ident!("send__{package_name}__{}_goal", self.name);
         let send_goal_with_timeout =
             format_ident!("send__{package_name}__{}_goal_with_timeout", self.name);
+        let cancel_goal = format_ident!("cancel__{package_name}__{}_goal", self.name);
 
         let request_result = format_ident!("request__{package_name}__{}_result", self.name);
         let result_matches = format_ident!("matches__{package_name}__{}_response", self.name);
@@ -349,6 +350,10 @@ impl Action {
                 self: &mut #client_name,
                 request: #goal_type_raw,
                 timeout: u64) -> Result<Box<ActionGoalId>>;
+
+            #[namespace = #package_name]
+            #[cxx_name = cancel_goal]
+            fn #cancel_goal(self: &mut #client_name, goal_id: &Box<ActionGoalId>) -> Result<()>;
 
             #[namespace = #package_name]
             #[cxx_name = request_result]
@@ -601,6 +606,18 @@ impl Action {
                         eyre::bail!("service not available");
                     };
                     futures::executor::block_on(service_ready)?;
+                    Ok(())
+                }
+
+                #[allow(non_snake_case)]
+                fn #cancel_goal(&mut self, goal_id: &Box<ffi::ActionGoalId>) -> eyre::Result<()> {
+                    // Fire-and-forget cancel. Completion can be tracked
+                    // by the caller via the existing status event stream
+                    // (the goal transitions to GoalStatusEnum::Canceled
+                    // once the server acknowledges).
+                    let goal_id = goal_id.id;
+                    self.client.cancel_goal(goal_id)
+                        .map_err(|e| eyre::eyre!("Failed to cancel goal: {:?}", e))?;
                     Ok(())
                 }
 
