@@ -59,6 +59,12 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
         &format!("CLI version: {}", env!("CARGO_PKG_VERSION")),
     )?;
 
+    // Shared memory permissions (Linux only). dora uses /dev/shm for the
+    // >4KiB shared-memory data path; wrong permissions there manifest as
+    // obscure spawn failures rather than a clear error message.
+    #[cfg(target_os = "linux")]
+    check_shared_memory(&mut stdout, &mut failures)?;
+
     // 2. Coordinator connectivity
     let addr = args.coordinator.socket_addr();
     let session = match connect_to_coordinator(addr) {
@@ -222,6 +228,65 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
     write!(stdout, "  WARN ")?;
     let _ = stdout.reset();
     writeln!(stdout, " {msg}")?;
+    Ok(())
+}
+
+/// Check `/dev/shm` is a directory with mode `1777` (sticky, world-rwx).
+///
+/// dora's shared-memory IPC for large messages requires `/dev/shm` to be
+/// world-writable so unprivileged daemon-spawned node processes can mmap
+/// regions there. The sticky bit (`1`) prevents nodes from removing each
+/// other's segments. When the permissions drift (e.g. `0755` on hardened
+/// systems), large messages fail with cryptic mmap errors at runtime; this
+/// check surfaces the misconfiguration up front. See dora-rs/dora#1352.
+#[cfg(target_os = "linux")]
+fn check_shared_memory(
+    stdout: &mut termcolor::StandardStream,
+    failures: &mut u32,
+) -> eyre::Result<()> {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    let shm_path = Path::new("/dev/shm");
+    let metadata = match fs::metadata(shm_path) {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            fail(
+                stdout,
+                "Shared memory: /dev/shm not accessible — \
+                 run `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm`",
+            )?;
+            *failures += 1;
+            return Ok(());
+        }
+    };
+
+    if !metadata.is_dir() {
+        fail(
+            stdout,
+            "Shared memory: /dev/shm exists but is not a directory — \
+             run `sudo chmod 1777 /dev/shm`",
+        )?;
+        *failures += 1;
+        return Ok(());
+    }
+
+    let mode = metadata.permissions().mode() & 0o7777;
+    let expected = 0o1777;
+    if mode != expected {
+        fail(
+            stdout,
+            &format!(
+                "Shared memory: /dev/shm has mode {mode:#o}, expected {expected:#o} — \
+                 run `sudo chmod 1777 /dev/shm`"
+            ),
+        )?;
+        *failures += 1;
+        return Ok(());
+    }
+
+    pass(stdout, "Shared memory: /dev/shm mode is 1777")?;
     Ok(())
 }
 
