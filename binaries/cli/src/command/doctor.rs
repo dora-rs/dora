@@ -60,10 +60,12 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
     )?;
 
     // Shared memory permissions (Linux only). dora uses /dev/shm for the
-    // >4KiB shared-memory data path; wrong permissions there manifest as
-    // obscure spawn failures rather than a clear error message.
+    // zero-copy SHM fast path on large payloads, but the node runtime
+    // gracefully falls back to heap-buffered zenoh publishes when SHM is
+    // unavailable, so a misconfigured /dev/shm is a perf concern, not a
+    // correctness one — surface it as a WARN.
     #[cfg(target_os = "linux")]
-    check_shared_memory(&mut stdout, &mut failures)?;
+    check_shared_memory(&mut stdout)?;
 
     // 2. Coordinator connectivity
     let addr = args.coordinator.socket_addr();
@@ -233,17 +235,15 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
 
 /// Check `/dev/shm` is a directory with mode `1777` (sticky, world-rwx).
 ///
-/// dora's shared-memory IPC for large messages requires `/dev/shm` to be
-/// world-writable so unprivileged daemon-spawned node processes can mmap
-/// regions there. The sticky bit (`1`) prevents nodes from removing each
-/// other's segments. When the permissions drift (e.g. `0755` on hardened
-/// systems), large messages fail with cryptic mmap errors at runtime; this
-/// check surfaces the misconfiguration up front. See dora-rs/dora#1352.
+/// dora's zero-copy fast path for large payloads uses zenoh SHM, which
+/// allocates segments in `/dev/shm`. The node runtime treats SHM as
+/// best-effort: if the provider can't be created or allocation fails,
+/// it falls back to heap-buffered publishes (see
+/// `apis/rust/node/src/node/mod.rs`). So a misconfigured `/dev/shm` is
+/// a perf concern (heap copy on every large message), not a correctness
+/// one — surface it as `WARN`, not `FAIL`. See dora-rs/dora#1352.
 #[cfg(target_os = "linux")]
-fn check_shared_memory(
-    stdout: &mut termcolor::StandardStream,
-    failures: &mut u32,
-) -> eyre::Result<()> {
+fn check_shared_memory(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
@@ -252,37 +252,35 @@ fn check_shared_memory(
     let metadata = match fs::metadata(shm_path) {
         Ok(metadata) => metadata,
         Err(_) => {
-            fail(
+            warn(
                 stdout,
-                "Shared memory: /dev/shm not accessible — \
-                 run `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm`",
+                "Shared memory: /dev/shm not accessible — dora will run via heap fallback; \
+                 for the zero-copy fast path run `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm`",
             )?;
-            *failures += 1;
             return Ok(());
         }
     };
 
     if !metadata.is_dir() {
-        fail(
+        warn(
             stdout,
-            "Shared memory: /dev/shm exists but is not a directory — \
-             run `sudo chmod 1777 /dev/shm`",
+            "Shared memory: /dev/shm exists but is not a directory — dora will run via heap fallback; \
+             for the zero-copy fast path run `sudo chmod 1777 /dev/shm`",
         )?;
-        *failures += 1;
         return Ok(());
     }
 
     let mode = metadata.permissions().mode() & 0o7777;
     let expected = 0o1777;
     if mode != expected {
-        fail(
+        warn(
             stdout,
             &format!(
                 "Shared memory: /dev/shm has mode {mode:#o}, expected {expected:#o} — \
-                 run `sudo chmod 1777 /dev/shm`"
+                 dora will run via heap fallback if SHM allocation is denied; \
+                 for the zero-copy fast path run `sudo chmod 1777 /dev/shm`"
             ),
         )?;
-        *failures += 1;
         return Ok(());
     }
 
