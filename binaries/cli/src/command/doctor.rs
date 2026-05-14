@@ -233,6 +233,37 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Pure evaluation of a directory's suitability as a POSIX shared-memory mount.
+///
+/// Returns one of four states based on `path`'s existence, type, and mode.
+/// Separated from the I/O wrapper so it can be unit-tested against a tempdir.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum ShmState {
+    Inaccessible(std::io::Error),
+    NotADirectory,
+    WrongMode { actual: u32, expected: u32 },
+    Ok,
+}
+
+#[cfg(target_os = "linux")]
+fn evaluate_shm(path: &std::path::Path) -> ShmState {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => return ShmState::Inaccessible(e),
+    };
+    if !metadata.is_dir() {
+        return ShmState::NotADirectory;
+    }
+    let actual = metadata.permissions().mode() & 0o7777;
+    let expected = 0o1777;
+    if actual != expected {
+        return ShmState::WrongMode { actual, expected };
+    }
+    ShmState::Ok
+}
+
 /// Check `/dev/shm` is a directory with mode `1777` (sticky, world-rwx).
 ///
 /// dora's zero-copy fast path for large payloads uses zenoh SHM, which
@@ -244,48 +275,80 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
 /// one — surface it as `WARN`, not `FAIL`. See dora-rs/dora#1352.
 #[cfg(target_os = "linux")]
 fn check_shared_memory(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-
-    let shm_path = Path::new("/dev/shm");
-    let metadata = match fs::metadata(shm_path) {
-        Ok(metadata) => metadata,
-        Err(_) => {
-            warn(
-                stdout,
-                "Shared memory: /dev/shm not accessible — dora will run via heap fallback; \
-                 for the zero-copy fast path run `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm`",
-            )?;
-            return Ok(());
-        }
-    };
-
-    if !metadata.is_dir() {
-        warn(
+    match evaluate_shm(Path::new("/dev/shm")) {
+        ShmState::Inaccessible(e) => warn(
+            stdout,
+            &format!(
+                "Shared memory: /dev/shm not accessible ({e}) — dora will run via heap fallback; \
+                 for the zero-copy fast path run \
+                 `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm` \
+                 (in a container, pass `--shm-size=...` or mount a tmpfs at /dev/shm)"
+            ),
+        )?,
+        ShmState::NotADirectory => warn(
             stdout,
             "Shared memory: /dev/shm exists but is not a directory — dora will run via heap fallback; \
              for the zero-copy fast path run `sudo chmod 1777 /dev/shm`",
-        )?;
-        return Ok(());
-    }
-
-    let mode = metadata.permissions().mode() & 0o7777;
-    let expected = 0o1777;
-    if mode != expected {
-        warn(
+        )?,
+        ShmState::WrongMode { actual, expected } => warn(
             stdout,
             &format!(
-                "Shared memory: /dev/shm has mode {mode:#o}, expected {expected:#o} — \
+                "Shared memory: /dev/shm has mode {actual:#o}, expected {expected:#o} — \
                  dora will run via heap fallback if SHM allocation is denied; \
                  for the zero-copy fast path run `sudo chmod 1777 /dev/shm`"
             ),
-        )?;
-        return Ok(());
+        )?,
+        ShmState::Ok => pass(stdout, "Shared memory: /dev/shm mode is 1777")?,
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod shm_tests {
+    use super::{ShmState, evaluate_shm};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    #[test]
+    fn inaccessible_when_path_is_missing() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        assert!(matches!(evaluate_shm(&missing), ShmState::Inaccessible(_)));
     }
 
-    pass(stdout, "Shared memory: /dev/shm mode is 1777")?;
-    Ok(())
+    #[test]
+    fn not_a_directory_when_path_is_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        fs::write(&file, b"").unwrap();
+        assert!(matches!(evaluate_shm(&file), ShmState::NotADirectory));
+    }
+
+    #[test]
+    fn wrong_mode_when_directory_is_0755() {
+        let dir = tempdir().unwrap();
+        let shm = dir.path().join("shm");
+        fs::create_dir(&shm).unwrap();
+        fs::set_permissions(&shm, fs::Permissions::from_mode(0o755)).unwrap();
+        match evaluate_shm(&shm) {
+            ShmState::WrongMode { actual, expected } => {
+                assert_eq!(actual, 0o755);
+                assert_eq!(expected, 0o1777);
+            }
+            other => panic!("expected WrongMode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ok_when_directory_is_1777() {
+        let dir = tempdir().unwrap();
+        let shm = dir.path().join("shm");
+        fs::create_dir(&shm).unwrap();
+        fs::set_permissions(&shm, fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(matches!(evaluate_shm(&shm), ShmState::Ok));
+    }
 }
 
 fn check_daemon(session: &WsSession) -> eyre::Result<bool> {
