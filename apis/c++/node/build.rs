@@ -119,6 +119,10 @@ mod ros2 {
             }
         };
         println!("cargo:rerun-if-env-changed=AMENT_PREFIX_PATH");
+        // Codegen picks ServiceMapping based on these — invalidate when
+        // they change. See dora-rs/dora#449.
+        println!("cargo:rerun-if-env-changed=RMW_IMPLEMENTATION");
+        println!("cargo:rerun-if-env-changed=ROS_DISTRO");
 
         let paths: Vec<_> = ament_prefix_path.split(':').map(PathBuf::from).collect();
         for path in &paths {
