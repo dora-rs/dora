@@ -379,6 +379,14 @@ If neither `--attach` nor `--detach` is specified: attaches if running in a TTY,
 
 **Hot reload:** Watches Python operator source files. On change, sends a reload request to the coordinator which propagates to the daemon.
 
+**Known limitation — editors that save by atomic rename (vim, JetBrains, some IDEs):** the watcher only triggers on `Modify(Data)` events from `notify-rs`, but vim's default save flow writes to a temp file and renames it over the original, which surfaces as `Remove(File)` instead. The reload then misses the change. See [#530](https://github.com/dora-rs/dora/issues/530) and the upstream notify-rs discussion at [notify-rs/notify#247](https://github.com/notify-rs/notify/issues/247).
+
+Workaround until [#530](https://github.com/dora-rs/dora/issues/530) lands a fix: configure your editor to write in place rather than atomic-rename.
+
+- **vim / neovim:** add `:set backupcopy=yes` to your `.vimrc`, or set it ad-hoc per session. This makes vim copy the file and overwrite in place (instead of write-temp + rename).
+- **JetBrains IDEs (PyCharm, IntelliJ):** Settings → Appearance & Behavior → System Settings → uncheck "Use 'safe write' (save changes to a temporary file first)".
+- **VS Code:** uses in-place writes by default; no workaround needed.
+
 #### `dora stop`
 
 Stop a running dataflow.
