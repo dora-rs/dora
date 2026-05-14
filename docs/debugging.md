@@ -441,10 +441,11 @@ dora doctor --dataflow dataflow.yml
 ```
 
 Checks performed:
-1. Coordinator reachability
-2. Connected daemon status
-3. Active dataflow health
-4. Dataflow YAML validation (if `--dataflow` provided)
+1. Shared memory permissions (Linux only — verifies `/dev/shm` has mode `1777` for zero-copy IPC)
+2. Coordinator reachability
+3. Connected daemon status
+4. Active dataflow health
+5. Dataflow YAML validation (if `--dataflow` provided)
 
 Use this as a first step when debugging any issue, or in CI to validate the environment before running tests.
 

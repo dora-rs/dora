@@ -59,6 +59,14 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
         &format!("CLI version: {}", env!("CARGO_PKG_VERSION")),
     )?;
 
+    // Shared memory permissions (Linux only). dora uses /dev/shm for the
+    // zero-copy SHM fast path on large payloads, but the node runtime
+    // gracefully falls back to heap-buffered zenoh publishes when SHM is
+    // unavailable, so a misconfigured /dev/shm is a perf concern, not a
+    // correctness one — surface it as a WARN.
+    #[cfg(target_os = "linux")]
+    check_shared_memory(&mut stdout)?;
+
     // 2. Coordinator connectivity
     let addr = args.coordinator.socket_addr();
     let session = match connect_to_coordinator(addr) {
@@ -223,6 +231,124 @@ fn warn(stdout: &mut termcolor::StandardStream, msg: &str) -> eyre::Result<()> {
     let _ = stdout.reset();
     writeln!(stdout, " {msg}")?;
     Ok(())
+}
+
+/// Pure evaluation of a directory's suitability as a POSIX shared-memory mount.
+///
+/// Returns one of four states based on `path`'s existence, type, and mode.
+/// Separated from the I/O wrapper so it can be unit-tested against a tempdir.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum ShmState {
+    Inaccessible(std::io::Error),
+    NotADirectory,
+    WrongMode { actual: u32, expected: u32 },
+    Ok,
+}
+
+#[cfg(target_os = "linux")]
+fn evaluate_shm(path: &std::path::Path) -> ShmState {
+    use std::os::unix::fs::PermissionsExt;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => return ShmState::Inaccessible(e),
+    };
+    if !metadata.is_dir() {
+        return ShmState::NotADirectory;
+    }
+    let actual = metadata.permissions().mode() & 0o7777;
+    let expected = 0o1777;
+    if actual != expected {
+        return ShmState::WrongMode { actual, expected };
+    }
+    ShmState::Ok
+}
+
+/// Check `/dev/shm` is a directory with mode `1777` (sticky, world-rwx).
+///
+/// dora's zero-copy fast path for large payloads uses zenoh SHM, which
+/// allocates segments in `/dev/shm`. The node runtime treats SHM as
+/// best-effort: if the provider can't be created or allocation fails,
+/// it falls back to heap-buffered publishes (see
+/// `apis/rust/node/src/node/mod.rs`). So a misconfigured `/dev/shm` is
+/// a perf concern (heap copy on every large message), not a correctness
+/// one — surface it as `WARN`, not `FAIL`. See dora-rs/dora#1352.
+#[cfg(target_os = "linux")]
+fn check_shared_memory(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
+    use std::path::Path;
+    match evaluate_shm(Path::new("/dev/shm")) {
+        ShmState::Inaccessible(e) => warn(
+            stdout,
+            &format!(
+                "Shared memory: /dev/shm not accessible ({e}) — dora will run via heap fallback; \
+                 for the zero-copy fast path run \
+                 `sudo mkdir -p /dev/shm && sudo chmod 1777 /dev/shm` \
+                 (in a container, pass `--shm-size=...` or mount a tmpfs at /dev/shm)"
+            ),
+        )?,
+        ShmState::NotADirectory => warn(
+            stdout,
+            "Shared memory: /dev/shm exists but is not a directory — dora will run via heap fallback; \
+             for the zero-copy fast path run `sudo chmod 1777 /dev/shm`",
+        )?,
+        ShmState::WrongMode { actual, expected } => warn(
+            stdout,
+            &format!(
+                "Shared memory: /dev/shm has mode {actual:#o}, expected {expected:#o} — \
+                 dora will run via heap fallback if SHM allocation is denied; \
+                 for the zero-copy fast path run `sudo chmod 1777 /dev/shm`"
+            ),
+        )?,
+        ShmState::Ok => pass(stdout, "Shared memory: /dev/shm mode is 1777")?,
+    }
+    Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod shm_tests {
+    use super::{ShmState, evaluate_shm};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use tempfile::tempdir;
+
+    #[test]
+    fn inaccessible_when_path_is_missing() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nope");
+        assert!(matches!(evaluate_shm(&missing), ShmState::Inaccessible(_)));
+    }
+
+    #[test]
+    fn not_a_directory_when_path_is_file() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("not-a-dir");
+        fs::write(&file, b"").unwrap();
+        assert!(matches!(evaluate_shm(&file), ShmState::NotADirectory));
+    }
+
+    #[test]
+    fn wrong_mode_when_directory_is_0755() {
+        let dir = tempdir().unwrap();
+        let shm = dir.path().join("shm");
+        fs::create_dir(&shm).unwrap();
+        fs::set_permissions(&shm, fs::Permissions::from_mode(0o755)).unwrap();
+        match evaluate_shm(&shm) {
+            ShmState::WrongMode { actual, expected } => {
+                assert_eq!(actual, 0o755);
+                assert_eq!(expected, 0o1777);
+            }
+            other => panic!("expected WrongMode, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ok_when_directory_is_1777() {
+        let dir = tempdir().unwrap();
+        let shm = dir.path().join("shm");
+        fs::create_dir(&shm).unwrap();
+        fs::set_permissions(&shm, fs::Permissions::from_mode(0o1777)).unwrap();
+        assert!(matches!(evaluate_shm(&shm), ShmState::Ok));
+    }
 }
 
 fn check_daemon(session: &WsSession) -> eyre::Result<bool> {
