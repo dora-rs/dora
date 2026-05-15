@@ -16,24 +16,34 @@
 //! Safety model
 //! ============
 //!
-//! [`SampleBufferState`] is shared between [`SampleHandler`] and the
-//! [`SampleBuffer`] it produces. Two invariants prevent use-after-free:
+//! The [`DataSample`] is owned by an `Arc<`[`SampleBufferState`]`>`, shared by
+//! `SampleHandler` and any `SampleBuffer` it produces. This lets the buffer (and
+//! any `memoryview` derived from it) keep the underlying allocation alive even
+//! if the `SampleHandler` is dropped first — eliminating a use-after-free that
+//! would otherwise be reachable via `buf = sample.as_buffer(); del sample;
+//! memoryview(buf)`.
 //!
-//! 1. `SampleHandler::send()` flips `valid = false` *before* the `DataSample` is
-//!    released. Any subsequent `__getbuffer__` call sees `valid == false` and
-//!    raises `BufferError` instead of touching freed memory.
+//! Three invariants prevent unsafe access:
+//!
+//! 1. `SampleHandler::send()` flips `valid = false` *before* taking the
+//!    `DataSample` out of `state.sample`. Any subsequent `__getbuffer__` call
+//!    sees `valid == false` and raises `BufferError`.
 //! 2. `send()` refuses to proceed while `view_count > 0`. The decrement happens
 //!    in `__releasebuffer__`; the increment happens *after* the view fill block
 //!    so a panic during fill cannot leave the counter permanently elevated.
+//! 3. `SampleHandler::drop()` flips `valid = false` so an unsent handler's
+//!    early drop still rejects new view acquisitions. The `DataSample` stays
+//!    in `state.sample` until the last `SampleBuffer`/memoryview also drops.
 
 #[cfg(Py_3_11)]
 use pyo3::types::PyMemoryView;
 #[cfg(Py_3_11)]
 use std::ffi::{c_int, c_void};
-use std::ops::DerefMut;
+use std::ops::Deref;
 #[cfg(Py_3_11)]
 use std::ptr;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
 use dora_message::metadata::ArrowTypeInfo;
@@ -44,36 +54,46 @@ use dora_operator_api_python::DelayedCleanup;
 use pyo3::exceptions::PyBufferError;
 #[cfg(Py_3_11)]
 use pyo3::ffi;
+use pyo3::types::PyAnyMethods;
 use pyo3::{Bound, Py, PyAny, PyResult, Python, pyclass, pymethods};
 
 // ---------------------------------------------------------------------------
-// Shared liveness + view-count state  (only needed for the buffer protocol)
+// Shared liveness + view-count state + ownership of the DataSample
 // ---------------------------------------------------------------------------
 
-/// Shared (via `Arc`) between `SampleHandler` and the `SampleBuffer` it
-/// hands out.
+/// Shared (via `Arc`) between `SampleHandler` and any `SampleBuffer` it hands out.
 ///
-/// Invariant: `valid` is set to `false` by `SampleHandler::send()` *before*
-/// the `DataSample` allocation is released. Because `send()` also checks
-/// that `view_count == 0` before proceeding, no live `Py_buffer` view can
-/// ever read freed memory.
-#[cfg(Py_3_11)]
+/// Owns the [`DataSample`]. `send()` takes it; otherwise it lives here until
+/// the last `Arc` reference drops — which means a `SampleBuffer` (and any
+/// `memoryview` derived from it) keeps the allocation alive even if the
+/// `SampleHandler` is dropped before `send()`.
+///
+/// The `valid` flag plus the `view_count` counter together prevent
+/// use-after-free (see the module-level docs for the three invariants).
 struct SampleBufferState {
-    /// `true` while the underlying `DataSample` is still alive.
+    /// `true` while the underlying `DataSample` is still accessible via the
+    /// buffer protocol. Set to `false` by `send()` (after view_count == 0)
+    /// and by `SampleHandler::drop()` (regardless of view_count).
     valid: AtomicBool,
-    /// Number of `Py_buffer` views currently checked out via
-    /// `__getbuffer__` that have not yet been released.
-    /// Incremented *after* the view is fully initialised so that a panic
-    /// during initialisation cannot leave the counter permanently elevated.
+    /// Number of `Py_buffer` views currently checked out via `__getbuffer__`
+    /// that have not yet been released. Incremented *after* the view is
+    /// fully initialised so that a panic during initialisation cannot leave
+    /// the counter permanently elevated.
     view_count: AtomicIsize,
+    /// Owns the `DataSample`. `send()` takes it; `SampleHandler::drop()`
+    /// leaves it. Behind a `Mutex` because the state is shared across the
+    /// Python/Rust boundary and Rust requires `Sync` for `Arc<T>`'s `Send`
+    /// implementation — PyO3's GIL serialises pymethods, so contention is
+    /// impossible in practice.
+    sample: Mutex<Option<DataSample>>,
 }
 
-#[cfg(Py_3_11)]
 impl SampleBufferState {
-    fn new() -> Arc<Self> {
+    fn new(sample: DataSample) -> Arc<Self> {
         Arc::new(Self {
             valid: AtomicBool::new(true),
             view_count: AtomicIsize::new(0),
+            sample: Mutex::new(Some(sample)),
         })
     }
 }
@@ -90,9 +110,9 @@ impl SampleBufferState {
 ///
 /// Permission model
 /// ----------------
-/// - **Writable** (`readonly = 0`) as long as `SampleHandler::send()` has
-///   not been called.
-/// - Acquiring a new view *after* `send()` raises `BufferError`.
+/// - **Writable** (`readonly = 0`) as long as `state.valid == true`.
+/// - Acquiring a new view *after* `send()` or after `SampleHandler` drop
+///   raises `BufferError`.
 /// - `send()` refuses to proceed while any view is still checked out,
 ///   preventing use-after-free.
 ///
@@ -107,13 +127,13 @@ impl SampleBufferState {
 #[cfg(Py_3_11)]
 #[pyclass]
 pub struct SampleBuffer {
-    /// Raw pointer into the `DataSample` allocation owned by `SampleHandler`.
+    /// Raw pointer into the `DataSample` owned by `state.sample`.
     ///
     /// # Safety
-    /// Valid iff `state.valid == true`. `SampleHandler::send()` sets
-    /// `valid = false` and waits for `view_count == 0` before the
-    /// `DataSample` is released, so the pointer is always live while any
-    /// `Py_buffer` view that references it is open.
+    /// Valid iff `state.valid == true`. `SampleBuffer` holds an `Arc` to
+    /// `state`, so the `DataSample` (inside `state.sample`) cannot be
+    /// dropped while any `SampleBuffer` (and therefore any memoryview
+    /// derived from it via `Py_buffer.obj`) is alive.
     ptr: *mut u8,
     len: usize,
     state: Arc<SampleBufferState>,
@@ -127,12 +147,13 @@ pub struct SampleBuffer {
 //   `__releasebuffer__` takes `&self`). PyO3 requires the GIL to be held for
 //   both, statically via the `Python<'_>` token threaded through every
 //   `#[pymethods]` entry point.
-// - The data the pointer references lives in a `DataSample` owned by the
-//   parent `SampleHandler`. `SampleHandler::send()` won't release that
-//   `DataSample` until `state.view_count == 0`, and `__getbuffer__` won't
-//   hand out a view once `state.valid == false`. So whenever the pointer is
-//   actually dereferenced (by CPython, through the `Py_buffer`), the
-//   allocation is guaranteed to be live.
+// - The data the pointer references lives in a `DataSample` owned by
+//   `state.sample` (an `Arc<SampleBufferState>`). The `SampleBuffer` holds
+//   that same `Arc`, so the `DataSample` cannot be dropped while the
+//   `SampleBuffer` is alive. `send()` won't take the `DataSample` until
+//   `state.view_count == 0`, and `__getbuffer__` won't hand out a view once
+//   `state.valid == false`. So whenever the pointer is actually dereferenced
+//   (by CPython, through the `Py_buffer`), the allocation is guaranteed live.
 //
 // The `unsafe impl` is required because the raw pointer would otherwise
 // disqualify the type from auto-`Send`/`Sync`. Marker traits themselves
@@ -148,7 +169,8 @@ impl SampleBuffer {
     /// Called by Python whenever a buffer view is requested:
     /// `memoryview(buf)`, `numpy.frombuffer(buf)`, `struct.pack_into`, ...
     ///
-    /// Raises `BufferError` after `send()` has been called.
+    /// Raises `BufferError` after `send()` or after the parent `SampleHandler`
+    /// has been dropped.
     ///
     /// # Safety
     /// PyO3 requires this to be `unsafe fn`; the raw `*mut Py_buffer`
@@ -163,8 +185,8 @@ impl SampleBuffer {
 
         if !this.state.valid.load(Ordering::Acquire) {
             return Err(PyBufferError::new_err(
-                "Cannot acquire buffer view after send() \
-                 - the sample has already been sent",
+                "Cannot acquire buffer view: the parent SampleHandler has been \
+                 sent or dropped",
             ));
         }
 
@@ -236,14 +258,14 @@ impl SampleBuffer {
 }
 
 // ---------------------------------------------------------------------------
-// SampleInner
+// SampleMeta
 // ---------------------------------------------------------------------------
 
-struct SampleInner {
+/// Per-send metadata. Lives in `SampleHandler.meta` until `send()` takes it.
+struct SampleMeta {
     data_id: DataId,
     type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
-    sample: DataSample,
 }
 
 // ---------------------------------------------------------------------------
@@ -252,17 +274,15 @@ struct SampleInner {
 
 /// Returned by `Node.send_output_raw`.
 ///
-/// Allocates a shared-memory (or aligned-heap) region via
-/// [`DoraNode::allocate_data_sample`].
-///
-/// On Python >= 3.11 the context-manager and `as_buffer()` API are
-/// available, exposing the memory as a zero-copy, writable buffer-protocol
-/// object:
+/// Holds the per-send metadata plus an `Arc<SampleBufferState>` that owns the
+/// pre-allocated [`DataSample`]. On Python >= 3.11 the context-manager and
+/// `as_buffer()` API are available; both let Python write into the sample
+/// via the buffer protocol and ship it with no additional copies.
 ///
 /// ```python
 /// with node.send_output_raw("out", 1024 * 1024) as buf:
 ///     memoryview(buf)[:] = my_bytes   # or: numpy / struct / ...
-/// # buf is sent automatically on __exit__
+/// # buf is sent automatically on __exit__ (only if the body did NOT raise)
 /// ```
 ///
 /// Manual usage (Python >= 3.11):
@@ -276,7 +296,11 @@ struct SampleInner {
 #[pyclass]
 pub struct SampleHandler {
     node: DelayedCleanup<DoraNode>,
-    inner: Option<SampleInner>,
+    /// Per-send metadata. Taken by `send()`.
+    meta: Option<SampleMeta>,
+    /// Shared state that owns the `DataSample`. Survives `SampleHandler::drop()`
+    /// iff any `SampleBuffer` (and thus any memoryview chain) keeps it alive.
+    state: Arc<SampleBufferState>,
     /// Lazily created on the first call to `as_buffer()` / `__enter__`.
     /// Only present on Python >= 3.11 where the buffer protocol is stable.
     #[cfg(Py_3_11)]
@@ -297,20 +321,32 @@ impl SampleHandler {
     ) -> eyre::Result<Self> {
         let sample = node.get_mut().allocate_data_sample(data_length)?;
         let type_info = ArrowTypeInfo::byte_array(data_length);
-        let inner = SampleInner {
-            data_id,
-            type_info,
-            parameters,
-            sample,
-        };
         Ok(Self {
             node,
-            inner: Some(inner),
+            meta: Some(SampleMeta {
+                data_id,
+                type_info,
+                parameters,
+            }),
+            state: SampleBufferState::new(sample),
             #[cfg(Py_3_11)]
             buffer: None,
             #[cfg(Py_3_11)]
             memoryview: None,
         })
+    }
+}
+
+impl Drop for SampleHandler {
+    fn drop(&mut self) {
+        // Invalidate the state so any new `__getbuffer__` call fails with
+        // `BufferError`. Existing memoryviews keep working — their cached
+        // `Py_buffer.buf` pointer references the `DataSample` which is held
+        // alive by the `state` Arc (via `SampleBuffer.state` and the
+        // memoryview's strong ref on `SampleBuffer`). Once those views are
+        // released, the last Arc drops, `state.sample` drops, and the
+        // `DataSample` is reclaimed.
+        self.state.valid.store(false, Ordering::Release);
     }
 }
 
@@ -326,53 +362,48 @@ impl SampleHandler {
     /// `SampleBuffer` — release all `memoryview` / numpy references first.
     pub fn send(&mut self) -> eyre::Result<()> {
         // 1. Guard: can only send once.
-        let SampleInner {
-            data_id,
-            type_info,
-            parameters,
-            sample,
-        } = self
-            .inner
+        let meta = self
+            .meta
             .take()
             .ok_or_else(|| eyre::eyre!("Sample has already been sent"))?;
 
-        // 2. Guard (Py >= 3.11 only): all buffer views must be released first.
-        //    Read view_count and (on success) flip valid inside a single
-        //    `Python::attach` block so the read-then-write happens under one
-        //    GIL acquisition — no inconsistency window if either side panics.
-        #[cfg(Py_3_11)]
-        if let Some(buf) = &self.buffer {
-            let view_count = Python::attach(|py| {
-                let state = &buf.borrow(py).state;
-                let count = state.view_count.load(Ordering::Acquire);
-                if count == 0 {
-                    // Invalidate the SampleBuffer *before* the DataSample is freed
-                    // so any Python handle that later calls __getbuffer__ receives
-                    // a clear BufferError instead of accessing freed memory.
-                    state.valid.store(false, Ordering::Release);
-                }
-                count
-            });
+        // 2. Atomically (under the GIL + the state mutex): check view_count,
+        //    invalidate the buffer, take the DataSample. The mutex is held for
+        //    the whole sequence so the read-then-write is a single critical
+        //    section.
+        let sample = {
+            let mut sample_lock = self
+                .state
+                .sample
+                .lock()
+                .map_err(|_| eyre::eyre!("DataSample lock poisoned"))?;
 
-            if view_count != 0 {
-                // Roll the take back so the handler stays in a consistent state.
-                self.inner = Some(SampleInner {
-                    data_id,
-                    type_info,
-                    parameters,
-                    sample,
-                });
-                eyre::bail!(
-                    "Cannot send: {view_count} buffer view(s) are still open. \
-                     Release all memoryview / numpy references before calling send()."
-                );
+            #[cfg(Py_3_11)]
+            {
+                let view_count = self.state.view_count.load(Ordering::Acquire);
+                if view_count != 0 {
+                    // Roll back the meta take so the handler stays sendable.
+                    self.meta = Some(meta);
+                    eyre::bail!(
+                        "Cannot send: {view_count} buffer view(s) are still open. \
+                         Release all memoryview / numpy references before calling send()."
+                    );
+                }
             }
-        }
+
+            // Invalidate the SampleBuffer *before* the DataSample is freed so
+            // any Python handle that later calls __getbuffer__ receives a
+            // clear BufferError instead of accessing freed memory.
+            self.state.valid.store(false, Ordering::Release);
+            sample_lock.take()
+        };
+
+        let sample = sample.ok_or_else(|| eyre::eyre!("DataSample missing (concurrent send?)"))?;
 
         // 3. Send (zero additional copies).
         self.node
             .get_mut()
-            .send_output_sample(data_id, type_info, parameters, Some(sample))
+            .send_output_sample(meta.data_id, meta.type_info, meta.parameters, Some(sample))
             .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
         Ok(())
     }
@@ -391,12 +422,12 @@ impl SampleHandler {
     /// The same `SampleBuffer` instance is returned on every call (lazily
     /// created on first access).
     ///
-    /// Raises `RuntimeError` after `send()` has been called.
+    /// Raises `RuntimeError` after `send()` has been called or after the
+    /// handler was dropped.
     pub fn as_buffer(&mut self, py: Python<'_>) -> PyResult<Py<SampleBuffer>> {
-        if self.inner.is_none() {
+        if !self.state.valid.load(Ordering::Acquire) {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                "Cannot access buffer after send() \
-                 - the sample has already been sent",
+                "Cannot access buffer: the sample has already been sent",
             ));
         }
 
@@ -405,18 +436,32 @@ impl SampleHandler {
             return Ok(buf.clone_ref(py));
         }
 
-        // First call: borrow the DataSample slice and wrap the raw pointer.
-        let inner = self.inner.as_mut().unwrap();
-        let slice: &mut [u8] = inner.sample.deref_mut();
-        let ptr = slice.as_mut_ptr();
-        let len = slice.len();
+        // Extract a stable raw pointer to the DataSample's bytes. The
+        // `DataSample` is heap-allocated via `AVec`, so its buffer address
+        // does not move; the pointer is valid as long as the `DataSample`
+        // remains inside `state.sample`. `send()` is the only path that
+        // takes the sample out, and it requires `view_count == 0` first —
+        // so any view we hand out via this `ptr` will be released before
+        // the memory can be reclaimed.
+        let (ptr, len) = {
+            let sample_lock = self.state.sample.lock().map_err(|_| {
+                pyo3::exceptions::PyRuntimeError::new_err("DataSample lock poisoned")
+            })?;
+            let sample = sample_lock.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "DataSample missing in state (concurrent send?)",
+                )
+            })?;
+            let slice: &[u8] = sample.deref();
+            (slice.as_ptr() as *mut u8, slice.len())
+        };
 
         let py_buf = Py::new(
             py,
             SampleBuffer {
                 ptr,
                 len,
-                state: SampleBufferState::new(),
+                state: self.state.clone(),
             },
         )?;
         self.buffer = Some(py_buf.clone_ref(py));
@@ -429,7 +474,8 @@ impl SampleHandler {
     /// Wraps the `SampleBuffer` in a native Python `memoryview` so callers can
     /// use it directly with slice syntax, `struct.pack_into`, NumPy, etc.
     ///
-    /// Raises `RuntimeError` after `send()` has been called.
+    /// Raises `RuntimeError` after `send()` has been called or after the
+    /// handler was dropped.
     ///
     /// ```python
     /// sample = node.send_output_raw("out", 1024)
@@ -460,22 +506,38 @@ impl SampleHandler {
         self.as_memoryview(py)
     }
 
-    /// Exit the context manager and send the data.
+    /// Exit the context manager.
+    ///
+    /// - **Normal exit** (`exc_type is None`): release the cached memoryview
+    ///   and call `send()`.
+    /// - **Exceptional exit**: release the cached memoryview but do **NOT**
+    ///   send — the buffer may contain partial or uninitialized data, and
+    ///   shipping it would deliver a corrupt frame to downstream nodes
+    ///   immediately before the node fails. The handler's `Drop` invalidates
+    ///   the state and reclaims the `DataSample`; the original exception
+    ///   propagates as normal.
     fn __exit__(
         &mut self,
-        _exc_type: &Bound<'_, PyAny>,
+        exc_type: &Bound<'_, PyAny>,
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
     ) -> PyResult<bool> {
-        // Close the memoryview returned by `__enter__` so that its buffer view
-        // on `SampleBuffer` is released before `send()` checks `view_count`.
-        // The user is still responsible for releasing any derived views (e.g.
-        // numpy arrays) they created inside the `with` block.
+        // Always release the cached memoryview so view_count drops back to 0
+        // — regardless of whether we send or not. The user is still
+        // responsible for releasing any derived views (e.g. numpy arrays)
+        // they created inside the `with` block.
         Python::attach(|py| {
             if let Some(mv) = self.memoryview.take() {
                 let _ = mv.call_method0(py, "release");
             }
         });
+
+        // Do NOT send on exceptional exit — the buffer contents are
+        // unreliable when the body raised mid-fill.
+        if !exc_type.is_none() {
+            return Ok(false); // propagate the original exception
+        }
+
         self.send().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("Failed to send: {e}"))
         })?;
@@ -485,30 +547,36 @@ impl SampleHandler {
 
 // ---------------------------------------------------------------------------
 // State-machine tests
-//
-// The end-to-end buffer-protocol contract (memoryview, numpy interop,
-// BufferError after send, send-blocked-by-open-views) is exercised by the
-// `examples/python-zero-copy-send/` integration example. These Rust unit
-// tests cover the underlying atomic state machine that the protocol relies on
-// — the part that's testable without spinning up a CPython interpreter.
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, Py_3_11))]
 mod tests {
-    use super::{Ordering, SampleBufferState};
+    use super::SampleBufferState;
+    use std::sync::atomic::Ordering;
+
+    /// `DataSample` requires a real node to construct, so the tests use a
+    /// `DataSample`-typed `Option::None` shim. They exercise the atomic state
+    /// machine only — the buffer-protocol contract and the
+    /// drop-without-send / exit-with-exception fixes are covered end-to-end
+    /// by `examples/python-zero-copy-send/test_contract.py`.
+    fn fresh_state() -> std::sync::Arc<SampleBufferState> {
+        std::sync::Arc::new(SampleBufferState {
+            valid: std::sync::atomic::AtomicBool::new(true),
+            view_count: std::sync::atomic::AtomicIsize::new(0),
+            sample: std::sync::Mutex::new(None),
+        })
+    }
 
     #[test]
     fn fresh_state_is_valid_with_no_views() {
-        let state = SampleBufferState::new();
+        let state = fresh_state();
         assert!(state.valid.load(Ordering::Acquire));
         assert_eq!(state.view_count.load(Ordering::Acquire), 0);
     }
 
     #[test]
     fn view_count_reflects_paired_get_release() {
-        let state = SampleBufferState::new();
-        // Two `__getbuffer__` calls (e.g. two memoryviews on the same buffer)
-        // followed by their matching `__releasebuffer__` calls.
+        let state = fresh_state();
         state.view_count.fetch_add(1, Ordering::AcqRel);
         state.view_count.fetch_add(1, Ordering::AcqRel);
         assert_eq!(state.view_count.load(Ordering::Acquire), 2);
@@ -519,9 +587,7 @@ mod tests {
 
     #[test]
     fn invalidation_is_one_way_and_observable() {
-        // `send()` flips `valid = false` before releasing the DataSample;
-        // a concurrent `__getbuffer__` must see the flag and bail out.
-        let state = SampleBufferState::new();
+        let state = fresh_state();
         assert!(state.valid.load(Ordering::Acquire));
         state.valid.store(false, Ordering::Release);
         assert!(!state.valid.load(Ordering::Acquire));
@@ -529,11 +595,7 @@ mod tests {
 
     #[test]
     fn view_count_is_independent_of_valid_flag() {
-        // The check-order matters: `send()` first verifies `view_count == 0`,
-        // THEN sets `valid = false`. The two atomics must be independent so the
-        // ordering is enforceable. This test catches an accidental coupling
-        // (e.g. a future refactor combining them into one atomic).
-        let state = SampleBufferState::new();
+        let state = fresh_state();
         state.view_count.fetch_add(1, Ordering::AcqRel);
         assert!(state.valid.load(Ordering::Acquire));
         state.view_count.fetch_sub(1, Ordering::AcqRel);

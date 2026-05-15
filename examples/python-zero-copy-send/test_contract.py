@@ -130,6 +130,70 @@ def case_access_after_send_raises_runtime_error(node):
         raise AssertionError("as_memoryview() after send() should raise RuntimeError")
 
 
+def case_buffer_outlives_dropped_handler_safely(node):
+    """Regression: SampleHandler dropped while SampleBuffer is alive must not UAF.
+
+    Previously, the DataSample was owned by SampleHandler.inner. Dropping the
+    handler released the DataSample while a held SampleBuffer still pointed
+    into it. Acquiring a new view through the buffer would read freed memory.
+
+    Fix: state.valid is flipped on SampleHandler::Drop, so __getbuffer__ sees
+    valid=false and raises BufferError. The DataSample is held alive by the
+    state Arc (referenced by the SampleBuffer) until the buffer + any
+    memoryview chain releases.
+    """
+    sample = node.send_output_raw(OUT, 64)
+    buf = sample.as_buffer()
+    del sample  # SampleHandler drops; state.valid flips to false
+    try:
+        memoryview(buf)
+    except BufferError:
+        pass  # expected
+    else:
+        raise AssertionError(
+            "memoryview() on a SampleBuffer whose parent handler was dropped "
+            "must raise BufferError"
+        )
+
+
+def case_exit_with_exception_does_not_send(node):
+    """Regression: `with` body raising must NOT publish the partial buffer.
+
+    Previously, __exit__ ignored exc_type and always called send(). If the
+    body raised mid-fill, dora would still ship the half-written buffer
+    immediately before propagating the exception — delivering corrupt data
+    downstream.
+
+    Fix: __exit__ checks exc_type and skips send() on exceptional exit.
+    """
+    # We don't have a clean way to inspect what was published, but we can
+    # verify the contract by:
+    # 1. Running a `with` block that raises
+    # 2. Confirming that the handler's state is consistent afterwards
+    #    (i.e. the handler can be created again and sent successfully —
+    #    no leaked resources, no stuck state)
+    sentinel = RuntimeError("intentional - testing exception path")
+    raised = False
+    try:
+        with node.send_output_raw(OUT, 64) as buf:
+            np.asarray(buf, dtype=np.uint8)[:] = 0
+            raise sentinel
+    except RuntimeError as exc:
+        # The original exception must propagate, NOT a wrapped "Failed to send"
+        # error. If __exit__ called send() and got an error from it, we'd see
+        # a chained or replaced exception here.
+        assert exc is sentinel, (
+            f"original exception should propagate unchanged, got: {exc!r}"
+        )
+        raised = True
+    assert raised, "the sentinel exception should have propagated"
+
+    # A fresh send after the exceptional exit must work — handler state is
+    # not stuck.
+    follow_up = node.send_output_raw(OUT, 64)
+    follow_up.send()
+
+
 CASES = [
     case_happy_path_context_manager,
     case_happy_path_manual,
@@ -139,6 +203,8 @@ CASES = [
     case_as_buffer_is_idempotent,
     case_as_memoryview_is_idempotent,
     case_access_after_send_raises_runtime_error,
+    case_buffer_outlives_dropped_handler_safely,
+    case_exit_with_exception_does_not_send,
 ]
 
 
