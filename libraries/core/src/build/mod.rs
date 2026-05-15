@@ -82,10 +82,10 @@ impl Builder {
                     None => self.base_working_dir,
                 };
 
-                // Only build-backed custom Python nodes get Dora's managed env today;
-                // script-only nodes still run in the caller's ambient uv environment.
-                python_env_dir =
-                    managed_python_env_dir(&node, &node_working_dir).filter(|_| n.build.is_some());
+                // `managed_python_env_dir` itself returns None for script-only
+                // Python custom nodes (no `build:`) — those run against the
+                // caller's ambient uv env.
+                python_env_dir = managed_python_env_dir(&node, &node_working_dir);
                 if self.uv
                     && let Some(python_env_dir) = &python_env_dir
                 {
@@ -246,12 +246,20 @@ pub struct BuildInfo {
 
 /// Computes the managed Python env directory for `node`, if it needs one.
 ///
-/// Returns `Some(working_dir/.dora/python-envs/<node-id>)` when the node is a
-/// Python custom node or a runtime node with at least one Python operator;
-/// `None` otherwise.
+/// Returns `Some(working_dir/.dora/python-envs/<node-id>)` when the node
+/// actually needs Dora to prepare a venv for it:
+///
+/// - Python custom node (`.py` extension) **with a `build:` block** — the
+///   build commands install deps into the managed env, which the runtime
+///   then reuses.
+/// - Runtime node with at least one Python operator.
+///
+/// Returns `None` for script-only Python custom nodes (no `build:` block) —
+/// those run against the caller's ambient `uv` environment by design — and
+/// for non-Python nodes.
 ///
 /// The `node_id` segment is what gives each node its own venv even when nodes
-/// share a `working_dir` — runtime nodes always do, and custom nodes without
+/// share a `working_dir`. Runtime nodes always do, and custom nodes without
 /// a git source also fall back to the shared `base_working_dir`. Without that
 /// segment, parallel builds would race on `uv venv --clear` against the same
 /// directory and silently clobber each other's envs.
@@ -285,7 +293,11 @@ pub fn managed_python_interpreter(python_env_dir: &Path) -> PathBuf {
 
 fn node_requires_managed_python_env(node: &ResolvedNode) -> bool {
     match &node.kind {
-        CoreNodeKind::Custom(custom) => is_python_custom_node(custom),
+        // Script-only Python custom nodes (no `build:`) run against the
+        // caller's ambient `uv` env — they have no deps for Dora to install
+        // and the spawn path uses `uv run python` rather than the managed
+        // interpreter for them.
+        CoreNodeKind::Custom(custom) => is_python_custom_node(custom) && custom.build.is_some(),
         CoreNodeKind::Runtime(runtime) => runtime
             .operators
             .iter()
@@ -319,19 +331,35 @@ mod tests {
     }
 
     #[test]
-    fn assigns_managed_env_dir_to_python_custom_nodes() {
+    fn assigns_managed_env_dir_to_build_backed_python_custom_nodes() {
         let node = resolved_node_from_yaml(
             "id: python-custom\n\
              custom:\n  \
              path: node.py\n  \
-             source: Local\n",
+             source: Local\n  \
+             build: pip install -r requirements.txt\n",
         );
         let env_dir = managed_python_env_dir(&node, &PathBuf::from("workdir"))
-            .expect("python custom node should get managed env dir");
+            .expect("build-backed python custom node should get managed env dir");
         assert_eq!(
             env_dir,
             PathBuf::from("workdir/.dora/python-envs/python-custom")
         );
+    }
+
+    #[test]
+    fn skips_managed_env_dir_for_script_only_python_custom_nodes() {
+        // Script-only Python custom nodes (no `build:`) intentionally run
+        // against the caller's ambient uv env — both the build flow and the
+        // spawn flow short-circuit them. The predicate must match so the
+        // daemon's fail-closed guard does not over-fire under `dora start --uv`.
+        let node = resolved_node_from_yaml(
+            "id: script-only-python\n\
+             custom:\n  \
+             path: node.py\n  \
+             source: Local\n",
+        );
+        assert!(managed_python_env_dir(&node, &PathBuf::from("workdir")).is_none());
     }
 
     #[test]
@@ -344,13 +372,15 @@ mod tests {
             "id: node-a\n\
              custom:\n  \
              path: a.py\n  \
-             source: Local\n",
+             source: Local\n  \
+             build: pip install foo\n",
         );
         let node_b = resolved_node_from_yaml(
             "id: node-b\n\
              custom:\n  \
              path: b.py\n  \
-             source: Local\n",
+             source: Local\n  \
+             build: pip install bar\n",
         );
         let shared = PathBuf::from("shared-workdir");
         let env_a = managed_python_env_dir(&node_a, &shared).expect("node-a env");
