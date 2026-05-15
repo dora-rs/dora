@@ -1173,6 +1173,7 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           dora build dataflow.yml --uv
+          uv pip install -e ../apis/python/node -e talker-1 -e talker-2 -e listener-1
           uv run ruff check .
           uv run pytest
           export OPERATING_MODE=SAVE
@@ -1441,7 +1442,7 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported
