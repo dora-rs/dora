@@ -26,6 +26,19 @@ pip install -r requirements.txt
 pip install -r requirements_llm.txt
 ```
 
+### Alternative: managed venvs with `--uv`
+
+Since each operator's `build:` line in [`dataflow.yml`](./dataflow.yml) is `pip install -r requirements.txt`, you can let dora manage per-operator [`uv`](https://github.com/astral-sh/uv) virtual environments instead of running `conda` by hand:
+
+```bash
+dora build --uv dataflow.yml
+dora run   --uv dataflow.yml
+```
+
+`dora build --uv` creates one venv per operator at `<dataflow-dir>/.dora/python-envs/<node-id>/`, runs the operator's `build:` command inside it, and records the env path. `dora run --uv` then spawns each operator against that exact interpreter — same Python, same deps as build time, no cross-operator contamination. Run `dora doctor` to confirm `uv` is on `PATH` before trying this flow.
+
+This is the closest analogue to the per-operator [`dataflow_conda.yml`](./dataflow_conda.yml) pattern (which uses `conda_env:` on a single operator). Use whichever fits your environment: `conda_env:` when you already have conda envs in place and want explicit naming; `--uv` when you want dora to provision the env from `pip install` build steps automatically. The two are not mutually exclusive at the operator level — an operator without `conda_env:` falls back to the `--uv` managed env when `--uv` is passed.
+
 ## Run the dataflow
 
 - Start the object detection dataflow alone:
