@@ -89,14 +89,20 @@ pub enum ControlRequest {
     },
     Destroy,
     List,
-    /// Remove finished and failed dataflows from the coordinator's state.
+    /// Remove fully-completed dataflows from the coordinator's state.
     ///
-    /// The coordinator returns the list of dataflows it just cleaned. Logs
-    /// and archived descriptors for those dataflows are no longer available
-    /// after this call. Running dataflows are unaffected. Cached build
-    /// results (`finished_builds`) are intentionally not touched — clearing
-    /// them would break concurrent `dora build` calls with
-    /// "unknown build id" errors.
+    /// A dataflow is considered fully completed when no daemon is still
+    /// running it (i.e. it's no longer in `running_dataflows`). Multi-daemon
+    /// dataflows that are still finishing — where some daemons have reported
+    /// results but others haven't — are intentionally skipped so their final
+    /// status is computed correctly when the last daemon completes.
+    ///
+    /// The coordinator returns the list of dataflows it just cleaned and
+    /// removes each from both the in-memory state and the persisted store.
+    /// Logs and archived descriptors for those dataflows are no longer
+    /// available afterward. Cached build results (`finished_builds`) are
+    /// intentionally not touched — clearing them would break concurrent
+    /// `dora build` calls with "unknown build id" errors.
     Clean,
     Info {
         dataflow_uuid: Uuid,

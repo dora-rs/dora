@@ -497,7 +497,7 @@ dora list [OPTIONS]
 
 #### `dora clean`
 
-Remove finished and failed dataflows from the coordinator's state. Running dataflows are unaffected.
+Remove fully-completed dataflows from the coordinator's state. Running dataflows are unaffected. Multi-daemon dataflows where some daemons have finished but others haven't are also skipped so the final status stays correct when the last daemon completes.
 
 ```
 dora clean [OPTIONS]
@@ -510,13 +510,16 @@ dora clean [OPTIONS]
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-**What's removed:** Records of finished/failed dataflows from `dataflow_results` and their archived descriptors from `archived_dataflows`. Running dataflows are not touched.
+**What's removed:** Records of fully-completed (finished/failed) dataflows from `dataflow_results` and their archived descriptors. Each cleaned dataflow is also deleted from the coordinator's persisted store (redb), so the on-disk state file does not grow unboundedly and `param`-style commands that resolve targets via the persisted record stop seeing "ghost" cleaned dataflows.
 
-**What's NOT removed:** Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls with "unknown build id" errors.
+**What's NOT removed:**
+- Running dataflows.
+- Multi-daemon dataflows still finishing (some daemons reported results, others haven't yet) — these are intentionally skipped to preserve the partial state the coordinator needs to compute the final status correctly.
+- Cached build results (`finished_builds`) — clearing them would break concurrent `dora build` calls with "unknown build id" errors.
 
-**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows (the archived metadata that backs log lookup is gone). Save anything you might want to reference later before running `dora clean`.
+**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows (the archived metadata that backs log lookup is gone), and the persisted record is removed (so `dora param` commands against the cleaned UUID also fail). Save anything you might want to reference later before running `dora clean`.
 
-**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs and you want to see only what's currently running. Less destructive than `dora down + dora up` because the coordinator stays up and daemons stay connected.
+**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs and you want to see only what's currently running, or when a long-lived coordinator's redb state file has grown too large. Less destructive than `dora down + dora up` because the coordinator stays up and daemons stay connected.
 
 **Examples:**
 

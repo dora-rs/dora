@@ -488,7 +488,7 @@ dora list [OPTIONS]
 
 #### `dora clean`
 
-Remove finished and failed dataflows from the coordinator's state. Running dataflows are unaffected.
+Remove fully-completed dataflows from the coordinator's state. Running dataflows are unaffected. Multi-daemon dataflows where some daemons have finished but others haven't are also skipped — clean only touches dataflows where no daemon is still running.
 
 ```
 dora clean [OPTIONS]
@@ -501,11 +501,11 @@ dora clean [OPTIONS]
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-**What's removed:** Records of finished/failed dataflows from `dataflow_results` and their archived descriptors. Running dataflows are not touched. Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls.
+**What's removed:** Records of fully-completed dataflows from `dataflow_results` and their archived descriptors. Each entry is also deleted from the coordinator's persisted store (redb) so the state file does not grow unboundedly. Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls.
 
-**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows. Save anything you might want to reference later before running `dora clean`.
+**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows, and the persisted record is gone (so `dora param` against the cleaned UUID also fails). Save anything you might want to reference later before running `dora clean`.
 
-**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs. Less destructive than `dora down + dora up` — the coordinator stays up and daemons stay connected.
+**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs, or when a long-lived coordinator's redb state file has grown too large. Less destructive than `dora down + dora up` — the coordinator stays up and daemons stay connected.
 
 #### `dora logs`
 

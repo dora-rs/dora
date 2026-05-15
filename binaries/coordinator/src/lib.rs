@@ -1000,28 +1000,53 @@ async fn start_inner(
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Clean => {
-                            // Drain `dataflow_results` in a single pass, removing each
-                            // entry's archived metadata along the way. Running dataflows
-                            // are untouched. `finished_builds` is intentionally NOT
-                            // touched: clearing it would break concurrent `dora build`
-                            // calls ("unknown build id" errors) that are still polling
-                            // for build completion.
-                            let drained: Vec<_> = std::mem::take(&mut dataflow_results)
-                                .into_iter()
-                                .map(|(uuid, results)| {
-                                    let name =
-                                        archived_dataflows.shift_remove(&uuid).and_then(|d| d.name);
-                                    let id = DataflowIdAndName { uuid, name };
-                                    let status = if results.values().all(|r| r.is_ok()) {
-                                        DataflowStatus::Finished
-                                    } else {
-                                        DataflowStatus::Failed
-                                    };
-                                    DataflowListEntry { id, status }
-                                })
-                                .collect();
+                            // Only drain entries whose dataflow has FULLY completed.
+                            // For multi-daemon dataflows, `dataflow_results` is populated
+                            // incrementally — each daemon's result is inserted as soon
+                            // as that daemon finishes, but the dataflow stays in
+                            // `running_dataflows` until ALL daemons are gone. Draining
+                            // such a partial entry would corrupt the final status:
+                            // when the last daemon finishes, the reply is computed from
+                            // the (now-missing) entry and can default to Succeeded even
+                            // if an earlier daemon reported a node failure.
+                            //
+                            // `finished_builds` is intentionally NOT touched: clearing
+                            // it would break concurrent `dora build` calls ("unknown
+                            // build id" errors) that are still polling for build
+                            // completion.
+                            //
+                            // We also remove each cleaned entry from the persisted
+                            // store, so the redb state file does not grow unboundedly
+                            // and so persisted-only lookups (e.g. param target
+                            // resolution via `store.get_dataflow()`) don't continue to
+                            // resolve "ghost" cleaned dataflows.
+                            let mut cleaned: Vec<DataflowListEntry> = Vec::new();
+                            dataflow_results.retain(|uuid, results| {
+                                if running_dataflows.contains_key(uuid) {
+                                    // Multi-daemon dataflow still completing — keep
+                                    // partial results so the final status is correct.
+                                    return true;
+                                }
+                                let name =
+                                    archived_dataflows.shift_remove(uuid).and_then(|d| d.name);
+                                let status = if results.values().all(|r| r.is_ok()) {
+                                    DataflowStatus::Finished
+                                } else {
+                                    DataflowStatus::Failed
+                                };
+                                cleaned.push(DataflowListEntry {
+                                    id: DataflowIdAndName { uuid: *uuid, name },
+                                    status,
+                                });
+                                if let Err(e) = store.delete_dataflow(uuid) {
+                                    tracing::warn!(
+                                        "failed to delete persisted record for cleaned \
+                                         dataflow {uuid}: {e}"
+                                    );
+                                }
+                                false
+                            });
 
-                            let mut cleaned = drained;
                             cleaned.sort_by(|a, b| {
                                 (a.id.name.as_deref(), a.id.uuid)
                                     .cmp(&(b.id.name.as_deref(), b.id.uuid))
