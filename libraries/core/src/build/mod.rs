@@ -246,11 +246,22 @@ pub struct BuildInfo {
 
 /// Computes the managed Python env directory for `node`, if it needs one.
 ///
-/// Returns `Some(working_dir/.dora/python-env)` when the node is a Python custom
-/// node or a runtime node with at least one Python operator; `None` otherwise.
+/// Returns `Some(working_dir/.dora/python-envs/<node-id>)` when the node is a
+/// Python custom node or a runtime node with at least one Python operator;
+/// `None` otherwise.
+///
+/// The `node_id` segment is what gives each node its own venv even when nodes
+/// share a `working_dir` — runtime nodes always do, and custom nodes without
+/// a git source also fall back to the shared `base_working_dir`. Without that
+/// segment, parallel builds would race on `uv venv --clear` against the same
+/// directory and silently clobber each other's envs.
 pub fn managed_python_env_dir(node: &ResolvedNode, node_working_dir: &Path) -> Option<PathBuf> {
-    node_requires_managed_python_env(node)
-        .then(|| node_working_dir.join(".dora").join("python-env"))
+    node_requires_managed_python_env(node).then(|| {
+        node_working_dir
+            .join(".dora")
+            .join("python-envs")
+            .join(node.id.as_ref())
+    })
 }
 
 /// Returns the bin directory inside an env dir (`bin/` on Unix, `Scripts/` on Windows).
@@ -317,7 +328,34 @@ mod tests {
         );
         let env_dir = managed_python_env_dir(&node, &PathBuf::from("workdir"))
             .expect("python custom node should get managed env dir");
-        assert_eq!(env_dir, PathBuf::from("workdir/.dora/python-env"));
+        assert_eq!(
+            env_dir,
+            PathBuf::from("workdir/.dora/python-envs/python-custom")
+        );
+    }
+
+    #[test]
+    fn env_dir_includes_node_id_so_parallel_builds_do_not_race() {
+        // Two Python nodes sharing the same working_dir (e.g. two runtime nodes
+        // in one dataflow, or two custom nodes without git sources) must get
+        // distinct env dirs; without per-node identification, parallel builds
+        // would race on `uv venv --clear` against the same directory.
+        let node_a = resolved_node_from_yaml(
+            "id: node-a\n\
+             custom:\n  \
+             path: a.py\n  \
+             source: Local\n",
+        );
+        let node_b = resolved_node_from_yaml(
+            "id: node-b\n\
+             custom:\n  \
+             path: b.py\n  \
+             source: Local\n",
+        );
+        let shared = PathBuf::from("shared-workdir");
+        let env_a = managed_python_env_dir(&node_a, &shared).expect("node-a env");
+        let env_b = managed_python_env_dir(&node_b, &shared).expect("node-b env");
+        assert_ne!(env_a, env_b);
     }
 
     #[test]

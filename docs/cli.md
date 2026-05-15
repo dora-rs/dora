@@ -353,7 +353,7 @@ dora build <PATH> [OPTIONS]
 
 **Git sources:** Nodes with a `git:` field are cloned/updated before building. The build command runs from the git repository root.
 
-**Managed Python environments (`--uv`):** For Python nodes (`.py` custom nodes with a `build:` block, and runtime nodes with Python operators), `--uv` now creates a dedicated `uv` virtual environment per node at `<working-dir>/.dora/python-env/`. The build commands run inside that venv with `VIRTUAL_ENV` set and the env's `bin/` (or `Scripts/` on Windows) prepended to `PATH`. `dora start` and `dora run` automatically reuse the same interpreter at spawn time, so a Python node sees the exact dependencies installed at build time — no more drift between build and runtime, and no contamination across nodes. Custom Python nodes without a `build:` block keep using the caller's ambient `uv` environment. The env is reused (not re-created) on subsequent builds.
+**Managed Python environments (`--uv`):** For Python nodes (`.py` custom nodes with a `build:` block, and runtime nodes with Python operators), `--uv` now creates a dedicated `uv` virtual environment per node at `<working-dir>/.dora/python-envs/<node-id>/`. The build commands run inside that venv with `VIRTUAL_ENV` set and the env's `bin/` (or `Scripts/` on Windows) prepended to `PATH`. `dora start` and `dora run` automatically reuse the same interpreter at spawn time, so a Python node sees the exact dependencies installed at build time — no more drift between build and runtime, and no contamination across nodes. Custom Python nodes without a `build:` block keep using the caller's ambient `uv` environment. The env is reused (not re-created) on subsequent builds.
 
 #### `dora start`
 
