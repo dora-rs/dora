@@ -70,6 +70,7 @@ dora start dataflow.yml
 dora list          # show running dataflows
 dora logs my-node  # stream node logs
 dora top           # resource usage
+dora clean         # drop finished/failed entries from the list (keeps coordinator running)
 
 # Stop
 dora stop --all
