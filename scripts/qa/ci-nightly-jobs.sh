@@ -871,6 +871,8 @@ job_cli_tests() {
     source "$venv_dir/bin/activate"
     uv pip install --quiet pyarrow "ruff>=0.9" pytest
     uv pip install --quiet -e apis/python/node
+    local dora_python_api
+    dora_python_api="$PWD/apis/python/node"
 
     # Python template: dora new + dora build + ruff + pytest + dora run
     local tmpd2
@@ -880,6 +882,7 @@ job_cli_tests() {
       dora new test_python_project --lang python --internal-create-with-path-dependencies
       cd test_python_project
       dora build dataflow.yml --uv
+      uv pip install --quiet -e "$dora_python_api" -e talker-1 -e talker-2 -e listener-1
       uv run ruff check .
       uv run pytest
       export OPERATING_MODE=SAVE
@@ -1066,6 +1069,7 @@ job_ros2_bridge() {
   source /opt/ros/humble/setup.bash
   timeout 600s cargo test -p dora-ros2-bridge-python
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 }
 
 # -----------------------------------------------------------------------------
