@@ -120,7 +120,7 @@ arrow-json = { version = "58" }
 parquet = { version = "58" }
 pyo3 = { version = "0.28", features = [
     "eyre",
-    "abi3-py37",
+    "abi3-py311",
     "multiple-pymethods",
 ] }
 pythonize = "0.28"

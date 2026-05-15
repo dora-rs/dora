@@ -248,6 +248,47 @@ With `--uv`, dora creates a dedicated `uv` virtual environment at `<working-dir>
 
 Script-only Python nodes (no `build:` block) keep using your active `uv` environment as before — they have no deps for dora to install. See [CLI reference](cli.md#dora-build) for details and the [`dora doctor` guide](debugging.md#environment-diagnosis) to verify `uv` is on PATH.
 
+## Zero-Copy Sends with `send_output_raw`
+
+`node.send_output(...)` performs **one copy** to move your data into dora's send buffer. For large payloads (camera frames, point clouds, embeddings) at high rates that copy is a real CPU + memory-bandwidth cost.
+
+`node.send_output_raw(output_id, length, metadata=...)` returns a `SampleHandler` that owns dora's pre-allocated send buffer. You write into it directly via Python's buffer protocol (`memoryview`, `numpy.asarray`, `struct.pack_into`) and call `.send()` — no intermediate copy.
+
+**Requires Python >= 3.11** (uses the stable buffer-protocol C API).
+
+### Recommended: context-manager form
+
+```python
+height, width = 1080, 1920
+with node.send_output_raw("frame", height * width * 3, metadata={"width": width}) as buf:
+    np.asarray(buf, dtype=np.uint8).reshape(height, width, 3)[:] = frame
+# data is sent automatically when the `with` block exits
+```
+
+### Manual form (when send timing is conditional)
+
+```python
+sample = node.send_output_raw("frame", height * width * 3)
+mv = sample.as_memoryview()
+arr = np.asarray(mv, dtype=np.uint8).reshape(height, width, 3)
+arr[:] = frame
+del arr        # drop derived numpy view first
+mv.release()   # then release the memoryview itself
+sample.send()  # ship it
+```
+
+### Safety contract
+
+The handler enforces a small protocol so the zero-copy path stays sound:
+
+- **Write-only-once.** Calling `.send()` twice on the same handler is an error.
+- **No view past `send()`.** Once `.send()` runs, any subsequent attempt to acquire a buffer view raises `BufferError`.
+- **No `send()` while views are open.** If you still hold a `memoryview` (or a derived numpy array that hasn't been GC'd), `.send()` errors with a clear message. Release the views first.
+
+The context-manager form handles this automatically — `__exit__` releases the cached memoryview before calling send. The manual form requires explicit `del` of any derived arrays + `mv.release()` before `sample.send()`.
+
+See [`examples/python-zero-copy-send/`](https://github.com/dora-rs/dora/tree/main/examples/python-zero-copy-send) for a runnable example.
+
 ## Next Steps
 
 - [Python API Reference](api-python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA
