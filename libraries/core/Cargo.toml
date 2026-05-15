@@ -26,7 +26,7 @@ which = "7"
 uuid = { workspace = true }
 tracing = { workspace = true }
 serde-with-expand-env = "1.1.0"
-tokio = { workspace = true, features = ["fs", "process", "sync", "rt"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "sync", "rt"] }
 schemars = "1.0.4"
 serde_json = { workspace = true }
 log = { version = "0.4.21", features = ["serde"] }

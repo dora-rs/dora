@@ -1615,10 +1615,15 @@ impl Daemon {
                         .try_clone()
                         .await
                         .context("failed to clone logger")?;
+                    // Re-derive the managed Python env dir deterministically so
+                    // node restarts reuse the same venv that `dora build` prepared.
+                    let python_env_dir =
+                        dora_core::build::managed_python_env_dir(&node, &base_working_dir);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
                             base_working_dir,
+                            python_env_dir,
                             node_stderr,
                             None,
                             &mut logger,
@@ -2221,6 +2226,7 @@ impl Daemon {
         let task = async move {
             let mut info = BuildInfo {
                 node_working_dirs: Default::default(),
+                python_env_dirs: Default::default(),
             };
             for task in tasks {
                 let NodeBuildTask {
@@ -2232,7 +2238,10 @@ impl Daemon {
                     .await
                     .with_context(|| format!("failed to build node `{node_id}`"))?;
                 info.node_working_dirs
-                    .insert(node_id, node.node_working_dir);
+                    .insert(node_id.clone(), node.node_working_dir);
+                if let Some(python_env_dir) = node.python_env_dir {
+                    info.python_env_dirs.insert(node_id, python_env_dir);
+                }
             }
             Ok(info)
         };
@@ -2288,8 +2297,10 @@ impl Daemon {
                 git_node.id
             )
         }
-        let node_working_dirs = build_info
-            .map(|info| info.node_working_dirs.clone())
+        // Reuse build-time metadata so runtime spawn can follow the same
+        // working-directory and managed-env decisions.
+        let (node_working_dirs, python_env_dirs) = build_info
+            .map(|info| (info.node_working_dirs.clone(), info.python_env_dirs.clone()))
             .unwrap_or_default();
 
         // calculate info about mappings
@@ -2399,11 +2410,30 @@ impl Daemon {
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
+                let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
+                // Fail closed under `--uv` when the build artifacts don't include a
+                // managed env for a node that needs one — happens with a stale session
+                // file, a prior non--uv build, or `dora start --uv` without rebuilding.
+                // Falling back silently would lose the isolation guarantees the user
+                // asked for by passing `--uv`.
+                if uv && configured_python_env_dir.is_none() {
+                    let expected =
+                        dora_core::build::managed_python_env_dir(&node, &node_working_dir);
+                    if expected.is_some() {
+                        eyre::bail!(
+                            "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
+                             but no managed env was recorded for it during build. \
+                             Re-run `dora build --uv <dataflow>` against the current build session, \
+                             or omit `--uv` to run against the ambient Python."
+                        );
+                    }
+                }
                 match spawner
                     .clone()
                     .spawn_node(
                         node,
                         node_working_dir,
+                        configured_python_env_dir,
                         node_stderr_most_recent,
                         node_write_events_to,
                         &mut logger,

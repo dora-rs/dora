@@ -67,6 +67,11 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
     #[cfg(target_os = "linux")]
     check_shared_memory(&mut stdout)?;
 
+    // `uv` availability. `dora build --uv` and the managed Python env flow
+    // depend on the `uv` binary being on PATH. Pure Rust/C++ users do not
+    // need it, so surface as WARN, not FAIL.
+    check_uv(&mut stdout)?;
+
     // 2. Coordinator connectivity
     let addr = args.coordinator.socket_addr();
     let session = match connect_to_coordinator(addr) {
@@ -300,6 +305,44 @@ fn check_shared_memory(stdout: &mut termcolor::StandardStream) -> eyre::Result<(
             ),
         )?,
         ShmState::Ok => pass(stdout, "Shared memory: /dev/shm mode is 1777")?,
+    }
+    Ok(())
+}
+
+/// Check that `uv` is on PATH.
+///
+/// `dora build --uv` and the managed Python env flow (`<working-dir>/.dora/python-envs/<node-id>/`)
+/// depend on the `uv` binary being available. Pure Rust/C++ users do not need it,
+/// so report as `WARN`, not `FAIL` — a system without `uv` is still healthy if no
+/// Python dataflows are involved.
+fn check_uv(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
+    match std::process::Command::new("uv").arg("--version").output() {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            // `uv --version` prints `uv 0.4.18 (foo bar)`. Show whatever it gave us.
+            let label = if version.is_empty() {
+                "uv: available".to_string()
+            } else {
+                format!("uv: {version}")
+            };
+            pass(stdout, &label)?;
+        }
+        Ok(output) => {
+            warn(
+                stdout,
+                &format!(
+                    "uv: `uv --version` exited with {} — `dora build --uv` may misbehave",
+                    output.status
+                ),
+            )?;
+        }
+        Err(_) => {
+            warn(
+                stdout,
+                "uv: not installed — `dora build --uv` (managed Python envs) will fail. \
+                 Install via `curl -LsSf https://astral.sh/uv/install.sh | sh`",
+            )?;
+        }
     }
     Ok(())
 }

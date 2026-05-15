@@ -29,8 +29,8 @@ The receiver has two inputs: raw `message` from sender and `transformed` from tr
 
 | File | Description |
 |------|-------------|
-| `dataflow.yml` | Standard sender/transformer/receiver pipeline |
-| `dataflow_dynamic.yml` | Separate example: camera + opencv-plot vision pipeline with dynamic node loading |
+| `dataflow.yml` | Standard sender/transformer/receiver pipeline. Script-only Python nodes (no `build:` blocks) — runs against your ambient Python. |
+| `dataflow_dynamic.yml` | Camera + opencv-plot vision pipeline with dynamic node loading. Each node has its own `build:` line (different `git+` install per node), so it's the natural fit for the `--uv` managed-env flow below. |
 
 ## Prerequisites
 
@@ -50,11 +50,13 @@ pip install dora-rs
 dora run dataflow.yml
 ```
 
-Or use `uv` to manage the Python environment automatically:
+Or pass `--uv` to run the Python nodes through `uv` instead of the system Python:
 
 ```bash
 dora run dataflow.yml --uv
 ```
+
+For `dataflow.yml` (script-only nodes, no `build:` blocks) this just routes spawns through `uv run python` against your active `uv` env — there are no per-node deps for dora to install. See the next section for the case where `--uv` actually creates per-node managed envs.
 
 Expected output (receiver logs):
 
@@ -65,6 +67,29 @@ Received message: [1]
 Received transformed: [{'doubled': 2, 'description': 'Message #1', 'is_even': False}]
 ...
 ```
+
+## Per-node managed environments (`--uv` + `build:`)
+
+When a Python node has a `build:` block, `--uv` switches into a different mode: dora creates a dedicated `uv` venv per node and installs that node's `build:` line into it. The runtime spawns each node against its own interpreter, so build-time deps == runtime deps and no two nodes share `site-packages`.
+
+`dataflow_dynamic.yml` is the demo: `camera` installs `opencv-video-capture` and `opencv-plot` installs `opencv-plot` — two different `pip install` lines, two different sets of deps.
+
+```bash
+dora build --uv dataflow_dynamic.yml
+dora run   --uv dataflow_dynamic.yml
+```
+
+After `dora build --uv`, the working directory contains:
+
+```
+.dora/python-envs/
+  camera/         <- isolated venv with opencv-video-capture installed
+  opencv-plot/    <- isolated venv with opencv-plot installed
+```
+
+`dora run --uv` then spawns each node against its own `.dora/python-envs/<node-id>/bin/python` (or `Scripts/python.exe` on Windows), with `VIRTUAL_ENV` set so any `subprocess.run(["pip", ...])` / console scripts / `python -m pip` inside the node also resolve from the managed env.
+
+Run `dora doctor` to confirm `uv` is on `PATH` before trying this flow. See the [CLI reference](../../docs/cli.md#dora-build) for the full description of the `--uv` build/runtime contract.
 
 ## What This Demonstrates
 
