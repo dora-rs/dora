@@ -252,11 +252,15 @@ pub struct BuildInfo {
 /// - Python custom node (`.py` extension) **with a `build:` block** — the
 ///   build commands install deps into the managed env, which the runtime
 ///   then reuses.
-/// - Runtime node with at least one Python operator.
+/// - Runtime node with at least one Python operator **that does not use
+///   `conda_env:`** — operators with `conda_env:` manage their own Python
+///   via `conda run`, and overlaying a uv venv on top would mix two env
+///   managers (the conda interpreter would run with `VIRTUAL_ENV` pointing
+///   at the wrong place and PATH searching the uv venv first).
 ///
 /// Returns `None` for script-only Python custom nodes (no `build:` block) —
-/// those run against the caller's ambient `uv` environment by design — and
-/// for non-Python nodes.
+/// those run against the caller's ambient `uv` environment by design —
+/// for Python operators that pin `conda_env:`, and for non-Python nodes.
 ///
 /// The `node_id` segment is what gives each node its own venv even when nodes
 /// share a `working_dir`. Runtime nodes always do, and custom nodes without
@@ -298,10 +302,17 @@ fn node_requires_managed_python_env(node: &ResolvedNode) -> bool {
         // and the spawn path uses `uv run python` rather than the managed
         // interpreter for them.
         CoreNodeKind::Custom(custom) => is_python_custom_node(custom) && custom.build.is_some(),
-        CoreNodeKind::Runtime(runtime) => runtime
-            .operators
-            .iter()
-            .any(|operator| matches!(operator.config.source, OperatorSource::Python(_))),
+        // Python operators with `conda_env:` manage their own Python via
+        // `conda run`; preparing a uv venv and injecting `VIRTUAL_ENV`/`PATH`
+        // would mix two environment managers and make subprocesses resolve
+        // from the wrong env. Only ask for a managed venv when the operator
+        // is plain Python (no conda_env).
+        CoreNodeKind::Runtime(runtime) => runtime.operators.iter().any(|operator| {
+            matches!(
+                &operator.config.source,
+                OperatorSource::Python(py) if py.conda_env.is_none()
+            )
+        }),
     }
 }
 
@@ -386,6 +397,39 @@ mod tests {
         let env_a = managed_python_env_dir(&node_a, &shared).expect("node-a env");
         let env_b = managed_python_env_dir(&node_b, &shared).expect("node-b env");
         assert_ne!(env_a, env_b);
+    }
+
+    #[test]
+    fn skips_managed_env_dir_for_runtime_python_operators_with_conda_env() {
+        // Python operators with `conda_env:` manage their own Python via
+        // `conda run` at spawn time. Layering a uv venv on top mixes two
+        // env managers and breaks subprocess resolution. Build must skip
+        // venv creation and spawn must skip env injection.
+        let node = resolved_node_from_yaml(
+            "id: runtime-with-conda\n\
+             operators:\n  \
+             - id: op\n    \
+             python:\n      \
+             source: op.py\n      \
+             conda_env: my-env\n",
+        );
+        assert!(managed_python_env_dir(&node, &PathBuf::from("workdir")).is_none());
+    }
+
+    #[test]
+    fn assigns_managed_env_dir_for_runtime_python_operators_without_conda_env() {
+        let node = resolved_node_from_yaml(
+            "id: runtime-no-conda\n\
+             operators:\n  \
+             - id: op\n    \
+             python: op.py\n",
+        );
+        let env_dir = managed_python_env_dir(&node, &PathBuf::from("workdir"))
+            .expect("runtime with plain python operator should get managed env dir");
+        assert_eq!(
+            env_dir,
+            PathBuf::from("workdir/.dora/python-envs/runtime-no-conda")
+        );
     }
 
     #[test]
