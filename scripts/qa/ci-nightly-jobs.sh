@@ -65,6 +65,7 @@ FAILED=()
 SKIPPED=()
 MANAGED_PIDS=()
 SELECTED_JOBS=("$@")
+SELECTED_JOB_COUNT=$#
 CLI_ROOT=""
 CLI_INSTALLED=0
 
@@ -109,13 +110,15 @@ if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
   exit 0
 fi
 
-for selected in "${SELECTED_JOBS[@]}"; do
-  if ! known_job "$selected"; then
-    echo "ERROR: unknown nightly job: $selected" >&2
-    usage >&2
-    exit 2
-  fi
-done
+if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
+  for selected in "${SELECTED_JOBS[@]}"; do
+    if ! known_job "$selected"; then
+      echo "ERROR: unknown nightly job: $selected" >&2
+      usage >&2
+      exit 2
+    fi
+  done
+fi
 
 # -----------------------------------------------------------------------------
 # Portable `timeout` shim
@@ -253,14 +256,15 @@ cleanup_all_managed() {
 run_job() {
   local name="$1"
   local fn="$2"
-  if [ "${#SELECTED_JOBS[@]}" -gt 0 ]; then
-    local selected
+  if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
+    local selected found=0
     for selected in "${SELECTED_JOBS[@]}"; do
       if [ "$selected" = "$name" ]; then
+        found=1
         break
       fi
     done
-    if [ "$selected" != "$name" ]; then
+    if [ "$found" -ne 1 ]; then
       return 0
     fi
   fi
@@ -1090,7 +1094,7 @@ if [ ${#SKIPPED[@]} -gt 0 ]; then
   printf '  - %s\n' "${SKIPPED[@]}"
 fi
 if [ ${#FAILED[@]} -eq 0 ]; then
-  if [ "${#SELECTED_JOBS[@]}" -gt 0 ]; then
+  if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
     echo "All selected CI-nightly jobs passed."
   else
     echo "All CI-nightly jobs passed."

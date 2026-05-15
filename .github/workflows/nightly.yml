@@ -1624,6 +1624,7 @@ jobs:
 
           failed_logs_file=$(mktemp)
           failed_logs_error=$(mktemp)
+          trap 'rm -f "$failed_logs_file" "$failed_logs_error"' EXIT
           if gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$failed_logs_file" 2> "$failed_logs_error"; then
             logs_available=1
           else
