@@ -78,6 +78,7 @@ async fn build_dataflow(
 
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
+        python_env_dirs: Default::default(),
     };
 
     if parallel && tasks.len() > 1 {
@@ -94,7 +95,10 @@ async fn build_dataflow(
                 .context("build task panicked")?
                 .with_context(|| "node build failed")?;
             info.node_working_dirs
-                .insert(node_id, node.node_working_dir);
+                .insert(node_id.clone(), node.node_working_dir);
+            if let Some(python_env_dir) = node.python_env_dir {
+                info.python_env_dirs.insert(node_id, python_env_dir);
+            }
         }
     } else {
         for (node_id, task) in tasks {
@@ -102,7 +106,10 @@ async fn build_dataflow(
                 .await
                 .with_context(|| format!("failed to build node `{node_id}`"))?;
             info.node_working_dirs
-                .insert(node_id, node.node_working_dir);
+                .insert(node_id.clone(), node.node_working_dir);
+            if let Some(python_env_dir) = node.python_env_dir {
+                info.python_env_dirs.insert(node_id, python_env_dir);
+            }
         }
     }
 
