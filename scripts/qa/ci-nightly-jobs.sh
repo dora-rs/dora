@@ -872,6 +872,7 @@ job_cli_tests() {
     uv pip install --quiet pyarrow "ruff>=0.9" pytest
     uv pip install --quiet -e apis/python/node
     local dora_python_api
+    # Capture an absolute path before the template subshell changes directory.
     dora_python_api="$PWD/apis/python/node"
 
     # Python template: dora new + dora build + ruff + pytest + dora run
