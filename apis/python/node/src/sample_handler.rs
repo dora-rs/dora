@@ -29,7 +29,7 @@
 #[cfg(Py_3_11)]
 use pyo3::types::PyMemoryView;
 #[cfg(Py_3_11)]
-use std::ffi::{CString, c_int, c_void};
+use std::ffi::{c_int, c_void};
 use std::ops::DerefMut;
 #[cfg(Py_3_11)]
 use std::ptr;
@@ -167,9 +167,11 @@ impl SampleBuffer {
             (*view).readonly = 0; // writable
             (*view).itemsize = 1;
 
-            // Only allocate the format CString when the caller needs it.
+            // Use a `'static` C-string literal for the format so we don't
+            // heap-allocate (and don't need to reclaim) per __getbuffer__ call.
+            // `"B"` is the buffer-protocol format code for unsigned bytes.
             (*view).format = if (flags & ffi::PyBUF_FORMAT) == ffi::PyBUF_FORMAT {
-                CString::new("B").unwrap().into_raw()
+                c"B".as_ptr().cast_mut()
             } else {
                 ptr::null_mut()
             };
@@ -208,15 +210,10 @@ impl SampleBuffer {
     /// # Safety
     /// Same contract as `__getbuffer__`: `view` is a valid `Py_buffer *`
     /// for the duration of the call.
-    unsafe fn __releasebuffer__(&self, view: *mut ffi::Py_buffer) {
-        // Free the format CString we heap-allocated in `__getbuffer__`.
-        // SAFETY: `(*view).format` is either null or a pointer we produced
-        // via `CString::into_raw`; `CString::from_raw` reclaims it.
-        let fmt = unsafe { (*view).format };
-        if !fmt.is_null() {
-            drop(unsafe { CString::from_raw(fmt) });
-        }
-
+    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {
+        // `__getbuffer__` points `(*view).format` at a `'static` C-string,
+        // so there is nothing to free here. Just decrement the view counter
+        // that was incremented after the matching __getbuffer__ completed.
         self.state.view_count.fetch_sub(1, Ordering::AcqRel);
     }
 }
@@ -323,10 +320,22 @@ impl SampleHandler {
             .ok_or_else(|| eyre::eyre!("Sample has already been sent"))?;
 
         // 2. Guard (Py >= 3.11 only): all buffer views must be released first.
+        //    Read view_count and (on success) flip valid inside a single
+        //    `Python::attach` block so the read-then-write happens under one
+        //    GIL acquisition — no inconsistency window if either side panics.
         #[cfg(Py_3_11)]
         if let Some(buf) = &self.buffer {
-            let view_count =
-                Python::attach(|py| buf.borrow(py).state.view_count.load(Ordering::Acquire));
+            let view_count = Python::attach(|py| {
+                let state = &buf.borrow(py).state;
+                let count = state.view_count.load(Ordering::Acquire);
+                if count == 0 {
+                    // Invalidate the SampleBuffer *before* the DataSample is freed
+                    // so any Python handle that later calls __getbuffer__ receives
+                    // a clear BufferError instead of accessing freed memory.
+                    state.valid.store(false, Ordering::Release);
+                }
+                count
+            });
 
             if view_count != 0 {
                 // Roll the take back so the handler stays in a consistent state.
@@ -341,13 +350,6 @@ impl SampleHandler {
                      Release all memoryview / numpy references before calling send()."
                 );
             }
-
-            // Invalidate the SampleBuffer *before* the DataSample is freed so
-            // that any Python handle that later calls __getbuffer__ receives a
-            // clear BufferError instead of accessing freed memory.
-            Python::attach(|py| {
-                buf.borrow(py).state.valid.store(false, Ordering::Release);
-            });
         }
 
         // 3. Send (zero additional copies).
