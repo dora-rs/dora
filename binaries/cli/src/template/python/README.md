@@ -32,7 +32,18 @@ uv run ruff check .
 
 ```bash
 uv pip install pytest
+uv pip install -e <each-node-package>
 uv run pytest . # Test
+```
+
+For the default template, the node packages are `talker-1`, `talker-2`, and
+`listener-1`.
+
+When testing this template from a Dora source checkout, install the checkout's
+Python API into the same root environment before running pytest, for example:
+
+```bash
+uv pip install -e ../apis/python/node -e talker-1 -e talker-2 -e listener-1
 ```
 
 ## YAML Specification

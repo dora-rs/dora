@@ -21,7 +21,7 @@ This examples requires a sourced ROS2 installation.
 ```bash
 source /opt/ros/<ros-distro>/setup.bash
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-cargo run --package dora-ros2-bridge --example cxx-ros2-dataflow
+cargo run --package dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 ```
 
 ## Alternative (manual)
