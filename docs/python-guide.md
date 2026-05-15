@@ -224,6 +224,30 @@ nodes:
 
 Also available: `dora/timer/hz/30` for 30 Hz.
 
+## Reproducible Dependencies with `--uv`
+
+For Python nodes with a `build:` block, pass `--uv` to `dora build` / `dora start` / `dora run`:
+
+```yaml
+- id: vision
+  path: vision.py
+  build: pip install -r requirements.txt
+```
+
+```bash
+dora build --uv dataflow.yml
+dora run   --uv dataflow.yml
+```
+
+With `--uv`, dora creates a dedicated `uv` virtual environment at `<working-dir>/.dora/python-envs/<node-id>/` for each Python node, installs your `build:` deps into it, and reuses that same interpreter when the node is spawned. This gives you:
+
+- **Build-time deps == runtime deps.** No drift if the system Python changes between `dora build` and `dora run`.
+- **No cross-node contamination.** A node with `tensorflow==2.10` and a node with `pytorch` in the same dataflow each get their own venv.
+- **No cross-dataflow contamination.** Building dataflow A with `numpy 1.x` does not overwrite dataflow B's `numpy 2.x`.
+- **Hermetic subprocesses.** Anything your node spawns (`subprocess.run(["pip", ...])`, console scripts, `python -m pip`) resolves to the managed env, not the ambient one.
+
+Script-only Python nodes (no `build:` block) keep using your active `uv` environment as before — they have no deps for dora to install. See [CLI reference](cli.md#dora-build) for details and the [`dora doctor` guide](debugging.md#environment-diagnosis) to verify `uv` is on PATH.
+
 ## Next Steps
 
 - [Python API Reference](api-python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA

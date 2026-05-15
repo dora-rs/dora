@@ -7,6 +7,7 @@ use crate::{
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
+    build::{managed_python_bin_dir, managed_python_interpreter},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
     get_python_path,
     topics::DORA_ZENOH_CONNECT_ENV,
@@ -17,11 +18,14 @@ use dora_message::{
     common::LogLevel,
     daemon_to_coordinator::Timestamped,
     daemon_to_node::{NodeConfig, RuntimeConfig},
+    descriptor::EnvValue,
 };
 use eyre::{ContextCompat, WrapErr, bail};
 use std::{
+    collections::BTreeMap,
+    ffi::OsString,
     future::Future,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicU64},
 };
 use tokio::sync::mpsc;
@@ -59,6 +63,43 @@ fn strip_denied_env(mut command: Command) -> Command {
     command
 }
 
+/// Point a spawned process at the managed Python env.
+///
+/// Sets `VIRTUAL_ENV` and prepends the env's `bin/` (or `Scripts/` on
+/// Windows) to `PATH`. Without this, subprocesses, console scripts, and
+/// `python -m pip` launched from inside the node still resolve from the
+/// ambient environment — so the runtime is not actually hermetic even
+/// though the top-level interpreter is the managed one.
+///
+/// The composed PATH puts the managed bin dir first, then the user-defined
+/// `PATH` from `node_env` (if any), then the daemon's ambient `PATH`. This
+/// preserves any custom PATH the node author set while still giving the
+/// managed env priority for `python`, `pip`, and friends.
+fn apply_managed_python_runtime_env(
+    command: Command,
+    python_env_dir: &Path,
+    node_env: Option<&BTreeMap<String, EnvValue>>,
+) -> eyre::Result<Command> {
+    let bin_dir = managed_python_bin_dir(python_env_dir);
+
+    let base_path = node_env
+        .and_then(|envs| envs.get("PATH"))
+        .map(|value| OsString::from(value.to_string()))
+        .or_else(|| std::env::var_os("PATH"));
+
+    let mut paths = vec![bin_dir];
+    if let Some(base) = base_path {
+        paths.extend(std::env::split_paths(&base));
+    }
+
+    let new_path = std::env::join_paths(paths)
+        .wrap_err("failed to compose managed Python PATH for runtime spawn")?;
+
+    Ok(command
+        .env("VIRTUAL_ENV", python_env_dir)
+        .env("PATH", new_path))
+}
+
 #[derive(Clone)]
 pub struct Spawner {
     pub dataflow_id: DataflowId,
@@ -88,6 +129,7 @@ impl Spawner {
         self,
         node: ResolvedNode,
         node_working_dir: PathBuf,
+        python_env_dir: Option<PathBuf>,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         write_events_to: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
@@ -134,6 +176,7 @@ impl Spawner {
             self.prepare_node_inner(
                 node,
                 node_working_dir,
+                python_env_dir,
                 &mut logger,
                 dataflow_id,
                 node_config,
@@ -150,6 +193,7 @@ impl Spawner {
         self,
         node: ResolvedNode,
         node_working_dir: PathBuf,
+        python_env_dir: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
@@ -160,8 +204,15 @@ impl Spawner {
             .context("failed to create node working directory")?;
         let (command, error_msg) = match &node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                let command =
-                    path_spawn_command(&node_working_dir, self.uv, logger, n, true).await?;
+                let command = path_spawn_command(
+                    &node_working_dir,
+                    self.uv,
+                    python_env_dir.as_deref(),
+                    logger,
+                    n,
+                    true,
+                )
+                .await?;
 
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
@@ -190,6 +241,18 @@ impl Spawner {
                                 command = command.env(key, value.to_string());
                             }
                         }
+                    }
+
+                    // For managed Python custom nodes, also set VIRTUAL_ENV and
+                    // prepend the env's bin dir to PATH so subprocesses, console
+                    // scripts, and `python -m pip` see the env. Mirrors the
+                    // managed-interpreter selection in `path_spawn_command`.
+                    if self.uv
+                        && let Some(env_dir) = python_env_dir.as_deref()
+                        && n.build.is_some()
+                    {
+                        command =
+                            apply_managed_python_runtime_env(command, env_dir, node.env.as_ref())?;
                     }
 
                     command = command.env("PYTHONUNBUFFERED", "1");
@@ -257,14 +320,32 @@ impl Spawner {
                         Some(command)
                     } else {
                         let mut cmd = if self.uv {
-                            let mut cmd = Command::new("uv");
-                            cmd = cmd.arg("run");
-                            cmd = cmd.arg("python");
-                            tracing::info!(
-                                "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                                node.id
-                            );
-                            cmd
+                            if let Some(python_env_dir) = python_env_dir.as_deref() {
+                                // Reuse the managed interpreter so Python operators run
+                                // against the same environment Dora prepared during build.
+                                let python = managed_python_interpreter(python_env_dir);
+                                if !python.is_file() {
+                                    eyre::bail!(
+                                        "managed Python interpreter `{}` is missing",
+                                        python.display()
+                                    );
+                                }
+                                tracing::info!(
+                                    "spawning managed Python {} -uc import dora; dora.start_runtime() # {}",
+                                    python.display(),
+                                    node.id
+                                );
+                                Command::new(python)
+                            } else {
+                                let mut cmd = Command::new("uv");
+                                cmd = cmd.arg("run");
+                                cmd = cmd.arg("python");
+                                tracing::info!(
+                                    "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
+                                    node.id
+                                );
+                                cmd
+                            }
                         } else {
                             let python = get_python_path()
                                 .wrap_err("Could not find python path when spawning custom node")?;
@@ -359,6 +440,16 @@ impl Spawner {
                                 command = command.env(key, value.to_string());
                             }
                         }
+                    }
+
+                    // For managed Python runtime nodes (Python operator + uv on),
+                    // set VIRTUAL_ENV and prepend the env's bin dir to PATH so
+                    // anything the operator spawns sees the managed env.
+                    if self.uv
+                        && let Some(env_dir) = python_env_dir.as_deref()
+                    {
+                        command =
+                            apply_managed_python_runtime_env(command, env_dir, node.env.as_ref())?;
                     }
 
                     command = command
