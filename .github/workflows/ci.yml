@@ -123,6 +123,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
       - name: Build (excluding Python packages)
         run: >
           cargo build --all
