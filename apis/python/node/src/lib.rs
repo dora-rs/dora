@@ -406,6 +406,19 @@ impl Node {
     ///
     /// Requires Python >= 3.11 (uses the stable buffer-protocol slots).
     ///
+    /// ## Wire format
+    ///
+    /// The buffer is sent as a 1-D Arrow byte array (``ArrowTypeInfo::byte_array``).
+    /// On the receive side, ``event["value"]`` is a ``pyarrow.UInt8Array`` /
+    /// ``LargeBinary`` shape — call ``.to_numpy()`` for a numpy view, then
+    /// ``.reshape(...)`` or ``.view(dtype=...)`` to interpret it as a typed
+    /// payload. Genuine typed zero-copy (sending an ``Int32Array``,
+    /// ``Float32Array``, etc. directly via this path) is a follow-up — the
+    /// current buffer-protocol shape is bytes-only because the buffer protocol
+    /// itself works in bytes and Arrow's typed metadata would need a separate
+    /// channel. Use the existing :meth:`send_output` (with one copy) when you
+    /// need a typed Arrow payload today.
+    ///
     /// Example (recommended, context manager):
     ///
     /// ```python

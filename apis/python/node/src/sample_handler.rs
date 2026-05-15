@@ -119,7 +119,24 @@ pub struct SampleBuffer {
     state: Arc<SampleBufferState>,
 }
 
-// `SampleBuffer` is only ever touched while the GIL is held.
+// SAFETY: `SampleBuffer` contains a raw `*mut u8` so it isn't `Send`/`Sync`
+// by default, but it is safe to share across threads in our specific usage:
+//
+// - The only ways to acquire a `&SampleBuffer` are through PyO3's `Bound<'_, T>`
+//   / `Py<T>` machinery (`__getbuffer__` takes `Bound<'_, Self>`,
+//   `__releasebuffer__` takes `&self`). PyO3 requires the GIL to be held for
+//   both, statically via the `Python<'_>` token threaded through every
+//   `#[pymethods]` entry point.
+// - The data the pointer references lives in a `DataSample` owned by the
+//   parent `SampleHandler`. `SampleHandler::send()` won't release that
+//   `DataSample` until `state.view_count == 0`, and `__getbuffer__` won't
+//   hand out a view once `state.valid == false`. So whenever the pointer is
+//   actually dereferenced (by CPython, through the `Py_buffer`), the
+//   allocation is guaranteed to be live.
+//
+// The `unsafe impl` is required because the raw pointer would otherwise
+// disqualify the type from auto-`Send`/`Sync`. Marker traits themselves
+// don't enforce the GIL-holding contract above — PyO3's API does.
 #[cfg(Py_3_11)]
 unsafe impl Send for SampleBuffer {}
 #[cfg(Py_3_11)]

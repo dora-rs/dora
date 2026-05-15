@@ -2117,6 +2117,7 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "pyo3",
+ "pyo3-build-config",
  "pythonize",
  "serde_json",
  "serde_yaml",
@@ -2250,6 +2251,7 @@ dependencies = [
  "eyre",
  "futures",
  "pyo3",
+ "pyo3-build-config",
  "serde",
  "serde_assert",
 ]
@@ -2274,6 +2276,7 @@ dependencies = [
  "futures-concurrency",
  "libloading 0.7.4",
  "pyo3",
+ "pyo3-build-config",
  "pythonize",
  "serde_yaml",
  "tokio",

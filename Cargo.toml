@@ -124,6 +124,7 @@ pyo3 = { version = "0.28", features = [
     "multiple-pymethods",
 ] }
 pythonize = "0.28"
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
 git2 = { version = "0.20.4", features = ["vendored-openssl"] }
 serde_yaml = "0.9.33"
 zenoh = { version = "~1.8", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }

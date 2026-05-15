@@ -1,0 +1,6 @@
+nodes:
+  - id: contract
+    build: pip install numpy
+    path: test_contract.py
+    outputs:
+      - test_data

@@ -36,6 +36,9 @@ pythonize = { workspace = true, optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 aligned-vec = "0.5.0"
 
+[build-dependencies]
+pyo3-build-config = { workspace = true }
+
 [features]
 default = ["tracing", "metrics"]
 tracing = ["dora-tracing"]
