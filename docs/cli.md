@@ -495,6 +495,42 @@ dora list [OPTIONS]
 
 **Output columns:** UUID, Name, Status, Nodes, CPU, Memory
 
+#### `dora clean`
+
+Remove finished and failed dataflows from the coordinator's state. Running dataflows are unaffected.
+
+```
+dora clean [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json` |
+| `--quiet`, `-q` | false | Print only cleaned UUIDs |
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**What's removed:** Records of finished/failed dataflows from `dataflow_results` and their archived descriptors from `archived_dataflows`. Running dataflows are not touched.
+
+**What's NOT removed:** Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls with "unknown build id" errors.
+
+**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows (the archived metadata that backs log lookup is gone). Save anything you might want to reference later before running `dora clean`.
+
+**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs and you want to see only what's currently running. Less destructive than `dora down + dora up` because the coordinator stays up and daemons stay connected.
+
+**Examples:**
+
+```bash
+# Drop all finished/failed records
+dora clean
+
+# Just print the UUIDs that were cleaned (for scripts)
+dora clean --quiet
+
+# Get JSON output (for tooling)
+dora clean --format json
+```
+
 #### `dora logs`
 
 Show and follow logs of a dataflow and node.

@@ -999,6 +999,38 @@ async fn start_inner(
                             )));
                             let _ = reply_sender.send(reply);
                         }
+                        ControlRequest::Clean => {
+                            // Drain `dataflow_results` in a single pass, removing each
+                            // entry's archived metadata along the way. Running dataflows
+                            // are untouched. `finished_builds` is intentionally NOT
+                            // touched: clearing it would break concurrent `dora build`
+                            // calls ("unknown build id" errors) that are still polling
+                            // for build completion.
+                            let drained: Vec<_> = std::mem::take(&mut dataflow_results)
+                                .into_iter()
+                                .map(|(uuid, results)| {
+                                    let name =
+                                        archived_dataflows.shift_remove(&uuid).and_then(|d| d.name);
+                                    let id = DataflowIdAndName { uuid, name };
+                                    let status = if results.values().all(|r| r.is_ok()) {
+                                        DataflowStatus::Finished
+                                    } else {
+                                        DataflowStatus::Failed
+                                    };
+                                    DataflowListEntry { id, status }
+                                })
+                                .collect();
+
+                            let mut cleaned = drained;
+                            cleaned.sort_by(|a, b| {
+                                (a.id.name.as_deref(), a.id.uuid)
+                                    .cmp(&(b.id.name.as_deref(), b.id.uuid))
+                            });
+
+                            let reply =
+                                Ok(ControlRequestReply::DataflowList(DataflowList(cleaned)));
+                            let _ = reply_sender.send(reply);
+                        }
                         ControlRequest::DaemonConnected => {
                             let running = !daemon_connections.is_empty();
                             let _ = reply_sender

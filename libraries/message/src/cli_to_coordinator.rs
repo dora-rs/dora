@@ -89,6 +89,15 @@ pub enum ControlRequest {
     },
     Destroy,
     List,
+    /// Remove finished and failed dataflows from the coordinator's state.
+    ///
+    /// The coordinator returns the list of dataflows it just cleaned. Logs
+    /// and archived descriptors for those dataflows are no longer available
+    /// after this call. Running dataflows are unaffected. Cached build
+    /// results (`finished_builds`) are intentionally not touched — clearing
+    /// them would break concurrent `dora build` calls with
+    /// "unknown build id" errors.
+    Clean,
     Info {
         dataflow_uuid: Uuid,
     },
