@@ -64,6 +64,56 @@ OS="$(uname -s)"
 FAILED=()
 SKIPPED=()
 MANAGED_PIDS=()
+SELECTED_JOBS=("$@")
+
+known_job() {
+  case "$1" in
+    record-replay|cluster-smoke|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/qa/ci-nightly-jobs.sh [job ...]
+
+Run local equivalents for the long-running GitHub Actions nightly jobs.
+With no job names, runs every supported job for the current platform.
+
+Supported jobs:
+  record-replay
+  cluster-smoke
+  topic-and-top-smoke
+  cpu-affinity-smoke
+  redb-backend-smoke
+  daemon-reconnect-smoke
+  state-reconstruction-smoke
+  test-cross-platform
+  examples
+  cli-tests
+  bench-example
+  msrv
+  cross-check
+  ros2-bridge
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+for selected in "${SELECTED_JOBS[@]}"; do
+  if ! known_job "$selected"; then
+    echo "ERROR: unknown nightly job: $selected" >&2
+    usage >&2
+    exit 2
+  fi
+done
 
 # -----------------------------------------------------------------------------
 # Portable `timeout` shim
@@ -191,6 +241,18 @@ cleanup_all_managed() {
 run_job() {
   local name="$1"
   local fn="$2"
+  if [ "${#SELECTED_JOBS[@]}" -gt 0 ]; then
+    local selected
+    for selected in "${SELECTED_JOBS[@]}"; do
+      if [ "$selected" = "$name" ]; then
+        break
+      fi
+    done
+    if [ "$selected" != "$name" ]; then
+      return 0
+    fi
+  fi
+
   echo
   echo "============================================================"
   echo "=== $name ==="
@@ -1001,7 +1063,11 @@ if [ ${#SKIPPED[@]} -gt 0 ]; then
   printf '  - %s\n' "${SKIPPED[@]}"
 fi
 if [ ${#FAILED[@]} -eq 0 ]; then
-  echo "All CI-nightly jobs passed."
+  if [ "${#SELECTED_JOBS[@]}" -gt 0 ]; then
+    echo "All selected CI-nightly jobs passed."
+  else
+    echo "All CI-nightly jobs passed."
+  fi
   exit 0
 else
   echo "FAILED:"
