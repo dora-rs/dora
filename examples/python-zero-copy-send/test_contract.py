@@ -165,33 +165,39 @@ def case_exit_with_exception_does_not_send(node):
     downstream.
 
     Fix: __exit__ checks exc_type and skips send() on exceptional exit.
+
+    Test strategy: capture the SampleHandler in a name, drive a `with`-body
+    exception through it, then verify the handler can STILL be sent.
+
+    - With the buggy code, __exit__ would have already taken the sample
+      via send(); a follow-up sample.send() would raise "Sample has already
+      been sent".
+    - With the fix, __exit__ skips send() on exceptional exit; the handler
+      remains sendable, and our follow-up send() must succeed.
+
+    (Verifying that the original `with` body's exception propagates is
+    not load-bearing — Python's `with` semantics propagate it regardless
+    of what __exit__ does, so that assertion alone can't distinguish old
+    from new behavior.)
     """
-    # We don't have a clean way to inspect what was published, but we can
-    # verify the contract by:
-    # 1. Running a `with` block that raises
-    # 2. Confirming that the handler's state is consistent afterwards
-    #    (i.e. the handler can be created again and sent successfully —
-    #    no leaked resources, no stuck state)
     sentinel = RuntimeError("intentional - testing exception path")
+    sample = node.send_output_raw(OUT, 64)
     raised = False
     try:
-        with node.send_output_raw(OUT, 64) as buf:
+        with sample as buf:
             np.asarray(buf, dtype=np.uint8)[:] = 0
             raise sentinel
     except RuntimeError as exc:
-        # The original exception must propagate, NOT a wrapped "Failed to send"
-        # error. If __exit__ called send() and got an error from it, we'd see
-        # a chained or replaced exception here.
         assert exc is sentinel, (
             f"original exception should propagate unchanged, got: {exc!r}"
         )
         raised = True
     assert raised, "the sentinel exception should have propagated"
 
-    # A fresh send after the exceptional exit must work — handler state is
-    # not stuck.
-    follow_up = node.send_output_raw(OUT, 64)
-    follow_up.send()
+    # The load-bearing assertion: the handler is still sendable because
+    # __exit__ skipped send() on exceptional exit. With the old buggy
+    # code, this would raise "Sample has already been sent".
+    sample.send()
 
 
 CASES = [
