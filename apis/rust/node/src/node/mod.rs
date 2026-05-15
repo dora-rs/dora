@@ -1069,9 +1069,28 @@ impl DoraNode {
         if data.len() >= ZENOH_SHM_MIN_PAYLOAD
             && let Some(provider) = &self.zenoh_shm_provider
         {
-            use zenoh::shm::{BlockOn, GarbageCollect};
+            use zenoh::shm::{AllocAlignment, BlockOn, GarbageCollect, MemoryLayout};
+            // Arrow SIMD requires 64-byte (2^6) aligned buffers. Requesting the
+            // same alignment for the SHM sub-allocation ensures that the absolute
+            // address of each Arrow buffer (shm_base_ptr + relative_offset) satisfies
+            // Arrow's per-buffer alignment requirements. Without this, aarch64
+            // platforms with strict NEON alignment (e.g. Jetson NX / NVIDIA Carmel
+            // + L4T kernel) trigger SIGBUS when the receiver builds Arrow arrays
+            // directly from the SHM pointer via zero-copy.
+            //
+            // The heap path (allocate_data_sample) already uses ConstAlign<128>
+            // for the same reason; this brings the SHM path to parity.
+            const ARROW_ALIGN_POW: u8 = 6; // 2^6 = 64 bytes
+            // SAFETY: data.len() >= ZENOH_SHM_MIN_PAYLOAD (512) so the NonZeroUsize
+            // conversion inside MemoryLayout::new cannot fail; AllocAlignment::new(6)
+            // is always Ok (only fails for pow >= 64).
+            let shm_layout = MemoryLayout::new(
+                data.len(),
+                AllocAlignment::new(ARROW_ALIGN_POW).expect("valid Arrow alignment"),
+            )
+            .expect("SHM layout: size is non-zero");
             match provider
-                .alloc(data.len())
+                .alloc(shm_layout)
                 .with_policy::<BlockOn<GarbageCollect>>()
                 .wait()
             {
