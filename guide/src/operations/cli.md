@@ -501,7 +501,7 @@ dora clean [OPTIONS]
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-**What's removed:** Records of fully-completed dataflows from `dataflow_results` and their archived descriptors. Each entry is also deleted from the coordinator's persisted store (redb), and the persisted-store deletion cascades to every `dora param` row that belonged to the cleaned dataflow so the state file does not grow unboundedly. Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls.
+**What's removed:** Records of fully-completed dataflows from `dataflow_results` and their archived descriptors. The coordinator deletes each cleaned entry from the persisted store (redb) *first*, and only then drops it from in-memory state — so a dataflow only appears in the command's output when both sides actually got cleaned. The persisted-store deletion cascades to every `dora param` row that belonged to the cleaned dataflow so the state file does not grow unboundedly. If the persisted-store delete fails for a particular dataflow, the coordinator logs a warning and leaves that dataflow in-memory; a subsequent `dora clean` will retry it. Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls.
 
 **What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows, and the persisted record is gone (so `dora param` against the cleaned UUID also fails). Save anything you might want to reference later before running `dora clean`.
 

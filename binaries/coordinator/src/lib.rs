@@ -1027,6 +1027,22 @@ async fn start_inner(
                                     // partial results so the final status is correct.
                                     return true;
                                 }
+                                // Persist the removal FIRST. If the store write
+                                // fails, leave the in-memory state untouched so
+                                // (a) we don't lie to the CLI by reporting this
+                                // dataflow as cleaned while its redb row + param
+                                // rows survive, and (b) the next `dora clean`
+                                // can retry — dropping the `dataflow_results`
+                                // entry here would lose the retry handle.
+                                if let Err(e) = store.delete_dataflow(uuid) {
+                                    tracing::warn!(
+                                        "skipping clean for dataflow {uuid}: \
+                                         persisted-store delete failed: {e}. \
+                                         In-memory entry preserved so a later \
+                                         `dora clean` can retry."
+                                    );
+                                    return true;
+                                }
                                 let name =
                                     archived_dataflows.shift_remove(uuid).and_then(|d| d.name);
                                 let status = if results.values().all(|r| r.is_ok()) {
@@ -1038,12 +1054,6 @@ async fn start_inner(
                                     id: DataflowIdAndName { uuid: *uuid, name },
                                     status,
                                 });
-                                if let Err(e) = store.delete_dataflow(uuid) {
-                                    tracing::warn!(
-                                        "failed to delete persisted record for cleaned \
-                                         dataflow {uuid}: {e}"
-                                    );
-                                }
                                 false
                             });
 
