@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsString,
+    fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::LazyLock,
@@ -14,8 +15,19 @@ use tokio::{
     process::Command,
 };
 
-static LOCAL_DORA_WHEEL_CACHE: LazyLock<tokio::sync::Mutex<BTreeMap<PathBuf, PathBuf>>> =
-    LazyLock::new(|| tokio::sync::Mutex::new(BTreeMap::new()));
+static LOCAL_DORA_WHEEL_CACHE: LazyLock<
+    tokio::sync::Mutex<BTreeMap<LocalDoraPythonSource, PathBuf>>,
+> = LazyLock::new(|| tokio::sync::Mutex::new(BTreeMap::new()));
+
+const LOCAL_DORA_RUNTIME_MARKER: &str = ".dora-local-runtime-fingerprint";
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x00000100000001b3;
+
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct LocalDoraPythonSource {
+    package_dir: PathBuf,
+    fingerprint: String,
+}
 
 pub async fn run_build_command(
     build: &str,
@@ -223,14 +235,24 @@ async fn ensure_managed_python_runtime(
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<()> {
-    if managed_python_can_import_dora(working_dir, python_env_dir, envs).await? {
+    let local_source = local_dora_python_source(working_dir)?;
+    let can_import_dora = managed_python_can_import_dora(working_dir, python_env_dir, envs).await?;
+    if local_source
+        .as_ref()
+        .is_some_and(|source| local_runtime_marker_matches(python_env_dir, &source.fingerprint))
+        && can_import_dora
+    {
+        return Ok(());
+    }
+    if local_source.is_none() && can_import_dora {
         return Ok(());
     }
 
     let mut cmd = Command::new("uv");
     cmd.arg("pip");
     cmd.arg("install");
-    let install_args = dora_runtime_install_args(working_dir, envs, stdout_tx.clone()).await?;
+    let install_args =
+        dora_runtime_install_args(local_source.as_ref(), envs, stdout_tx.clone()).await?;
     cmd.args(install_args);
 
     if let Some(envs) = envs {
@@ -272,6 +294,10 @@ async fn ensure_managed_python_runtime(
             "managed Python runtime installation `{}` returned {exit_status}",
             python_env_dir.display()
         ));
+    }
+
+    if let Some(source) = local_source {
+        write_local_runtime_marker(python_env_dir, &source.fingerprint)?;
     }
 
     Ok(())
@@ -316,15 +342,35 @@ fn local_dora_python_package_dir(working_dir: &Path) -> Option<PathBuf> {
     })
 }
 
+fn local_dora_python_source(working_dir: &Path) -> eyre::Result<Option<LocalDoraPythonSource>> {
+    local_dora_python_package_dir(working_dir)
+        .map(|package_dir| {
+            let package_dir = dunce::canonicalize(&package_dir).wrap_err_with(|| {
+                format!(
+                    "failed to canonicalize local Dora Python package `{}`",
+                    package_dir.display()
+                )
+            })?;
+            let fingerprint = local_dora_python_source_fingerprint(&package_dir)?;
+            Ok(LocalDoraPythonSource {
+                package_dir,
+                fingerprint,
+            })
+        })
+        .transpose()
+}
+
 /// Returns the package argument for installing `dora-rs` into a managed Python env.
 async fn dora_runtime_install_args(
-    working_dir: &Path,
+    local_source: Option<&LocalDoraPythonSource>,
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<Vec<OsString>> {
-    match local_dora_python_package_dir(working_dir) {
-        Some(package_dir) => Ok(vec![
-            ensure_local_dora_python_wheel(&package_dir, envs, stdout_tx)
+    match local_source {
+        Some(source) => Ok(vec![
+            OsString::from("--reinstall-package"),
+            OsString::from("dora-rs"),
+            ensure_local_dora_python_wheel(source, envs, stdout_tx)
                 .await?
                 .into_os_string(),
         ]),
@@ -341,24 +387,18 @@ async fn dora_runtime_install_args(
 /// node env. A wheel install keeps local checkout behavior while sharing that build
 /// across all node envs created by the current CLI invocation.
 async fn ensure_local_dora_python_wheel(
-    package_dir: &Path,
+    source: &LocalDoraPythonSource,
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<PathBuf> {
-    let package_dir = dunce::canonicalize(package_dir).wrap_err_with(|| {
-        format!(
-            "failed to canonicalize local Dora Python package `{}`",
-            package_dir.display()
-        )
-    })?;
     let mut cache = LOCAL_DORA_WHEEL_CACHE.lock().await;
-    if let Some(wheel) = cache.get(&package_dir)
+    if let Some(wheel) = cache.get(source)
         && wheel.is_file()
     {
         return Ok(wheel.clone());
     }
 
-    let wheel_dir = local_dora_python_wheel_dir(&package_dir)?;
+    let wheel_dir = local_dora_python_wheel_dir(&source.package_dir)?;
     std::fs::create_dir_all(&wheel_dir).wrap_err_with(|| {
         format!(
             "failed to create local Dora Python wheel cache `{}`",
@@ -373,14 +413,14 @@ async fn ensure_local_dora_python_wheel(
     cmd.arg("--no-create-gitignore");
     cmd.arg("--out-dir");
     cmd.arg(&wheel_dir);
-    cmd.arg(&package_dir);
+    cmd.arg(&source.package_dir);
 
     if let Some(envs) = envs {
         for (key, value) in envs {
             cmd.env(key, value.to_string());
         }
     }
-    cmd.current_dir(dunce::simplified(&package_dir));
+    cmd.current_dir(dunce::simplified(&source.package_dir));
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
@@ -390,7 +430,7 @@ async fn ensure_local_dora_python_wheel(
     let mut child = cmd.spawn().wrap_err_with(|| {
         format!(
             "failed to spawn local Dora Python wheel build for `{}`",
-            package_dir.display()
+            source.package_dir.display()
         )
     })?;
 
@@ -404,32 +444,23 @@ async fn ensure_local_dora_python_wheel(
     let exit_status = child.wait().await.wrap_err_with(|| {
         format!(
             "failed to build local Dora Python wheel from `{}`",
-            package_dir.display()
+            source.package_dir.display()
         )
     })?;
     if !exit_status.success() {
         return Err(eyre!(
             "local Dora Python wheel build `{}` returned {exit_status}",
-            package_dir.display()
+            source.package_dir.display()
         ));
     }
 
     let wheel = find_local_dora_python_wheel(&wheel_dir)?;
-    cache.insert(package_dir, wheel.clone());
+    cache.insert(source.clone(), wheel.clone());
     Ok(wheel)
 }
 
 fn local_dora_python_wheel_dir(package_dir: &Path) -> eyre::Result<PathBuf> {
-    let workspace_root = package_dir
-        .parent()
-        .and_then(|path| path.parent())
-        .and_then(|path| path.parent())
-        .ok_or_else(|| {
-            eyre!(
-                "local Dora Python package `{}` is not under apis/python/node",
-                package_dir.display()
-            )
-        })?;
+    let workspace_root = local_dora_workspace_root(package_dir)?;
     Ok(workspace_root
         .join("target")
         .join("dora-python-wheels")
@@ -455,6 +486,127 @@ fn find_local_dora_python_wheel(wheel_dir: &Path) -> eyre::Result<PathBuf> {
             wheel_dir.display()
         )
     })
+}
+
+fn local_runtime_marker_path(python_env_dir: &Path) -> PathBuf {
+    python_env_dir.join(LOCAL_DORA_RUNTIME_MARKER)
+}
+
+fn local_runtime_marker_matches(python_env_dir: &Path, fingerprint: &str) -> bool {
+    std::fs::read_to_string(local_runtime_marker_path(python_env_dir))
+        .is_ok_and(|existing| existing.trim() == fingerprint)
+}
+
+fn write_local_runtime_marker(python_env_dir: &Path, fingerprint: &str) -> eyre::Result<()> {
+    std::fs::write(local_runtime_marker_path(python_env_dir), fingerprint).wrap_err_with(|| {
+        format!(
+            "failed to write local Dora runtime marker in `{}`",
+            python_env_dir.display()
+        )
+    })
+}
+
+fn local_dora_workspace_root(package_dir: &Path) -> eyre::Result<PathBuf> {
+    package_dir
+        .parent()
+        .and_then(|path| path.parent())
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            eyre!(
+                "local Dora Python package `{}` is not under apis/python/node",
+                package_dir.display()
+            )
+        })
+}
+
+fn local_dora_python_source_fingerprint(package_dir: &Path) -> eyre::Result<String> {
+    let workspace_root = local_dora_workspace_root(package_dir)?;
+    let mut files = Vec::new();
+    collect_fingerprint_files(&workspace_root, &mut files)?;
+    files.sort();
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for path in files {
+        let relative = path.strip_prefix(&workspace_root).unwrap_or(&path);
+        hash_fingerprint_bytes(&mut hash, relative.to_string_lossy().as_bytes());
+        hash_fingerprint_bytes(&mut hash, b"\0");
+        let contents = fs::read(&path)
+            .wrap_err_with(|| format!("failed to read `{}` for fingerprint", path.display()))?;
+        hash_fingerprint_bytes(&mut hash, &contents);
+        hash_fingerprint_bytes(&mut hash, b"\0");
+    }
+
+    Ok(format!("{hash:016x}"))
+}
+
+fn collect_fingerprint_files(dir: &Path, files: &mut Vec<PathBuf>) -> eyre::Result<()> {
+    let mut entries = fs::read_dir(dir)
+        .wrap_err_with(|| format!("failed to read `{}` for fingerprint", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .wrap_err_with(|| format!("failed to read entry under `{}`", dir.display()))?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .wrap_err_with(|| format!("failed to inspect `{}` for fingerprint", path.display()))?;
+        if file_type.is_dir() {
+            if should_skip_fingerprint_dir(&path) {
+                continue;
+            }
+            collect_fingerprint_files(&path, files)?;
+        } else if file_type.is_file() && is_fingerprint_file(&path) {
+            files.push(path);
+        }
+    }
+
+    Ok(())
+}
+
+fn should_skip_fingerprint_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(
+                name,
+                ".claude"
+                    | ".codex"
+                    | ".direnv"
+                    | ".dora"
+                    | ".git"
+                    | ".mypy_cache"
+                    | ".pytest_cache"
+                    | ".ruff_cache"
+                    | ".tox"
+                    | ".venv"
+                    | "__pycache__"
+                    | "out"
+                    | "target"
+            )
+        })
+}
+
+fn is_fingerprint_file(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "Cargo.lock" | "build.rs" | "pyproject.toml"))
+    {
+        return true;
+    }
+
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "py" | "rs" | "toml"))
+}
+
+fn hash_fingerprint_bytes(hash: &mut u64, bytes: &[u8]) {
+    for byte in bytes {
+        *hash ^= u64::from(*byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
+    }
 }
 
 /// Forwards stdout and stderr to the build logger using interleaved select.
@@ -483,7 +635,8 @@ async fn forward_build_output(
 mod tests {
     use super::{
         dora_runtime_install_args, find_local_dora_python_wheel, local_dora_python_package_dir,
-        local_dora_python_wheel_dir,
+        local_dora_python_source_fingerprint, local_dora_python_wheel_dir,
+        local_runtime_marker_matches, write_local_runtime_marker,
     };
     use std::{ffi::OsString, fs};
 
@@ -509,11 +662,10 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_install_falls_back_to_versioned_pypi_requirement() {
-        let temp = tempfile::tempdir().unwrap();
         let (stdout_tx, _stdout_rx) = tokio::sync::mpsc::channel(1);
 
         assert_eq!(
-            dora_runtime_install_args(temp.path(), &None, stdout_tx)
+            dora_runtime_install_args(None, &None, stdout_tx)
                 .await
                 .unwrap(),
             vec![OsString::from(format!(
@@ -548,5 +700,80 @@ mod tests {
         fs::write(temp.path().join("other-0.1.0-py3-none-any.whl"), "").unwrap();
 
         assert_eq!(find_local_dora_python_wheel(temp.path()).unwrap(), wheel);
+    }
+
+    #[test]
+    fn local_runtime_source_fingerprint_changes_when_source_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = create_local_python_package(temp.path());
+
+        let before = local_dora_python_source_fingerprint(&package_dir).unwrap();
+        fs::write(
+            package_dir.join("dora").join("__init__.py"),
+            "version = 2\n",
+        )
+        .unwrap();
+        let after = local_dora_python_source_fingerprint(&package_dir).unwrap();
+
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn local_runtime_source_fingerprint_ignores_build_outputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = create_local_python_package(temp.path());
+
+        let before = local_dora_python_source_fingerprint(&package_dir).unwrap();
+        let target_dir = temp.path().join("target").join("debug");
+        fs::create_dir_all(&target_dir).unwrap();
+        fs::write(target_dir.join("generated.rs"), "fn ignored() {}\n").unwrap();
+        let dora_dir = temp.path().join(".dora").join("python-envs");
+        fs::create_dir_all(&dora_dir).unwrap();
+        fs::write(dora_dir.join("marker.py"), "ignored = True\n").unwrap();
+        let after = local_dora_python_source_fingerprint(&package_dir).unwrap();
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn local_runtime_marker_must_match_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let env_dir = temp.path().join("env");
+        fs::create_dir_all(&env_dir).unwrap();
+
+        assert!(!local_runtime_marker_matches(&env_dir, "fingerprint-a"));
+
+        write_local_runtime_marker(&env_dir, "fingerprint-a").unwrap();
+        assert!(local_runtime_marker_matches(&env_dir, "fingerprint-a"));
+        assert!(!local_runtime_marker_matches(&env_dir, "fingerprint-b"));
+    }
+
+    fn create_local_python_package(root: &std::path::Path) -> std::path::PathBuf {
+        fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+        let package_dir = root.join("apis").join("python").join("node");
+        fs::create_dir_all(package_dir.join("dora")).unwrap();
+        fs::create_dir_all(package_dir.join("src")).unwrap();
+        fs::write(
+            package_dir.join("pyproject.toml"),
+            "[project]\nname = \"dora-rs\"\n",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("Cargo.toml"),
+            "[package]\nname = \"node\"\n",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("dora").join("__init__.py"),
+            "version = 1\n",
+        )
+        .unwrap();
+        fs::write(
+            package_dir.join("src").join("lib.rs"),
+            "pub fn marker() {}\n",
+        )
+        .unwrap();
+        package_dir
     }
 }
