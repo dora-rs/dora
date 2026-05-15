@@ -510,7 +510,7 @@ dora clean [OPTIONS]
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
-**What's removed:** Records of fully-completed (finished/failed) dataflows from `dataflow_results` and their archived descriptors. Each cleaned dataflow is also deleted from the coordinator's persisted store (redb), so the on-disk state file does not grow unboundedly and `param`-style commands that resolve targets via the persisted record stop seeing "ghost" cleaned dataflows.
+**What's removed:** Records of fully-completed (finished/failed) dataflows from `dataflow_results` and their archived descriptors. Each cleaned dataflow is also deleted from the coordinator's persisted store (redb), and the persisted-store deletion cascades to every `dora param` row that belonged to the cleaned dataflow — so the on-disk state file does not grow unboundedly and `param`-style commands that resolve targets via the persisted record stop seeing "ghost" cleaned dataflows.
 
 **What's NOT removed:**
 - Running dataflows.

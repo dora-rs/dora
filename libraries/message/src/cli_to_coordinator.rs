@@ -99,10 +99,13 @@ pub enum ControlRequest {
     ///
     /// The coordinator returns the list of dataflows it just cleaned and
     /// removes each from both the in-memory state and the persisted store.
-    /// Logs and archived descriptors for those dataflows are no longer
-    /// available afterward. Cached build results (`finished_builds`) are
-    /// intentionally not touched — clearing them would break concurrent
-    /// `dora build` calls with "unknown build id" errors.
+    /// The persisted-store removal cascades to every `dora param` row owned
+    /// by the cleaned dataflows, so the on-disk redb file doesn't grow
+    /// unboundedly. Logs and archived descriptors for those dataflows are
+    /// no longer available afterward. Cached build results
+    /// (`finished_builds`) are intentionally not touched — clearing them
+    /// would break concurrent `dora build` calls with "unknown build id"
+    /// errors.
     Clean,
     Info {
         dataflow_uuid: Uuid,
