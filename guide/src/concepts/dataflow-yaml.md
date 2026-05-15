@@ -67,7 +67,7 @@ A node's executable comes from a local path, a git repository, a module referenc
 | `branch` | string | Branch to checkout (requires `git`, mutually exclusive with `tag`/`rev`) |
 | `tag` | string | Tag to checkout (requires `git`, mutually exclusive with `branch`/`rev`) |
 | `rev` | string | Commit hash to checkout (requires `git`, mutually exclusive with `branch`/`tag`) |
-| `build` | string | Build commands run during `dora build`. Each line runs separately. `pip`/`pip3` lines use `uv` when `--uv` is passed |
+| `build` | string | Build commands run during `dora build`. Each line runs separately. With `--uv`, `pip`/`pip3` lines use `uv pip` and Python nodes get a dedicated managed venv at `<working-dir>/.dora/python-envs/<node-id>/` that the runtime reuses at spawn time. See [CLI reference](../operations/cli.md#dora-build) for details. |
 | `args` | string | Command-line arguments (space-separated) |
 
 Example with git source:
