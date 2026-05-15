@@ -2411,6 +2411,23 @@ impl Daemon {
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
                 let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
+                // Fail closed under `--uv` when the build artifacts don't include a
+                // managed env for a node that needs one — happens with a stale session
+                // file, a prior non--uv build, or `dora start --uv` without rebuilding.
+                // Falling back silently would lose the isolation guarantees the user
+                // asked for by passing `--uv`.
+                if uv && configured_python_env_dir.is_none() {
+                    let expected =
+                        dora_core::build::managed_python_env_dir(&node, &node_working_dir);
+                    if expected.is_some() {
+                        eyre::bail!(
+                            "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
+                             but no managed env was recorded for it during build. \
+                             Re-run `dora build --uv <dataflow>` against the current build session, \
+                             or omit `--uv` to run against the ambient Python."
+                        );
+                    }
+                }
                 match spawner
                     .clone()
                     .spawn_node(
