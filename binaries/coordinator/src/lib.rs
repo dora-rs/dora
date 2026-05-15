@@ -16,8 +16,8 @@ use dora_message::{
     cli_to_coordinator::ControlRequest,
     common::DaemonId,
     coordinator_to_cli::{
-        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
+        CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
+        DataflowResult, DataflowStatus, LogLevel, LogMessage,
     },
     coordinator_to_daemon::{
         DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
@@ -1021,6 +1021,7 @@ async fn start_inner(
                             // resolution via `store.get_dataflow()`) don't continue to
                             // resolve "ghost" cleaned dataflows.
                             let mut cleaned: Vec<DataflowListEntry> = Vec::new();
+                            let mut failed: Vec<CleanFailure> = Vec::new();
                             dataflow_results.retain(|uuid, results| {
                                 if running_dataflows.contains_key(uuid) {
                                     // Multi-daemon dataflow still completing — keep
@@ -1033,14 +1034,23 @@ async fn start_inner(
                                 // dataflow as cleaned while its redb row + param
                                 // rows survive, and (b) the next `dora clean`
                                 // can retry — dropping the `dataflow_results`
-                                // entry here would lose the retry handle.
+                                // entry here would lose the retry handle. The
+                                // failure is surfaced to the CLI alongside the
+                                // success list so a partial outage is visible
+                                // rather than silently logged.
                                 if let Err(e) = store.delete_dataflow(uuid) {
+                                    let name =
+                                        archived_dataflows.get(uuid).and_then(|d| d.name.clone());
                                     tracing::warn!(
                                         "skipping clean for dataflow {uuid}: \
                                          persisted-store delete failed: {e}. \
                                          In-memory entry preserved so a later \
                                          `dora clean` can retry."
                                     );
+                                    failed.push(CleanFailure {
+                                        id: DataflowIdAndName { uuid: *uuid, name },
+                                        error: e.to_string(),
+                                    });
                                     return true;
                                 }
                                 let name =
@@ -1061,9 +1071,15 @@ async fn start_inner(
                                 (a.id.name.as_deref(), a.id.uuid)
                                     .cmp(&(b.id.name.as_deref(), b.id.uuid))
                             });
+                            failed.sort_by(|a, b| {
+                                (a.id.name.as_deref(), a.id.uuid)
+                                    .cmp(&(b.id.name.as_deref(), b.id.uuid))
+                            });
 
-                            let reply =
-                                Ok(ControlRequestReply::DataflowList(DataflowList(cleaned)));
+                            let reply = Ok(ControlRequestReply::CleanResult {
+                                cleaned: DataflowList(cleaned),
+                                failed,
+                            });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {

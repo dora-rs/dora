@@ -46,6 +46,19 @@ pub enum ControlRequestReply {
         new_uuid: Uuid,
     },
     DataflowList(DataflowList),
+    /// Response to [`ControlRequest::Clean`][crate::cli_to_coordinator::ControlRequest::Clean].
+    ///
+    /// `cleaned` lists dataflows the coordinator successfully removed
+    /// from both in-memory state and the persisted store (with the
+    /// cascade-delete of associated `dora param` rows). `failed` lists
+    /// dataflows that were eligible but whose persisted-store delete
+    /// errored: their in-memory entries are preserved so a later
+    /// `dora clean` can retry. The CLI needs both lists to tell
+    /// "nothing eligible" apart from "all candidates failed to clean".
+    CleanResult {
+        cleaned: DataflowList,
+        failed: Vec<CleanFailure>,
+    },
     DataflowInfo {
         uuid: Uuid,
         name: Option<String>,
@@ -217,6 +230,18 @@ impl DataflowList {
 pub struct DataflowListEntry {
     pub id: DataflowIdAndName,
     pub status: DataflowStatus,
+}
+
+/// A dataflow that `dora clean` failed to remove from the persisted
+/// store. Reported alongside the successful list so the CLI can show
+/// the user what didn't get cleaned and exit non-zero.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CleanFailure {
+    pub id: DataflowIdAndName,
+    /// Human-readable error from the persisted store (e.g. an
+    /// underlying redb / I/O failure). The in-memory entry is
+    /// preserved so a later `dora clean` can retry.
+    pub error: String,
 }
 
 #[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]

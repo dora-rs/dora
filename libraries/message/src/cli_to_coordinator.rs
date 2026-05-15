@@ -99,17 +99,20 @@ pub enum ControlRequest {
     ///
     /// For each cleaned dataflow the coordinator removes its persisted
     /// record first and only then mutates in-memory state, so the reply
-    /// reflects what was actually persisted: a dataflow only appears in
-    /// the returned list when its redb row (and every `dora param` row
-    /// owned by it — the persisted-store delete cascades) is gone. If
-    /// the persisted-store write fails for a particular dataflow the
-    /// coordinator logs a warning and leaves that dataflow in-memory so
-    /// a later `dora clean` can retry; the dataflow simply does not
-    /// appear in the success list. Logs and archived descriptors for
-    /// successfully cleaned dataflows are no longer available
-    /// afterward. Cached build results (`finished_builds`) are
-    /// intentionally not touched — clearing them would break concurrent
-    /// `dora build` calls with "unknown build id" errors.
+    /// reflects what was actually persisted. The response is
+    /// [`ControlRequestReply::CleanResult`] carrying two separate
+    /// lists: `cleaned` for dataflows whose redb row (and every
+    /// `dora param` row owned by it — the persisted-store delete
+    /// cascades) is gone, and `failed` for dataflows whose
+    /// persisted-store delete errored. In-memory entries for failed
+    /// candidates are preserved so a later `dora clean` can retry;
+    /// they show up in `failed`, not `cleaned`, so the CLI can tell
+    /// "nothing eligible" apart from "all candidates failed to
+    /// clean". Logs and archived descriptors for successfully cleaned
+    /// dataflows are no longer available afterward. Cached build
+    /// results (`finished_builds`) are intentionally not touched —
+    /// clearing them would break concurrent `dora build` calls with
+    /// "unknown build id" errors.
     Clean,
     Info {
         dataflow_uuid: Uuid,

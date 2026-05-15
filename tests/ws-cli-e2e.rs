@@ -200,24 +200,29 @@ fn cli_list_empty() {
 #[test]
 fn cli_clean_empty() {
     // Sanity check: `dora clean` against a coordinator with no finished/failed
-    // dataflows must return an empty list (not panic, not error). This catches
-    // protocol regressions on the new `ControlRequest::Clean` variant — the
-    // CLI message round-trips and the coordinator's match arm runs cleanly
-    // even when dataflow_results is empty.
+    // dataflows must return both lists empty (not panic, not error). This
+    // catches protocol regressions on the new `ControlRequest::Clean` variant
+    // and the matching `CleanResult` reply — the CLI message round-trips and
+    // the coordinator's match arm runs cleanly even when dataflow_results is
+    // empty, and the failed list is empty in the absence of store errors.
     let port = start_coordinator_background();
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
     let reply = send_request(&session, &ControlRequest::Clean).unwrap();
     match reply {
-        ControlRequestReply::DataflowList(list) => {
+        ControlRequestReply::CleanResult { cleaned, failed } => {
             assert!(
-                list.0.is_empty(),
+                cleaned.0.is_empty(),
                 "expected empty cleaned list, got {:?}",
-                list.0
+                cleaned.0
+            );
+            assert!(
+                failed.is_empty(),
+                "expected empty failed list, got {failed:?}"
             );
         }
-        other => panic!("expected DataflowList, got {other:?}"),
+        other => panic!("expected CleanResult, got {other:?}"),
     }
 }
 
