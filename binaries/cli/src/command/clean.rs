@@ -68,7 +68,9 @@ fn clean(
 
     if entries.is_empty() {
         if !quiet {
-            println!("No finished or failed dataflows to clean.");
+            // Informational; goes to stderr so `dora clean | …` pipelines see
+            // an empty stdout consistently with the non-empty case below.
+            eprintln!("No finished or failed dataflows to clean.");
         }
         return Ok(());
     }
