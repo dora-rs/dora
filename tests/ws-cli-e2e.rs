@@ -198,6 +198,52 @@ fn cli_list_empty() {
 }
 
 #[test]
+fn cli_clean_reaps_persisted_only_record() {
+    // Regression for #1835 review round 6: after a coordinator restart,
+    // historical Succeeded/Failed rows live in the persisted store but
+    // are NOT reloaded into `dataflow_results` (the recovery loop
+    // intentionally skips them). `dora clean` must still be able to
+    // reap them, otherwise the on-disk redb state grows unbounded.
+    //
+    // The seeded record stands in for the post-restart state: empty
+    // in-memory map + a row in the store.
+    let store_impl = Arc::new(InMemoryStore::new());
+    let dataflow_id = uuid::Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl.clone();
+    let port = start_coordinator_background_with_store(store);
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(&session, &ControlRequest::Clean).unwrap();
+    match reply {
+        ControlRequestReply::CleanResult { cleaned, failed } => {
+            assert!(
+                failed.is_empty(),
+                "expected no failed entries, got {failed:?}"
+            );
+            assert_eq!(
+                cleaned.0.len(),
+                1,
+                "expected the seeded record to be cleaned, got {:?}",
+                cleaned.0
+            );
+            assert_eq!(cleaned.0[0].id.uuid, dataflow_id);
+        }
+        other => panic!("expected CleanResult, got {other:?}"),
+    }
+
+    // The persisted store row must be gone after a successful clean.
+    let surviving = store_impl
+        .get_dataflow(&dataflow_id)
+        .expect("get_dataflow after clean");
+    assert!(
+        surviving.is_none(),
+        "persisted record should be deleted after clean, got {surviving:?}"
+    );
+}
+
+#[test]
 fn cli_clean_empty() {
     // Sanity check: `dora clean` against a coordinator with no finished/failed
     // dataflows must return both lists empty (not panic, not error). This

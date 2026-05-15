@@ -97,6 +97,15 @@ pub enum ControlRequest {
     /// results but others haven't — are intentionally skipped so their final
     /// status is computed correctly when the last daemon completes.
     ///
+    /// Candidates are enumerated from BOTH the in-memory
+    /// `dataflow_results` map AND the persisted store
+    /// (`Succeeded` / `Failed` records). This lets a restarted
+    /// coordinator still reap historical rows that exist only on
+    /// disk — the recovery loop intentionally does not reload them
+    /// into memory, so without the persisted-store pass they would
+    /// otherwise sit in redb forever and never become reachable for
+    /// `dora clean`.
+    ///
     /// For each cleaned dataflow the coordinator removes its persisted
     /// record first and only then mutates in-memory state, so the reply
     /// reflects what was actually persisted. The response is
