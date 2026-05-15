@@ -1509,6 +1509,9 @@ jobs:
           set -euo pipefail
 
           DATE=$(date -u +%Y-%m-%d)
+          MAX_JOB_EXCERPT_BYTES=10000
+          MAX_FAILURE_DETAILS_BYTES=45000
+          GLOBAL_FALLBACK_EXCERPT_BYTES=4000
 
           # Per-job repro hints. Keep in sync with the job blocks above.
           # Blank entries fall back to "see workflow file" in the
@@ -1627,20 +1630,56 @@ jobs:
             logs_available=0
           fi
 
+          byte_count() {
+            LC_ALL=C wc -c | tr -d '[:space:]'
+          }
+
+          file_byte_count() {
+            LC_ALL=C wc -c < "$1" | tr -d '[:space:]'
+          }
+
+          strip_ansi_file() {
+            sed -E 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g' "$1"
+          }
+
+          bounded_tail_file() {
+            local file="$1"
+            local max_bytes="$2"
+            local original_bytes
+
+            if [ "$max_bytes" -le 0 ]; then
+              echo "Excerpt omitted because the report reached the ${MAX_FAILURE_DETAILS_BYTES}-byte log budget."
+              echo "See full run log: $RUN_URL"
+              return
+            fi
+
+            original_bytes=$(file_byte_count "$file")
+            if [ "$original_bytes" -gt "$max_bytes" ]; then
+              echo "Excerpt truncated to the last ${max_bytes} bytes; see full run log: $RUN_URL"
+              echo
+              tail -c "$max_bytes" "$file"
+            else
+              cat "$file"
+            fi
+          }
+
           failure_excerpt() {
             local job="$1"
-            local pattern filtered
+            local max_bytes="$2"
+            local pattern filtered clean fallback
             filtered=$(mktemp)
+            clean=$(mktemp)
+            fallback=0
 
             if [ "$logs_available" != "1" ]; then
               echo 'Unable to fetch failed GitHub Actions log lines.'
               sed -n '1,40p' "$failed_logs_error"
-              rm -f "$filtered"
+              rm -f "$filtered" "$clean"
               return
             fi
             if [ ! -s "$failed_logs_file" ]; then
               echo 'No failed log lines were returned by GitHub Actions.'
-              rm -f "$filtered"
+              rm -f "$filtered" "$clean"
               return
             fi
 
@@ -1649,11 +1688,18 @@ jobs:
               awk -F '\t' -v pattern="$pattern" '$1 ~ pattern { print }' "$failed_logs_file" > "$filtered"
             fi
             if [ ! -s "$filtered" ]; then
-              cp "$failed_logs_file" "$filtered"
+              fallback=1
+              tail -c "$GLOBAL_FALLBACK_EXCERPT_BYTES" "$failed_logs_file" > "$filtered"
             fi
 
-            tail -n 120 "$filtered" | sed -E 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g'
-            rm -f "$filtered"
+            strip_ansi_file "$filtered" > "$clean"
+            if [ "$fallback" -eq 1 ]; then
+              echo "No log lines matched this job name; showing the global failed-log tail."
+              echo "See full run log: $RUN_URL"
+              echo
+            fi
+            bounded_tail_file "$clean" "$max_bytes"
+            rm -f "$filtered" "$clean"
           }
 
           # Compose the failure-specific section.
@@ -1662,10 +1708,26 @@ jobs:
             details+=$'\n### Failed jobs\n\n'
             while IFS= read -r job; do
               [ -z "$job" ] && continue
-              details+="<details><summary>\`$job\`</summary>"$'\n\n'"Reproduce locally:"$'\n\n```\n'
-              details+="$(job_repro "$job")"$'\n```\n\n'
-              details+="Failure excerpt (last 120 failed log lines):"$'\n\n````text\n'
-              details+="$(failure_excerpt "$job")"$'\n````\n</details>\n\n'
+              job_header="<details><summary>\`$job\`</summary>"$'\n\n'"Reproduce locally:"$'\n\n```\n'"$(job_repro "$job")"$'\n```\n\n'"Failure excerpt (bounded to ${MAX_JOB_EXCERPT_BYTES} bytes per job):"$'\n\n````text\n'
+              job_footer=$'\n````\n</details>\n\n'
+              current_bytes=$(printf '%s' "$details" | byte_count)
+              overhead_bytes=$(printf '%s%s' "$job_header" "$job_footer" | byte_count)
+              remaining_bytes=$((MAX_FAILURE_DETAILS_BYTES - current_bytes - overhead_bytes))
+              if [ "$remaining_bytes" -gt $((MAX_JOB_EXCERPT_BYTES + 512)) ]; then
+                excerpt_budget=$MAX_JOB_EXCERPT_BYTES
+              elif [ "$remaining_bytes" -gt 512 ]; then
+                # Leave room for truncation/fallback notes inside the code block.
+                excerpt_budget=$((remaining_bytes - 512))
+              else
+                excerpt_budget=0
+              fi
+
+              if [ "$excerpt_budget" -gt 0 ]; then
+                excerpt="$(failure_excerpt "$job" "$excerpt_budget")"
+              else
+                excerpt="Excerpt omitted because the report reached the ${MAX_FAILURE_DETAILS_BYTES}-byte log budget."$'\n'"See full run log: $RUN_URL"
+              fi
+              details+="$job_header$excerpt$job_footer"
             done <<< "$failed_jobs"
           fi
           if [ -n "$skipped_jobs" ]; then
