@@ -64,6 +64,61 @@ OS="$(uname -s)"
 FAILED=()
 SKIPPED=()
 MANAGED_PIDS=()
+SELECTED_JOBS=("$@")
+SELECTED_JOB_COUNT=$#
+CLI_ROOT=""
+CLI_INSTALLED=0
+
+known_job() {
+  case "$1" in
+    record-replay|cluster-smoke|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/qa/ci-nightly-jobs.sh [job ...]
+
+Run local equivalents for the long-running GitHub Actions nightly jobs.
+With no job names, runs every supported job for the current platform.
+
+Supported jobs:
+  record-replay
+  cluster-smoke
+  topic-and-top-smoke
+  cpu-affinity-smoke
+  redb-backend-smoke
+  daemon-reconnect-smoke
+  state-reconstruction-smoke
+  test-cross-platform
+  examples
+  cli-tests
+  bench-example
+  msrv
+  cross-check
+  ros2-bridge
+EOF
+}
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
+  usage
+  exit 0
+fi
+
+if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
+  for selected in "${SELECTED_JOBS[@]}"; do
+    if ! known_job "$selected"; then
+      echo "ERROR: unknown nightly job: $selected" >&2
+      usage >&2
+      exit 2
+    fi
+  done
+fi
 
 # -----------------------------------------------------------------------------
 # Portable `timeout` shim
@@ -89,26 +144,33 @@ if ! command -v timeout > /dev/null 2>&1; then
   fi
 fi
 
-# Install dora CLI into a scratch root we own, so we don't clobber the user's
-# ~/.cargo/bin/dora. Prepend to PATH for this script only. CLI_ROOT is also
-# the unique pattern we use to identify our own processes (see PROCESS SAFETY
-# in the header).
-CLI_ROOT="$(mktemp -d -t dora-qa-XXXXXX)"
-trap 'cleanup_all_managed; rm -rf "$CLI_ROOT"' EXIT
+trap 'cleanup_all_managed; if [ -n "$CLI_ROOT" ]; then rm -rf "$CLI_ROOT"; fi' EXIT
 
-echo
-echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
-cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
-export PATH="$CLI_ROOT/bin:$PATH"
-dora --version
+ensure_cli_installed() {
+  if [ "$CLI_INSTALLED" -eq 1 ]; then
+    return 0
+  fi
 
-# Port 6013 is the default coordinator WS port. If something is already
-# listening, bail out with a clear message instead of racing.
-if command -v lsof > /dev/null 2>&1 && lsof -iTCP:6013 -sTCP:LISTEN > /dev/null 2>&1; then
-  echo "ERROR: port 6013 is already in use. A dora coordinator is likely already"
-  echo "running. Stop that coordinator with \`dora destroy\` before re-running."
-  exit 1
-fi
+  # Port 6013 is the default coordinator WS port. Jobs that spawn dora services
+  # need it free; pure cargo jobs should not be blocked by this preflight.
+  if command -v lsof > /dev/null 2>&1 && lsof -iTCP:6013 -sTCP:LISTEN > /dev/null 2>&1; then
+    echo "ERROR: port 6013 is already in use. A dora coordinator is likely already"
+    echo "running. Stop that coordinator with \`dora destroy\` before re-running."
+    exit 1
+  fi
+
+  # Install dora CLI into a scratch root we own, so we don't clobber the user's
+  # ~/.cargo/bin/dora. Prepend to PATH for this script only. CLI_ROOT is also
+  # the unique pattern we use to identify our own processes (see PROCESS SAFETY
+  # in the header).
+  CLI_ROOT="$(mktemp -d -t dora-qa-XXXXXX)"
+  echo
+  echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
+  cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
+  export PATH="$CLI_ROOT/bin:$PATH"
+  dora --version
+  CLI_INSTALLED=1
+}
 
 # -----------------------------------------------------------------------------
 # Safe process management (replaces broad pkill)
@@ -135,6 +197,9 @@ terminate_pid() {
 # never touch dora binaries installed elsewhere -- $CLI_ROOT is a unique
 # per-run mktemp path.
 terminate_our_dora_children() {
+  if [ -z "$CLI_ROOT" ]; then
+    return 0
+  fi
   if ! command -v pgrep > /dev/null 2>&1; then
     return 0
   fi
@@ -172,7 +237,7 @@ cleanup_all_managed() {
       wait "$pid" 2>/dev/null || true
     done
   fi
-  if command -v pgrep > /dev/null 2>&1; then
+  if [ -n "$CLI_ROOT" ] && command -v pgrep > /dev/null 2>&1; then
     local remaining
     remaining=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
     if [ -n "$remaining" ]; then
@@ -191,6 +256,19 @@ cleanup_all_managed() {
 run_job() {
   local name="$1"
   local fn="$2"
+  if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
+    local selected found=0
+    for selected in "${SELECTED_JOBS[@]}"; do
+      if [ "$selected" = "$name" ]; then
+        found=1
+        break
+      fi
+    done
+    if [ "$found" -ne 1 ]; then
+      return 0
+    fi
+  fi
+
   echo
   echo "============================================================"
   echo "=== $name ==="
@@ -222,6 +300,8 @@ run_job() {
 # class of bug. Keep this function in lockstep with the GHA step bodies.
 # -----------------------------------------------------------------------------
 job_record_replay() {
+  ensure_cli_installed
+
   cargo build --quiet \
     -p rust-dataflow-example-node \
     -p rust-dataflow-example-status-node \
@@ -263,6 +343,8 @@ job_record_replay() {
 # Job 2: cluster-smoke
 # -----------------------------------------------------------------------------
 job_cluster_smoke() {
+  ensure_cli_installed
+
   cargo build --quiet \
     -p rust-dataflow-example-node \
     -p rust-dataflow-example-status-node \
@@ -324,6 +406,7 @@ job_topic_and_top() {
     SKIPPED+=("topic-and-top-smoke: uv missing")
     return 0
   fi
+  ensure_cli_installed
 
   local venv_dir
   venv_dir="$(mktemp -d -t dora-qa-venv-XXXXXX)"
@@ -441,6 +524,7 @@ job_cpu_affinity() {
     SKIPPED+=("cpu-affinity-smoke: non-Linux ($OS)")
     return 0
   fi
+  ensure_cli_installed
 
   cargo build --quiet -p cpu-affinity-probe
 
@@ -467,6 +551,8 @@ job_cpu_affinity() {
 # Job 4: redb-backend-smoke
 # -----------------------------------------------------------------------------
 job_redb_backend() {
+  ensure_cli_installed
+
   cargo build --quiet -p rust-dataflow-example-node
 
   local STORE=/tmp/dora-redb-smoke.db
@@ -540,6 +626,7 @@ job_daemon_reconnect() {
     SKIPPED+=("daemon-reconnect-smoke: non-Linux ($OS)")
     return 0
   fi
+  ensure_cli_installed
 
   dora coordinator > /tmp/coord.log 2>&1 &
   track_pid "$!"
@@ -592,6 +679,8 @@ job_daemon_reconnect() {
 # Job 6: state-reconstruction-smoke
 # -----------------------------------------------------------------------------
 job_state_reconstruction() {
+  ensure_cli_installed
+
   cargo build --quiet -p rust-dataflow-example-node
 
   local STORE=/tmp/state-reconstruct.db
@@ -685,10 +774,12 @@ job_test_cross_platform() {
 # Mirrors nightly.yml `examples`.
 # -----------------------------------------------------------------------------
 job_examples() {
+  ensure_cli_installed
+
   cargo build --quiet --examples
   cargo build --quiet -p dora-cli
   # NOTE: $CLI_ROOT/bin/dora is already on PATH (set by the script
-  # preamble), so the daemon's which::which("dora") will find it. Do
+  # ensure_cli_installed), so the daemon's which::which("dora") will find it. Do
   # NOT prepend target/debug here -- a naive `export PATH=...` leaks
   # past this function and subsequent jobs' spawned `dora up` children
   # would end up at target/debug/dora, which `terminate_our_dora_children`
@@ -733,7 +824,9 @@ job_examples() {
 # Mirrors nightly.yml `cli-tests` (was the `cli` job in old ci.yml).
 # -----------------------------------------------------------------------------
 job_cli_tests() {
-  # CLI already installed at $CLI_ROOT/bin/dora by this script's preamble.
+  ensure_cli_installed
+
+  # CLI already installed at $CLI_ROOT/bin/dora by ensure_cli_installed.
   # cargo install --path binaries/cli --locked is redundant here; skip it
   # to save ~45 min per local run.
 
@@ -1001,7 +1094,11 @@ if [ ${#SKIPPED[@]} -gt 0 ]; then
   printf '  - %s\n' "${SKIPPED[@]}"
 fi
 if [ ${#FAILED[@]} -eq 0 ]; then
-  echo "All CI-nightly jobs passed."
+  if [ "$SELECTED_JOB_COUNT" -gt 0 ]; then
+    echo "All selected CI-nightly jobs passed."
+  else
+    echo "All CI-nightly jobs passed."
+  fi
   exit 0
 else
   echo "FAILED:"

@@ -35,6 +35,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   issues: write
 
 env:
@@ -1496,6 +1497,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
           # `toJSON(needs)` is a map `{ job_name: { result: "failure" | "success" | ... } }`.
           # Parse in-shell to list only the jobs that actually failed
@@ -1507,6 +1509,9 @@ jobs:
           set -euo pipefail
 
           DATE=$(date -u +%Y-%m-%d)
+          MAX_JOB_EXCERPT_BYTES=10000
+          MAX_FAILURE_DETAILS_BYTES=45000
+          GLOBAL_FALLBACK_EXCERPT_BYTES=4000
 
           # Per-job repro hints. Keep in sync with the job blocks above.
           # Blank entries fall back to "see workflow file" in the
@@ -1530,35 +1535,79 @@ jobs:
                 echo 'dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s'
                 ;;
               record-replay)
-                # The PR-CI contract test covers the semantic path; job
-                # itself is in .github/workflows/nightly.yml if you need
-                # the exact invocation against rust-dataflow.
-                echo 'cargo test -p dora-examples --test example-smoke contract_record_replay -- --test-threads=1'
+                echo 'scripts/qa/ci-nightly-jobs.sh record-replay'
                 ;;
               cluster-smoke)
-                # Multi-step: dora up + cluster status + dataflow + cluster down.
-                echo 'See the `cluster-smoke` job block in .github/workflows/nightly.yml for the exact sequence.'
+                echo 'scripts/qa/ci-nightly-jobs.sh cluster-smoke'
                 ;;
               topic-and-top-smoke)
-                echo 'See the `topic-and-top-smoke` job block in .github/workflows/nightly.yml.'
+                echo 'scripts/qa/ci-nightly-jobs.sh topic-and-top-smoke'
                 ;;
               cpu-affinity-smoke)
                 # Linux-only; the fixture requires sched_setaffinity.
-                echo 'cd examples/cpu-affinity-probe && dora run dataflow.yml --stop-after 3s  # Linux only'
+                echo 'scripts/qa/ci-nightly-jobs.sh cpu-affinity-smoke'
                 ;;
               redb-backend-smoke)
-                echo 'See the `redb-backend-smoke` job block in .github/workflows/nightly.yml (Session 1 + Session 2).'
+                echo 'scripts/qa/ci-nightly-jobs.sh redb-backend-smoke'
                 ;;
               daemon-reconnect-smoke)
                 # Uses SIGSTOP / SIGCONT — Linux only.
-                echo 'See the `daemon-reconnect-smoke` job block in .github/workflows/nightly.yml (Linux only).'
+                echo 'scripts/qa/ci-nightly-jobs.sh daemon-reconnect-smoke'
                 ;;
               state-reconstruction-smoke)
-                echo 'See the `state-reconstruction-smoke` job block in .github/workflows/nightly.yml.'
+                echo 'scripts/qa/ci-nightly-jobs.sh state-reconstruction-smoke'
+                ;;
+              test-cross-platform)
+                echo 'scripts/qa/ci-nightly-jobs.sh test-cross-platform'
+                ;;
+              examples)
+                echo 'scripts/qa/ci-nightly-jobs.sh examples'
+                ;;
+              cli-tests)
+                echo 'scripts/qa/ci-nightly-jobs.sh cli-tests'
+                ;;
+              bench-example)
+                echo 'scripts/qa/ci-nightly-jobs.sh bench-example'
+                ;;
+              msrv)
+                echo 'scripts/qa/ci-nightly-jobs.sh msrv'
+                ;;
+              cross-check)
+                echo 'scripts/qa/ci-nightly-jobs.sh cross-check'
+                ;;
+              ros2-bridge)
+                echo 'scripts/qa/ci-nightly-jobs.sh ros2-bridge'
                 ;;
               *)
                 echo 'No job-specific repro recorded. See the run log for this subjob.'
                 ;;
+            esac
+          }
+
+          # GitHub's run log uses display names, while `needs` uses job IDs.
+          # Keep this map in sync with the job `name:` fields above.
+          job_log_pattern() {
+            case "$1" in
+              build-cli) echo '^Build dora CLI \(shared\)$' ;;
+              smoke-suite) echo '^Smoke suite \(tests/example-smoke\.rs\)$' ;;
+              log-sinks) echo '^Log-sink examples \(Python sources\)$' ;;
+              service-action) echo '^Service / Action patterns \(Rust-only\)$' ;;
+              streaming) echo '^Streaming example \(Python\)$' ;;
+              record-replay) echo '^Record/replay round-trip$' ;;
+              cluster-smoke) echo '^Cluster lifecycle smoke$' ;;
+              topic-and-top-smoke) echo '^Topic & top inspection smoke$' ;;
+              cpu-affinity-smoke) echo '^cpu_affinity end-to-end \(Linux\)$' ;;
+              redb-backend-smoke) echo '^redb backend end-to-end$' ;;
+              daemon-reconnect-smoke) echo '^daemon auto-reconnect end-to-end \(Linux\)$' ;;
+              state-reconstruction-smoke) echo '^state reconstruction end-to-end \(partial\)$' ;;
+              test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
+              examples) echo '^Examples \(.+\)$' ;;
+              cli-tests) echo '^CLI Tests \(.+\)$' ;;
+              bench-example) echo '^Bench Example \(.+\)$' ;;
+              cross-check) echo '^Cross-check \(.+\)$' ;;
+              ros2-bridge) echo '^ROS2 Bridge Examples$' ;;
+              msrv) echo '^MSRV check$' ;;
+              *) echo '' ;;
             esac
           }
 
@@ -1573,14 +1622,113 @@ jobs:
             | jq -r 'to_entries | map(select(.value.result == "skipped")) | .[].key' \
             | sort)
 
+          failed_logs_file=$(mktemp)
+          failed_logs_error=$(mktemp)
+          trap 'rm -f "$failed_logs_file" "$failed_logs_error"' EXIT
+          if gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$failed_logs_file" 2> "$failed_logs_error"; then
+            logs_available=1
+          else
+            logs_available=0
+          fi
+
+          byte_count() {
+            LC_ALL=C wc -c | tr -d '[:space:]'
+          }
+
+          file_byte_count() {
+            LC_ALL=C wc -c < "$1" | tr -d '[:space:]'
+          }
+
+          strip_ansi_file() {
+            sed -E 's/\x1b\[[0-9;?]*[ -/]*[@-~]//g' "$1"
+          }
+
+          bounded_tail_file() {
+            local file="$1"
+            local max_bytes="$2"
+            local original_bytes
+
+            if [ "$max_bytes" -le 0 ]; then
+              echo "Excerpt omitted because the report reached the ${MAX_FAILURE_DETAILS_BYTES}-byte log budget."
+              echo "See full run log: $RUN_URL"
+              return
+            fi
+
+            original_bytes=$(file_byte_count "$file")
+            if [ "$original_bytes" -gt "$max_bytes" ]; then
+              echo "Excerpt truncated to the last ${max_bytes} bytes; see full run log: $RUN_URL"
+              echo
+              tail -c "$max_bytes" "$file"
+            else
+              cat "$file"
+            fi
+          }
+
+          failure_excerpt() {
+            local job="$1"
+            local max_bytes="$2"
+            local pattern filtered clean fallback
+            filtered=$(mktemp)
+            clean=$(mktemp)
+            fallback=0
+
+            if [ "$logs_available" != "1" ]; then
+              echo 'Unable to fetch failed GitHub Actions log lines.'
+              sed -n '1,40p' "$failed_logs_error"
+              rm -f "$filtered" "$clean"
+              return
+            fi
+            if [ ! -s "$failed_logs_file" ]; then
+              echo 'No failed log lines were returned by GitHub Actions.'
+              rm -f "$filtered" "$clean"
+              return
+            fi
+
+            pattern=$(job_log_pattern "$job")
+            if [ -n "$pattern" ]; then
+              awk -F '\t' -v pattern="$pattern" '$1 ~ pattern { print }' "$failed_logs_file" > "$filtered"
+            fi
+            if [ ! -s "$filtered" ]; then
+              fallback=1
+              tail -c "$GLOBAL_FALLBACK_EXCERPT_BYTES" "$failed_logs_file" > "$filtered"
+            fi
+
+            strip_ansi_file "$filtered" > "$clean"
+            if [ "$fallback" -eq 1 ]; then
+              echo "No log lines matched this job name; showing the global failed-log tail."
+              echo "See full run log: $RUN_URL"
+              echo
+            fi
+            bounded_tail_file "$clean" "$max_bytes"
+            rm -f "$filtered" "$clean"
+          }
+
           # Compose the failure-specific section.
           details=""
           if [ -n "$failed_jobs" ]; then
             details+=$'\n### Failed jobs\n\n'
             while IFS= read -r job; do
               [ -z "$job" ] && continue
-              details+="<details><summary>\`$job\`</summary>"$'\n\n'"Reproduce locally:"$'\n\n```\n'
-              details+="$(job_repro "$job")"$'\n```\n</details>\n\n'
+              job_header="<details><summary>\`$job\`</summary>"$'\n\n'"Reproduce locally:"$'\n\n```\n'"$(job_repro "$job")"$'\n```\n\n'"Failure excerpt (bounded to ${MAX_JOB_EXCERPT_BYTES} bytes per job):"$'\n\n````text\n'
+              job_footer=$'\n````\n</details>\n\n'
+              current_bytes=$(printf '%s' "$details" | byte_count)
+              overhead_bytes=$(printf '%s%s' "$job_header" "$job_footer" | byte_count)
+              remaining_bytes=$((MAX_FAILURE_DETAILS_BYTES - current_bytes - overhead_bytes))
+              if [ "$remaining_bytes" -gt $((MAX_JOB_EXCERPT_BYTES + 512)) ]; then
+                excerpt_budget=$MAX_JOB_EXCERPT_BYTES
+              elif [ "$remaining_bytes" -gt 512 ]; then
+                # Leave room for truncation/fallback notes inside the code block.
+                excerpt_budget=$((remaining_bytes - 512))
+              else
+                excerpt_budget=0
+              fi
+
+              if [ "$excerpt_budget" -gt 0 ]; then
+                excerpt="$(failure_excerpt "$job" "$excerpt_budget")"
+              else
+                excerpt="Excerpt omitted because the report reached the ${MAX_FAILURE_DETAILS_BYTES}-byte log budget."$'\n'"See full run log: $RUN_URL"
+              fi
+              details+="$job_header$excerpt$job_footer"
             done <<< "$failed_jobs"
           fi
           if [ -n "$skipped_jobs" ]; then
