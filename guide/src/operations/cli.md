@@ -486,6 +486,29 @@ dora list [OPTIONS]
 
 **Output columns:** UUID, Name, Status, Nodes, CPU, Memory
 
+#### `dora clean`
+
+Remove fully-completed dataflows from the coordinator's state. Running dataflows are unaffected. Multi-daemon dataflows where some daemons have finished but others haven't are also skipped — clean only touches dataflows where no daemon is still running.
+
+```
+dora clean [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json` |
+| `--quiet`, `-q` | false | Print only cleaned UUIDs |
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**What's removed:** Records of fully-completed dataflows from `dataflow_results` and their archived descriptors, plus any persisted-only Succeeded/Failed records that exist on disk (in redb) but not in memory — typically the historical rows from before a coordinator restart, since the recovery loop intentionally does not reload completed dataflows into memory. The coordinator deletes each cleaned entry from the persisted store *first*, and only then drops it from in-memory state — so a dataflow only appears in the command's output when both sides actually got cleaned. The persisted-store deletion cascades to every `dora param` row that belonged to the cleaned dataflow so the state file does not grow unboundedly. Cached build results (`finished_builds`) are intentionally preserved — clearing them would break concurrent `dora build` calls.
+
+**Partial-failure behavior:** If the persisted-store delete fails for one or more dataflows, those dataflows keep their in-memory entries so a later `dora clean` can retry. The CLI prints a `warning:` line per failure to stderr and exits non-zero, distinguishing a partial outage from the "nothing eligible to clean" case. If the persisted-store *enumeration* itself fails (e.g. the redb file is unreadable), the coordinator hard-fails the request with an error reply and leaves all state untouched — the next clean retries once the store is healthy.
+
+**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows, and the persisted record is gone (so `dora param` against the cleaned UUID also fails). Save anything you might want to reference later before running `dora clean`.
+
+**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs, or when a long-lived coordinator's redb state file has grown too large. Less destructive than `dora down + dora up` — the coordinator stays up and daemons stay connected.
+
 #### `dora logs`
 
 Show and follow logs of a dataflow and node.

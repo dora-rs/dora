@@ -245,6 +245,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | Command | Description |
 |---------|-------------|
 | `dora list` | List running dataflows (alias: `ps`) |
+| `dora clean` | Remove finished and failed dataflows from the coordinator |
 | `dora logs <ID>` | Show logs for a dataflow or node |
 | `dora top` | Real-time resource monitor (TUI); also `dora inspect top` |
 | `dora topic list` | List topics in a dataflow |

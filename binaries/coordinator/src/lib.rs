@@ -16,8 +16,8 @@ use dora_message::{
     cli_to_coordinator::ControlRequest,
     common::DaemonId,
     coordinator_to_cli::{
-        ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry, DataflowResult,
-        DataflowStatus, LogLevel, LogMessage,
+        CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
+        DataflowResult, DataflowStatus, LogLevel, LogMessage,
     },
     coordinator_to_daemon::{
         DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
@@ -997,6 +997,147 @@ async fn start_inner(
                             let reply = Ok(ControlRequestReply::DataflowList(DataflowList(
                                 running.chain(finished_failed).collect(),
                             )));
+                            let _ = reply_sender.send(reply);
+                        }
+                        ControlRequest::Clean => {
+                            // `dora clean` semantics (see #1835):
+                            //
+                            // * Only FULLY completed dataflows are eligible. For
+                            //   multi-daemon dataflows `dataflow_results` is
+                            //   populated incrementally as each daemon finishes,
+                            //   while the dataflow stays in `running_dataflows`
+                            //   until ALL daemons are gone. Cleaning a partial
+                            //   entry would corrupt the final status: when the
+                            //   last daemon finishes the reply is computed from
+                            //   the (now-missing) entry and can default to
+                            //   Succeeded even if an earlier daemon reported a
+                            //   node failure.
+                            //
+                            // * Each cleaned entry is removed from the persisted
+                            //   store so the on-disk state file doesn't grow
+                            //   unboundedly. The persisted-store delete cascades
+                            //   to associated `dora param` rows.
+                            //
+                            // * `finished_builds` is intentionally NOT touched —
+                            //   clearing it would break concurrent `dora build`
+                            //   calls with "unknown build id" errors.
+                            //
+                            // Phase A: enumerate completed candidates from BOTH
+                            // `dataflow_results` AND `store.list_dataflows()` so
+                            // a restarted coordinator can still reap historical
+                            // Succeeded/Failed rows that only exist on disk
+                            // (startup recovery intentionally does NOT reload
+                            // them into memory — see the empty match arm at
+                            // `StoreDataflowStatus::Succeeded | Failed` in the
+                            // startup loop). Per-candidate tuple:
+                            // (uuid, name, cli-facing status, in_memory).
+                            let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> =
+                                Vec::new();
+
+                            for (uuid, results) in dataflow_results.iter() {
+                                if running_dataflows.contains_key(uuid) {
+                                    // Multi-daemon dataflow still completing —
+                                    // keep partial results so the final status
+                                    // is computed correctly when the last daemon
+                                    // completes.
+                                    continue;
+                                }
+                                let name =
+                                    archived_dataflows.get(uuid).and_then(|d| d.name.clone());
+                                let status = if results.values().all(|r| r.is_ok()) {
+                                    DataflowStatus::Finished
+                                } else {
+                                    DataflowStatus::Failed
+                                };
+                                candidates.push((*uuid, name, status, true));
+                            }
+
+                            // Hard-fail if we can't enumerate the persisted
+                            // store. With a partial view we cannot honor the
+                            // "trim disk state" contract, and silently
+                            // processing only the in-memory subset would let
+                            // the CLI claim "nothing to clean" while
+                            // historical rows still sit on disk untouched.
+                            // The in-memory entries we would have processed
+                            // stay in `dataflow_results`, so a subsequent
+                            // `dora clean` (after the operator fixes the
+                            // underlying store issue) reaps them on the next
+                            // call. No state is mutated on this path.
+                            let records = match store.list_dataflows() {
+                                Ok(records) => records,
+                                Err(e) => {
+                                    let _ = reply_sender.send(Err(eyre!(
+                                        "dora clean: failed to enumerate persisted \
+                                         dataflows: {e}. No state was modified; the \
+                                         next `dora clean` will retry once the \
+                                         coordinator's store is healthy again."
+                                    )));
+                                    continue;
+                                }
+                            };
+                            for record in records {
+                                if running_dataflows.contains_key(&record.uuid) {
+                                    continue;
+                                }
+                                if dataflow_results.contains_key(&record.uuid) {
+                                    // Already covered by the in-memory pass;
+                                    // skip to avoid double-counting.
+                                    continue;
+                                }
+                                let status = match record.status {
+                                    StoreDataflowStatus::Succeeded => DataflowStatus::Finished,
+                                    StoreDataflowStatus::Failed { .. } => DataflowStatus::Failed,
+                                    _ => continue,
+                                };
+                                candidates.push((record.uuid, record.name, status, false));
+                            }
+
+                            // Phase B: per-candidate, persist-first, then mutate
+                            // in-memory state on success. Collect-then-mutate
+                            // avoids borrow friction with two sources and makes
+                            // the success/failure split obvious.
+                            let mut cleaned: Vec<DataflowListEntry> = Vec::new();
+                            let mut failed: Vec<CleanFailure> = Vec::new();
+                            for (uuid, name, status, in_memory) in candidates {
+                                let id = DataflowIdAndName { uuid, name };
+                                if let Err(e) = store.delete_dataflow(&uuid) {
+                                    tracing::warn!(
+                                        "skipping clean for dataflow {uuid}: \
+                                         persisted-store delete failed: {e}. \
+                                         {state} preserved so a later `dora clean` \
+                                         can retry.",
+                                        state = if in_memory {
+                                            "In-memory entry"
+                                        } else {
+                                            "Persisted record"
+                                        }
+                                    );
+                                    failed.push(CleanFailure {
+                                        id,
+                                        error: e.to_string(),
+                                    });
+                                    continue;
+                                }
+                                if in_memory {
+                                    dataflow_results.remove(&uuid);
+                                }
+                                archived_dataflows.shift_remove(&uuid);
+                                cleaned.push(DataflowListEntry { id, status });
+                            }
+
+                            cleaned.sort_by(|a, b| {
+                                (a.id.name.as_deref(), a.id.uuid)
+                                    .cmp(&(b.id.name.as_deref(), b.id.uuid))
+                            });
+                            failed.sort_by(|a, b| {
+                                (a.id.name.as_deref(), a.id.uuid)
+                                    .cmp(&(b.id.name.as_deref(), b.id.uuid))
+                            });
+
+                            let reply = Ok(ControlRequestReply::CleanResult {
+                                cleaned: DataflowList(cleaned),
+                                failed,
+                            });
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::DaemonConnected => {

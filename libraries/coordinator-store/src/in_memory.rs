@@ -116,11 +116,25 @@ impl CoordinatorStore for InMemoryStore {
     }
 
     fn delete_dataflow(&self, uuid: &Uuid) -> Result<()> {
-        let mut dataflows = self
-            .dataflows
-            .write()
-            .map_err(|e| eyre!("lock poisoned: {e}"))?;
-        dataflows.remove(uuid);
+        {
+            let mut dataflows = self
+                .dataflows
+                .write()
+                .map_err(|e| eyre!("lock poisoned: {e}"))?;
+            dataflows.remove(uuid);
+        }
+        // Cascade-delete node params for this dataflow so `dora clean`
+        // doesn't leak orphan rows. Each backend holds one lock at a
+        // time (matching the rest of this impl); the coordinator runs
+        // events serially, so a brief window between the two removals
+        // is invisible to callers.
+        {
+            let mut params = self
+                .params
+                .write()
+                .map_err(|e| eyre!("lock poisoned: {e}"))?;
+            params.retain(|(df, _, _), _| df != uuid);
+        }
         Ok(())
     }
 
@@ -324,5 +338,31 @@ mod tests {
                 .is_none()
         );
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
+    }
+
+    /// `delete_dataflow` must remove every node param tied to that
+    /// dataflow so `dora clean` doesn't leak orphan rows. Params for
+    /// other dataflows must survive untouched.
+    #[test]
+    fn delete_dataflow_cascades_to_node_params() {
+        let store = InMemoryStore::new();
+        let df_a = Uuid::new_v4();
+        let df_b = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        store.put_node_param(&df_a, &node, "k1", b"a1").unwrap();
+        store.put_node_param(&df_a, &node, "k2", b"a2").unwrap();
+        store.put_node_param(&df_b, &node, "k1", b"b1").unwrap();
+
+        store.delete_dataflow(&df_a).unwrap();
+
+        assert!(
+            store.list_node_params(&df_a, &node).unwrap().is_empty(),
+            "params for cleaned dataflow must be removed"
+        );
+        let surviving = store.list_node_params(&df_b, &node).unwrap();
+        assert_eq!(surviving.len(), 1, "other dataflows' params untouched");
+        assert_eq!(surviving[0].0, "k1");
+        assert_eq!(surviving[0].1, b"b1");
     }
 }

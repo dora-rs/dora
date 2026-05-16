@@ -629,6 +629,9 @@ dora doctor
 # List all dataflows (active and completed)
 dora list
 
+# Drop finished/failed entries from the list (keeps coordinator running)
+dora clean
+
 # List nodes in a specific dataflow
 dora node list -d my-dataflow
 
@@ -643,7 +646,7 @@ dora param list -d my-dataflow detector
 dora param set -d my-dataflow detector threshold 0.5
 ```
 
-`dora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow.
+`dora list` shows each dataflow's UUID, name, status, and node count. Use `-d <name>` with other commands to target a specific dataflow. When the list grows cluttered with finished/failed entries from past runs, `dora clean` drops them without restarting the coordinator — `dora logs <uuid>` won't work for cleaned dataflows afterward.
 
 ---
 
