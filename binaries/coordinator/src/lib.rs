@@ -1000,38 +1000,36 @@ async fn start_inner(
                             let _ = reply_sender.send(reply);
                         }
                         ControlRequest::Clean => {
-                            // Only clean dataflows that have FULLY completed.
-                            // For multi-daemon dataflows, `dataflow_results` is populated
-                            // incrementally — each daemon's result is inserted as soon
-                            // as that daemon finishes, but the dataflow stays in
-                            // `running_dataflows` until ALL daemons are gone. Cleaning
-                            // such a partial entry would corrupt the final status:
-                            // when the last daemon finishes, the reply is computed from
-                            // the (now-missing) entry and can default to Succeeded even
-                            // if an earlier daemon reported a node failure.
+                            // `dora clean` semantics (see #1835):
                             //
-                            // `finished_builds` is intentionally NOT touched: clearing
-                            // it would break concurrent `dora build` calls ("unknown
-                            // build id" errors) that are still polling for build
-                            // completion.
+                            // * Only FULLY completed dataflows are eligible. For
+                            //   multi-daemon dataflows `dataflow_results` is
+                            //   populated incrementally as each daemon finishes,
+                            //   while the dataflow stays in `running_dataflows`
+                            //   until ALL daemons are gone. Cleaning a partial
+                            //   entry would corrupt the final status: when the
+                            //   last daemon finishes the reply is computed from
+                            //   the (now-missing) entry and can default to
+                            //   Succeeded even if an earlier daemon reported a
+                            //   node failure.
                             //
-                            // We also remove each cleaned entry from the persisted
-                            // store, so the redb state file does not grow unboundedly
-                            // and so persisted-only lookups (e.g. param target
-                            // resolution via `store.get_dataflow()`) don't continue to
-                            // resolve "ghost" cleaned dataflows. Candidates are
-                            // enumerated from BOTH `dataflow_results` AND
-                            // `store.list_dataflows()` so a restarted coordinator
-                            // can still reap historical Succeeded/Failed records
-                            // that only exist on disk after coordinator startup
-                            // (which intentionally does NOT reload them into
-                            // memory — see the empty match arm at
-                            // `StoreDataflowStatus::Succeeded | Failed` in the
-                            // startup recovery loop).
+                            // * Each cleaned entry is removed from the persisted
+                            //   store so the on-disk state file doesn't grow
+                            //   unboundedly. The persisted-store delete cascades
+                            //   to associated `dora param` rows.
+                            //
+                            // * `finished_builds` is intentionally NOT touched —
+                            //   clearing it would break concurrent `dora build`
+                            //   calls with "unknown build id" errors.
+                            //
                             // Phase A: enumerate completed candidates from BOTH
-                            // sources so a restarted coordinator can still clean
-                            // historical rows that exist only in the persisted
-                            // store (#1835 review round 6). Per-candidate tuple:
+                            // `dataflow_results` AND `store.list_dataflows()` so
+                            // a restarted coordinator can still reap historical
+                            // Succeeded/Failed rows that only exist on disk
+                            // (startup recovery intentionally does NOT reload
+                            // them into memory — see the empty match arm at
+                            // `StoreDataflowStatus::Succeeded | Failed` in the
+                            // startup loop). Per-candidate tuple:
                             // (uuid, name, cli-facing status, in_memory).
                             let mut candidates: Vec<(Uuid, Option<String>, DataflowStatus, bool)> =
                                 Vec::new();
@@ -1072,7 +1070,7 @@ async fn start_inner(
                                         "dora clean: failed to enumerate persisted \
                                          dataflows: {e}. No state was modified; the \
                                          next `dora clean` will retry once the \
-                                         coordinator's redb store is healthy again."
+                                         coordinator's store is healthy again."
                                     )));
                                     continue;
                                 }
