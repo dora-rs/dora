@@ -104,7 +104,12 @@ pub enum ControlRequest {
     /// disk — the recovery loop intentionally does not reload them
     /// into memory, so without the persisted-store pass they would
     /// otherwise sit in redb forever and never become reachable for
-    /// `dora clean`.
+    /// `dora clean`. If the persisted-store enumeration itself
+    /// errors, the entire request fails with
+    /// [`ControlRequestReply::Error`] and no in-memory state is
+    /// mutated — degrading silently to in-memory-only would let the
+    /// CLI claim "nothing to clean" while historical rows are still
+    /// sitting on disk.
     ///
     /// For each cleaned dataflow the coordinator removes its persisted
     /// record first and only then mutates in-memory state, so the reply

@@ -1054,36 +1054,44 @@ async fn start_inner(
                                 candidates.push((*uuid, name, status, true));
                             }
 
-                            match store.list_dataflows() {
-                                Ok(records) => {
-                                    for record in records {
-                                        if running_dataflows.contains_key(&record.uuid) {
-                                            continue;
-                                        }
-                                        if dataflow_results.contains_key(&record.uuid) {
-                                            // Already covered by the in-memory
-                                            // pass; skip to avoid double-counting.
-                                            continue;
-                                        }
-                                        let status = match record.status {
-                                            StoreDataflowStatus::Succeeded => {
-                                                DataflowStatus::Finished
-                                            }
-                                            StoreDataflowStatus::Failed { .. } => {
-                                                DataflowStatus::Failed
-                                            }
-                                            _ => continue,
-                                        };
-                                        candidates.push((record.uuid, record.name, status, false));
-                                    }
-                                }
+                            // Hard-fail if we can't enumerate the persisted
+                            // store. With a partial view we cannot honor the
+                            // "trim disk state" contract, and silently
+                            // processing only the in-memory subset would let
+                            // the CLI claim "nothing to clean" while
+                            // historical rows still sit on disk untouched.
+                            // The in-memory entries we would have processed
+                            // stay in `dataflow_results`, so a subsequent
+                            // `dora clean` (after the operator fixes the
+                            // underlying store issue) reaps them on the next
+                            // call. No state is mutated on this path.
+                            let records = match store.list_dataflows() {
+                                Ok(records) => records,
                                 Err(e) => {
-                                    tracing::warn!(
-                                        "failed to enumerate persisted dataflows during \
-                                         clean: {e}. Only in-memory candidates will be \
-                                         considered for this call."
-                                    );
+                                    let _ = reply_sender.send(Err(eyre!(
+                                        "dora clean: failed to enumerate persisted \
+                                         dataflows: {e}. No state was modified; the \
+                                         next `dora clean` will retry once the \
+                                         coordinator's redb store is healthy again."
+                                    )));
+                                    continue;
                                 }
+                            };
+                            for record in records {
+                                if running_dataflows.contains_key(&record.uuid) {
+                                    continue;
+                                }
+                                if dataflow_results.contains_key(&record.uuid) {
+                                    // Already covered by the in-memory pass;
+                                    // skip to avoid double-counting.
+                                    continue;
+                                }
+                                let status = match record.status {
+                                    StoreDataflowStatus::Succeeded => DataflowStatus::Finished,
+                                    StoreDataflowStatus::Failed { .. } => DataflowStatus::Failed,
+                                    _ => continue,
+                                };
+                                candidates.push((record.uuid, record.name, status, false));
                             }
 
                             // Phase B: per-candidate, persist-first, then mutate

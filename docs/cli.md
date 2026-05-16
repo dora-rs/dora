@@ -514,6 +514,8 @@ dora clean [OPTIONS]
 
 **What happens on a persisted-store failure:** If the persisted-store delete fails for one or more dataflows, the in-memory entries for those dataflows are preserved so a later `dora clean` can retry. The CLI prints a `warning:` line per failure to stderr and exits non-zero, so scripted callers can tell a partial outage apart from a clean (no-eligible) run. The successful entries on the same call are still printed to stdout in the chosen format.
 
+If the persisted-store *enumeration* itself fails (e.g. the redb file is corrupted or unreadable), the coordinator hard-fails the request: it returns a request error, the CLI exits non-zero with a message that names the underlying error, and no in-memory state is mutated. Degrading silently to in-memory-only would let the command report "nothing to clean" while historical rows are still sitting on disk — once the operator fixes the store, the next `dora clean` reaps everything.
+
 **What's NOT removed:**
 - Running dataflows.
 - Multi-daemon dataflows still finishing (some daemons reported results, others haven't yet) — these are intentionally skipped to preserve the partial state the coordinator needs to compute the final status correctly.
