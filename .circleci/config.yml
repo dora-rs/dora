@@ -1140,7 +1140,7 @@ jobs:
           name: C++ ROS2 Bridge example
           command: |
             source /opt/ros/humble/setup.bash
-            cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow
+            cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
           no_output_timeout: 30m
       - cargo-cache-save:
           prefix: ros2
