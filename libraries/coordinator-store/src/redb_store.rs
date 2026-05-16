@@ -223,10 +223,22 @@ impl CoordinatorStore for RedbStore {
 
     fn delete_dataflow(&self, uuid: &Uuid) -> Result<()> {
         let key: &[u8] = uuid.as_bytes();
+        // All node-param rows for a dataflow share the prefix
+        // "<uuid><sep>" — see `make_param_key`. Cascade-deleting them
+        // in the same write txn keeps `delete_dataflow` atomic and
+        // prevents orphan rows accumulating in NODE_PARAMS when
+        // `dora clean` removes a dataflow.
+        let param_prefix = format!("{uuid}{KEY_SEPARATOR}");
         let txn = self.db.begin_write()?;
         {
             let mut table = txn.open_table(DATAFLOWS)?;
             table.remove(key)?;
+        }
+        {
+            let mut params = txn.open_table(NODE_PARAMS)?;
+            params.retain_in(param_prefix.as_str().., |k, _| {
+                !k.starts_with(param_prefix.as_str())
+            })?;
         }
         txn.commit()?;
         Ok(())
@@ -853,6 +865,32 @@ mod tests {
         let uuid = Uuid::new_v4();
         // Nothing was stored. delete should still succeed.
         store.delete_dataflow(&uuid).unwrap();
+    }
+
+    /// delete_dataflow cascades to NODE_PARAMS so `dora clean` can't
+    /// leave orphan param rows behind. The non-cleaned dataflow's
+    /// params must survive.
+    #[test]
+    fn delete_dataflow_cascades_to_node_params() {
+        let (store, _dir) = temp_store();
+        let df_a = Uuid::new_v4();
+        let df_b = Uuid::new_v4();
+        let node: NodeId = "n".to_string().into();
+
+        store.put_node_param(&df_a, &node, "k1", b"a1").unwrap();
+        store.put_node_param(&df_a, &node, "k2", b"a2").unwrap();
+        store.put_node_param(&df_b, &node, "k1", b"b1").unwrap();
+
+        store.delete_dataflow(&df_a).unwrap();
+
+        assert!(
+            store.list_node_params(&df_a, &node).unwrap().is_empty(),
+            "params for cleaned dataflow must be removed"
+        );
+        let surviving = store.list_node_params(&df_b, &node).unwrap();
+        assert_eq!(surviving.len(), 1, "other dataflows' params untouched");
+        assert_eq!(surviving[0].0, "k1");
+        assert_eq!(surviving[0].1, b"b1");
     }
 
     /// delete_node_param on a non-existent key is a no-op.

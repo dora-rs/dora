@@ -8,14 +8,23 @@
 //! via `dora up` CLI to test the complete lifecycle.
 
 use dora_cli::WsSession;
-use dora_coordinator::dora_coordinator_store::{DataflowRecord, DataflowStatus};
+use dora_coordinator::dora_coordinator_store::{
+    BuildRecord, DaemonInfo, DataflowRecord, DataflowStatus,
+};
 use dora_coordinator::{CoordinatorStore, InMemoryStore};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
-    current_crate_version, ws_protocol::WsRequest,
+    cli_to_coordinator::ControlRequest, common::DaemonId, coordinator_to_cli::ControlRequestReply,
+    current_crate_version, id::NodeId, ws_protocol::WsRequest,
 };
 use futures::{SinkExt, StreamExt};
-use std::{collections::BTreeMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio_tungstenite::accept_async;
 use uuid::Uuid;
 
@@ -79,6 +88,106 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, n
         updated_at: 0,
     };
     store.put_dataflow(&record).expect("seed dataflow record");
+}
+
+/// Test wrapper around `InMemoryStore` that can be flipped to make
+/// `list_dataflows` return an error after the coordinator has finished
+/// starting up. Used to exercise `dora clean`'s hard-fail-on-enumeration
+/// error path without having to wire a real broken redb file.
+struct FailingListStore {
+    inner: InMemoryStore,
+    fail_list: AtomicBool,
+}
+
+impl FailingListStore {
+    fn new() -> Self {
+        Self {
+            inner: InMemoryStore::new(),
+            fail_list: AtomicBool::new(false),
+        }
+    }
+
+    fn enable_failure(&self) {
+        self.fail_list.store(true, Ordering::Release);
+    }
+}
+
+impl CoordinatorStore for FailingListStore {
+    fn register_daemon(&self, info: DaemonInfo) -> eyre::Result<()> {
+        self.inner.register_daemon(info)
+    }
+    fn unregister_daemon(&self, id: &DaemonId) -> eyre::Result<()> {
+        self.inner.unregister_daemon(id)
+    }
+    fn list_daemons(&self) -> eyre::Result<Vec<DaemonInfo>> {
+        self.inner.list_daemons()
+    }
+    fn get_daemon(&self, id: &DaemonId) -> eyre::Result<Option<DaemonInfo>> {
+        self.inner.get_daemon(id)
+    }
+    fn get_daemon_by_machine(&self, machine_id: &str) -> eyre::Result<Option<DaemonId>> {
+        self.inner.get_daemon_by_machine(machine_id)
+    }
+    fn put_dataflow(&self, record: &DataflowRecord) -> eyre::Result<()> {
+        self.inner.put_dataflow(record)
+    }
+    fn get_dataflow(&self, uuid: &Uuid) -> eyre::Result<Option<DataflowRecord>> {
+        self.inner.get_dataflow(uuid)
+    }
+    fn list_dataflows(&self) -> eyre::Result<Vec<DataflowRecord>> {
+        if self.fail_list.load(Ordering::Acquire) {
+            Err(eyre::eyre!("injected list_dataflows failure for test"))
+        } else {
+            self.inner.list_dataflows()
+        }
+    }
+    fn delete_dataflow(&self, uuid: &Uuid) -> eyre::Result<()> {
+        self.inner.delete_dataflow(uuid)
+    }
+    fn put_build(&self, record: &BuildRecord) -> eyre::Result<()> {
+        self.inner.put_build(record)
+    }
+    fn get_build(&self, build_id: &Uuid) -> eyre::Result<Option<BuildRecord>> {
+        self.inner.get_build(build_id)
+    }
+    fn list_builds(&self) -> eyre::Result<Vec<BuildRecord>> {
+        self.inner.list_builds()
+    }
+    fn delete_build(&self, build_id: &Uuid) -> eyre::Result<()> {
+        self.inner.delete_build(build_id)
+    }
+    fn put_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+        value: &[u8],
+    ) -> eyre::Result<()> {
+        self.inner.put_node_param(dataflow_id, node_id, key, value)
+    }
+    fn get_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> eyre::Result<Option<Vec<u8>>> {
+        self.inner.get_node_param(dataflow_id, node_id, key)
+    }
+    fn list_node_params(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+    ) -> eyre::Result<Vec<(String, Vec<u8>)>> {
+        self.inner.list_node_params(dataflow_id, node_id)
+    }
+    fn delete_node_param(
+        &self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        key: &str,
+    ) -> eyre::Result<()> {
+        self.inner.delete_node_param(dataflow_id, node_id, key)
+    }
 }
 
 /// Start a minimal control websocket server that acks `TopicSubscribe` and
@@ -194,6 +303,119 @@ fn cli_list_empty() {
             assert!(list.0.is_empty(), "expected empty dataflow list");
         }
         other => panic!("expected DataflowList, got {other:?}"),
+    }
+}
+
+#[test]
+fn cli_clean_reaps_persisted_only_record() {
+    // Regression for #1835 review round 6: after a coordinator restart,
+    // historical Succeeded/Failed rows live in the persisted store but
+    // are NOT reloaded into `dataflow_results` (the recovery loop
+    // intentionally skips them). `dora clean` must still be able to
+    // reap them, otherwise the on-disk redb state grows unbounded.
+    //
+    // The seeded record stands in for the post-restart state: empty
+    // in-memory map + a row in the store.
+    let store_impl = Arc::new(InMemoryStore::new());
+    let dataflow_id = uuid::Uuid::new_v4();
+    seed_dataflow_record(store_impl.as_ref(), dataflow_id, &["sensor"]);
+    let store: Arc<dyn CoordinatorStore> = store_impl.clone();
+    let port = start_coordinator_background_with_store(store);
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(&session, &ControlRequest::Clean).unwrap();
+    match reply {
+        ControlRequestReply::CleanResult { cleaned, failed } => {
+            assert!(
+                failed.is_empty(),
+                "expected no failed entries, got {failed:?}"
+            );
+            assert_eq!(
+                cleaned.0.len(),
+                1,
+                "expected the seeded record to be cleaned, got {:?}",
+                cleaned.0
+            );
+            assert_eq!(cleaned.0[0].id.uuid, dataflow_id);
+        }
+        other => panic!("expected CleanResult, got {other:?}"),
+    }
+
+    // The persisted store row must be gone after a successful clean.
+    let surviving = store_impl
+        .get_dataflow(&dataflow_id)
+        .expect("get_dataflow after clean");
+    assert!(
+        surviving.is_none(),
+        "persisted record should be deleted after clean, got {surviving:?}"
+    );
+}
+
+#[test]
+fn cli_clean_hard_fails_when_persisted_enumeration_fails() {
+    // Regression for #1835 review round 7: if `store.list_dataflows()`
+    // errors during clean, the coordinator can't honor the "trim disk
+    // state" contract because it can't even see what's on disk. Previous
+    // behavior silently degraded to in-memory-only and reported success;
+    // that lets the CLI claim "nothing to clean" while historical rows
+    // sit untouched. The fixed behavior is to return a request error so
+    // the CLI exits non-zero and the operator notices.
+    let store_impl = Arc::new(FailingListStore::new());
+    let store: Arc<dyn CoordinatorStore> = store_impl.clone();
+    let port = start_coordinator_background_with_store(store);
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    // Flip the failure switch only AFTER startup has finished using the
+    // store — startup calls list_dataflows once and we don't want to
+    // sabotage it.
+    store_impl.enable_failure();
+
+    let reply = send_request(&session, &ControlRequest::Clean).unwrap();
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains("failed to enumerate persisted dataflows"),
+                "expected enumeration-failure error message, got: {msg}"
+            );
+            assert!(
+                msg.contains("No state was modified"),
+                "error message should reassure the operator that state is intact: {msg}"
+            );
+        }
+        other => {
+            panic!("expected Error reply when persisted-store enumeration fails, got {other:?}")
+        }
+    }
+}
+
+#[test]
+fn cli_clean_empty() {
+    // Sanity check: `dora clean` against a coordinator with no finished/failed
+    // dataflows must return both lists empty (not panic, not error). This
+    // catches protocol regressions on the new `ControlRequest::Clean` variant
+    // and the matching `CleanResult` reply — the CLI message round-trips and
+    // the coordinator's match arm runs cleanly even when dataflow_results is
+    // empty, and the failed list is empty in the absence of store errors.
+    let port = start_coordinator_background();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    let reply = send_request(&session, &ControlRequest::Clean).unwrap();
+    match reply {
+        ControlRequestReply::CleanResult { cleaned, failed } => {
+            assert!(
+                cleaned.0.is_empty(),
+                "expected empty cleaned list, got {:?}",
+                cleaned.0
+            );
+            assert!(
+                failed.is_empty(),
+                "expected empty failed list, got {failed:?}"
+            );
+        }
+        other => panic!("expected CleanResult, got {other:?}"),
     }
 }
 

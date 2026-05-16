@@ -1,4 +1,5 @@
 mod build;
+mod clean;
 mod cluster;
 mod completion;
 mod coordinator;
@@ -32,6 +33,7 @@ pub use build::{BuildConfig, build};
 pub use run::{Run, run};
 
 use build::Build;
+use clean::CleanArgs;
 use cluster::Cluster;
 use completion::Completion;
 use coordinator::Coordinator;
@@ -93,6 +95,9 @@ pub enum Command {
     /// List running dataflows
     #[clap(alias = "ps", display_order = 10)]
     List(ListArgs),
+    /// Remove finished and failed dataflows from the coordinator
+    #[clap(display_order = 10)]
+    Clean(CleanArgs),
     /// Show logs of a given dataflow and node
     #[command(allow_missing_positional = true)]
     #[clap(display_order = 11)]
@@ -194,6 +199,7 @@ impl Executable for Command {
             Command::Stop(args) => args.execute(),
             Command::Restart(args) => args.execute(),
             Command::List(args) => args.execute(),
+            Command::Clean(args) => args.execute(),
             Command::Logs(args) => args.execute(),
             Command::Inspect(args) => args.execute(),
             Command::Topic(args) => args.execute(),
@@ -278,6 +284,15 @@ mod tests {
     #[test]
     fn parse_list() {
         parse_ok(&["dora", "list"]);
+    }
+
+    #[test]
+    fn parse_clean() {
+        parse_ok(&["dora", "clean"]);
+        parse_ok(&["dora", "clean", "--format", "json"]);
+        parse_ok(&["dora", "clean", "-q"]);
+        // --quiet and --format conflict
+        parse_err(&["dora", "clean", "-q", "--format", "table"]);
     }
 
     #[test]

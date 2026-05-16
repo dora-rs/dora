@@ -89,6 +89,45 @@ pub enum ControlRequest {
     },
     Destroy,
     List,
+    /// Remove fully-completed dataflows from the coordinator's state.
+    ///
+    /// A dataflow is considered fully completed when no daemon is still
+    /// running it (i.e. it's no longer in `running_dataflows`). Multi-daemon
+    /// dataflows that are still finishing — where some daemons have reported
+    /// results but others haven't — are intentionally skipped so their final
+    /// status is computed correctly when the last daemon completes.
+    ///
+    /// Candidates are enumerated from BOTH the in-memory
+    /// `dataflow_results` map AND the persisted store
+    /// (`Succeeded` / `Failed` records). This lets a restarted
+    /// coordinator still reap historical rows that exist only on
+    /// disk — the recovery loop intentionally does not reload them
+    /// into memory, so without the persisted-store pass they would
+    /// otherwise sit in redb forever and never become reachable for
+    /// `dora clean`. If the persisted-store enumeration itself
+    /// errors, the entire request fails with
+    /// [`ControlRequestReply::Error`] and no in-memory state is
+    /// mutated — degrading silently to in-memory-only would let the
+    /// CLI claim "nothing to clean" while historical rows are still
+    /// sitting on disk.
+    ///
+    /// For each cleaned dataflow the coordinator removes its persisted
+    /// record first and only then mutates in-memory state, so the reply
+    /// reflects what was actually persisted. The response is
+    /// [`ControlRequestReply::CleanResult`] carrying two separate
+    /// lists: `cleaned` for dataflows whose redb row (and every
+    /// `dora param` row owned by it — the persisted-store delete
+    /// cascades) is gone, and `failed` for dataflows whose
+    /// persisted-store delete errored. In-memory entries for failed
+    /// candidates are preserved so a later `dora clean` can retry;
+    /// they show up in `failed`, not `cleaned`, so the CLI can tell
+    /// "nothing eligible" apart from "all candidates failed to
+    /// clean". Logs and archived descriptors for successfully cleaned
+    /// dataflows are no longer available afterward. Cached build
+    /// results (`finished_builds`) are intentionally not touched —
+    /// clearing them would break concurrent `dora build` calls with
+    /// "unknown build id" errors.
+    Clean,
     Info {
         dataflow_uuid: Uuid,
     },
