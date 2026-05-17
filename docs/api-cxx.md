@@ -249,6 +249,28 @@ DoraResult close_outputs(
 
 `output_ids` are validated as `DataId`s; an invalid id (e.g. one containing characters not allowed by the data-id grammar) returns a `DoraResult` whose `error` names the offending id and the underlying validation message, instead of aborting the process.
 
+#### node_config_json
+
+Return this node's `NodeRunConfig` (inputs, outputs, type annotations, framing overrides, etc. — the per-node block from the dataflow descriptor) serialized as JSON. Lets a C++ node reason about its own declared interface at runtime without re-parsing the dataflow yaml.
+
+```cpp
+rust::String node_config_json(const rust::Box<OutputSender>& sender);
+```
+
+Throws `rust::Error` if serialization fails (rare — `NodeRunConfig` has no fields that can produce serde errors in practice).
+
+#### dataflow_descriptor_json
+
+Return the full parsed `Descriptor` (the entire dataflow yaml) serialized as JSON. Useful for introspecting peer nodes, listing all topics, etc.
+
+```cpp
+rust::String dataflow_descriptor_json(const rust::Box<OutputSender>& sender);
+```
+
+Throws `rust::Error` if the daemon hasn't delivered the descriptor yet, or on serialization failure.
+
+> **Caution:** the returned JSON includes any `env` blocks declared on nodes in the dataflow yaml. Inline literals (`API_KEY: "..."`) **and** host-environment substitutions (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse time) both appear as plain strings in the output. Don't pipe the result into shared logs or telemetry without sanitizing if your dataflow can carry secrets in env vars.
+
 #### log_message
 
 Send a log message through the Dora logging system.

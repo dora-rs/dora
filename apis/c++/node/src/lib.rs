@@ -163,6 +163,16 @@ mod ffi {
         /// serialized as JSON. Useful for introspecting peer nodes,
         /// listing all topics, etc. May fail if the daemon hasn't
         /// delivered the descriptor yet.
+        ///
+        /// **Caution:** the returned JSON includes any `env` blocks
+        /// declared on nodes in the dataflow yaml. Inline literals
+        /// (`API_KEY: "..."`) and host-environment substitutions
+        /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
+        /// time per `libraries/message/src/descriptor.rs`'s
+        /// `with_expand_envs`) both appear as plain strings in the
+        /// output. Don't pipe this into shared logs or telemetry
+        /// without sanitizing if your dataflow can carry secrets in
+        /// env vars.
         fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
