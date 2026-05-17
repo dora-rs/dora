@@ -446,8 +446,24 @@ fn close_outputs(
     output_sender: &mut Box<OutputSender>,
     output_ids: Vec<String>,
 ) -> ffi::DoraResult {
-    let ids: Vec<dora_node_api::dora_core::config::DataId> =
-        output_ids.into_iter().map(Into::into).collect();
+    // Parse via `FromStr` instead of `From<String>` so invalid IDs
+    // surface as a `DoraResult.error` rather than panicking across
+    // the cxx::bridge. `DataId::from(String)` is documented as
+    // panicking on invalid characters (see
+    // `libraries/message/src/id.rs:186`, `# Panics`); calling it on
+    // caller-supplied input would mean a typo in a C++ string literal
+    // aborts the whole node.
+    let mut ids = Vec::with_capacity(output_ids.len());
+    for id in output_ids {
+        match id.parse::<dora_node_api::dora_core::config::DataId>() {
+            Ok(parsed) => ids.push(parsed),
+            Err(e) => {
+                return ffi::DoraResult {
+                    error: format!("invalid output id '{id}': {e}"),
+                };
+            }
+        }
+    }
     match output_sender.0.close_outputs(ids) {
         Ok(()) => ffi::DoraResult {
             error: String::new(),
