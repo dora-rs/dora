@@ -243,9 +243,11 @@ async fn run(
             RuntimeEvent::Event(Event::Reload {
                 operator_id: Some(operator_id),
             }) => {
-                let _ = operator_channels
-                    .get(&operator_id)
-                    .unwrap()
+                let Some(operator_channel) = operator_channels.get(&operator_id) else {
+                    tracing::warn!("received Reload event for unknown operator `{operator_id}`");
+                    continue;
+                };
+                let _ = operator_channel
                     .send_async(Event::Reload {
                         operator_id: Some(operator_id),
                     })
