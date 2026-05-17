@@ -10,6 +10,22 @@ int main()
 
     auto dora_node = init_dora_node();
 
+    // Demonstrate runtime introspection: a node can ask the daemon
+    // what its own declared inputs/outputs look like, and what the
+    // full dataflow descriptor is, without re-parsing the yaml.
+    try
+    {
+        auto config = node_config_json(dora_node.send_output);
+        std::cout << "Node config: " << std::string(config) << std::endl;
+
+        auto descriptor = dataflow_descriptor_json(dora_node.send_output);
+        std::cout << "Dataflow descriptor length: " << descriptor.length() << std::endl;
+    }
+    catch (const rust::Error &e)
+    {
+        std::cerr << "Introspection failed: " << e.what() << std::endl;
+    }
+
     for (int i = 0; i < 20; i++)
     {
 

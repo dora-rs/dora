@@ -153,6 +153,27 @@ mod ffi {
             output_sender: &mut Box<OutputSender>,
             output_ids: Vec<String>,
         ) -> DoraResult;
+        /// Return this node's `NodeRunConfig` (inputs / outputs /
+        /// metadata block from the dataflow descriptor) serialized as
+        /// JSON. Useful for runtime introspection: the C++ node can
+        /// reason about its own declared interface without re-parsing
+        /// the dataflow yaml.
+        fn node_config_json(output_sender: &Box<OutputSender>) -> Result<String>;
+        /// Return the full `Descriptor` (the parsed dataflow yaml)
+        /// serialized as JSON. Useful for introspecting peer nodes,
+        /// listing all topics, etc. May fail if the daemon hasn't
+        /// delivered the descriptor yet.
+        ///
+        /// **Caution:** the returned JSON includes any `env` blocks
+        /// declared on nodes in the dataflow yaml. Inline literals
+        /// (`API_KEY: "..."`) and host-environment substitutions
+        /// (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse
+        /// time per `libraries/message/src/descriptor.rs`'s
+        /// `with_expand_envs`) both appear as plain strings in the
+        /// output. Don't pipe this into shared logs or telemetry
+        /// without sanitizing if your dataflow can carry secrets in
+        /// env vars.
+        fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> Result<String>;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -472,6 +493,18 @@ fn close_outputs(
             error: format!("{err:?}"),
         },
     }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn node_config_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    serde_json::to_string(output_sender.0.node_config())
+        .map_err(|e| eyre!("failed to serialize node config: {e}"))
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
+    let desc = output_sender.0.dataflow_descriptor()?;
+    serde_json::to_string(desc).map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
 }
 
 unsafe fn event_as_arrow_input(
