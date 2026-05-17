@@ -10,19 +10,6 @@ int main()
 
     auto dora_node = init_dora_node();
 
-    // Demonstrate the non-blocking helpers. We check `events_is_empty`
-    // FIRST so the subsequent `try_next_event` can't accidentally
-    // consume (and drop) an in-flight event from the daemon — the
-    // dataflow timer ticks every 300ms and if one happens to land
-    // before this code runs, popping it here would shorten the main
-    // receive loop's tick count by one.
-    if (events_is_empty(dora_node.events)) {
-        auto poll = try_next_event(dora_node.events);
-        if (event_type(poll) == DoraEventType::Empty) {
-            std::cout << "No event ready yet (non-blocking poll)" << std::endl;
-        }
-    }
-
     for (int i = 0; i < 20; i++)
     {
 

@@ -238,7 +238,15 @@ fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
 /// matching on a wrapped `Event::Error(msg.contains("timed out"))`
 /// would be fragile (#1409 review feedback).
 fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // `timeout_ms` arrives across the cxx::bridge as `u64`, so a C++
+    // caller can supply values that would panic the underlying
+    // `Instant + Duration` arithmetic on platforms with a bounded
+    // Instant range. Use `checked_add` and treat overflow as
+    // "effectively no deadline" -- keep polling indefinitely until
+    // an event arrives or the stream closes. Never returns
+    // `TimedOut` in the overflow case, matching the caller's
+    // intent ("wait as long as needed").
+    let deadline = Instant::now().checked_add(Duration::from_millis(timeout_ms));
     // 1 ms keeps the busy-wait cost negligible while bounding overshoot
     // of the caller-supplied deadline to ~1 ms in the worst case.
     let poll_interval = Duration::from_millis(1);
@@ -246,13 +254,16 @@ fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEven
         match events.0.try_recv() {
             Ok(event) => return Box::new(DoraEvent(EventOrReason::Event(event))),
             Err(TryRecvError::Closed) => return Box::new(DoraEvent(EventOrReason::Closed)),
-            Err(TryRecvError::Empty) => {
-                let now = Instant::now();
-                if now >= deadline {
-                    return Box::new(DoraEvent(EventOrReason::TimedOut));
+            Err(TryRecvError::Empty) => match deadline {
+                Some(d) => {
+                    let now = Instant::now();
+                    if now >= d {
+                        return Box::new(DoraEvent(EventOrReason::TimedOut));
+                    }
+                    std::thread::sleep(std::cmp::min(d - now, poll_interval));
                 }
-                std::thread::sleep(std::cmp::min(deadline - now, poll_interval));
-            }
+                None => std::thread::sleep(poll_interval),
+            },
         }
     }
 }
