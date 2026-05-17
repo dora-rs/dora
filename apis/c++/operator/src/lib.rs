@@ -2,7 +2,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{
-    self, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
+    self, register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
 };
 use ffi::DoraSendOutputResult;
 
@@ -37,6 +37,17 @@ mod ffi {
             data: &[u8],
             output_sender: &mut OutputSender,
         ) -> DoraOnInputResult;
+
+        /// Called when an upstream input stream closes (the daemon
+        /// delivers `Event::InputClosed { id }`). Previously these
+        /// events were silently dropped on the C++ operator side via
+        /// the catch-all `_ => Continue` arm.
+        fn on_input_closed(op: Pin<&mut Operator>, id: &str) -> DoraOnInputResult;
+
+        /// Called on graceful shutdown (the daemon delivers
+        /// `Event::Stop(_)`). Previously silently dropped like
+        /// `InputClosed`.
+        fn on_stop(op: Pin<&mut Operator>) -> DoraOnInputResult;
     }
 }
 
@@ -93,10 +104,34 @@ impl DoraOperator for OperatorWrapper {
                     Err(result.error)
                 }
             }
-            _ => {
-                // ignore other events for now
-                Ok(DoraStatus::Continue)
+            Event::InputClosed { id } => {
+                let operator = self.operator.as_mut().unwrap();
+                let result = ffi::on_input_closed(operator, id);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
             }
+            Event::Stop => {
+                let operator = self.operator.as_mut().unwrap();
+                let result = ffi::on_stop(operator);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
+            }
+            // Other events (NodeFailed, Reload, Error, …) currently
+            // have no operator-side callback. Operators that need to
+            // react to them should subscribe via the node API instead.
+            _ => Ok(DoraStatus::Continue),
         }
     }
 }
