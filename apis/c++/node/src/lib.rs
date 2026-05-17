@@ -9,12 +9,13 @@ use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
 use dora_node_api::{
-    self, Event, EventStream, Metadata as DoraMetadata,
-    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
+    self,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
+    Event, EventStream, Metadata as DoraMetadata, MetadataParameters as DoraMetadataParameters,
+    Parameter as DoraParameter, TryRecvError,
 };
-use eyre::{Result as EyreResult, bail, eyre};
+use eyre::{bail, eyre, Result as EyreResult};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
@@ -24,7 +25,7 @@ pub use prelude::*;
 pub mod prelude {
     pub use dora_ros2_bridge::prelude::*;
 }
-use futures_lite::{Stream, StreamExt, stream};
+use futures_lite::{stream, Stream, StreamExt};
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
@@ -49,6 +50,15 @@ mod ffi {
         /// `next_event_timeout` returned without an event because the
         /// caller-supplied deadline elapsed first.
         Timeout,
+        /// An upstream node has failed. Use `event_as_node_failed` to
+        /// extract the failed node id, the error message, and the list
+        /// of downstream inputs that will stop receiving data.
+        NodeFailed,
+        /// Hot-reload notification for an operator. Operator id is
+        /// available via the daemon's reload protocol; this variant
+        /// exists so C++ nodes can react to reloads (e.g. flushing
+        /// caches) rather than treating them as `Unknown`.
+        Reload,
     }
 
     struct DoraInput {
@@ -58,6 +68,17 @@ mod ffi {
 
     struct DoraResult {
         error: String,
+    }
+
+    /// Payload of a `DoraEventType::NodeFailed` event.
+    struct DoraNodeFailed {
+        /// Inputs on this node that will stop receiving data because
+        /// the upstream node failed.
+        affected_input_ids: Vec<String>,
+        /// Human-readable error message from the failed node.
+        error: String,
+        /// Id of the node that failed.
+        source_node_id: String,
     }
 
     struct ArrowInputInfo {
@@ -123,6 +144,15 @@ mod ffi {
         fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
+        /// Extract the failure payload from a `NodeFailed` event.
+        fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        /// Selectively close one or more of this node's outputs without
+        /// shutting the whole node down. Subsequent downstream
+        /// subscribers see the corresponding `InputClosed` event.
+        fn close_outputs(
+            output_sender: &mut Box<OutputSender>,
+            output_ids: Vec<String>,
+        ) -> DoraResult;
         fn send_output(
             output_sender: &mut Box<OutputSender>,
             id: String,
@@ -359,6 +389,8 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,
+            Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
+            Event::Reload { .. } => ffi::DoraEventType::Reload,
             _ => ffi::DoraEventType::Unknown,
         },
         EventOrReason::Closed => ffi::DoraEventType::AllInputsClosed,
@@ -389,6 +421,57 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
         id: id.into(),
         data,
     })
+}
+
+fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFailed> {
+    let EventOrReason::Event(Event::NodeFailed {
+        affected_input_ids,
+        error,
+        source_node_id,
+    }) = event.0
+    else {
+        bail!("not a NodeFailed event");
+    };
+    Ok(ffi::DoraNodeFailed {
+        affected_input_ids: affected_input_ids
+            .into_iter()
+            .map(|id| id.to_string())
+            .collect(),
+        error,
+        source_node_id: source_node_id.to_string(),
+    })
+}
+
+fn close_outputs(
+    output_sender: &mut Box<OutputSender>,
+    output_ids: Vec<String>,
+) -> ffi::DoraResult {
+    // Parse via `FromStr` instead of `From<String>` so invalid IDs
+    // surface as a `DoraResult.error` rather than panicking across
+    // the cxx::bridge. `DataId::from(String)` is documented as
+    // panicking on invalid characters (see
+    // `libraries/message/src/id.rs:186`, `# Panics`); calling it on
+    // caller-supplied input would mean a typo in a C++ string literal
+    // aborts the whole node.
+    let mut ids = Vec::with_capacity(output_ids.len());
+    for id in output_ids {
+        match id.parse::<dora_node_api::dora_core::config::DataId>() {
+            Ok(parsed) => ids.push(parsed),
+            Err(e) => {
+                return ffi::DoraResult {
+                    error: format!("invalid output id '{id}': {e}"),
+                };
+            }
+        }
+    }
+    match output_sender.0.close_outputs(ids) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(err) => ffi::DoraResult {
+            error: format!("{err:?}"),
+        },
+    }
 }
 
 unsafe fn event_as_arrow_input(

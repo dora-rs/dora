@@ -51,9 +51,44 @@ rust::Box<DoraEvent> next_event(rust::Box<Events>& events);
 
 Both forms block until the next event arrives and return an owned `DoraEvent`.
 
+### Non-blocking and timed receive
+
+For nodes that need to do work between events, or react to deadlines, the `Events` stream also offers non-blocking and timed variants of `next_event()`:
+
+```cpp
+// Block up to `timeout_ms` milliseconds for the next event. Returns
+// an event with `event_type() == Timeout` if the deadline elapses
+// before one arrives, or `AllInputsClosed` if the stream closed.
+rust::Box<DoraEvent> next_event_timeout(rust::Box<Events>& events, uint64_t timeout_ms);
+
+// Non-blocking poll. Returns `event_type() == Empty` if no event is
+// immediately available, or `AllInputsClosed` if the stream is closed.
+rust::Box<DoraEvent> try_next_event(rust::Box<Events>& events);
+
+// Hint: true when the event queue is currently empty. Treat as
+// advisory only -- the daemon can produce a new event between the
+// check and a subsequent receive.
+bool events_is_empty(const rust::Box<Events>& events);
+```
+
+For draining buffered events into a snapshot (useful when you want to process a batch all at once without racing the daemon):
+
+```cpp
+// Take a snapshot of all currently-buffered events. Subsequent
+// `next_event` / `try_next_event` calls only see events that arrive
+// after this point.
+rust::Box<DrainedEvents> drain_events(rust::Box<Events>& events);
+
+size_t drained_events_len(const rust::Box<DrainedEvents>& drained);
+
+// Pop the next event from a drained snapshot. Returns
+// `event_type() == Empty` once the snapshot is exhausted.
+rust::Box<DoraEvent> drained_events_next(rust::Box<DrainedEvents>& drained);
+```
+
 ### DoraEvent
 
-Opaque Rust type. Inspect its kind with `event_type()`, then downcast with `event_as_input()` or `event_as_arrow_input()`.
+Opaque Rust type. Inspect its kind with `event_type()`, then downcast with one of the variant extractors below.
 
 ```cpp
 // Determine the event kind.
@@ -75,6 +110,9 @@ ArrowInputInfo event_as_arrow_input_with_info(
     rust::Box<DoraEvent> event,
     uint8_t* out_array,
     uint8_t* out_schema);
+
+// Downcast to a NodeFailed payload. Throws if the event is not NodeFailed.
+DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
 ```
 
 ### DoraEventType
@@ -87,8 +125,14 @@ enum class DoraEventType : uint8_t {
     Error,            // an error occurred
     Unknown,          // unrecognized event variant
     AllInputsClosed,  // all inputs closed (stream ended)
+    Empty,            // try_next_event / drained_events_next found no event ready
+    Timeout,          // next_event_timeout deadline elapsed without an event
+    NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
+    Reload,           // hot-reload notification for an operator
 };
 ```
+
+`Empty` is distinct from `Timeout`: `Empty` means "no event available right now" (the caller did not request a timeout); `Timeout` means "the caller-supplied deadline elapsed before an event arrived". A non-blocking poll never returns `Timeout`; a timed receive returns either `Timeout` or `AllInputsClosed` if no event arrived in time.
 
 ### DoraInput
 
@@ -99,6 +143,29 @@ struct DoraInput {
     rust::String     id;    // input identifier (e.g. "tick", "image")
     rust::Vec<uint8_t> data;  // raw payload bytes
 };
+```
+
+### DoraNodeFailed
+
+Returned by `event_as_node_failed()`. Carries the failure information from an upstream node that exited unexpectedly. Use it to log the cause, flush downstream state, or trigger graceful shutdown.
+
+```cpp
+struct DoraNodeFailed {
+    rust::Vec<rust::String> affected_input_ids;  // inputs on this node that will stop receiving data
+    rust::String            error;               // human-readable error message from the failed node
+    rust::String            source_node_id;      // id of the node that failed
+};
+```
+
+Example:
+
+```cpp
+auto event = next_event(dora_node.events);
+if (event_type(event) == DoraEventType::NodeFailed) {
+    auto failed = event_as_node_failed(std::move(event));
+    std::cerr << "Upstream node `" << std::string(failed.source_node_id)
+              << "` failed: " << std::string(failed.error) << std::endl;
+}
 ```
 
 ### ArrowInputInfo
@@ -169,6 +236,18 @@ DoraResult send_arrow_output(
     uint8_t* schema_ptr,
     rust::Box<Metadata> metadata);
 ```
+
+#### close_outputs
+
+Selectively close one or more of this node's outputs without shutting the whole node down. Downstream subscribers see the corresponding `InputClosed` event for each closed output.
+
+```cpp
+DoraResult close_outputs(
+    rust::Box<OutputSender>& sender,
+    rust::Vec<rust::String> output_ids);
+```
+
+`output_ids` are validated as `DataId`s; an invalid id (e.g. one containing characters not allowed by the data-id grammar) returns a `DoraResult` whose `error` names the offending id and the underlying validation message, instead of aborting the process.
 
 #### log_message
 
