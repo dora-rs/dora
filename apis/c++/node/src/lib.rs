@@ -1,11 +1,16 @@
-use std::{any::Any, collections::BTreeMap, vec};
+use std::{
+    any::Any,
+    collections::{BTreeMap, VecDeque},
+    time::{Duration, Instant},
+    vec,
+};
 
 use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
-    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter,
+    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
 };
@@ -36,6 +41,14 @@ mod ffi {
         Error,
         Unknown,
         AllInputsClosed,
+        /// Non-blocking poll (`try_next_event`) found no event ready,
+        /// and the same value is returned by `drained_events_next` once
+        /// a drained queue is exhausted. Distinct from `Timeout` —
+        /// `Empty` is returned even when no timeout was set.
+        Empty,
+        /// `next_event_timeout` returned without an event because the
+        /// caller-supplied deadline elapsed first.
+        Timeout,
     }
 
     struct DoraInput {
@@ -76,6 +89,7 @@ mod ffi {
         type Events;
         type OutputSender;
         type DoraEvent;
+        type DrainedEvents;
         type MergedEvents;
         type MergedDoraEvent;
         type Metadata;
@@ -86,6 +100,27 @@ mod ffi {
         fn empty_combined_events() -> CombinedEvents;
         fn next(self: &mut Events) -> Box<DoraEvent>;
         fn next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
+        /// Block up to `timeout_ms` milliseconds for the next event.
+        /// Returns an event with `event_type == Timeout` if the deadline
+        /// elapses before one arrives, or `AllInputsClosed` if the
+        /// stream closed first.
+        fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent>;
+        /// Non-blocking poll. Returns an event with `event_type ==
+        /// Empty` if no event is immediately available, or
+        /// `AllInputsClosed` if the stream is closed.
+        fn try_next_event(events: &mut Box<Events>) -> Box<DoraEvent>;
+        /// True when the event queue is currently empty (no events
+        /// buffered). Note this can race against the daemon producing a
+        /// new event; treat it as a hint, not a guarantee.
+        fn events_is_empty(events: &Box<Events>) -> bool;
+        /// Take a snapshot of all currently-buffered events. Subsequent
+        /// `next_event` / `try_next_event` calls see only events that
+        /// arrive after this point.
+        fn drain_events(events: &mut Box<Events>) -> Box<DrainedEvents>;
+        fn drained_events_len(drained: &Box<DrainedEvents>) -> usize;
+        /// Pop the next event from a drained snapshot. Returns
+        /// `event_type == Empty` once the snapshot is exhausted.
+        fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent>;
         fn event_type(event: &Box<DoraEvent>) -> DoraEventType;
         fn event_as_input(event: Box<DoraEvent>) -> Result<DoraInput>;
         fn send_output(
@@ -185,12 +220,83 @@ pub struct Events(EventStream);
 
 impl Events {
     fn next(&mut self) -> Box<DoraEvent> {
-        Box::new(DoraEvent(self.0.recv()))
+        Box::new(DoraEvent(match self.0.recv() {
+            Some(e) => EventOrReason::Event(e),
+            None => EventOrReason::Closed,
+        }))
     }
 }
 
 fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
     events.next()
+}
+
+/// Block up to `timeout_ms` for the next event. Polls `try_recv` with
+/// an `Instant`-based deadline (and a short sleep between polls) so we
+/// can distinguish "timed out" from "stream closed" structurally —
+/// `EventStream::recv_timeout` returns `None` for both cases and
+/// matching on a wrapped `Event::Error(msg.contains("timed out"))`
+/// would be fragile (#1409 review feedback).
+fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // 1 ms keeps the busy-wait cost negligible while bounding overshoot
+    // of the caller-supplied deadline to ~1 ms in the worst case.
+    let poll_interval = Duration::from_millis(1);
+    loop {
+        match events.0.try_recv() {
+            Ok(event) => return Box::new(DoraEvent(EventOrReason::Event(event))),
+            Err(TryRecvError::Closed) => return Box::new(DoraEvent(EventOrReason::Closed)),
+            Err(TryRecvError::Empty) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    return Box::new(DoraEvent(EventOrReason::TimedOut));
+                }
+                std::thread::sleep(std::cmp::min(deadline - now, poll_interval));
+            }
+        }
+    }
+}
+
+/// Non-blocking single poll. Returns `EventOrReason::Empty` (surfaced
+/// as `DoraEventType::Empty` on the C++ side) when no event is
+/// available; distinct from a real timeout because no timeout was
+/// requested.
+fn try_next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
+    Box::new(DoraEvent(match events.0.try_recv() {
+        Ok(event) => EventOrReason::Event(event),
+        Err(TryRecvError::Empty) => EventOrReason::Empty,
+        Err(TryRecvError::Closed) => EventOrReason::Closed,
+    }))
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn events_is_empty(events: &Box<Events>) -> bool {
+    events.0.is_empty()
+}
+
+/// Snapshot of buffered events at a point in time. Subsequent
+/// receives on the `Events` stream see only events that arrive after
+/// this snapshot.
+pub struct DrainedEvents(VecDeque<Event>);
+
+fn drain_events(events: &mut Box<Events>) -> Box<DrainedEvents> {
+    let drained = events.0.drain().unwrap_or_default();
+    Box::new(DrainedEvents(drained.into()))
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn drained_events_len(drained: &Box<DrainedEvents>) -> usize {
+    drained.0.len()
+}
+
+fn drained_events_next(drained: &mut Box<DrainedEvents>) -> Box<DoraEvent> {
+    Box::new(DoraEvent(match drained.0.pop_front() {
+        Some(e) => EventOrReason::Event(e),
+        // Drained snapshots cannot transition from non-empty to closed
+        // (the snapshot is frozen at `drain_events` time), so an
+        // exhausted drain is `Empty`, not `Closed`.
+        None => EventOrReason::Empty,
+    }))
 }
 
 fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
@@ -212,23 +318,46 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     }
 }
 
-pub struct DoraEvent(Option<Event>);
+pub struct DoraEvent(EventOrReason);
+
+/// Internal representation that lets `try_next_event` /
+/// `next_event_timeout` / `drained_events_next` report "no event"
+/// outcomes to C++ without overloading `Option<Event>` (#1409 review).
+//
+// `Event` is much larger than the unit variants (Closed/Empty/TimedOut),
+// but this enum is always wrapped in `Box<DoraEvent>` at the FFI boundary
+// so the size delta isn't paid per-stack-slot. Boxing the `Event` variant
+// would add a second allocation on every event delivery for no benefit.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum EventOrReason {
+    Event(Event),
+    /// Source stream closed; surfaces as `DoraEventType::AllInputsClosed`.
+    Closed,
+    /// Non-blocking poll found no event ready, or a drained snapshot
+    /// was exhausted. Surfaces as `DoraEventType::Empty`.
+    Empty,
+    /// `next_event_timeout` deadline elapsed before an event arrived.
+    /// Surfaces as `DoraEventType::Timeout`.
+    TimedOut,
+}
 
 fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     match &event.0 {
-        Some(event) => match event {
+        EventOrReason::Event(event) => match event {
             Event::Stop(_) => ffi::DoraEventType::Stop,
             Event::Input { .. } => ffi::DoraEventType::Input,
             Event::InputClosed { .. } => ffi::DoraEventType::InputClosed,
             Event::Error(_) => ffi::DoraEventType::Error,
             _ => ffi::DoraEventType::Unknown,
         },
-        None => ffi::DoraEventType::AllInputsClosed,
+        EventOrReason::Closed => ffi::DoraEventType::AllInputsClosed,
+        EventOrReason::Empty => ffi::DoraEventType::Empty,
+        EventOrReason::TimedOut => ffi::DoraEventType::Timeout,
     }
 }
 
 fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
-    let Some(Event::Input { id, metadata, data }) = event.0 else {
+    let EventOrReason::Event(Event::Input { id, metadata, data }) = event.0 else {
         bail!("not an input event");
     };
     let data = match metadata.type_info.data_type {
@@ -260,7 +389,7 @@ unsafe fn event_as_arrow_input(
     let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
     let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
 
-    let Some(Event::Input {
+    let EventOrReason::Event(Event::Input {
         id: _,
         metadata: _,
         data,
@@ -552,7 +681,7 @@ unsafe fn event_as_arrow_input_with_info(
     let out_array = out_array as *mut arrow::ffi::FFI_ArrowArray;
     let out_schema = out_schema as *mut arrow::ffi::FFI_ArrowSchema;
 
-    let Some(Event::Input { id, metadata, data }) = event.0 else {
+    let EventOrReason::Event(Event::Input { id, metadata, data }) = event.0 else {
         return ffi::ArrowInputInfo {
             id: String::new(),
             metadata: Box::new(Metadata::empty()),
@@ -765,7 +894,11 @@ impl ffi::CombinedEvent {
 
 fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
     match event.event.0 {
-        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent(Some(event)))),
-        _ => eyre::bail!("not an external event"),
+        Some(MergedEvent::Dora(event)) => Ok(Box::new(DoraEvent(EventOrReason::Event(event)))),
+        // None means the merged stream closed; pass that through as Closed
+        // so C++ sees `DoraEventType::AllInputsClosed` rather than a
+        // bail-out error.
+        None => Ok(Box::new(DoraEvent(EventOrReason::Closed))),
+        _ => eyre::bail!("not a dora event"),
     }
 }

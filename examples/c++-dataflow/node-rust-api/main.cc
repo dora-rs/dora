@@ -10,6 +10,16 @@ int main()
 
     auto dora_node = init_dora_node();
 
+    // Demonstrate try_next_event (non-blocking poll). Before the main
+    // receive loop starts pulling events, the event queue is typically
+    // empty so the poll should return an `Empty` marker rather than
+    // blocking. `Empty` is distinct from `Timeout` (no timeout was set)
+    // and from `AllInputsClosed` (stream still open).
+    auto poll = try_next_event(dora_node.events);
+    if (event_type(poll) == DoraEventType::Empty) {
+        std::cout << "No event ready yet (non-blocking poll)" << std::endl;
+    }
+
     for (int i = 0; i < 20; i++)
     {
 
