@@ -418,11 +418,13 @@ ROS2 subscriptions add their own events to the merged stream. Use `subscription-
 
 ## Operator API (`dora-operator-api-cxx`)
 
-Operators are shared libraries loaded by the Dora runtime. The C++ side implements two functions that the CXX bridge calls into.
+Operators are shared libraries loaded by the Dora runtime. The C++ side implements four functions that the CXX bridge calls into.
+
+> **Breaking change vs. earlier dora releases:** the operator API used to require only `new_operator` + `on_input`; `Event::InputClosed` and `Event::Stop` were silently dropped on the C++ side. As of this release the bridge calls `on_input_closed` and `on_stop` instead, so existing C++ operators must add these two functions (a no-op stub returning `{ rust::String(), false }` is sufficient to restore the pre-change behavior). See [#1849](https://github.com/dora-rs/dora/pull/1849) for the rationale.
 
 ### Required C++ interface
 
-You must provide a header `operator.h` and an implementation file. The header declares an `Operator` class and two free functions:
+You must provide a header `operator.h` and an implementation file. The header declares an `Operator` class and four free functions:
 
 ```cpp
 // operator.h
@@ -443,10 +445,17 @@ DoraOnInputResult on_input(
     rust::Str id,
     rust::Slice<const uint8_t> data,
     OutputSender& output_sender);
+
+DoraOnInputResult on_input_closed(Operator& op, rust::Str id);
+DoraOnInputResult on_stop(Operator& op);
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
 - `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or set `result.stop = true` to request shutdown.
+- `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, etc.
+
+Default implementations that simply log + return success are sufficient for operators that don't need to react to these events. See `examples/c++-dataflow/operator-rust-api/operator.cc` for a minimal reference.
 
 ### OutputSender (operator)
 

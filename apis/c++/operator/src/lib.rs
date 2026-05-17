@@ -2,7 +2,7 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_operator_api::{
-    self, register_operator, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow,
+    self, DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow, register_operator,
 };
 use ffi::DoraSendOutputResult;
 
@@ -45,7 +45,9 @@ mod ffi {
         fn on_input_closed(op: Pin<&mut Operator>, id: &str) -> DoraOnInputResult;
 
         /// Called on graceful shutdown (the daemon delivers
-        /// `Event::Stop(_)`). Previously silently dropped like
+        /// `Event::Stop` — a unit variant on `dora_operator_api::Event`,
+        /// distinct from `dora_node_api::Event::Stop(StopCause)` which
+        /// carries a payload). Previously silently dropped like
         /// `InputClosed`.
         fn on_stop(op: Pin<&mut Operator>) -> DoraOnInputResult;
     }
