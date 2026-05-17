@@ -41,15 +41,25 @@ mod ffi {
         /// Called when an upstream input stream closes (the daemon
         /// delivers `Event::InputClosed { id }`). Previously these
         /// events were silently dropped on the C++ operator side via
-        /// the catch-all `_ => Continue` arm.
-        fn on_input_closed(op: Pin<&mut Operator>, id: &str) -> DoraOnInputResult;
+        /// the catch-all `_ => Continue` arm. The `output_sender` is
+        /// the same per-event sender supplied to `on_input`, so the
+        /// operator can emit a final/status output (e.g. a "drain
+        /// complete" marker for a downstream consumer) in response to
+        /// the input close.
+        fn on_input_closed(
+            op: Pin<&mut Operator>,
+            id: &str,
+            output_sender: &mut OutputSender,
+        ) -> DoraOnInputResult;
 
         /// Called on graceful shutdown (the daemon delivers
         /// `Event::Stop` — a unit variant on `dora_operator_api::Event`,
         /// distinct from `dora_node_api::Event::Stop(StopCause)` which
         /// carries a payload). Previously silently dropped like
-        /// `InputClosed`.
-        fn on_stop(op: Pin<&mut Operator>) -> DoraOnInputResult;
+        /// `InputClosed`. The `output_sender` is provided so the
+        /// operator can emit a final output (e.g. flush buffered
+        /// state, send a "shutdown summary") before returning.
+        fn on_stop(op: Pin<&mut Operator>, output_sender: &mut OutputSender) -> DoraOnInputResult;
     }
 }
 
@@ -108,7 +118,8 @@ impl DoraOperator for OperatorWrapper {
             }
             Event::InputClosed { id } => {
                 let operator = self.operator.as_mut().unwrap();
-                let result = ffi::on_input_closed(operator, id);
+                let mut output_sender = OutputSender(output_sender);
+                let result = ffi::on_input_closed(operator, id, &mut output_sender);
                 if result.error.is_empty() {
                     Ok(match result.stop {
                         false => DoraStatus::Continue,
@@ -120,7 +131,8 @@ impl DoraOperator for OperatorWrapper {
             }
             Event::Stop => {
                 let operator = self.operator.as_mut().unwrap();
-                let result = ffi::on_stop(operator);
+                let mut output_sender = OutputSender(output_sender);
+                let result = ffi::on_stop(operator, &mut output_sender);
                 if result.error.is_empty() {
                     Ok(match result.stop {
                         false => DoraStatus::Continue,

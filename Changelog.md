@@ -4,7 +4,12 @@
 
 ### Breaking
 
-- **`dora-operator-api-cxx` operator interface gains `on_input_closed` and `on_stop`**: previously the C++ operator API silently dropped `Event::InputClosed { id }` and `Event::Stop` via a catch-all `_ => Continue` arm — operators had no way to react to upstream input closure or graceful shutdown. The cxx::bridge now declares two additional callbacks (`on_input_closed`, `on_stop`) that the C++ side must implement; without them, downstream C++ operators that build against `dora-operator-api-cxx` will fail to link. To restore pre-change behavior in an existing operator, add stubs that return `{ rust::String(), false }`. See [#1849](https://github.com/dora-rs/dora/pull/1849) (rescue of [#1414](https://github.com/dora-rs/dora/pull/1414)).
+- **`dora-operator-api-cxx` operator interface gains `on_input_closed` and `on_stop`**: previously the C++ operator API silently dropped `Event::InputClosed { id }` and `Event::Stop` via a catch-all `_ => Continue` arm — operators had no way to react to upstream input closure or graceful shutdown. The cxx::bridge now declares two additional callbacks that the C++ side must implement:
+  ```cpp
+  DoraOnInputResult on_input_closed(Operator& op, rust::Str id, OutputSender& output_sender);
+  DoraOnInputResult on_stop(Operator& op, OutputSender& output_sender);
+  ```
+  Both receive the same per-event `OutputSender` as `on_input`, so operators can emit a final/status output in response to the event (e.g. flush buffered state on stop, send a "drain complete" marker on input close). Without these symbols, downstream C++ operators that build against `dora-operator-api-cxx` will fail to link. To restore pre-change behavior in an existing operator, add stubs that ignore `output_sender` and return `{ rust::String(), false }`. See [#1849](https://github.com/dora-rs/dora/pull/1849) (rescue of [#1414](https://github.com/dora-rs/dora/pull/1414)).
 
 ### Added
 

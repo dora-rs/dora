@@ -345,16 +345,16 @@ DoraOnInputResult on_input(
     rust::Slice<const uint8_t> data,
     OutputSender& output_sender);
 
-DoraOnInputResult on_input_closed(Operator& op, rust::Str id);
-DoraOnInputResult on_stop(Operator& op);
+DoraOnInputResult on_input_closed(Operator& op, rust::Str id, OutputSender& output_sender);
+DoraOnInputResult on_stop(Operator& op, OutputSender& output_sender);
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
 - `on_input()` -- called for every input event; process data and optionally send outputs.
-- `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or set `result.stop = true` to request shutdown.
-- `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, etc.
+- `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
+- `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
 
-Default implementations that simply log + return success are sufficient for operators that don't need to react to these events. See `examples/c++-dataflow/operator-rust-api/operator.cc` for a minimal reference.
+Default implementations that simply log + return success are sufficient for operators that don't need to react to these events. The `output_sender` argument is provided so that operators which want to emit final/status outputs on close or stop can do so symmetrically to `on_input`. See `examples/c++-dataflow/operator-rust-api/operator.cc` for a minimal reference.
 
 ### OutputSender (operator)
 
