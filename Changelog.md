@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Breaking
+
+- **`dora-operator-api-cxx` operator interface gains `on_input_closed` and `on_stop`**: previously the C++ operator API silently dropped `Event::InputClosed { id }` and `Event::Stop` via a catch-all `_ => Continue` arm — operators had no way to react to upstream input closure or graceful shutdown. The cxx::bridge now declares two additional callbacks that the C++ side must implement:
+  ```cpp
+  DoraOnInputResult on_input_closed(Operator& op, rust::Str id, OutputSender& output_sender);
+  DoraOnInputResult on_stop(Operator& op, OutputSender& output_sender);
+  ```
+  Both receive the same per-event `OutputSender` as `on_input`, so operators can emit a final/status output in response to the event (e.g. flush buffered state on stop, send a "drain complete" marker on input close). Without these symbols, downstream C++ operators that build against `dora-operator-api-cxx` will fail to link. To restore pre-change behavior in an existing operator, add stubs that ignore `output_sender` and return `{ rust::String(), false }`. See [#1849](https://github.com/dora-rs/dora/pull/1849) (rescue of [#1414](https://github.com/dora-rs/dora/pull/1414)).
+
 ### Added
 
 - **`dora clean` subcommand**: removes fully-completed dataflows from the coordinator's state without restarting the coordinator. Candidates are enumerated from BOTH the in-memory `dataflow_results` map and the persisted store, so a restarted coordinator can still reap historical Succeeded/Failed rows that exist only on disk (the recovery loop intentionally does not reload completed dataflows into memory, so without this they would otherwise sit in redb forever). The coordinator deletes each cleaned dataflow from the persisted store first, then drops it from in-memory state; the redb deletion cascades to every `dora param` row owned by the cleaned dataflow so the on-disk state file doesn't grow unboundedly. Multi-daemon dataflows still finishing (some daemons reported, others haven't) are intentionally skipped so their final status is computed correctly when the last daemon completes. `finished_builds` is intentionally NOT touched (would break concurrent `dora build` calls with "unknown build id" errors). When the persisted-store delete fails for one or more candidates, the CLI prints a `warning:` line per failure to stderr and exits non-zero — those dataflows keep their in-memory entries so a later `dora clean` can retry, and the partial-outage state stays visible to scripted callers instead of being silently logged. If the persisted-store enumeration itself fails (e.g. an unreadable redb file), the coordinator hard-fails the request and leaves all in-memory state untouched, so the CLI never reports a misleading "nothing to clean" while historical rows are still on disk. Useful for dev workflows that accumulate dataflow history and for long-lived coordinators trimming redb state. Cleaned dataflows are no longer queryable via `dora logs <uuid>` or `dora param`. Rescue of [#1366](https://github.com/dora-rs/dora/pull/1366) (reimplemented against the current coordinator since the original PR targeted a control plane that was rewritten).
