@@ -423,6 +423,15 @@ impl CachedResult {
         matches!(self, CachedResult::Pending { .. })
     }
 
+    /// Returns `true` if a terminally-failed result has already been cached.
+    /// Used by other handlers (auto-recovery, late `DataflowSpawnResult`
+    /// arms) to skip operations that would resurrect or muddle a dataflow
+    /// the spawn-timeout watchdog (or any other terminal-failure path)
+    /// has already marked as failed.
+    pub(crate) fn is_terminal_error(&self) -> bool {
+        matches!(self, CachedResult::Cached { result: Err(_) })
+    }
+
     fn send_result_to(
         result: &eyre::Result<ControlRequestReply>,
         sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,

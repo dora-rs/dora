@@ -2142,17 +2142,13 @@ async fn start_inner(
                             );
                         }
                         Err(err) => {
-                            tracing::warn!("error while spawning dataflow `{dataflow_id}`");
-                            // Persist: spawn failed
-                            if let Err(e) = dataflow
-                                .make_record(StoreDataflowStatus::Failed {
-                                    error: format!("spawn failed: {err}"),
-                                })
-                                .and_then(|r| store.put_dataflow(&r))
-                            {
-                                tracing::warn!("failed to persist dataflow spawn failure: {e}");
-                            }
-                            dataflow.spawn_result.set_result(Err(err));
+                            handle_spawn_result_err(
+                                dataflow,
+                                dataflow_id,
+                                &daemon_id,
+                                err,
+                                store.as_ref(),
+                            );
                         }
                     };
                 }
@@ -2239,6 +2235,17 @@ async fn start_inner(
                     }
                     // Skip if a spawn is already in-flight for this daemon
                     if df.pending_spawn_results.contains(&daemon_id) {
+                        continue;
+                    }
+                    // Skip dataflows that the spawn-timeout watchdog (or
+                    // any other terminal-failure path) has already marked
+                    // as failed. Without this, a daemon whose
+                    // `DaemonStatusReport` lacks a watchdog-failed
+                    // dataflow would have the dataflow re-spawned here,
+                    // resurrecting a terminally-failed dataflow in memory
+                    // even though `spawn_result` is `Cached(Err)` and the
+                    // store says Failed. See PR #1854 round-4 Finding 1.
+                    if df.spawn_result.is_terminal_error() {
                         continue;
                     }
                     // Collect nodes assigned to this daemon
@@ -2474,6 +2481,44 @@ fn handle_spawn_result_ok(
             tracing::warn!("failed to persist dataflow running: {e}");
         }
     }
+}
+
+/// Handle the failure arm of `Event::DataflowSpawnResult`.
+///
+/// Symmetric with [`handle_spawn_result_ok`]. The late-arrival guard
+/// prevents a late daemon `Err` from overwriting the watchdog's (or any
+/// other terminal-failure path's) more informative store record with a
+/// generic `"spawn failed: <daemon-error>"` message — same data-integrity
+/// concern as the Ok guard, just with cosmetic-only consequences instead
+/// of resurrection. Also avoids bumping `store_generation` for no
+/// observable state change.
+fn handle_spawn_result_err(
+    dataflow: &mut RunningDataflow,
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    err: eyre::Report,
+    store: &dyn CoordinatorStore,
+) {
+    if !dataflow.spawn_result.is_pending() {
+        tracing::warn!(
+            dataflow = %dataflow_id,
+            daemon = %daemon_id,
+            "ignoring late failed spawn_result on a dataflow already \
+             terminally failed: {err:?}",
+        );
+        return;
+    }
+
+    tracing::warn!("error while spawning dataflow `{dataflow_id}`");
+    if let Err(e) = dataflow
+        .make_record(StoreDataflowStatus::Failed {
+            error: format!("spawn failed: {err}"),
+        })
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!("failed to persist dataflow spawn failure: {e}");
+    }
+    dataflow.spawn_result.set_result(Err(err));
 }
 
 /// Fire-and-forget compensating rollback used by [`check_spawn_timeouts`].
@@ -4794,5 +4839,143 @@ mod tests {
             "happy-path success must persist Running, got: {:?}",
             record.status,
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Round-4 findings (PR #1854): terminal-failure paths must be
+    // respected by every handler that writes to the affected state.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn cached_result_is_terminal_error_distinguishes_states() {
+        let mut r = CachedResult::default();
+        assert!(!r.is_terminal_error(), "fresh Pending must not be terminal");
+
+        // Cached(Ok) is terminal but NOT an error.
+        r.set_result(Ok(ControlRequestReply::DataflowSpawned {
+            uuid: DataflowId::from(Uuid::new_v4()),
+        }));
+        assert!(
+            !r.is_terminal_error(),
+            "Cached(Ok) must not match is_terminal_error()"
+        );
+
+        // Cached(Err) is the only state we want flagged.
+        let mut r = CachedResult::default();
+        r.set_result(Err(eyre!("spawn timed out")));
+        assert!(
+            r.is_terminal_error(),
+            "Cached(Err) must match is_terminal_error()"
+        );
+    }
+
+    /// Round-4 Finding 2: a late-arriving daemon `Err` after the watchdog
+    /// (or any other terminal-failure path) has already cached an `Err`
+    /// must NOT overwrite the existing store record. Drives
+    /// `handle_spawn_result_err` directly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn late_failed_spawn_result_does_not_overwrite_watchdog_store_error() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("late".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+
+        // Simulate the watchdog having already fired with a detailed err.
+        let watchdog_msg = "spawn timed out after 60s (watchdog)";
+        df.spawn_result.set_result(Err(eyre!(watchdog_msg)));
+        assert!(df.spawn_result.is_terminal_error());
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        // Seed the store with the detailed Failed record the watchdog
+        // would have persisted.
+        let initial_record = df
+            .make_record(StoreDataflowStatus::Failed {
+                error: watchdog_msg.to_string(),
+            })
+            .expect("make_record");
+        store.put_dataflow(&initial_record).expect("seed");
+        let initial_generation = initial_record.generation;
+
+        // Late-arriving daemon Err.
+        let late_err = eyre!("daemon-side spawn rejection");
+        handle_spawn_result_err(&mut df, dataflow_id, &daemon_id, late_err, store.as_ref());
+
+        // 1. Store record must still carry the watchdog's detailed message.
+        let records = store.list_dataflows().expect("store list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("seeded record present");
+        match &record.status {
+            dora_coordinator_store::DataflowStatus::Failed { error } => assert!(
+                error.contains("watchdog") || error.contains("timed out"),
+                "watchdog error message must be preserved, got: {error}"
+            ),
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+        // 2. Generation must NOT bump (no rewrite happened).
+        assert_eq!(
+            record.generation, initial_generation,
+            "guarded late-Err must not bump store_generation"
+        );
+
+        // 3. In-memory spawn_result still carries the watchdog's err.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached result delivers immediately")
+            .expect("sender alive");
+        let err = reply.expect_err("must still be Err");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("watchdog") || msg.contains("timed out"),
+            "in-memory err must be the watchdog's, got: {msg}"
+        );
+    }
+
+    /// Companion test for Finding 2: when spawn_result IS still Pending,
+    /// the err arm must persist Failed and fire the waiter — guards
+    /// against an over-eager guard blocking the legitimate failure path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_spawn_result_err_persists_failed_when_pending() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        df.pending_spawn_results.insert(daemon_id.clone());
+        df.pending_spawn_results.remove(&daemon_id);
+        assert!(df.spawn_result.is_pending());
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let err = eyre!("daemon-side spawn rejection");
+        handle_spawn_result_err(&mut df, dataflow_id, &daemon_id, err, store.as_ref());
+
+        // 1. spawn_result must now be Cached(Err); waiter receives the err.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached result delivers immediately")
+            .expect("sender alive");
+        let err = reply.expect_err("happy-path err must not be guarded out");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("rejection"));
+
+        // 2. Store must reflect Failed with the daemon's error message.
+        let records = store.list_dataflows().expect("store list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("dataflow persisted");
+        match &record.status {
+            dora_coordinator_store::DataflowStatus::Failed { error } => {
+                assert!(
+                    error.contains("rejection"),
+                    "Failed.error must carry the daemon's message, got: {error}"
+                );
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
     }
 }
