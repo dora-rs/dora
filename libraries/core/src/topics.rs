@@ -68,27 +68,49 @@ pub async fn open_zenoh_session_with_listen(
             // scouting. This makes the >=4 KiB zenoh data path work in
             // environments without working multicast (#1778).
             if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
-                if let Err(err) =
-                    zenoh_config.insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
+                // Only disable multicast scouting if we successfully replaced
+                // it with an explicit connect endpoint — otherwise the node
+                // would have neither and open an isolated session. Interim
+                // mitigation for #1856; full required-vs-optional config
+                // classification still pending there.
+                let connect_inserted = match zenoh_config
+                    .insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
                 {
-                    warn!("failed to set zenoh connect/endpoints from DORA_ZENOH_CONNECT: {err}");
-                }
-                if let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false") {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            "failed to set zenoh connect/endpoints from DORA_ZENOH_CONNECT ({err}); leaving multicast scouting enabled as fallback"
+                        );
+                        false
+                    }
+                };
+                if connect_inserted
+                    && let Err(err) =
+                        zenoh_config.insert_json5("scouting/multicast/enabled", "false")
+                {
                     warn!("failed to disable zenoh scouting/multicast: {err}");
                 }
             }
 
             if let Some(ep) = listen_endpoint {
-                if let Err(err) =
-                    zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#))
-                {
-                    warn!("failed to set zenoh listen/endpoints to `{ep}`: {err}");
-                }
+                // `listen/exit_on_failure: false` is a tuning knob for the
+                // listener; only set it if the listener itself got
+                // configured. Interim mitigation for #1856.
+                let listen_inserted =
+                    match zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#)) {
+                        Ok(()) => true,
+                        Err(err) => {
+                            warn!("failed to set zenoh listen/endpoints to `{ep}`: {err}");
+                            false
+                        }
+                    };
                 // Tolerate a race between OS port reservation and zenoh's own
                 // bind on the same port: the connect side still works, and
                 // child nodes get a clear error rather than the daemon
                 // exiting.
-                if let Err(err) = zenoh_config.insert_json5("listen/exit_on_failure", "false") {
+                if listen_inserted
+                    && let Err(err) = zenoh_config.insert_json5("listen/exit_on_failure", "false")
+                {
                     warn!("failed to set zenoh listen/exit_on_failure: {err}");
                 }
             }
