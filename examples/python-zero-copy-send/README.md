@@ -27,8 +27,20 @@ Expected output: 10 tick-driven iterations, each sending one 64 KiB `large_outpu
 
 ```python
 with node.send_output_raw("frame", height * width * 3, metadata={"width": width}) as buf:
+    # Inline expression — view auto-released at end of statement:
     np.asarray(buf, dtype=np.uint8).reshape(height, width, 3)[:] = frame
 # data is sent automatically when the `with` block exits
+```
+
+`buf` is a `SampleBuffer` (a buffer-protocol exporter), **not** a memoryview. Every consumer derived from it — `np.asarray(buf)`, `memoryview(buf)`, `struct.pack_into(buf, ...)` — registers as a tracked view; `__exit__` 's `send()` refuses while any view is alive.
+
+If you store a derived view in a named variable, release it before exit:
+
+```python
+with node.send_output_raw("frame", H * W * 3) as buf:
+    arr = np.asarray(buf, dtype=np.uint8).reshape(H, W, 3)
+    arr[:] = frame
+    del arr           # release the numpy view before __exit__ tries to send
 ```
 
 ### Manual (when send timing is conditional)
@@ -49,9 +61,9 @@ The `SampleHandler` enforces a small protocol so the zero-copy path stays sound:
 
 - **Write-only-once.** Calling `.send()` twice on the same handler is an error.
 - **No view past `send()`.** Once `.send()` runs, any subsequent attempt to acquire a buffer view raises `BufferError`.
-- **No `send()` while views are open.** If you have an outstanding `memoryview` (or a derived numpy array that hasn't been GC'd), `.send()` errors with a clear message. Release the views first.
+- **No `send()` while views are open.** If any consumer derived from the yielded `SampleBuffer` (memoryview, numpy array, struct view) is still alive when `.send()` runs, the send is refused with a clear "buffer view(s) still open" error.
 
-The context-manager form handles release automatically (`__exit__` releases the cached memoryview before calling send). The manual form is the one where you need to be careful: `del arr` on any numpy view, then `mv.release()`, before `sample.send()`.
+For the context-manager form: every consumer goes through `SampleBuffer` 's tracked `__getbuffer__` / `__releasebuffer__`, so the system catches stragglers automatically. For the manual form: `del` derived arrays first, then `mv.release()`, then `sample.send()`.
 
 ## Performance
 
