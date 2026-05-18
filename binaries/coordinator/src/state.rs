@@ -194,6 +194,13 @@ pub(crate) struct RunningDataflow {
     pub(crate) topic_subscribers: BTreeMap<Uuid, TopicSubscriber>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
+    /// Coordinator-local timestamp captured when this `RunningDataflow` was
+    /// constructed (i.e. just before the per-daemon spawn dispatch). Used by
+    /// the heartbeat-driven watchdog to detect spawn flows that have been
+    /// pending past `SPAWN_RESULT_TIMEOUT` so waiters can be released with a
+    /// clear error instead of hanging on the client-side RPC deadline.
+    /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
+    pub(crate) spawn_started_at: Instant,
 
     /// Timestamp (unix millis) when this dataflow was first persisted.
     pub(crate) created_at: u64,
@@ -343,8 +350,9 @@ impl RunningDataflow {
         let descriptor_json = serde_json::to_string(&self.descriptor)
             .map_err(|e| eyre::eyre!("failed to serialize descriptor: {e}"))?;
         let status = match status {
-            DataflowStatus::Failed { error } => DataflowStatus::Failed {
+            DataflowStatus::Failed { error, terminal } => DataflowStatus::Failed {
                 error: truncate_str(&error, MAX_ERROR_BYTES).to_owned(),
+                terminal,
             },
             other => other,
         };
@@ -407,6 +415,22 @@ impl CachedResult {
             }
             CachedResult::Cached { .. } => {}
         }
+    }
+
+    /// Returns `true` if no result has been recorded yet. Used by the
+    /// heartbeat-driven spawn-timeout watchdog to decide whether to fire a
+    /// rollback-with-error path on a stuck pending spawn.
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self, CachedResult::Pending { .. })
+    }
+
+    /// Returns `true` if a terminally-failed result has already been cached.
+    /// Used by other handlers (auto-recovery, late `DataflowSpawnResult`
+    /// arms) to skip operations that would resurrect or muddle a dataflow
+    /// the spawn-timeout watchdog (or any other terminal-failure path)
+    /// has already marked as failed.
+    pub(crate) fn is_terminal_error(&self) -> bool {
+        matches!(self, CachedResult::Cached { result: Err(_) })
     }
 
     fn send_result_to(
