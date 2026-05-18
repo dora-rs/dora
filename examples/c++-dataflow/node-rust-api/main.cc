@@ -1,5 +1,6 @@
 #include "../build/dora-node-api.h"
 
+#include <exception>
 #include <iostream>
 #include <vector>
 
@@ -21,8 +22,13 @@ int main()
         auto descriptor = dataflow_descriptor_json(dora_node.send_output);
         std::cout << "Dataflow descriptor length: " << descriptor.length() << std::endl;
     }
-    catch (const rust::Error &e)
+    catch (const std::exception &e)
     {
+        // cxx throws `rust::Error` (a `std::exception` subclass) when a
+        // Rust function returning `Result<T>` fails. We catch by
+        // `std::exception` because `rust::Error` is part of cxx's runtime
+        // (`rust/cxx.h`) and is not re-exported into the bridge-specific
+        // header that user code sees.
         std::cerr << "Introspection failed: " << e.what() << std::endl;
     }
 
