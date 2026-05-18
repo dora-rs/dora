@@ -45,6 +45,12 @@ use uuid::Uuid;
 
 const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
 
+/// Cap on the in-memory archived-dataflow history. Mirrors the local constant
+/// used by the `DataflowFinishedOnDaemon` teardown path; lifted to module
+/// scope so the spawn-timeout watchdog can use the same cap for archived
+/// failed dataflows. Keep the two in sync.
+const MAX_ARCHIVED_DATAFLOWS: usize = 200;
+
 /// Default deadline after which a distributed spawn that has not received
 /// every daemon's `spawn_result` is considered stuck. The heartbeat-driven
 /// watchdog fails such spawns and rolls back any daemons that already
@@ -506,7 +512,6 @@ async fn start_inner(
                                 archived_dataflows
                                     .entry(uuid)
                                     .or_insert_with(|| ArchivedDataflow::from(entry.get()));
-                                const MAX_ARCHIVED_DATAFLOWS: usize = 200;
                                 while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
                                     archived_dataflows.shift_remove_index(0);
                                 }
@@ -1911,6 +1916,7 @@ async fn start_inner(
                 // spawn time even with `--uv` Python env preparation.
                 check_spawn_timeouts(
                     &mut running_dataflows,
+                    &mut archived_dataflows,
                     &mut daemon_connections,
                     &clock,
                     store.as_ref(),
@@ -2578,25 +2584,35 @@ async fn fire_and_forget_rollback(
 }
 
 /// Scan `running_dataflows` for spawns that have been pending past
-/// [`spawn_result_timeout`] and resolve them as failed.
+/// [`spawn_result_timeout`] and resolve them as terminally failed.
 ///
 /// For each stuck dataflow:
 /// 1. Roll back any daemons that already reported a successful spawn
-///    (best-effort; failures are logged).
-/// 2. Set `spawn_result` to an error, unblocking `wait_for_spawn` waiters
-///    with an actionable message instead of letting them hang on the
+///    (fire-and-forget; failures are logged).
+/// 2. Set `spawn_result` to an error so `wait_for_spawn` waiters are
+///    unblocked with an actionable message instead of hanging on the
 ///    client-side RPC deadline.
-/// 3. Persist the dataflow as `Failed` so a restarted coordinator does not
-///    re-resurrect it.
+/// 3. Persist the dataflow as `Failed` so a restarted coordinator does
+///    not re-resurrect it.
+/// 4. **Tear down in-memory state**: archive the dataflow, drain
+///    `stop_reply_senders`, close `topic_subscribers`, send a final
+///    "dataflow failed" log to `log_subscribers`, then remove from
+///    `running_dataflows`. Mirrors the `DataflowFinishedOnDaemon` teardown
+///    so the dataflow is no longer visible to `Check` / `List` /
+///    `DaemonStatusReport` reconciliation / `Clean` / etc. as if it
+///    were still active. Without this step, those handlers would
+///    contradict the watchdog's "terminally failed" verdict
+///    (PR #1854 round-5 Findings 1 and 2).
 ///
-/// Idempotent: `CachedResult::set_result` is a no-op once the result has
-/// been cached, so re-running this on subsequent heartbeats does not
-/// double-fail or double-rollback.
+/// Idempotent: `CachedResult::set_result` is a no-op on `Cached`, and
+/// removed dataflows simply don't reappear in the next pass, so
+/// re-running this on subsequent heartbeats is safe.
 ///
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
 async fn check_spawn_timeouts(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     store: &dyn CoordinatorStore,
@@ -2670,27 +2686,84 @@ async fn check_spawn_timeouts(
             );
         }
 
-        // Fire the spawn_result error and persist the dataflow as Failed.
-        if let Some(df) = running_dataflows.get_mut(&uuid) {
-            let err_msg = format!(
-                "spawn timed out after {}s; {} daemon(s) never reported \
-                 spawn_result; rolled back {} previously-started daemon(s)",
-                timeout_threshold.as_secs(),
-                pending_count,
-                succeeded_daemons.len(),
+        // Fire the spawn_result error, persist Failed, then tear down
+        // in-memory state so the dataflow is terminal from every other
+        // handler's point of view (Check, List, reconcile, Clean, ...).
+        let Some(mut df) = running_dataflows.remove(&uuid) else {
+            // Concurrent removal — nothing more to do. (Not currently
+            // reachable from any other code path; defensive.)
+            continue;
+        };
+        let err_msg = format!(
+            "spawn timed out after {}s; {} daemon(s) never reported \
+             spawn_result; rolled back {} previously-started daemon(s)",
+            timeout_threshold.as_secs(),
+            pending_count,
+            succeeded_daemons.len(),
+        );
+        df.spawn_result.set_result(Err(eyre!(err_msg.clone())));
+        if let Err(e) = df
+            .make_record(StoreDataflowStatus::Failed {
+                error: err_msg.clone(),
+            })
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!(
+                dataflow = %uuid,
+                "failed to persist spawn timeout: {e}",
             );
-            df.spawn_result.set_result(Err(eyre!(err_msg.clone())));
-            match df
-                .make_record(StoreDataflowStatus::Failed { error: err_msg })
-                .and_then(|r| store.put_dataflow(&r))
-            {
-                Ok(()) => {}
-                Err(e) => tracing::warn!(
-                    dataflow = %uuid,
-                    "failed to persist spawn timeout: {e}",
-                ),
-            }
         }
+
+        // Final log message to anyone subscribed.
+        send_log_message(
+            &mut df.log_subscribers,
+            &LogMessage {
+                build_id: None,
+                dataflow_id: Some(uuid),
+                node_id: None,
+                daemon_id: None,
+                level: LogLevel::Error.into(),
+                target: Some("coordinator".into()),
+                module_path: None,
+                file: None,
+                line: None,
+                message: err_msg.clone(),
+                timestamp: clock.new_timestamp().get_time().to_system_time().into(),
+                fields: None,
+            },
+        )
+        .await;
+
+        // Close topic subscribers so attached clients see a clean end-of-
+        // stream rather than hanging.
+        close_topic_subscribers_on_finish(&mut df);
+
+        // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
+        // waiting for the dataflow to stop; that's effectively what just
+        // happened (the watchdog took ownership and the dataflow will not
+        // proceed). Report it as a DataflowStopped with an empty result —
+        // the caller can correlate with the persisted Failed status for
+        // detail. Without this drain, stop callers would hang forever
+        // since no DataflowFinishedOnDaemon will arrive.
+        let stop_reply = ControlRequestReply::DataflowStopped {
+            uuid,
+            result: DataflowResult::ok_empty(uuid, clock.new_timestamp()),
+        };
+        for sender in df.stop_reply_senders.drain(..) {
+            let _ = sender.send(Ok(stop_reply.clone()));
+        }
+
+        // Archive so `dora list` still surfaces the dataflow's name +
+        // descriptor for users investigating after the fact. Capped to
+        // prevent unbounded growth — uses the same MAX_ARCHIVED_DATAFLOWS
+        // limit as the DataflowFinishedOnDaemon teardown.
+        archived_dataflows
+            .entry(uuid)
+            .or_insert_with(|| ArchivedDataflow::from(&df));
+        while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
+            archived_dataflows.shift_remove_index(0);
+        }
+        // `df` drops here, releasing all remaining resources.
     }
 }
 
@@ -4497,9 +4570,11 @@ mod tests {
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
+            &mut archived_dataflows,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4518,13 +4593,18 @@ mod tests {
             "error should explain the timeout, got: {msg}"
         );
 
-        // And the dataflow's spawn_result should now be Cached.
-        let df = running_dataflows
-            .get(&dataflow_id)
-            .expect("df still present");
+        // Watchdog must remove the dataflow from running_dataflows so
+        // Check / List / reconcile no longer report it as active.
         assert!(
-            !df.spawn_result.is_pending(),
-            "spawn_result must transition out of Pending after timeout fires"
+            !running_dataflows.contains_key(&dataflow_id),
+            "watchdog must remove the terminally-failed dataflow from running_dataflows"
+        );
+
+        // And it must be archived so post-mortem queries can still find
+        // its name/descriptor.
+        assert!(
+            archived_dataflows.contains_key(&dataflow_id),
+            "watchdog must archive the terminally-failed dataflow"
         );
     }
 
@@ -4547,9 +4627,11 @@ mod tests {
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
+            &mut archived_dataflows,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4589,9 +4671,11 @@ mod tests {
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
+            &mut archived_dataflows,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4600,7 +4684,7 @@ mod tests {
 
         let df = running_dataflows
             .get_mut(&dataflow_id)
-            .expect("df still present");
+            .expect("Cached(Ok) dataflow must stay in running_dataflows — only Cached(Err) triggers teardown");
         // Registering a new waiter on a Cached result must immediately
         // deliver the cached Ok — proving the watchdog did not clobber it.
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -4670,9 +4754,11 @@ mod tests {
 
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
+            &mut archived_dataflows,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4977,5 +5063,110 @@ mod tests {
             }
             other => panic!("expected Failed, got: {other:?}"),
         }
+    }
+
+    // -------------------------------------------------------------------
+    // Round-5 findings (PR #1854): watchdog must make the dataflow
+    // terminal in memory too, not just in the store. Without removal
+    // from running_dataflows, `Check` and `List` would report it as
+    // active, and `DaemonStatusReport` reconciliation could promote
+    // its Failed store record back to Running.
+    // -------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_teardown_drains_stop_reply_senders() {
+        // Anyone waiting on `dora stop` for the dataflow when the
+        // watchdog fires must be released — otherwise they hang
+        // forever because no `DataflowFinishedOnDaemon` will arrive
+        // for a spawn-that-never-started.
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        df.pending_spawn_results.insert(daemon_id);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        // Register an in-flight `dora stop` waiter.
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        df.stop_reply_senders.push(stop_tx);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // The stop waiter must have received a reply.
+        let reply = timeout(TokioDuration::from_secs(1), stop_rx)
+            .await
+            .expect("stop waiter should resolve, not hang")
+            .expect("stop sender should not drop");
+        let stop = reply.expect("watchdog drains with Ok DataflowStopped");
+        assert!(
+            matches!(stop, ControlRequestReply::DataflowStopped { uuid, .. } if uuid == dataflow_id),
+            "drain should send DataflowStopped with the watchdog'd dataflow's uuid"
+        );
+    }
+
+    /// Round-5 Finding 2: after the watchdog fires, the dataflow must be
+    /// absent from `running_dataflows` so `Check`/`List` no longer report
+    /// it as active. The archive map must hold a record so post-mortem
+    /// queries can still find its name/descriptor.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_makes_dataflow_invisible_to_check_and_list() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        df.name = Some("flagged-name".to_string());
+        df.pending_spawn_results.insert(daemon_id);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // Check / List query running_dataflows directly; absence is the
+        // contract that fixes both consumers in one move.
+        assert!(
+            !running_dataflows.contains_key(&dataflow_id),
+            "Check/List must observe the watchdog-failed dataflow as absent"
+        );
+
+        // The archive preserves the name so post-mortem `dora list`
+        // queries against `archived_dataflows` can correlate the uuid
+        // with a human-readable identity.
+        let archived = archived_dataflows
+            .get(&dataflow_id)
+            .expect("watchdog must archive for post-mortem queries");
+        assert_eq!(
+            archived.name.as_deref(),
+            Some("flagged-name"),
+            "archive must preserve the dataflow name"
+        );
     }
 }
