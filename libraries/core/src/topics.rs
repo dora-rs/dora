@@ -105,6 +105,12 @@ pub async fn open_zenoh_session_with_listen(
                 }
             }
 
+            // Track whether listen/endpoints was accepted into THIS config.
+            // We don't promote it to `effective_listen_endpoint` until the
+            // configured open succeeds — the fallback default-config path
+            // below has no listener and must not advertise one (#1856).
+            let mut listen_inserted_into_configured: Option<String> = None;
+
             if let Some(ep) = listen_endpoint {
                 // `listen/exit_on_failure: false` is a tuning knob for the
                 // listener; only set it if the listener itself got
@@ -112,11 +118,7 @@ pub async fn open_zenoh_session_with_listen(
                 let listen_inserted =
                     match zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#)) {
                         Ok(()) => {
-                            // Helper became the source of truth: the daemon
-                            // reads this on return and only injects
-                            // `DORA_ZENOH_CONNECT` into spawned nodes when
-                            // listen actually bound (#1856).
-                            effective_listen_endpoint = Some(ep.to_string());
+                            listen_inserted_into_configured = Some(ep.to_string());
                             true
                         }
                         Err(err) => {
@@ -147,9 +149,15 @@ pub async fn open_zenoh_session_with_listen(
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
+                // The configured session opened — promote the (possibly None)
+                // listener now that we know it's actually live.
+                effective_listen_endpoint = listen_inserted_into_configured;
                 zenoh_session
             } else {
                 warn!("failed to open zenoh session, retrying with default config");
+                // Default fallback has no listener; `effective_listen_endpoint`
+                // stays `None` so peers don't try to reach a bind that isn't
+                // there (#1856).
                 let zenoh_config = zenoh::Config::default();
                 zenoh::open(zenoh_config)
                     .await
