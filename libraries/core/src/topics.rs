@@ -15,20 +15,35 @@ pub const MANUAL_STOP: &str = "dora/stop";
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
-    open_zenoh_session_with_listen(coordinator_addr, None).await
+    let (session, _) = open_zenoh_session_with_listen(coordinator_addr, None).await?;
+    Ok(session)
 }
 
 /// Like [`open_zenoh_session`], but also configures the session to listen on
 /// the given loopback endpoint (e.g. `tcp/127.0.0.1:43217`). The daemon uses
 /// this so spawned nodes can connect via `DORA_ZENOH_CONNECT` without
 /// multicast scouting.
+///
+/// Returns `(session, effective_listen_endpoint)`. The second element is
+/// `Some(ep)` only when `listen_endpoint` was requested AND zenoh accepted
+/// the `listen/endpoints` insert. It is `None` if `listen_endpoint` was
+/// `None`, the insert failed, or the open path used the
+/// `ZENOH_CONFIG_PATH`-from-file branch. Callers must inject the returned
+/// endpoint into peers (e.g. via `DORA_ZENOH_CONNECT`) instead of the value
+/// they passed in, so peers never receive a stale endpoint the listener
+/// did not actually bind (#1856).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
     coordinator_addr: Option<IpAddr>,
     listen_endpoint: Option<&str>,
-) -> eyre::Result<zenoh::Session> {
+) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
+
+    // Source-of-truth for the listener: stays `None` unless we actually
+    // accepted `listen/endpoints` into the config below. Callers use this
+    // (not their requested endpoint) to advertise the listener to peers.
+    let mut effective_listen_endpoint: Option<String> = None;
 
     let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
         Ok(path) => {
@@ -44,10 +59,11 @@ pub async fn open_zenoh_session_with_listen(
             let mut zenoh_config = zenoh::Config::default();
             // Linkstate make it possible to connect two daemons on different network through a public daemon
             // TODO: There is currently a CI/CD Error in windows linkstate.
-            if cfg!(not(target_os = "windows")) {
-                zenoh_config
-                    .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                    .unwrap();
+            if cfg!(not(target_os = "windows"))
+                && let Err(err) =
+                    zenoh_config.insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+            {
+                warn!("failed to set zenoh routing/peer to linkstate: {err}");
             }
 
             // Latency note: each data-plane publisher in
@@ -67,42 +83,81 @@ pub async fn open_zenoh_session_with_listen(
             // scouting. This makes the >=4 KiB zenoh data path work in
             // environments without working multicast (#1778).
             if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
-                zenoh_config
+                // Only disable multicast scouting if we successfully replaced
+                // it with an explicit connect endpoint — otherwise the node
+                // would have neither and open an isolated session (#1856).
+                let connect_inserted = match zenoh_config
                     .insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
-                    .unwrap();
-                zenoh_config
-                    .insert_json5("scouting/multicast/enabled", "false")
-                    .unwrap();
+                {
+                    Ok(()) => true,
+                    Err(err) => {
+                        warn!(
+                            "failed to set zenoh connect/endpoints from DORA_ZENOH_CONNECT ({err}); leaving multicast scouting enabled as fallback"
+                        );
+                        false
+                    }
+                };
+                if connect_inserted
+                    && let Err(err) =
+                        zenoh_config.insert_json5("scouting/multicast/enabled", "false")
+                {
+                    warn!("failed to disable zenoh scouting/multicast: {err}");
+                }
             }
 
+            // Track whether listen/endpoints was accepted into THIS config.
+            // We don't promote it to `effective_listen_endpoint` until the
+            // configured open succeeds — the fallback default-config path
+            // below has no listener and must not advertise one (#1856).
+            let mut listen_inserted_into_configured: Option<String> = None;
+
             if let Some(ep) = listen_endpoint {
-                zenoh_config
-                    .insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#))
-                    .unwrap();
+                // `listen/exit_on_failure: false` is a tuning knob for the
+                // listener; only set it if the listener itself got
+                // configured (#1856).
+                let listen_inserted =
+                    match zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#)) {
+                        Ok(()) => {
+                            listen_inserted_into_configured = Some(ep.to_string());
+                            true
+                        }
+                        Err(err) => {
+                            warn!("failed to set zenoh listen/endpoints to `{ep}`: {err}");
+                            false
+                        }
+                    };
                 // Tolerate a race between OS port reservation and zenoh's own
                 // bind on the same port: the connect side still works, and
                 // child nodes get a clear error rather than the daemon
                 // exiting.
-                zenoh_config
-                    .insert_json5("listen/exit_on_failure", "false")
-                    .unwrap();
+                if listen_inserted
+                    && let Err(err) = zenoh_config.insert_json5("listen/exit_on_failure", "false")
+                {
+                    warn!("failed to set zenoh listen/exit_on_failure: {err}");
+                }
             }
 
-            if let Some(addr) = coordinator_addr {
-                zenoh_config
-                    .insert_json5(
-                        "connect/endpoints",
-                        &format!(
-                            r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                            addr
-                        ),
-                    )
-                    .unwrap();
+            if let Some(addr) = coordinator_addr
+                && let Err(err) = zenoh_config.insert_json5(
+                    "connect/endpoints",
+                    &format!(
+                        r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
+                        addr
+                    ),
+                )
+            {
+                warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
+                // The configured session opened — promote the (possibly None)
+                // listener now that we know it's actually live.
+                effective_listen_endpoint = listen_inserted_into_configured;
                 zenoh_session
             } else {
                 warn!("failed to open zenoh session, retrying with default config");
+                // Default fallback has no listener; `effective_listen_endpoint`
+                // stays `None` so peers don't try to reach a bind that isn't
+                // there (#1856).
                 let zenoh_config = zenoh::Config::default();
                 zenoh::open(zenoh_config)
                     .await
@@ -115,7 +170,7 @@ pub async fn open_zenoh_session_with_listen(
             zenoh::Config::DEFAULT_CONFIG_PATH_ENV
         ),
     };
-    Ok(zenoh_session)
+    Ok((zenoh_session, effective_listen_endpoint))
 }
 
 /// Reserve an unused TCP port on `127.0.0.1` for use as a zenoh listen

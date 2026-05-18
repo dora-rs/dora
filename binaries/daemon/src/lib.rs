@@ -785,7 +785,7 @@ impl Daemon {
         // Reserve a loopback port and have zenoh listen on it. The endpoint is
         // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
         // discovery works without multicast (#1778).
-        let zenoh_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
+        let requested_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
             Ok(ep) => Some(ep),
             Err(err) => {
                 tracing::warn!(
@@ -795,9 +795,21 @@ impl Daemon {
                 None
             }
         };
-        let zenoh_session = open_zenoh_session_with_listen(None, zenoh_listen_endpoint.as_deref())
-            .await
-            .wrap_err("failed to open zenoh session")?;
+        // The helper is the source of truth for whether the listener actually
+        // bound: `zenoh_listen_endpoint` only becomes `Some` if zenoh accepted
+        // the listen/endpoints insert. Otherwise we must not inject
+        // `DORA_ZENOH_CONNECT` into spawned nodes — they would try to connect
+        // to an endpoint that nothing is listening on (#1856).
+        let (zenoh_session, zenoh_listen_endpoint) =
+            open_zenoh_session_with_listen(None, requested_listen_endpoint.as_deref())
+                .await
+                .wrap_err("failed to open zenoh session")?;
+        if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
+            tracing::warn!(
+                "requested zenoh listener but zenoh did not bind it; \
+                 spawned nodes will use multicast scouting only"
+            );
+        }
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 

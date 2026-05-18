@@ -568,7 +568,15 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
-        self.record_event(&event).unwrap();
+        // Event recording is observability-only (writes to the optional
+        // `write_events_to` log). A write failure must not panic the event
+        // loop — drop the log line and continue scheduling.
+        if let Err(err) = self.record_event(&event) {
+            tracing::warn!(
+                node = %self.node_id,
+                "failed to record event to write_events_to log: {err:?}"
+            );
+        }
         self.scheduler.add_event(event);
     }
 
