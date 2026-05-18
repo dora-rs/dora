@@ -15,20 +15,35 @@ pub const MANUAL_STOP: &str = "dora/stop";
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
-    open_zenoh_session_with_listen(coordinator_addr, None).await
+    let (session, _) = open_zenoh_session_with_listen(coordinator_addr, None).await?;
+    Ok(session)
 }
 
 /// Like [`open_zenoh_session`], but also configures the session to listen on
 /// the given loopback endpoint (e.g. `tcp/127.0.0.1:43217`). The daemon uses
 /// this so spawned nodes can connect via `DORA_ZENOH_CONNECT` without
 /// multicast scouting.
+///
+/// Returns `(session, effective_listen_endpoint)`. The second element is
+/// `Some(ep)` only when `listen_endpoint` was requested AND zenoh accepted
+/// the `listen/endpoints` insert. It is `None` if `listen_endpoint` was
+/// `None`, the insert failed, or the open path used the
+/// `ZENOH_CONFIG_PATH`-from-file branch. Callers must inject the returned
+/// endpoint into peers (e.g. via `DORA_ZENOH_CONNECT`) instead of the value
+/// they passed in, so peers never receive a stale endpoint the listener
+/// did not actually bind (#1856).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
     coordinator_addr: Option<IpAddr>,
     listen_endpoint: Option<&str>,
-) -> eyre::Result<zenoh::Session> {
+) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
+
+    // Source-of-truth for the listener: stays `None` unless we actually
+    // accepted `listen/endpoints` into the config below. Callers use this
+    // (not their requested endpoint) to advertise the listener to peers.
+    let mut effective_listen_endpoint: Option<String> = None;
 
     let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
         Ok(path) => {
@@ -70,9 +85,7 @@ pub async fn open_zenoh_session_with_listen(
             if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
                 // Only disable multicast scouting if we successfully replaced
                 // it with an explicit connect endpoint — otherwise the node
-                // would have neither and open an isolated session. Interim
-                // mitigation for #1856; full required-vs-optional config
-                // classification still pending there.
+                // would have neither and open an isolated session (#1856).
                 let connect_inserted = match zenoh_config
                     .insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
                 {
@@ -95,10 +108,17 @@ pub async fn open_zenoh_session_with_listen(
             if let Some(ep) = listen_endpoint {
                 // `listen/exit_on_failure: false` is a tuning knob for the
                 // listener; only set it if the listener itself got
-                // configured. Interim mitigation for #1856.
+                // configured (#1856).
                 let listen_inserted =
                     match zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#)) {
-                        Ok(()) => true,
+                        Ok(()) => {
+                            // Helper became the source of truth: the daemon
+                            // reads this on return and only injects
+                            // `DORA_ZENOH_CONNECT` into spawned nodes when
+                            // listen actually bound (#1856).
+                            effective_listen_endpoint = Some(ep.to_string());
+                            true
+                        }
                         Err(err) => {
                             warn!("failed to set zenoh listen/endpoints to `{ep}`: {err}");
                             false
@@ -142,7 +162,7 @@ pub async fn open_zenoh_session_with_listen(
             zenoh::Config::DEFAULT_CONFIG_PATH_ENV
         ),
     };
-    Ok(zenoh_session)
+    Ok((zenoh_session, effective_listen_endpoint))
 }
 
 /// Reserve an unused TCP port on `127.0.0.1` for use as a zenoh listen
