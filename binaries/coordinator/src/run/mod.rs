@@ -185,7 +185,7 @@ pub struct SpawnedDataflow {
 ///   by `TCP_READ_TIMEOUT`.
 /// - Daemon-supplied error strings are truncated to prevent oversized messages
 ///   propagating to clients.
-pub(crate) async fn rollback_spawned_daemons(
+async fn rollback_spawned_daemons(
     dataflow_id: Uuid,
     spawned_daemons: &BTreeSet<DaemonId>,
     daemon_connections: &mut DaemonConnections,

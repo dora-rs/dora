@@ -59,21 +59,6 @@ const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
 const SPAWN_RESULT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
 
-/// Wall-clock budget for the entire rollback batch issued by the spawn
-/// timeout watchdog. Caps how long the heartbeat handler can block dispatching
-/// stop RPCs to (possibly stuck) succeeded daemons.
-///
-/// Without this cap, a worst-case rollback of N succeeded-but-now-wedged
-/// daemons could block the heartbeat handler for up to `N * TCP_READ_TIMEOUT`
-/// (30 s each), during which heartbeats to *other* healthy daemons are not
-/// dispatched. Since the daemon-disconnect threshold is also 30 s, that delay
-/// can falsely declare healthy daemons dead during recovery -- a watchdog
-/// destabilising healthy components is an anti-pattern.
-///
-/// 5 s is generous for fast-failing stops yet bounded enough that healthy
-/// daemons stay within heartbeat tolerance.
-const SPAWN_TIMEOUT_ROLLBACK_BUDGET: Duration = Duration::from_secs(5);
-
 /// Reads `DORA_SPAWN_RESULT_TIMEOUT_SECS` once and caches the result so
 /// each heartbeat tick is not repeatedly parsing the env var. Invalid or
 /// non-positive values fall back to [`SPAWN_RESULT_TIMEOUT_DEFAULT`].
@@ -2149,19 +2134,12 @@ async fn start_inner(
                     dataflow.pending_spawn_results.remove(&daemon_id);
                     match result {
                         Ok(()) => {
-                            if dataflow.pending_spawn_results.is_empty() {
-                                tracing::info!("successfully spawned dataflow `{dataflow_id}`",);
-                                dataflow.spawn_result.set_result(Ok(
-                                    ControlRequestReply::DataflowSpawned { uuid: dataflow_id },
-                                ));
-                                // Persist: dataflow now running
-                                if let Err(e) = dataflow
-                                    .make_record(StoreDataflowStatus::Running)
-                                    .and_then(|r| store.put_dataflow(&r))
-                                {
-                                    tracing::warn!("failed to persist dataflow running: {e}");
-                                }
-                            }
+                            handle_spawn_result_ok(
+                                dataflow,
+                                dataflow_id,
+                                &daemon_id,
+                                store.as_ref(),
+                            );
                         }
                         Err(err) => {
                             tracing::warn!("error while spawning dataflow `{dataflow_id}`");
@@ -2446,6 +2424,114 @@ fn topic_outputs_by_daemon(
     Ok(outputs_by_daemon)
 }
 
+/// Handle the success arm of `Event::DataflowSpawnResult`.
+///
+/// Extracted from the inline event loop so the late-arrival guard can be
+/// exercised directly by unit tests. Two correctness invariants:
+///
+/// 1. **Late-Ok guard**: if `spawn_result` is no longer `Pending` (i.e. the
+///    timeout watchdog already cached an `Err`), do NOT persist `Running`.
+///    Without this guard, a delayed daemon's `Ok` arriving after the
+///    watchdog fires would resurrect a terminally-failed dataflow as
+///    `Running` in the store — in-memory `spawn_result` would still be
+///    `Cached(Err)` (because `set_result` is a no-op on `Cached`), so the
+///    store and the in-memory state would silently diverge. Rescue of
+///    [#1593](https://github.com/dora-rs/dora/pull/1593) Finding 1 follow-up.
+///
+/// 2. **All-daemons-succeeded check**: only mark the dataflow Running once
+///    every assigned daemon has reported a successful spawn. Preserves the
+///    pre-existing handler semantics.
+fn handle_spawn_result_ok(
+    dataflow: &mut RunningDataflow,
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    store: &dyn CoordinatorStore,
+) {
+    // Guard: if the spawn was already terminally failed (by the watchdog
+    // or by another daemon reporting an error), a late Ok must not
+    // promote the store status back to Running.
+    if !dataflow.spawn_result.is_pending() {
+        tracing::warn!(
+            dataflow = %dataflow_id,
+            daemon = %daemon_id,
+            "ignoring late successful spawn_result on a dataflow already \
+             terminally failed (e.g. by the spawn-timeout watchdog)",
+        );
+        return;
+    }
+
+    if dataflow.pending_spawn_results.is_empty() {
+        tracing::info!("successfully spawned dataflow `{dataflow_id}`");
+        dataflow
+            .spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        if let Err(e) = dataflow
+            .make_record(StoreDataflowStatus::Running)
+            .and_then(|r| store.put_dataflow(&r))
+        {
+            tracing::warn!("failed to persist dataflow running: {e}");
+        }
+    }
+}
+
+/// Fire-and-forget compensating rollback used by [`check_spawn_timeouts`].
+///
+/// Enqueues `StopDataflow{force: true}` to each succeeded daemon via
+/// `connection.send()` (no reply wait). Unlike
+/// `run::rollback_spawned_daemons`, this does NOT use `send_and_receive` —
+/// see the comment in `check_spawn_timeouts` for why: (a) reply-waiting
+/// blocks the heartbeat handler for up to `TCP_READ_TIMEOUT` per wedged
+/// daemon, risking false-positive disconnections elsewhere in the cluster;
+/// (b) `send_and_receive` is not cancellation-safe (it inserts into
+/// `pending_replies` *before* registering its own cleanup), so any
+/// external timeout that cancels it leaks state.
+///
+/// Returns `(daemon_id, error)` pairs for dispatch failures (serialization
+/// failure or absent daemon connection). The mpsc `send` itself is
+/// near-instantaneous so total wall-clock is bounded regardless of N.
+async fn fire_and_forget_rollback(
+    dataflow_id: Uuid,
+    spawned_daemons: &BTreeSet<DaemonId>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+) -> Vec<(DaemonId, String)> {
+    if spawned_daemons.is_empty() {
+        return Vec::new();
+    }
+
+    let stop_message = match serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::StopDataflow {
+            dataflow_id,
+            grace_duration: None,
+            force: true,
+        },
+        timestamp: clock.new_timestamp(),
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            // Serialization failure is unlikely but fatal for rollback.
+            return spawned_daemons
+                .iter()
+                .map(|id| (id.clone(), format!("failed to serialize stop message: {e}")))
+                .collect();
+        }
+    };
+
+    let mut errors = Vec::new();
+    for daemon_id in spawned_daemons {
+        let Some(conn) = daemon_connections.get_mut(daemon_id) else {
+            errors.push((daemon_id.clone(), "no daemon connection".to_string()));
+            continue;
+        };
+        if let Err(e) = conn.send(&stop_message).await {
+            errors.push((daemon_id.clone(), format!("send failed: {e}")));
+        }
+    }
+    errors
+}
+
 /// Scan `running_dataflows` for spawns that have been pending past
 /// [`spawn_result_timeout`] and resolve them as failed.
 ///
@@ -2503,41 +2589,40 @@ async fn check_spawn_timeouts(
             "spawn timeout: releasing waiters and rolling back",
         );
 
-        // Best-effort rollback, bounded by SPAWN_TIMEOUT_ROLLBACK_BUDGET.
-        // Failures here are logged but do not block firing the spawn_result
-        // error -- the user must hear about the timeout regardless of
-        // whether stop dispatches succeed. The wall-clock budget caps how
-        // long this heartbeat tick can block: without it, N wedged
-        // succeeded daemons could block heartbeat dispatch for
-        // N * TCP_READ_TIMEOUT (30s each), risking false-positive
-        // disconnections of healthy daemons (Finding 1 / cascade risk).
-        let rollback_outcome = tokio::time::timeout(
-            SPAWN_TIMEOUT_ROLLBACK_BUDGET,
-            run::rollback_spawned_daemons(uuid, &succeeded_daemons, daemon_connections, clock),
-        )
-        .await;
-        match rollback_outcome {
-            Ok(rollback_errors) if !rollback_errors.is_empty() => {
-                let rollback_summary = rollback_errors
-                    .iter()
-                    .map(|(id, e)| format!("  {id}: {e}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                tracing::warn!(
-                    dataflow = %uuid,
-                    "rollback partial after spawn timeout, {} stop(s) failed:\n{rollback_summary}",
-                    rollback_errors.len(),
-                );
-            }
-            Ok(_) => {}
-            Err(_elapsed) => {
-                tracing::warn!(
-                    dataflow = %uuid,
-                    budget_secs = SPAWN_TIMEOUT_ROLLBACK_BUDGET.as_secs(),
-                    "spawn-timeout rollback exceeded budget; \
-                     some succeeded daemons may not have been stopped",
-                );
-            }
+        // Fire-and-forget rollback: enqueue StopDataflow on each succeeded
+        // daemon WITHOUT awaiting a reply. This solves two problems at once:
+        //
+        // 1. Cascade-failure risk: a reply-awaiting rollback (the original
+        //    `run::rollback_spawned_daemons` path) blocks
+        //    `TCP_READ_TIMEOUT = 30s` per wedged daemon. With N wedged
+        //    daemons, the heartbeat handler would block ~N*30s, during
+        //    which heartbeats to *other* healthy daemons aren't dispatched
+        //    and they trip the 30s disconnect threshold.
+        // 2. Cancellation safety: an earlier version wrapped
+        //    `rollback_spawned_daemons` in `tokio::time::timeout`, but
+        //    that future cancels mid-`send_and_receive`, which inserts a
+        //    pending reply *before* registering its own cleanup -- the
+        //    cancellation would leak `pending_replies` entries.
+        //    `connection.send()` is just an mpsc enqueue; no pending state,
+        //    no cleanup needed, fully cancellation-safe.
+        //
+        // Trade-off: we don't get per-daemon ack of "stop succeeded". For
+        // the watchdog this is acceptable -- the user is already getting
+        // a clear timeout error, and unstopped daemons will be reclaimed
+        // by daemon-disconnect or operator `dora stop`.
+        let rollback_errors =
+            fire_and_forget_rollback(uuid, &succeeded_daemons, daemon_connections, clock).await;
+        if !rollback_errors.is_empty() {
+            let rollback_summary = rollback_errors
+                .iter()
+                .map(|(id, e)| format!("  {id}: {e}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            tracing::warn!(
+                dataflow = %uuid,
+                "rollback partial after spawn timeout, {} dispatch(es) failed:\n{rollback_summary}",
+                rollback_errors.len(),
+            );
         }
 
         // Fire the spawn_result error and persist the dataflow as Failed.
@@ -4485,14 +4570,13 @@ mod tests {
 
     /// Covers Finding 2 from the self-review on PR #1854: exercises the
     /// rollback dispatch path with a *non-empty* succeeded set. The other
-    /// timeout tests have `succeeded = {}`, so `rollback_spawned_daemons`
+    /// timeout tests have `succeeded = {}`, so the rollback helper
     /// short-circuits at its `if spawned_daemons.is_empty()` early-exit
     /// and never actually sends a stop message.
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn check_spawn_timeouts_dispatches_rollback_stop_to_succeeded_daemon() {
         #[derive(serde::Deserialize)]
         struct OutboundRaw {
-            id: String,
             params: Timestamped<DaemonCoordinatorEvent>,
         }
 
@@ -4503,9 +4587,9 @@ mod tests {
         let daemon_a = DaemonId::new(Some("daemon-a".to_string())); // succeeded
         let daemon_b = DaemonId::new(Some("daemon-b".to_string())); // still pending
 
-        // Mock daemon `a` -- replies to StopDataflow with Ok so the rollback
-        // completes inside the budget; an absent reply would block on
-        // TCP_READ_TIMEOUT and trip the budget timeout instead.
+        // Mock daemon `a` -- fire-and-forget rollback uses `connection.send()`
+        // which only enqueues; no reply is awaited. We just need to capture
+        // the outbound message and verify StopDataflow was dispatched.
         let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<String>(8);
         let pending_replies_a = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
         let conn_a =
@@ -4518,20 +4602,12 @@ mod tests {
         let daemon_a_task = tokio::spawn(async move {
             while let Some(outbound) = rx_a.recv().await {
                 let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-                let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
-                let reply = match outbound_raw.params.inner {
+                match outbound_raw.params.inner {
                     DaemonCoordinatorEvent::StopDataflow { .. } => {
                         *stop_seen_task.lock().await = true;
-                        serde_json::to_string(&DaemonCoordinatorReply::StopResult(Ok(()))).unwrap()
                     }
                     other => panic!("unexpected event on daemon-a in rollback test: {other:?}"),
-                };
-                let reply_tx = pending_replies_a
-                    .lock()
-                    .await
-                    .remove(&request_id)
-                    .expect("pending reply sender should exist");
-                let _ = reply_tx.send(reply);
+                }
             }
         });
 
@@ -4559,8 +4635,20 @@ mod tests {
         .await;
 
         // 1. The mock daemon must have received a stop dispatch.
+        //    Fire-and-forget rollback enqueues into the mpsc channel; the
+        //    daemon task picks it up asynchronously, so poll briefly.
+        let saw_stop = timeout(TokioDuration::from_secs(1), async {
+            loop {
+                if *stop_seen.lock().await {
+                    return true;
+                }
+                tokio::time::sleep(TokioDuration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
         assert!(
-            *stop_seen.lock().await,
+            saw_stop,
             "rollback must dispatch StopDataflow to the succeeded daemon"
         );
 
@@ -4594,5 +4682,117 @@ mod tests {
         );
 
         daemon_a_task.abort();
+    }
+
+    /// Covers Finding 1 from the round-3 review on PR #1854: a late
+    /// successful `DataflowSpawnResult` arriving after the watchdog has
+    /// already failed the dataflow must NOT resurrect it as `Running` in
+    /// the store.
+    ///
+    /// This test drives `handle_spawn_result_ok` directly (the same
+    /// helper the event loop's success arm calls) so any future refactor
+    /// that drops the `spawn_result.is_pending()` guard will surface here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn late_successful_spawn_result_does_not_resurrect_failed_dataflow() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("late".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+
+        // Simulate the watchdog having already fired: spawn_result is
+        // Cached(Err), and the Failed status is persisted to the store.
+        df.spawn_result
+            .set_result(Err(eyre!("spawn timed out after 60s (watchdog)")));
+        assert!(!df.spawn_result.is_pending());
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let failed_record = df
+            .make_record(StoreDataflowStatus::Failed {
+                error: "spawn timed out".to_string(),
+            })
+            .expect("make_record should succeed");
+        store
+            .put_dataflow(&failed_record)
+            .expect("seed Failed in store");
+
+        // Now simulate the late-arriving Ok: the event loop would have
+        // removed `daemon_id` from `pending_spawn_results` and then
+        // called `handle_spawn_result_ok`. Drive the helper directly.
+        df.pending_spawn_results.remove(&daemon_id);
+        handle_spawn_result_ok(&mut df, dataflow_id, &daemon_id, store.as_ref());
+
+        // 1. The store entry must still be Failed — NOT promoted to Running.
+        let records = store.list_dataflows().expect("store should list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("seeded record should still be present");
+        assert!(
+            matches!(
+                record.status,
+                dora_coordinator_store::DataflowStatus::Failed { .. }
+            ),
+            "Failed must NOT be promoted to Running by a late successful spawn_result, \
+             got: {:?}",
+            record.status,
+        );
+
+        // 2. spawn_result must still be Cached(Err) — registering a new
+        //    waiter should immediately deliver the original error.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached result should deliver immediately")
+            .expect("sender should not drop");
+        let err = reply.expect_err("late ok must not clobber the watchdog's Err");
+        let msg = format!("{err:?}");
+        assert!(msg.contains("watchdog") || msg.contains("timed out"),);
+    }
+
+    /// Companion test: the happy path through `handle_spawn_result_ok`
+    /// (spawn_result was Pending, all pending daemons have now reported)
+    /// must still promote to Running in the store. Guards against an
+    /// over-eager guard that would block the legitimate success path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn handle_spawn_result_ok_promotes_to_running_when_pending_and_complete() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        // Single-daemon dataflow: after removing this daemon from pending,
+        // the set becomes empty and the success branch should fire.
+        df.pending_spawn_results.insert(daemon_id.clone());
+        df.pending_spawn_results.remove(&daemon_id);
+        assert!(df.spawn_result.is_pending());
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        handle_spawn_result_ok(&mut df, dataflow_id, &daemon_id, store.as_ref());
+
+        // spawn_result must now be Cached(Ok), waiter should receive
+        // DataflowSpawned.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached result should deliver immediately")
+            .expect("sender should not drop");
+        let ok = reply.expect("happy-path ok must not be guarded out");
+        assert!(matches!(ok, ControlRequestReply::DataflowSpawned { .. }));
+
+        // Store must reflect Running.
+        let records = store.list_dataflows().expect("store should list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("dataflow should be persisted");
+        assert!(
+            matches!(
+                record.status,
+                dora_coordinator_store::DataflowStatus::Running
+            ),
+            "happy-path success must persist Running, got: {:?}",
+            record.status,
+        );
     }
 }
