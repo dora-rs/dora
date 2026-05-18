@@ -79,6 +79,21 @@ pub enum DataflowStatus {
     Succeeded,
     Failed {
         error: String,
+        /// Marks the failure as terminal -- subsequent daemon reports
+        /// must NOT promote the record back to `Running` via the
+        /// reconcile path. Set by coordinator-side failure paths
+        /// (e.g. the spawn-timeout watchdog) where the verdict has
+        /// already been delivered to the user via `wait_for_spawn`
+        /// and resurrection would create an inconsistent
+        /// store-vs-CLI view across coordinator restarts.
+        ///
+        /// `#[serde(default)]` so persisted records written by older
+        /// coordinators (which never set this field) deserialize with
+        /// `terminal: false` -- preserving the pre-#1854 behaviour
+        /// where a daemon report could promote Failed -> Running.
+        /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
+        #[serde(default)]
+        terminal: bool,
     },
 }
 

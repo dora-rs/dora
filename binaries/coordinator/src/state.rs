@@ -350,8 +350,9 @@ impl RunningDataflow {
         let descriptor_json = serde_json::to_string(&self.descriptor)
             .map_err(|e| eyre::eyre!("failed to serialize descriptor: {e}"))?;
         let status = match status {
-            DataflowStatus::Failed { error } => DataflowStatus::Failed {
+            DataflowStatus::Failed { error, terminal } => DataflowStatus::Failed {
                 error: truncate_str(&error, MAX_ERROR_BYTES).to_owned(),
+                terminal,
             },
             other => other,
         };

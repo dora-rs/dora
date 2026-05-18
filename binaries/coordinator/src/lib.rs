@@ -566,6 +566,10 @@ async fn start_inner(
                                         } else {
                                             StoreDataflowStatus::Failed {
                                                 error: errors.join("; "),
+                                                // Normal end-of-life failure: not flagged terminal
+                                                // because there is no concurrent path that could
+                                                // resurrect a properly-finished dataflow.
+                                                terminal: false,
                                             }
                                         }
                                     } else {
@@ -1970,6 +1974,10 @@ async fn start_inner(
                                             "recovery timeout ({RECOVERY_TIMEOUT_SECS}s): \
                                              no daemon reconnected"
                                         ),
+                                        // Coordinator gave up waiting for daemon reconnect;
+                                        // mark terminal so a daemon that eventually returns
+                                        // doesn't promote this back to Running via reconcile.
+                                        terminal: true,
                                     };
                                     record.generation += 1;
                                     record.updated_at = now_ms;
@@ -2219,7 +2227,21 @@ async fn start_inner(
                     }
                     match store.get_dataflow(df_id) {
                         Ok(Some(mut record)) => match record.status {
-                            StoreDataflowStatus::Failed { .. }
+                            // Failed records: only promote to Running if NOT
+                            // terminal. The `terminal: true` marker (set by
+                            // the spawn-timeout watchdog and the recovery
+                            // timeout) survives coordinator restarts in the
+                            // store, so a wedged daemon that reconnects
+                            // post-restart cannot resurrect a terminally-
+                            // failed dataflow (round-8 Finding 1).
+                            // Non-terminal Failed records preserve the
+                            // pre-#1854 behaviour where a daemon's report
+                            // could override a coordinator-side Failed
+                            // (e.g. the multi-daemon partial-failure case
+                            // where another daemon is still running).
+                            StoreDataflowStatus::Failed {
+                                terminal: false, ..
+                            }
                             | StoreDataflowStatus::Pending
                             | StoreDataflowStatus::Recovering => {
                                 tracing::info!(
@@ -2234,6 +2256,16 @@ async fn start_inner(
                                 if let Err(e) = store.put_dataflow(&record) {
                                     tracing::warn!("failed to reconcile dataflow {df_id}: {e}");
                                 }
+                            }
+                            StoreDataflowStatus::Failed { terminal: true, .. } => {
+                                // Terminal failure (watchdog or equivalent
+                                // coordinator-side verdict). Daemon's report
+                                // is ignored to preserve the verdict the
+                                // user already received via wait_for_spawn.
+                                tracing::warn!(
+                                    "daemon {daemon_id} reports terminally-failed \
+                                     dataflow {df_id} as running; skipping reconcile",
+                                );
                             }
                             _ => {}
                         },
@@ -2560,6 +2592,10 @@ fn handle_spawn_result_err(
     if let Err(e) = dataflow
         .make_record(StoreDataflowStatus::Failed {
             error: format!("spawn failed: {err}"),
+            // Daemon-side spawn error: the daemon authoritatively
+            // reported the spawn failed. Terminal so a later daemon
+            // status report can't promote this back to Running.
+            terminal: true,
         })
         .and_then(|r| store.put_dataflow(&r))
     {
@@ -2748,6 +2784,11 @@ async fn check_spawn_timeouts(
         if let Err(e) = df
             .make_record(StoreDataflowStatus::Failed {
                 error: err_msg.clone(),
+                // Watchdog verdict is terminal: even across coordinator
+                // restarts, a wedged daemon that eventually reports the
+                // dataflow as running must NOT resurrect this record to
+                // Running via the reconcile path (round-8 Finding 1).
+                terminal: true,
             })
             .and_then(|r| store.put_dataflow(&r))
         {
@@ -2853,8 +2894,16 @@ async fn check_spawn_timeouts(
             );
             let mut sentinel = BTreeMap::new();
             let mut node_results = BTreeMap::new();
+            // Use `"watchdog"` (no angle brackets) because
+            // `NodeId::from(invalid_chars)` PANICS via `validate_node_id`
+            // -- the validator rejects characters outside `[a-zA-Z0-9_.-]`.
+            // This branch is dead code under normal construction (since
+            // `node_to_daemon` is populated at construction time), but
+            // a panic here would abort the coordinator if a future
+            // refactor empties `node_to_daemon` for any reason.
+            // Round-8 Finding 2.
             node_results.insert(
-                NodeId::from("<watchdog>".to_string()),
+                NodeId::from("watchdog".to_string()),
                 Err(NodeError {
                     timestamp: synth_timestamp,
                     cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
@@ -2862,7 +2911,7 @@ async fn check_spawn_timeouts(
                 }),
             );
             sentinel.insert(
-                DaemonId::new(Some("<watchdog>".to_string())),
+                DaemonId::new(Some("watchdog".to_string())),
                 DataflowDaemonResult {
                     timestamp: synth_timestamp,
                     node_results,
@@ -4996,6 +5045,7 @@ mod tests {
         let failed_record = df
             .make_record(StoreDataflowStatus::Failed {
                 error: "spawn timed out".to_string(),
+                terminal: true,
             })
             .expect("make_record should succeed");
         store
@@ -5133,6 +5183,7 @@ mod tests {
         let initial_record = df
             .make_record(StoreDataflowStatus::Failed {
                 error: watchdog_msg.to_string(),
+                terminal: true,
             })
             .expect("make_record");
         store.put_dataflow(&initial_record).expect("seed");
@@ -5149,7 +5200,7 @@ mod tests {
             .find(|r| r.uuid == dataflow_id)
             .expect("seeded record present");
         match &record.status {
-            dora_coordinator_store::DataflowStatus::Failed { error } => assert!(
+            dora_coordinator_store::DataflowStatus::Failed { error, .. } => assert!(
                 error.contains("watchdog") || error.contains("timed out"),
                 "watchdog error message must be preserved, got: {error}"
             ),
@@ -5211,7 +5262,7 @@ mod tests {
             .find(|r| r.uuid == dataflow_id)
             .expect("dataflow persisted");
         match &record.status {
-            dora_coordinator_store::DataflowStatus::Failed { error } => {
+            dora_coordinator_store::DataflowStatus::Failed { error, .. } => {
                 assert!(
                     error.contains("rejection"),
                     "Failed.error must carry the daemon's message, got: {error}"
@@ -5656,6 +5707,140 @@ mod tests {
         assert!(
             daemon_result.node_results.contains_key(&node_id),
             "synthesis must include the originally-assigned node"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Round-8 findings (PR #1854):
+    //   1. Cross-restart reconcile resurrection: store-level `terminal`
+    //      marker so the watchdog's verdict survives coordinator
+    //      restarts where `archived_dataflows` is in-memory-wiped.
+    //   2. Defensive sentinel must not panic: `NodeId::from(invalid)`
+    //      asserts on disallowed chars.
+    // -------------------------------------------------------------------
+
+    /// Round-8 Finding 1: watchdog must persist `terminal: true` so the
+    /// reconcile path skips promotion to Running even after coordinator
+    /// restart (when `archived_dataflows` is empty).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_persists_terminal_marker_for_cross_restart_protection() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        df.pending_spawn_results.insert(daemon_id);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        let record = store
+            .get_dataflow(&dataflow_id)
+            .expect("store should be readable")
+            .expect("watchdog must persist a record");
+        match record.status {
+            dora_coordinator_store::DataflowStatus::Failed { terminal, .. } => {
+                assert!(
+                    terminal,
+                    "watchdog-persisted Failed must carry terminal: true so \
+                     a post-restart reconcile cannot resurrect it"
+                );
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+    }
+
+    /// Round-8 Finding 1 companion: assert that the `Failed` field
+    /// defaults to `terminal: false` when an older record (without the
+    /// field) is deserialized. This guarantees backward compat with
+    /// records persisted by pre-#1854 coordinators.
+    #[test]
+    fn dataflow_status_failed_terminal_field_defaults_to_false_on_legacy_records() {
+        // Simulate a record JSON written by an older coordinator that
+        // didn't know about the `terminal` field.
+        let legacy_json = r#"{ "Failed": { "error": "old failure" } }"#;
+        let deser: dora_coordinator_store::DataflowStatus =
+            serde_json::from_str(legacy_json).expect("legacy Failed must deserialize");
+        match deser {
+            dora_coordinator_store::DataflowStatus::Failed { error, terminal } => {
+                assert_eq!(error, "old failure");
+                assert!(
+                    !terminal,
+                    "legacy Failed records (no terminal field) MUST default to \
+                     terminal: false to preserve the daemon-overrides-coordinator \
+                     reconcile semantics of pre-#1854 stores"
+                );
+            }
+            other => panic!("expected Failed, got: {other:?}"),
+        }
+    }
+
+    /// Round-8 Finding 2: the defensive sentinel branch in the watchdog
+    /// (fired when `node_to_daemon` is empty) must NOT panic. Previous
+    /// versions used `NodeId::from("<watchdog>".to_string())` which
+    /// panics via `validate_node_id` -- the `<` / `>` chars aren't in
+    /// the allowed `[a-zA-Z0-9_.-]` set.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_sentinel_branch_does_not_panic_on_empty_node_to_daemon() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        // Force the sentinel branch: empty node_to_daemon (and daemons)
+        // so the synthesis-from-assignment path produces an empty map.
+        df.node_to_daemon.clear();
+        df.daemons.clear();
+        df.pending_spawn_results.clear();
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+
+        // If `NodeId::from("<watchdog>")` is reintroduced, this awaits
+        // a panic and the test fails. Currently uses `"watchdog"` which
+        // passes validation.
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // Sentinel result must be present and classify as Failed.
+        let per_daemon = dataflow_results
+            .get(&dataflow_id)
+            .expect("sentinel must populate dataflow_results");
+        assert!(!per_daemon.is_empty(), "sentinel must be non-empty");
+        assert!(
+            !per_daemon.values().all(DataflowDaemonResult::is_ok),
+            "sentinel must classify as Failed (not vacuously Finished)"
         );
     }
 }
