@@ -14,7 +14,7 @@ use dora_core::{descriptor::DescriptorExt, uhlc::HLC};
 use dora_message::{
     BuildId, DataflowId,
     cli_to_coordinator::ControlRequest,
-    common::DaemonId,
+    common::{DaemonId, NodeError, NodeErrorCause, NodeExitStatus},
     coordinator_to_cli::{
         CleanFailure, ControlRequestReply, DataflowIdAndName, DataflowList, DataflowListEntry,
         DataflowResult, DataflowStatus, LogLevel, LogMessage,
@@ -23,6 +23,7 @@ use dora_message::{
         DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
+    id::NodeId,
 };
 pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
@@ -609,7 +610,31 @@ async fn start_inner(
                             }
                         }
                         std::collections::hash_map::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on DataflowFinishedOnDaemon");
+                            // If the dataflow was previously archived by the
+                            // spawn-timeout watchdog (round-6 Finding 2), merge
+                            // the daemon's late-arriving completion result into
+                            // the synthetic `dataflow_results` entry so the
+                            // per-node details are surfaced via `dora list` /
+                            // `dora check` instead of being silently dropped.
+                            // Per-node `Err(FailedToSpawn(..))` entries
+                            // (synthesized at watchdog time) are overwritten
+                            // by the daemon's real per-node results where they
+                            // overlap, giving the user the best available
+                            // post-mortem info.
+                            if archived_dataflows.contains_key(&uuid) {
+                                let entry = dataflow_results.entry(uuid).or_default();
+                                let existing =
+                                    entry.entry(daemon_id.clone()).or_insert_with(|| {
+                                        DataflowDaemonResult {
+                                            timestamp: result.timestamp,
+                                            node_results: BTreeMap::new(),
+                                        }
+                                    });
+                                existing.timestamp = result.timestamp;
+                                existing.node_results.extend(result.node_results);
+                            } else {
+                                tracing::warn!("dataflow not running on DataflowFinishedOnDaemon",);
+                            }
                         }
                     }
                 }
@@ -1917,6 +1942,7 @@ async fn start_inner(
                 check_spawn_timeouts(
                     &mut running_dataflows,
                     &mut archived_dataflows,
+                    &mut dataflow_results,
                     &mut daemon_connections,
                     &clock,
                     store.as_ref(),
@@ -2610,9 +2636,11 @@ async fn fire_and_forget_rollback(
 ///
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
+#[allow(clippy::too_many_arguments)]
 async fn check_spawn_timeouts(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     store: &dyn CoordinatorStore,
@@ -2738,16 +2766,72 @@ async fn check_spawn_timeouts(
         // stream rather than hanging.
         close_topic_subscribers_on_finish(&mut df);
 
+        // Synthesize a `dataflow_results` entry so:
+        //   - `dora list` shows the dataflow as Failed (instead of
+        //     disappearing entirely — round-6 Finding 1)
+        //   - `dora stop <uuid>` returns DataflowStopped via the early-
+        //     return at the Stop handler (instead of "no known running
+        //     dataflow" — round-6 Finding 3)
+        //   - Late `DataflowFinishedOnDaemon` events can merge into the
+        //     same entry rather than being silently discarded (round-6
+        //     Finding 2; merge logic lives in that handler's Vacant arm).
+        //
+        // For each daemon that was assigned to this dataflow, emit a
+        // per-daemon `DataflowDaemonResult` with one `Err(NodeError {
+        // cause: FailedToSpawn(..) })` entry per node assigned to that
+        // daemon. This makes
+        // `results.values().all(DataflowDaemonResult::is_ok) == false`,
+        // which classifies the dataflow as `Failed` in
+        // `DataflowList` (lib.rs ~1019).
+        let synth_timestamp = clock.new_timestamp();
+        let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = df
+            .daemons
+            .iter()
+            .map(|daemon_id| {
+                let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
+                    .node_to_daemon
+                    .iter()
+                    .filter(|(_, did)| *did == daemon_id)
+                    .map(|(node_id, _)| {
+                        (
+                            node_id.clone(),
+                            Err(NodeError {
+                                timestamp: synth_timestamp,
+                                cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
+                                exit_status: NodeExitStatus::Unknown,
+                            }),
+                        )
+                    })
+                    .collect();
+                (
+                    daemon_id.clone(),
+                    DataflowDaemonResult {
+                        timestamp: synth_timestamp,
+                        node_results: nodes_for_daemon,
+                    },
+                )
+            })
+            .collect();
+        // Insert before draining stop senders so the DataflowResult
+        // they receive carries the synthesized node-level errors.
+        dataflow_results
+            .entry(uuid)
+            .or_default()
+            .extend(synth_results);
+
         // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
         // waiting for the dataflow to stop; that's effectively what just
         // happened (the watchdog took ownership and the dataflow will not
-        // proceed). Report it as a DataflowStopped with an empty result —
-        // the caller can correlate with the persisted Failed status for
-        // detail. Without this drain, stop callers would hang forever
-        // since no DataflowFinishedOnDaemon will arrive.
+        // proceed). Use `dataflow_result` (the helper used by the normal
+        // DataflowFinishedOnDaemon path) over the synthesized entry so
+        // the reply carries the per-node errors that `dora list` /
+        // `dora check` will also surface.
         let stop_reply = ControlRequestReply::DataflowStopped {
             uuid,
-            result: DataflowResult::ok_empty(uuid, clock.new_timestamp()),
+            result: dataflow_results
+                .get(&uuid)
+                .map(|r| dataflow_result(r, uuid, clock))
+                .unwrap_or_else(|| DataflowResult::ok_empty(uuid, clock.new_timestamp())),
         };
         for sender in df.stop_reply_senders.drain(..) {
             let _ = sender.send(Ok(stop_reply.clone()));
@@ -4571,10 +4655,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4628,10 +4715,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4672,10 +4762,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -4755,10 +4848,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -5097,10 +5193,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -5140,10 +5239,13 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
+            &mut dataflow_results,
             &mut daemon_connections,
             &clock,
             store.as_ref(),
@@ -5168,5 +5270,208 @@ mod tests {
             Some("flagged-name"),
             "archive must preserve the dataflow name"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Round-6 findings (PR #1854): post-watchdog UX parity with
+    // normal-failure path. Watchdog now populates `dataflow_results` so
+    // `dora list` / `dora check` / `dora stop` all see the dataflow as
+    // Failed (instead of "disappeared" / "no known running dataflow").
+    // -------------------------------------------------------------------
+
+    /// Round-6 Finding 1: after watchdog fires, `dataflow_results` must
+    /// contain an entry that classifies the dataflow as Failed (i.e. at
+    /// least one per-daemon entry is_ok()==false). Without this, the
+    /// List handler's `finished_failed` iterator skips the dataflow and
+    /// it disappears from `dora list` entirely.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_synthesizes_dataflow_results_for_list_visibility() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        df.pending_spawn_results.insert(daemon_id.clone());
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // `dataflow_results` must contain an entry for the timed-out uuid.
+        let per_daemon = dataflow_results
+            .get(&dataflow_id)
+            .expect("watchdog must synthesize a dataflow_results entry");
+
+        // The entry must have at least one per-daemon DataflowDaemonResult.
+        assert!(
+            !per_daemon.is_empty(),
+            "synthesized entry must have per-daemon results"
+        );
+
+        // Mirror the List classification check (lib.rs ~1019): all per-
+        // daemon results must NOT be is_ok(), so the dataflow is Failed.
+        let is_failed = !per_daemon.values().all(DataflowDaemonResult::is_ok);
+        assert!(
+            is_failed,
+            "synthesized result must classify as Failed (List would show \
+             Finished otherwise)"
+        );
+
+        // Each per-daemon entry must include the dataflow's nodes with
+        // Err(FailedToSpawn(..)) so the user sees which nodes never started.
+        let daemon_result = per_daemon
+            .get(&daemon_id)
+            .expect("entry must include the assigned daemon");
+        let node_err = daemon_result
+            .node_results
+            .get(&node_id)
+            .expect("node must be present in synthesized results");
+        match node_err {
+            Err(NodeError {
+                cause: NodeErrorCause::FailedToSpawn(msg),
+                ..
+            }) => {
+                assert!(
+                    msg.contains("spawn timed out") || msg.contains("timeout"),
+                    "FailedToSpawn cause must carry the watchdog timeout message, got: {msg}"
+                );
+            }
+            other => panic!("expected Err(FailedToSpawn(..)), got: {other:?}"),
+        }
+    }
+
+    /// Round-6 Finding 3: `dora stop <watchdog-failed-uuid>` must return
+    /// `DataflowStopped` (via the cached `dataflow_results` early-return)
+    /// rather than "no known running dataflow". This auto-resolves once
+    /// Finding 1's synthesis is in place — the Stop handler's
+    /// `dataflow_results.get(&uuid)` early-return fires.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dora_stop_after_watchdog_finds_dataflow_results_entry() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), "sender".to_string().into());
+        df.pending_spawn_results.insert(daemon_id);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // The Stop handler at lib.rs:824 does:
+        //   if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+        //       reply DataflowStopped { uuid, result: dataflow_result(result, ...) };
+        //       continue;
+        //   }
+        // The early-return only fires when the synthesis above worked.
+        assert!(
+            dataflow_results.contains_key(&dataflow_id),
+            "Stop handler's dataflow_results early-return must fire for \
+             watchdog-failed dataflows (otherwise stop_dataflow bails \
+             with 'no known running dataflow')"
+        );
+    }
+
+    /// Round-6 Finding 2: late `DataflowFinishedOnDaemon` arrivals must
+    /// merge into the synthetic `dataflow_results` entry, not be silently
+    /// discarded. This tests the merge math directly (extending
+    /// node_results overwrites synthetic FailedToSpawn entries with the
+    /// daemon's real per-node results).
+    #[test]
+    fn late_finished_on_daemon_merge_extends_node_results() {
+        // Step 1: build a synthesized DataflowDaemonResult as the watchdog
+        // would emit. Two nodes assigned, both with FailedToSpawn errors.
+        let synth_timestamp = HLC::default().new_timestamp();
+        let node_a: dora_core::config::NodeId = "node_a".to_string().into();
+        let node_b: dora_core::config::NodeId = "node_b".to_string().into();
+
+        let mut synth = DataflowDaemonResult {
+            timestamp: synth_timestamp,
+            node_results: BTreeMap::new(),
+        };
+        synth.node_results.insert(
+            node_a.clone(),
+            Err(NodeError {
+                timestamp: synth_timestamp,
+                cause: NodeErrorCause::FailedToSpawn("spawn timed out".to_string()),
+                exit_status: NodeExitStatus::Unknown,
+            }),
+        );
+        synth.node_results.insert(
+            node_b.clone(),
+            Err(NodeError {
+                timestamp: synth_timestamp,
+                cause: NodeErrorCause::FailedToSpawn("spawn timed out".to_string()),
+                exit_status: NodeExitStatus::Unknown,
+            }),
+        );
+
+        // Step 2: late `result` from a daemon that DID end up running
+        // node_a successfully and saw node_b crash with a real exit code.
+        let late_timestamp = HLC::default().new_timestamp();
+        let mut late_results: BTreeMap<dora_core::config::NodeId, Result<(), NodeError>> =
+            BTreeMap::new();
+        late_results.insert(node_a.clone(), Ok(()));
+        late_results.insert(
+            node_b.clone(),
+            Err(NodeError {
+                timestamp: late_timestamp,
+                cause: NodeErrorCause::Other {
+                    stderr: "real error".to_string(),
+                },
+                exit_status: NodeExitStatus::ExitCode(42),
+            }),
+        );
+
+        // Step 3: apply the merge logic from the Vacant arm.
+        synth.timestamp = late_timestamp;
+        synth.node_results.extend(late_results);
+
+        // The merged entry must reflect the daemon's real results, not
+        // the synthetic ones, for the nodes that overlap.
+        assert!(matches!(synth.node_results.get(&node_a), Some(Ok(()))));
+        match synth.node_results.get(&node_b) {
+            Some(Err(NodeError {
+                cause: NodeErrorCause::Other { stderr },
+                exit_status: NodeExitStatus::ExitCode(42),
+                ..
+            })) => {
+                assert_eq!(stderr, "real error");
+            }
+            other => panic!("expected merged real Err, got: {other:?}"),
+        }
+        assert_eq!(synth.timestamp, late_timestamp);
     }
 }
