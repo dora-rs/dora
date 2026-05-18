@@ -45,15 +45,50 @@ use uuid::Uuid;
 
 const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
 
-/// Deadline after which a distributed spawn that has not received every
-/// daemon's `spawn_result` is considered stuck. The heartbeat-driven
+/// Default deadline after which a distributed spawn that has not received
+/// every daemon's `spawn_result` is considered stuck. The heartbeat-driven
 /// watchdog fails such spawns and rolls back any daemons that already
 /// reported success.
 ///
 /// Chosen well above realistic per-daemon spawn time (even with `--uv`
 /// Python venv preparation) so the watchdog only fires on genuine hangs.
+/// Overridable at process startup via the `DORA_SPAWN_RESULT_TIMEOUT_SECS`
+/// environment variable (parsed once into [`spawn_result_timeout`]; invalid
+/// or zero values fall back to this default).
+///
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
-const SPAWN_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
+const SPAWN_RESULT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(60);
+
+/// Wall-clock budget for the entire rollback batch issued by the spawn
+/// timeout watchdog. Caps how long the heartbeat handler can block dispatching
+/// stop RPCs to (possibly stuck) succeeded daemons.
+///
+/// Without this cap, a worst-case rollback of N succeeded-but-now-wedged
+/// daemons could block the heartbeat handler for up to `N * TCP_READ_TIMEOUT`
+/// (30 s each), during which heartbeats to *other* healthy daemons are not
+/// dispatched. Since the daemon-disconnect threshold is also 30 s, that delay
+/// can falsely declare healthy daemons dead during recovery -- a watchdog
+/// destabilising healthy components is an anti-pattern.
+///
+/// 5 s is generous for fast-failing stops yet bounded enough that healthy
+/// daemons stay within heartbeat tolerance.
+const SPAWN_TIMEOUT_ROLLBACK_BUDGET: Duration = Duration::from_secs(5);
+
+/// Reads `DORA_SPAWN_RESULT_TIMEOUT_SECS` once and caches the result so
+/// each heartbeat tick is not repeatedly parsing the env var. Invalid or
+/// non-positive values fall back to [`SPAWN_RESULT_TIMEOUT_DEFAULT`].
+fn spawn_result_timeout() -> Duration {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Duration> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("DORA_SPAWN_RESULT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(SPAWN_RESULT_TIMEOUT_DEFAULT)
+    })
+}
 
 pub(crate) mod artifacts;
 mod control;
@@ -1835,7 +1870,17 @@ async fn start_inner(
                             tracing::warn!("failed to persist daemon unregistration: {e}");
                         }
                     }
-                    // Clean up running_dataflows: remove disconnected daemon references
+                    // Clean up running_dataflows: remove disconnected daemon references.
+                    //
+                    // Note: this intentionally does NOT fire `spawn_result.set_result()`
+                    // even if the disconnect leaves `pending_spawn_results` empty.
+                    // The spawn timeout watchdog (`check_spawn_timeouts`, below)
+                    // is the single chokepoint that releases `wait_for_spawn`
+                    // waiters with an error -- it fires regardless of *why*
+                    // `spawn_result` is still Pending past the deadline
+                    // (stuck daemon OR disconnect-mid-spawn). Adding a
+                    // direct set_result here would create two firing paths
+                    // and risk inconsistent error messages.
                     for (_uuid, df) in running_dataflows.iter_mut() {
                         for machine_id in &disconnected {
                             df.daemons.remove(machine_id);
@@ -2402,7 +2447,7 @@ fn topic_outputs_by_daemon(
 }
 
 /// Scan `running_dataflows` for spawns that have been pending past
-/// [`SPAWN_RESULT_TIMEOUT`] and resolve them as failed.
+/// [`spawn_result_timeout`] and resolve them as failed.
 ///
 /// For each stuck dataflow:
 /// 1. Roll back any daemons that already reported a successful spawn
@@ -2425,14 +2470,14 @@ async fn check_spawn_timeouts(
     clock: &HLC,
     store: &dyn CoordinatorStore,
 ) {
+    let timeout_threshold = spawn_result_timeout();
     // First pass: identify stuck spawns and snapshot the daemon sets we
     // need for rollback. We collect into an owned Vec so the immutable
     // borrow of `running_dataflows` drops before we mutate it below.
     let stuck: Vec<(DataflowId, BTreeSet<DaemonId>, usize)> = running_dataflows
         .iter()
         .filter_map(|(uuid, df)| {
-            if df.spawn_result.is_pending() && df.spawn_started_at.elapsed() > SPAWN_RESULT_TIMEOUT
-            {
+            if df.spawn_result.is_pending() && df.spawn_started_at.elapsed() > timeout_threshold {
                 // Daemons assigned to this dataflow that already reported
                 // successful spawn (i.e. were removed from
                 // `pending_spawn_results`). These are the ones we need to
@@ -2452,29 +2497,47 @@ async fn check_spawn_timeouts(
     for (uuid, succeeded_daemons, pending_count) in stuck {
         tracing::warn!(
             dataflow = %uuid,
-            timeout_secs = SPAWN_RESULT_TIMEOUT.as_secs(),
+            timeout_secs = timeout_threshold.as_secs(),
             pending = pending_count,
             succeeded = succeeded_daemons.len(),
             "spawn timeout: releasing waiters and rolling back",
         );
 
-        // Best-effort rollback. Failures here are logged but do not block
-        // firing the spawn_result error — the user must hear about the
-        // timeout regardless of whether stop dispatches succeed.
-        let rollback_errors =
-            run::rollback_spawned_daemons(uuid, &succeeded_daemons, daemon_connections, clock)
-                .await;
-        if !rollback_errors.is_empty() {
-            let rollback_summary = rollback_errors
-                .iter()
-                .map(|(id, e)| format!("  {id}: {e}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            tracing::warn!(
-                dataflow = %uuid,
-                "rollback partial after spawn timeout, {} stop(s) failed:\n{rollback_summary}",
-                rollback_errors.len(),
-            );
+        // Best-effort rollback, bounded by SPAWN_TIMEOUT_ROLLBACK_BUDGET.
+        // Failures here are logged but do not block firing the spawn_result
+        // error -- the user must hear about the timeout regardless of
+        // whether stop dispatches succeed. The wall-clock budget caps how
+        // long this heartbeat tick can block: without it, N wedged
+        // succeeded daemons could block heartbeat dispatch for
+        // N * TCP_READ_TIMEOUT (30s each), risking false-positive
+        // disconnections of healthy daemons (Finding 1 / cascade risk).
+        let rollback_outcome = tokio::time::timeout(
+            SPAWN_TIMEOUT_ROLLBACK_BUDGET,
+            run::rollback_spawned_daemons(uuid, &succeeded_daemons, daemon_connections, clock),
+        )
+        .await;
+        match rollback_outcome {
+            Ok(rollback_errors) if !rollback_errors.is_empty() => {
+                let rollback_summary = rollback_errors
+                    .iter()
+                    .map(|(id, e)| format!("  {id}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                tracing::warn!(
+                    dataflow = %uuid,
+                    "rollback partial after spawn timeout, {} stop(s) failed:\n{rollback_summary}",
+                    rollback_errors.len(),
+                );
+            }
+            Ok(_) => {}
+            Err(_elapsed) => {
+                tracing::warn!(
+                    dataflow = %uuid,
+                    budget_secs = SPAWN_TIMEOUT_ROLLBACK_BUDGET.as_secs(),
+                    "spawn-timeout rollback exceeded budget; \
+                     some succeeded daemons may not have been stopped",
+                );
+            }
         }
 
         // Fire the spawn_result error and persist the dataflow as Failed.
@@ -2482,7 +2545,7 @@ async fn check_spawn_timeouts(
             let err_msg = format!(
                 "spawn timed out after {}s; {} daemon(s) never reported \
                  spawn_result; rolled back {} previously-started daemon(s)",
-                SPAWN_RESULT_TIMEOUT.as_secs(),
+                timeout_threshold.as_secs(),
                 pending_count,
                 succeeded_daemons.len(),
             );
@@ -4292,7 +4355,7 @@ mod tests {
         let node_id: dora_core::config::NodeId = "sender".to_string().into();
         let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
         // Backdate the spawn start so the watchdog treats it as stuck.
-        df.spawn_started_at = Instant::now() - SPAWN_RESULT_TIMEOUT - Duration::from_secs(1);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
         // Still waiting on the daemon's spawn_result; this is the trigger
         // condition the watchdog is meant to catch.
         df.pending_spawn_results.insert(daemon_id);
@@ -4386,7 +4449,7 @@ mod tests {
         let daemon_id = DaemonId::new(Some("m1".to_string()));
         let node_id: dora_core::config::NodeId = "sender".to_string().into();
         let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id);
-        df.spawn_started_at = Instant::now() - SPAWN_RESULT_TIMEOUT - Duration::from_secs(1);
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
         // Spawn already resolved successfully — the watchdog must NOT
         // re-fire on subsequent heartbeats and clobber the cached result.
         df.spawn_result
@@ -4418,5 +4481,118 @@ mod tests {
             .expect("sender should not drop");
         let ok = reply.expect("the cached Ok result must be preserved");
         assert!(matches!(ok, ControlRequestReply::DataflowSpawned { .. }));
+    }
+
+    /// Covers Finding 2 from the self-review on PR #1854: exercises the
+    /// rollback dispatch path with a *non-empty* succeeded set. The other
+    /// timeout tests have `succeeded = {}`, so `rollback_spawned_daemons`
+    /// short-circuits at its `if spawned_daemons.is_empty()` early-exit
+    /// and never actually sends a stop message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn check_spawn_timeouts_dispatches_rollback_stop_to_succeeded_daemon() {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_a = DaemonId::new(Some("daemon-a".to_string())); // succeeded
+        let daemon_b = DaemonId::new(Some("daemon-b".to_string())); // still pending
+
+        // Mock daemon `a` -- replies to StopDataflow with Ok so the rollback
+        // completes inside the budget; an absent reply would block on
+        // TCP_READ_TIMEOUT and trip the budget timeout instead.
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies_a = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let conn_a =
+            crate::state::DaemonConnection::new(tx_a, pending_replies_a.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_a.clone(), conn_a);
+
+        let stop_seen = Arc::new(tokio::sync::Mutex::new(false));
+        let stop_seen_task = stop_seen.clone();
+        let daemon_a_task = tokio::spawn(async move {
+            while let Some(outbound) = rx_a.recv().await {
+                let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+                let request_id = Uuid::parse_str(&outbound_raw.id).expect("valid request id");
+                let reply = match outbound_raw.params.inner {
+                    DaemonCoordinatorEvent::StopDataflow { .. } => {
+                        *stop_seen_task.lock().await = true;
+                        serde_json::to_string(&DaemonCoordinatorReply::StopResult(Ok(()))).unwrap()
+                    }
+                    other => panic!("unexpected event on daemon-a in rollback test: {other:?}"),
+                };
+                let reply_tx = pending_replies_a
+                    .lock()
+                    .await
+                    .remove(&request_id)
+                    .expect("pending reply sender should exist");
+                let _ = reply_tx.send(reply);
+            }
+        });
+
+        // Build a RunningDataflow where `a` succeeded (in `daemons` but not
+        // in `pending_spawn_results`) and `b` is still pending.
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+        df.daemons.insert(daemon_b.clone());
+        df.pending_spawn_results.insert(daemon_b.clone());
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        // Register a waiter so we can confirm spawn_result fires.
+        let (waiter_tx, waiter_rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(waiter_tx);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // 1. The mock daemon must have received a stop dispatch.
+        assert!(
+            *stop_seen.lock().await,
+            "rollback must dispatch StopDataflow to the succeeded daemon"
+        );
+
+        // 2. The waiter must be released with an error (regardless of
+        //    rollback outcome).
+        let reply = timeout(TokioDuration::from_secs(1), waiter_rx)
+            .await
+            .expect("waiter should resolve, not hang")
+            .expect("sender should not drop");
+        let err = reply.expect_err("timed-out spawn must surface as Err");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("spawn timed out") || msg.contains("timeout"),
+            "error should explain the timeout, got: {msg}"
+        );
+
+        // 3. Dataflow must be persisted as Failed so a coordinator restart
+        //    does not resurrect it as Recovering.
+        let records = store.list_dataflows().expect("store should list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("dataflow should be persisted after timeout");
+        assert!(
+            matches!(
+                record.status,
+                dora_coordinator_store::DataflowStatus::Failed { .. }
+            ),
+            "dataflow must be persisted as Failed, got: {:?}",
+            record.status,
+        );
+
+        daemon_a_task.abort();
     }
 }
