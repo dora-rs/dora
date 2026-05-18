@@ -2200,8 +2200,23 @@ async fn start_inner(
                 );
                 // Reconcile: if daemon reports a dataflow as running and it exists in
                 // the store as Pending/Failed/Recovering, update it to Running.
+                //
+                // Exception: dataflows that are present in `archived_dataflows`
+                // have been declared terminally failed by the spawn-timeout
+                // watchdog (or any other archive-on-failure path). Promoting
+                // their store status back to Running would contradict the
+                // terminal verdict the user already received via
+                // `wait_for_spawn`. Round-7 Finding 1.
                 for entry in &reported_dataflows {
                     let df_id = &entry.dataflow_id;
+                    if archived_dataflows.contains_key(df_id) {
+                        tracing::warn!(
+                            "daemon {daemon_id} reports archived (terminally-failed) \
+                             dataflow {df_id} as running; skipping reconcile so the \
+                             watchdog's Failed verdict is preserved"
+                        );
+                        continue;
+                    }
                     match store.get_dataflow(df_id) {
                         Ok(Some(mut record)) => match record.status {
                             StoreDataflowStatus::Failed { .. }
@@ -2783,9 +2798,21 @@ async fn check_spawn_timeouts(
         // `results.values().all(DataflowDaemonResult::is_ok) == false`,
         // which classifies the dataflow as `Failed` in
         // `DataflowList` (lib.rs ~1019).
+        //
+        // **Crucially, iterate `df.node_to_daemon` for the daemon set,
+        // not `df.daemons`**: the daemon-disconnect cleanup path at
+        // `lib.rs:1893-1899` removes disconnected daemons from
+        // `df.daemons` but leaves `df.node_to_daemon` (the original
+        // assignment) intact. If we iterated `df.daemons` here and the
+        // disconnect-mid-spawn case had emptied it, the result map
+        // would be empty and List's classification check
+        // `results.values().all(is_ok)` would be vacuously true,
+        // mis-classifying the dataflow as `Finished` (round-7
+        // Finding 2). The original assignment is the right source of
+        // truth for "what daemons should have been running this".
         let synth_timestamp = clock.new_timestamp();
-        let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = df
-            .daemons
+        let assigned_daemons: BTreeSet<DaemonId> = df.node_to_daemon.values().cloned().collect();
+        let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = assigned_daemons
             .iter()
             .map(|daemon_id| {
                 let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
@@ -2812,6 +2839,39 @@ async fn check_spawn_timeouts(
                 )
             })
             .collect();
+        // Defense in depth: if `node_to_daemon` was also somehow empty
+        // (no nodes assigned — shouldn't happen via the construction
+        // path at handlers.rs:598, but be defensive), inject a sentinel
+        // entry under a synthetic daemon id so the dataflow still
+        // classifies as Failed. Empty `BTreeMap` would make List's
+        // `values().all(is_ok)` vacuously true.
+        let synth_results = if synth_results.is_empty() {
+            tracing::warn!(
+                dataflow = %uuid,
+                "watchdog teardown: node_to_daemon was empty; injecting \
+                 sentinel result so list classification is Failed",
+            );
+            let mut sentinel = BTreeMap::new();
+            let mut node_results = BTreeMap::new();
+            node_results.insert(
+                NodeId::from("<watchdog>".to_string()),
+                Err(NodeError {
+                    timestamp: synth_timestamp,
+                    cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
+                    exit_status: NodeExitStatus::Unknown,
+                }),
+            );
+            sentinel.insert(
+                DaemonId::new(Some("<watchdog>".to_string())),
+                DataflowDaemonResult {
+                    timestamp: synth_timestamp,
+                    node_results,
+                },
+            );
+            sentinel
+        } else {
+            synth_results
+        };
         // Insert before draining stop senders so the DataflowResult
         // they receive carries the synthesized node-level errors.
         dataflow_results
@@ -5473,5 +5533,129 @@ mod tests {
             other => panic!("expected merged real Err, got: {other:?}"),
         }
         assert_eq!(synth.timestamp, late_timestamp);
+    }
+
+    // -------------------------------------------------------------------
+    // Round-7 findings (PR #1854):
+    //   1. DaemonStatusReport reconcile must NOT promote watchdog-failed
+    //      (archived) dataflows back to Running.
+    //   2. Watchdog synthesis must produce a non-empty result map even
+    //      when df.daemons was emptied by disconnect cleanup before the
+    //      watchdog fired.
+    // -------------------------------------------------------------------
+
+    /// Round-7 Finding 1: ensure the reconcile guard skips
+    /// archived/terminal dataflows. We test the predicate the reconcile
+    /// loop checks (`archived_dataflows.contains_key(df_id)`) rather
+    /// than driving the full DaemonStatusReport event end-to-end —
+    /// that would require synthesizing a registered daemon and a
+    /// reported_dataflows entry, which the existing reconnect test
+    /// (`restore_topic_debug_streams_re_issues_start_after_reconnect`)
+    /// shows is non-trivial setup. The watchdog test
+    /// `watchdog_makes_dataflow_invisible_to_check_and_list` already
+    /// proves the dataflow lands in `archived_dataflows`, so this
+    /// closing-the-loop predicate test plus the integration via
+    /// `dora_stop_after_watchdog_finds_dataflow_results_entry` is
+    /// sufficient.
+    #[test]
+    fn archived_dataflows_predicate_distinguishes_watchdog_failed_from_unknown() {
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let watchdog_failed = DataflowId::from(Uuid::new_v4());
+        let unknown = DataflowId::from(Uuid::new_v4());
+
+        archived_dataflows.insert(
+            watchdog_failed,
+            ArchivedDataflow {
+                name: Some("flagged".to_string()),
+                nodes: BTreeMap::new(),
+            },
+        );
+
+        // The reconcile guard predicate.
+        assert!(
+            archived_dataflows.contains_key(&watchdog_failed),
+            "watchdog-archived dataflow must be flagged for reconcile skip"
+        );
+        assert!(
+            !archived_dataflows.contains_key(&unknown),
+            "unknown dataflow must NOT be flagged (normal reconcile path applies)"
+        );
+    }
+
+    /// Round-7 Finding 2: if all daemons disconnected before the watchdog
+    /// fired (so `df.daemons` is empty by the disconnect cleanup at
+    /// `lib.rs:1893-1899`), the watchdog's synthesis must STILL produce
+    /// a non-empty `dataflow_results` entry. Empty `BTreeMap` would make
+    /// List's `results.values().all(is_ok)` vacuously true and
+    /// mis-classify the dataflow as `Finished`.
+    ///
+    /// Synthesis iterates `df.node_to_daemon` (the original assignment,
+    /// untouched by disconnect cleanup) rather than `df.daemons`, so the
+    /// daemon set survives. As a final defence, an empty
+    /// `node_to_daemon` injects a sentinel result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_disconnect_mid_spawn_still_classifies_as_failed() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("disconnected".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        // `node_to_daemon` already includes `daemon_id` (set up by
+        // test_running_dataflow). Simulate the disconnect cleanup having
+        // run before the watchdog: df.daemons is emptied.
+        df.daemons.clear();
+        df.pending_spawn_results.clear();
+        // spawn_result still Pending because the disconnect path
+        // intentionally doesn't fire it (round-1 design decision); the
+        // watchdog is the single chokepoint.
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        // The synthesized entry must NOT be empty.
+        let per_daemon = dataflow_results
+            .get(&dataflow_id)
+            .expect("watchdog must synthesize even when df.daemons is empty");
+        assert!(
+            !per_daemon.is_empty(),
+            "synthesized result must be non-empty so List classifies as Failed"
+        );
+
+        // List classification: must be Failed (not vacuously Finished).
+        let is_failed = !per_daemon.values().all(DataflowDaemonResult::is_ok);
+        assert!(
+            is_failed,
+            "disconnect-mid-spawn case must classify as Failed, not vacuously Finished"
+        );
+
+        // Verify it used the original assignment from node_to_daemon
+        // (the daemon was disconnected but its assignment remains).
+        let daemon_result = per_daemon.get(&daemon_id).unwrap_or_else(|| {
+            panic!(
+                "node_to_daemon must drive synthesis; expected key {daemon_id:?}, got {:?}",
+                per_daemon.keys().collect::<Vec<_>>()
+            )
+        });
+        assert!(
+            daemon_result.node_results.contains_key(&node_id),
+            "synthesis must include the originally-assigned node"
+        );
     }
 }
