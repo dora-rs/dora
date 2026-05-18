@@ -2848,7 +2848,7 @@ async fn check_spawn_timeouts(
         // disconnect-mid-spawn case had emptied it, the result map
         // would be empty and List's classification check
         // `results.values().all(is_ok)` would be vacuously true,
-        // mis-classifying the dataflow as `Finished` (round-7
+        // misclassifying the dataflow as `Finished` (round-7
         // Finding 2). The original assignment is the right source of
         // truth for "what daemons should have been running this".
         let synth_timestamp = clock.new_timestamp();
@@ -5638,7 +5638,7 @@ mod tests {
     /// `lib.rs:1893-1899`), the watchdog's synthesis must STILL produce
     /// a non-empty `dataflow_results` entry. Empty `BTreeMap` would make
     /// List's `results.values().all(is_ok)` vacuously true and
-    /// mis-classify the dataflow as `Finished`.
+    /// misclassify the dataflow as `Finished`.
     ///
     /// Synthesis iterates `df.node_to_daemon` (the original assignment,
     /// untouched by disconnect cleanup) rather than `df.daemons`, so the
