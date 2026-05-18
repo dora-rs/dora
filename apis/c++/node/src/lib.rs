@@ -9,13 +9,12 @@ use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
 use dora_node_api::{
-    self,
+    self, Event, EventStream, Metadata as DoraMetadata,
+    MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
     arrow::array::{AsArray, UInt8Array},
     merged::{MergeExternal, MergedEvent},
-    Event, EventStream, Metadata as DoraMetadata, MetadataParameters as DoraMetadataParameters,
-    Parameter as DoraParameter, TryRecvError,
 };
-use eyre::{bail, eyre, Result as EyreResult};
+use eyre::{Result as EyreResult, bail, eyre};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
@@ -25,7 +24,7 @@ pub use prelude::*;
 pub mod prelude {
     pub use dora_ros2_bridge::prelude::*;
 }
-use futures_lite::{stream, Stream, StreamExt};
+use futures_lite::{Stream, StreamExt, stream};
 
 #[cxx::bridge]
 #[allow(clippy::needless_lifetimes)]
