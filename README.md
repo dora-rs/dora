@@ -431,7 +431,7 @@ examples/               # Example dataflows
 | Language | Node API | Operator API | Docs | Status |
 |----------|----------|--------------|------|--------|
 | Rust | `dora-node-api` | `dora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
-| Python >= 3.8 | `pip install dora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
+| Python >= 3.11 | `pip install dora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
 | C | `dora-node-api-c` | `dora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
 | C++ | `dora-node-api-cxx` | `dora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
 | ROS2 >= Foxy | `dora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |

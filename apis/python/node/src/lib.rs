@@ -450,7 +450,9 @@ impl Node {
         _py: Python,
     ) -> eyre::Result<SampleHandler> {
         let parameters = pydict_to_metadata(metadata)?;
-        let data_id: DataId = output_id.into();
+        let data_id: DataId = output_id
+            .parse()
+            .map_err(|e| eyre::eyre!("invalid output_id: {e}"))?;
         if !self.node.get_mut().validate_output(&data_id) {
             eyre::bail!("Output `{data_id}` not in node's output list.")
         }
