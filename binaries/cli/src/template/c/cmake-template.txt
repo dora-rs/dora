@@ -35,10 +35,8 @@ if(DORA_ROOT_DIR)
     add_custom_command(OUTPUT ${dora_c_include_dir}
         WORKING_DIRECTORY ${DORA_ROOT_DIR}
         DEPENDS Dora
-        COMMAND
-            mkdir ${CMAKE_CURRENT_BINARY_DIR}/include/c -p
-            &&
-            cp apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_c_include_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory apis/c/node ${dora_c_include_dir}/node
     )
 
     add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
@@ -62,10 +60,8 @@ else()
     add_custom_command(OUTPUT ${dora_c_include_dir}
         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
         DEPENDS Dora
-        COMMAND
-            mkdir ${CMAKE_CURRENT_BINARY_DIR}/include/c -p
-            &&
-            cp ../apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${dora_c_include_dir}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory ../apis/c/node ${dora_c_include_dir}/node
     )
 
     set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/${dora_cargo_profile_dir})
