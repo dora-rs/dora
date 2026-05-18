@@ -6,6 +6,9 @@ extend-exclude = ["Changelog.md"]
 DeviceNDArray = "DeviceNDArray"
 Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
 clonable_command = "clonable_command"
+# CPython buffer-protocol flag constants. PyBUF_ND = "N-Dimensional buffer".
+# Introduced by the Python zero-copy send work (#1833).
+PyBUF_ND = "PyBUF_ND"
 
 [default.extend-words]
 # ratatui is a Rust TUI crate name, not a misspelling of ratatouille

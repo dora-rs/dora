@@ -709,7 +709,14 @@ impl DoraNode {
         Ok((node, event_stream))
     }
 
-    fn validate_output(&mut self, output_id: &DataId) -> bool {
+    /// Check whether `output_id` is declared as an output of this node.
+    ///
+    /// Returns `true` if the output is declared (or this node is `interactive`,
+    /// which has no static output declaration); `false` and emits a one-time
+    /// warning if the output is unknown. Public so callers building higher-level
+    /// send helpers (e.g. the Python `send_output_raw` zero-copy path) can
+    /// validate before allocating a buffer.
+    pub fn validate_output(&mut self, output_id: &DataId) -> bool {
         if !self.node_config.outputs.contains(output_id) && !self.interactive {
             if !self.warned_unknown_output.contains(output_id) {
                 warn!("Ignoring output `{output_id}` not in node's output list.");

@@ -27,7 +27,7 @@ serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = "0.1.8"
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html
-pyo3 = { workspace = true, features = ["eyre", "abi3-py37"], optional = true }
+pyo3 = { workspace = true, features = ["eyre", "abi3-py311"], optional = true }
 tracing = { workspace = true }
 dora-download = { workspace = true }
 flume = { workspace = true }
@@ -35,6 +35,9 @@ tracing-opentelemetry = { version = "0.32.0", optional = true }
 pythonize = { workspace = true, optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 aligned-vec = "0.5.0"
+
+[build-dependencies]
+pyo3-build-config = { workspace = true }
 
 [features]
 default = ["tracing", "metrics"]

@@ -374,7 +374,7 @@ examples/               # 示例数据流
 | 语言 | 节点 API | 算子 API | 文档 | 状态 |
 |------|----------|----------|------|------|
 | Rust | `dora-node-api` | `dora-operator-api` | [API 参考](docs/api-rust.md) | 一等支持 |
-| Python >= 3.8 | `pip install dora-rs` | 已包含 | [入门指南](docs/python-guide.md)、[API 参考](docs/api-python.md) | 一等支持 |
+| Python >= 3.11 | `pip install dora-rs` | 已包含 | [入门指南](docs/python-guide.md)、[API 参考](docs/api-python.md) | 一等支持 |
 | C | `dora-node-api-c` | `dora-operator-api-c` | [API 参考](docs/api-c.md) | 支持 |
 | C++ | `dora-node-api-cxx` | `dora-operator-api-cxx` | [API 参考](docs/api-cxx.md) | 支持 |
 | ROS2 >= Foxy | `dora-ros2-bridge` | -- | [桥接指南](docs/ros2-bridge.md) | 实验性 |

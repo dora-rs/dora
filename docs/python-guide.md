@@ -248,6 +248,51 @@ With `--uv`, dora creates a dedicated `uv` virtual environment at `<working-dir>
 
 Script-only Python nodes (no `build:` block) keep using your active `uv` environment as before — they have no deps for dora to install. See [CLI reference](cli.md#dora-build) for details and the [`dora doctor` guide](debugging.md#environment-diagnosis) to verify `uv` is on PATH.
 
+## Zero-Copy Sends with `send_output_raw`
+
+`node.send_output(...)` performs **one copy** to move your data into dora's send buffer. For large payloads (camera frames, point clouds, embeddings) at high rates that copy is a real CPU + memory-bandwidth cost.
+
+`node.send_output_raw(output_id, length, metadata=...)` returns a `SampleHandler` that owns dora's pre-allocated send buffer. You write into it directly via Python's buffer protocol (`memoryview`, `numpy.asarray`, `struct.pack_into`) and call `.send()` — no intermediate copy.
+
+**Requires Python >= 3.11** (uses the stable buffer-protocol C API).
+
+### Recommended: context-manager form
+
+```python
+height, width = 1080, 1920
+with node.send_output_raw("frame", height * width * 3, metadata={"width": width}) as buf:
+    arr = np.asarray(buf, dtype=np.uint8).reshape(height, width, 3)
+    arr[:] = frame
+    del arr  # release the numpy view before `with` exits (see "Safety contract")
+# data is sent automatically when the `with` block exits
+```
+
+The `with` block yields a `SampleBuffer` (a buffer-protocol exporter), **not** a memoryview. Any consumer derived from it — `np.asarray(buf)`, `memoryview(buf)`, `struct.pack_into(buf, ...)` — must be released before the `with` block exits, otherwise `__exit__` 's `send()` refuses.
+
+### Manual form (when send timing is conditional)
+
+```python
+sample = node.send_output_raw("frame", height * width * 3)
+mv = sample.as_memoryview()
+arr = np.asarray(mv, dtype=np.uint8).reshape(height, width, 3)
+arr[:] = frame
+del arr        # drop derived numpy view first
+mv.release()   # then release the memoryview itself
+sample.send()  # ship it
+```
+
+### Safety contract
+
+The handler enforces a small protocol so the zero-copy path stays sound:
+
+- **Write-only-once.** Calling `.send()` twice on the same handler is an error.
+- **No view past `send()`.** Once `.send()` runs, any subsequent attempt to acquire a buffer view raises `BufferError`.
+- **No `send()` while views are open.** If any consumer derived from the yielded `SampleBuffer` (memoryview, numpy array, struct view, etc.) is still alive when `.send()` runs, the send is refused with a clear "buffer view(s) still open" error. Release every derived view first — either `del` them (numpy arrays) or `.release()` them (memoryview).
+
+The context-manager form delegates this to the `SampleBuffer` 's tracked `__getbuffer__` / `__releasebuffer__` pair: each derived consumer goes through it and shows up in `view_count`. If `view_count > 0` at `__exit__`, send is refused — the user has to free the holdouts first. Using a memoryview *inline* (e.g. `np.asarray(buf, dtype=np.uint8)[:] = frame`) is safe because the inline expression releases its view at the end of the statement.
+
+See [`examples/python-zero-copy-send/`](https://github.com/dora-rs/dora/tree/main/examples/python-zero-copy-send) for a runnable example.
+
 ## Next Steps
 
 - [Python API Reference](api-python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA

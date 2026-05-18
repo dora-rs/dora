@@ -411,6 +411,27 @@ fn smoke_python_dataflow() {
 }
 
 #[test]
+fn smoke_python_zero_copy_send_example() {
+    run_smoke_test(
+        "python-zero-copy-send",
+        "examples/python-zero-copy-send/dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
+fn smoke_python_zero_copy_send_contract() {
+    // Buffer-protocol contract tests for `node.send_output_raw`.
+    // The contract node exits non-zero on any failure; smoke harness
+    // surfaces the exit code as a test failure.
+    run_smoke_test(
+        "python-zero-copy-send-contract",
+        "examples/python-zero-copy-send/contract_dataflow.yml",
+        Duration::from_secs(30),
+    );
+}
+
+#[test]
 fn smoke_python_async() {
     run_smoke_test(
         "python-async",
@@ -502,6 +523,17 @@ fn smoke_local_python_dataflow() {
     run_smoke_test_local(
         "local-python-dataflow",
         "examples/python-dataflow/dataflow.yml",
+        30,
+    );
+}
+
+#[test]
+fn smoke_local_python_zero_copy_send_contract() {
+    // Local-mode variant of the buffer-protocol contract test.
+    // The contract node exits when finished, so 30s is just an upper bound.
+    run_smoke_test_local(
+        "local-python-zero-copy-send-contract",
+        "examples/python-zero-copy-send/contract_dataflow.yml",
         30,
     );
 }

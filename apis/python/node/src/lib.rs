@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_node_api::dora_core::config::NodeId;
+use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
 use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
@@ -17,6 +17,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use tokio::runtime::{Builder, Runtime};
 use tracing::{Level, span};
+
+mod sample_handler;
+use sample_handler::SampleHandler;
 static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     Builder::new_multi_thread()
         .worker_threads(4)
@@ -393,6 +396,72 @@ impl Node {
         Ok(())
     }
 
+    /// `send_output_raw` send data from the node via a writable buffer (zero-copy).
+    ///
+    /// Returns a :class:`SampleHandler` that pre-allocates `data_length` bytes
+    /// of shared-memory- or aligned-heap-backed storage. Fill the buffer via
+    /// Python's buffer protocol (`memoryview`, `numpy.frombuffer`, `struct`, ...)
+    /// and then call ``.send()`` — or use the context-manager form which sends
+    /// on ``__exit__``.
+    ///
+    /// Requires Python >= 3.11 (uses the stable buffer-protocol slots).
+    ///
+    /// ## Wire format
+    ///
+    /// The buffer is sent as a 1-D Arrow byte array (``ArrowTypeInfo::byte_array``).
+    /// On the receive side, ``event["value"]`` is a ``pyarrow.UInt8Array`` /
+    /// ``LargeBinary`` shape — call ``.to_numpy()`` for a numpy view, then
+    /// ``.reshape(...)`` or ``.view(dtype=...)`` to interpret it as a typed
+    /// payload. Genuine typed zero-copy (sending an ``Int32Array``,
+    /// ``Float32Array``, etc. directly via this path) is a follow-up — the
+    /// current buffer-protocol shape is bytes-only because the buffer protocol
+    /// itself works in bytes and Arrow's typed metadata would need a separate
+    /// channel. Use the existing :meth:`send_output` (with one copy) when you
+    /// need a typed Arrow payload today.
+    ///
+    /// Example (recommended, context manager):
+    ///
+    /// ```python
+    /// with node.send_output_raw("rgb_image", 1920 * 1080 * 3, {"width": 1920}) as buf:
+    ///     numpy.frombuffer(buf, numpy.uint8).reshape(1080, 1920, 3)[:] = frame
+    /// # data is sent automatically on __exit__. The yielded `buf` is a
+    /// # SampleBuffer; any derived consumer (numpy, memoryview, struct)
+    /// # must be released before `with` exits or send() refuses.
+    /// ```
+    ///
+    /// Manual send:
+    ///
+    /// ```python
+    /// sample = node.send_output_raw("rgb_image", data_length)
+    /// mv = sample.as_memoryview()
+    /// mv[:] = your_data
+    /// mv.release()
+    /// sample.send()
+    /// ```
+    ///
+    /// :type output_id: str
+    /// :type data_length: int
+    /// :type metadata: dict, optional
+    /// :rtype: SampleHandler
+    #[cfg(Py_3_11)]
+    #[pyo3(signature = (output_id, data_length, metadata=None))]
+    pub fn send_output_raw(
+        &self,
+        output_id: String,
+        data_length: usize,
+        metadata: Option<Bound<'_, PyDict>>,
+        _py: Python,
+    ) -> eyre::Result<SampleHandler> {
+        let parameters = pydict_to_metadata(metadata)?;
+        let data_id: DataId = output_id
+            .parse()
+            .map_err(|e| eyre::eyre!("invalid output_id: {e}"))?;
+        if !self.node.get_mut().validate_output(&data_id) {
+            eyre::bail!("Output `{data_id}` not in node's output list.")
+        }
+        SampleHandler::new(data_length, data_id, parameters, self.node.clone())
+    }
+
     /// Send a service request, automatically injecting a ``request_id`` into
     /// the metadata. Returns the generated request ID (UUID v7).
     ///
@@ -653,6 +722,29 @@ impl Node {
         *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
 
         Ok(())
+    }
+}
+
+/// Stub for `send_output_raw` on Python < 3.11.
+///
+/// Raises `NotImplementedError` with an actionable install hint so callers get
+/// clear feedback instead of a bare `AttributeError`.
+#[cfg(not(Py_3_11))]
+#[pymethods]
+impl Node {
+    #[pyo3(signature = (output_id, _data_length, _metadata=None))]
+    pub fn send_output_raw(
+        &self,
+        output_id: String,
+        _data_length: usize,
+        _metadata: Option<Bound<'_, PyDict>>,
+    ) -> PyResult<()> {
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(format!(
+            "send_output_raw (output_id={output_id:?}) requires Python >= 3.11. \
+             The zero-copy send path uses the stable Python buffer-protocol slots \
+             which only became part of the stable C API in 3.11. \
+             Upgrade Python or use send_output() instead (1 copy)."
+        )))
     }
 }
 

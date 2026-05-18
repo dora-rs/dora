@@ -1,0 +1,16 @@
+nodes:
+  - id: sender
+    build: pip install numpy
+    path: node.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - large_output
+      - rgb_image
+
+  - id: receiver
+    build: pip install numpy
+    path: receiver.py
+    inputs:
+      large_output: sender/large_output
+      rgb_image: sender/rgb_image
