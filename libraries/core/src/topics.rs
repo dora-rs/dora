@@ -44,10 +44,11 @@ pub async fn open_zenoh_session_with_listen(
             let mut zenoh_config = zenoh::Config::default();
             // Linkstate make it possible to connect two daemons on different network through a public daemon
             // TODO: There is currently a CI/CD Error in windows linkstate.
-            if cfg!(not(target_os = "windows")) {
-                zenoh_config
-                    .insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-                    .unwrap();
+            if cfg!(not(target_os = "windows"))
+                && let Err(err) =
+                    zenoh_config.insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
+            {
+                warn!("failed to set zenoh routing/peer to linkstate: {err}");
             }
 
             // Latency note: each data-plane publisher in
@@ -67,37 +68,41 @@ pub async fn open_zenoh_session_with_listen(
             // scouting. This makes the >=4 KiB zenoh data path work in
             // environments without working multicast (#1778).
             if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
-                zenoh_config
-                    .insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
-                    .unwrap();
-                zenoh_config
-                    .insert_json5("scouting/multicast/enabled", "false")
-                    .unwrap();
+                if let Err(err) =
+                    zenoh_config.insert_json5("connect/endpoints", &format!(r#"["{ep}"]"#))
+                {
+                    warn!("failed to set zenoh connect/endpoints from DORA_ZENOH_CONNECT: {err}");
+                }
+                if let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false") {
+                    warn!("failed to disable zenoh scouting/multicast: {err}");
+                }
             }
 
             if let Some(ep) = listen_endpoint {
-                zenoh_config
-                    .insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#))
-                    .unwrap();
+                if let Err(err) =
+                    zenoh_config.insert_json5("listen/endpoints", &format!(r#"["{ep}"]"#))
+                {
+                    warn!("failed to set zenoh listen/endpoints to `{ep}`: {err}");
+                }
                 // Tolerate a race between OS port reservation and zenoh's own
                 // bind on the same port: the connect side still works, and
                 // child nodes get a clear error rather than the daemon
                 // exiting.
-                zenoh_config
-                    .insert_json5("listen/exit_on_failure", "false")
-                    .unwrap();
+                if let Err(err) = zenoh_config.insert_json5("listen/exit_on_failure", "false") {
+                    warn!("failed to set zenoh listen/exit_on_failure: {err}");
+                }
             }
 
-            if let Some(addr) = coordinator_addr {
-                zenoh_config
-                    .insert_json5(
-                        "connect/endpoints",
-                        &format!(
-                            r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                            addr
-                        ),
-                    )
-                    .unwrap();
+            if let Some(addr) = coordinator_addr
+                && let Err(err) = zenoh_config.insert_json5(
+                    "connect/endpoints",
+                    &format!(
+                        r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
+                        addr
+                    ),
+                )
+            {
+                warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
                 zenoh_session
