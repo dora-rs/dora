@@ -8,9 +8,15 @@ backing memory is allocated once by dora; the caller writes into it directly
 
 Two patterns are shown:
 
-1. Context-manager form (recommended). `__exit__` calls `send()`.
+1. Context-manager form (recommended). The `with` block yields a
+   `SampleBuffer` whose buffer protocol can be consumed by numpy,
+   memoryview, struct, etc.; `__exit__` calls `send()`. Any derived
+   consumer (numpy array, memoryview) created inside the `with` block
+   must be released before exit, otherwise `send()` refuses with
+   "buffer view(s) still open".
 2. Manual form. Useful when the send timing depends on logic that doesn't fit
-   a `with` block. Caller must `release()` the memoryview before `send()`.
+   a `with` block. Caller must `del` any derived numpy view AND
+   `release()` the memoryview before `send()`.
 
 Requires Python >= 3.11 (the stable buffer-protocol slots).
 """
@@ -41,11 +47,14 @@ def main() -> None:
             break
 
         # Pattern 1: context-manager form (recommended).
-        # `with` returns a writable memoryview; `__exit__` calls `send()`.
+        # `with` returns a SampleBuffer (buffer-protocol exporter);
+        # `__exit__` calls `send()`.
         with node.send_output_raw("large_output", LARGE_OUTPUT_BYTES) as buf:
             arr = np.asarray(buf, dtype=np.uint8)
             arr[:] = np.random.randint(0, 256, size=LARGE_OUTPUT_BYTES, dtype=np.uint8)
             del arr  # release the numpy view before `with` block exits
+            # NOTE: if `arr` is not released, `__exit__` 's `send()` refuses
+            # with "buffer view(s) still open" — the tracked view_count > 0.
 
         # Pattern 2: manual form. Useful when you need to make the send
         # conditional on logic that doesn't fit a `with` block.

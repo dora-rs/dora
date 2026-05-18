@@ -305,11 +305,6 @@ pub struct SampleHandler {
     /// Only present on Python >= 3.11 where the buffer protocol is stable.
     #[cfg(Py_3_11)]
     buffer: Option<Py<SampleBuffer>>,
-    /// The `memoryview` created by `__enter__` / `as_memoryview()`.
-    /// Cached so that `__exit__` can close it (releasing its buffer view)
-    /// before `send()` checks that `view_count == 0`.
-    #[cfg(Py_3_11)]
-    memoryview: Option<Py<PyMemoryView>>,
 }
 
 impl SampleHandler {
@@ -331,8 +326,6 @@ impl SampleHandler {
             state: SampleBufferState::new(sample),
             #[cfg(Py_3_11)]
             buffer: None,
-            #[cfg(Py_3_11)]
-            memoryview: None,
         })
     }
 }
@@ -471,8 +464,10 @@ impl SampleHandler {
     /// Return a writable Python `memoryview` over the pre-allocated memory
     /// (zero-copy).
     ///
-    /// Wraps the `SampleBuffer` in a native Python `memoryview` so callers can
-    /// use it directly with slice syntax, `struct.pack_into`, NumPy, etc.
+    /// Each call creates a fresh `memoryview`. The caller is responsible for
+    /// releasing it (and any derived consumers like numpy arrays) before
+    /// calling `send()`, otherwise `send()` will refuse with "buffer view(s)
+    /// still open".
     ///
     /// Raises `RuntimeError` after `send()` has been called or after the
     /// handler was dropped.
@@ -481,57 +476,61 @@ impl SampleHandler {
     /// sample = node.send_output_raw("out", 1024)
     /// mv = sample.as_memoryview()
     /// np.asarray(mv, dtype=np.uint8)[:] = data
+    /// del arr       # release derived numpy view (if you stored it)
+    /// mv.release()  # release the memoryview itself
     /// sample.send()
     /// ```
     pub fn as_memoryview(&mut self, py: Python<'_>) -> PyResult<Py<PyMemoryView>> {
-        // Return the cached memoryview if one already exists. This keeps
-        // view_count at 1 regardless of how many times the caller invokes
-        // as_memoryview(), so send() is never blocked by phantom open views.
-        if let Some(mv) = &self.memoryview {
-            return Ok(mv.clone_ref(py));
-        }
-
+        // Do NOT cache the memoryview. Each call produces a fresh one whose
+        // `__getbuffer__` increments `view_count` on the underlying
+        // SampleBuffer. The caller must release it (which decrements
+        // view_count) before `send()` will proceed. Caching would let a
+        // stale-released memoryview be returned on subsequent calls.
         let buf = self.as_buffer(py)?;
         let bound_buf = buf.into_bound(py);
         let mv = PyMemoryView::from(&bound_buf.into_any())?;
-        let mv_owned = mv.unbind();
-        // Cache for `__exit__` to close before calling `send()`.
-        self.memoryview = Some(mv_owned.clone_ref(py));
-        Ok(mv_owned)
+        Ok(mv.unbind())
     }
 
-    /// Enter the context manager — returns a writable `memoryview` over the
-    /// pre-allocated sample buffer.
-    fn __enter__(&mut self, py: Python<'_>) -> PyResult<Py<PyMemoryView>> {
-        self.as_memoryview(py)
+    /// Enter the context manager — returns the underlying [`SampleBuffer`].
+    ///
+    /// Yielding `SampleBuffer` (not a memoryview) is deliberate: every
+    /// buffer-protocol consumer (numpy, struct, memoryview, etc.) acquired
+    /// from this `SampleBuffer` will pass through our tracked
+    /// `__getbuffer__` / `__releasebuffer__` pair. A consumer that outlives
+    /// the `with` block keeps `view_count > 0`, so `__exit__` 's `send()`
+    /// refuses with a clear "buffer views still open" error instead of
+    /// silently freeing memory underneath the live consumer.
+    ///
+    /// Yielding a `memoryview` here would *not* be safe: a numpy array
+    /// derived from the memoryview (`arr = np.asarray(mv)`) holds an
+    /// export of the memoryview, not of our SampleBuffer, so our view_count
+    /// would not see it. Releasing the memoryview in such a state raises
+    /// `BufferError`, but if we ever ignored that error (or the consumer's
+    /// release semantics happened to differ) we would publish memory that
+    /// the consumer is still reading.
+    fn __enter__(&mut self, py: Python<'_>) -> PyResult<Py<SampleBuffer>> {
+        self.as_buffer(py)
     }
 
     /// Exit the context manager.
     ///
-    /// - **Normal exit** (`exc_type is None`): release the cached memoryview
-    ///   and call `send()`.
-    /// - **Exceptional exit**: release the cached memoryview but do **NOT**
-    ///   send — the buffer may contain partial or uninitialized data, and
-    ///   shipping it would deliver a corrupt frame to downstream nodes
-    ///   immediately before the node fails. The handler's `Drop` invalidates
-    ///   the state and reclaims the `DataSample`; the original exception
-    ///   propagates as normal.
+    /// - **Normal exit** (`exc_type is None`): call `send()`. If any
+    ///   buffer-protocol consumer of the yielded `SampleBuffer` (memoryview,
+    ///   numpy array, etc.) is still alive, `send()` refuses with "buffer
+    ///   view(s) still open" — the user must release every derived view
+    ///   before exiting the `with` block.
+    /// - **Exceptional exit**: do **NOT** send — the buffer may contain
+    ///   partial or uninitialized data, and shipping it would deliver a
+    ///   corrupt frame to downstream nodes immediately before the node
+    ///   fails. The handler's `Drop` invalidates the state; the original
+    ///   exception propagates as normal.
     fn __exit__(
         &mut self,
         exc_type: &Bound<'_, PyAny>,
         _exc_value: &Bound<'_, PyAny>,
         _traceback: &Bound<'_, PyAny>,
     ) -> PyResult<bool> {
-        // Always release the cached memoryview so view_count drops back to 0
-        // — regardless of whether we send or not. The user is still
-        // responsible for releasing any derived views (e.g. numpy arrays)
-        // they created inside the `with` block.
-        Python::attach(|py| {
-            if let Some(mv) = self.memoryview.take() {
-                let _ = mv.call_method0(py, "release");
-            }
-        });
-
         // Do NOT send on exceptional exit — the buffer contents are
         // unreliable when the body raised mid-fill.
         if !exc_type.is_none() {

@@ -107,15 +107,75 @@ def case_as_buffer_is_idempotent(node):
     sample.send()
 
 
-def case_as_memoryview_is_idempotent(node):
-    """Repeated `as_memoryview()` returns the same memoryview; view_count stays at 1."""
+def case_as_memoryview_returns_fresh_view(node):
+    """Each `as_memoryview()` call creates a fresh memoryview; each counts
+    against `view_count`. Caller must release every view before `send()`.
+
+    Caching memoryviews was previously done but produced a stale-released
+    view on the second call after the first was released. The current design
+    creates a fresh memoryview each call; the cost is one extra
+    __getbuffer__ per call, which is acceptable.
+    """
     sample = node.send_output_raw(OUT, 64)
     mv_a = sample.as_memoryview()
     mv_b = sample.as_memoryview()
-    assert mv_a is mv_b, "as_memoryview() must return the cached PyMemoryView"
-    # Single release should drop view_count to 0; send() should then succeed.
+    assert mv_a is not mv_b, "as_memoryview() must return a fresh view each call"
+    # view_count is now 2 (one per memoryview). send() must refuse.
+    try:
+        sample.send()
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert "view" in msg or "open" in msg, (
+            f"expected 'view'/'open' in error, got: {msg!r}"
+        )
+    else:
+        raise AssertionError("send() should have refused while two views were open")
+    # Release both; send() now succeeds.
     mv_a.release()
+    mv_b.release()
     sample.send()
+
+
+def case_send_refused_when_numpy_view_outlives_context(node):
+    """Regression for UAF: a numpy array derived from the buffer that
+    outlives the `with` block keeps `view_count > 0`, so `__exit__` 's
+    `send()` refuses rather than freeing memory under the live numpy array.
+
+    Previously the `with` block yielded a memoryview and `__exit__` did
+    `mv.release()` then `send()`. If `arr = np.asarray(mv)` was still alive
+    at exit, `mv.release()` either (a) raised BufferError that the old code
+    silently swallowed, or (b) succeeded depending on numpy's export
+    tracking, after which `send()` would free the DataSample while `arr`
+    still pointed at it.
+
+    Fix: `with` now yields SampleBuffer directly, so every consumer
+    (memoryview, numpy, struct) goes through SampleBuffer's tracked
+    __getbuffer__/__releasebuffer__. A live numpy array means view_count > 0
+    means send() refuses with our clear error message.
+    """
+    holder = {}  # carries the numpy array past the `with` exit
+    raised_msg = None
+    try:
+        with node.send_output_raw(OUT, 64) as buf:
+            holder["arr"] = np.asarray(buf, dtype=np.uint8)
+            holder["arr"][:] = 0  # safe write while inside `with`
+        # If __exit__ does NOT raise here, the bug is live.
+    except RuntimeError as exc:
+        raised_msg = str(exc)
+    assert raised_msg is not None, (
+        "__exit__ must refuse to send while a derived buffer-protocol "
+        "consumer (numpy array) is still alive"
+    )
+    assert "view" in raised_msg or "open" in raised_msg, (
+        f"expected 'view' / 'open' in error, got: {raised_msg!r}"
+    )
+
+    # Release the held numpy view. The DataSample is still alive in the
+    # state Arc (view_count > 0 kept it alive); dropping the array drops
+    # view_count to 0. The handler itself was dropped by the failed __exit__,
+    # so we cannot send via it — the test asserts only that the unsafe
+    # send was refused.
+    del holder["arr"]
 
 
 def case_access_after_send_raises_runtime_error(node):
@@ -207,10 +267,11 @@ CASES = [
     case_view_after_send_raises_buffer_error,
     case_double_send_errors,
     case_as_buffer_is_idempotent,
-    case_as_memoryview_is_idempotent,
+    case_as_memoryview_returns_fresh_view,
     case_access_after_send_raises_runtime_error,
     case_buffer_outlives_dropped_handler_safely,
     case_exit_with_exception_does_not_send,
+    case_send_refused_when_numpy_view_outlives_context,
 ]
 
 

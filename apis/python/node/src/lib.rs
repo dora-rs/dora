@@ -422,9 +422,11 @@ impl Node {
     /// Example (recommended, context manager):
     ///
     /// ```python
-    /// with node.send_output_raw("rgb_image", 1920 * 1080 * 3, {"width": 1920}) as mv:
-    ///     numpy.frombuffer(mv, numpy.uint8).reshape(1080, 1920, 3)[:] = frame
-    /// # data is sent automatically on __exit__
+    /// with node.send_output_raw("rgb_image", 1920 * 1080 * 3, {"width": 1920}) as buf:
+    ///     numpy.frombuffer(buf, numpy.uint8).reshape(1080, 1920, 3)[:] = frame
+    /// # data is sent automatically on __exit__. The yielded `buf` is a
+    /// # SampleBuffer; any derived consumer (numpy, memoryview, struct)
+    /// # must be released before `with` exits or send() refuses.
     /// ```
     ///
     /// Manual send:
@@ -433,6 +435,7 @@ impl Node {
     /// sample = node.send_output_raw("rgb_image", data_length)
     /// mv = sample.as_memoryview()
     /// mv[:] = your_data
+    /// mv.release()
     /// sample.send()
     /// ```
     ///
