@@ -75,6 +75,19 @@ target_include_directories(___name___ PRIVATE ${dora_c_include_dir})
 
 if(WIN32)
     target_link_libraries(___name___ dora_node_api_c ws2_32 userenv ntdll bcrypt)
+elseif(APPLE)
+    # CoreFoundation: chrono time-zone APIs (CFRelease, CFTimeZoneCopySystem).
+    # Security + SystemConfiguration: pulled by transitive Rust deps that
+    # touch TLS and network config. Without these the link fails on macOS
+    # with missing _CF* and _Sec* symbols.
+    target_link_libraries(___name___
+        dora_node_api_c
+        m
+        z
+        "-framework CoreFoundation"
+        "-framework Security"
+        "-framework SystemConfiguration"
+    )
 else()
     target_link_libraries(___name___ dora_node_api_c m z)
 endif()
