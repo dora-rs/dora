@@ -7,6 +7,18 @@ set(CMAKE_CXX_FLAGS "-fPIC")
 set(DORA_ROOT_DIR "__DORA_PATH__" CACHE FILEPATH "Path to the root of dora")
 
 set(dora_c_include_dir "${CMAKE_CURRENT_BINARY_DIR}/include/c")
+
+# Map CMake's CMAKE_BUILD_TYPE to Cargo's profile so a Release build
+# links against target/release/ and a Debug build (or no build type
+# specified) links against target/debug/.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug" OR NOT CMAKE_BUILD_TYPE)
+    set(dora_cargo_profile_dir "debug")
+    set(dora_cargo_release_arg "")
+else()
+    set(dora_cargo_profile_dir "release")
+    set(dora_cargo_release_arg "--release")
+endif()
+
 if(DORA_ROOT_DIR)
     include(ExternalProject)
     ExternalProject_Add(Dora
@@ -15,6 +27,7 @@ if(DORA_ROOT_DIR)
         CONFIGURE_COMMAND ""
         BUILD_COMMAND
             cargo build
+            ${dora_cargo_release_arg}
             --package dora-node-api-c
         INSTALL_COMMAND ""
     )
@@ -29,7 +42,7 @@ if(DORA_ROOT_DIR)
     )
 
     add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
-    set(dora_link_dirs ${DORA_ROOT_DIR}/target/debug)
+    set(dora_link_dirs ${DORA_ROOT_DIR}/target/${dora_cargo_profile_dir})
 else()
     include(ExternalProject)
     ExternalProject_Add(Dora
@@ -40,6 +53,7 @@ else()
         CONFIGURE_COMMAND ""
         BUILD_COMMAND
             cargo build
+            ${dora_cargo_release_arg}
             --package dora-node-api-c
             --target-dir ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target
         INSTALL_COMMAND ""
@@ -54,7 +68,7 @@ else()
             cp ../apis/c/node ${CMAKE_CURRENT_BINARY_DIR}/include/c -r
     )
 
-    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/debug)
+    set(dora_link_dirs ${CMAKE_CURRENT_BINARY_DIR}/dora/src/Dora/target/${dora_cargo_profile_dir})
 
     add_custom_target(Dora_c DEPENDS ${dora_c_include_dir})
 endif()
