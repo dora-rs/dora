@@ -1333,9 +1333,12 @@ jobs:
       # compile time — they bake the minimum into the binary — so
       # disabling the interpreter probe is correct here. Fixes #1866.
       PYO3_NO_PYTHON: "1"
-      # Same value needs to reach the container `cross` spawns;
+      # Pass PYO3_NO_PYTHON through to the container `cross` spawns;
       # otherwise the in-container build sees runner-host env only.
-      CROSS_CONTAINER_ENV: "PYO3_NO_PYTHON"
+      # `CROSS_BUILD_ENV_PASSTHROUGH` maps to `build.env.passthrough`
+      # in Cross.toml — see cross-rs/cross docs. (Earlier draft used
+      # `CROSS_CONTAINER_ENV`, which is not a cross-recognized var.)
+      CROSS_BUILD_ENV_PASSTHROUGH: "PYO3_NO_PYTHON"
     strategy:
       matrix:
         include:
