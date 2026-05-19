@@ -202,6 +202,14 @@ pub enum DaemonCoordinatorReply {
         notify: Option<tokio::sync::oneshot::Sender<()>>,
     },
     Logs(Result<Vec<u8>, String>),
+    /// Reply for `DaemonCoordinatorEvent::AddNode`. Previously the daemon
+    /// returned `None` and the coordinator accepted any successful TCP
+    /// response as proof that AddNode applied, even a `SetParamResult` or
+    /// other unrelated reply — committing state for a node the daemon
+    /// may have rejected (#1682). This variant lets the coordinator
+    /// pattern-match a specific reply and forward daemon errors to the
+    /// CLI instead of corrupting the dataflow state. Rescue of #1757.
+    AddNodeResult(Result<(), String>),
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
     SetParamResult(Result<(), String>),
