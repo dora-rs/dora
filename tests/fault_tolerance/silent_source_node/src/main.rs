@@ -17,15 +17,14 @@ fn main() -> eyre::Result<()> {
     let mut sent = false;
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata, .. } if id.as_str() == "tick" => {
-                if !sent {
-                    node.send_output(output.clone(), metadata.parameters, 42i64.into_arrow())
-                        .context("failed to send value")?;
-                    sent = true;
-                }
-                // Subsequent ticks are intentionally ignored so the
-                // downstream must rely on `input_timeout` to notice
-                // that data has gone stale.
+            // First tick only: send the value, then go silent. Subsequent
+            // ticks fall through to the catch-all arm below, where they're
+            // intentionally ignored so the downstream consumer must rely
+            // on `input_timeout` to notice that data has gone stale.
+            Event::Input { id, metadata, .. } if id.as_str() == "tick" && !sent => {
+                node.send_output(output.clone(), metadata.parameters, 42i64.into_arrow())
+                    .context("failed to send value")?;
+                sent = true;
             }
             Event::Stop(_) => break,
             _ => {}
