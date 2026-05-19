@@ -149,9 +149,43 @@ pub async fn open_zenoh_session_with_listen(
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
             if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                // The configured session opened — promote the (possibly None)
-                // listener now that we know it's actually live.
-                effective_listen_endpoint = listen_inserted_into_configured;
+                // Verify the listener actually bound. `zenoh::open` returning
+                // Ok is necessary but not sufficient — with
+                // `listen/exit_on_failure: false` (set above), zenoh tolerates
+                // a silently-failed listen bind. The most plausible cause is
+                // the race between `reserve_loopback_zenoh_endpoint` dropping
+                // its reservation socket and zenoh's own bind, during which
+                // some other process could grab the port. Trusting `Ok` here
+                // would advertise an endpoint nothing is listening on, and
+                // spawned nodes would fail their `DORA_ZENOH_CONNECT` connect
+                // attempts (#1858).
+                //
+                // `info().locators()` is the zenoh-canonical "what actually
+                // bound" query (unstable API gated behind the workspace
+                // `unstable` feature, already enabled in the root Cargo.toml
+                // zenoh dependency).
+                if let Some(requested) = listen_inserted_into_configured {
+                    let bound_locators: Vec<String> = zenoh_session
+                        .info()
+                        .locators()
+                        .await
+                        .into_iter()
+                        .map(|l| l.as_str().to_string())
+                        .collect();
+                    // Substring match tolerates zenoh's metadata suffixes
+                    // (e.g. `tcp/127.0.0.1:43217#iface=lo0`) while still
+                    // requiring the exact addr:port we asked for to appear.
+                    let bound = bound_locators.iter().any(|l| l.contains(&requested));
+                    if bound {
+                        effective_listen_endpoint = Some(requested);
+                    } else {
+                        warn!(
+                            "zenoh session opened but listener for `{requested}` \
+                             did not bind (actually bound: {bound_locators:?}); \
+                             spawned nodes will use multicast scouting only"
+                        );
+                    }
+                }
                 zenoh_session
             } else {
                 warn!("failed to open zenoh session, retrying with default config");
@@ -177,11 +211,21 @@ pub async fn open_zenoh_session_with_listen(
 /// endpoint. Returns a string suitable for the zenoh `listen/endpoints`
 /// config (e.g. `tcp/127.0.0.1:43217`).
 ///
-/// There is a small race window between dropping the reservation socket and
-/// zenoh's own bind. `open_zenoh_session_with_listen` sets
-/// `listen/exit_on_failure: false` so the daemon survives that race; in
-/// practice the OS keeps allocating new ports so collisions are vanishingly
-/// rare.
+/// There is a small race window between dropping the reservation socket
+/// and zenoh's own bind. `open_zenoh_session_with_listen` defends against
+/// it on two layers:
+///
+/// 1. `listen/exit_on_failure: false` keeps the daemon alive if zenoh's
+///    bind silently fails inside the race window.
+/// 2. After `zenoh::open`, the helper queries `session.info().locators()`
+///    and only advertises the returned endpoint when our requested
+///    `addr:port` is actually in the bound-locator list. If the port was
+///    grabbed by another process, the returned `effective_listen_endpoint`
+///    is `None` and callers fall back to multicast scouting instead of
+///    advertising a phantom endpoint (#1858).
+///
+/// In practice the OS keeps allocating fresh ephemeral ports each call,
+/// so collisions remain vanishingly rare.
 pub fn reserve_loopback_zenoh_endpoint() -> std::io::Result<String> {
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     let port = listener.local_addr()?.port();
