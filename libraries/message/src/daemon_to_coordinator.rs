@@ -212,6 +212,7 @@ pub enum DaemonCoordinatorReply {
     AddNodeResult(Result<(), String>),
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
+    RemoveNodeResult(Result<(), String>),
     SetParamResult(Result<(), String>),
     DeleteParamResult(Result<(), String>),
     StartTopicDebugStreamResult(Result<(), String>),

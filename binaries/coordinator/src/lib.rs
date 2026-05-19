@@ -1651,35 +1651,39 @@ async fn start_inner(
                                             match daemon_connections.get_mut(daemon_id) {
                                                 Some(conn) => {
                                                     match conn.send_and_receive(&msg).await {
-                                                        Ok(_) => {
-                                                            // TODO: validate the daemon reply
-                                                            // is specifically a successful
-                                                            // `RemoveNodeResult`, parallel to
-                                                            // the AddNode fix (#1682, rescue of
-                                                            // #1757). Same `Ok(_)` shape can
-                                                            // accept a stale or wrong-variant
-                                                            // reply and corrupt state. Tracked
-                                                            // separately to keep this rescue
-                                                            // panel-faithful to #1757's scope.
-                                                            // Clean up coordinator state
-                                                            // (inverse of AddNode inserts)
-                                                            if let Some(dataflow) =
-                                                                running_dataflows
-                                                                    .get_mut(&dataflow_id)
-                                                            {
-                                                                dataflow
-                                                                    .node_to_daemon
-                                                                    .remove(&node_id);
-                                                                dataflow
-                                                                    .descriptor
-                                                                    .nodes
-                                                                    .retain(|n| n.id != node_id);
-                                                                dataflow.nodes.remove(&node_id);
+                                                        Ok(reply_raw) => {
+                                                            match ensure_remove_node_applied(
+                                                                &reply_raw, &node_id,
+                                                            ) {
+                                                                Ok(()) => {
+                                                                    // Clean up coordinator state
+                                                                    // (inverse of AddNode inserts)
+                                                                    if let Some(dataflow) =
+                                                                        running_dataflows
+                                                                            .get_mut(&dataflow_id)
+                                                                    {
+                                                                        dataflow
+                                                                            .node_to_daemon
+                                                                            .remove(&node_id);
+                                                                        dataflow
+                                                                            .descriptor
+                                                                            .nodes
+                                                                            .retain(|n| {
+                                                                                n.id != node_id
+                                                                            });
+                                                                        dataflow
+                                                                            .nodes
+                                                                            .remove(&node_id);
+                                                                    }
+                                                                    Ok(
+                                                                        ControlRequestReply::NodeRemoved {
+                                                                            dataflow_id,
+                                                                            node_id,
+                                                                        },
+                                                                    )
+                                                                }
+                                                                Err(e) => Err(e),
                                                             }
-                                                            Ok(ControlRequestReply::NodeRemoved {
-                                                                dataflow_id,
-                                                                node_id,
-                                                            })
                                                         }
                                                         Err(e) => Err(eyre!(
                                                             "daemon dispatch failed: {e}"
@@ -3501,6 +3505,27 @@ fn ensure_delete_param_forward_applied(
     }
 }
 
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::RemoveNode`
+/// is a successful `RemoveNodeResult`. Returns `Err` for both an explicit
+/// daemon failure and an unexpected reply variant; callers should forward
+/// the error to the CLI as a `ControlRequestReply::Error` and NOT use `?`
+/// to bubble out of the coordinator's main loop. Parallel to
+/// `ensure_add_node_applied` (#1873). Closes #1874.
+fn ensure_remove_node_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::RemoveNodeResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::RemoveNodeResult(Err(err)) => {
+            Err(eyre!("daemon failed to remove node `{node_id}`: {err}"))
+        }
+        other => Err(eyre!(
+            "unexpected daemon reply for RemoveNode on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
 fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
@@ -4821,6 +4846,14 @@ mod tests {
             err.to_string().contains("unexpected daemon reply"),
             "error must call out the wrong-reply-type failure mode: {err}"
         );
+
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::RemoveNodeResult(Ok(()))).unwrap();
+        let err = ensure_add_node_applied(&reply, &node_id)
+            .expect_err("RemoveNodeResult reply must not be accepted by AddNode validator");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
     }
 
     #[test]
@@ -4831,6 +4864,53 @@ mod tests {
         let err = ensure_delete_param_forward_applied(&reply, &node_id)
             .expect_err("unexpected reply variant should fail strict forwarding");
         assert!(err.to_string().contains("unexpected daemon reply"));
+    }
+
+    #[test]
+    fn remove_node_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::RemoveNodeResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        ensure_remove_node_applied(&reply, &node_id)
+            .expect("successful RemoveNode reply should pass");
+    }
+
+    #[test]
+    fn remove_node_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::RemoveNodeResult(Err(
+            "node `camera` not found in running dataflow".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let err = ensure_remove_node_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail RemoveNode forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to remove node") && msg.contains("camera"),
+            "error must name the operation and node: {msg}"
+        );
+    }
+
+    #[test]
+    fn remove_node_reply_rejects_wrong_reply_variant() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let err = ensure_remove_node_applied(&reply, &node_id)
+            .expect_err("unexpected reply variant should fail RemoveNode forwarding");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
+
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap();
+        let err = ensure_remove_node_applied(&reply, &node_id)
+            .expect_err("AddNodeResult reply must not be accepted by RemoveNode validator");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
     }
 
     // -------------------------------------------------------------------
