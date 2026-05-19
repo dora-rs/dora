@@ -1323,6 +1323,22 @@ jobs:
     name: Cross-check (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     # (PR-CI gate removed; runs independently in nightly)
+    env:
+      # The workspace pins `abi3-py311` in pyo3 features (workspace
+      # Cargo.toml:123 + apis/python/operator + ros2-bridge/python +
+      # binaries/runtime). pyo3-build-config 0.28+ asserts the build-
+      # time Python interpreter version is >= the abi3 minimum, but
+      # `cross` runs the build inside Docker images that ship Python
+      # 3.10. abi3 builds don't actually need a runtime Python at
+      # compile time — they bake the minimum into the binary — so
+      # disabling the interpreter probe is correct here. Fixes #1866.
+      PYO3_NO_PYTHON: "1"
+      # Pass PYO3_NO_PYTHON through to the container `cross` spawns;
+      # otherwise the in-container build sees runner-host env only.
+      # `CROSS_BUILD_ENV_PASSTHROUGH` maps to `build.env.passthrough`
+      # in Cross.toml — see cross-rs/cross docs. (Earlier draft used
+      # `CROSS_CONTAINER_ENV`, which is not a cross-recognized var.)
+      CROSS_BUILD_ENV_PASSTHROUGH: "PYO3_NO_PYTHON"
     strategy:
       matrix:
         include:
@@ -1408,6 +1424,18 @@ jobs:
         with:
           required-ros-distributions: humble
       - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
+      # Provision Python 3.12 BEFORE the first cargo invocation. The
+      # workspace pins `abi3-py311` in pyo3 features (workspace
+      # Cargo.toml:123) and pyo3-build-config 0.28+ rejects build-time
+      # interpreters older than the abi3 minimum. ubuntu-22.04 ships
+      # Python 3.10 by default, which would make `cargo test -p
+      # dora-ros2-bridge-python` below fail with "cannot set a minimum
+      # Python version 3.11 higher than the interpreter version 3.10".
+      # Previously this step lived AFTER the cargo steps below, so it
+      # only protected the Python example, not the build. Fixes #1866.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Install uv
         uses: astral-sh/setup-uv@v6
         with:
@@ -1423,9 +1451,6 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
       - name: Python ROS2 Bridge example
         timeout-minutes: 30
         env:
