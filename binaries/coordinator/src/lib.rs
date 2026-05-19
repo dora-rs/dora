@@ -1555,31 +1555,58 @@ async fn start_inner(
                                                                     .send_and_receive(&msg)
                                                                     .await
                                                                 {
-                                                                    Ok(_) => {
-                                                                        dataflow
-                                                                            .node_to_daemon
-                                                                            .insert(
-                                                                                node_id.clone(),
-                                                                                did,
-                                                                            );
-                                                                        // Update the stored descriptor
-                                                                        // and resolved nodes so
-                                                                        // `dora info` reflects the
-                                                                        // new node.
-                                                                        dataflow
-                                                                            .descriptor
-                                                                            .nodes
-                                                                            .push(original_node);
-                                                                        dataflow.nodes.insert(
-                                                                            node_id.clone(),
-                                                                            resolved_node,
-                                                                        );
-                                                                        Ok(
-                                                                            ControlRequestReply::NodeAdded {
-                                                                                dataflow_id,
-                                                                                node_id,
-                                                                            },
-                                                                        )
+                                                                    Ok(reply_raw) => {
+                                                                        // Validate the daemon reply is
+                                                                        // specifically an `AddNodeResult`
+                                                                        // (not just any non-error reply)
+                                                                        // before committing state. Without
+                                                                        // this, a `SetParamResult` or an
+                                                                        // explicit `AddNodeResult(Err)`
+                                                                        // would still be reported as
+                                                                        // applied and corrupt the dataflow
+                                                                        // state (#1682, rescue of #1757).
+                                                                        // The validator's error is folded
+                                                                        // into the `Err` arm of `result`
+                                                                        // (via explicit `Err(e) => Err(e)`
+                                                                        // below — no `?`), which the
+                                                                        // coordinator's main loop sends
+                                                                        // back to the CLI as
+                                                                        // `ControlRequestReply::Error`.
+                                                                        // Addresses phil-opp's review of
+                                                                        // #1757 (do not tear down the
+                                                                        // event loop on a recoverable
+                                                                        // per-request failure).
+                                                                        match ensure_add_node_applied(
+                                                                            &reply_raw, &node_id,
+                                                                        ) {
+                                                                            Ok(()) => {
+                                                                                dataflow
+                                                                                    .node_to_daemon
+                                                                                    .insert(
+                                                                                        node_id.clone(),
+                                                                                        did,
+                                                                                    );
+                                                                                // Update the stored descriptor
+                                                                                // and resolved nodes so
+                                                                                // `dora info` reflects the
+                                                                                // new node.
+                                                                                dataflow
+                                                                                    .descriptor
+                                                                                    .nodes
+                                                                                    .push(original_node);
+                                                                                dataflow.nodes.insert(
+                                                                                    node_id.clone(),
+                                                                                    resolved_node,
+                                                                                );
+                                                                                Ok(
+                                                                                    ControlRequestReply::NodeAdded {
+                                                                                        dataflow_id,
+                                                                                        node_id,
+                                                                                    },
+                                                                                )
+                                                                            }
+                                                                            Err(e) => Err(e),
+                                                                        }
                                                                     }
                                                                     Err(e) => Err(eyre!(
                                                                         "daemon dispatch failed: {e}"
@@ -1625,6 +1652,15 @@ async fn start_inner(
                                                 Some(conn) => {
                                                     match conn.send_and_receive(&msg).await {
                                                         Ok(_) => {
+                                                            // TODO: validate the daemon reply
+                                                            // is specifically a successful
+                                                            // `RemoveNodeResult`, parallel to
+                                                            // the AddNode fix (#1682, rescue of
+                                                            // #1757). Same `Ok(_)` shape can
+                                                            // accept a stale or wrong-variant
+                                                            // reply and corrupt state. Tracked
+                                                            // separately to keep this rescue
+                                                            // panel-faithful to #1757's scope.
                                                             // Clean up coordinator state
                                                             // (inverse of AddNode inserts)
                                                             if let Some(dataflow) =
@@ -3414,6 +3450,27 @@ fn build_set_param_message_from_raw_json(
     .map_err(Into::into)
 }
 
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::AddNode`
+/// is a successful `AddNodeResult`. Returns `Err` for both an explicit
+/// daemon failure and an unexpected reply variant; callers should forward
+/// the error to the CLI as a `ControlRequestReply::Error` and NOT use `?`
+/// to bubble out of the coordinator's main loop. Rescue of #1757,
+/// addresses #1682.
+fn ensure_add_node_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::AddNodeResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::AddNodeResult(Err(err)) => {
+            Err(eyre!("daemon failed to add node `{node_id}`: {err}"))
+        }
+        other => Err(eyre!(
+            "unexpected daemon reply for AddNode on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
 fn ensure_set_param_forward_applied(
     reply_raw: &[u8],
     node_id: &dora_core::config::NodeId,
@@ -4708,6 +4765,62 @@ mod tests {
         let err = ensure_set_param_forward_applied(&reply, &node_id)
             .expect_err("daemon rejection should fail strict forwarding");
         assert!(err.to_string().contains("failed to apply SetParam"));
+    }
+
+    // -------------------------------------------------------------------
+    // AddNode reply validation (rescue of #1757, addresses #1682)
+    // -------------------------------------------------------------------
+    //
+    // The bug: coordinator's `Ok(_) =>` arm in the AddNode dispatch
+    // (lib.rs:1558 pre-fix) accepted any successful `send_and_receive`
+    // reply and committed dataflow state, even when the daemon returned
+    // an `AddNodeResult(Err(...))` or a stale reply from a different
+    // request. The three tests below pin the validator's contract: it
+    // must accept ONLY a successful `AddNodeResult` and forward every
+    // other shape as an error to the call site (which then surfaces it
+    // to the CLI without bringing down the coordinator's main loop).
+
+    #[test]
+    fn add_node_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        ensure_add_node_applied(&reply, &node_id).expect("successful AddNode reply should pass");
+    }
+
+    #[test]
+    fn add_node_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Err(
+            "failed to spawn node".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_add_node_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail AddNode forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to add node") && msg.contains("filter"),
+            "error must name the operation and node: {msg}"
+        );
+    }
+
+    #[test]
+    fn add_node_reply_rejects_wrong_reply_variant() {
+        // This is the regression scenario for #1682: the daemon returned
+        // a stale or otherwise unrelated reply variant (here:
+        // `SetParamResult(Ok)`). Before the fix, the coordinator's
+        // `Ok(_) =>` arm would accept this and commit state for a node
+        // the daemon never actually added.
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_add_node_applied(&reply, &node_id)
+            .expect_err("unexpected reply variant should fail AddNode forwarding");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
     }
 
     #[test]

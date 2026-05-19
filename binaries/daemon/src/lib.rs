@@ -1770,7 +1770,13 @@ impl Daemon {
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
                 }
-                let _ = reply_tx.send(None);
+                // Return a specific `AddNodeResult` variant so the
+                // coordinator can validate the reply against its
+                // expected request, instead of treating any non-error
+                // reply as success (#1682, rescue of #1757).
+                let reply =
+                    DaemonCoordinatorReply::AddNodeResult(result.map_err(|err| format!("{err:?}")));
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::RemoveNode {
