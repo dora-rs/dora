@@ -1306,7 +1306,7 @@ pub(crate) struct WriteEventsTo {
 pub(crate) struct PoisonInfo {
     /// `events_buffer.len()` at the moment of the first failure — i.e.
     /// the number of events successfully recorded before the gap.
-    first_missed_index: usize,
+    first_failure_event_index: usize,
     /// Seconds since `EventStream::start_timestamp` at the first failure.
     first_failure_time_offset_secs: f64,
     /// `format!("{err:?}")` of the first `record_event()` error.
@@ -1322,7 +1322,7 @@ impl WriteEventsTo {
         match &mut self.poisoned {
             None => {
                 self.poisoned = Some(PoisonInfo {
-                    first_missed_index: self.events_buffer.len(),
+                    first_failure_event_index: self.events_buffer.len(),
                     first_failure_time_offset_secs: time_offset_secs,
                     first_failure_error: format!("{err:?}"),
                     additional_failures: 0,
@@ -1335,6 +1335,8 @@ impl WriteEventsTo {
     }
 
     fn write_out(self) -> eyre::Result<()> {
+        use dora_message::integration_testing_format::RecordingStatus;
+
         let Self {
             node_id,
             file,
@@ -1346,18 +1348,26 @@ impl WriteEventsTo {
         // Emit `recording_status` for clean recordings too, so consumers
         // can rely on its presence as a definitive signal rather than
         // having to treat "field absent" as ambiguous between "clean"
-        // and "older format" (#1857).
-        let recording_status = match &poisoned {
-            None => serde_json::json!({ "state": "clean" }),
-            Some(info) => serde_json::json!({
-                "state": "poisoned",
-                "first_missed_index": info.first_missed_index,
-                "first_failure_time_offset_secs": info.first_failure_time_offset_secs,
-                "first_failure_error": info.first_failure_error,
-                "additional_failures": info.additional_failures,
-            }),
+        // and "older format" (#1857). Serialized via the canonical
+        // `RecordingStatus` enum in `dora-message` so the wire format
+        // stays in lockstep with the consumer-side type. The wire
+        // shape is unaffected by `IntegrationTestInput`'s
+        // `Option<Box<RecordingStatus>>` storage choice — serde
+        // transparently serializes through the `Box`.
+        let recording_status = match poisoned {
+            None => RecordingStatus::Clean,
+            Some(info) => RecordingStatus::Poisoned {
+                first_failure_event_index: info.first_failure_event_index,
+                first_failure_time_offset_secs: info.first_failure_time_offset_secs,
+                first_failure_error: info.first_failure_error,
+                additional_failures: info.additional_failures,
+            },
         };
-        inputs_file.insert("recording_status".into(), recording_status);
+        inputs_file.insert(
+            "recording_status".into(),
+            serde_json::to_value(&recording_status)
+                .context("failed to serialize recording_status")?,
+        );
         inputs_file.insert("events".into(), events_buffer.into());
 
         serde_json::to_writer_pretty(file, &inputs_file)
@@ -1487,7 +1497,7 @@ mod tests {
         let v = read_back(&path);
         let status = &v["recording_status"];
         assert_eq!(status["state"], "poisoned");
-        assert_eq!(status["first_missed_index"], 2);
+        assert_eq!(status["first_failure_event_index"], 2);
         assert_eq!(status["first_failure_time_offset_secs"], 1.5);
         assert!(
             status["first_failure_error"]
@@ -1512,7 +1522,7 @@ mod tests {
         let status = &v["recording_status"];
         assert_eq!(status["state"], "poisoned");
         // First failure detail is preserved, NOT overwritten by later ones.
-        assert_eq!(status["first_missed_index"], 0);
+        assert_eq!(status["first_failure_event_index"], 0);
         assert_eq!(status["first_failure_time_offset_secs"], 0.5);
         assert!(
             status["first_failure_error"]
