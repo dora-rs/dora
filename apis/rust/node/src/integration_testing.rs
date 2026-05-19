@@ -210,6 +210,18 @@ pub(crate) struct TestingCommunication {
 }
 
 /// Provides input data for integration testing.
+///
+/// `Input(IntegrationTestInput)` is a large variant (~230 bytes) next
+/// to `FromJsonFile(PathBuf)` (~24 bytes). Clippy's
+/// `large_enum_variant` lint flags the asymmetry, but boxing `Input`
+/// would touch 32 call sites across `apis/`, `examples/`, and
+/// `tests/` for negligible perf benefit — this enum lives in the
+/// integration-testing setup path, not any hot loop. The size
+/// asymmetry was already near the 200-byte threshold before
+/// `IntegrationTestInput::recording_status` was added in #1857; that
+/// 8-byte addition (a niche-optimized `Option<Box<RecordingStatus>>`)
+/// is what pushed it over.
+#[allow(clippy::large_enum_variant)]
 pub enum TestingInput {
     /// Loads the integration test input from the given JSON file.
     ///

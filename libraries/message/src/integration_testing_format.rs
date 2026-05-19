@@ -178,6 +178,48 @@ pub struct IntegrationTestInput {
     /// The node event stream will yield these events during the test. Once the list is exhausted,
     /// the event stream will close itself.
     pub events: Vec<TimedIncomingEvent>,
+
+    /// Status of the recording that produced this file. Emitted by the
+    /// `DORA_WRITE_EVENTS_TO` recorder; `None` for files produced by
+    /// older versions of dora (before #1857) or hand-authored fixtures.
+    ///
+    /// Consumers should refuse to replay (or at minimum warn loudly)
+    /// when this is `Some(RecordingStatus::Poisoned { .. })`, because
+    /// the `events` array is incomplete relative to the original run.
+    ///
+    /// Boxed so the (large) `RecordingStatus::Poisoned` variant doesn't
+    /// inflate `IntegrationTestInput`'s size for the common-case
+    /// `Clean`-or-`None` recording. This also avoids
+    /// `large_enum_variant` lints on `TestingInput::Input(...)` (32
+    /// call sites; widening that enum would be intrusive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_status: Option<Box<RecordingStatus>>,
+}
+
+/// State of a `DORA_WRITE_EVENTS_TO` recording (#1857).
+///
+/// `Clean` means the recorder observed every event it was asked to
+/// record. `Poisoned` means at least one `record_event()` call failed
+/// (Arrow→JSON conversion error, file I/O error, etc.) — the `events`
+/// array is missing at least one event, and replay results will not
+/// match the original run.
+#[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+pub enum RecordingStatus {
+    Clean,
+    Poisoned {
+        /// Index in the `events` array where the first missed event
+        /// would have been. Equals the number of events that WERE
+        /// successfully recorded before the first failure.
+        first_failure_event_index: usize,
+        /// Seconds since the EventStream's start timestamp at the
+        /// moment of the first failure.
+        first_failure_time_offset_secs: f64,
+        /// `format!("{:?}", err)` of the first `record_event()` error.
+        first_failure_error: String,
+        /// Count of subsequent failures after the first one.
+        additional_failures: u64,
+    },
 }
 
 impl IntegrationTestInput {
@@ -192,6 +234,7 @@ impl IntegrationTestInput {
             inputs: BTreeMap::new(),
             send_stdout_as: None,
             events,
+            recording_status: None,
         }
     }
 }
@@ -265,4 +308,71 @@ pub enum InputData {
         /// If not set, the entire record batch is read and converted to an Arrow `StructArray`.
         column: Option<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pre-#1857 recordings and hand-authored fixtures have no
+    /// `recording_status` field. They must continue to deserialize
+    /// cleanly with `recording_status: None`, otherwise the new
+    /// schema breaks the entire existing fixture corpus.
+    #[test]
+    fn integration_test_input_without_recording_status_deserializes() {
+        let json = r#"{
+            "id": "test-node",
+            "events": []
+        }"#;
+        let v: IntegrationTestInput = serde_json::from_str(json).expect("deserialize legacy form");
+        assert!(v.recording_status.is_none());
+    }
+
+    /// Clean recordings emit `{"recording_status": {"state": "clean"}}`.
+    /// Deserialization should land on `Some(RecordingStatus::Clean)`.
+    #[test]
+    fn integration_test_input_with_clean_recording_status_deserializes() {
+        let json = r#"{
+            "id": "test-node",
+            "events": [],
+            "recording_status": { "state": "clean" }
+        }"#;
+        let v: IntegrationTestInput = serde_json::from_str(json).expect("deserialize clean form");
+        assert_eq!(v.recording_status.as_deref(), Some(&RecordingStatus::Clean));
+    }
+
+    /// Poisoned recordings carry the failure details; the deserialized
+    /// enum variant must preserve every field. The exact JSON shape
+    /// here is what `event_stream::WriteEventsTo::write_out` produces
+    /// in dora-node-api — pinning both sides of the wire contract.
+    #[test]
+    fn integration_test_input_with_poisoned_recording_status_deserializes() {
+        let json = r#"{
+            "id": "test-node",
+            "events": [],
+            "recording_status": {
+                "state": "poisoned",
+                "first_failure_event_index": 7,
+                "first_failure_time_offset_secs": 1.25,
+                "first_failure_error": "Arrow conversion failed: bad type",
+                "additional_failures": 3
+            }
+        }"#;
+        let v: IntegrationTestInput =
+            serde_json::from_str(json).expect("deserialize poisoned form");
+        match v.recording_status.map(|b| *b) {
+            Some(RecordingStatus::Poisoned {
+                first_failure_event_index,
+                first_failure_time_offset_secs,
+                first_failure_error,
+                additional_failures,
+            }) => {
+                assert_eq!(first_failure_event_index, 7);
+                assert_eq!(first_failure_time_offset_secs, 1.25);
+                assert_eq!(first_failure_error, "Arrow conversion failed: bad type");
+                assert_eq!(additional_failures, 3);
+            }
+            other => panic!("expected Poisoned, got {other:?}"),
+        }
+    }
 }
