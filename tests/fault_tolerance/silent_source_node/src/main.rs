@@ -17,8 +17,8 @@ fn main() -> eyre::Result<()> {
     let mut sent = false;
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { id, metadata, .. } if id.as_str() == "tick" => {
-                if !sent {
+            Event::Input { id, metadata, .. } if id.as_str() == "tick"
+                && !sent => {
                     node.send_output(output.clone(), metadata.parameters, 42i64.into_arrow())
                         .context("failed to send value")?;
                     sent = true;
@@ -26,7 +26,6 @@ fn main() -> eyre::Result<()> {
                 // Subsequent ticks are intentionally ignored so the
                 // downstream must rely on `input_timeout` to notice
                 // that data has gone stale.
-            }
             Event::Stop(_) => break,
             _ => {}
         }

@@ -182,7 +182,7 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
     for path in &log_files {
         all_messages.extend(read_log_file(path)?);
     }
-    all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    all_messages.sort_by_key(|a| a.timestamp);
     let filtered = apply_time_filters(all_messages, args.since, args.until, now);
     let grepped = apply_grep(filtered, args.grep.as_deref());
     let display = apply_tail(grepped, args.tail);
@@ -227,7 +227,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     for path in &files {
         all_messages.extend(read_log_file(path)?);
     }
-    all_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    all_messages.sort_by_key(|a| a.timestamp);
     let filtered = apply_time_filters(all_messages, args.since, args.until, now);
     let grepped = apply_grep(filtered, args.grep.as_deref());
     let display = apply_tail(grepped, args.tail);
@@ -266,7 +266,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
             file_positions.insert(path.clone(), current_size);
         }
 
-        new_messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        new_messages.sort_by_key(|a| a.timestamp);
         for msg in new_messages {
             if matches_grep(&msg, args.grep.as_deref()) {
                 print_log_message(msg, &config);

@@ -1031,8 +1031,8 @@ fn check_edge_mismatches_with_compat(
                 let downstream_urn = input_types.get(input_id);
 
                 match (upstream_urn, downstream_urn) {
-                    (Some(out_urn), Some(in_urn)) => {
-                        if !compat.is_compatible(out_urn, in_urn) {
+                    (Some(out_urn), Some(in_urn))
+                        if !compat.is_compatible(out_urn, in_urn) => {
                             let schema_detail = check_schema_compat(out_urn, in_urn, registry);
                             let detail =
                                 schema_detail.map(|d| format!(" ({d})")).unwrap_or_default();
@@ -1046,7 +1046,6 @@ fn check_edge_mismatches_with_compat(
                                 ),
                             });
                         }
-                    }
                     (Some(out_urn), None) => {
                         inferences.push(TypeInference {
                             node_id: node_id.to_string(),
