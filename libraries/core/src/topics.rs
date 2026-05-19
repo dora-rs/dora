@@ -172,10 +172,26 @@ pub async fn open_zenoh_session_with_listen(
                         .into_iter()
                         .map(|l| l.as_str().to_string())
                         .collect();
-                    // Substring match tolerates zenoh's metadata suffixes
-                    // (e.g. `tcp/127.0.0.1:43217#iface=lo0`) while still
-                    // requiring the exact addr:port we asked for to appear.
-                    let bound = bound_locators.iter().any(|l| l.contains(&requested));
+                    // Strip zenoh's endpoint-string separators before
+                    // comparing. Per `zenoh-protocol::core::endpoint`,
+                    // `?` separates metadata and `#` separates config
+                    // (e.g. `tcp/127.0.0.1:43217?prio=high#iface=lo0`).
+                    // `Locator::from(EndPoint)` already truncates `#`,
+                    // but a `?`-metadata suffix would survive into
+                    // `info().locators()`'s output. Strip both, then
+                    // exact-match — substring `contains` would
+                    // false-positive on port-prefix collisions (e.g.
+                    // requested `:5000` matching bound `:50000`), which
+                    // is exactly the mismatch this check exists to
+                    // catch. NOTE: the comparison is by canonical
+                    // `tcp/127.0.0.1:<port>` form; callers passing
+                    // non-canonical loopback forms (`localhost`, IPv6
+                    // mapped) won't match — `reserve_loopback_zenoh_
+                    // endpoint` only emits the canonical form, so this
+                    // is fine for the daemon's only call site.
+                    let bound = bound_locators
+                        .iter()
+                        .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
                     if bound {
                         effective_listen_endpoint = Some(requested);
                     } else {
