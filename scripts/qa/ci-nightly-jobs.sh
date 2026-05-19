@@ -69,6 +69,47 @@ SELECTED_JOB_COUNT=$#
 CLI_ROOT=""
 CLI_INSTALLED=0
 
+# Scan a dataflow's `out/<UUID>/log_*.jsonl` for per-node failure
+# markers. `dora run --stop-after Ns` exits 0 if the daemon ran for N
+# seconds regardless of whether any node actually succeeded inside —
+# so callers need an explicit assertion on top to catch silent
+# crashes. Without this, the cli-tests phase reports PASS even when
+# `listener_1` failed to build and `talker_1` never received an event
+# (#1863).
+#
+# Patterns chosen because `level:error` in dora's JSONL is noisy
+# (zenoh emits "Unable to publish transport event: session closed"
+# on every clean teardown). The patterns below are unambiguous node
+# failures that don't appear in the happy path.
+assert_clean_dataflow_run() {
+  local outdir="${1:-out}"
+  local fail_re='panicked at|failed to build node|ModuleNotFoundError:|Traceback \(most recent|^Caused by:|"level":"stderr".*"msg":"Error:'
+  local issues=()
+
+  if [ ! -d "$outdir" ]; then
+    # No output at all means `dora run` produced nothing — the
+    # caller's own exit-code check already covered that case.
+    return 0
+  fi
+
+  while IFS= read -r logfile; do
+    local node
+    node=$(basename "$logfile" .jsonl | sed 's/^log_//')
+    # Internal dora bookkeeping nodes (record/replay etc.) — skip.
+    case "$node" in __dora_*) continue ;; esac
+    if grep -qE "$fail_re" "$logfile" 2>/dev/null; then
+      issues+=("$node (see $logfile)")
+    fi
+  done < <(find "$outdir" -name 'log_*.jsonl' -type f 2>/dev/null)
+
+  if [ ${#issues[@]} -gt 0 ]; then
+    echo "ERROR: cli-tests assertion: dora run exit was clean but these nodes had failures:" >&2
+    printf '  - %s\n' "${issues[@]}" >&2
+    return 1
+  fi
+  return 0
+}
+
 known_job() {
   case "$1" in
     record-replay|cluster-smoke|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
@@ -830,17 +871,21 @@ job_cli_tests() {
   # cargo install --path binaries/cli --locked is redundant here; skip it
   # to save ~45 min per local run.
 
-  # Rust template project: all platforms
-  local tmpd
-  tmpd=$(mktemp -d -t dora-tpl-XXXXXX)
+  # Rust template project: all platforms. Generated at repo root so
+  # the CLI template's relative path dep `dora-node-api = { path =
+  # "../../apis/rust/node" }` resolves to the actual workspace
+  # (#1862). Matches `.github/workflows/nightly.yml::cli-tests`.
+  # Pre-clean in case a prior interrupted run left state behind.
+  rm -rf test_rust_project
   (
-    cd "$tmpd"
     dora new test_rust_project --internal-create-with-path-dependencies
     cd test_rust_project
     cargo build --all
     timeout 120s dora run dataflow.yml --stop-after 10s
+    # Assert no per-node failures hid behind dora-run's 10s timer (#1863).
+    assert_clean_dataflow_run "out"
   )
-  rm -rf "$tmpd"
+  rm -rf test_rust_project
 
   # Dynamic Rust Dataflow
   dora up
@@ -875,11 +920,13 @@ job_cli_tests() {
     # Capture an absolute path before the template subshell changes directory.
     dora_python_api="$PWD/apis/python/node"
 
-    # Python template: dora new + dora build + ruff + pytest + dora run
-    local tmpd2
-    tmpd2=$(mktemp -d -t dora-pytpl-XXXXXX)
+    # Python template: dora new + dora build + ruff + pytest + dora run.
+    # Generated at repo root for the same reason as the Rust template
+    # above — the CLI template's relative path-dep needs the dora
+    # workspace as a parent (#1862). Matches
+    # `.github/workflows/nightly.yml::cli-tests`.
+    rm -rf test_python_project
     (
-      cd "$tmpd2"
       dora new test_python_project --lang python --internal-create-with-path-dependencies
       cd test_python_project
       dora build dataflow.yml --uv
@@ -889,12 +936,19 @@ job_cli_tests() {
       export OPERATING_MODE=SAVE
       dora build dataflow.yml --uv
       timeout 120s dora run dataflow.yml --uv --stop-after 10s
+      # Assert no per-node failures hid behind dora-run's 10s timer (#1863).
+      assert_clean_dataflow_run "out"
     )
-    rm -rf "$tmpd2"
+    rm -rf test_python_project
 
-    # Python Node example
+    # Python Node example. `dora run X/dataflow.yml` puts `out/` next
+    # to the yaml, so the assertion scans `examples/python-dataflow/out`.
+    # Pre-clean stale logs from prior runs so the assert only sees
+    # this invocation's per-node behavior (#1863).
+    rm -rf examples/python-dataflow/out
     dora build examples/python-dataflow/dataflow.yml --uv
     timeout 60s dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+    assert_clean_dataflow_run examples/python-dataflow/out
 
     # Python Dynamic Node example
     # dora-hub deps pull dora-rs from PyPI, overriding local build;
@@ -911,13 +965,17 @@ job_cli_tests() {
 
     # Python Operator example
     # dora-hub deps pull dora-rs from PyPI; re-install local version.
+    rm -rf examples/python-operator-dataflow/out
     dora build examples/python-operator-dataflow/dataflow.yml --uv
     uv pip install --quiet -e apis/python/node
     timeout 120s dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+    assert_clean_dataflow_run examples/python-operator-dataflow/out
 
     # Python Multiple Arrays
+    rm -rf examples/python-multiple-arrays/out
     dora build examples/python-multiple-arrays/dataflow.yml --uv
     timeout 120s dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+    assert_clean_dataflow_run examples/python-multiple-arrays/out
 
     # Python Async example (5-min run; skipped on Windows per GHA)
     case "$OS" in
