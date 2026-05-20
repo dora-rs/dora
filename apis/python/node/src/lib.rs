@@ -8,7 +8,9 @@ use arrow::pyarrow::{FromPyArrow, ToPyArrow};
 use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
-use dora_operator_api_python::{DelayedCleanup, NodeCleanupHandle, PyEvent, pydict_to_metadata};
+use dora_operator_api_python::{
+    DelayedCleanup, NodeCleanupHandle, PyEvent, datetime_module, pydict_to_metadata,
+};
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
@@ -686,6 +688,45 @@ impl Node {
     /// :rtype: int
     pub fn restart_count(&self) -> u32 {
         self.node.get_mut().restart_count()
+    }
+
+    /// Returns the current timestamp from the node's Hybrid Logical Clock
+    /// as a UTC datetime object.
+    ///
+    /// Use this against ``event["metadata"]["timestamp"]`` from an INPUT
+    /// event to compute per-event processing latency against the same
+    /// clock dora uses on its data plane.
+    ///
+    /// **Resolution & ordering caveats** — Python ``datetime`` is
+    /// microsecond-resolution and only carries the HLC's physical
+    /// component; its logical counter is dropped. Two messages produced
+    /// in the same HLC microsecond will compare equal here even though
+    /// the underlying HLC distinguishes them. For strict ordering use
+    /// the Rust API (``DoraNode::timestamp() -> uhlc::Timestamp``).
+    ///
+    /// **Threading** — like every other ``Node`` method, this acquires
+    /// the node's internal mutex via ``try_lock`` and will panic if
+    /// another thread is mid-call into the same ``Node`` instance. The
+    /// Python GIL serialises in-process calls, so this is only
+    /// reachable if a caller releases the GIL (e.g. via
+    /// ``allow_threads``) and another thread re-enters the same Node.
+    /// Don't do that.
+    ///
+    /// :rtype: datetime.datetime
+    pub fn timestamp(&self, py: Python) -> eyre::Result<Py<PyAny>> {
+        let ts = self.node.get_mut().timestamp();
+        let system_time = ts.get_time().to_system_time();
+        let duration_since_epoch = system_time
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("Failed to calculate duration since epoch")?;
+        let total_seconds = duration_since_epoch.as_secs() as f64
+            + duration_since_epoch.subsec_micros() as f64 / 1_000_000.0;
+        let dt_module = datetime_module(py).context("Failed to import datetime module")?;
+        let datetime_class = dt_module.getattr("datetime")?;
+        let utc_timezone = dt_module.getattr("timezone")?.getattr("utc")?;
+        let py_datetime =
+            datetime_class.call_method1("fromtimestamp", (total_seconds, utc_timezone))?;
+        Ok(py_datetime.unbind())
     }
 
     /// Merge an external event stream with dora main loop.

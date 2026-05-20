@@ -1,3 +1,4 @@
+import datetime
 import typing
 
 import pyarrow
@@ -148,6 +149,10 @@ class Node:
         """Returns how many times this node has been restarted.
 
         Returns 0 on the first run, 1 after the first restart, etc."""
+
+    def timestamp(self) -> "datetime.datetime":
+        """Returns the current timestamp from the node's Hybrid Logical Clock
+        as a UTC datetime object."""
 
     def merge_external_events(self, subscription: dora.Ros2Subscription) -> None:
         """Merge an external event stream with dora main loop.
