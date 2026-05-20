@@ -29,6 +29,9 @@ pub struct LogsArgs {
     /// Identifier of the dataflow (UUID or name)
     #[clap(value_name = "UUID_OR_NAME")]
     pub dataflow: Option<String>,
+    /// Deprecated positional node name. Use --node instead.
+    #[clap(value_name = "NAME", hide = true)]
+    pub legacy_node: Option<NodeId>,
     /// Show logs for the given node
     #[clap(long, short = 'n', value_name = "NAME", conflicts_with = "all_nodes")]
     pub node: Option<NodeId>,
@@ -94,6 +97,8 @@ impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
+        reject_legacy_node_arg(&self)?;
+
         // --local always uses local file path
         if self.local {
             if self.follow {
@@ -148,6 +153,17 @@ impl Executable for LogsArgs {
             }
         }
     }
+}
+
+fn reject_legacy_node_arg(args: &LogsArgs) -> Result<()> {
+    if let Some(node) = &args.legacy_node {
+        let dataflow = args.dataflow.as_deref().unwrap_or("<DATAFLOW>");
+        bail!(
+            "positional node argument `{node}` is no longer supported\n\n  \
+             hint: use `dora logs {dataflow} --node {node}` instead"
+        );
+    }
+    Ok(())
 }
 
 fn legacy_positional_node(args: &LogsArgs) -> Option<&str> {

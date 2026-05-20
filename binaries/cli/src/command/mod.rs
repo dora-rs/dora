@@ -321,8 +321,8 @@ mod tests {
     }
 
     #[test]
-    fn reject_logs_positional_node() {
-        parse_err(&["dora", "logs", "my-dataflow", "sensor"]);
+    fn parse_logs_legacy_positional_node_for_runtime_hint() {
+        parse_ok(&["dora", "logs", "my-dataflow", "sensor"]);
     }
 
     #[test]
