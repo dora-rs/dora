@@ -31,6 +31,8 @@ on:
 env:
   RUST_VERSION: "1.92.0"
   RUST_TOOLCHAIN_DIR: "1.92.0-x86_64-unknown-linux-gnu"
+  # The workspace pins PyO3's abi3 floor to Python 3.11.
+  PYTHON_VERSION: "3.11"
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -67,7 +69,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: ${{ env.PYTHON_VERSION }}
       - run: rustup default ${{ env.RUST_VERSION }}
       - run: rustup update ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -85,10 +87,11 @@ jobs:
           before-script-linux: |
             sudo apt-get update
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libatomic1-i386-cross libatomic1-armhf-cross
+            : "${pythonLocation:?actions/setup-python did not set pythonLocation}"
             mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/
             ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so
             ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/i686-unknown-linux-gnu/lib/libatomic.so.1
-            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 /opt/hostedtoolcache/Python/3.8.18/x64/lib/libatomic.so.1
+            ln -s /usr/i686-linux-gnu/lib/libatomic.so.1 "$pythonLocation/lib/libatomic.so.1"
             mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
             ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
@@ -119,7 +122,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -161,7 +164,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -194,13 +197,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i 3.8
+          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
           sccache: "true"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
@@ -227,12 +230,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: 3.8
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i 3.8
+          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
