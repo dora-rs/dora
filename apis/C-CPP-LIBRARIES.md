@@ -68,6 +68,56 @@ dora-cpp-libraries-<target>/
 
 ## CMake Integration
 
+### Recommended: `find_package`
+
+The pre-built archives include cmake config files at `lib/cmake/<crate>/`, so consumers can use the standard `find_package` idiom without hardcoding library paths or platform-specific link flags. The package's `extra` interface target carries the platform link dependencies (winapi libs / Apple frameworks / pthread+dl+m+rt) so consumers never have to list them by hand.
+
+**C node:**
+```cmake
+cmake_minimum_required(VERSION 3.15)
+project(my_dora_node C)
+
+find_package(dora-node-api-c REQUIRED)
+
+add_executable(my_node main.c)
+target_link_libraries(my_node
+    PRIVATE
+        dora-node-api-c::dora-node-api-c
+        dora-node-api-c::extra
+)
+```
+
+**C++ node:**
+```cmake
+cmake_minimum_required(VERSION 3.15)
+project(my_dora_node CXX)
+set(CMAKE_CXX_STANDARD 20)
+
+find_package(dora-node-api-cxx REQUIRED)
+
+add_executable(my_node
+    main.cc
+    ${dora-node-api-cxx_CXX_BRIDGE_FILES}
+)
+target_link_libraries(my_node
+    PRIVATE
+        dora-node-api-cxx::dora-node-api-cxx
+        dora-node-api-cxx::extra
+)
+```
+
+Configure with the prefix path pointing at the extracted archive:
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/dora-c-libraries-<target>
+cmake --build build
+```
+
+The cmake config performs a platform-match check at configure time and aborts if the archive's target triple does not match the host you are building on — this catches "wrong-architecture archive extracted" before the link step.
+
+### Legacy: hand-rolled include + library paths
+
+This pattern still works for projects that haven't migrated, but every new project should prefer `find_package` above.
+
 ### C Node Example
 
 ```cmake
@@ -196,6 +246,17 @@ cargo build --release \
 # C headers:          apis/c/node/, apis/c/operator/
 # C++ bridge files:   target/cxxbridge/dora-{node,operator}-api-cxx/src/lib.rs.{h,cc}
 ```
+
+To produce a find_package-ready prefix from a source build, run `xtask stage` after `cargo build`:
+
+```bash
+cargo run -p xtask -- stage dora-node-api-c   target/release dora-c-libraries-local
+cargo run -p xtask -- stage dora-node-api-cxx target/release dora-cpp-libraries-local
+
+cmake -S my-project -B build -DCMAKE_PREFIX_PATH=$(pwd)/dora-c-libraries-local
+```
+
+The same `xtask stage` command drives the release-archive packaging in `.github/workflows/publish-c-cpp-libraries.yml`, so a local build produces exactly the layout consumers will see in the GitHub release artefacts.
 
 ## Versioning
 
