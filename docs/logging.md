@@ -239,15 +239,15 @@ Read historical logs or stream live logs from a running dataflow.
 
 ```bash
 # Read logs for a specific node (via coordinator)
-dora logs <dataflow_uuid> <node_name>
+dora logs <dataflow_uuid> --node <node_name>
 
 # Read local log files directly
-dora logs --local <node_name>
+dora logs --local --node <node_name>
 dora logs --local --all-nodes
 
 # Stream live logs
-dora logs <dataflow_uuid> <node_name> --follow
-dora logs --local <node_name> --follow
+dora logs <dataflow_uuid> --node <node_name> --follow
+dora logs --local --node <node_name> --follow
 ```
 
 ### Flags
@@ -255,8 +255,9 @@ dora logs --local <node_name> --follow
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--local` | | false | Read from local `out/` directory instead of coordinator |
+| `--node NAME` | `-n` | none | Show logs for a single node |
 | `--all-nodes` | | false | Merge logs from all nodes, sorted by timestamp |
-| `--tail N` | `-n` | all | Show only the last N lines |
+| `--tail N` | | all | Show only the last N lines |
 | `--follow` | `-f` | false | Stream new log entries as they arrive |
 | `--since DURATION` | | none | Only show logs newer than this duration ago |
 | `--until DURATION` | | none | Only show logs older than this duration ago |
@@ -271,13 +272,13 @@ dora logs --local <node_name> --follow
 
 ```bash
 # Logs from the last 5 minutes
-dora logs --local sensor --since 5m
+dora logs --local --node sensor --since 5m
 
 # Logs from 1 hour ago to 30 minutes ago
-dora logs --local sensor --since 1h --until 30m
+dora logs --local --node sensor --since 1h --until 30m
 
 # Last 10 errors from the past hour
-dora logs --local sensor --since 1h --level error --tail 10
+dora logs --local --node sensor --since 1h --level error --tail 10
 ```
 
 Supported duration formats: `30` (seconds), `30s`, `5m`, `1h`, `2d`.
@@ -294,7 +295,7 @@ Supported duration formats: `30` (seconds), `30s`, `5m`, `1h`, `2d`.
 dora logs --local --all-nodes --grep "timeout"
 
 # Find errors from a specific module
-dora logs --local sensor --grep "camera::driver" --level error
+dora logs --local --node sensor --grep "camera::driver" --level error
 ```
 
 ### Filter Pipeline
@@ -979,10 +980,10 @@ dora start examples/python-logging/dataflow.yml --attach
 
 # Or start detached and query logs separately
 dora start examples/python-logging/dataflow.yml
-dora logs <dataflow-id> sensor --follow                    # stream one node
-dora logs <dataflow-id> sensor --follow --level warn       # only warnings
+dora logs <dataflow-id> --node sensor --follow             # stream one node
+dora logs <dataflow-id> --node sensor --follow --level warn # only warnings
 dora logs <dataflow-id> --all-nodes --tail 20              # last 20 lines
-dora logs <dataflow-id> processor --grep "error" --since 5m  # targeted search
+dora logs <dataflow-id> --node processor --grep "error" --since 5m # targeted search
 ```
 
 In distributed mode, logs flow Node -> Daemon -> Coordinator -> CLI over WebSocket. The coordinator buffers log messages until a subscriber connects, so you won't miss logs even if you attach late. YAML-level settings (`min_log_level`, `send_logs_as`, `max_log_size`) work identically since they are applied at the daemon.
@@ -1001,7 +1002,7 @@ In distributed mode, logs flow Node -> Daemon -> Coordinator -> CLI over WebSock
 dora logs --local --all-nodes --tail 20
 
 # Search for warnings in sensor logs
-dora logs --local sensor --grep "high temp"
+dora logs --local --node sensor --grep "high temp"
 
 # Check that rotation created multiple files
 ls -la out/*/log_sensor*.jsonl
@@ -1118,7 +1119,7 @@ dora logs --local --all-nodes --since 5m --level error
 dora logs --local --all-nodes --grep "out of memory"
 
 # Drill into a specific node
-dora logs --local detector --since 2m
+dora logs --local --node detector --since 2m
 
 # Export as JSON for external analysis
 dora run dataflow.yml --log-format json 2>logs.json
@@ -1181,19 +1182,19 @@ dora start dataflow.yml
 # Open targeted log streams in separate terminals:
 
 # Terminal 1: all sensor warnings
-dora logs <dataflow-id> sensor --follow --level warn
+dora logs <dataflow-id> --node sensor --follow --level warn
 
 # Terminal 2: processor errors with text search
-dora logs <dataflow-id> processor --follow --level error --grep "timeout"
+dora logs <dataflow-id> --node processor --follow --level error --grep "timeout"
 
 # Terminal 3: all nodes merged
 dora logs <dataflow-id> --all-nodes --follow
 
 # Terminal 4: historical + live (errors from the last hour, then stream)
-dora logs <dataflow-id> processor --since 1h --level error --follow
+dora logs <dataflow-id> --node processor --since 1h --level error --follow
 
 # Monitor a remote coordinator from another machine:
-dora logs <dataflow-id> sensor --follow --coordinator-addr 192.168.1.10
+dora logs <dataflow-id> --node sensor --follow --coordinator-addr 192.168.1.10
 ```
 
 **How it works internally:**
@@ -1271,6 +1272,6 @@ nodes:
 
 **Use `--local` for post-mortem debugging.** After a crash, `dora logs --local --all-nodes` works without a running coordinator and merges all node logs chronologically.
 
-**Combine `--since` with `--grep` for targeted debugging.** Instead of scrolling through thousands of lines, narrow the window: `dora logs --local sensor --since 5m --grep "error"`.
+**Combine `--since` with `--grep` for targeted debugging.** Instead of scrolling through thousands of lines, narrow the window: `dora logs --local --node sensor --since 5m --grep "error"`.
 
 **Use JSON format for log pipelines.** When feeding logs to external systems (ELK, Grafana Loki, Datadog), use `--log-format json` for structured ingestion.
