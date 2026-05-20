@@ -1785,8 +1785,12 @@ impl Daemon {
                 grace_duration,
             } => {
                 tracing::info!(%dataflow_id, %node_id, "removing node from running dataflow");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let _ = dataflow.stop_single_node(&node_id, &self.clock, grace_duration);
+                let result: eyre::Result<()> = (|| {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    dataflow.stop_single_node(&node_id, &self.clock, grace_duration)?;
 
                     // Clean up routing tables: remove all mappings where this
                     // node is a source, and close inputs on downstream nodes.
@@ -1818,8 +1822,16 @@ impl Daemon {
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
                     dataflow.descriptor.nodes.retain(|n| n.id != node_id);
+                    Ok(())
+                })();
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");
                 }
-                let _ = reply_tx.send(None);
+                let reply = DaemonCoordinatorReply::RemoveNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::AddMapping {
