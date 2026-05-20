@@ -329,6 +329,27 @@ impl Listener {
                 )
                 .await?;
             }
+            DaemonRequest::RegisterDirectListener { listen_addr } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::RegisterDirectListener {
+                        listen_addr,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::QueryDirectRoutes => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::QueryDirectRoutes { reply_sender },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
         }
         Ok(())
     }

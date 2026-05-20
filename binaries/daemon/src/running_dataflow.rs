@@ -25,7 +25,7 @@ use crossbeam::queue::ArrayQueue;
 use eyre::eyre;
 use futures::FutureExt;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32, AtomicU64},
@@ -212,6 +212,10 @@ pub struct RunningDataflow {
     pub(crate) net_messages_sent: Arc<AtomicU64>,
     pub(crate) net_messages_received: Arc<AtomicU64>,
     pub(crate) net_publish_failures: Arc<AtomicU64>,
+    /// Addresses of nodes that accept direct node-to-node connections.
+    pub(crate) direct_listeners: HashMap<NodeId, std::net::SocketAddr>,
+    /// Output-receiver pairs using direct connections (daemon skips forwarding small Vec messages).
+    pub(crate) direct_pairs: HashSet<(OutputId, NodeId)>,
 }
 
 /// Indicates whether a dataflow should be finished immediately after stop_all()
@@ -265,6 +269,8 @@ impl RunningDataflow {
             net_messages_sent: Default::default(),
             net_messages_received: Default::default(),
             net_publish_failures: Default::default(),
+            direct_listeners: HashMap::new(),
+            direct_pairs: HashSet::new(),
         }
     }
 
