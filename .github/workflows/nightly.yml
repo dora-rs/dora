@@ -1482,11 +1482,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      # PyO3's abi3-py311 floor still needs a real interpreter when checking
+      # publishable Python helper crates that embed/link Python. Without this,
+      # pyo3-ffi falls back to an abi3 config without lib_name and the MSRV
+      # check fails before reaching crate code.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack
-      - run: cargo hack check --rust-version --workspace --ignore-private --locked
+      - run: |
+          unset PYO3_NO_PYTHON
+          PYO3_PYTHON="$(command -v python)" cargo hack check --rust-version --workspace --ignore-private --locked
 
 
   file-issue-on-failure:

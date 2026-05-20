@@ -1064,7 +1064,20 @@ job_msrv() {
     SKIPPED+=("msrv: cargo-hack missing")
     return 0
   fi
-  cargo hack check --rust-version --workspace --ignore-private --locked
+
+  local pyo3_python="${PYO3_PYTHON:-}"
+  if [[ -z "$pyo3_python" ]]; then
+    pyo3_python="$(command -v python || command -v python3 || true)"
+  fi
+
+  if [[ -n "$pyo3_python" ]]; then
+    (
+      unset PYO3_NO_PYTHON
+      PYO3_PYTHON="$pyo3_python" cargo hack check --rust-version --workspace --ignore-private --locked
+    )
+  else
+    cargo hack check --rust-version --workspace --ignore-private --locked
+  fi
 }
 
 # -----------------------------------------------------------------------------
