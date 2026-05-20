@@ -22,7 +22,7 @@ use std::time::UNIX_EPOCH;
 /// Cached Python `datetime` module to avoid repeated `PyModule::import` on the hot path.
 static DATETIME_MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
-fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
+pub fn datetime_module<'py>(py: Python<'py>) -> PyResult<&'py Bound<'py, PyModule>> {
     Ok(DATETIME_MODULE
         .get_or_try_init(py, || PyModule::import(py, "datetime").map(|m| m.unbind()))?
         .bind(py))

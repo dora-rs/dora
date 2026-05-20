@@ -1149,6 +1149,20 @@ impl DoraNode {
         self.restart_count
     }
 
+    /// Returns the current timestamp from the node's Hybrid Logical Clock.
+    ///
+    /// This generates a new HLC timestamp, which combines the physical
+    /// wall-clock time with a logical counter to ensure uniqueness and
+    /// monotonicity even across nodes. The HLC is the same clock dora
+    /// stamps every outgoing message with, so this is the right value
+    /// to subtract from an input event's `metadata.timestamp` when
+    /// measuring per-event processing latency — using
+    /// `std::time::SystemTime::now()` instead would mix two unrelated
+    /// clocks and give meaningless results across daemons.
+    pub fn timestamp(&self) -> uhlc::Timestamp {
+        self.clock.new_timestamp()
+    }
+
     /// Send a structured log message.
     ///
     /// Outputs a JSONL line to stdout that the daemon parses automatically.
@@ -1689,6 +1703,38 @@ mod tests {
     fn new_goal_id_returns_valid_uuid() {
         let id = DoraNode::new_goal_id();
         uuid::Uuid::parse_str(&id).expect("should be valid UUID");
+    }
+
+    /// `DoraNode::timestamp()` must read from the SAME HLC the node
+    /// uses to stamp outgoing messages. If a refactor accidentally
+    /// gives `timestamp()` its own clock, the latency-measurement use
+    /// case in the docstring silently breaks (subtracting against an
+    /// `event.metadata.timestamp` from the data plane would mix two
+    /// unrelated HLCs). Guard by asserting two calls share an HLC ID
+    /// and that the second reads strictly later than the first.
+    ///
+    /// The strict `t2 > t1` assertion holds by HLC construction: if
+    /// the wall clock advanced between calls, the physical component
+    /// strictly increases; if not, the logical counter bumps. The
+    /// lexicographic ordering on `uhlc::Timestamp` puts `t2` strictly
+    /// after `t1` in either case, so this assertion does not flake on
+    /// fast machines whose OS clock rounds both calls to the same tick.
+    #[test]
+    fn timestamp_uses_node_clock_and_is_monotonic() {
+        let (node, events, _rx) = test_node();
+        let t1 = node.timestamp();
+        let t2 = node.timestamp();
+        assert_eq!(
+            t1.get_id(),
+            t2.get_id(),
+            "two timestamp() calls must come from the same HLC instance",
+        );
+        assert!(
+            t2 > t1,
+            "HLC timestamps must be strictly monotonic: {t1:?} >= {t2:?}"
+        );
+        drop(node);
+        drop(events);
     }
 
     /// Helper: create a minimal test node with a channel output.
