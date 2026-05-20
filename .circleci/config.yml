@@ -180,17 +180,31 @@ jobs:
 
   clippy:
     executor: linux-large
+    environment:
+      # The workspace pins `abi3-py311` in pyo3 features. With the
+      # cimg/rust image's Python sitting at < 3.11, pyo3-build-config
+      # 0.28+ aborts the interpreter probe. Disable the probe; the
+      # `abi3-py311` feature on pyo3-build-config (Cargo.toml:128)
+      # carries the ABI metadata without needing a live interpreter.
+      # Mirrors the GHA nightly env at .github/workflows/nightly.yml:1335.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore:
           prefix: clippy
       - run:
           name: Clippy (warnings = errors)
+          # dora-cli-api-python is a leaf cdylib that links libpython
+          # via pyo3-ffi — incompatible with the job's `PYO3_NO_PYTHON=1`.
+          # Exclude it so cargo doesn't try to link the cdylib at all.
+          # Same exclusion shape used by every other CircleCI cargo
+          # invocation (test-linux, cross-check-*, etc.).
           command: >
             cargo clippy --all
             --exclude dora-node-api-python
             --exclude dora-operator-api-python
             --exclude dora-ros2-bridge-python
+            --exclude dora-cli-api-python
             -- -D warnings
       - cargo-cache-save:
           prefix: clippy
@@ -265,6 +279,10 @@ jobs:
 
   test-linux:
     executor: linux
+    environment:
+      # Skip pyo3-build-config's interpreter probe (image Python < 3.11).
+      # Workspace pins `abi3-py311` on pyo3-build-config (Cargo.toml:128).
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore
@@ -352,6 +370,8 @@ jobs:
     resource_class: macos.m1.medium.gen1
     environment:
       CARGO_TERM_COLOR: always
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust:
@@ -381,6 +401,8 @@ jobs:
       # CircleCI Windows runners have less RAM than GitHub Actions;
       # limit parallelism to avoid OOM during linking.
       CARGO_BUILD_JOBS: "2"
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust-windows:
@@ -408,6 +430,9 @@ jobs:
 
   examples-linux:
     executor: linux
+    environment:
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore
@@ -467,6 +492,11 @@ jobs:
     resource_class: macos.m1.medium.gen1
     environment:
       CARGO_TERM_COLOR: always
+      # macOS Xcode 15.4 ships Python 3.9; `cargo build --examples` +
+      # `cargo install dora-cli` both trigger dora-runtime's build.rs
+      # which calls `pyo3_build_config::use_pyo3_cfgs()` unconditionally
+      # (binaries/runtime/build.rs). Skip the interpreter probe.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust:
@@ -508,6 +538,10 @@ jobs:
     executor: win/default
     environment:
       CARGO_TERM_COLOR: always
+      # Same as examples-macos: build chain pulls dora-runtime which
+      # always calls pyo3-build-config; Windows runner has no guaranteed
+      # Python 3.11+. Skip the probe.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust-windows:
@@ -740,6 +774,10 @@ jobs:
     resource_class: macos.m1.medium.gen1
     environment:
       CARGO_TERM_COLOR: always
+      # `cargo install --path binaries/cli --locked` resolves to dora-
+      # runtime as a transitive dep; runtime's build.rs runs pyo3-build-
+      # config unconditionally. Skip the probe on the < 3.11 macOS image.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust:
@@ -786,6 +824,8 @@ jobs:
     executor: win/default
     environment:
       CARGO_TERM_COLOR: always
+      # Same as cli-macos.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust-windows:
@@ -837,6 +877,9 @@ jobs:
   # authoritative benchmark gate; this is a "does it run" check.
   bench-example:
     executor: linux
+    environment:
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore:
@@ -851,6 +894,9 @@ jobs:
   # ===== E2E tests =====
   e2e:
     executor: linux
+    environment:
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - attach_workspace:
@@ -874,6 +920,9 @@ jobs:
   # ===== Semantic contract tests =====
   contract-tests:
     executor: linux
+    environment:
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - attach_workspace:
@@ -898,6 +947,9 @@ jobs:
   # ===== Benchmark regression check =====
   bench:
     executor: linux-large
+    environment:
+      # Same pyo3-build-config probe-skip as test-linux above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore:
@@ -942,6 +994,11 @@ jobs:
     resource_class: << parameters.resource >>
     environment:
       CARGO_TERM_COLOR: always
+      # Mirror the GHA nightly env at nightly.yml:1335. cimg/rust:1.92.0
+      # ships Python < 3.11, which fails pyo3-build-config 0.28+'s
+      # interpreter-vs-abi3-minimum check. abi3 metadata is already
+      # baked in via the workspace `abi3-py311` feature.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore:
@@ -975,6 +1032,9 @@ jobs:
     resource_class: macos.m1.medium.gen1
     environment:
       CARGO_TERM_COLOR: always
+      # System Python on this macOS image is < 3.11. Same reasoning as
+      # cross-check-native above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - install-rust:
@@ -1003,6 +1063,13 @@ jobs:
     environment:
       CARGO_TERM_COLOR: always
       RUST_VERSION: "1.92.0"
+      # cross-rs Docker images ship Python 3.10, below our abi3-py311
+      # minimum. Disable the interpreter probe (same as the GHA nightly
+      # at nightly.yml:1335) AND pass the env through to the container
+      # `cross` spawns — `CROSS_BUILD_ENV_PASSTHROUGH` maps to
+      # `build.env.passthrough` in Cross.toml.
+      PYO3_NO_PYTHON: "1"
+      CROSS_BUILD_ENV_PASSTHROUGH: "PYO3_NO_PYTHON"
     steps:
       - checkout
       - install-rust:
@@ -1159,6 +1226,11 @@ jobs:
   # ===== MSRV check =====
   msrv:
     executor: linux-large
+    environment:
+      # `cargo hack check --workspace` builds the whole workspace,
+      # which triggers pyo3-build-config 0.28+'s interpreter probe.
+      # Same fix as the cross-check + clippy jobs above.
+      PYO3_NO_PYTHON: "1"
     steps:
       - checkout
       - cargo-cache-restore:

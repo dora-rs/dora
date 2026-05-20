@@ -24,7 +24,12 @@ pyo3.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [build-dependencies]
-pyo3-build-config = "0.28"
+# Inherit the workspace dep so the `abi3-py311` feature (which the
+# workspace adds via Cargo.toml) is picked up here too. A bare
+# `pyo3-build-config = "0.28"` would silently drop that feature and
+# re-trigger the "no abi3-py3* feature" build-script error on hosts
+# with `PYO3_NO_PYTHON=1` set or no findable Python interpreter.
+pyo3-build-config.workspace = true
 
 [lib]
 name = "dora_cli"
