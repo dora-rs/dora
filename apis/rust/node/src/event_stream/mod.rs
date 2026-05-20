@@ -1128,29 +1128,69 @@ fn zenoh_payload_to_arrow_array(
     let raw_buffer = match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
             // SHM path: the slice points into memory owned by `payload`
-            // (the zenoh shared-memory mapping). Wrap `payload` in an
-            // Arc as the allocation owner so the mapping stays alive
-            // for the lifetime of the Arrow buffer.
-            let ptr =
-                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
-            let len = slice.len();
+            // (the zenoh shared-memory mapping).
+            //
+            // Zenoh's Talc sub-allocator does not honour the AllocAlignment
+            // hint on all platforms (observed: only 16-byte aligned on
+            // Jetson NX / L4T). aarch64 NEON SIMD instructions (e.g. those
+            // emitted for Arrow compute kernels) require the buffer base
+            // address to be 64-byte aligned; a misaligned base causes SIGBUS
+            // on NVIDIA Carmel cores even though the individual Arrow buffer
+            // *offsets* within the payload are already 64-byte aligned.
+            //
+            // Defence: check alignment here and fall back to a heap copy when
+            // the SHM base is not 64-byte aligned. The copy is O(payload)
+            // but only occurs when the platform's SHM allocator misbehaves.
+            const REQUIRED_ALIGN: usize = 64;
+            if slice.as_ptr() as usize % REQUIRED_ALIGN == 0 {
+                // Already aligned: true zero-copy SHM path.
+                let ptr = NonNull::new(slice.as_ptr() as *mut u8)
+                    .expect("zenoh SHM payload ptr is null");
+                let len = slice.len();
 
-            // Newtype satisfying arrow's Allocation trait.
-            #[allow(dead_code)] // field kept alive to own the zenoh buffer
-            struct ZBytesAllocation(zenoh::bytes::ZBytes);
-            unsafe impl Sync for ZBytesAllocation {}
-            unsafe impl Send for ZBytesAllocation {}
-            impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+                // Newtype satisfying arrow's Allocation trait.
+                #[allow(dead_code)] // field kept alive to own the zenoh buffer
+                struct ZBytesAllocation(zenoh::bytes::ZBytes);
+                unsafe impl Sync for ZBytesAllocation {}
+                unsafe impl Send for ZBytesAllocation {}
+                impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 
-            // SAFETY: `ptr` points into the SHM region owned by
-            // `payload`. Moving `payload` into the Arc keeps the
-            // region mapped for the lifetime of the Buffer.
-            unsafe {
-                arrow::buffer::Buffer::from_custom_allocation(
-                    ptr,
-                    len,
-                    Arc::new(ZBytesAllocation(payload)),
-                )
+                // SAFETY: `ptr` points into the SHM region owned by
+                // `payload`. Moving `payload` into the Arc keeps the
+                // region mapped for the lifetime of the Buffer.
+                unsafe {
+                    arrow::buffer::Buffer::from_custom_allocation(
+                        ptr,
+                        len,
+                        Arc::new(ZBytesAllocation(payload)),
+                    )
+                }
+            } else {
+                // Misaligned SHM pointer (Talc ignores AllocAlignment on
+                // some platforms, e.g. Jetson NX L4T).  Copy into a
+                // 128-byte-aligned heap buffer so that every Arrow buffer
+                // within the payload (whose intra-payload offsets are
+                // already multiples of 64) ends up at an absolute address
+                // that is also 64-byte aligned.
+                let mut aligned: Vec<u8> = Vec::with_capacity(slice.len() + REQUIRED_ALIGN);
+                // Push padding so the data starts at a 64-byte boundary.
+                let base = aligned.as_ptr() as usize;
+                let pad = REQUIRED_ALIGN - (base % REQUIRED_ALIGN);
+                let pad = if pad == REQUIRED_ALIGN { 0 } else { pad };
+                aligned.resize(pad, 0);
+                aligned.extend_from_slice(slice);
+                // Slice off the padding so the Arrow Buffer starts at the
+                // aligned address.
+                let aligned_slice = &aligned[pad..];
+                // We must not move `aligned` while the slice exists, so we
+                // use from_custom_allocation with an Arc<Vec<u8>>.
+                let ptr = NonNull::new(aligned_slice.as_ptr() as *mut u8)
+                    .expect("aligned copy ptr is null");
+                let len = aligned_slice.len();
+                let owner = Arc::new(aligned);
+                // SAFETY: `ptr` is derived from `owner` (the Vec).  The Arc
+                // keeps the Vec alive for the lifetime of the Buffer.
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, owner) }
             }
         }
         std::borrow::Cow::Owned(vec) => {

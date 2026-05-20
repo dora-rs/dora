@@ -14,6 +14,17 @@ const MAX_TYPE_DEPTH: usize = 32;
 /// Maximum number of buffer offsets or child arrays per level.
 const MAX_ENTRIES: usize = 256;
 
+/// Minimum alignment (in bytes) enforced for every Arrow buffer placed into
+/// the shared-memory (or heap) payload buffer.
+///
+/// Arrow's own spec requires 64-byte alignment for SIMD loads. aarch64 NEON
+/// instructions raise SIGBUS when the base address is not aligned to this
+/// boundary. We enforce the same alignment for every buffer offset so that
+/// `shm_base_ptr + buffer_offset` is always 64-byte aligned regardless of
+/// whether the base pointer itself is aligned (it will be — see `zenoh_publish`
+/// and `allocate_data_sample` which also use 64 / 128-byte alignment).
+const ARROW_SHM_ALIGNMENT: usize = 64;
+
 /// Compute a hash of an Arrow [`DataType`] for fast type matching.
 ///
 /// Uses the `Debug` representation which is stable for the same type within
@@ -42,10 +53,18 @@ pub fn required_data_size(array: &ArrayData) -> usize {
 fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
     let layout = arrow::array::layout(array.data_type());
     for (buffer, spec) in array.buffers().iter().zip(&layout.buffers) {
-        // consider alignment padding
-        if let BufferSpec::FixedWidth { alignment, .. } = *spec {
-            *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-        }
+        // Align each buffer to the greater of Arrow's own required alignment
+        // and ARROW_SHM_ALIGNMENT (64 bytes). This ensures that when the
+        // payload is placed at a 64-byte-aligned SHM base address the absolute
+        // address of every buffer (base + offset) is also 64-byte aligned,
+        // satisfying aarch64 NEON's strict alignment requirement.
+        let arrow_align = if let BufferSpec::FixedWidth { alignment, .. } = *spec {
+            alignment
+        } else {
+            1
+        };
+        let align = arrow_align.max(ARROW_SHM_ALIGNMENT);
+        *next_offset = (*next_offset).div_ceil(align) * align;
         *next_offset += buffer.len();
     }
     for child in array.child_data() {
@@ -73,16 +92,23 @@ fn copy_array_into_sample_inner(
     let layout = arrow::array::layout(arrow_array.data_type());
     for (buffer, spec) in arrow_array.buffers().iter().zip(&layout.buffers) {
         let len = buffer.len();
+        // Align to the greater of Arrow's own required alignment and
+        // ARROW_SHM_ALIGNMENT (64 bytes), so that `shm_base + offset`
+        // satisfies aarch64 NEON's 64-byte alignment requirement.
+        let arrow_align = if let BufferSpec::FixedWidth { alignment, .. } = *spec {
+            alignment
+        } else {
+            1
+        };
+        let align = arrow_align.max(ARROW_SHM_ALIGNMENT);
+        *next_offset = (*next_offset).div_ceil(align) * align;
+
         assert!(
             target_buffer[*next_offset..].len() >= len,
             "target buffer too small (total_len: {}, offset: {}, required_len: {len})",
             target_buffer.len(),
             *next_offset,
         );
-        // add alignment padding
-        if let BufferSpec::FixedWidth { alignment, .. } = *spec {
-            *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-        }
 
         target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());
         buffer_offsets.push(BufferOffset {
