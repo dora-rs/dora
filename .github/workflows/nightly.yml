@@ -1524,6 +1524,7 @@ jobs:
           REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
+          API_URL: ${{ github.api_url }}
           COMMIT_SHA: ${{ github.sha }}
           # `toJSON(needs)` is a map `{ job_name: { result: "failure" | "success" | ... } }`.
           # Parse in-shell to list only the jobs that actually failed
@@ -1610,7 +1611,7 @@ jobs:
             esac
           }
 
-          # GitHub's run log uses display names, while `needs` uses job IDs.
+          # GitHub's job API uses display names, while `needs` uses job IDs.
           # Keep this map in sync with the job `name:` fields above.
           job_log_pattern() {
             case "$1" in
@@ -1648,13 +1649,47 @@ jobs:
             | jq -r 'to_entries | map(select(.value.result == "skipped")) | .[].key' \
             | sort)
 
-          failed_logs_file=$(mktemp)
+          failed_job_rows=$(mktemp)
+          failed_log_index=$(mktemp)
           failed_logs_error=$(mktemp)
-          trap 'rm -f "$failed_logs_file" "$failed_logs_error"' EXIT
-          if gh run view "$RUN_ID" --repo "$REPO" --log-failed > "$failed_logs_file" 2> "$failed_logs_error"; then
+          failed_logs_dir=$(mktemp -d)
+          trap 'rm -rf "$failed_job_rows" "$failed_log_index" "$failed_logs_error" "$failed_logs_dir"' EXIT
+
+          # Do not use whole-run logs here: this reporter job is still
+          # running, and GitHub does not expose whole-run logs until the run
+          # completes. Completed failed jobs already have individual logs, so
+          # enumerate them and download each job log directly.
+          if gh api --paginate "/repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '.jobs[] | select(.status == "completed" and .conclusion == "failure") | [.id, .name] | @tsv' \
+            > "$failed_job_rows" 2> "$failed_logs_error"; then
             logs_available=1
           else
             logs_available=0
+          fi
+
+          if [ "$logs_available" = "1" ]; then
+            while IFS=$'\t' read -r job_id job_name; do
+              [ -n "$job_id" ] || continue
+              job_log_file="$failed_logs_dir/$job_id.log"
+              if gh run view "$RUN_ID" --repo "$REPO" --job "$job_id" --log-failed \
+                > "$job_log_file" 2>> "$failed_logs_error" && [ -s "$job_log_file" ]; then
+                :
+              else
+                echo "Failed-step log unavailable or empty for job '$job_name' ($job_id); falling back to the full job log." >> "$failed_logs_error"
+                if ! curl -fsSL \
+                  -H "Authorization: Bearer $GH_TOKEN" \
+                  -H "Accept: application/vnd.github+json" \
+                  -H "X-GitHub-Api-Version: 2022-11-28" \
+                  "$API_URL/repos/$REPO/actions/jobs/$job_id/logs" \
+                  > "$job_log_file" 2>> "$failed_logs_error"; then
+                  echo "Unable to fetch log for failed job '$job_name' ($job_id)." >> "$failed_logs_error"
+                  rm -f "$job_log_file"
+                fi
+              fi
+              if [ -s "$job_log_file" ]; then
+                printf '%s\t%s\t%s\n' "$job_id" "$job_name" "$job_log_file" >> "$failed_log_index"
+              fi
+            done < "$failed_job_rows"
           fi
 
           byte_count() {
@@ -1693,37 +1728,57 @@ jobs:
           failure_excerpt() {
             local job="$1"
             local max_bytes="$2"
-            local pattern filtered clean fallback
+            local pattern filtered clean fallback job_id job_name job_log_file
             filtered=$(mktemp)
             clean=$(mktemp)
             fallback=0
 
             if [ "$logs_available" != "1" ]; then
-              echo 'Unable to fetch failed GitHub Actions log lines.'
+              echo 'Unable to enumerate failed GitHub Actions jobs.'
               sed -n '1,40p' "$failed_logs_error"
               rm -f "$filtered" "$clean"
               return
             fi
-            if [ ! -s "$failed_logs_file" ]; then
-              echo 'No failed log lines were returned by GitHub Actions.'
+            if [ ! -s "$failed_log_index" ]; then
+              echo 'No failed GitHub Actions job logs were downloaded.'
+              sed -n '1,40p' "$failed_logs_error"
               rm -f "$filtered" "$clean"
               return
             fi
 
             pattern=$(job_log_pattern "$job")
             if [ -n "$pattern" ]; then
-              awk -F '\t' -v pattern="$pattern" '$1 ~ pattern { print }' "$failed_logs_file" > "$filtered"
+              while IFS=$'\t' read -r job_id job_name job_log_file; do
+                [ -n "$job_id" ] || continue
+                if [[ "$job_name" =~ $pattern ]]; then
+                  {
+                    echo "===== $job_name (job $job_id) ====="
+                    cat "$job_log_file"
+                    echo
+                  } >> "$filtered"
+                fi
+              done < "$failed_log_index"
             fi
             if [ ! -s "$filtered" ]; then
               fallback=1
-              tail -c "$GLOBAL_FALLBACK_EXCERPT_BYTES" "$failed_logs_file" > "$filtered"
+              while IFS=$'\t' read -r job_id job_name job_log_file; do
+                [ -n "$job_id" ] || continue
+                {
+                  echo "===== $job_name (job $job_id) ====="
+                  cat "$job_log_file"
+                  echo
+                } >> "$filtered"
+              done < "$failed_log_index"
             fi
 
             strip_ansi_file "$filtered" > "$clean"
             if [ "$fallback" -eq 1 ]; then
-              echo "No log lines matched this job name; showing the global failed-log tail."
+              echo "No downloaded failed-job log matched this job name; showing the failed-log tail."
               echo "See full run log: $RUN_URL"
               echo
+              if [ "$max_bytes" -gt "$GLOBAL_FALLBACK_EXCERPT_BYTES" ]; then
+                max_bytes=$GLOBAL_FALLBACK_EXCERPT_BYTES
+              fi
             fi
             bounded_tail_file "$clean" "$max_bytes"
             rm -f "$filtered" "$clean"
