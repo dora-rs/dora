@@ -13,7 +13,7 @@ The receiver has two inputs: raw `message` from sender and `transformed` from tr
 
 ## Nodes
 
-**sender** (`sender.py`) -- Sends 100 numbered messages as `pa.array([i])` with 100ms delays. Exits after the loop completes.
+**sender** (`sender.py`) -- Sends numbered messages as `pa.array([i])` with 100ms pacing, polling `try_recv()` so it exits cleanly on `STOP` or after 100 messages.
 
 **transformer** (`transformer.py`) -- Receives each message number and creates a `StructArray` with three fields:
 - `doubled`: the value times 2
@@ -98,6 +98,6 @@ Run `dora doctor` to confirm `uv` is on `PATH` before trying this flow. See the 
 | `pa.array()` for simple values | Sender |
 | `pa.StructArray` for structured data | Transformer |
 | Multiple inputs on one node | Receiver (message + transformed) |
-| Event type handling (INPUT, STOP) | Receiver |
+| Event type handling (INPUT, STOP) | Sender, transformer, receiver |
 | `event["id"]` to distinguish inputs | Receiver |
 | `event["value"].to_pylist()` for reading | Receiver |
