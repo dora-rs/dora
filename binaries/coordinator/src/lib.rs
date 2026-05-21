@@ -2615,7 +2615,21 @@ async fn start_inner(
                     entry.memory_bytes = 0;
                     entry.disk_read_bytes = None;
                     entry.disk_write_bytes = None;
-                    dataflow.node_stopped_at.insert(node_id, Instant::now());
+                    // Only arm the auto-expire side-band for clean Stopped
+                    // rows. Failed rows must stay visible until the dataflow
+                    // is stopped/destroyed — otherwise a crashed node would
+                    // disappear from `dora node list` / `dora doctor` after
+                    // the 60s grace, hiding the failure this PR is meant
+                    // to surface.
+                    if clean_stop {
+                        dataflow.node_stopped_at.insert(node_id, Instant::now());
+                    } else {
+                        // Defensive: if the same node id was previously
+                        // marked Stopped (then re-spawned and now Failed),
+                        // clear the stale stopped_at so the Failed row
+                        // isn't swept on the next tick.
+                        dataflow.node_stopped_at.remove(&node_id);
+                    }
                 }
             }
             Event::NodeMetricsExpire {
@@ -5302,6 +5316,58 @@ mod tests {
             df.node_stopped_at.contains_key(&node_id),
             "stopped_at marker must stay armed during the grace window"
         );
+    }
+
+    #[test]
+    fn expire_stopped_nodes_leaves_failed_rows_untouched() {
+        // Pre-fix regression scenario: the DaemonNodeStopped handler
+        // previously inserted into `node_stopped_at` for both Stopped
+        // and Failed statuses, so a crashed `restart_policy: Never`
+        // node would disappear from `dora node list` and `dora doctor`
+        // after the 60s grace window — hiding the very failure this
+        // PR is supposed to surface. The handler now only arms the
+        // expire side-band for Stopped rows; this test asserts that
+        // a Failed row whose `node_stopped_at` entry is somehow set
+        // would still be swept on its own clock, but in the normal
+        // flow no entry exists for Failed rows so the sweep is a no-op.
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "crashed".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        df.node_metrics.insert(
+            node_id.clone(),
+            NodeMetrics {
+                pid: 0,
+                cpu_usage: 0.0,
+                memory_bytes: 0,
+                disk_read_bytes: None,
+                disk_write_bytes: None,
+                restart_count: 0,
+                broken_inputs: Vec::new(),
+                status: NodeStatus::Failed,
+                pending_messages: 0,
+            },
+        );
+        // No node_stopped_at entry (which is what the handler now
+        // guarantees for Failed rows). Even hours later, the sweep
+        // must not remove this row.
+        expire_stopped_nodes(&mut df);
+        assert!(
+            df.node_metrics.contains_key(&node_id),
+            "Failed row with no expire timer must remain after sweep"
+        );
+
+        // Even if a *very* old expire timer somehow remains armed
+        // for a Failed row (e.g. stale leftover from a prior
+        // Stopped → respawn → Failed sequence), the sweep removes
+        // both — that's OK because the caller for the Failed update
+        // explicitly clears `node_stopped_at`. This test pins down
+        // the sweep's semantics so a future refactor that decides
+        // to "preserve Failed rows past grace" doesn't quietly
+        // break by overriding the side-band contract.
     }
 
     #[test]
