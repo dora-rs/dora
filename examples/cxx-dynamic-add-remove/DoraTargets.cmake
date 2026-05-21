@@ -13,6 +13,13 @@ if(NOT DORA_ROOT_DIR)
 endif()
 
 include(ExternalProject)
+# `--target-dir` is pinned to `${DORA_ROOT_DIR}/target` so the link
+# search path below (`dora_link_dirs`) actually contains the freshly-
+# built `libdora_node_api_c.{a,so,dylib}` even when the surrounding
+# shell sets `CARGO_TARGET_DIR` to a different location. Without this
+# pin, cargo honors the env var and writes the lib elsewhere, but the
+# linker still looks at `${DORA_ROOT_DIR}/target/debug` and fails with
+# "library not found".
 ExternalProject_Add(Dora
     SOURCE_DIR ${DORA_ROOT_DIR}
     BUILD_IN_SOURCE True
@@ -20,6 +27,7 @@ ExternalProject_Add(Dora
     BUILD_COMMAND
         cargo build
         --package dora-node-api-c
+        --target-dir ${DORA_ROOT_DIR}/target
     INSTALL_COMMAND ""
 )
 

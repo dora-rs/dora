@@ -3,7 +3,9 @@
 # then wired with `dora node connect`.
 
 id: filter
-build: cargo build -p rust-dynamic-add-remove-filter
+# `--target-dir` pin — see dataflow.yml for the rationale (avoids the
+# CARGO_TARGET_DIR/build-vs-path mismatch).
+build: cargo build -p rust-dynamic-add-remove-filter --target-dir ../../target
 path: ../../target/debug/rust-dynamic-add-remove-filter
 outputs:
   - output

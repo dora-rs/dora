@@ -15,7 +15,13 @@
 
 nodes:
   - id: sender
-    build: cargo build -p rust-dynamic-add-remove-sender
+    # `--target-dir` is forced to the workspace-relative `target` so the
+    # artifact lands at the path the `path:` field below resolves to,
+    # even when the surrounding shell sets `CARGO_TARGET_DIR` to a
+    # different location. Without this pin, `dora build` succeeds (cargo
+    # honors the env var) but `dora start` fails because the daemon
+    # looks at `../../target/debug/...` per the descriptor.
+    build: cargo build -p rust-dynamic-add-remove-sender --target-dir ../../target
     path: ../../target/debug/rust-dynamic-add-remove-sender
     outputs:
       - value
@@ -23,7 +29,7 @@ nodes:
       tick: dora/timer/millis/200
 
   - id: receiver
-    build: cargo build -p rust-dynamic-add-remove-receiver
+    build: cargo build -p rust-dynamic-add-remove-receiver --target-dir ../../target
     path: ../../target/debug/rust-dynamic-add-remove-receiver
     inputs:
       value: sender/value
