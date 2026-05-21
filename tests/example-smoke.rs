@@ -32,17 +32,29 @@ fn dora_bin() -> String {
     // to a bare "dora" on PATH would silently let a stale globally-
     // installed CLI shadow whatever ensure_cli_built() just produced;
     // the test would then "pass" against the wrong binary.
+    //
+    // Limitations not handled here (would need cargo metadata or
+    // --message-format=json parsing in ensure_cli_built):
+    //   - `.cargo/config.toml` `[build] target-dir`
+    //   - target-triple subdirs from `CARGO_BUILD_TARGET` / cargo
+    //     config (`target/<triple>/debug/...`)
+    // Neither is used in this project today; the panic below points at
+    // the cause if a future config hits them.
     let target_root = std::env::var("CARGO_TARGET_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| Path::new(manifest).join("target"));
-    let candidate = target_root.join("debug").join("dora");
+    // `EXE_SUFFIX` is `.exe` on Windows, empty elsewhere. Without this,
+    // dora_bin() panics on Windows where the artifact is `dora.exe`,
+    // breaking every smoke test on that platform.
+    let exe_name = format!("dora{}", std::env::consts::EXE_SUFFIX);
+    let candidate = target_root.join("debug").join(&exe_name);
     if candidate.exists() {
         return candidate.to_string_lossy().to_string();
     }
     panic!(
         "dora binary not found at {} after ensure_cli_built(); \
-         check CARGO_TARGET_DIR consistency between the test runner \
-         and the cargo invocation",
+         if you use .cargo/config.toml or CARGO_BUILD_TARGET, ensure \
+         CARGO_TARGET_DIR points at the resolved artifact directory",
         candidate.display()
     );
 }
@@ -1501,12 +1513,19 @@ fn ensure_marker_absent(marker: &std::path::Path) {
     );
 }
 
-/// Defense in depth: `dora run` embeds a coordinator on the hardcoded
-/// default port `binaries/cli/src/command/run.rs:226`. The file is
-/// documented to be run with `--test-threads=1`, but if someone forgets,
-/// at least our two shell-gate tests will serialize against each other
-/// here. Project-wide serialization across all smoke_local_* tests
-/// would require a separate refactor and is out of scope for #1702.
+/// Defense in depth, narrow scope: serializes ONLY these two shell-gate
+/// tests against each other. `dora run` embeds a coordinator on the
+/// hardcoded default port `binaries/cli/src/command/run.rs:226`, so two
+/// `dora run` instances race on bind(). The lock does NOT protect
+/// against:
+///   - Other tests in this file that also invoke `dora run` (e.g.
+///     `run_smoke_test_local` callers). Those would need a file-level
+///     lock or a project-wide refactor.
+///   - Multi-process runners like `cargo nextest run` or sharded CI:
+///     the mutex is process-local. A file lock (`fs2::FileExt::lock_exclusive`
+///     or similar) would cover that case.
+/// Both are out of scope for #1702. The file is documented to run with
+/// `--test-threads=1`, which is the canonical fix.
 static SHELL_GATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
