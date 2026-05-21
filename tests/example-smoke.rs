@@ -27,11 +27,36 @@ static BUILD_MAVLINK2_BRIDGE_NODES: Once = Once::new();
 
 fn dora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let target_dir = Path::new(manifest).join("target/debug/dora");
-    if target_dir.exists() {
-        return target_dir.to_string_lossy().to_string();
+    // Honor $CARGO_TARGET_DIR if set — devs and some CI setups redirect
+    // builds out of the workspace `target/` dir. The previous fall-back
+    // to a bare "dora" on PATH would silently let a stale globally-
+    // installed CLI shadow whatever ensure_cli_built() just produced;
+    // the test would then "pass" against the wrong binary.
+    //
+    // Limitations not handled here (would need cargo metadata or
+    // --message-format=json parsing in ensure_cli_built):
+    //   - `.cargo/config.toml` `[build] target-dir`
+    //   - target-triple subdirs from `CARGO_BUILD_TARGET` / cargo
+    //     config (`target/<triple>/debug/...`)
+    // Neither is used in this project today; the panic below points at
+    // the cause if a future config hits them.
+    let target_root = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| Path::new(manifest).join("target"));
+    // `EXE_SUFFIX` is `.exe` on Windows, empty elsewhere. Without this,
+    // dora_bin() panics on Windows where the artifact is `dora.exe`,
+    // breaking every smoke test on that platform.
+    let exe_name = format!("dora{}", std::env::consts::EXE_SUFFIX);
+    let candidate = target_root.join("debug").join(&exe_name);
+    if candidate.exists() {
+        return candidate.to_string_lossy().to_string();
     }
-    "dora".to_string()
+    panic!(
+        "dora binary not found at {} after ensure_cli_built(); \
+         if you use .cargo/config.toml or CARGO_BUILD_TARGET, ensure \
+         CARGO_TARGET_DIR points at the resolved artifact directory",
+        candidate.display()
+    );
 }
 
 fn ensure_cli_built() {
@@ -1550,6 +1575,189 @@ fn smoke_daemon_rt_quiet_still_emits_setup_messages() {
         "expected non-Linux SCHED_FIFO fallback on stderr under --quiet.\n\
          stderr was:\n{stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Shell-node gate (issue #1702)
+// ---------------------------------------------------------------------------
+//
+// `dora run --allow-shell-nodes` toggles a security gate enforced at
+// `binaries/daemon/src/spawn/command.rs:24`. Both branches of that `if`
+// matter: without the flag, dora MUST refuse to spawn shell nodes.
+// The negative test is therefore load-bearing security coverage —
+// a regression that silently allowed shell execution would bypass the
+// security model. Linux + macOS only (`sh -c` form); Windows uses
+// `cmd /C` and would need a separate fixture.
+
+fn unique_temp_path(stem: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "dora-shell-gate-{stem}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+#[cfg(unix)]
+fn write_shell_dataflow(yaml_path: &std::path::Path, marker: &std::path::Path) {
+    // Wrap the marker path in single quotes so spaces or most shell
+    // metacharacters in `$TMPDIR` cannot break out of the `echo`. This
+    // does NOT protect against a literal single quote in $TMPDIR — that
+    // would corrupt the shell args and the test would fail loudly
+    // rather than silently execute the wrong command. On any sane
+    // CI/dev system $TMPDIR is a well-formed path; the residual risk
+    // is acceptable for a test fixture in an environment we control.
+    let yaml = format!(
+        "nodes:\n  - id: shell-test\n    path: shell\n    args: \"echo hello > '{}'\"\n",
+        marker.display()
+    );
+    std::fs::write(yaml_path, yaml).expect("failed to write shell dataflow YAML");
+}
+
+/// Guarantee the marker path is clean before the test runs. A silent
+/// `remove_file` failure (permissions, symlink to unwritable target)
+/// could otherwise let the positive test pass against a stale marker
+/// without proving this run wrote it.
+fn ensure_marker_absent(marker: &std::path::Path) {
+    let _ = std::fs::remove_file(marker);
+    assert!(
+        !marker.exists(),
+        "marker path {marker:?} pre-existed and could not be removed; \
+         a stale file would make the positive test pass spuriously"
+    );
+}
+
+/// Defense in depth, narrow scope: serializes ONLY these two shell-gate
+/// tests against each other. `dora run` embeds a coordinator on the
+/// hardcoded default port `binaries/cli/src/command/run.rs:226`, so two
+/// `dora run` instances race on bind(). The lock does NOT protect
+/// against:
+///   - Other tests in this file that also invoke `dora run` (e.g.
+///     `run_smoke_test_local` callers). Those would need a file-level
+///     lock or a project-wide refactor.
+///   - Multi-process runners like `cargo nextest run` or sharded CI:
+///     the mutex is process-local. A file lock (`fs2::FileExt::lock_exclusive`
+///     or similar) would cover that case.
+/// Both are out of scope for #1702. The file is documented to run with
+/// `--test-threads=1`, which is the canonical fix.
+static SHELL_GATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+#[cfg(unix)]
+fn smoke_shell_node_allowed_with_flag() {
+    let _guard = SHELL_GATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    let yaml = unique_temp_path("allowed-yaml");
+    let marker = unique_temp_path("allowed-marker");
+    ensure_marker_absent(&marker);
+    write_shell_dataflow(&yaml, &marker);
+
+    let output = Command::new(&dora)
+        .args([
+            "run",
+            yaml.to_str().unwrap(),
+            "--allow-shell-nodes",
+            "--stop-after",
+            "10s",
+        ])
+        // Don't let an inherited DORA_ALLOW_SHELL_NODES=true bias the
+        // result — the CLI flag must be the sole source of truth.
+        .env_remove("DORA_ALLOW_SHELL_NODES")
+        // Capture both streams: the audit-trail warning is emitted via
+        // the daemon's tracing subscriber, which routes to stdout in
+        // `dora run` (single-process mode), while CLI-level errors go
+        // to stderr. We need both to verify the gate's side effects.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run --allow-shell-nodes");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // Assert dora exited cleanly BEFORE checking the marker. Otherwise a
+    // regression where the shell node runs successfully but a subsequent
+    // lifecycle/result step fails (e.g. dataflow result handling returns
+    // non-zero) would still produce the marker file and slip past the
+    // test (review feedback on PR #1898).
+    assert!(
+        output.status.success(),
+        "dora run --allow-shell-nodes exited non-zero (status={:?}); \
+         marker file alone is not enough.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
+    );
+    // The audit-trail warning at binaries/daemon/src/spawn/command.rs:34
+    // is the operator's only signal that shell execution is happening.
+    // If the gate works but this warning is silenced, dora becomes
+    // quietly unsafe — the marker check alone wouldn't catch it.
+    assert!(
+        stdout.contains("DORA_ALLOW_SHELL_NODES is set:")
+            || stderr.contains("DORA_ALLOW_SHELL_NODES is set:"),
+        "audit-trail warning missing — operators would lose the only \
+         signal that shell execution is happening.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        marker.exists(),
+        "shell command did not produce marker file at {marker:?}; \
+         dora exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status.code()
+    );
+    let body = std::fs::read_to_string(&marker).expect("read marker");
+    assert!(
+        body.contains("hello"),
+        "marker contents unexpected: {body:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&yaml);
+}
+
+#[test]
+#[cfg(unix)]
+fn smoke_shell_node_blocked_without_flag() {
+    let _guard = SHELL_GATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    let yaml = unique_temp_path("blocked-yaml");
+    let marker = unique_temp_path("blocked-marker");
+    ensure_marker_absent(&marker);
+    write_shell_dataflow(&yaml, &marker);
+
+    let output = Command::new(&dora)
+        .args(["run", yaml.to_str().unwrap(), "--stop-after", "10s"])
+        // Belt-and-suspenders: explicitly strip the env var from the
+        // child. Without this, a parent shell that exported the flag
+        // (or a leftover from a prior test) would silently let the
+        // gate pass — and we'd never know.
+        .env_remove("DORA_ALLOW_SHELL_NODES")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run (gate-blocked)");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "dora run unexpectedly SUCCEEDED without --allow-shell-nodes — \
+         the security gate failed.\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Shell nodes are disabled"),
+        "error message missing the documented gate string \
+         'Shell nodes are disabled'.\nstderr:\n{stderr}"
+    );
+    assert!(
+        !marker.exists(),
+        "shell command produced output at {marker:?} despite the gate — \
+         the security gate failed.\nstderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_file(&yaml);
 }
 
 // ---------------------------------------------------------------------------
