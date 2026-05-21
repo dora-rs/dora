@@ -32,6 +32,11 @@ This sets:
 - `mlockall(MCL_CURRENT | MCL_FUTURE)` — pin all memory, prevent page faults
 - `SCHED_FIFO` priority 50 — real-time scheduling for the main daemon thread
 
+The setup writes `RT: ...` success/failure diagnostics to **stderr**
+unconditionally — even with `--quiet`. The flag affects structured log
+filtering, but a failed mlockall or SCHED_FIFO promotion is an operational
+warning that must always be visible.
+
 **Important:** `SCHED_FIFO` applies only to the main thread (the one calling
 `block_on`). Tokio worker threads remain at `SCHED_OTHER`. For full RT
 coverage, use `taskset` + `chrt` to promote the entire process, or use
@@ -239,9 +244,18 @@ dora run examples/benchmark/dataflow.yml --stop-after 30s
 
 ## CI Coverage
 
-The `--rt` / mlock / SCHED_FIFO paths are **manual Tier 2** (see
-[`testing-matrix.md`](testing-matrix.md#soft-real-time)). Not automated
-on GitHub Actions for two reasons:
+**Minimum gate (automated):** `tests/example-smoke.rs::smoke_daemon_rt_emits_setup_messages`
+and `smoke_daemon_rt_quiet_still_emits_setup_messages` (both `#[cfg(unix)]`)
+assert that the RT branch fires and writes its diagnostics to stderr — under
+both default and `--quiet` flags. They do **not** require `CAP_IPC_LOCK` /
+`CAP_SYS_NICE`: the fallback `RT: mlockall failed: …` / `RT: sched_setscheduler
+failed: …` messages are accepted, which is exactly what an unprivileged GHA
+runner produces. This catches regressions where the RT block is bypassed,
+silenced, or reordered (the #1701 silent-fallback class of bug).
+
+**Full validation (manual Tier 2):** Verifying that `mlockall` actually
+locked memory and `SCHED_FIFO` actually promoted the thread is still not
+automated, for two reasons:
 
 1. **Privilege.** `--rt` needs `CAP_SYS_NICE` and `CAP_IPC_LOCK`. GHA
    runners are unprivileged and refuse `sudo` for anything that touches

@@ -1437,6 +1437,122 @@ fn smoke_local_queue_size_latest_data_rust() {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon `--rt` smoke (issue #1701)
+// ---------------------------------------------------------------------------
+//
+// Asserts the RT setup code path actually emits its diagnostic messages.
+// We deliberately do NOT require CAP_IPC_LOCK / CAP_SYS_NICE — unprivileged
+// CI runners hit the documented fallback branch, which is exactly the
+// "useful error vs. silent fallback" guarantee #1701 calls out as untested.
+//
+// Linux exercises both mlockall and SCHED_FIFO branches; macOS exercises
+// the mlockall + "SCHED_FIFO not available" branches. Windows is excluded
+// via `#[cfg(unix)]` because the assertions below only cover unix RT
+// branches — the Windows fallback at `binaries/cli/src/command/daemon.rs`
+// (`#[cfg(not(unix))]` arm) is not exercised here.
+
+#[test]
+#[cfg(unix)]
+fn smoke_daemon_rt_emits_setup_messages() {
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    // Stale coordinator on 6013 would let the daemon connect and run
+    // indefinitely — we only need ~1s to capture the RT prints.
+    cleanup_stale(&dora);
+
+    let mut child = Command::new(&dora)
+        .args(["daemon", "--rt"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dora daemon --rt");
+
+    // RT setup runs synchronously at startup, before the daemon tries to
+    // dial the coordinator. ~1.5s is enough for the eprintln!s to land on
+    // the captured stderr pipe.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let _ = child.kill();
+    let output = child
+        .wait_with_output()
+        .expect("daemon wait_with_output failed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("RT: mlockall"),
+        "expected 'RT: mlockall' line on stderr (success or failure variant).\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(target_os = "linux")]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO priority 50 enabled")
+            || stderr.contains("RT: sched_setscheduler failed:"),
+        "expected SCHED_FIFO success-or-failure line on stderr.\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO not available on this platform"),
+        "expected non-Linux SCHED_FIFO fallback line on stderr.\n\
+         stderr was:\n{stderr}"
+    );
+}
+
+/// `--quiet` must NOT suppress RT setup diagnostics. The fix in #1701
+/// deliberately uses `eprintln!` so a failed mlockall/SCHED_FIFO promotion
+/// is always visible — silencing operational warnings via the existing log
+/// filter would be unsafe.
+#[test]
+#[cfg(unix)]
+fn smoke_daemon_rt_quiet_still_emits_setup_messages() {
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    cleanup_stale(&dora);
+
+    let mut child = Command::new(&dora)
+        .args(["daemon", "--rt", "--quiet"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dora daemon --rt --quiet");
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let _ = child.kill();
+    let output = child
+        .wait_with_output()
+        .expect("daemon wait_with_output failed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("RT: mlockall"),
+        "expected 'RT: mlockall' line on stderr under --quiet.\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(target_os = "linux")]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO priority 50 enabled")
+            || stderr.contains("RT: sched_setscheduler failed:"),
+        "expected SCHED_FIFO line on stderr under --quiet.\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO not available on this platform"),
+        "expected non-Linux SCHED_FIFO fallback on stderr under --quiet.\n\
+         stderr was:\n{stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
 // dep); others are intentionally covered by a DIFFERENT CI job. Keep this
