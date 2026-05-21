@@ -1437,6 +1437,128 @@ fn smoke_local_queue_size_latest_data_rust() {
 }
 
 // ---------------------------------------------------------------------------
+// Shell-node gate (issue #1702)
+// ---------------------------------------------------------------------------
+//
+// `dora run --allow-shell-nodes` toggles a security gate enforced at
+// `binaries/daemon/src/spawn/command.rs:24`. Both branches of that `if`
+// matter: without the flag, dora MUST refuse to spawn shell nodes.
+// The negative test is therefore load-bearing security coverage —
+// a regression that silently allowed shell execution would bypass the
+// security model. Linux + macOS only (`sh -c` form); Windows uses
+// `cmd /C` and would need a separate fixture.
+
+fn unique_temp_path(stem: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "dora-shell-gate-{stem}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+#[cfg(unix)]
+fn write_shell_dataflow(yaml_path: &std::path::Path, marker: &std::path::Path) {
+    // Use single quotes around the marker path so spaces or shell
+    // metacharacters in `$TMPDIR` cannot break out of the `echo`.
+    let yaml = format!(
+        "nodes:\n  - id: shell-test\n    path: shell\n    args: \"echo hello > '{}'\"\n",
+        marker.display()
+    );
+    std::fs::write(yaml_path, yaml).expect("failed to write shell dataflow YAML");
+}
+
+#[test]
+#[cfg(unix)]
+fn smoke_shell_node_allowed_with_flag() {
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    let yaml = unique_temp_path("allowed-yaml");
+    let marker = unique_temp_path("allowed-marker");
+    let _ = std::fs::remove_file(&marker);
+    write_shell_dataflow(&yaml, &marker);
+
+    let output = Command::new(&dora)
+        .args([
+            "run",
+            yaml.to_str().unwrap(),
+            "--allow-shell-nodes",
+            "--stop-after",
+            "10s",
+        ])
+        // Don't let an inherited DORA_ALLOW_SHELL_NODES=true bias the
+        // result — the CLI flag must be the sole source of truth.
+        .env_remove("DORA_ALLOW_SHELL_NODES")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run --allow-shell-nodes");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        marker.exists(),
+        "shell command did not produce marker file at {marker:?}; \
+         dora exit={:?}\nstderr:\n{stderr}",
+        output.status.code()
+    );
+    let body = std::fs::read_to_string(&marker).expect("read marker");
+    assert!(
+        body.contains("hello"),
+        "marker contents unexpected: {body:?}\nstderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_file(&marker);
+    let _ = std::fs::remove_file(&yaml);
+}
+
+#[test]
+#[cfg(unix)]
+fn smoke_shell_node_blocked_without_flag() {
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    let yaml = unique_temp_path("blocked-yaml");
+    let marker = unique_temp_path("blocked-marker");
+    let _ = std::fs::remove_file(&marker);
+    write_shell_dataflow(&yaml, &marker);
+
+    let output = Command::new(&dora)
+        .args(["run", yaml.to_str().unwrap(), "--stop-after", "10s"])
+        // Belt-and-suspenders: explicitly strip the env var from the
+        // child. Without this, a parent shell that exported the flag
+        // (or a leftover from a prior test) would silently let the
+        // gate pass — and we'd never know.
+        .env_remove("DORA_ALLOW_SHELL_NODES")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run (gate-blocked)");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "dora run unexpectedly SUCCEEDED without --allow-shell-nodes — \
+         the security gate failed.\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Shell nodes are disabled"),
+        "error message missing the documented gate string \
+         'Shell nodes are disabled'.\nstderr:\n{stderr}"
+    );
+    assert!(
+        !marker.exists(),
+        "shell command produced output at {marker:?} despite the gate — \
+         the security gate failed.\nstderr:\n{stderr}"
+    );
+
+    let _ = std::fs::remove_file(&yaml);
+}
+
+// ---------------------------------------------------------------------------
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
 // dep); others are intentionally covered by a DIFFERENT CI job. Keep this
