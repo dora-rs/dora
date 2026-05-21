@@ -79,6 +79,15 @@ class MockNode:
         """
         return self.next(timeout=timeout)
 
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> dict[str, Any]:
+        event = self.next()
+        if event is None:
+            raise StopAsyncIteration
+        return event
+
     def send_output(
         self,
         output_id: str,
