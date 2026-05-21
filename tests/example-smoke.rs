@@ -27,11 +27,24 @@ static BUILD_MAVLINK2_BRIDGE_NODES: Once = Once::new();
 
 fn dora_bin() -> String {
     let manifest = env!("CARGO_MANIFEST_DIR");
-    let target_dir = Path::new(manifest).join("target/debug/dora");
-    if target_dir.exists() {
-        return target_dir.to_string_lossy().to_string();
+    // Honor $CARGO_TARGET_DIR if set — devs and some CI setups redirect
+    // builds out of the workspace `target/` dir. The previous fall-back
+    // to a bare "dora" on PATH would silently let a stale globally-
+    // installed CLI shadow whatever ensure_cli_built() just produced;
+    // the test would then "pass" against the wrong binary.
+    let target_root = std::env::var("CARGO_TARGET_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| Path::new(manifest).join("target"));
+    let candidate = target_root.join("debug").join("dora");
+    if candidate.exists() {
+        return candidate.to_string_lossy().to_string();
     }
-    "dora".to_string()
+    panic!(
+        "dora binary not found at {} after ensure_cli_built(); \
+         check CARGO_TARGET_DIR consistency between the test runner \
+         and the cargo invocation",
+        candidate.display()
+    );
 }
 
 fn ensure_cli_built() {
@@ -1488,9 +1501,18 @@ fn ensure_marker_absent(marker: &std::path::Path) {
     );
 }
 
+/// Defense in depth: `dora run` embeds a coordinator on the hardcoded
+/// default port `binaries/cli/src/command/run.rs:226`. The file is
+/// documented to be run with `--test-threads=1`, but if someone forgets,
+/// at least our two shell-gate tests will serialize against each other
+/// here. Project-wide serialization across all smoke_local_* tests
+/// would require a separate refactor and is out of scope for #1702.
+static SHELL_GATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 #[cfg(unix)]
 fn smoke_shell_node_allowed_with_flag() {
+    let _guard = SHELL_GATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_cli_built();
     let dora = dora_bin();
 
@@ -1561,6 +1583,7 @@ fn smoke_shell_node_allowed_with_flag() {
 #[test]
 #[cfg(unix)]
 fn smoke_shell_node_blocked_without_flag() {
+    let _guard = SHELL_GATE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_cli_built();
     let dora = dora_bin();
 
