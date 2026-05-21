@@ -1,0 +1,9 @@
+# Dynamic-node spec for the rust-dynamic-add-remove fixture.
+# Added at runtime via `dora node add --from-yaml filter-node.yml`,
+# then wired with `dora node connect`.
+
+id: filter
+build: cargo build -p rust-dynamic-add-remove-filter
+path: ../../target/debug/rust-dynamic-add-remove-filter
+outputs:
+  - output

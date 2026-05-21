@@ -5900,6 +5900,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-dynamic-add-remove-filter"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "rust-dynamic-add-remove-receiver"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
+name = "rust-dynamic-add-remove-sender"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "rust-format"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

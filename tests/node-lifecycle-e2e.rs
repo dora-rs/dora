@@ -163,16 +163,32 @@ where
     }
 }
 
-#[test]
+/// Parameters that differ between language variants of the lifecycle test.
+struct LifecycleFixture<'a> {
+    /// Path to the main dataflow.yml.
+    dataflow_path: &'a Path,
+    /// Path to the dynamic-add filter-node.yml.
+    filter_yml_path: &'a Path,
+    /// `dora start`/`stop` --name handle.
+    name: &'a str,
+    /// `Path: foo.py` (Python) or `Path: ../../target/...` (Rust). Matched
+    /// in the `dora node info sender` output assertion to confirm the
+    /// info path resolved to the correct fixture.
+    sender_path_marker: &'a str,
+    /// Pass `--uv` to `dora build`/`start`. Python fixtures need it;
+    /// Rust fixtures don't (cargo build is invoked via the `build:`
+    /// command in the dataflow.yml).
+    use_uv: bool,
+}
+
 #[cfg(unix)]
-fn lifecycle_python_dynamic_add_remove() {
+fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_cli_built();
     let dora = dora_bin();
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let dataflow = Path::new(manifest_dir).join("examples/dynamic-add-remove/dataflow.yml");
-    let filter_yml = Path::new(manifest_dir).join("examples/dynamic-add-remove/filter-node.yml");
-    let name = "pylc";
+    let dataflow = fixture.dataflow_path;
+    let filter_yml = fixture.filter_yml_path;
+    let name = fixture.name;
 
     cleanup_stale(&dora);
 
@@ -180,28 +196,30 @@ fn lifecycle_python_dynamic_add_remove() {
     let (ok, _, stderr) = run_capture(Command::new(&dora).arg("up"), "dora up");
     assert!(ok, "dora up failed.\nstderr:\n{stderr}");
 
-    // `dora build` ensures the Python venv is provisioned before start.
-    let (ok, _, stderr) = run_capture(
-        Command::new(&dora).args(["build", dataflow.to_str().unwrap(), "--uv"]),
-        "dora build",
-    );
+    // `dora build` — provisions the Python venv (Python) or runs
+    // the per-node `build:` cargo commands (Rust).
+    let mut build_args = vec!["build", dataflow.to_str().unwrap()];
+    if fixture.use_uv {
+        build_args.push("--uv");
+    }
+    let (ok, _, stderr) = run_capture(Command::new(&dora).args(&build_args), "dora build");
     assert!(ok, "dora build failed.\nstderr:\n{stderr}");
 
-    let (ok, _, stderr) = run_capture(
-        Command::new(&dora).args([
-            "start",
-            dataflow.to_str().unwrap(),
-            "--detach",
-            "--name",
-            name,
-            "--uv",
-        ]),
-        "dora start",
-    );
+    let mut start_args = vec![
+        "start",
+        dataflow.to_str().unwrap(),
+        "--detach",
+        "--name",
+        name,
+    ];
+    if fixture.use_uv {
+        start_args.push("--uv");
+    }
+    let (ok, _, stderr) = run_capture(Command::new(&dora).args(&start_args), "dora start");
     assert!(ok, "dora start failed.\nstderr:\n{stderr}");
 
     // Make sure both base nodes are Running before exercising the matrix.
-    let list_out = wait_for_list(&dora, name, Duration::from_secs(20), |m| {
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(30), |m| {
         m.get("sender").is_some_and(|(s, _, _)| s == "Running")
             && m.get("receiver").is_some_and(|(s, _, _)| s == "Running")
     });
@@ -234,10 +252,11 @@ fn lifecycle_python_dynamic_add_remove() {
     );
     assert!(ok, "dora node info failed.\nstderr:\n{stderr}");
     assert!(
-        stdout.contains("Path: sender.py")
+        stdout.contains(fixture.sender_path_marker)
             && stdout.contains("Outputs:")
             && stdout.contains("value"),
-        "info output missing expected fields:\n{stdout}"
+        "info output missing expected fields (expected path marker {:?}):\n{stdout}",
+        fixture.sender_path_marker
     );
 
     // --- 3. dora node add (dynamic filter) ------------------------------
@@ -356,31 +375,20 @@ fn lifecycle_python_dynamic_add_remove() {
         "filter should be removed or Stopped after remove, got {filter_state:?}"
     );
 
-    // --- 8. dora node stop ----------------------------------------------
-    // `stop_single_node` schedules SIGTERM at +10s, SIGKILL at +15s.
-    // Wait up to 25s for the Stopped status to land.
-    let (ok, _, stderr) = run_capture(
-        Command::new(&dora).args(["node", "stop", "--dataflow", name, "sender"]),
-        "dora node stop sender",
-    );
-    assert!(ok, "dora node stop failed.\nstderr:\n{stderr}");
-    let list_out = wait_for_list(&dora, name, Duration::from_secs(25), |m| {
-        m.get("sender").is_some_and(|(s, _, _)| s == "Stopped")
-    });
-    let nodes = parse_node_list(&list_out);
-    let sender_after_stop = nodes
-        .get("sender")
-        .map(|(s, _, _)| s.clone())
-        .unwrap_or_default();
-    assert_eq!(
-        sender_after_stop, "Stopped",
-        "sender should be Stopped after `dora node stop` + grace; got {sender_after_stop:?} (initial pid was {sender_initial_pid})\nlist:\n{list_out}"
-    );
-
-    // --- 9. dora node restart -------------------------------------------
-    // `restart_single_node` schedules SIGTERM at +5s, SIGKILL at +7.5s,
-    // and the restart loop respawns on the next event. Wait up to 20s
-    // for the new PID (and restart_count >= 1) to land.
+    // --- 8. dora node restart -------------------------------------------
+    // Run restart BEFORE stop so the sender is still alive and the
+    // receiver's input stays open. Without this ordering, dora-rs's
+    // Rust `EventStream` closes the stream on any `Event::Stop`
+    // (including the synthesized `AllInputsClosed` it generates when
+    // sender's output closes — see
+    // `apis/rust/node/src/event_stream/mod.rs:484`), and the receiver
+    // exits before we can restart it. Python receivers don't share
+    // that gate, but ordering this way keeps the matrix consistent
+    // across languages.
+    //
+    // `restart_single_node` schedules SIGTERM at +5s, SIGKILL at
+    // +7.5s, and the restart loop respawns on the next exit. Wait up
+    // to 20s for the new PID (and `restart_count >= 1`) to land.
     let (ok, _, stderr) = run_capture(
         Command::new(&dora).args(["node", "restart", "--dataflow", name, "receiver"]),
         "dora node restart receiver",
@@ -409,6 +417,63 @@ fn lifecycle_python_dynamic_add_remove() {
         "receiver restart_count should be > 0 after restart; got {restarts:?}\nlist:\n{list_out}"
     );
 
+    // --- 9. dora node stop (terminal) -----------------------------------
+    // `stop_single_node` schedules SIGTERM at +10s, SIGKILL at +15s.
+    // Wait up to 25s for the Stopped status to land.
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args(["node", "stop", "--dataflow", name, "sender"]),
+        "dora node stop sender",
+    );
+    assert!(ok, "dora node stop failed.\nstderr:\n{stderr}");
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(25), |m| {
+        m.get("sender").is_some_and(|(s, _, _)| s == "Stopped")
+    });
+    let nodes = parse_node_list(&list_out);
+    let sender_after_stop = nodes
+        .get("sender")
+        .map(|(s, _, _)| s.clone())
+        .unwrap_or_default();
+    assert_eq!(
+        sender_after_stop, "Stopped",
+        "sender should be Stopped after `dora node stop` + grace; got {sender_after_stop:?} (initial pid was {sender_initial_pid})\nlist:\n{list_out}"
+    );
+
     // Teardown: stop the dataflow, then `dora down` (destroys daemon+coordinator).
     cleanup_stale(&dora);
+}
+
+#[test]
+#[cfg(unix)]
+fn lifecycle_python_dynamic_add_remove() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/dynamic-add-remove/dataflow.yml");
+    let filter_yml = Path::new(manifest_dir).join("examples/dynamic-add-remove/filter-node.yml");
+    run_lifecycle(LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &filter_yml,
+        name: "pylc",
+        sender_path_marker: "Path: sender.py",
+        use_uv: true,
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn lifecycle_rust_dynamic_add_remove() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
+    let filter_yml =
+        Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/filter-node.yml");
+    // The `path:` field in the dataflow.yml is a relative target/
+    // binary path (`../../target/debug/rust-dynamic-add-remove-sender`).
+    // The `dora node info` output prints `Path: <as-specified>`, so we
+    // match the suffix portion that's stable across CARGO_TARGET_DIR
+    // overrides.
+    run_lifecycle(LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &filter_yml,
+        name: "rustlc",
+        sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    });
 }
