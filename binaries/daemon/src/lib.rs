@@ -4527,6 +4527,7 @@ mod fault_tolerance_tests {
             restart_count: Arc::new(AtomicU32::new(0)),
             restart_policy: RestartPolicy::Never,
             disable_restart: Arc::new(AtomicBool::new(false)),
+            force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
             health_check_timeout: None,
         }

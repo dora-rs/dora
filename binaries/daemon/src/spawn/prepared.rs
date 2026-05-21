@@ -110,6 +110,7 @@ impl PreparedNode {
             .await?;
 
         let disable_restart = Arc::new(AtomicBool::new(false));
+        let force_restart_next = Arc::new(AtomicBool::new(false));
         let pid = Arc::new(AtomicU32::new(0));
         let restart_count = Arc::new(AtomicU32::new(0));
         let running_node = RunningNode {
@@ -120,6 +121,7 @@ impl PreparedNode {
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
+            force_restart_next: force_restart_next.clone(),
             restart_count: restart_count.clone(),
             pid: match kind {
                 NodeKind::Dynamic => None,
@@ -132,7 +134,14 @@ impl PreparedNode {
             health_check_timeout: self.health_check_timeout(),
         };
 
-        tokio::spawn(self.restart_loop(logger, finished_rx, disable_restart, pid, restart_count));
+        tokio::spawn(self.restart_loop(
+            logger,
+            finished_rx,
+            disable_restart,
+            force_restart_next,
+            pid,
+            restart_count,
+        ));
 
         Ok(running_node)
     }
@@ -170,6 +179,7 @@ impl PreparedNode {
         mut logger: NodeLogger<'static>,
         mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
         disable_restart: Arc<AtomicBool>,
+        force_restart_next: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
         shared_restart_count: Arc<AtomicU32>,
     ) {
@@ -190,12 +200,20 @@ impl PreparedNode {
                 break;
             };
 
-            let restart = match self.restart_policy() {
-                RestartPolicy::Always => true,
-                RestartPolicy::OnFailure if exit_status.is_success() => false,
-                RestartPolicy::OnFailure => true,
-                RestartPolicy::Never => false,
-            };
+            // Consume the one-shot `force_restart_next` flag set by
+            // `restart_single_node` (operator-requested `dora node
+            // restart`). When set, override `restart_policy` for this
+            // incarnation so the CLI's "re-spawns it" promise holds even
+            // for default `restart_policy: Never` nodes.
+            let force_restart = force_restart_next.swap(false, atomic::Ordering::AcqRel);
+
+            let restart = force_restart
+                || match self.restart_policy() {
+                    RestartPolicy::Always => true,
+                    RestartPolicy::OnFailure if exit_status.is_success() => false,
+                    RestartPolicy::OnFailure => true,
+                    RestartPolicy::Never => false,
+                };
 
             let restart_disabled = disable_restart.load(atomic::Ordering::Acquire);
             if restart && restart_disabled {
