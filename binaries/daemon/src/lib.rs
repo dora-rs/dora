@@ -3324,19 +3324,32 @@ impl Daemon {
         self.handle_outputs_done(dataflow_id, node_id, might_restart)
             .await?;
 
-        let should_finish = {
+        // Capture `restarts_disabled` BEFORE the remove so we can tell
+        // the coordinator whether this exit was operator-requested
+        // (`dora node stop`/`restart` → `disable_restart()` set) or a
+        // final-failure exit (restart_policy: Never, max_restarts
+        // exhausted, etc.). Coordinator picks `Stopped` vs `Failed`
+        // accordingly — without this signal a crash would be reported
+        // as a clean teardown and slip past `dora doctor`.
+        let (should_finish, clean_stop) = {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                 format!(
                     "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
                 )
             })?;
+            let clean_stop = dataflow
+                .running_nodes
+                .get(node_id)
+                .map(|n| n.restarts_disabled())
+                .unwrap_or(false);
             dataflow.running_nodes.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
-            !dataflow.pending_nodes.local_nodes_pending()
+            let should_finish = !dataflow.pending_nodes.local_nodes_pending()
                 && dataflow
                     .running_nodes
                     .iter()
-                    .all(|(_id, n)| n.node_config.dynamic)
+                    .all(|(_id, n)| n.node_config.dynamic);
+            (should_finish, clean_stop)
         };
 
         // Tell the coordinator the node is gone so its cached
@@ -3352,6 +3365,7 @@ impl Daemon {
                     event: DaemonEvent::NodeStopped {
                         dataflow_id,
                         node_id: node_id.clone(),
+                        clean_stop,
                     },
                 },
                 timestamp: self.clock.new_timestamp(),

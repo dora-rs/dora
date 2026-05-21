@@ -65,11 +65,16 @@ pub enum Event {
     },
     /// Daemon reports that a node has stopped and will not be restarted.
     /// Triggers an immediate update of cached `node_metrics` so
-    /// `dora node list` shows status `Stopped` instead of the stale
-    /// "Running" snapshot from before the exit.
+    /// `dora node list` shows status `Stopped` (or `Failed` for a
+    /// non-clean exit) instead of the stale "Running" snapshot from
+    /// before the exit. `daemon_id` is verified against
+    /// `running_dataflows[df].node_to_daemon[node_id]` so a stale or
+    /// foreign daemon cannot poison another daemon's node state.
     DaemonNodeStopped {
+        daemon_id: DaemonId,
         dataflow_id: Uuid,
         node_id: NodeId,
+        clean_stop: bool,
     },
     /// Internal event scheduled by the coordinator a fixed grace period
     /// after a `DaemonNodeStopped` to drop the stopped-node entry from

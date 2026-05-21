@@ -118,6 +118,16 @@ pub enum DaemonEvent {
     NodeStopped {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        /// `true` if the daemon called `disable_restart()` before the
+        /// exit (i.e. the `stop_single_node` / `restart_single_node`
+        /// path triggered by `dora node stop`/`restart`). `false` for
+        /// a final-failure exit under `restart_policy: Never` or a
+        /// `max_restarts` exhaustion. The coordinator uses this to
+        /// pick `NodeStatus::Stopped` vs `NodeStatus::Failed`, so a
+        /// crash is not silently reported as a clean teardown (which
+        /// would hide it from `dora doctor`).
+        #[serde(default)]
+        clean_stop: bool,
     },
 }
 

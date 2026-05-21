@@ -1598,6 +1598,18 @@ async fn start_inner(
                                                                                     node_id.clone(),
                                                                                     resolved_node,
                                                                                 );
+                                                                                // Clear any stale Stopped-
+                                                                                // marker for this node id so
+                                                                                // the new incarnation's
+                                                                                // metrics push isn't blocked
+                                                                                // by the prior stop's
+                                                                                // `node_stopped_at` entry.
+                                                                                dataflow
+                                                                                    .node_stopped_at
+                                                                                    .remove(&node_id);
+                                                                                dataflow
+                                                                                    .node_metrics
+                                                                                    .remove(&node_id);
                                                                                 Ok(
                                                                                     ControlRequestReply::NodeAdded {
                                                                                         dataflow_id,
@@ -2158,6 +2170,17 @@ async fn start_inner(
                     // stopped > NODE_STOPPED_GRACE ago.
                     expire_stopped_nodes(dataflow);
                     for (node_id, node_metrics) in &metrics {
+                        // A NodeStopped event is authoritative: skip
+                        // any in-flight metrics row for the same node
+                        // that was captured by the daemon's pre-stop
+                        // snapshot. Without this guard, a stale push
+                        // arriving after `NodeStopped` would overwrite
+                        // the `Stopped`/`Failed` row with the frozen
+                        // Running snapshot — exactly the bug this PR
+                        // is meant to fix.
+                        if dataflow.node_stopped_at.contains_key(node_id) {
+                            continue;
+                        }
                         dataflow
                             .node_metrics
                             .insert(node_id.clone(), node_metrics.clone());
@@ -2527,15 +2550,51 @@ async fn start_inner(
                 }
             }
             Event::DaemonNodeStopped {
+                daemon_id,
                 dataflow_id,
                 node_id,
+                clean_stop,
             } => {
                 // Daemon reports a node has stopped and will not be
                 // restarted. Mark the cached metrics so `dora node list`
-                // shows `Stopped` instead of the frozen-Running snapshot,
-                // and arm the expiry side-band so the row eventually
-                // disappears (see `expire_stopped_nodes`).
+                // shows `Stopped` (clean exit) or `Failed` (final-failure
+                // exit) instead of the frozen-Running snapshot, and arm
+                // the expiry side-band so the row eventually disappears
+                // (see `expire_stopped_nodes`).
+                //
+                // Ownership check: the daemon that owns this node per
+                // `node_to_daemon` is the only one allowed to declare it
+                // stopped. Drops stale events from a previous incarnation
+                // (e.g. stop → remove → re-add on a different daemon) and
+                // foreign-daemon spoofing.
                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    match dataflow.node_to_daemon.get(&node_id) {
+                        Some(owner) if owner == &daemon_id => {}
+                        Some(other) => {
+                            tracing::warn!(
+                                %dataflow_id, %node_id,
+                                "ignoring NodeStopped from daemon `{daemon_id}`: node \
+                                 is owned by `{other}`"
+                            );
+                            continue;
+                        }
+                        None => {
+                            tracing::debug!(
+                                %dataflow_id, %node_id,
+                                "ignoring NodeStopped: node no longer in dataflow"
+                            );
+                            continue;
+                        }
+                    }
+                    let status = if clean_stop {
+                        dora_message::daemon_to_coordinator::NodeStatus::Stopped
+                    } else {
+                        // Crash / restart-policy exhaustion: surface as
+                        // `Failed` so `dora doctor` still counts it. A
+                        // clean `Stopped` would be invisible to the
+                        // doctor's healthy/degraded/failed bucketing.
+                        dora_message::daemon_to_coordinator::NodeStatus::Failed
+                    };
                     let entry = dataflow
                         .node_metrics
                         .entry(node_id.clone())
@@ -2547,10 +2606,10 @@ async fn start_inner(
                             disk_write_bytes: None,
                             restart_count: 0,
                             broken_inputs: Vec::new(),
-                            status: dora_message::daemon_to_coordinator::NodeStatus::Stopped,
+                            status: status.clone(),
                             pending_messages: 0,
                         });
-                    entry.status = dora_message::daemon_to_coordinator::NodeStatus::Stopped;
+                    entry.status = status;
                     entry.pid = 0;
                     entry.cpu_usage = 0.0;
                     entry.memory_bytes = 0;
@@ -5151,8 +5210,99 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Spawn timeout watchdog (rescue of #1593)
+    // Node-stop stale-metrics fix (PR #1901 / follow-up to #1703 prereq)
     // -------------------------------------------------------------------
+
+    #[test]
+    fn expire_stopped_nodes_removes_entries_older_than_grace() {
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "stopped-sender".to_string().into();
+        let fresh_node: dora_core::config::NodeId = "fresh-receiver".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+
+        let stale_row = NodeMetrics {
+            pid: 0,
+            cpu_usage: 0.0,
+            memory_bytes: 0,
+            disk_read_bytes: None,
+            disk_write_bytes: None,
+            restart_count: 0,
+            broken_inputs: Vec::new(),
+            status: NodeStatus::Stopped,
+            pending_messages: 0,
+        };
+        let fresh_row = NodeMetrics {
+            status: NodeStatus::Running,
+            ..stale_row.clone()
+        };
+
+        df.node_metrics.insert(node_id.clone(), stale_row);
+        df.node_metrics.insert(fresh_node.clone(), fresh_row);
+
+        // Backdate the stale node past the grace window; leave the fresh
+        // node out of node_stopped_at entirely (it's still running).
+        df.node_stopped_at.insert(
+            node_id.clone(),
+            Instant::now() - NODE_STOPPED_GRACE - Duration::from_secs(1),
+        );
+
+        expire_stopped_nodes(&mut df);
+
+        assert!(
+            !df.node_metrics.contains_key(&node_id),
+            "stale stopped row should be dropped after grace"
+        );
+        assert!(
+            !df.node_stopped_at.contains_key(&node_id),
+            "stale stopped_at marker should be dropped together with the metrics row"
+        );
+        assert!(
+            df.node_metrics.contains_key(&fresh_node),
+            "non-stopped node must NOT be affected by the sweep"
+        );
+    }
+
+    #[test]
+    fn expire_stopped_nodes_keeps_entries_within_grace() {
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "just-stopped".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        df.node_metrics.insert(
+            node_id.clone(),
+            NodeMetrics {
+                pid: 0,
+                cpu_usage: 0.0,
+                memory_bytes: 0,
+                disk_read_bytes: None,
+                disk_write_bytes: None,
+                restart_count: 0,
+                broken_inputs: Vec::new(),
+                status: NodeStatus::Stopped,
+                pending_messages: 0,
+            },
+        );
+        // Recent: well within grace.
+        df.node_stopped_at.insert(node_id.clone(), Instant::now());
+
+        expire_stopped_nodes(&mut df);
+
+        assert!(
+            df.node_metrics.contains_key(&node_id),
+            "stopped row must stay visible during the grace window"
+        );
+        assert!(
+            df.node_stopped_at.contains_key(&node_id),
+            "stopped_at marker must stay armed during the grace window"
+        );
+    }
 
     #[test]
     fn cached_result_is_pending_distinguishes_pending_and_cached() {
