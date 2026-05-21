@@ -183,12 +183,21 @@ pub(crate) struct RunningDataflow {
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
-    /// When a node entered `NodeStatus::Stopped` (after `DaemonEvent::NodeStopped`).
-    /// Entries here are removed together with the `node_metrics` row once the
-    /// grace period elapses, so `dora node list` briefly shows the stopped
-    /// status and then the row disappears. Without this side-band timestamp
-    /// the daemon's snapshot loop would simply stop including the node and
-    /// the cached `node_metrics` row would stay frozen at the pre-exit values.
+    /// Nodes the daemon has reported as finalized via `DaemonEvent::NodeStopped`.
+    /// Authoritative: any subsequent `NodeMetrics` push from the daemon for
+    /// a node in this set is dropped on the floor (stale pre-exit snapshot).
+    /// Covers BOTH `NodeStatus::Stopped` (clean) and `NodeStatus::Failed`
+    /// (crash / final-failure) so a delayed metrics task cannot resurrect
+    /// either kind of finalized row back to "Running" indefinitely.
+    /// Cleared by the grace-period sweep (for Stopped) or by `AddNode`
+    /// (when the same node id is added back to the dataflow).
+    pub(crate) node_finalized: BTreeSet<NodeId>,
+    /// When a node entered `NodeStatus::Stopped` (clean teardown only).
+    /// Drives the auto-expire sweep: after the grace window the row is
+    /// dropped from `node_metrics`/`node_finalized` so `dora node list`
+    /// stops showing zombies. `Failed` rows are NOT inserted here — they
+    /// stay visible until the dataflow itself is stopped so `dora doctor`
+    /// keeps reporting the crash.
     pub(crate) node_stopped_at: BTreeMap<NodeId, Instant>,
     pub(crate) network_metrics: Option<dora_message::daemon_to_coordinator::NetworkMetrics>,
 

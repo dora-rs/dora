@@ -1598,14 +1598,18 @@ async fn start_inner(
                                                                                     node_id.clone(),
                                                                                     resolved_node,
                                                                                 );
-                                                                                // Clear any stale Stopped-
-                                                                                // marker for this node id so
-                                                                                // the new incarnation's
-                                                                                // metrics push isn't blocked
-                                                                                // by the prior stop's
-                                                                                // `node_stopped_at` entry.
+                                                                                // Clear any stale Stopped/
+                                                                                // Finalized state for this
+                                                                                // node id so the new
+                                                                                // incarnation's metrics push
+                                                                                // isn't blocked by the prior
+                                                                                // stop's `node_stopped_at` /
+                                                                                // `node_finalized` entries.
                                                                                 dataflow
                                                                                     .node_stopped_at
+                                                                                    .remove(&node_id);
+                                                                                dataflow
+                                                                                    .node_finalized
                                                                                     .remove(&node_id);
                                                                                 dataflow
                                                                                     .node_metrics
@@ -2170,15 +2174,14 @@ async fn start_inner(
                     // stopped > NODE_STOPPED_GRACE ago.
                     expire_stopped_nodes(dataflow);
                     for (node_id, node_metrics) in &metrics {
-                        // A NodeStopped event is authoritative: skip
-                        // any in-flight metrics row for the same node
-                        // that was captured by the daemon's pre-stop
-                        // snapshot. Without this guard, a stale push
-                        // arriving after `NodeStopped` would overwrite
-                        // the `Stopped`/`Failed` row with the frozen
-                        // Running snapshot — exactly the bug this PR
-                        // is meant to fix.
-                        if dataflow.node_stopped_at.contains_key(node_id) {
+                        // A NodeStopped event is authoritative: skip any
+                        // in-flight metrics row for the same node that was
+                        // captured by the daemon's pre-stop snapshot. The
+                        // check uses `node_finalized` (covers Stopped AND
+                        // Failed) rather than `node_stopped_at` (Stopped
+                        // only) so a delayed metrics push cannot revive a
+                        // crashed-Failed row back to a stale Running.
+                        if dataflow.node_finalized.contains(node_id) {
                             continue;
                         }
                         dataflow
@@ -2615,6 +2618,10 @@ async fn start_inner(
                     entry.memory_bytes = 0;
                     entry.disk_read_bytes = None;
                     entry.disk_write_bytes = None;
+                    // Authoritative finalize marker: protects against late
+                    // in-flight metrics pushes overwriting the row, for
+                    // BOTH Stopped and Failed.
+                    dataflow.node_finalized.insert(node_id.clone());
                     // Only arm the auto-expire side-band for clean Stopped
                     // rows. Failed rows must stay visible until the dataflow
                     // is stopped/destroyed — otherwise a crashed node would
@@ -2639,6 +2646,7 @@ async fn start_inner(
                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                     dataflow.node_metrics.remove(&node_id);
                     dataflow.node_stopped_at.remove(&node_id);
+                    dataflow.node_finalized.remove(&node_id);
                 }
             }
         }
@@ -3682,6 +3690,10 @@ fn expire_stopped_nodes(dataflow: &mut RunningDataflow) {
     for nid in expired {
         dataflow.node_metrics.remove(&nid);
         dataflow.node_stopped_at.remove(&nid);
+        // Clear the finalize marker too so a subsequent AddNode of the
+        // same name (or any future metrics push for it) is not blocked
+        // by the stale Stopped state.
+        dataflow.node_finalized.remove(&nid);
     }
 }
 
@@ -4072,6 +4084,7 @@ mod tests {
             nodes: BTreeMap::new(),
             node_to_daemon,
             node_metrics: BTreeMap::new(),
+            node_finalized: BTreeSet::new(),
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::default(),
@@ -5368,6 +5381,112 @@ mod tests {
         // the sweep's semantics so a future refactor that decides
         // to "preserve Failed rows past grace" doesn't quietly
         // break by overriding the side-band contract.
+    }
+
+    #[test]
+    fn expire_stopped_nodes_clears_finalized_marker_too() {
+        // The grace-period sweep must clear `node_finalized` in addition
+        // to `node_metrics` and `node_stopped_at`. Without this, a
+        // subsequent `dora node add` of the same name (or the next
+        // metrics push for it) would be blocked by the stale marker —
+        // the new incarnation would never appear in `dora node list`.
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "expiring".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        df.node_metrics.insert(
+            node_id.clone(),
+            NodeMetrics {
+                pid: 0,
+                cpu_usage: 0.0,
+                memory_bytes: 0,
+                disk_read_bytes: None,
+                disk_write_bytes: None,
+                restart_count: 0,
+                broken_inputs: Vec::new(),
+                status: NodeStatus::Stopped,
+                pending_messages: 0,
+            },
+        );
+        df.node_finalized.insert(node_id.clone());
+        df.node_stopped_at.insert(
+            node_id.clone(),
+            Instant::now() - NODE_STOPPED_GRACE - Duration::from_secs(1),
+        );
+
+        expire_stopped_nodes(&mut df);
+
+        assert!(!df.node_metrics.contains_key(&node_id));
+        assert!(!df.node_stopped_at.contains_key(&node_id));
+        assert!(
+            !df.node_finalized.contains(&node_id),
+            "finalized marker must clear together with the metrics row, \
+             else AddNode of the same id would be silently blocked"
+        );
+    }
+
+    #[test]
+    fn finalized_marker_blocks_stale_metrics_for_failed_row_too() {
+        // Pre-fix race: the metrics-handler guard used `node_stopped_at`
+        // (only armed for Stopped). A crashed node sends NodeStopped
+        // {clean_stop:false}, coordinator writes Failed but does NOT
+        // arm node_stopped_at; a delayed in-flight metrics push then
+        // sails past the guard and overwrites Failed back to Running.
+        // The fix uses `node_finalized` (armed for BOTH Stopped and
+        // Failed) so the guard catches the Failed case too.
+        //
+        // This test exercises the data-level invariant: a row marked
+        // Failed AND inserted into node_finalized is what the
+        // NodeMetrics handler now consults via
+        // `dataflow.node_finalized.contains(node_id)` — the unit-test
+        // equivalent is just verifying that lookup is true.
+        use dora_message::daemon_to_coordinator::{NodeMetrics, NodeStatus};
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "crashed-no-restart".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        df.node_metrics.insert(
+            node_id.clone(),
+            NodeMetrics {
+                pid: 0,
+                cpu_usage: 0.0,
+                memory_bytes: 0,
+                disk_read_bytes: None,
+                disk_write_bytes: None,
+                restart_count: 0,
+                broken_inputs: Vec::new(),
+                status: NodeStatus::Failed,
+                pending_messages: 0,
+            },
+        );
+        // Failed path: finalized armed, stopped_at NOT armed.
+        df.node_finalized.insert(node_id.clone());
+
+        assert!(
+            df.node_finalized.contains(&node_id),
+            "Failed row must be in node_finalized so the metrics-push \
+             guard at lib.rs:2181 skips it"
+        );
+        assert!(
+            !df.node_stopped_at.contains_key(&node_id),
+            "Failed row must NOT be in node_stopped_at — that would \
+             arm the auto-expire timer and hide the crash after 60s"
+        );
+
+        // Run the sweep: nothing should change for a Failed row that
+        // has no stopped_at entry.
+        expire_stopped_nodes(&mut df);
+
+        assert!(
+            df.node_metrics.contains_key(&node_id) && df.node_finalized.contains(&node_id),
+            "Failed row + its finalize marker must survive the sweep \
+             until the dataflow itself is stopped/destroyed"
+        );
     }
 
     #[test]
