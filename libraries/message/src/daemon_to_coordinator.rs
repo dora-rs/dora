@@ -213,6 +213,16 @@ pub enum DaemonCoordinatorReply {
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
     RemoveNodeResult(Result<(), String>),
+    /// Reply for `DaemonCoordinatorEvent::AddMapping`. Previously the daemon
+    /// returned `None`, which the coordinator's WS layer skipped instead
+    /// of forwarding as a reply, causing `send_and_receive` to time out
+    /// after 30s with `daemon dispatch failed: timeout waiting for daemon
+    /// WS reply`. Same bug class as #1682's AddNode silent-reply hole;
+    /// applied to mappings here.
+    AddMappingResult(Result<(), String>),
+    /// Reply for `DaemonCoordinatorEvent::RemoveMapping`. See
+    /// `AddMappingResult` doc for the silent-reply bug class.
+    RemoveMappingResult(Result<(), String>),
     SetParamResult(Result<(), String>),
     DeleteParamResult(Result<(), String>),
     StartTopicDebugStreamResult(Result<(), String>),
