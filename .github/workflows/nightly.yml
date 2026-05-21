@@ -1174,7 +1174,6 @@ jobs:
           dora new test_python_project --lang python --internal-create-with-path-dependencies
           cd test_python_project
           dora build dataflow.yml --uv
-          uv pip install -e ../apis/python/node -e talker-1 -e talker-2 -e listener-1
           uv run ruff check .
           uv run pytest
           export OPERATING_MODE=SAVE

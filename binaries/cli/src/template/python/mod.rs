@@ -13,8 +13,9 @@ const README_MD: &str = include_str!("__node-name__/README.md");
 
 const TALKER_PY: &str = include_str!("talker/talker-template.py");
 const LISTENER_PY: &str = include_str!("listener/listener-template.py");
+const WORKSPACE_PYPROJECT: &str = include_str!("workspace-pyproject-template.toml");
 
-pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
+pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     let crate::CommandNew {
         kind,
         lang: _,
@@ -24,7 +25,7 @@ pub fn create(args: crate::CommandNew) -> eyre::Result<()> {
 
     match kind {
         crate::Kind::Node => create_custom_node(name, path, MAIN_PY),
-        crate::Kind::Dataflow => create_dataflow(name, path),
+        crate::Kind::Dataflow => create_dataflow(name, path, use_path_deps),
     }
 }
 
@@ -98,7 +99,11 @@ fn create_custom_node(
     Ok(())
 }
 
-fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrReport> {
+fn create_dataflow(
+    name: String,
+    path: Option<PathBuf>,
+    use_path_deps: bool,
+) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
     const WORKSPACE_README: &str = include_str!("README.md");
 
@@ -122,6 +127,16 @@ fn create_dataflow(name: String, path: Option<PathBuf>) -> Result<(), eyre::ErrR
     let readme_path = root.join("README.md");
     fs::write(&readme_path, WORKSPACE_README)
         .with_context(|| format!("failed to write `{}`", readme_path.display()))?;
+
+    let pyproject_path = root.join("pyproject.toml");
+    let mut pyproject = WORKSPACE_PYPROJECT.replace("___name___", &name);
+    if use_path_deps {
+        pyproject.push_str(
+            "\n[tool.uv.sources]\ndora-rs = { path = \"../apis/python/node\", editable = true }\n",
+        );
+    }
+    fs::write(&pyproject_path, pyproject)
+        .with_context(|| format!("failed to write `{}`", pyproject_path.display()))?;
 
     create_custom_node("talker 1".into(), Some(root.join("talker-1")), TALKER_PY)?;
     create_custom_node("talker 2".into(), Some(root.join("talker-2")), TALKER_PY)?;
