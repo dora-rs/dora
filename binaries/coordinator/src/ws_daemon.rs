@@ -254,6 +254,16 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             dataflow_id,
             ack_sequence,
         }),
+        DaemonEvent::NodeStopped {
+            dataflow_id,
+            node_id,
+            clean_stop,
+        } => Some(Event::DaemonNodeStopped {
+            daemon_id,
+            dataflow_id,
+            node_id,
+            clean_stop,
+        }),
     }
 }
 

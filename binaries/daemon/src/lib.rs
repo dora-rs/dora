@@ -1058,7 +1058,8 @@ impl Daemon {
                             .entry(dataflow_id)
                             .or_default()
                             .insert(node_id.clone(), Err(error));
-                        self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                        // Error arm: surface as Failed (not Stopped).
+                        self.handle_node_stop(dataflow_id, &node_id, dynamic_node, false)
                             .await?;
                     }
                 },
@@ -2588,7 +2589,9 @@ impl Daemon {
             }
         }
         for (node_id, dynamic) in stopped {
-            self.handle_node_stop(dataflow_id, &node_id, dynamic)
+            // Pre-spawn failures (resolve/validate errors). Surface
+            // as Failed so the dataflow doesn't silently hide them.
+            self.handle_node_stop(dataflow_id, &node_id, dynamic, false)
                 .await?;
         }
 
@@ -3268,9 +3271,10 @@ impl Daemon {
         dataflow_id: Uuid,
         node_id: &NodeId,
         dynamic_node: bool,
+        exit_clean: bool,
     ) -> eyre::Result<()> {
         let result = self
-            .handle_node_stop_inner(dataflow_id, node_id, dynamic_node)
+            .handle_node_stop_inner(dataflow_id, node_id, dynamic_node, exit_clean)
             .await;
         let _ = self
             .events_tx
@@ -3285,11 +3289,20 @@ impl Daemon {
         result
     }
 
+    /// `exit_clean` indicates the process exited successfully (Success
+    /// exit status). Combined with `restarts_disabled` (operator
+    /// requested stop via `dora node stop` → `disable_restart()` set,
+    /// even when the SIGTERM-induced exit code is non-zero) it produces
+    /// the `clean_stop` flag sent to the coordinator: clean_stop = true
+    /// → `NodeStatus::Stopped` (auto-expires from `dora node list` after
+    /// the 60s grace), clean_stop = false → `NodeStatus::Failed` (stays
+    /// visible so `dora doctor` keeps reporting it).
     async fn handle_node_stop_inner(
         &mut self,
         dataflow_id: Uuid,
         node_id: &NodeId,
         dynamic_node: bool,
+        exit_clean: bool,
     ) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow = match self.running.get_mut(&dataflow_id) {
@@ -3324,20 +3337,64 @@ impl Daemon {
         self.handle_outputs_done(dataflow_id, node_id, might_restart)
             .await?;
 
-        let should_finish = {
+        // Capture `restarts_disabled` BEFORE the remove. Combined with
+        // `exit_clean` (passed from the caller, set when the exit_status
+        // was Success), produces the `clean_stop` flag:
+        //   - operator-requested stop: stop_single_node() set
+        //     disable_restart, SIGTERM-induced exit is non-zero
+        //     (exit_clean=false). restarts_disabled covers it.
+        //   - node finished its own work and exited 0: exit_clean=true.
+        //   - crash / panic / restart_policy=Never with non-zero exit:
+        //     neither bit is set → clean_stop=false → `Failed`, so the
+        //     row sticks around and `dora doctor` keeps reporting it.
+        let (should_finish, clean_stop) = {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                 format!(
                     "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
                 )
             })?;
+            let restarts_disabled = dataflow
+                .running_nodes
+                .get(node_id)
+                .map(|n| n.restarts_disabled())
+                .unwrap_or(false);
+            let clean_stop = exit_clean || restarts_disabled;
             dataflow.running_nodes.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
-            !dataflow.pending_nodes.local_nodes_pending()
+            let should_finish = !dataflow.pending_nodes.local_nodes_pending()
                 && dataflow
                     .running_nodes
                     .iter()
-                    .all(|(_id, n)| n.node_config.dynamic)
+                    .all(|(_id, n)| n.node_config.dynamic);
+            (should_finish, clean_stop)
         };
+
+        // Tell the coordinator the node is gone so its cached
+        // `node_metrics[node_id]` row stops claiming `Running` with the
+        // pre-exit PID/CPU/memory snapshot. Without this signal the
+        // daemon's metrics-snapshot loop simply omits the dead node and
+        // the coordinator's cache stays frozen at the last pre-exit
+        // values forever.
+        if let Some(sender) = self.coordinator_sender.as_mut() {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::NodeStopped {
+                        dataflow_id,
+                        node_id: node_id.clone(),
+                        clean_stop,
+                    },
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to serialize NodeStopped")?;
+            if let Err(err) = sender.send_event(&msg).await {
+                tracing::warn!(
+                    %dataflow_id, %node_id,
+                    "failed to send NodeStopped to coordinator: {err}"
+                );
+            }
+        }
 
         if should_finish {
             self.finish_dataflow(dataflow_id).await?;
@@ -3796,12 +3853,13 @@ impl Daemon {
                         }
                     }
 
+                    let exit_clean = node_result.is_ok();
                     self.dataflow_node_results
                         .entry(dataflow_id)
                         .or_default()
                         .insert(node_id.clone(), node_result);
 
-                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node, exit_clean)
                         .await?;
                 }
             }

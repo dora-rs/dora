@@ -423,6 +423,9 @@ fn check_node_health(session: &WsSession) -> eyre::Result<(usize, usize, usize, 
                 NodeStatus::Restarting => healthy += 1,
                 NodeStatus::Degraded => degraded += 1,
                 NodeStatus::Failed => failed += 1,
+                // A cleanly-stopped node is neither healthy nor a fault:
+                // skip it so doctor counts reflect the live surface.
+                NodeStatus::Stopped => {}
             }
         } else {
             healthy += 1; // No metrics yet = assumed healthy
