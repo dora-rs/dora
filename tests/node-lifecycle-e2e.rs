@@ -63,6 +63,7 @@ fn ensure_cli_built() {
     });
 }
 
+#[cfg(not(windows))]
 static BUILD_CXX: Once = Once::new();
 
 /// Drive the CMake build for the `examples/cxx-dynamic-add-remove`
@@ -71,6 +72,7 @@ static BUILD_CXX: Once = Once::new();
 /// workspace (it runs `cargo build -p dora-node-api-c` internally
 /// via `ExternalProject_Add`). Idempotent — `cmake --build` is a
 /// no-op if everything's up to date.
+#[cfg(not(windows))]
 fn ensure_cxx_built(fixture_dir: &Path) {
     BUILD_CXX.call_once(|| {
         let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -219,7 +221,6 @@ struct LifecycleFixture<'a> {
     use_uv: bool,
 }
 
-#[cfg(unix)]
 fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_cli_built();
@@ -481,6 +482,12 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
 }
 
 #[test]
+// Python variant is Unix-only because it uses `--uv` for the Python
+// venv and the CircleCI Windows lane (`.circleci/config.yml`
+// test-windows job) does NOT install uv. Linux + macOS CI install it
+// explicitly. If a Windows uv path lands later (e.g. via
+// `winget install astral-sh.uv` in the runner setup), this gate can
+// be relaxed.
 #[cfg(unix)]
 fn lifecycle_python_dynamic_add_remove() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
@@ -496,7 +503,6 @@ fn lifecycle_python_dynamic_add_remove() {
 }
 
 #[test]
-#[cfg(unix)]
 fn lifecycle_rust_dynamic_add_remove() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
@@ -506,7 +512,10 @@ fn lifecycle_rust_dynamic_add_remove() {
     // binary path (`../../target/debug/rust-dynamic-add-remove-sender`).
     // The `dora node info` output prints `Path: <as-specified>`, so we
     // match the suffix portion that's stable across CARGO_TARGET_DIR
-    // overrides.
+    // overrides. dora's `resolve_path` (libraries/core/src/descriptor/
+    // mod.rs) automatically appends `EXE_EXTENSION` (.exe) on Windows
+    // when the YAML path has no extension, so the same fixture works
+    // cross-platform without per-OS YAML.
     run_lifecycle(LifecycleFixture {
         dataflow_path: &dataflow,
         filter_yml_path: &filter_yml,
@@ -517,7 +526,14 @@ fn lifecycle_rust_dynamic_add_remove() {
 }
 
 #[test]
-#[cfg(unix)]
+// C++ fixture is deliberately Unix-only: the existing cmake-dataflow
+// example in this repo explicitly skips Windows
+// (`examples/cmake-dataflow/run.rs` bails on `cfg!(windows)` with
+// "The c++ example does not work on Windows currently because of a
+// linker error"). Honoring that ground truth keeps this test honest;
+// a Windows C++ fixture would need separate linker work tracked
+// outside #1703's scope.
+#[cfg(not(windows))]
 fn lifecycle_cxx_dynamic_add_remove() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixture_dir = Path::new(manifest_dir).join("examples/cxx-dynamic-add-remove");
