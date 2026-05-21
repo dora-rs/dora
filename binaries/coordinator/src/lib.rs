@@ -1726,13 +1726,29 @@ async fn start_inner(
                                         })?;
                                         match daemon_connections.get_mut(daemon_id) {
                                             Some(conn) => match conn.send_and_receive(&msg).await {
-                                                Ok(_) => Ok(ControlRequestReply::MappingAdded {
-                                                    dataflow_id,
-                                                    source_node,
-                                                    source_output,
-                                                    target_node,
-                                                    target_input,
-                                                }),
+                                                Ok(reply_raw) => {
+                                                    // Validate the daemon reply is specifically an
+                                                    // `AddMappingResult` before reporting success,
+                                                    // mirroring the #1682 / #1873 rescue for AddNode.
+                                                    let src =
+                                                        format!("{source_node}/{source_output}");
+                                                    let tgt =
+                                                        format!("{target_node}/{target_input}");
+                                                    match ensure_add_mapping_applied(
+                                                        &reply_raw, &src, &tgt,
+                                                    ) {
+                                                        Ok(()) => {
+                                                            Ok(ControlRequestReply::MappingAdded {
+                                                                dataflow_id,
+                                                                source_node,
+                                                                source_output,
+                                                                target_node,
+                                                                target_input,
+                                                            })
+                                                        }
+                                                        Err(e) => Err(e),
+                                                    }
+                                                }
                                                 Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
                                             },
                                             None => {
@@ -1770,13 +1786,26 @@ async fn start_inner(
                                         })?;
                                         match daemon_connections.get_mut(daemon_id) {
                                             Some(conn) => match conn.send_and_receive(&msg).await {
-                                                Ok(_) => Ok(ControlRequestReply::MappingRemoved {
-                                                    dataflow_id,
-                                                    source_node,
-                                                    source_output,
-                                                    target_node,
-                                                    target_input,
-                                                }),
+                                                Ok(reply_raw) => {
+                                                    let src =
+                                                        format!("{source_node}/{source_output}");
+                                                    let tgt =
+                                                        format!("{target_node}/{target_input}");
+                                                    match ensure_remove_mapping_applied(
+                                                        &reply_raw, &src, &tgt,
+                                                    ) {
+                                                        Ok(()) => Ok(
+                                                            ControlRequestReply::MappingRemoved {
+                                                                dataflow_id,
+                                                                source_node,
+                                                                source_output,
+                                                                target_node,
+                                                                target_input,
+                                                            },
+                                                        ),
+                                                        Err(e) => Err(e),
+                                                    }
+                                                }
                                                 Err(e) => Err(eyre!("daemon dispatch failed: {e}")),
                                             },
                                             None => {
@@ -3526,6 +3555,38 @@ fn ensure_remove_node_applied(
     }
 }
 
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::AddMapping`
+/// is a successful `AddMappingResult`. Parallel to `ensure_add_node_applied`.
+/// Before the daemon returned an explicit `AddMappingResult`, the coordinator's
+/// `send_and_receive` for `AddMapping` timed out after 30s because the WS
+/// layer dropped the daemon's `None` reply; closing that hole means we now
+/// have a typed reply to check against — same #1682 class.
+fn ensure_add_mapping_applied(reply_raw: &[u8], source: &str, target: &str) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::AddMappingResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::AddMappingResult(Err(err)) => Err(eyre!(
+            "daemon failed to add mapping `{source}` -> `{target}`: {err}"
+        )),
+        other => Err(eyre!(
+            "unexpected daemon reply for AddMapping `{source}` -> `{target}`: {other:?}"
+        )),
+    }
+}
+
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::RemoveMapping`
+/// is a successful `RemoveMappingResult`. See `ensure_add_mapping_applied`.
+fn ensure_remove_mapping_applied(reply_raw: &[u8], source: &str, target: &str) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::RemoveMappingResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::RemoveMappingResult(Err(err)) => Err(eyre!(
+            "daemon failed to remove mapping `{source}` -> `{target}`: {err}"
+        )),
+        other => Err(eyre!(
+            "unexpected daemon reply for RemoveMapping `{source}` -> `{target}`: {other:?}"
+        )),
+    }
+}
+
 fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
@@ -4907,6 +4968,103 @@ mod tests {
         let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap();
         let err = ensure_remove_node_applied(&reply, &node_id)
             .expect_err("AddNodeResult reply must not be accepted by RemoveNode validator");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // AddMapping / RemoveMapping reply validation (silent-reply rescue
+    // for the connect/disconnect timeouts — same class as #1682).
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn add_mapping_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddMappingResult(Ok(()))).unwrap();
+        ensure_add_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect("successful AddMapping reply should pass");
+    }
+
+    #[test]
+    fn add_mapping_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddMappingResult(Err(
+            "no running dataflow with ID `xyz`".to_string(),
+        )))
+        .unwrap();
+        let err = ensure_add_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("daemon rejection should fail AddMapping forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to add mapping")
+                && msg.contains("sender/value")
+                && msg.contains("filter/input"),
+            "error must name the operation and the mapping endpoints: {msg}"
+        );
+    }
+
+    #[test]
+    fn add_mapping_reply_rejects_wrong_reply_variant() {
+        // Pre-fix #1682-equivalent regression: daemon returned `None`,
+        // WS layer dropped it, coordinator's `Ok(_) =>` arm reported
+        // success on any wire response. With AddMappingResult now typed,
+        // a foreign reply variant must NOT be accepted.
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let err = ensure_add_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("unexpected reply variant should fail AddMapping forwarding");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
+
+        let reply =
+            serde_json::to_vec(&DaemonCoordinatorReply::RemoveMappingResult(Ok(()))).unwrap();
+        let err = ensure_add_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("RemoveMappingResult must not be accepted by AddMapping validator");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
+    }
+
+    #[test]
+    fn remove_mapping_reply_accepts_daemon_success() {
+        let reply =
+            serde_json::to_vec(&DaemonCoordinatorReply::RemoveMappingResult(Ok(()))).unwrap();
+        ensure_remove_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect("successful RemoveMapping reply should pass");
+    }
+
+    #[test]
+    fn remove_mapping_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::RemoveMappingResult(Err(
+            "no running dataflow with ID `xyz`".to_string(),
+        )))
+        .unwrap();
+        let err = ensure_remove_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("daemon rejection should fail RemoveMapping forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to remove mapping")
+                && msg.contains("sender/value")
+                && msg.contains("filter/input"),
+            "error must name the operation and the mapping endpoints: {msg}"
+        );
+    }
+
+    #[test]
+    fn remove_mapping_reply_rejects_wrong_reply_variant() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+        let err = ensure_remove_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("unexpected reply variant should fail RemoveMapping forwarding");
+        assert!(
+            err.to_string().contains("unexpected daemon reply"),
+            "error must call out the wrong-reply-type failure mode: {err}"
+        );
+
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::AddMappingResult(Ok(()))).unwrap();
+        let err = ensure_remove_mapping_applied(&reply, "sender/value", "filter/input")
+            .expect_err("AddMappingResult must not be accepted by RemoveMapping validator");
         assert!(
             err.to_string().contains("unexpected daemon reply"),
             "error must call out the wrong-reply-type failure mode: {err}"
