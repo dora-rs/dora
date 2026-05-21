@@ -106,6 +106,19 @@ pub enum DaemonEvent {
         dataflow_id: DataflowId,
         ack_sequence: u64,
     },
+    /// Sent by the daemon when a node has exited and the daemon will NOT
+    /// restart it (e.g. `dora node stop`, a node exiting under
+    /// `restart_policy: Never`, or a final-failure cascade). The
+    /// coordinator uses this to invalidate its cached `node_metrics`
+    /// entry so `dora node list` reflects the actual state instead of
+    /// the last-reported "Running" snapshot. Without this signal the
+    /// daemon's metrics-snapshot loop simply stops including the dead
+    /// node and the coordinator's cache is frozen at the last
+    /// pre-exit values forever.
+    NodeStopped {
+        dataflow_id: DataflowId,
+        node_id: NodeId,
+    },
 }
 
 /// Health status of a node
@@ -118,6 +131,12 @@ pub enum NodeStatus {
     /// One or more inputs have timed out (circuit breaker open)
     Degraded,
     Failed,
+    /// Node was cleanly stopped (e.g. via `dora node stop`) and the
+    /// process has exited. Distinguishes a deliberate teardown from a
+    /// crash failure. Coordinator-side entries with this status are
+    /// removed after `NODE_STOPPED_GRACE_PERIOD` so `dora node list`
+    /// eventually stops showing zombies.
+    Stopped,
 }
 
 impl std::fmt::Display for NodeStatus {
@@ -127,6 +146,7 @@ impl std::fmt::Display for NodeStatus {
             NodeStatus::Restarting => write!(f, "Restarting"),
             NodeStatus::Degraded => write!(f, "Degraded"),
             NodeStatus::Failed => write!(f, "Failed"),
+            NodeStatus::Stopped => write!(f, "Stopped"),
         }
     }
 }

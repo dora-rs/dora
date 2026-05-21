@@ -609,6 +609,7 @@ pub(crate) async fn start_dataflow(
         nodes,
         node_to_daemon,
         node_metrics: BTreeMap::new(),
+        node_stopped_at: BTreeMap::new(),
         network_metrics: None,
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),

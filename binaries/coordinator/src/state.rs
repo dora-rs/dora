@@ -183,6 +183,13 @@ pub(crate) struct RunningDataflow {
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
+    /// When a node entered `NodeStatus::Stopped` (after `DaemonEvent::NodeStopped`).
+    /// Entries here are removed together with the `node_metrics` row once the
+    /// grace period elapses, so `dora node list` briefly shows the stopped
+    /// status and then the row disappears. Without this side-band timestamp
+    /// the daemon's snapshot loop would simply stop including the node and
+    /// the cached `node_metrics` row would stay frozen at the pre-exit values.
+    pub(crate) node_stopped_at: BTreeMap<NodeId, Instant>,
     pub(crate) network_metrics: Option<dora_message::daemon_to_coordinator::NetworkMetrics>,
 
     pub(crate) spawn_result: CachedResult,

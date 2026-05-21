@@ -1923,6 +1923,12 @@ async fn start_inner(
                 }
             },
             Event::DaemonHeartbeatInterval => {
+                // Also drives expired-stopped-node cleanup so dataflows
+                // with no live nodes (and therefore no NodeMetrics push)
+                // still eventually shed their zombie rows.
+                for dataflow in running_dataflows.values_mut() {
+                    expire_stopped_nodes(dataflow);
+                }
                 let mut disconnected = BTreeSet::new();
                 for (machine_id, connection) in daemon_connections.iter_mut() {
                     if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
@@ -2146,6 +2152,11 @@ async fn start_inner(
             } => {
                 // Store metrics for this dataflow
                 if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    // Sweep expired stopped-node entries before applying
+                    // fresh metrics, so `dora node list` eventually stops
+                    // showing rows for nodes the daemon last reported as
+                    // stopped > NODE_STOPPED_GRACE ago.
+                    expire_stopped_nodes(dataflow);
                     for (node_id, node_metrics) in &metrics {
                         dataflow
                             .node_metrics
@@ -2513,6 +2524,48 @@ async fn start_inner(
                         df.daemon_ack_sequence.insert(daemon_id, clamped);
                         df.prune_state_log();
                     }
+                }
+            }
+            Event::DaemonNodeStopped {
+                dataflow_id,
+                node_id,
+            } => {
+                // Daemon reports a node has stopped and will not be
+                // restarted. Mark the cached metrics so `dora node list`
+                // shows `Stopped` instead of the frozen-Running snapshot,
+                // and arm the expiry side-band so the row eventually
+                // disappears (see `expire_stopped_nodes`).
+                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    let entry = dataflow
+                        .node_metrics
+                        .entry(node_id.clone())
+                        .or_insert_with(|| dora_message::daemon_to_coordinator::NodeMetrics {
+                            pid: 0,
+                            cpu_usage: 0.0,
+                            memory_bytes: 0,
+                            disk_read_bytes: None,
+                            disk_write_bytes: None,
+                            restart_count: 0,
+                            broken_inputs: Vec::new(),
+                            status: dora_message::daemon_to_coordinator::NodeStatus::Stopped,
+                            pending_messages: 0,
+                        });
+                    entry.status = dora_message::daemon_to_coordinator::NodeStatus::Stopped;
+                    entry.pid = 0;
+                    entry.cpu_usage = 0.0;
+                    entry.memory_bytes = 0;
+                    entry.disk_read_bytes = None;
+                    entry.disk_write_bytes = None;
+                    dataflow.node_stopped_at.insert(node_id, Instant::now());
+                }
+            }
+            Event::NodeMetricsExpire {
+                dataflow_id,
+                node_id,
+            } => {
+                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                    dataflow.node_metrics.remove(&node_id);
+                    dataflow.node_stopped_at.remove(&node_id);
                 }
             }
         }
@@ -3534,6 +3587,31 @@ fn ensure_delete_param_forward_applied(
     }
 }
 
+/// How long a node's `Stopped` row stays visible in
+/// `running_dataflows[df].node_metrics` after a `DaemonEvent::NodeStopped`
+/// arrives before the coordinator drops it. Long enough for an operator
+/// running `dora node list` to see the `Stopped` status; short enough that
+/// the listing doesn't accumulate zombie rows over a long-lived dataflow.
+const NODE_STOPPED_GRACE: Duration = Duration::from_secs(60);
+
+/// Drop any `node_metrics` rows whose corresponding `node_stopped_at`
+/// timestamp is older than `NODE_STOPPED_GRACE`. Called from the
+/// `NodeMetrics` push handler and the heartbeat tick so cleanup runs
+/// even when no live metrics flow.
+fn expire_stopped_nodes(dataflow: &mut RunningDataflow) {
+    let now = Instant::now();
+    let expired: Vec<dora_core::config::NodeId> = dataflow
+        .node_stopped_at
+        .iter()
+        .filter(|(_, t)| now.duration_since(**t) >= NODE_STOPPED_GRACE)
+        .map(|(nid, _)| nid.clone())
+        .collect();
+    for nid in expired {
+        dataflow.node_metrics.remove(&nid);
+        dataflow.node_stopped_at.remove(&nid);
+    }
+}
+
 /// Validate that the daemon's reply to `DaemonCoordinatorEvent::RemoveNode`
 /// is a successful `RemoveNodeResult`. Returns `Err` for both an explicit
 /// daemon failure and an unexpected reply variant; callers should forward
@@ -3921,6 +3999,7 @@ mod tests {
             nodes: BTreeMap::new(),
             node_to_daemon,
             node_metrics: BTreeMap::new(),
+            node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::default(),
             stop_reply_senders: vec![],

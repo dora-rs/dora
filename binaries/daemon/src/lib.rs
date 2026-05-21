@@ -3339,6 +3339,32 @@ impl Daemon {
                     .all(|(_id, n)| n.node_config.dynamic)
         };
 
+        // Tell the coordinator the node is gone so its cached
+        // `node_metrics[node_id]` row stops claiming `Running` with the
+        // pre-exit PID/CPU/memory snapshot. Without this signal the
+        // daemon's metrics-snapshot loop simply omits the dead node and
+        // the coordinator's cache stays frozen at the last pre-exit
+        // values forever.
+        if let Some(sender) = self.coordinator_sender.as_mut() {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::NodeStopped {
+                        dataflow_id,
+                        node_id: node_id.clone(),
+                    },
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to serialize NodeStopped")?;
+            if let Err(err) = sender.send_event(&msg).await {
+                tracing::warn!(
+                    %dataflow_id, %node_id,
+                    "failed to send NodeStopped to coordinator: {err}"
+                );
+            }
+        }
+
         if should_finish {
             self.finish_dataflow(dataflow_id).await?;
         }
