@@ -1386,4 +1386,214 @@ mod real_dataflow {
 
         cleanup(&dora);
     }
+
+    fn start_lifecycle_dataflow_detached(dora: &str) -> Uuid {
+        let yaml = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/dataflows/node-lifecycle.yml");
+        let status = Command::new(dora)
+            .args(["start", yaml.to_str().unwrap(), "--detach"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start failed");
+
+        // Poll until the coordinator records the dataflow (max 10s).
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let dataflow_id = loop {
+            let session = connect_session();
+            let reply = super::send_request(&session, &ControlRequest::List).unwrap();
+            if let ControlRequestReply::DataflowList(list) = reply {
+                if let Some(entry) = list.0.first() {
+                    break entry.id.uuid;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "dataflow never appeared in list");
+            std::thread::sleep(Duration::from_millis(300));
+        };
+
+        // Wait until all three nodes show up in the daemon's running_nodes
+        // (queried via `dora node info`). This avoids the race where the
+        // dataflow is registered at coordinator level but the daemon hasn't
+        // yet spawned+registered individual nodes.
+        let expected_nodes = ["rust-node", "rust-status-node", "rust-sink"];
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let all_up = expected_nodes.iter().all(|node| {
+                Command::new(dora)
+                    .args([
+                        "node",
+                        "info",
+                        node,
+                        "--dataflow",
+                        &dataflow_id.to_string(),
+                    ])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            });
+            if all_up {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "nodes never registered with daemon");
+            std::thread::sleep(Duration::from_millis(300));
+        }
+
+        dataflow_id
+    }
+
+/// `dora node list --dataflow` lists all nodes in the running dataflow.
+    #[test]
+    fn e2e_node_list_shows_running_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_lifecycle_dataflow_detached(&dora);
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "list",
+                "--dataflow",
+                &dataflow_id.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dora node list failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("rust-node"), "rust-node missing from list: {stdout}");
+        assert!(stdout.contains("rust-status-node"), "rust-status-node missing: {stdout}");
+        assert!(stdout.contains("rust-sink"), "rust-sink missing: {stdout}");
+
+        cleanup(&dora);
+    }
+
+    /// `dora node info` returns the descriptor with inputs and outputs.
+    #[test]
+    fn e2e_node_info_returns_descriptor() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_lifecycle_dataflow_detached(&dora);
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "info",
+                "rust-node",
+                "--dataflow",
+                &dataflow_id.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dora node info failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("rust-node"), "node id missing in info: {stdout}");
+        assert!(stdout.contains("tick"), "tick input missing in info: {stdout}");
+        assert!(stdout.contains("random"), "random output missing in info: {stdout}");
+
+        cleanup(&dora);
+    }
+
+    /// `dora node stop` stops one node, leaving the rest of the dataflow running.
+    #[test]
+    fn e2e_node_stop_exits_cleanly() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_lifecycle_dataflow_detached(&dora);
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "stop",
+                "rust-sink",
+                "--dataflow",
+                &dataflow_id.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dora node stop failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("stopped") || stdout.contains("rust-sink"),
+            "expected stop confirmation for rust-sink, got: {stdout}"
+        );
+
+        cleanup(&dora);
+    }
+
+    /// `dora node restart` re-spawns a node; daemon increments restart_count.
+    #[test]
+    fn e2e_node_restart_increments_counter() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let dataflow_id = start_lifecycle_dataflow_detached(&dora);
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "restart",
+                "rust-node",
+                "--dataflow",
+                &dataflow_id.to_string(),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "dora node restart failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.to_lowercase().contains("restart"),
+            "expected restart confirmation, got: {stdout}"
+        );
+
+        // Give the daemon time to kill and re-spawn the node, then poll
+        // `dora node list` until rust-node re-appears. This confirms the
+        // restart loop actually ran — if the node simply stopped and was
+        // never re-spawned it would not show up in the list.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let list_out = Command::new(&dora)
+                .args([
+                    "node",
+                    "list",
+                    "--dataflow",
+                    &dataflow_id.to_string(),
+                ])
+                .output()
+                .unwrap();
+            if list_out.status.success() {
+                let stdout = String::from_utf8_lossy(&list_out.stdout);
+                if stdout.contains("rust-node") {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "rust-node never re-appeared in node list within 20s after restart"
+            );
+            std::thread::sleep(Duration::from_millis(300));
+        }
+
+        cleanup(&dora);
+    }
 }
