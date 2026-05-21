@@ -124,8 +124,11 @@ impl Executable for Daemon {
                         );
                     }
                 }
+                // Note: the previous "(mlockall applied)" parenthetical here
+                // could lie on macOS where `mlockall` returns ENOTSUP, so the
+                // message now stands on its own.
                 #[cfg(not(target_os = "linux"))]
-                eprintln!("RT: SCHED_FIFO not available on this platform (mlockall applied)");
+                eprintln!("RT: SCHED_FIFO not available on this platform");
             }
             #[cfg(not(unix))]
             eprintln!("RT: --rt flag is only supported on Unix systems");

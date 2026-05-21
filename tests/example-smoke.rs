@@ -1446,8 +1446,10 @@ fn smoke_local_queue_size_latest_data_rust() {
 // "useful error vs. silent fallback" guarantee #1701 calls out as untested.
 //
 // Linux exercises both mlockall and SCHED_FIFO branches; macOS exercises
-// the mlockall + "SCHED_FIFO not available" branches. Windows is not
-// covered because the daemon does not run on Windows.
+// the mlockall + "SCHED_FIFO not available" branches. Windows is excluded
+// via `#[cfg(unix)]` because the assertions below only cover unix RT
+// branches — the Windows fallback at `binaries/cli/src/command/daemon.rs`
+// (`#[cfg(not(unix))]` arm) is not exercised here.
 
 #[test]
 #[cfg(unix)]
@@ -1496,6 +1498,56 @@ fn smoke_daemon_rt_emits_setup_messages() {
     assert!(
         stderr.contains("RT: SCHED_FIFO not available on this platform"),
         "expected non-Linux SCHED_FIFO fallback line on stderr.\n\
+         stderr was:\n{stderr}"
+    );
+}
+
+/// `--quiet` must NOT suppress RT setup diagnostics. The fix in #1701
+/// deliberately uses `eprintln!` so a failed mlockall/SCHED_FIFO promotion
+/// is always visible — silencing operational warnings via the existing log
+/// filter would be unsafe.
+#[test]
+#[cfg(unix)]
+fn smoke_daemon_rt_quiet_still_emits_setup_messages() {
+    ensure_cli_built();
+    let dora = dora_bin();
+
+    cleanup_stale(&dora);
+
+    let mut child = Command::new(&dora)
+        .args(["daemon", "--rt", "--quiet"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn dora daemon --rt --quiet");
+
+    std::thread::sleep(Duration::from_millis(1500));
+
+    let _ = child.kill();
+    let output = child
+        .wait_with_output()
+        .expect("daemon wait_with_output failed");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        stderr.contains("RT: mlockall"),
+        "expected 'RT: mlockall' line on stderr under --quiet.\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(target_os = "linux")]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO priority 50 enabled")
+            || stderr.contains("RT: sched_setscheduler failed:"),
+        "expected SCHED_FIFO line on stderr under --quiet.\n\
+         stderr was:\n{stderr}"
+    );
+
+    #[cfg(not(target_os = "linux"))]
+    assert!(
+        stderr.contains("RT: SCHED_FIFO not available on this platform"),
+        "expected non-Linux SCHED_FIFO fallback on stderr under --quiet.\n\
          stderr was:\n{stderr}"
     );
 }
