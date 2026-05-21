@@ -195,8 +195,18 @@ pub async fn prepare_managed_python_env(
             .spawn()
             .wrap_err_with(|| format!("failed to spawn `uv venv {}`", python_env_dir.display()))?;
 
-        let child_stdout = BufReader::new(child.stdout.take().expect("failed to take stdout"));
-        let child_stderr = BufReader::new(child.stderr.take().expect("failed to take stderr"));
+        let child_stdout = BufReader::new(
+            child
+                .stdout
+                .take()
+                .ok_or_else(|| eyre!("failed to take stdout pipe from uv venv child"))?,
+        );
+        let child_stderr = BufReader::new(
+            child
+                .stderr
+                .take()
+                .ok_or_else(|| eyre!("failed to take stderr pipe from uv venv child"))?,
+        );
         let stdout_tx_clone = stdout_tx.clone();
 
         tokio::spawn(async move {
