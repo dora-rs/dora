@@ -1489,10 +1489,10 @@ fn write_shell_dataflow(yaml_path: &std::path::Path, marker: &std::path::Path) {
     // Wrap the marker path in single quotes so spaces or most shell
     // metacharacters in `$TMPDIR` cannot break out of the `echo`. This
     // does NOT protect against a literal single quote in $TMPDIR — that
-    // would corrupt the shell args and the test would fail loudly (not
-    // silently mis-execute). On any sane CI/dev system $TMPDIR is a
-    // well-formed path; the residual risk is acceptable for a test
-    // fixture in an environment we control.
+    // would corrupt the shell args and the test would fail loudly
+    // rather than silently execute the wrong command. On any sane
+    // CI/dev system $TMPDIR is a well-formed path; the residual risk
+    // is acceptable for a test fixture in an environment we control.
     let yaml = format!(
         "nodes:\n  - id: shell-test\n    path: shell\n    args: \"echo hello > '{}'\"\n",
         marker.display()
