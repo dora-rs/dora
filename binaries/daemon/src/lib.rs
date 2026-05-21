@@ -1842,7 +1842,13 @@ impl Daemon {
                 target_input,
             } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                // Previously this handler ignored unknown dataflow_id and
+                // always replied `None`, which the WS layer dropped on the
+                // floor → coordinator timed out after 30s without ever
+                // knowing whether the mapping applied. Reply with an
+                // explicit `AddMappingResult` so the coordinator can pattern-
+                // match the outcome (same class as #1682's AddNodeResult).
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
                     dataflow
                         .mappings
@@ -1854,8 +1860,11 @@ impl Daemon {
                         .entry(target_node)
                         .or_default()
                         .insert(target_input);
-                }
-                let _ = reply_tx.send(None);
+                    Ok(())
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::AddMappingResult(result)));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::RemoveMapping {
@@ -1866,15 +1875,32 @@ impl Daemon {
                 target_input,
             } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let output_id = OutputId(source_node, source_output);
-                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id)
-                        && receivers.remove(&(target_node.clone(), target_input.clone()))
-                    {
+                // Same silent-reply fix as AddMapping above.
+                // Errors on missing-mapping (rather than silently succeeding)
+                // to match the `RemoveNode` semantics in stop_single_node,
+                // which surface "node not found" as a daemon Err. A double-
+                // disconnect or typo'd edge then produces a clear CLI error
+                // instead of a misleading "Mapping removed" message.
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    let output_id = OutputId(source_node.clone(), source_output.clone());
+                    let removed = dataflow
+                        .mappings
+                        .get_mut(&output_id)
+                        .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
+                        .unwrap_or(false);
+                    if removed {
                         close_input(dataflow, &target_node, &target_input, &self.clock);
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "mapping `{source_node}/{source_output}` -> \
+                             `{target_node}/{target_input}` not found"
+                        ))
                     }
-                }
-                let _ = reply_tx.send(None);
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::RemoveMappingResult(result)));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::StartTopicDebugStream {
