@@ -1876,14 +1876,27 @@ impl Daemon {
             } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
                 // Same silent-reply fix as AddMapping above.
+                // Errors on missing-mapping (rather than silently succeeding)
+                // to match the `RemoveNode` semantics in stop_single_node,
+                // which surface "node not found" as a daemon Err. A double-
+                // disconnect or typo'd edge then produces a clear CLI error
+                // instead of a misleading "Mapping removed" message.
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let output_id = OutputId(source_node, source_output);
-                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id)
-                        && receivers.remove(&(target_node.clone(), target_input.clone()))
-                    {
+                    let output_id = OutputId(source_node.clone(), source_output.clone());
+                    let removed = dataflow
+                        .mappings
+                        .get_mut(&output_id)
+                        .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
+                        .unwrap_or(false);
+                    if removed {
                         close_input(dataflow, &target_node, &target_input, &self.clock);
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "mapping `{source_node}/{source_output}` -> \
+                             `{target_node}/{target_input}` not found"
+                        ))
                     }
-                    Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
                 };

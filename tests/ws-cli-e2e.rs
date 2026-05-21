@@ -814,12 +814,27 @@ mod param_cli {
 
     fn dora_bin() -> String {
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let target = Path::new(manifest).join("target/debug/dora");
-        if target.exists() {
-            target.to_string_lossy().to_string()
-        } else {
-            "dora".to_string()
+        // Honor $CARGO_TARGET_DIR + EXE_SUFFIX so Windows finds
+        // `dora.exe` instead of falling back to a stale globally-
+        // installed `dora` on PATH — that fallback ran the pre-fix
+        // CLI/daemon against new-coordinator code and caused
+        // test-windows to fail with the silent-reply timeout this PR
+        // is meant to fix. Same shape as the example-smoke.rs fix
+        // for #1701.
+        let target_root = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| Path::new(manifest).join("target"));
+        let exe_name = format!("dora{}", std::env::consts::EXE_SUFFIX);
+        let candidate = target_root.join("debug").join(&exe_name);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
         }
+        panic!(
+            "dora binary not found at {} after ensure_cli_built(); \
+             if you use .cargo/config.toml or CARGO_BUILD_TARGET, ensure \
+             CARGO_TARGET_DIR points at the resolved artifact directory",
+            candidate.display()
+        );
     }
 
     fn ensure_cli_built() {
@@ -984,11 +999,22 @@ mod real_dataflow {
 
     fn dora_bin() -> String {
         let manifest = env!("CARGO_MANIFEST_DIR");
-        let target_dir = Path::new(manifest).join("target/debug/dora");
-        if target_dir.exists() {
-            return target_dir.to_string_lossy().to_string();
+        // Honor $CARGO_TARGET_DIR + EXE_SUFFIX. See the matching copy
+        // of this helper earlier in the file for the rationale.
+        let target_root = std::env::var("CARGO_TARGET_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| Path::new(manifest).join("target"));
+        let exe_name = format!("dora{}", std::env::consts::EXE_SUFFIX);
+        let candidate = target_root.join("debug").join(&exe_name);
+        if candidate.exists() {
+            return candidate.to_string_lossy().to_string();
         }
-        "dora".to_string()
+        panic!(
+            "dora binary not found at {} after ensure_built(); \
+             if you use .cargo/config.toml or CARGO_BUILD_TARGET, ensure \
+             CARGO_TARGET_DIR points at the resolved artifact directory",
+            candidate.display()
+        );
     }
 
     fn ensure_built() {
