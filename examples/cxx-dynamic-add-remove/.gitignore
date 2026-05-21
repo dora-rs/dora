@@ -1,0 +1,7 @@
+*.o
+
+# cmake artifacts
+build/
+
+# dora runtime per-run dirs (created by `dora start`)
+out/

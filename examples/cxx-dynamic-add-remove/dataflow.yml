@@ -1,0 +1,32 @@
+# C++ analog of examples/dynamic-add-remove / rust-dynamic-add-remove,
+# used by tests/node-lifecycle-e2e.rs::lifecycle_cxx_dynamic_add_remove
+# (issue #1703).
+#
+# Build:
+#   cmake -S . -B build -DDORA_ROOT_DIR=<dora-root>
+#   cmake --build build
+#
+# Then start the dataflow:
+#   dora start dataflow.yml --detach --name <name>
+#
+# The receiver subscribes to BOTH `value: sender/value` and a 500ms
+# timer tick so its `open_inputs` set never empties when sender is
+# operator-stopped. Without the tick, dora-rs's event stream would
+# synthesize `Event::Stop(StopCause::AllInputsClosed)`, the C API
+# would surface it as `DoraEventType_Stop`, and the next
+# `dora_next_event` call would return NULL — killing the receiver
+# before the harness can complete the lifecycle.
+
+nodes:
+  - id: sender
+    path: build/cxx_sender
+    outputs:
+      - value
+    inputs:
+      tick: dora/timer/millis/200
+
+  - id: receiver
+    path: build/cxx_receiver
+    inputs:
+      value: sender/value
+      tick: dora/timer/millis/500

@@ -63,6 +63,44 @@ fn ensure_cli_built() {
     });
 }
 
+static BUILD_CXX: Once = Once::new();
+
+/// Drive the CMake build for the `examples/cxx-dynamic-add-remove`
+/// fixture. The cmake invocation passes `-DDORA_ROOT_DIR=<root>` so
+/// the fixture's `DoraTargets.cmake` knows where to find the dora
+/// workspace (it runs `cargo build -p dora-node-api-c` internally
+/// via `ExternalProject_Add`). Idempotent — `cmake --build` is a
+/// no-op if everything's up to date.
+fn ensure_cxx_built(fixture_dir: &Path) {
+    BUILD_CXX.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let build_dir = fixture_dir.join("build");
+        let configure = Command::new("cmake")
+            .arg("-S")
+            .arg(fixture_dir)
+            .arg("-B")
+            .arg(&build_dir)
+            .arg(format!("-DDORA_ROOT_DIR={}", dora_root.display()))
+            .status()
+            .expect("failed to run `cmake -S ... -B ...`");
+        assert!(
+            configure.success(),
+            "cmake configure failed for {}",
+            fixture_dir.display()
+        );
+        let build = Command::new("cmake")
+            .arg("--build")
+            .arg(&build_dir)
+            .status()
+            .expect("failed to run `cmake --build`");
+        assert!(
+            build.success(),
+            "cmake --build failed for {}",
+            fixture_dir.display()
+        );
+    });
+}
+
 /// Tear down any leftover coordinator/daemon so tests don't pile up
 /// state from a prior crash. Safe to call when nothing is running —
 /// the commands error silently.
@@ -474,6 +512,27 @@ fn lifecycle_rust_dynamic_add_remove() {
         filter_yml_path: &filter_yml,
         name: "rustlc",
         sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    });
+}
+
+#[test]
+#[cfg(unix)]
+fn lifecycle_cxx_dynamic_add_remove() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let fixture_dir = Path::new(manifest_dir).join("examples/cxx-dynamic-add-remove");
+    let dataflow = fixture_dir.join("dataflow.yml");
+    let filter_yml = fixture_dir.join("filter-node.yml");
+    // C++ binaries aren't built by `dora build` — drive cmake before
+    // the dataflow lifecycle starts. The fixture's `DoraTargets.cmake`
+    // runs `cargo build -p dora-node-api-c` internally so we don't
+    // double-build that library.
+    ensure_cxx_built(&fixture_dir);
+    run_lifecycle(LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &filter_yml,
+        name: "cxxlc",
+        sender_path_marker: "build/cxx_sender",
         use_uv: false,
     });
 }
