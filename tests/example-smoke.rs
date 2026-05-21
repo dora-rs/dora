@@ -1461,13 +1461,31 @@ fn unique_temp_path(stem: &str) -> std::path::PathBuf {
 
 #[cfg(unix)]
 fn write_shell_dataflow(yaml_path: &std::path::Path, marker: &std::path::Path) {
-    // Use single quotes around the marker path so spaces or shell
-    // metacharacters in `$TMPDIR` cannot break out of the `echo`.
+    // Wrap the marker path in single quotes so spaces or most shell
+    // metacharacters in `$TMPDIR` cannot break out of the `echo`. This
+    // does NOT protect against a literal single quote in $TMPDIR — that
+    // would corrupt the shell args and the test would fail loudly (not
+    // silently mis-execute). On any sane CI/dev system $TMPDIR is a
+    // well-formed path; the residual risk is acceptable for a test
+    // fixture in an environment we control.
     let yaml = format!(
         "nodes:\n  - id: shell-test\n    path: shell\n    args: \"echo hello > '{}'\"\n",
         marker.display()
     );
     std::fs::write(yaml_path, yaml).expect("failed to write shell dataflow YAML");
+}
+
+/// Guarantee the marker path is clean before the test runs. A silent
+/// `remove_file` failure (permissions, symlink to unwritable target)
+/// could otherwise let the positive test pass against a stale marker
+/// without proving this run wrote it.
+fn ensure_marker_absent(marker: &std::path::Path) {
+    let _ = std::fs::remove_file(marker);
+    assert!(
+        !marker.exists(),
+        "marker path {marker:?} pre-existed and could not be removed; \
+         a stale file would make the positive test pass spuriously"
+    );
 }
 
 #[test]
@@ -1478,7 +1496,7 @@ fn smoke_shell_node_allowed_with_flag() {
 
     let yaml = unique_temp_path("allowed-yaml");
     let marker = unique_temp_path("allowed-marker");
-    let _ = std::fs::remove_file(&marker);
+    ensure_marker_absent(&marker);
     write_shell_dataflow(&yaml, &marker);
 
     let output = Command::new(&dora)
@@ -1492,11 +1510,16 @@ fn smoke_shell_node_allowed_with_flag() {
         // Don't let an inherited DORA_ALLOW_SHELL_NODES=true bias the
         // result — the CLI flag must be the sole source of truth.
         .env_remove("DORA_ALLOW_SHELL_NODES")
-        .stdout(Stdio::null())
+        // Capture both streams: the audit-trail warning is emitted via
+        // the daemon's tracing subscriber, which routes to stdout in
+        // `dora run` (single-process mode), while CLI-level errors go
+        // to stderr. We need both to verify the gate's side effects.
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
         .expect("failed to run dora run --allow-shell-nodes");
 
+    let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Assert dora exited cleanly BEFORE checking the marker. Otherwise a
     // regression where the shell node runs successfully but a subsequent
@@ -1506,19 +1529,29 @@ fn smoke_shell_node_allowed_with_flag() {
     assert!(
         output.status.success(),
         "dora run --allow-shell-nodes exited non-zero (status={:?}); \
-         marker file alone is not enough.\nstderr:\n{stderr}",
+         marker file alone is not enough.\nstdout:\n{stdout}\nstderr:\n{stderr}",
         output.status.code()
+    );
+    // The audit-trail warning at binaries/daemon/src/spawn/command.rs:34
+    // is the operator's only signal that shell execution is happening.
+    // If the gate works but this warning is silenced, dora becomes
+    // quietly unsafe — the marker check alone wouldn't catch it.
+    assert!(
+        stdout.contains("DORA_ALLOW_SHELL_NODES is set:")
+            || stderr.contains("DORA_ALLOW_SHELL_NODES is set:"),
+        "audit-trail warning missing — operators would lose the only \
+         signal that shell execution is happening.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
         marker.exists(),
         "shell command did not produce marker file at {marker:?}; \
-         dora exit={:?}\nstderr:\n{stderr}",
+         dora exit={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         output.status.code()
     );
     let body = std::fs::read_to_string(&marker).expect("read marker");
     assert!(
         body.contains("hello"),
-        "marker contents unexpected: {body:?}\nstderr:\n{stderr}"
+        "marker contents unexpected: {body:?}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 
     let _ = std::fs::remove_file(&marker);
@@ -1533,7 +1566,7 @@ fn smoke_shell_node_blocked_without_flag() {
 
     let yaml = unique_temp_path("blocked-yaml");
     let marker = unique_temp_path("blocked-marker");
-    let _ = std::fs::remove_file(&marker);
+    ensure_marker_absent(&marker);
     write_shell_dataflow(&yaml, &marker);
 
     let output = Command::new(&dora)
