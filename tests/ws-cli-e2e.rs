@@ -454,10 +454,8 @@ fn cli_stop_nonexistent() {
     match reply {
         ControlRequestReply::Error(msg) => {
             assert!(
-                msg.contains(&fake_uuid.to_string())
-                    || msg.to_lowercase().contains("not found")
-                    || !msg.is_empty(),
-                "error should be descriptive: {msg}"
+                msg.contains(&fake_uuid.to_string()) || msg.to_lowercase().contains("not found"),
+                "error must name the unknown UUID {fake_uuid}: {msg}"
             );
         }
         other => panic!("expected Error, got {other:?}"),
@@ -522,20 +520,27 @@ fn cli_restart_node_nonexistent() {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
+    let fake_dataflow_id = uuid::Uuid::new_v4();
     let reply = send_request(
         &session,
         &ControlRequest::RestartNode {
-            dataflow_id: uuid::Uuid::new_v4(),
+            dataflow_id: fake_dataflow_id,
             node_id: "camera".to_string().into(),
             grace_duration: None,
         },
     )
     .unwrap();
 
-    assert!(
-        matches!(reply, ControlRequestReply::Error(_)),
-        "expected Error, got {reply:?}"
-    );
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains(&fake_dataflow_id.to_string())
+                    || msg.to_lowercase().contains("not found"),
+                "error must name the unknown dataflow {fake_dataflow_id}: {msg}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
 }
 
 #[test]
@@ -544,20 +549,27 @@ fn cli_stop_node_nonexistent() {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
+    let fake_dataflow_id = uuid::Uuid::new_v4();
     let reply = send_request(
         &session,
         &ControlRequest::StopNode {
-            dataflow_id: uuid::Uuid::new_v4(),
+            dataflow_id: fake_dataflow_id,
             node_id: "sensor".to_string().into(),
             grace_duration: None,
         },
     )
     .unwrap();
 
-    assert!(
-        matches!(reply, ControlRequestReply::Error(_)),
-        "expected Error, got {reply:?}"
-    );
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains(&fake_dataflow_id.to_string())
+                    || msg.to_lowercase().contains("not found"),
+                "error must name the unknown dataflow {fake_dataflow_id}: {msg}"
+            );
+        }
+        other => panic!("expected Error, got {other:?}"),
+    }
 }
 
 // -- Phase 3: Parameter operations via WsSession (E2E) --
@@ -581,10 +593,15 @@ fn cli_param_set_rejects_unknown_target() {
         },
     )
     .unwrap();
-    assert!(
-        matches!(reply, ControlRequestReply::Error(_)),
-        "expected Error for unknown param target, got {reply:?}"
-    );
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains(&df_id.to_string()) || msg.to_lowercase().contains("not found"),
+                "error must name the unknown dataflow {df_id}: {msg}"
+            );
+        }
+        other => panic!("expected Error for unknown param target, got {other:?}"),
+    }
 }
 
 #[test]
@@ -593,20 +610,26 @@ fn cli_param_get_nonexistent() {
     let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let session = WsSession::connect(addr).expect("failed to connect WsSession");
 
+    let df_id = uuid::Uuid::new_v4();
     let reply = send_request(
         &session,
         &ControlRequest::GetParam {
-            dataflow_id: uuid::Uuid::new_v4(),
+            dataflow_id: df_id,
             node_id: "ghost".to_string().into(),
             key: "missing".into(),
         },
     )
     .unwrap();
 
-    assert!(
-        matches!(reply, ControlRequestReply::Error(_)),
-        "expected Error for missing param, got {reply:?}"
-    );
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains(&df_id.to_string()) || msg.to_lowercase().contains("not found"),
+                "error must name the unknown dataflow {df_id}: {msg}"
+            );
+        }
+        other => panic!("expected Error for missing param, got {other:?}"),
+    }
 }
 
 #[test]
@@ -627,10 +650,15 @@ fn cli_param_delete_rejects_unknown_target() {
         },
     )
     .unwrap();
-    assert!(
-        matches!(reply, ControlRequestReply::Error(_)),
-        "expected Error for unknown param target, got {reply:?}"
-    );
+    match reply {
+        ControlRequestReply::Error(msg) => {
+            assert!(
+                msg.contains(&df_id.to_string()) || msg.to_lowercase().contains("not found"),
+                "error must name the unknown dataflow {df_id}: {msg}"
+            );
+        }
+        other => panic!("expected Error for unknown param target, got {other:?}"),
+    }
 }
 
 #[test]
