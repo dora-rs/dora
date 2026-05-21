@@ -244,6 +244,21 @@ jobs:
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
         timeout-minutes: 15
+      # `dora node` lifecycle E2E (issue #1703). The shared test
+      # binary lives under the `dora-examples` package which the bulk
+      # `cargo test --all` step excludes, so it needs an explicit
+      # invocation here. Filter to the Rust + C++ variants because
+      # the Python variant requires uv (handled in `contract-tests`
+      # below where uv is already installed).
+      - name: Run dora node lifecycle E2E (Rust + C++)
+        # Cargo's TESTNAME positional is single-valued; multiple
+        # substring filters go after `--` for libtest.
+        run: >
+          cargo test -p dora-examples --test node-lifecycle-e2e
+          --
+          --test-threads=1
+          lifecycle_rust lifecycle_cxx
+        timeout-minutes: 15
 
   # Semantic contract tests — promoted from nightly per #1632.
   #
@@ -300,6 +315,16 @@ jobs:
           --
           --test-threads=1
           --nocapture
+      # Python variant of the lifecycle test piggybacks on this job
+      # because it needs uv (already set up above). See the e2e job
+      # for the Rust + C++ variants.
+      - name: Run dora node lifecycle E2E (Python)
+        run: >
+          cargo test -p dora-examples --test node-lifecycle-e2e
+          --
+          --test-threads=1
+          lifecycle_python
+        timeout-minutes: 15
 
   # Benchmark regression check — Ubuntu only (intentional).
   # Upstream dora runs bench on 3 platforms but only for the benchmark

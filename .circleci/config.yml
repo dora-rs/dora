@@ -915,6 +915,21 @@ jobs:
           name: Run fault-tolerance tests
           command: cargo test --test fault-tolerance-e2e -- --test-threads=1
           no_output_timeout: 15m
+      # `dora node` lifecycle E2E (issue #1703). The shared test
+      # binary lives under the `dora-examples` package which the
+      # bulk `cargo test --all` step excludes. Filter to Rust + C++
+      # variants here; the Python variant runs in `contract-tests`
+      # below where uv is already installed.
+      - run:
+          name: Run dora node lifecycle E2E (Rust + C++)
+          # Cargo's TESTNAME positional is single-valued; multiple
+          # substring filters go after `--` for libtest.
+          command: >
+            cargo test -p dora-examples --test node-lifecycle-e2e
+            --
+            --test-threads=1
+            lifecycle_rust lifecycle_cxx
+          no_output_timeout: 15m
       - cargo-cache-save
 
   # ===== Semantic contract tests =====
@@ -942,6 +957,17 @@ jobs:
             --test-threads=1
             --nocapture
           no_output_timeout: 30m
+      # Python variant of the lifecycle test piggybacks on this
+      # job because it needs uv (already set up via setup-python-uv
+      # above). Rust + C++ variants run in the `e2e` job.
+      - run:
+          name: Run dora node lifecycle E2E (Python)
+          command: >
+            cargo test -p dora-examples --test node-lifecycle-e2e
+            --
+            --test-threads=1
+            lifecycle_python
+          no_output_timeout: 15m
       - cargo-cache-save
 
   # ===== Benchmark regression check =====
@@ -1248,7 +1274,19 @@ jobs:
             - ~/.cargo/bin/cargo-hack
       - run:
           name: MSRV check
-          command: cargo hack check --rust-version --workspace --ignore-private --locked
+          # Same `--exclude` set as the test-linux job above. With
+          # `PYO3_NO_PYTHON=1` set, pyo3-build-config 0.28+ emits a
+          # config with `suppress_build_script_link_lines=false` and
+          # no `lib_name`, so any crate that depends on pyo3 fails to
+          # link with "attempted to link to Python shared library but
+          # config does not contain lib_name". Excluding the three
+          # python-binding crates matches the test-linux strategy and
+          # restores green on this check.
+          command: >
+            cargo hack check --rust-version --workspace --ignore-private --locked
+            --exclude dora-node-api-python
+            --exclude dora-operator-api-python
+            --exclude dora-ros2-bridge-python
       - cargo-cache-save:
           prefix: msrv
 
