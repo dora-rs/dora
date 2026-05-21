@@ -1498,6 +1498,17 @@ fn smoke_shell_node_allowed_with_flag() {
         .expect("failed to run dora run --allow-shell-nodes");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Assert dora exited cleanly BEFORE checking the marker. Otherwise a
+    // regression where the shell node runs successfully but a subsequent
+    // lifecycle/result step fails (e.g. dataflow result handling returns
+    // non-zero) would still produce the marker file and slip past the
+    // test (review feedback on PR #1898).
+    assert!(
+        output.status.success(),
+        "dora run --allow-shell-nodes exited non-zero (status={:?}); \
+         marker file alone is not enough.\nstderr:\n{stderr}",
+        output.status.code()
+    );
     assert!(
         marker.exists(),
         "shell command did not produce marker file at {marker:?}; \
