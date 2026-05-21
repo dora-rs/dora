@@ -467,6 +467,26 @@ impl RunningDataflow {
             .running_nodes
             .get_mut(node_id)
             .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
+        // Reject the restart if the process slot is empty. `process ==
+        // None` means the previous incarnation has exited and either:
+        //   (a) `restart_loop` is between exit and respawn (transient),
+        //       in which case a second restart would arm
+        //       `force_restart_next` a second time and the leftover
+        //       `true` would spuriously force a restart on the next
+        //       natural exit — poisoning a future incarnation.
+        //   (b) `restart_loop` has already exited for good (`restart=
+        //       false` branch at spawn/prepared.rs:396), in which case
+        //       no consumer for `force_restart_next` remains. Setting
+        //       the flag here would leak silently: the CLI would see
+        //       success but the node would stay down.
+        // Both (a) and (b) are silent-failure paths; reject loudly.
+        if node.process.is_none() {
+            return Err(eyre!(
+                "node `{node_id}` is not in a restartable state (process \
+                 slot is empty; the node is between restarts or has \
+                 already exited terminally)"
+            ));
+        }
         let process = node.process.take();
         // Clear any prior disable (e.g. from an earlier stop_single_node
         // or a cascading AllInputsClosed) so the restart_loop will pick

@@ -221,6 +221,20 @@ struct LifecycleFixture<'a> {
     use_uv: bool,
 }
 
+/// RAII teardown: ensure coordinator/daemon/dataflows are torn down
+/// even if a downstream assertion panics. Without this, an early
+/// failure leaves the cluster running on port 6013 and contaminates
+/// the next test binary (or the next CI retry) with stale state.
+struct CleanupGuard<'a> {
+    dora: &'a str,
+}
+
+impl Drop for CleanupGuard<'_> {
+    fn drop(&mut self) {
+        cleanup_stale(self.dora);
+    }
+}
+
 fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     ensure_cli_built();
@@ -230,6 +244,10 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let name = fixture.name;
 
     cleanup_stale(&dora);
+    // Arm panic-safe teardown BEFORE `dora up` so any assertion
+    // between here and the normal end of the function still leaves
+    // the cluster torn down.
+    let _cleanup = CleanupGuard { dora: &dora };
 
     // `dora up` starts coordinator + daemon on port 6013.
     let (ok, _, stderr) = run_capture(Command::new(&dora).arg("up"), "dora up");
@@ -262,15 +280,24 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         m.get("sender").is_some_and(|(s, _, _)| s == "Running")
             && m.get("receiver").is_some_and(|(s, _, _)| s == "Running")
     });
+    // Tight assertion: `wait_for_list` returns the last stdout on
+    // timeout regardless of whether the predicate held, so check the
+    // actual status here rather than just node existence — otherwise a
+    // Failed or never-spawned base node would pass this checkpoint and
+    // surface a misleading failure several subcommands later.
     let nodes = parse_node_list(&list_out);
-    let sender_initial_pid = nodes
-        .get("sender")
-        .map(|(_, pid, _)| pid.clone())
-        .expect("sender missing after start");
-    let receiver_initial_pid = nodes
-        .get("receiver")
-        .map(|(_, pid, _)| pid.clone())
-        .expect("receiver missing after start");
+    let sender_state = nodes.get("sender").cloned();
+    let receiver_state = nodes.get("receiver").cloned();
+    assert!(
+        matches!(&sender_state, Some((s, _, _)) if s == "Running"),
+        "sender did not reach Running within 30s; got {sender_state:?}\nlist:\n{list_out}"
+    );
+    assert!(
+        matches!(&receiver_state, Some((s, _, _)) if s == "Running"),
+        "receiver did not reach Running within 30s; got {receiver_state:?}\nlist:\n{list_out}"
+    );
+    let sender_initial_pid = sender_state.unwrap().1;
+    let receiver_initial_pid = receiver_state.unwrap().1;
 
     // --- 1. dora node list ----------------------------------------------
     let (ok, stdout, stderr) = run_capture(
@@ -314,10 +341,14 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let list_out = wait_for_list(&dora, name, Duration::from_secs(10), |m| {
         m.get("filter").is_some_and(|(s, _, _)| s == "Running")
     });
+    // Tight assertion: a Failed filter (e.g. spawn failure because the
+    // binary couldn't be found) would still be in the list, so check
+    // status rather than just existence.
     let nodes = parse_node_list(&list_out);
+    let filter_state = nodes.get("filter").cloned();
     assert!(
-        nodes.contains_key("filter"),
-        "filter missing after add: {nodes:?}"
+        matches!(&filter_state, Some((s, _, _)) if s == "Running"),
+        "filter did not reach Running within 10s after `dora node add`; got {filter_state:?}\nlist:\n{list_out}"
     );
 
     // --- 4 + 5. dora node connect (two edges) ---------------------------
@@ -477,8 +508,8 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         "sender should be Stopped after `dora node stop` + grace; got {sender_after_stop:?} (initial pid was {sender_initial_pid})\nlist:\n{list_out}"
     );
 
-    // Teardown: stop the dataflow, then `dora down` (destroys daemon+coordinator).
-    cleanup_stale(&dora);
+    // Teardown is handled by `CleanupGuard` on scope exit, so it
+    // runs whether we reach this point normally or panic earlier.
 }
 
 #[test]
