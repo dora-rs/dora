@@ -1,0 +1,7 @@
+[project]
+name = "___name___"
+version = "0.0.0"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = ["talker-1", "talker-2", "listener-1"]
