@@ -177,6 +177,9 @@ tokio-stream = "0.1.11"
 tempfile = { workspace = true }
 assert2 = "0.3.16"
 tokio-tungstenite = "0.28"
+libloading = "0.8"
+dora-operator-api-types = { workspace = true }
+arrow-array = { workspace = true }
 
 [[example]]
 name = "c-dataflow"
@@ -226,6 +229,10 @@ path = "examples/multiple-daemons/run.rs"
 [[example]]
 name = "cmake-dataflow"
 path = "examples/cmake-dataflow/run.rs"
+
+[[test]]
+name = "cpp-operator-cxx-bridge"
+path = "tests/cpp-operator-cxx-bridge.rs"
 
 [[test]]
 name = "ws-cli-e2e"
