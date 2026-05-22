@@ -540,16 +540,16 @@ dora clean --format json
 
 #### `dora logs`
 
-Show and follow logs of a dataflow and node.
+Show and follow logs of a dataflow.
 
 ```
-dora logs [UUID_OR_NAME] [NODE] [OPTIONS]
+dora logs [UUID_OR_NAME] [OPTIONS]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `[UUID_OR_NAME]` | | Dataflow UUID or name |
-| `[NODE]` | | Node name (required unless `--all-nodes`) |
+| `--node <NAME>`, `-n` | | Node name |
 | `--all-nodes` | false | Merge logs from all nodes by timestamp |
 | `--tail <N>` | all | Show last N lines |
 | `--follow`, `-f` | false | Stream new log entries |
@@ -572,7 +572,7 @@ dora logs [UUID_OR_NAME] [NODE] [OPTIONS]
 dora logs my-dataflow --all-nodes --follow
 
 # Last 50 errors from a specific node
-dora logs my-dataflow sensor --level error --tail 50
+dora logs my-dataflow --node sensor --level error --tail 50
 
 # Search logs from last 5 minutes
 dora logs my-dataflow --all-nodes --since 5m --grep "timeout"
@@ -581,7 +581,7 @@ dora logs my-dataflow --all-nodes --since 5m --grep "timeout"
 dora logs --local --all-nodes --tail 100
 
 # Post-mortem analysis: errors in time window
-dora logs --local sensor --since 1h --until 30m --level error
+dora logs --local --node sensor --since 1h --until 30m --level error
 ```
 
 **Duration formats:** `30` (seconds), `30s`, `5m`, `1h`, `2d`
@@ -1582,7 +1582,7 @@ dora start dataflow.yml --name my-robot --attach
 dora top
 
 # Logs from any node regardless of machine
-dora logs my-robot inference --follow
+dora logs my-robot --node inference --follow
 
 # List all dataflows
 dora list
@@ -1653,7 +1653,7 @@ dora run dataflow.yml --log-level trace --debug
 dora node info -d my-dataflow problem-node
 
 # 4. Monitor specific node logs
-dora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow --node problem-node --follow --level debug
 
 # 5. Check resource usage
 dora top
@@ -1696,5 +1696,5 @@ Read directly with:
 
 ```bash
 dora logs --local --all-nodes
-dora logs --local <node-name> --tail 50
+dora logs --local --node <node-name> --tail 50
 ```

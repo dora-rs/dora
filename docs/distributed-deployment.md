@@ -747,7 +747,7 @@ dora list
 dora top
 
 # View node logs
-dora logs my-app <node-id> --follow
+dora logs my-app --node <node-id> --follow
 
 # Stop a dataflow
 dora stop my-app

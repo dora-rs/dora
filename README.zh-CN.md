@@ -236,7 +236,7 @@ dora cluster down
 | 命令 | 描述 |
 |------|------|
 | `dora list` | 列出运行中的数据流（别名：`ps`） |
-| `dora logs <ID>` | 显示数据流或节点的日志 |
+| `dora logs <ID> [--node <NAME>]` | 显示数据流或节点的日志 |
 | `dora top` | 实时资源监控（TUI）；也可使用 `dora inspect top` |
 | `dora topic list` | 列出数据流中的主题 |
 | `dora topic hz <TOPIC>` | 测量主题发布频率（TUI） |

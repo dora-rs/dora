@@ -82,7 +82,7 @@ dora node info -d my-dataflow problem-node
 dora top
 
 # 5. Stream logs from the problem node
-dora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow --node problem-node --follow --level debug
 
 # 6. Is the node producing output?
 dora topic echo -d my-dataflow problem-node/output
@@ -539,13 +539,13 @@ Note: CPU percentages are per-core, so values can exceed 100% for multi-threaded
 
 ```bash
 # Stream logs from a specific node
-dora logs my-dataflow sensor-node --follow
+dora logs my-dataflow --node sensor-node --follow
 
 # Stream logs from all nodes
 dora logs my-dataflow --all-nodes --follow
 
 # Filter by log level
-dora logs my-dataflow sensor-node --follow --level debug
+dora logs my-dataflow --node sensor-node --follow --level debug
 
 # Stream with grep filter
 dora logs my-dataflow --all-nodes --follow --grep "error"
@@ -572,7 +572,7 @@ Read directly:
 dora logs --local --all-nodes
 
 # Specific node, last 50 lines
-dora logs --local sensor-node --tail 50
+dora logs --local --node sensor-node --tail 50
 ```
 
 ### Filtering and Searching
@@ -660,7 +660,7 @@ dora list
 dora top
 
 # 2. Check its logs
-dora logs my-dataflow problem-node --follow --level trace
+dora logs my-dataflow --node problem-node --follow --level trace
 
 # 3. Check if upstream nodes are publishing
 dora topic echo -d my-dataflow upstream-node/output
