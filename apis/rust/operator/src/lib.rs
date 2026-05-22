@@ -222,5 +222,4 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SendOutput>();
     }
-
 }

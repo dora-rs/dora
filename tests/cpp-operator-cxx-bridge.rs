@@ -26,8 +26,7 @@ use std::{mem, path::PathBuf, sync::Arc};
 use arrow_array::{Array, Int32Array};
 use dora_operator_api_types::{
     DoraInitResult, DoraResult, DoraStatus, Input, Metadata, OnEventResult, RawEvent, SendOutput,
-    arrow::ffi::FFI_ArrowArray,
-    safer_ffi::closure::ArcDynFn1,
+    arrow::ffi::FFI_ArrowArray, safer_ffi::closure::ArcDynFn1,
 };
 
 fn shared_lib_path() -> PathBuf {
