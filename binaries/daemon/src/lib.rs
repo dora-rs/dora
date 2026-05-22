@@ -3673,44 +3673,94 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
-
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("daemon".into()),
-                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                    )
-                                    .await;
-
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut lines = Vec::new();
-                                        if queue.is_full() {
-                                            lines.push("[...]".into());
-                                        }
-                                        while let Some(line) = queue.pop() {
-                                            lines.push(line);
-                                        }
-                                        lines
-                                    })
-                                    .map(extract_err_from_stderr)
-                                    .unwrap_or_default();
-
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
+                        // The operator asked this node to stop (`dora stop`,
+                        // `dora destroy`, `dora node stop`, `dora run
+                        // --stop-after`) and the node responded to our
+                        // SIGTERM. On Unix the exit reports as
+                        // `Signal(15)`. Some node wrappers (notably `uv
+                        // run python`) catch SIGTERM and exit with code
+                        // 143 (= 128 + 15) instead of propagating the
+                        // signal, so `child.wait()` returns
+                        // `ExitCode(143)` not `Signal(15)`. Same shape
+                        // for SIGINT (2 / 130). Treat any of those as a
+                        // clean planned stop so `dora run --stop-after`
+                        // doesn't report a fake "Node failed: exited
+                        // with code 143" when the dataflow shut down
+                        // exactly as requested (dora-rs/dora#1882).
+                        //
+                        // `grace_duration_kill` is set the moment the
+                        // soft-kill is submitted (see
+                        // `running_dataflow.rs::stop_all`), not just
+                        // when the hard-kill timeout fires, so it
+                        // overlaps with planned stop here — we don't
+                        // exclude it.
+                        //
+                        // Cascading failures still win — if some other
+                        // node failed first and this one was killed as
+                        // collateral, we want to surface the original
+                        // failure rather than hide it behind the
+                        // shutdown that followed.
+                        let restarts_disabled = dataflow
+                            .and_then(|df| df.running_nodes.get(&node_id))
+                            .map(|n| n.restarts_disabled())
+                            .unwrap_or(false);
+                        let is_sigterm_like = matches!(
                             exit_status,
-                        })
+                            NodeExitStatus::Signal(15)
+                                | NodeExitStatus::Signal(2)
+                                | NodeExitStatus::ExitCode(143)
+                                | NodeExitStatus::ExitCode(130)
+                        );
+                        if caused_by_node.is_none() && restarts_disabled && is_sigterm_like {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("daemon".into()),
+                                    format!(
+                                        "`{node_id}` exited with {exit_status:?} during planned stop; treating as clean"
+                                    ),
+                                )
+                                .await;
+                            Ok(())
+                        } else {
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
+                                        .log(
+                                            LogLevel::Info,
+                                            Some("daemon".into()),
+                                            format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                        )
+                                        .await;
+
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut lines = Vec::new();
+                                            if queue.is_full() {
+                                                lines.push("[...]".into());
+                                            }
+                                            while let Some(line) = queue.pop() {
+                                                lines.push(line);
+                                            }
+                                            lines
+                                        })
+                                        .map(extract_err_from_stderr)
+                                        .unwrap_or_default();
+
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
 
