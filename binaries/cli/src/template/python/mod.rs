@@ -129,12 +129,20 @@ fn create_dataflow(
         .with_context(|| format!("failed to write `{}`", readme_path.display()))?;
 
     let pyproject_path = root.join("pyproject.toml");
-    let mut pyproject = WORKSPACE_PYPROJECT.replace("___name___", &name);
-    if use_path_deps {
-        pyproject.push_str(
-            "\n[tool.uv.sources]\ndora-rs = { path = \"../apis/python/node\", editable = true }\n",
-        );
-    }
+    // `___DORA_RS_PATH_SOURCE___` is the placeholder inside the
+    // existing `[tool.uv.sources]` block — replace it with the
+    // path-pinned line in CI mode, drop it otherwise. We cannot append
+    // a second `[tool.uv.sources]` header at the end of the file
+    // (duplicate section = TOML parse error), so this stays an in-place
+    // substitution rather than a `push_str`.
+    let dora_rs_source = if use_path_deps {
+        "dora-rs = { path = \"../apis/python/node\", editable = true }"
+    } else {
+        ""
+    };
+    let pyproject = WORKSPACE_PYPROJECT
+        .replace("___name___", &name)
+        .replace("___DORA_RS_PATH_SOURCE___", dora_rs_source);
     fs::write(&pyproject_path, pyproject)
         .with_context(|| format!("failed to write `{}`", pyproject_path.display()))?;
 
