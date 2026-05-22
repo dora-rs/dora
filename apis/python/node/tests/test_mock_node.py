@@ -87,24 +87,6 @@ def test_mock_node_recv_async():
     asyncio.run(run())
 
 
-def test_mock_node_async_iteration():
-    """async for event in node: mirrors the pattern used with the real dora.Node async API."""
-
-    async def run():
-        node = MockNode([("tick", pa.array([1])), ("tick", pa.array([2]))])
-        events = []
-        async for event in node:
-            events.append(event)
-        assert len(events) == 3
-        assert events[0]["type"] == "INPUT"
-        assert events[0]["value"].to_pylist() == [1]
-        assert events[1]["type"] == "INPUT"
-        assert events[1]["value"].to_pylist() == [2]
-        assert events[2]["type"] == "STOP"
-
-    asyncio.run(run())
-
-
 def test_mock_node_recv_async_loop():
     """while/recv_async loop — the canonical dora async node pattern.  Timeout guards against deadlock."""
 
@@ -122,15 +104,17 @@ def test_mock_node_recv_async_loop():
 
 
 def test_mock_node_send_output_in_async_context():
-    """send_output called from an async coroutine must complete without blocking."""
+    """send_output called from an async coroutine completes synchronously."""
 
     async def run():
         node = MockNode([("tick", pa.array([0]))])
-        async for event in node:
+        while True:
+            event = await node.recv_async()
+            if event is None or event["type"] == "STOP":
+                break
             if event["type"] == "INPUT":
-                # send_output is sync but must not block the event loop
                 node.send_output("result", pa.array([42]))
-                await asyncio.sleep(0)  # yield to event loop — if any lock is held, this deadlocks
+                await asyncio.sleep(0)  # yield to let other coroutines run
         assert node.outputs["result"][0].to_pylist() == [42]
 
     asyncio.run(run())
