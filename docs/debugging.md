@@ -124,11 +124,11 @@ the next useful signal.
 |---|---|---|
 | `Could not connect to the daemon` | The node tried to connect to the local daemon port, but no daemon is listening or the port is wrong. | Start the runtime with `dora up`, or check `DORA_DAEMON_LOCAL_LISTEN_PORT` when using a custom port. |
 | `failed to request node config from daemon` | A manually started node reached the daemon, but the daemon could not return the node configuration. | Start the node through `dora start`/`dora run`, or confirm the node ID exists in the running dataflow. |
-| `failed to register node with dora-daemon` | The daemon rejected a node registration request. | Check `dora logs --daemon`, then confirm the node ID and dataflow ID match the current run. |
+| `failed to register node with dora-daemon` | The daemon rejected a node registration request. | Inspect the daemon stderr from the process started by `dora up`, then confirm the node ID and dataflow ID match the current run. |
 | `no running dataflow with ID ...` | A CLI command is using a stale dataflow ID from a previous run. | Run `dora list` and retry with the current dataflow ID, or stop old references with `dora stop`. |
-| `node ... not connected` | A command targeted a node that has not connected, has crashed, or has already shut down. | Run `dora node info -d <dataflow> <node>` and inspect `dora logs <dataflow> <node>`. |
+| `node ... not connected` | A command targeted a node that has not connected, has crashed, or has already shut down. | Run `dora node info -d <dataflow> <node>` and inspect `dora logs <dataflow> --node <node>`. |
 | `node ... channel full` | The node is not draining control messages fast enough, so the daemon cannot enqueue another event. | Check `dora top` for pressure, inspect node logs, and reduce input rate or restart the node. |
-| `node ... channel closed` | The node's control channel closed, usually because the node process exited. | Use `dora logs <dataflow> <node>` to find the crash or shutdown reason, then restart the node. |
+| `node ... channel closed` | The node's control channel closed, usually because the node process exited. | Use `dora logs <dataflow> --node <node>` to find the crash or shutdown reason, then restart the node. |
 | `failed to serialize param value for node ...` | A runtime parameter update could not be encoded for delivery to the target node. | Check the value passed to `dora param set`, then compare it with the parameter type shown by `dora param list`. |
 | `unexpected ... reply` | Coordinator, daemon, or node API versions disagreed about the expected protocol reply. | Confirm all binaries come from the same Dora build, then restart coordinator, daemon, and dataflow. |
 | `coordinator heartbeat timeout (20s)` | The daemon stopped receiving coordinator heartbeats. | Inspect coordinator and daemon logs for disconnects, then restart with `dora down` followed by `dora up`. |
