@@ -326,6 +326,16 @@ mod tests {
     }
 
     #[test]
+    fn reject_logs_legacy_positional_node_with_node_flag() {
+        parse_err(&["dora", "logs", "my-dataflow", "sensor", "--node", "other"]);
+    }
+
+    #[test]
+    fn reject_logs_legacy_positional_node_with_all_nodes_flag() {
+        parse_err(&["dora", "logs", "my-dataflow", "sensor", "--all-nodes"]);
+    }
+
+    #[test]
     fn reject_logs_node_and_all_nodes() {
         parse_err(&[
             "dora",

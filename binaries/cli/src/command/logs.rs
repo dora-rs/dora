@@ -30,7 +30,7 @@ pub struct LogsArgs {
     #[clap(value_name = "UUID_OR_NAME")]
     pub dataflow: Option<String>,
     /// Deprecated positional node name. Use --node instead.
-    #[clap(value_name = "NAME", hide = true)]
+    #[clap(value_name = "NAME", hide = true, conflicts_with_all = ["node", "all_nodes"])]
     pub legacy_node: Option<NodeId>,
     /// Show logs for the given node
     #[clap(long, short = 'n', value_name = "NAME", conflicts_with = "all_nodes")]
@@ -184,7 +184,7 @@ fn resolve_logs_dataflow_identifier(
             Err(err).wrap_err_with(|| {
                 format!(
                     "failed to resolve dataflow `{node}`\n\n  \
-                     hint: if `{node}` is a node name, use `dora logs --node {node}`"
+                     hint: if you intended `{node}` as a node name, use `dora logs --node {node}`"
                 )
             })
         }
@@ -200,7 +200,7 @@ fn find_logs_dataflow_dir(out_dir: &Path, args: &LogsArgs) -> Result<PathBuf> {
             Err(err).wrap_err_with(|| {
                 format!(
                     "failed to resolve local log dataflow `{node}`\n\n  \
-                     hint: if `{node}` is a node name, use `dora logs --local --node {node}`"
+                     hint: if you intended `{node}` as a node name, use `dora logs --local --node {node}`"
                 )
             })
         }
