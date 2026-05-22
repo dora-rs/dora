@@ -8,6 +8,7 @@ This guide covers how to debug, record, replay, and monitor dora dataflows. It i
 
 - [Prerequisites](#prerequisites)
 - [Quick Debugging Checklist](#quick-debugging-checklist)
+- [Common Error Messages](#common-error-messages)
 - [Record and Replay](#record-and-replay)
   - [Recording a Dataflow](#recording-a-dataflow)
   - [Recording Specific Topics](#recording-specific-topics)
@@ -82,7 +83,7 @@ dora node info -d my-dataflow problem-node
 dora top
 
 # 5. Stream logs from the problem node
-dora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow --node problem-node --follow --level debug
 
 # 6. Is the node producing output?
 dora topic echo -d my-dataflow problem-node/output
@@ -110,6 +111,31 @@ dora graph dataflow.yml --open
 # 13. Record for offline analysis
 dora record dataflow.yml -o debug-capture.drec
 ```
+
+---
+
+## Common Error Messages
+
+Use this table as a first stop when a command or log line already includes a
+clear error fragment. The fix column points to the command that usually gives
+the next useful signal.
+
+| Error message (or fragment) | Likely cause | Fix or next step |
+|---|---|---|
+| `Could not connect to the daemon` | The node tried to connect to the local daemon port, but no daemon is listening or the port is wrong. | Start the runtime with `dora up`, or check `DORA_DAEMON_LOCAL_LISTEN_PORT` when using a custom port. |
+| `failed to request node config from daemon` | A manually started node reached the daemon, but the daemon could not return the node configuration. | Start the node through `dora start`/`dora run`, or confirm the node ID exists in the running dataflow. |
+| `failed to register node with dora-daemon` | The daemon rejected a node registration request. | Inspect the daemon stderr from the process started by `dora up`, then confirm the node ID and dataflow ID match the current run. |
+| `no running dataflow with ID ...` | A CLI command is using a stale dataflow ID from a previous run. | Run `dora list` and retry with the current dataflow ID, or stop old references with `dora stop`. |
+| `node ... not connected` | A command targeted a node that has not connected, has crashed, or has already shut down. | Run `dora node info -d <dataflow> <node>` and inspect `dora logs <dataflow> --node <node>`. |
+| `node ... channel full` | The node is not draining control messages fast enough, so the daemon cannot enqueue another event. | Check `dora top` for pressure, inspect node logs, and reduce input rate or restart the node. |
+| `node ... channel closed` | The node's control channel closed, usually because the node process exited. | Use `dora logs <dataflow> --node <node>` to find the crash or shutdown reason, then restart the node. |
+| `failed to serialize param value for node ...` | A runtime parameter update could not be encoded for delivery to the target node. | Check the value passed to `dora param set`, then compare it with the parameter type shown by `dora param list`. |
+| `unexpected ... reply` | Coordinator, daemon, or node API versions disagreed about the expected protocol reply. | Confirm all binaries come from the same Dora build, then restart coordinator, daemon, and dataflow. |
+| `coordinator heartbeat timeout (20s)` | The daemon stopped receiving coordinator heartbeats. | Inspect coordinator and daemon logs for disconnects, then restart with `dora down` followed by `dora up`. |
+| `there is already a running dataflow with ID ...` | A new start request reused an ID that is still active. | Run `dora list`, stop the existing dataflow if it is stale, or start with a different name/ID. |
+| `failed to infer JSON schema` | JSON supplied to a topic or interactive input could not be mapped to an Arrow schema. | Check that the JSON is valid and homogeneous, or publish data with an explicit schema-aware producer. |
+| `Arrow IPC stream contained no record batches` | A producer sent an empty or invalid Arrow IPC payload. | Verify the upstream node output and replay/recording file before debugging downstream consumers. |
+| `zenoh publish failed` | Direct Zenoh publishing failed before the node could deliver data over the fast path. | Check Zenoh/network configuration and node logs; Dora may fall back to the daemon path for some publish failures. |
 
 ---
 
@@ -539,13 +565,13 @@ Note: CPU percentages are per-core, so values can exceed 100% for multi-threaded
 
 ```bash
 # Stream logs from a specific node
-dora logs my-dataflow sensor-node --follow
+dora logs my-dataflow --node sensor-node --follow
 
 # Stream logs from all nodes
 dora logs my-dataflow --all-nodes --follow
 
 # Filter by log level
-dora logs my-dataflow sensor-node --follow --level debug
+dora logs my-dataflow --node sensor-node --follow --level debug
 
 # Stream with grep filter
 dora logs my-dataflow --all-nodes --follow --grep "error"
@@ -572,7 +598,7 @@ Read directly:
 dora logs --local --all-nodes
 
 # Specific node, last 50 lines
-dora logs --local sensor-node --tail 50
+dora logs --local --node sensor-node --tail 50
 ```
 
 ### Filtering and Searching
@@ -660,7 +686,7 @@ dora list
 dora top
 
 # 2. Check its logs
-dora logs my-dataflow problem-node --follow --level trace
+dora logs my-dataflow --node problem-node --follow --level trace
 
 # 3. Check if upstream nodes are publishing
 dora topic echo -d my-dataflow upstream-node/output
