@@ -77,6 +77,28 @@ dora stop --all
 dora down
 ```
 
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as dora CLI
+    participant Coordinator
+    participant Daemon
+    participant Nodes
+
+    User->>CLI: dora up
+    CLI->>Coordinator: start coordinator
+    CLI->>Daemon: start local daemon
+    Daemon->>Coordinator: register
+    User->>CLI: dora start dataflow.yml
+    CLI->>Coordinator: submit dataflow
+    Coordinator->>Daemon: spawn node processes
+    Daemon->>Nodes: start nodes
+    Nodes->>Nodes: exchange messages
+    User->>CLI: dora stop --all
+    CLI->>Coordinator: stop dataflow
+    Coordinator->>Daemon: stop nodes
+```
+
 ## Next Steps
 
 - **Examples**: Browse `examples/` for service, action, streaming, and Python patterns

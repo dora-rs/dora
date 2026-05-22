@@ -13,16 +13,31 @@ Dora is built on four core principles:
 
 ### Architecture Stack
 
-```
-┌─────────────────────────────────────────────────┐
-│  CLI (dora)          Coordinator (orchestrator) │  Layer 4: Orchestration
-├─────────────────────────────────────────────────┤
-│  Daemon (per-machine)    Runtime (operators)     │  Layer 3: Execution
-├─────────────────────────────────────────────────┤
-│  dora-core    shared-memory-server    Node API  │  Layer 2: Core Libraries
-├─────────────────────────────────────────────────┤
-│  dora-message (protocol + Arrow types)          │  Layer 1: Protocol
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph L4[Layer 4: Orchestration]
+        CLI[CLI<br/>dora]
+        Coordinator[Coordinator<br/>orchestrator]
+    end
+
+    subgraph L3[Layer 3: Execution]
+        Daemon[Daemon<br/>per machine]
+        Runtime[Runtime<br/>operators]
+    end
+
+    subgraph L2[Layer 2: Core Libraries]
+        Core[dora-core]
+        Shmem[shared-memory-server]
+        NodeApi[Node API]
+    end
+
+    subgraph L1[Layer 1: Protocol]
+        Message[dora-message<br/>protocol + Arrow types]
+    end
+
+    L4 --> L3
+    L3 --> L2
+    L2 --> L1
 ```
 
 ## Workspace Structure
