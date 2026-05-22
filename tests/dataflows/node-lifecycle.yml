@@ -6,7 +6,7 @@ nodes:
   - id: rust-node
     build: cargo build -p rust-dataflow-example-node
     path: ../../target/debug/rust-dataflow-example-node
-    restart_policy: always
+    restart_policy: never
     inputs:
       tick: dora/timer/secs/1
     outputs:

@@ -1080,6 +1080,13 @@ mod real_dataflow {
         std::thread::sleep(Duration::from_millis(500));
     }
 
+    struct ClusterGuard<'a>(&'a str);
+    impl<'a> Drop for ClusterGuard<'a> {
+        fn drop(&mut self) {
+            cleanup(self.0);
+        }
+    }
+
     fn start_cluster(dora: &str) {
         cleanup(dora);
         let status = Command::new(dora)
@@ -1388,6 +1395,22 @@ mod real_dataflow {
     }
 
     fn start_lifecycle_dataflow_detached(dora: &str) -> Uuid {
+        // Assert no stale dataflows before we start — if the coordinator
+        // already has an entry, first() would return the wrong UUID and every
+        // subsequent node-command assertion would silently target it instead.
+        {
+            let session = connect_session();
+            if let ControlRequestReply::DataflowList(list) =
+                super::send_request(&session, &ControlRequest::List).unwrap()
+            {
+                assert!(
+                    list.0.is_empty(),
+                    "stale dataflow(s) in coordinator before start: {:?}",
+                    list.0.iter().map(|e| e.id.uuid).collect::<Vec<_>>()
+                );
+            }
+        }
+
         let yaml = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/dataflows/node-lifecycle.yml");
         let status = Command::new(dora)
@@ -1417,7 +1440,7 @@ mod real_dataflow {
         // dataflow is registered at coordinator level but the daemon hasn't
         // yet spawned+registered individual nodes.
         let expected_nodes = ["rust-node", "rust-status-node", "rust-sink"];
-        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             let all_up = expected_nodes.iter().all(|node| {
                 Command::new(dora)
@@ -1450,6 +1473,7 @@ mod real_dataflow {
         ensure_built();
         let dora = dora_bin();
         start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
         let dataflow_id = start_lifecycle_dataflow_detached(&dora);
 
         let output = Command::new(&dora)
@@ -1480,6 +1504,7 @@ mod real_dataflow {
         ensure_built();
         let dora = dora_bin();
         start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
         let dataflow_id = start_lifecycle_dataflow_detached(&dora);
 
         let output = Command::new(&dora)
@@ -1511,6 +1536,7 @@ mod real_dataflow {
         ensure_built();
         let dora = dora_bin();
         start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
         let dataflow_id = start_lifecycle_dataflow_detached(&dora);
 
         let output = Command::new(&dora)
@@ -1530,7 +1556,7 @@ mod real_dataflow {
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.contains("stopped") || stdout.contains("rust-sink"),
+            stdout.contains("stopped") && stdout.contains("rust-sink"),
             "expected stop confirmation for rust-sink, got: {stdout}"
         );
 
@@ -1543,6 +1569,7 @@ mod real_dataflow {
         ensure_built();
         let dora = dora_bin();
         start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
         let dataflow_id = start_lifecycle_dataflow_detached(&dora);
 
         let output = Command::new(&dora)
