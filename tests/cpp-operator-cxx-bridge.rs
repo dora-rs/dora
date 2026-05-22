@@ -51,9 +51,7 @@ fn noop_send_output() -> SendOutput {
 fn cxx_bridge_dispatches_input_parse_error() {
     let lib_path = shared_lib_path();
     if !lib_path.exists() {
-        eprintln!(
-            "SKIP: {lib_path:?} not found — run `cargo run --example cxx-dataflow` first"
-        );
+        eprintln!("SKIP: {lib_path:?} not found — run `cargo run --example cxx-dataflow` first");
         return;
     }
 
@@ -62,11 +60,8 @@ fn cxx_bridge_dispatches_input_parse_error() {
         .unwrap_or_else(|e| panic!("failed to load {lib_path:?}: {e}"));
 
     type InitFn = unsafe extern "C" fn() -> DoraInitResult;
-    type OnEventFn = unsafe extern "C" fn(
-        &mut RawEvent,
-        &SendOutput,
-        *mut std::ffi::c_void,
-    ) -> OnEventResult;
+    type OnEventFn =
+        unsafe extern "C" fn(&mut RawEvent, &SendOutput, *mut std::ffi::c_void) -> OnEventResult;
     type DropFn = unsafe extern "C" fn(*mut std::ffi::c_void) -> DoraResult;
 
     // SAFETY: symbol names and types match the register_operator!-generated exports.
@@ -93,9 +88,8 @@ fn cxx_bridge_dispatches_input_parse_error() {
     // schema only needs to be valid in memory (not semantically matched).
     let arr = Int32Array::from(vec![1i32]);
     let arr_data = arr.to_data();
-    let (real_ffi_array, schema) =
-        dora_operator_api_types::arrow::ffi::to_ffi(&arr_data)
-            .expect("to_ffi on valid Int32Array must not fail");
+    let (real_ffi_array, schema) = dora_operator_api_types::arrow::ffi::to_ffi(&arr_data)
+        .expect("to_ffi on valid Int32Array must not fail");
     // Intentional memory leak: we forget the valid FFI_ArrowArray so its
     // release callback is not invoked.  The small tracking allocation is
     // acceptable in test context.
