@@ -1,0 +1,25 @@
+[package]
+name = "fire-and-forget-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: emits values on a wall-clock loop without ever
+# calling `events.recv()`. Used to prove the daemon treats SIGTERM-
+# induced exits as clean when the operator asked the dataflow to stop
+# (dora-rs/dora#1882). A node with no recv loop cannot honor the
+# cooperative `Event::Stop`, so `dora run --stop-after` will SIGTERM it
+# after the grace period — the daemon must NOT report that as a node
+# failure.
+
+[[bin]]
+name = "fire-and-forget-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

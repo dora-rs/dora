@@ -2589,6 +2589,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9844ddc3a6e533d62bba727eb6c28b5d360921d5175e9ff0f1e621a5c590a4d5"
 
 [[package]]
+name = "fire-and-forget-source-node"
+version = "0.2.1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "fixedbitset"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

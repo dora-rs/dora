@@ -3673,46 +3673,121 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
-
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("daemon".into()),
-                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                    )
-                                    .await;
-
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut lines = Vec::new();
-                                        if queue.is_full() {
-                                            lines.push("[...]".into());
-                                        }
-                                        while let Some(line) = queue.pop() {
-                                            lines.push(line);
-                                        }
-                                        lines
-                                    })
-                                    .map(extract_err_from_stderr)
-                                    .unwrap_or_default();
-
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
+                        // The daemon explicitly sent SoftKill (SIGTERM)
+                        // to this node as part of an operator-initiated
+                        // stop (`dora stop`, `dora destroy`, `dora run
+                        // --stop-after`, `dora node stop`, `dora node
+                        // restart`) and the node responded by exiting.
+                        // On Unix the exit reports as `Signal(15)`.
+                        // Wrappers like `uv run python` catch SIGTERM
+                        // and exit with code 143 (= 128 + 15) instead
+                        // of propagating the signal, so `child.wait()`
+                        // returns `ExitCode(143)` not `Signal(15)`.
+                        // Same shape for SIGINT (2 / 130). Treat any of
+                        // those as a clean planned stop so `dora run
+                        // --stop-after` doesn't report a fake "Node
+                        // failed: exited with code 143" when the
+                        // dataflow shut down exactly as requested
+                        // (dora-rs/dora#1882).
+                        //
+                        // `grace_duration_kill` is the right
+                        // discriminant — not `restarts_disabled` —
+                        // because `disable_restart()` fires at subscribe
+                        // time for source nodes (see lib.rs:3203 where
+                        // `open_inputs().is_empty()` triggers it).
+                        // Using `restarts_disabled` would silently
+                        // swallow externally-sent SIGTERMs on source
+                        // nodes (e.g. `kill -TERM <pid>`) as clean.
+                        // `grace_duration_kills` is only populated by
+                        // the daemon's own SoftKill/Kill submission
+                        // path (`running_dataflow.rs::stop_all` and
+                        // `::send_stop_and_schedule_kill`), so it
+                        // accurately encodes "daemon asked this node to
+                        // stop."
+                        //
+                        // SIGKILL exits (Signal(9), happens when the
+                        // node didn't respond to SoftKill within the
+                        // secondary grace) fall through to the existing
+                        // `GraceDuration` branch — that's the original
+                        // semantic of GraceDuration and we want to
+                        // preserve it.
+                        //
+                        // Cascading failures still win — if some other
+                        // node failed first and this one was killed as
+                        // collateral, we want to surface the original
+                        // failure rather than hide it behind the
+                        // shutdown that followed.
+                        let is_sigterm_like = matches!(
                             exit_status,
-                        })
+                            NodeExitStatus::Signal(15)
+                                | NodeExitStatus::Signal(2)
+                                | NodeExitStatus::ExitCode(143)
+                                | NodeExitStatus::ExitCode(130)
+                        );
+                        if caused_by_node.is_none() && grace_duration_kill && is_sigterm_like {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("daemon".into()),
+                                    format!(
+                                        "`{node_id}` exited with {exit_status:?} during planned stop; treating as clean"
+                                    ),
+                                )
+                                .await;
+                            Ok(())
+                        } else {
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
+                                        .log(
+                                            LogLevel::Info,
+                                            Some("daemon".into()),
+                                            format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                        )
+                                        .await;
+
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut lines = Vec::new();
+                                            if queue.is_full() {
+                                                lines.push("[...]".into());
+                                            }
+                                            while let Some(line) = queue.pop() {
+                                                lines.push(line);
+                                            }
+                                            lines
+                                        })
+                                        .map(extract_err_from_stderr)
+                                        .unwrap_or_default();
+
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
+
+                // Clear the per-incarnation kill marker so it doesn't
+                // leak into the next incarnation. `grace_duration_kills`
+                // is keyed only by `node_id`; if `restart=true` and we
+                // didn't clear here, a later external SIGTERM or
+                // unrelated 143 exit from the restarted process would
+                // still see `grace_duration_kill=true` and be
+                // misreported as `Ok(())`. The marker has done its job
+                // for this exit — drop it.
+                if let Some(dataflow) = self.running.get(&dataflow_id) {
+                    dataflow.grace_duration_kills.remove(&node_id);
+                }
 
                 logger
                     .log(

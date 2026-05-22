@@ -533,11 +533,25 @@ impl RunningDataflow {
 
         if let Some(proc) = process {
             let duration = grace_duration.unwrap_or(default_grace);
+            // Mirror `stop_all`'s population of `grace_duration_kills`
+            // so SpawnedNodeResult can distinguish "daemon explicitly
+            // sent SIGTERM to this node" from "node received SIGTERM
+            // from somewhere else". Without this marker, a source node
+            // (which has `disable_restart` set at subscribe time, see
+            // lib.rs:3203) cannot be told apart from an externally
+            // killed source node when classifying the exit status
+            // (dora-rs/dora#1882).
+            let grace_duration_kills = self.grace_duration_kills.clone();
+            let node_id = node_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
-                proc.submit(ProcessOperation::SoftKill);
+                if proc.submit(ProcessOperation::SoftKill) {
+                    grace_duration_kills.insert(node_id.clone());
+                }
                 tokio::time::sleep(duration / 2).await;
-                proc.submit(ProcessOperation::Kill);
+                if proc.submit(ProcessOperation::Kill) {
+                    grace_duration_kills.insert(node_id);
+                }
             });
         }
     }
