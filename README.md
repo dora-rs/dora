@@ -367,9 +367,11 @@ nodes:
 
 ## Architecture
 
-```
-CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
-             (orchestration)  (per machine)    (user code)
+```mermaid
+flowchart LR
+    CLI[CLI<br/>dora] --> Coordinator[Coordinator<br/>orchestration]
+    Coordinator --> Daemons[Daemon(s)<br/>per machine]
+    Daemons --> Nodes[Nodes / Operators<br/>user code]
 ```
 
 | Layer | Protocol | Purpose |
