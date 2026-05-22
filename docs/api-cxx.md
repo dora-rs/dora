@@ -477,7 +477,11 @@ struct DoraOnInputResult {
     rust::String error;  // empty on success
     bool         stop;   // true to request graceful shutdown
 };
+```
 
+> **`error` and `stop` are mutually exclusive.** If `error` is non-empty the runtime treats the result as a fatal failure regardless of the `stop` field. Use `stop = true` only when `error` is empty.
+
+```cpp
 struct DoraSendOutputResult {
     rust::String error;  // empty on success
 };

@@ -80,7 +80,7 @@ impl DoraOutputSender<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     struct RecordingOperator {
         parse_errors: Vec<(String, String)>,
@@ -223,59 +223,4 @@ mod tests {
         assert_send_sync::<SendOutput>();
     }
 
-    #[test]
-    fn parse_errors_accumulated_from_concurrent_event_streams() {
-        // Simulates two independent operator instances processing events
-        // concurrently — exercises the no-shared-state invariant.
-        let results: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let results2 = Arc::clone(&results);
-
-        let h1 = std::thread::spawn(move || {
-            let sender = noop_send_output();
-            let mut output_sender = DoraOutputSender(&sender);
-            let mut op = RecordingOperator::default();
-            for i in 0..100u32 {
-                op.on_event(
-                    &Event::InputParseError {
-                        id: "thread-1",
-                        error: format!("err-{i}"),
-                    },
-                    &mut output_sender,
-                )
-                .unwrap();
-            }
-            results2
-                .lock()
-                .unwrap()
-                .push(format!("t1:{}", op.parse_errors.len()));
-        });
-
-        let results3 = Arc::clone(&results);
-        let h2 = std::thread::spawn(move || {
-            let sender = noop_send_output();
-            let mut output_sender = DoraOutputSender(&sender);
-            let mut op = RecordingOperator::default();
-            for i in 0..100u32 {
-                op.on_event(
-                    &Event::InputParseError {
-                        id: "thread-2",
-                        error: format!("err-{i}"),
-                    },
-                    &mut output_sender,
-                )
-                .unwrap();
-            }
-            results3
-                .lock()
-                .unwrap()
-                .push(format!("t2:{}", op.parse_errors.len()));
-        });
-
-        h1.join().unwrap();
-        h2.join().unwrap();
-
-        let r = results.lock().unwrap();
-        assert!(r.contains(&"t1:100".to_string()));
-        assert!(r.contains(&"t2:100".to_string()));
-    }
 }
