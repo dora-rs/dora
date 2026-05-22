@@ -30,7 +30,7 @@
 
 [**User Guide**](https://dora-rs.ai/dora/) | [**用户指南 (中文)**](https://dora-rs.ai/dora/zh-CN/)
 
-> 通过**智能体工程（agentic engineering）**方式构建和维护 -- 代码生成、审查、重构、测试和提交均由自主 AI 智能体驱动。
+> 通过**智能体工程（agentic engineering）**方式构建和维护 -- AI 智能体主要承担代码生成、审查、重构和测试工作；维护者把控方向，每次合并均需人工授权。
 
 ---
 
@@ -515,9 +515,9 @@ cargo run --example benchmark --release
 - [Discord](https://discord.gg/6eMGGutkfE)
 - [GitHub Discussions](https://github.com/orgs/dora-rs/discussions)
 
-## AI 辅助开发
+## 智能体工程（Agentic Engineering）
 
-本仓库通过 AI 辅助的智能体工程方式维护。代码生成、审查、重构、测试和提交均由自主 AI 智能体驱动 -- 实现更快的迭代速度和更高的大规模代码质量。
+本仓库采用智能体工程方式构建。AI 智能体在日常工作中协同推进 -- 代码生成、审查、重构、测试、撰写 PR 评论、分析每日构建回归 -- 维护者负责设定方向、审核判断、并把控发布内容。两种角色相辅相成：AI 智能体在机械性工作上效率更高；真正关键的细节则由人类把关。
 
 ## 许可证
 

@@ -30,7 +30,7 @@
 
 [**User Guide**](https://dora-rs.ai/dora/) | [**用户指南 (中文)**](https://dora-rs.ai/dora/zh-CN/)
 
-> Built and maintained with **agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
+> Built and maintained with **agentic engineering** -- AI agents do the heavy lifting on code generation, reviews, refactoring, and testing; humans set direction and gate every merge.
 
 ---
 
@@ -653,9 +653,9 @@ For non-trivial work, discuss the approach in a GitHub issue, discussion, or Dis
 - [Discord](https://discord.gg/6eMGGutkfE)
 - [GitHub Discussions](https://github.com/orgs/dora-rs/discussions)
 
-## AI-Assisted Development
+## Agentic Engineering
 
-This repository is maintained with AI-assisted agentic engineering. Code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents -- enabling faster iteration and higher code quality at scale.
+This repository is built with agentic engineering. AI agents collaborate on day-to-day work -- code generation, reviews, refactoring, testing, drafting PR comments, triaging nightly regressions -- while maintainers set direction, review judgments, and authorize what ships. The two roles compound: AI agents move fast on mechanical work; humans catch the things that matter.
 
 ## License
 
