@@ -10,7 +10,7 @@
 //! reports SIGTERM-induced exits as clean when the dataflow was stopped
 //! by the operator (`dora run --stop-after`). See dora-rs/dora#1882.
 
-use dora_node_api::{dora_core::config::DataId, DoraNode, IntoArrow};
+use dora_node_api::{DoraNode, IntoArrow, dora_core::config::DataId};
 use eyre::Context;
 use std::{thread, time::Duration};
 

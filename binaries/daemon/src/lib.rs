@@ -3673,37 +3673,50 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
-                        // The operator asked this node to stop (`dora stop`,
-                        // `dora destroy`, `dora node stop`, `dora run
-                        // --stop-after`) and the node responded to our
-                        // SIGTERM. On Unix the exit reports as
-                        // `Signal(15)`. Some node wrappers (notably `uv
-                        // run python`) catch SIGTERM and exit with code
-                        // 143 (= 128 + 15) instead of propagating the
-                        // signal, so `child.wait()` returns
-                        // `ExitCode(143)` not `Signal(15)`. Same shape
-                        // for SIGINT (2 / 130). Treat any of those as a
-                        // clean planned stop so `dora run --stop-after`
-                        // doesn't report a fake "Node failed: exited
-                        // with code 143" when the dataflow shut down
-                        // exactly as requested (dora-rs/dora#1882).
+                        // The daemon explicitly sent SoftKill (SIGTERM)
+                        // to this node as part of an operator-initiated
+                        // stop (`dora stop`, `dora destroy`, `dora run
+                        // --stop-after`, `dora node stop`, `dora node
+                        // restart`) and the node responded by exiting.
+                        // On Unix the exit reports as `Signal(15)`.
+                        // Wrappers like `uv run python` catch SIGTERM
+                        // and exit with code 143 (= 128 + 15) instead
+                        // of propagating the signal, so `child.wait()`
+                        // returns `ExitCode(143)` not `Signal(15)`.
+                        // Same shape for SIGINT (2 / 130). Treat any of
+                        // those as a clean planned stop so `dora run
+                        // --stop-after` doesn't report a fake "Node
+                        // failed: exited with code 143" when the
+                        // dataflow shut down exactly as requested
+                        // (dora-rs/dora#1882).
                         //
-                        // `grace_duration_kill` is set the moment the
-                        // soft-kill is submitted (see
-                        // `running_dataflow.rs::stop_all`), not just
-                        // when the hard-kill timeout fires, so it
-                        // overlaps with planned stop here — we don't
-                        // exclude it.
+                        // `grace_duration_kill` is the right
+                        // discriminant — not `restarts_disabled` —
+                        // because `disable_restart()` fires at subscribe
+                        // time for source nodes (see lib.rs:3203 where
+                        // `open_inputs().is_empty()` triggers it).
+                        // Using `restarts_disabled` would silently
+                        // swallow externally-sent SIGTERMs on source
+                        // nodes (e.g. `kill -TERM <pid>`) as clean.
+                        // `grace_duration_kills` is only populated by
+                        // the daemon's own SoftKill/Kill submission
+                        // path (`running_dataflow.rs::stop_all` and
+                        // `::send_stop_and_schedule_kill`), so it
+                        // accurately encodes "daemon asked this node to
+                        // stop."
+                        //
+                        // SIGKILL exits (Signal(9), happens when the
+                        // node didn't respond to SoftKill within the
+                        // secondary grace) fall through to the existing
+                        // `GraceDuration` branch — that's the original
+                        // semantic of GraceDuration and we want to
+                        // preserve it.
                         //
                         // Cascading failures still win — if some other
                         // node failed first and this one was killed as
                         // collateral, we want to surface the original
                         // failure rather than hide it behind the
                         // shutdown that followed.
-                        let restarts_disabled = dataflow
-                            .and_then(|df| df.running_nodes.get(&node_id))
-                            .map(|n| n.restarts_disabled())
-                            .unwrap_or(false);
                         let is_sigterm_like = matches!(
                             exit_status,
                             NodeExitStatus::Signal(15)
@@ -3711,7 +3724,7 @@ impl Daemon {
                                 | NodeExitStatus::ExitCode(143)
                                 | NodeExitStatus::ExitCode(130)
                         );
-                        if caused_by_node.is_none() && restarts_disabled && is_sigterm_like {
+                        if caused_by_node.is_none() && grace_duration_kill && is_sigterm_like {
                             logger
                                 .log(
                                     LogLevel::Info,

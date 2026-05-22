@@ -31,7 +31,10 @@ fn ensure_fire_and_forget_built() {
             .args(["build", "-p", "fire-and-forget-source-node"])
             .status()
             .expect("failed to run cargo build");
-        assert!(status.success(), "failed to build fire-and-forget-source-node");
+        assert!(
+            status.success(),
+            "failed to build fire-and-forget-source-node"
+        );
     });
 }
 
