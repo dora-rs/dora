@@ -3777,6 +3777,18 @@ impl Daemon {
                     }
                 };
 
+                // Clear the per-incarnation kill marker so it doesn't
+                // leak into the next incarnation. `grace_duration_kills`
+                // is keyed only by `node_id`; if `restart=true` and we
+                // didn't clear here, a later external SIGTERM or
+                // unrelated 143 exit from the restarted process would
+                // still see `grace_duration_kill=true` and be
+                // misreported as `Ok(())`. The marker has done its job
+                // for this exit — drop it.
+                if let Some(dataflow) = self.running.get(&dataflow_id) {
+                    dataflow.grace_duration_kills.remove(&node_id);
+                }
+
                 logger
                     .log(
                         if node_result.is_ok() {
