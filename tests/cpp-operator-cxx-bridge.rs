@@ -13,11 +13,12 @@
 //! ----------------
 //! * `dora_on_event` / `dora_init_operator` / `dora_drop_operator` are
 //!   exported and loadable (catches link-time symbol regressions).
-//! * Passing a *released* `FFI_ArrowArray` (all-zero struct → `release = None`)
-//!   causes `arrow::ffi::from_ffi` to return `Err`, which
-//!   `raw::dora_on_event` converts to `Event::InputParseError` and dispatches
-//!   to `OperatorWrapper::on_event` → `ffi::on_input_parse_error` (the
-//!   cxx-bridge call site added in #1879).
+//! * Passing a structurally-valid `FFI_ArrowArray` for Int32 (n_buffers = 2,
+//!   non-null buffers pointer, length = 1) with a null values slot causes
+//!   `arrow::ffi::from_ffi` to return `Err("null buffer at position 1")`,
+//!   which `raw::dora_on_event` converts to `Event::InputParseError` and
+//!   dispatches to `OperatorWrapper::on_event` → `ffi::on_input_parse_error`
+//!   (the cxx-bridge call site added in #1879).
 //! * The C++ stub returns `{error: "", stop: false}`, so the final
 //!   `OnEventResult` is `{ result: SUCCESS, status: Continue }`.
 
@@ -81,23 +82,32 @@ fn cxx_bridge_dispatches_input_parse_error() {
         init_result.error
     );
 
-    // Construct a valid schema from a real Int32Array, then substitute a
-    // zeroed (released) FFI_ArrowArray.  arrow::ffi::from_ffi returns Err
-    // immediately when release == None, without reading the schema, so the
-    // schema only needs to be valid in memory (not semantically matched).
+    // Schema and array are independent objects in the Arrow C Data Interface;
+    // we only need the type metadata (schema) here.
     let arr = Int32Array::from(vec![1i32]);
     let arr_data = arr.to_data();
-    let (real_ffi_array, schema) = dora_operator_api_types::arrow::ffi::to_ffi(&arr_data)
+    let (_ffi_array, schema) = dora_operator_api_types::arrow::ffi::to_ffi(&arr_data)
         .expect("to_ffi on valid Int32Array must not fail");
-    // Intentional memory leak: we forget the valid FFI_ArrowArray so its
-    // release callback is not invoked.  The small tracking allocation is
-    // acceptable in test context.
-    mem::forget(real_ffi_array);
+    drop(_ffi_array);
 
-    // SAFETY: FFI_ArrowArray is repr(C); zeroed gives release = None.
-    // The Drop impl for FFI_ArrowArray only calls release when Some, so
-    // dropping this is a no-op — no dangling-pointer deref occurs.
-    let bad_array: FFI_ArrowArray = unsafe { mem::zeroed() };
+    // Construct a structurally-valid FFI_ArrowArray for Int32 that causes
+    // arrow::ffi::from_ffi to return Err rather than panic.
+    //
+    // Per Arrow C Data Interface, Int32 requires n_buffers == 2:
+    //   buffers[0] = validity bitmap — null is valid (means no nulls)
+    //   buffers[1] = values buffer  — null + non-zero byte length → Err
+    //
+    // The `buffers` field must be a non-null pointer; FFI_ArrowArray::buffer()
+    // asserts !buffers.is_null() before from_ffi can inspect the per-slot
+    // values.  length = 1 keeps the computed byte-size > 0 so from_ffi
+    // returns Err instead of Ok(empty).  Drop is a no-op when release == None.
+    let buffer_ptrs: [*const std::ffi::c_void; 2] = [std::ptr::null(), std::ptr::null()];
+    // SAFETY: FFI_ArrowArray is repr(C). We set n_buffers, buffers, and length
+    // to structurally-valid values; all other fields are zeroed (null/false/0).
+    let mut bad_array: FFI_ArrowArray = unsafe { mem::zeroed() };
+    bad_array.n_buffers = 2;
+    bad_array.buffers = buffer_ptrs.as_ptr() as *mut *const std::ffi::c_void;
+    bad_array.length = 1;
 
     let input = Input {
         id: "test-input".to_owned().into(),
