@@ -63,6 +63,38 @@ fn ensure_cli_built() {
     });
 }
 
+static BUILD_RUST_FILTER: Once = Once::new();
+
+/// Build the `rust-dynamic-add-remove-filter` workspace binary that
+/// `lifecycle_rust_dynamic_add_remove` adds via `dora node add
+/// --from-yaml filter-node.yml`. Unlike `sender`/`receiver`, the
+/// filter is NOT listed in `dataflow.yml` — `dora build` never sees
+/// it — and `dora node add` only reads the descriptor + dispatches
+/// `AddNode`; it does NOT execute the `build:` field. Without this
+/// helper the test panics on `dora node add filter` with `No such
+/// file or directory` for `target/debug/rust-dynamic-add-remove-filter`.
+///
+/// `--target-dir` is pinned to the workspace-relative `target/` to
+/// match `filter-node.yml`'s `path: ../../target/debug/...`, so a
+/// `CARGO_TARGET_DIR` override on the test invocation can't desync
+/// the build location from where the daemon will look at spawn time.
+fn ensure_rust_filter_built() {
+    BUILD_RUST_FILTER.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let target_dir = dora_root.join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "rust-dynamic-add-remove-filter"])
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .status()
+            .expect("failed to run cargo build for rust-dynamic-add-remove-filter");
+        assert!(
+            status.success(),
+            "failed to build rust-dynamic-add-remove-filter"
+        );
+    });
+}
+
 #[cfg(not(windows))]
 static BUILD_CXX: Once = Once::new();
 
@@ -561,6 +593,12 @@ fn lifecycle_rust_dynamic_add_remove() {
     // mod.rs) automatically appends `EXE_EXTENSION` (.exe) on Windows
     // when the YAML path has no extension, so the same fixture works
     // cross-platform without per-OS YAML.
+    //
+    // Build the filter binary before run_lifecycle — `dora node add`
+    // does not honor `build:` in the dynamic-node yaml, so unlike
+    // sender/receiver (built by `dora build dataflow.yml`) the filter
+    // has to be compiled explicitly. Mirrors `ensure_cxx_built`.
+    ensure_rust_filter_built();
     run_lifecycle(LifecycleFixture {
         dataflow_path: &dataflow,
         filter_yml_path: &filter_yml,
