@@ -60,6 +60,20 @@ mod ffi {
         /// operator can emit a final output (e.g. flush buffered
         /// state, send a "shutdown summary") before returning.
         fn on_stop(op: Pin<&mut Operator>, output_sender: &mut OutputSender) -> DoraOnInputResult;
+
+        /// Called when an input's Arrow data fails to deserialize
+        /// (`Event::InputParseError { id, error }`). The daemon emits
+        /// this when `arrow::ffi::from_ffi` returns `Err` for a
+        /// received input. Without this callback the error was silently
+        /// swallowed by the catch-all `_ => Continue` arm, leaving the
+        /// operator with no way to log, surface as health, or reroute
+        /// malformed inputs.
+        fn on_input_parse_error(
+            op: Pin<&mut Operator>,
+            id: &str,
+            error: &str,
+            output_sender: &mut OutputSender,
+        ) -> DoraOnInputResult;
     }
 }
 
@@ -133,6 +147,19 @@ impl DoraOperator for OperatorWrapper {
                 let operator = self.operator.as_mut().unwrap();
                 let mut output_sender = OutputSender(output_sender);
                 let result = ffi::on_stop(operator, &mut output_sender);
+                if result.error.is_empty() {
+                    Ok(match result.stop {
+                        false => DoraStatus::Continue,
+                        true => DoraStatus::Stop,
+                    })
+                } else {
+                    Err(result.error)
+                }
+            }
+            Event::InputParseError { id, error } => {
+                let operator = self.operator.as_mut().unwrap();
+                let mut output_sender = OutputSender(output_sender);
+                let result = ffi::on_input_parse_error(operator, id, error, &mut output_sender);
                 if result.error.is_empty() {
                     Ok(match result.stop {
                         false => DoraStatus::Continue,

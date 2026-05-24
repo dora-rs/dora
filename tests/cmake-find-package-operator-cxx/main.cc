@@ -38,3 +38,12 @@ DoraOnInputResult on_stop(Operator &op, OutputSender &output_sender) {
     DoraOnInputResult result = {rust::String(), false};
     return result;
 }
+
+DoraOnInputResult on_input_parse_error(Operator &op, rust::Str id, rust::Str error, OutputSender &output_sender) {
+    (void)op;
+    (void)id;
+    (void)error;
+    (void)output_sender;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}
