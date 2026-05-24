@@ -9238,8 +9238,6 @@ dependencies = [
 [[package]]
 name = "zenoh-shm"
 version = "1.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5905d7d5dcfb934e94d225aff5e01546c2ad5f38b577709416893968041066d"
 dependencies = [
  "advisory-lock",
  "async-trait",

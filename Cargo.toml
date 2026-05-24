@@ -254,3 +254,6 @@ lto = "thin"
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+[patch.crates-io]
+zenoh-shm = { path = "patches/zenoh-shm" }
