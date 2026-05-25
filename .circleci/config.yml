@@ -718,12 +718,13 @@ jobs:
           name: Python Queue Latency + Timeout Test
           command: dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
           no_output_timeout: 30m
-      - run:
-          name: Rust Queue Latency Test
-          command: |
-            dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
-            dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
-          no_output_timeout: 30m
+      # Rust Queue Latency Test relocated to `contract-tests` to keep
+      # cli-python under CircleCI's 60m job wall (the editable-fix in
+      # this PR makes the Python steps actually do real work, pushing
+      # totals to ~58m; the rust test added ~2m on top and was getting
+      # truncated). The rust test still needs uv (the dataflow has a
+      # Python sender feeding a Rust receiver), so contract-tests —
+      # which already runs setup-python-uv — is the natural home.
       - cargo-cache-save
 
   cli-templates:
@@ -960,6 +961,18 @@ jobs:
             --test-threads=1
             lifecycle_python
           no_output_timeout: 15m
+      # Rust Queue Latency Test moved from cli-python here to keep
+      # cli-python under CircleCI's 60m job wall. The dataflow has a
+      # Python sender (queue_size_latest_data_python/send_data.py)
+      # feeding a Rust receiver, so it needs the uv setup that this
+      # job already has via setup-python-uv. Adds ~2m to a job that
+      # otherwise runs ~22m.
+      - run:
+          name: Rust Queue Latency Test
+          command: |
+            dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
+            dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+          no_output_timeout: 30m
       - cargo-cache-save
 
   # ===== Benchmark regression check =====
