@@ -1878,6 +1878,7 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
+ "arrow-array",
  "assert2",
  "dora-cli",
  "dora-coordinator",
@@ -1885,10 +1886,12 @@ dependencies = [
  "dora-daemon",
  "dora-download",
  "dora-message",
+ "dora-operator-api-types",
  "dora-tracing",
  "dunce",
  "eyre",
  "futures",
+ "libloading 0.8.9",
  "serde_json",
  "serde_yaml",
  "tempfile",
