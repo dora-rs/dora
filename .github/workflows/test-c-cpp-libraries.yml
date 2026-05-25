@@ -12,7 +12,7 @@ on:
     branches: [main]
     paths:
       - "apis/c/**"
-      - "apis/c++/**"
+      - 'apis/c\+\+/**'
       # Transitive Rust deps — the C/C++ surfaces wrap these, so an
       # ABI-breaking change here can silently regress find_package
       # consumers without touching apis/c{,++}/.
@@ -29,7 +29,7 @@ on:
   pull_request:
     paths:
       - "apis/c/**"
-      - "apis/c++/**"
+      - 'apis/c\+\+/**'
       # Transitive Rust deps — the C/C++ surfaces wrap these, so an
       # ABI-breaking change here can silently regress find_package
       # consumers without touching apis/c{,++}/.
