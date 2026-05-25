@@ -135,8 +135,20 @@ fn create_dataflow(
     // a second `[tool.uv.sources]` header at the end of the file
     // (duplicate section = TOML parse error), so this stays an in-place
     // substitution rather than a `push_str`.
+    //
+    // NOTE: do NOT set `editable = true` here. uv's editable install
+    // of `apis/python/node` only drops a `.pth` file pointing at the
+    // source dir and skips invoking maturin's PEP 660 build hook — the
+    // compiled Rust extension `dora/dora.abi3.so` is never produced,
+    // and `from dora import Node` fails with
+    // `ModuleNotFoundError: No module named 'dora.dora'`. A regular
+    // path-source install (no `editable`) triggers maturin to produce
+    // a wheel with the `.so` included; `uv` then installs that wheel
+    // into each per-node venv. cli-python's `dora build --uv` +
+    // `uv run pytest` + `dora run --stop-after` chain all depend on
+    // the extension being present.
     let dora_rs_source = if use_path_deps {
-        "dora-rs = { path = \"../apis/python/node\", editable = true }"
+        "dora-rs = { path = \"../apis/python/node\" }"
     } else {
         ""
     };
