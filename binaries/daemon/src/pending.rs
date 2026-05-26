@@ -183,7 +183,7 @@ impl PendingNodes {
         let result = match &node_exited_before_subscribe {
             Some(causing_node) => Err(format!(
                 "Node {causing_node} exited before initializing dora. For \
-                more information, run `dora logs {} {causing_node}`.",
+                more information, run `dora logs {} --node {causing_node}`.",
                 self.dataflow_id
             )),
             None => Ok(()),
