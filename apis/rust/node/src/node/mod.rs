@@ -605,12 +605,31 @@ impl DoraNode {
             // buffers when the provider is missing.
             let provider = {
                 use zenoh::Wait;
-                use zenoh::shm::ShmProviderBuilder;
-                match ShmProviderBuilder::default_backend(shm_pool_size).wait() {
-                    Ok(provider) => Some(provider),
-                    Err(e) => {
+                use zenoh::shm::{AllocAlignment, MemoryLayout, ShmProviderBuilder};
+
+                let alignment = AllocAlignment::new(6).expect("64-byte alignment is valid");
+                let layout = shm_pool_size
+                    .checked_add(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT - 1)
+                    .map(|size| {
+                        (size / crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
+                            * crate::arrow_utils::ARROW_BUFFER_ALIGNMENT
+                    })
+                    .and_then(|aligned| MemoryLayout::new(aligned, alignment).ok());
+
+                match layout {
+                    Some(layout) => match ShmProviderBuilder::default_backend(layout).wait() {
+                        Ok(provider) => Some(provider),
+                        Err(e) => {
+                            warn!(
+                                "failed to create zenoh SHM provider ({e}); \
+                                 falling back to heap-buffered publishes"
+                            );
+                            None
+                        }
+                    },
+                    None => {
                         warn!(
-                            "failed to create zenoh SHM provider ({e}); \
+                            "invalid zenoh SHM pool size ({shm_pool_size}); \
                              falling back to heap-buffered publishes"
                         );
                         None

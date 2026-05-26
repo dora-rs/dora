@@ -14,6 +14,21 @@ const MAX_TYPE_DEPTH: usize = 32;
 /// Maximum number of buffer offsets or child arrays per level.
 const MAX_ENTRIES: usize = 256;
 
+/// Alignment guaranteed for every raw Arrow buffer inside Dora payloads.
+///
+/// Arrow kernels can issue SIMD loads from buffer bases. Some ARM platforms
+/// fault on under-aligned SIMD loads, so the raw data-plane format keeps every
+/// buffer start at a 64-byte boundary relative to the payload base.
+pub(crate) const ARROW_BUFFER_ALIGNMENT: usize = 64;
+
+fn payload_buffer_alignment(spec: &BufferSpec) -> usize {
+    let arrow_alignment = match *spec {
+        BufferSpec::FixedWidth { alignment, .. } => alignment,
+        BufferSpec::VariableWidth | BufferSpec::BitMap | BufferSpec::AlwaysNull => 1,
+    };
+    arrow_alignment.max(ARROW_BUFFER_ALIGNMENT)
+}
+
 /// Compute a hash of an Arrow [`DataType`] for fast type matching.
 ///
 /// Uses the `Debug` representation which is stable for the same type within
@@ -42,10 +57,8 @@ pub fn required_data_size(array: &ArrayData) -> usize {
 fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
     let layout = arrow::array::layout(array.data_type());
     for (buffer, spec) in array.buffers().iter().zip(&layout.buffers) {
-        // consider alignment padding
-        if let BufferSpec::FixedWidth { alignment, .. } = *spec {
-            *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-        }
+        let alignment = payload_buffer_alignment(spec);
+        *next_offset = (*next_offset).div_ceil(alignment) * alignment;
         *next_offset += buffer.len();
     }
     for child in array.child_data() {
@@ -73,16 +86,15 @@ fn copy_array_into_sample_inner(
     let layout = arrow::array::layout(arrow_array.data_type());
     for (buffer, spec) in arrow_array.buffers().iter().zip(&layout.buffers) {
         let len = buffer.len();
+        let alignment = payload_buffer_alignment(spec);
+        *next_offset = (*next_offset).div_ceil(alignment) * alignment;
+
         assert!(
             target_buffer[*next_offset..].len() >= len,
             "target buffer too small (total_len: {}, offset: {}, required_len: {len})",
             target_buffer.len(),
             *next_offset,
         );
-        // add alignment padding
-        if let BufferSpec::FixedWidth { alignment, .. } = *spec {
-            *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-        }
 
         target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());
         buffer_offsets.push(BufferOffset {
@@ -260,7 +272,21 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, StringArray, UInt64Array};
+    use arrow::array::{Array, ArrayRef, StringArray, StructArray, UInt64Array};
+    use std::sync::Arc;
+
+    fn assert_buffer_offsets_are_aligned(type_info: &ArrowTypeInfo) {
+        for offset in &type_info.buffer_offsets {
+            assert_eq!(
+                offset.offset % ARROW_BUFFER_ALIGNMENT,
+                0,
+                "buffer offset {offset:?} is not {ARROW_BUFFER_ALIGNMENT}-byte aligned"
+            );
+        }
+        for child in &type_info.child_data {
+            assert_buffer_offsets_are_aligned(child);
+        }
+    }
 
     #[test]
     fn ipc_roundtrip_primitive() {
@@ -303,6 +329,30 @@ mod tests {
         let data = array.into_data();
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn raw_payload_offsets_are_64_byte_aligned_recursively() {
+        use arrow_schema::{DataType, Field};
+
+        let array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("values", DataType::UInt64, false)),
+                Arc::new(UInt64Array::from(vec![1, 2, 3])) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("labels", DataType::Utf8, true)),
+                Arc::new(StringArray::from(vec![Some("a"), None, Some("bbb")])) as ArrayRef,
+            ),
+        ]);
+        let data = array.into_data();
+        let mut sample = vec![0; required_data_size(&data)];
+        let type_info = copy_array_into_sample(&mut sample, &data);
+
+        assert_buffer_offsets_are_aligned(&type_info);
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
         assert_eq!(data, decoded);
     }
 
