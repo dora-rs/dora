@@ -604,14 +604,26 @@ mod tests {
 
     /// Tiny owned-tempdir helper. Avoids pulling in `tempfile` as a
     /// dependency for a one-off test crate.
+    ///
+    /// The path mixes process id, thread id, and a monotonic counter.
+    /// `SystemTime::now().as_nanos()` was the original disambiguator
+    /// but `clock_gettime(CLOCK_REALTIME)` on macOS only ticks at
+    /// ~µs resolution — `as_nanos()` looks unique but ~83% of paired
+    /// calls collide. Two parallel cargo-test threads landing on the
+    /// same path silently share a `target/` directory; the sibling
+    /// `stage_c_crate_succeeds_when_lib_present` test writes a
+    /// `libdora_node_api_c.a` that `stage_c_crate_errors_when_static_lib_missing`
+    /// then mistakenly sees, flipping its `expect_err` into a panic
+    /// (issue #1940). Process id + thread id + atomic counter is
+    /// race-free without depending on clock resolution.
     fn tempdir() -> TempDir {
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let base = std::env::temp_dir().join(format!(
-            "dora-xtask-test-{}-{}",
+            "dora-xtask-test-{}-{:?}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            std::thread::current().id(),
+            seq,
         ));
         std::fs::create_dir_all(&base).unwrap();
         TempDir { path: base }
