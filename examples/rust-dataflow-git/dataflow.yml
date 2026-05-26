@@ -6,7 +6,7 @@
 nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
-    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
+    rev: 9f4242b69720dd6c4da44260cc4102541dcf7d70
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
@@ -16,7 +16,7 @@ nodes:
 
   - id: rust-status-node
     git: https://github.com/dora-rs/dora.git
-    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
+    rev: 9f4242b69720dd6c4da44260cc4102541dcf7d70
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -27,7 +27,7 @@ nodes:
 
   - id: rust-sink
     git: https://github.com/dora-rs/dora.git
-    rev: 10cf7fe9c082caaa90679bcca48c873cdc16311b
+    rev: 9f4242b69720dd6c4da44260cc4102541dcf7d70
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:
