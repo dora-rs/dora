@@ -43,6 +43,7 @@ use std::{
     collections::{BTreeSet, HashMap},
     path::PathBuf,
     sync::Arc,
+    time::{Duration, Instant},
 };
 #[cfg(feature = "tracing")]
 use tokio::runtime::Handle;
@@ -97,6 +98,9 @@ impl RuntimeTypeCheck {
 /// shared memory. Messages that are smaller than this threshold are sent through
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
+
+const ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT: Duration = Duration::from_millis(200);
+const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -956,7 +960,7 @@ impl DoraNode {
                     "publishing via zenoh"
                 );
                 match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
-                    Ok(()) => true,
+                    Ok(published) => published,
                     Err(e) => {
                         tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
                         false
@@ -1008,7 +1012,7 @@ impl DoraNode {
         output_id: &DataId,
         metadata: &Metadata,
         data: &[u8],
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<bool> {
         use zenoh::Wait;
         use zenoh::qos::Priority;
 
@@ -1023,7 +1027,7 @@ impl DoraNode {
         // its default (`Drop`) so a stalled subscriber cannot back-pressure
         // the publishing node; per-publication QoS setters are only available
         // on session-level `Session::put` builders in zenoh 1.8.
-        if !self.zenoh_publishers.contains_key(output_id) {
+        let declared_publisher = if !self.zenoh_publishers.contains_key(output_id) {
             let topic = dora_core::topics::zenoh_output_publish_topic(
                 self.dataflow_id,
                 &self.id,
@@ -1039,8 +1043,37 @@ impl DoraNode {
                 .wait()
                 .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
             self.zenoh_publishers.insert(output_id.clone(), publisher);
-        }
+            true
+        } else {
+            false
+        };
         let publisher = self.zenoh_publishers.get(output_id).unwrap();
+
+        if declared_publisher {
+            let wait_until = Instant::now() + ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT;
+            loop {
+                match publisher.matching_status().wait() {
+                    Ok(status) if status.matching() => break,
+                    Ok(_) if Instant::now() < wait_until => {
+                        std::thread::sleep(ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL);
+                    }
+                    Ok(_) => {
+                        tracing::debug!(
+                            output = %output_id,
+                            "no matching zenoh subscriber before first publish timeout"
+                        );
+                        return Ok(false);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            output = %output_id,
+                            "failed to query zenoh matching status before first publish: {err}"
+                        );
+                        return Ok(false);
+                    }
+                }
+            }
+        }
 
         // Serialize metadata as zenoh attachment
         let metadata_bytes = bincode::serialize(metadata)
@@ -1066,7 +1099,7 @@ impl DoraNode {
                         .attachment(&metadata_bytes[..])
                         .wait()
                         .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
-                    return Ok(());
+                    return Ok(true);
                 }
                 Err(e) => {
                     tracing::debug!("SHM alloc failed ({e}), using heap buffer");
@@ -1081,7 +1114,7 @@ impl DoraNode {
             .wait()
             .map_err(|e| eyre::eyre!("zenoh publish failed: {e}"))?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Returns the ID of the node as specified in the dataflow configuration file.
