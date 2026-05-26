@@ -82,17 +82,12 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    #[derive(Default)]
     struct RecordingOperator {
         parse_errors: Vec<(String, String)>,
     }
 
-    impl Default for RecordingOperator {
-        fn default() -> Self {
-            RecordingOperator {
-                parse_errors: Vec::new(),
-            }
-        }
-    }
+    
 
     impl DoraOperator for RecordingOperator {
         fn on_event(
