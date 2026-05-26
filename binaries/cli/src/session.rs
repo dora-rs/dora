@@ -17,9 +17,15 @@ use eyre::{Context, ContextCompat};
 /// automatically.
 ///
 /// Versions:
-///   - v1: Custom-node build/source/env/cwd only (initial #1944 implementation)
-///   - v2: + Runtime-node operator build/source iteration (review of #1947)
-const FINGERPRINT_SCHEMA_VERSION: u32 = 2;
+/// - v1: Custom-node build/source/env/cwd only (initial #1444 implementation).
+/// - v2: + Runtime-node operator build + source-including-paths (first
+///   self-review fix of #1947, later flagged as over-broad).
+/// - v3: Drop operator runtime paths (python script path / shared-lib path /
+///   wasm path / conda_env) from the canonical form. They are runtime
+///   artifact locations, not build inputs — symmetric to `path` on Custom
+///   nodes which the #1444 policy explicitly excludes. Keep operator `build`
+///   and source-kind tag; those still flip the fingerprint correctly.
+const FINGERPRINT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DataflowSession {
@@ -106,11 +112,15 @@ impl DataflowSession {
     /// - per-node `env` (sorted map, Display'd values — covers global env after
     ///   resolve_aliases_and_set_defaults merges it)
     /// - per-node `deploy.working_dir` (changes shift the cwd cargo/python runs in)
-    /// - per-operator `build` command and `source` (Runtime-kind nodes — Python
-    ///   script path, conda env, SharedLibrary path, Wasm path)
+    /// - per-operator `build` command and source-kind tag (Runtime-kind
+    ///   nodes — distinguishes Python vs SharedLibrary vs Wasm because
+    ///   switching kinds is a build-system change)
     ///
     /// Deliberately ignored (don't affect the build):
     /// - `path` — where the artifact is read from at start time, not built to
+    /// - operator `python:` / `shared-library:` / `wasm:` path values, and
+    ///   `conda_env` — runtime artifact pointers, symmetric to `path` on
+    ///   Custom nodes
     /// - `deploy.machine` — affects placement at start time, not build inputs
     ///
     /// Discussed in #1444 + extended in #1947 review.
@@ -225,30 +235,25 @@ impl DataflowSession {
                             }
                             None => canonical.push_str("    build:none\n"),
                         }
-                        match &op.config.source {
-                            OperatorSource::SharedLibrary(path) => {
-                                canonical.push_str("    source:shared-library\n    path:");
-                                canonical.push_str(path);
-                                canonical.push('\n');
-                            }
-                            OperatorSource::Python(py) => {
-                                canonical.push_str("    source:python\n    script:");
-                                canonical.push_str(&py.source);
-                                canonical.push('\n');
-                                if let Some(conda) = &py.conda_env {
-                                    canonical.push_str("    conda_env:");
-                                    canonical.push_str(conda);
-                                    canonical.push('\n');
-                                } else {
-                                    canonical.push_str("    conda_env:none\n");
-                                }
-                            }
-                            OperatorSource::Wasm(path) => {
-                                canonical.push_str("    source:wasm\n    path:");
-                                canonical.push_str(path);
-                                canonical.push('\n');
-                            }
-                        }
+                        // Operator source: include only the KIND tag, not the
+                        // path/script/conda_env inside. Those are runtime
+                        // artifact locations — symmetric to `path` on Custom
+                        // nodes, which the #1444 policy explicitly excludes.
+                        // Swapping `python: ./op_a.py` for `./op_b.py` is a
+                        // runtime-pointer change, not a build-input change,
+                        // and should NOT invalidate `build_id` for unrelated
+                        // built/git nodes in a mixed dataflow (#1947 review).
+                        //
+                        // Kind tag still flips when switching kinds (Python ->
+                        // SharedLibrary etc.), which IS a build-system change.
+                        let kind_tag = match &op.config.source {
+                            OperatorSource::SharedLibrary(_) => "shared-library",
+                            OperatorSource::Python(_) => "python",
+                            OperatorSource::Wasm(_) => "wasm",
+                        };
+                        canonical.push_str("    source-kind:");
+                        canonical.push_str(kind_tag);
+                        canonical.push('\n');
                     }
                 }
             }
@@ -770,8 +775,14 @@ nodes:
         );
     }
 
+    /// Operator runtime paths (`python:` script, `shared-library:` path,
+    /// `wasm:` path) are artifact-location fields, not build inputs.
+    /// Symmetric to `path` on Custom nodes. Swapping the script must NOT
+    /// invalidate `build_id` for unrelated built/git nodes in the same
+    /// dataflow. This was over-invalidating in the initial fix
+    /// (#1947 round-2 review).
     #[test]
-    fn fingerprint_changes_when_operator_source_changes() {
+    fn fingerprint_unchanged_when_only_operator_python_path_changes() {
         let py_a = resolved(
             "\
 nodes:
@@ -794,10 +805,45 @@ nodes:
         outputs: []
 ",
         );
-        assert_ne!(
+        assert_eq!(
             DataflowSession::fingerprint_build_inputs(&py_a),
             DataflowSession::fingerprint_build_inputs(&py_b),
-            "operator-level Python source change must change fingerprint",
+            "operator script path-only change MUST NOT change fingerprint \
+             (symmetric to Custom `path` exclusion in #1444)",
+        );
+    }
+
+    /// Switching operator KIND (Python -> SharedLibrary, etc.) IS a
+    /// build-system change. The fingerprint tracks the kind tag separately
+    /// from the path within each kind, so this still flips.
+    #[test]
+    fn fingerprint_changes_when_operator_kind_changes() {
+        let python = resolved(
+            "\
+nodes:
+  - id: foo
+    operators:
+      - id: op
+        python: ./op.py
+        inputs: {}
+        outputs: []
+",
+        );
+        let shared_lib = resolved(
+            "\
+nodes:
+  - id: foo
+    operators:
+      - id: op
+        shared-library: ./op
+        inputs: {}
+        outputs: []
+",
+        );
+        assert_ne!(
+            DataflowSession::fingerprint_build_inputs(&python),
+            DataflowSession::fingerprint_build_inputs(&shared_lib),
+            "switching operator kind (Python -> SharedLibrary) must change fingerprint",
         );
     }
 
