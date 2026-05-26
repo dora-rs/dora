@@ -273,24 +273,6 @@ impl EventStream {
         input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::Subscribe,
-                timestamp: clock.new_timestamp(),
-            })
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
-
-        match reply {
-            DaemonReply::Result(Ok(())) => {}
-            DaemonReply::Result(Err(err)) => {
-                eyre::bail!("subscribe failed: {err}")
-            }
-            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
-        }
-
-        close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
 
         let use_scheduler = match &channel {
@@ -410,6 +392,24 @@ impl EventStream {
                 }
             }
         }
+
+        let reply = channel
+            .request(&Timestamped {
+                inner: DaemonRequest::Subscribe,
+                timestamp: clock.new_timestamp(),
+            })
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to create subscription with dora-daemon")?;
+
+        match reply {
+            DaemonReply::Result(Ok(())) => {}
+            DaemonReply::Result(Err(err)) => {
+                eyre::bail!("subscribe failed: {err}")
+            }
+            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
+        }
+
+        close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
@@ -1023,13 +1023,14 @@ pub enum TryRecvError {
 /// For `Cow::Borrowed` payloads (SHM), the Arrow `Buffer` is backed by
 /// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
 /// achieving true zero-copy. For `Cow::Owned` (normal network path),
-/// the owned `Vec` is wrapped via the same mechanism at zero cost.
+/// copy into Dora's aligned buffer type before reconstructing Arrow arrays.
 /// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
 fn zenoh_payload_to_arrow_array(
     payload: zenoh::bytes::ZBytes,
     metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
+    use aligned_vec::{AVec, ConstAlign};
     use std::ptr::NonNull;
 
     let is_ipc = dora_message::metadata::get_string_param(
@@ -1059,6 +1060,13 @@ fn zenoh_payload_to_arrow_array(
     // Branch on Cow to handle ownership correctly for each case.
     let raw_buffer = match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
+            if !raw_payload_is_arrow_aligned(slice.as_ptr(), &metadata.type_info) {
+                let aligned = AVec::<u8, ConstAlign<128>>::from_slice(128, slice);
+                return RawData::Vec(aligned)
+                    .into_arrow_array(&metadata.type_info, false)
+                    .map(arrow::array::make_array);
+            }
+
             // SHM path: the slice points into memory owned by `payload`
             // (the zenoh shared-memory mapping). Wrap `payload` in an
             // Arc as the allocation owner so the mapping stays alive
@@ -1086,16 +1094,45 @@ fn zenoh_payload_to_arrow_array(
             }
         }
         std::borrow::Cow::Owned(vec) => {
-            // Non-SHM path: zenoh materialized a fresh Vec. Let the
-            // Arrow buffer own that Vec directly — no copy, correct
-            // ownership (the Vec's allocation is freed when the Buffer
-            // drops). `payload` is dropped here; it does not own the
-            // Vec's allocation.
-            arrow::buffer::Buffer::from_vec(vec)
+            if raw_payload_is_arrow_aligned(vec.as_ptr(), &metadata.type_info) {
+                return buffer_into_arrow_array(
+                    &arrow::buffer::Buffer::from_vec(vec),
+                    &metadata.type_info,
+                )
+                .map(arrow::array::make_array);
+            }
+
+            // Non-SHM path: zenoh materialized a fresh Vec. Raw Arrow
+            // buffers need the alignment guaranteed by Dora's AVec path;
+            // a plain Vec<u8> can fail Arrow's alignment checks for
+            // fixed-width arrays.
+            let aligned = AVec::<u8, ConstAlign<128>>::from_slice(128, &vec);
+            return RawData::Vec(aligned)
+                .into_arrow_array(&metadata.type_info, false)
+                .map(arrow::array::make_array);
         }
     };
 
     buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
+}
+
+fn raw_payload_is_arrow_aligned(
+    base_ptr: *const u8,
+    type_info: &dora_message::metadata::ArrowTypeInfo,
+) -> bool {
+    let layout = arrow::array::layout(&type_info.data_type);
+    for (buffer, spec) in type_info.buffer_offsets.iter().zip(&layout.buffers) {
+        if let arrow::array::BufferSpec::FixedWidth { alignment, .. } = *spec
+            && !(base_ptr as usize + buffer.offset).is_multiple_of(alignment)
+        {
+            return false;
+        }
+    }
+
+    type_info
+        .child_data
+        .iter()
+        .all(|child| raw_payload_is_arrow_aligned(base_ptr, child))
 }
 
 pub fn data_to_arrow_array(

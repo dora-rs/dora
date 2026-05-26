@@ -2813,6 +2813,12 @@ impl Daemon {
                 .send_out(dataflow_id, node_id, output_id, metadata, data)
                 .await
                 .context("failed to send out")?,
+            DaemonNodeEvent::OutputSent {
+                output_id,
+                metadata,
+            } => self
+                .output_sent(dataflow_id, node_id, output_id, metadata)
+                .context("failed to mark output sent")?,
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
                 let inner = async {
                     let dataflow = self
@@ -2915,6 +2921,26 @@ impl Daemon {
                 .await?;
         }
 
+        Ok(())
+    }
+
+    fn output_sent(
+        &mut self,
+        dataflow_id: Uuid,
+        node_id: NodeId,
+        output_id: DataId,
+        _metadata: dora_message::metadata::Metadata,
+    ) -> Result<(), eyre::ErrReport> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("output sent failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
+        note_output_sent_to_local_receivers(
+            node_id,
+            output_id,
+            dataflow,
+            &self.clock,
+            Some(&self.ft_stats),
+        );
         Ok(())
     }
 
@@ -3994,6 +4020,76 @@ async fn set_up_event_stream(
     )
         .merge();
     Ok((daemon_id, coordinator_sender, incoming))
+}
+
+fn note_output_sent_to_local_receivers(
+    node_id: NodeId,
+    output_id: DataId,
+    dataflow: &mut RunningDataflow,
+    clock: &HLC,
+    ft_stats: Option<&FaultToleranceStats>,
+) {
+    let empty_set = BTreeSet::new();
+    let output_id = OutputId(node_id, output_id);
+    let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
+    let now = Instant::now();
+
+    for (receiver_id, input_id) in local_receivers {
+        if let Some(deadline) = dataflow
+            .input_deadlines
+            .get_mut(&(receiver_id.clone(), input_id.clone()))
+        {
+            deadline.last_received = Some(now);
+        }
+
+        let Some(timeout) = dataflow
+            .broken_inputs
+            .remove(&(receiver_id.clone(), input_id.clone()))
+        else {
+            continue;
+        };
+
+        tracing::info!(
+            "input `{receiver_id}/{input_id}` recovered, \
+             re-opening (circuit breaker reset)",
+        );
+        if let Some(stats) = ft_stats {
+            stats
+                .circuit_breaker_recoveries
+                .fetch_add(1, atomic::Ordering::Relaxed);
+        }
+        dataflow
+            .open_inputs
+            .entry(receiver_id.clone())
+            .or_default()
+            .insert(input_id.clone());
+        dataflow.input_deadlines.insert(
+            (receiver_id.clone(), input_id.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(now),
+            },
+        );
+
+        let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+            continue;
+        };
+        match send_with_timestamp(
+            channel,
+            NodeEvent::InputRecovered {
+                id: input_id.clone(),
+            },
+            clock,
+        ) {
+            Ok(true) => {
+                dataflow.inc_pending(receiver_id);
+            }
+            Ok(false) => { /* event dropped (channel full) */ }
+            Err(_) => {
+                tracing::warn!("failed to send InputRecovered for `{receiver_id}/{input_id}`");
+            }
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

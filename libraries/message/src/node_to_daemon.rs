@@ -16,6 +16,10 @@ pub enum DaemonRequest {
         metadata: Metadata,
         data: Option<DataMessage>,
     },
+    OutputSent {
+        output_id: DataId,
+        metadata: Metadata,
+    },
     CloseOutputs(Vec<DataId>),
     /// Signals that the node is finished sending outputs.
     OutputsDone,
@@ -30,7 +34,9 @@ impl DaemonRequest {
     pub fn expects_tcp_bincode_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
-            DaemonRequest::SendMessage { .. } | DaemonRequest::NodeConfig { .. } => false,
+            DaemonRequest::SendMessage { .. }
+            | DaemonRequest::OutputSent { .. }
+            | DaemonRequest::NodeConfig { .. } => false,
             DaemonRequest::Register(NodeRegisterRequest { .. })
             | DaemonRequest::Subscribe
             | DaemonRequest::CloseOutputs(_)
@@ -50,6 +56,7 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::SendMessage { .. }
+            | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped => false,
         }
     }
