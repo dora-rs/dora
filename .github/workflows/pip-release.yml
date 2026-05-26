@@ -66,8 +66,8 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: rustup default ${{ env.RUST_VERSION }}
@@ -96,7 +96,7 @@ jobs:
             ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-linux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
@@ -119,8 +119,8 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
@@ -134,7 +134,7 @@ jobs:
 
       - name: Upload wheels
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
@@ -161,8 +161,8 @@ jobs:
       env:
         CFLAGS_armv7_unknown_linux_musleabihf: "-mfpu=vfpv3-d16"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build Wheels
@@ -175,7 +175,7 @@ jobs:
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
@@ -194,8 +194,8 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.platform.target }}
@@ -208,7 +208,7 @@ jobs:
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-windows-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
@@ -227,8 +227,8 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
@@ -239,7 +239,7 @@ jobs:
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-macos-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist
@@ -255,7 +255,7 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
@@ -264,7 +264,7 @@ jobs:
           working-directory: ${{ matrix.repository.path }}
       - name: Upload sdist
         if: github.event_name == 'release'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-sdist
           path: ${{ matrix.repository.path }}/dist
@@ -300,7 +300,7 @@ jobs:
           - path: binaries/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:

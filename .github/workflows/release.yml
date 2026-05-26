@@ -20,7 +20,7 @@ jobs:
     name: Publish crates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -86,8 +86,8 @@ jobs:
         repository:
           - { path: apis/python/node, name: dora-rs }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
       - uses: Swatinem/rust-cache@v2
@@ -108,7 +108,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           working-directory: ${{ matrix.repository.path }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-${{ matrix.platform.os }}-${{ matrix.platform.target }}
           path: ${{ matrix.repository.path }}/dist/
@@ -122,7 +122,7 @@ jobs:
       name: pypi
       url: https://pypi.org/p/dora-rs
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dora-rs*
           merge-multiple: true
@@ -145,7 +145,7 @@ jobs:
           - { target: x86_64-unknown-linux-gnu,  runner: ubuntu-22.04 }
           - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -171,7 +171,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts
           Copy-Item "target/${{ matrix.target }}/release/dora.exe" "artifacts/dora.exe"
           Compress-Archive -Path "artifacts/dora.exe" -DestinationPath "artifacts/dora-${{ matrix.target }}.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
           path: artifacts/dora-*.*
@@ -182,10 +182,10 @@ jobs:
     needs: [publish-crates, publish-pypi, dist]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
           merge-multiple: true
@@ -200,7 +200,7 @@ jobs:
         with:
           config: cliff.toml
           args: --latest --strip header
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.cliff.outputs.content }}
