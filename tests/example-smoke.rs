@@ -423,7 +423,7 @@ fn smoke_log_sink_tcp() {
 // Python examples (all use networked lifecycle: up/start/stop/destroy)
 //
 // Timer-driven examples run until the timeout, then get stopped.
-// Self-terminating examples (e.g. python-dataflow) exit on their own.
+// Some examples also self-terminate after completing their advertised work.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -549,6 +549,26 @@ fn smoke_local_python_dataflow() {
         "local-python-dataflow",
         "examples/python-dataflow/dataflow.yml",
         30,
+    );
+}
+
+#[test]
+fn contract_local_python_dataflow_sender_receives_stop_event() {
+    let (status, stdout, stderr) = run_dora_capture(
+        "local-python-dataflow-stop-contract",
+        "examples/python-dataflow/dataflow.yml",
+        1,
+        true,
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        status.success(),
+        "dora run exited non-zero: {status:?}\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+    assert!(
+        combined.contains("Sender stopping after receiving STOP"),
+        "sender did not log the STOP path; it may have ignored Dora shutdown and exited by timing luck.\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
     );
 }
 
