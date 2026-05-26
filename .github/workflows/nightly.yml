@@ -1667,26 +1667,56 @@ jobs:
             logs_available=0
           fi
 
+          fetch_failed_job_log_once() {
+            local job_id="$1"
+            local job_name="$2"
+            local job_log_file="$3"
+
+            rm -f "$job_log_file"
+            if gh run view "$RUN_ID" --repo "$REPO" --job "$job_id" --log-failed \
+              > "$job_log_file" 2>> "$failed_logs_error" && [ -s "$job_log_file" ]; then
+              return 0
+            fi
+
+            echo "Failed-step log unavailable or empty for job '$job_name' ($job_id); falling back to the full job log." >> "$failed_logs_error"
+            if curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$API_URL/repos/$REPO/actions/jobs/$job_id/logs" \
+              > "$job_log_file" 2>> "$failed_logs_error" && [ -s "$job_log_file" ]; then
+              return 0
+            fi
+
+            return 1
+          }
+
+          fetch_failed_job_log() {
+            local job_id="$1"
+            local job_name="$2"
+            local job_log_file="$3"
+
+            if fetch_failed_job_log_once "$job_id" "$job_name" "$job_log_file"; then
+              return 0
+            fi
+
+            echo "Log for failed job '$job_name' ($job_id) is not ready yet; retrying once after 5s." >> "$failed_logs_error"
+            sleep 5
+            if fetch_failed_job_log_once "$job_id" "$job_name" "$job_log_file"; then
+              return 0
+            fi
+
+            echo "Unable to fetch log for failed job '$job_name' ($job_id)." >> "$failed_logs_error"
+            rm -f "$job_log_file"
+            return 1
+          }
+
           if [ "$logs_available" = "1" ]; then
             while IFS=$'\t' read -r job_id job_name; do
               [ -n "$job_id" ] || continue
+              job_name="${job_name%$'\r'}"
               job_log_file="$failed_logs_dir/$job_id.log"
-              if gh run view "$RUN_ID" --repo "$REPO" --job "$job_id" --log-failed \
-                > "$job_log_file" 2>> "$failed_logs_error" && [ -s "$job_log_file" ]; then
-                :
-              else
-                echo "Failed-step log unavailable or empty for job '$job_name' ($job_id); falling back to the full job log." >> "$failed_logs_error"
-                if ! curl -fsSL \
-                  -H "Authorization: Bearer $GH_TOKEN" \
-                  -H "Accept: application/vnd.github+json" \
-                  -H "X-GitHub-Api-Version: 2022-11-28" \
-                  "$API_URL/repos/$REPO/actions/jobs/$job_id/logs" \
-                  > "$job_log_file" 2>> "$failed_logs_error"; then
-                  echo "Unable to fetch log for failed job '$job_name' ($job_id)." >> "$failed_logs_error"
-                  rm -f "$job_log_file"
-                fi
-              fi
-              if [ -s "$job_log_file" ]; then
+              if fetch_failed_job_log "$job_id" "$job_name" "$job_log_file"; then
                 printf '%s\t%s\t%s\n' "$job_id" "$job_name" "$job_log_file" >> "$failed_log_index"
               fi
             done < "$failed_job_rows"
@@ -1719,7 +1749,7 @@ jobs:
             if [ "$original_bytes" -gt "$max_bytes" ]; then
               echo "Excerpt truncated to the last ${max_bytes} bytes; see full run log: $RUN_URL"
               echo
-              tail -c "$max_bytes" "$file"
+              tail -c "$max_bytes" "$file" | iconv -c -f UTF-8 -t UTF-8
             else
               cat "$file"
             fi
