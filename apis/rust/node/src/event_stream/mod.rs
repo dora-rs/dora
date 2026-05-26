@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -1116,54 +1119,113 @@ fn zenoh_payload_to_arrow_array(
         return decode_arrow_ipc(&bytes).map(arrow::array::make_array);
     }
 
-    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer.
-    //
-    // For SHM payloads, to_bytes() returns Cow::Borrowed pointing into
-    // shared memory. We extract the raw pointer, then move the ZBytes
-    // (which owns the SHM mapping) into an Arc used as the custom
-    // allocation owner. The pointer remains valid because the ZBytes
-    // inside the Arc keeps the mapping alive.
-    //
-    // Branch on Cow to handle ownership correctly for each case.
+    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer. Borrowed
+    // payloads point into zenoh-owned shared memory; owned payloads are
+    // materialized heap buffers. In both cases the resulting Arrow buffer must
+    // be 64-byte aligned before Arrow can safely run SIMD loads on strict ARM
+    // cores.
     let raw_buffer = match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
-            // SHM path: the slice points into memory owned by `payload`
-            // (the zenoh shared-memory mapping). Wrap `payload` in an
-            // Arc as the allocation owner so the mapping stays alive
-            // for the lifetime of the Arrow buffer.
-            let ptr =
-                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
-            let len = slice.len();
+            if is_aligned_for_arrow(slice.as_ptr()) {
+                // SHM path: the slice points into memory owned by `payload`
+                // (the zenoh shared-memory mapping). Wrap `payload` in an
+                // Arc as the allocation owner so the mapping stays alive for
+                // the lifetime of the Arrow buffer.
+                let ptr =
+                    NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+                let len = slice.len();
 
-            // Newtype satisfying arrow's Allocation trait.
-            #[allow(dead_code)] // field kept alive to own the zenoh buffer
-            struct ZBytesAllocation(zenoh::bytes::ZBytes);
-            unsafe impl Sync for ZBytesAllocation {}
-            unsafe impl Send for ZBytesAllocation {}
-            impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+                // Newtype satisfying arrow's Allocation trait.
+                #[allow(dead_code)] // field kept alive to own the zenoh buffer
+                struct ZBytesAllocation(zenoh::bytes::ZBytes);
+                unsafe impl Sync for ZBytesAllocation {}
+                unsafe impl Send for ZBytesAllocation {}
+                impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 
-            // SAFETY: `ptr` points into the SHM region owned by
-            // `payload`. Moving `payload` into the Arc keeps the
-            // region mapped for the lifetime of the Buffer.
-            unsafe {
-                arrow::buffer::Buffer::from_custom_allocation(
-                    ptr,
-                    len,
-                    Arc::new(ZBytesAllocation(payload)),
-                )
+                // SAFETY: `ptr` points into the SHM region owned by
+                // `payload`. Moving `payload` into the Arc keeps the region
+                // mapped for the lifetime of the Buffer.
+                unsafe {
+                    arrow::buffer::Buffer::from_custom_allocation(
+                        ptr,
+                        len,
+                        Arc::new(ZBytesAllocation(payload)),
+                    )
+                }
+            } else {
+                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohShm, slice.as_ptr());
+                copy_to_aligned_arrow_buffer(slice)
             }
         }
         std::borrow::Cow::Owned(vec) => {
-            // Non-SHM path: zenoh materialized a fresh Vec. Let the
-            // Arrow buffer own that Vec directly — no copy, correct
-            // ownership (the Vec's allocation is freed when the Buffer
-            // drops). `payload` is dropped here; it does not own the
-            // Vec's allocation.
-            arrow::buffer::Buffer::from_vec(vec)
+            if is_aligned_for_arrow(vec.as_ptr()) {
+                // Non-SHM path: zenoh materialized a fresh Vec. Let the Arrow
+                // buffer own that Vec directly — no copy, correct ownership.
+                arrow::buffer::Buffer::from_vec(vec)
+            } else {
+                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohHeap, vec.as_ptr());
+                copy_to_aligned_arrow_buffer(&vec)
+            }
         }
     };
 
     buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
+}
+
+fn is_aligned_for_arrow(ptr: *const u8) -> bool {
+    (ptr as usize).is_multiple_of(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
+}
+
+enum MisalignedPayloadSource {
+    ZenohShm,
+    ZenohHeap,
+}
+
+impl MisalignedPayloadSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ZenohShm => "zenoh SHM",
+            Self::ZenohHeap => "zenoh heap",
+        }
+    }
+
+    fn warned_flag(&self) -> &'static AtomicBool {
+        static WARNED_SHM: AtomicBool = AtomicBool::new(false);
+        static WARNED_HEAP: AtomicBool = AtomicBool::new(false);
+
+        match self {
+            Self::ZenohShm => &WARNED_SHM,
+            Self::ZenohHeap => &WARNED_HEAP,
+        }
+    }
+}
+
+fn warn_misaligned_payload_once(source: MisalignedPayloadSource, ptr: *const u8) {
+    if !source.warned_flag().swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            source = source.as_str(),
+            address = %format_args!("{:#x}", ptr as usize),
+            alignment = crate::arrow_utils::ARROW_BUFFER_ALIGNMENT,
+            "received misaligned Zenoh payload, copying before Arrow decode"
+        );
+    }
+}
+
+fn copy_to_aligned_arrow_buffer(slice: &[u8]) -> arrow::buffer::Buffer {
+    use std::ptr::NonNull;
+
+    // The raw Arrow layout requires 64-byte alignment; this follows the
+    // codebase-wide AVec convention of over-aligning data buffers to 128 bytes.
+    let mut aligned: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
+        aligned_vec::AVec::__from_elem(128, 0, slice.len());
+    aligned.copy_from_slice(slice);
+    debug_assert!(is_aligned_for_arrow(aligned.as_ptr()));
+
+    let ptr = NonNull::new(aligned.as_ptr() as *mut u8).expect("aligned payload ptr is null");
+    let len = aligned.len();
+    // SAFETY: `ptr` points into `aligned`, and the Arc keeps that allocation
+    // alive for the lifetime of the Arrow Buffer.
+    unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(aligned)) }
 }
 
 pub fn data_to_arrow_array(
@@ -1389,6 +1451,23 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_to_aligned_arrow_buffer_realigns_misaligned_payload() {
+        let payload: Vec<u8> = (0..64).collect();
+        let mut storage = vec![0; payload.len() + 1];
+        let start = usize::from(is_aligned_for_arrow(storage.as_ptr()));
+        storage[start..start + payload.len()].copy_from_slice(&payload);
+        let misaligned = &storage[start..start + payload.len()];
+        assert!(
+            !is_aligned_for_arrow(misaligned.as_ptr()),
+            "test setup must provide a misaligned slice"
+        );
+
+        let buffer = copy_to_aligned_arrow_buffer(misaligned);
+        assert!(is_aligned_for_arrow(buffer.as_ptr()));
+        assert_eq!(buffer.as_slice(), payload.as_slice());
+    }
 
     #[test]
     fn convert_param_update() {
