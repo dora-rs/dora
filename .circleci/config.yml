@@ -534,6 +534,28 @@ jobs:
       - cargo-cache-save:
           prefix: cargo-macos-examples
 
+  # `examples-windows` was a single job covering Build + 5 examples
+  # (~65m total post-#1946). CircleCI Windows jobs cap at a 60-minute
+  # wall, so the cumulative runtime tripped the wall during "Multiple
+  # Daemons example" — even though the per-step `no_output_timeout`
+  # values are well above 60m. Split into two cooperating jobs:
+  #
+  #   examples-windows       — Build + Rust Dataflow + Rust Git Dataflow (~42m).
+  #                            Runs on every main push as a fast informational
+  #                            signal — exercises runtime + CLI + git source path.
+  #   examples-windows-heavy — Build + Multiple Daemons + C + C++ (~47m).
+  #                            Runs ONLY on release tags (see workflow filter).
+  #                            Dora has few Windows users; paying double Windows
+  #                            compute on every main push to catch regressions
+  #                            that mostly matter at tag time isn't worth the
+  #                            spend. Multi-daemon cluster + C/C++ FFI are
+  #                            release-time confidence checks.
+  #
+  # Both jobs do their own `cargo build --examples` because Windows
+  # runners don't share workspaces with each other today (no Windows
+  # job uses `persist_to_workspace`). Linux examples remain in a single
+  # `examples-linux` job — Linux is fast enough that the cumulative
+  # runtime stays under 50m.
   examples-windows:
     executor: win/default
     environment:
@@ -565,6 +587,29 @@ jobs:
           shell: bash.exe
           command: cargo run --example rust-dataflow-git
           no_output_timeout: 30m
+      - cargo-cache-save:
+          prefix: cargo-win-examples
+
+  examples-windows-heavy:
+    executor: win/default
+    environment:
+      CARGO_TERM_COLOR: always
+      PYO3_NO_PYTHON: "1"
+    steps:
+      - checkout
+      - install-rust-windows:
+          version: "1.92.0"
+      # Separate cache prefix from `examples-windows` so the two jobs
+      # never trip on each other's incremental compilation state.
+      - cargo-cache-restore:
+          prefix: cargo-win-examples-heavy
+      - run:
+          name: Build examples + CLI binary
+          shell: bash.exe
+          command: |
+            cargo build --examples
+            cargo build -p dora-cli
+          no_output_timeout: 30m
       - run:
           name: Multiple Daemons example
           shell: bash.exe
@@ -581,7 +626,7 @@ jobs:
           command: cargo run --example cxx-dataflow
           no_output_timeout: 15m
       - cargo-cache-save:
-          prefix: cargo-win-examples
+          prefix: cargo-win-examples-heavy
 
   # ===== CLI integration tests =====
   # Split into Rust-only and Python sub-jobs for parallelism.
@@ -1326,11 +1371,30 @@ workflows:
       - examples-macos
       - cli-macos
 
-      # ── Windows integration (main branch only -- 2x slower) ──
+      # ── Windows integration (slow runners, narrow user surface) ──
+      #
+      # `examples-windows` runs on every main push as a fast informational
+      # signal (Rust Dataflow + Rust Git Dataflow exercise the runtime +
+      # CLI + git-source paths — where most "did anything obvious break
+      # on Windows" lives).
+      #
+      # `examples-windows-heavy` runs ONLY on release tags. Multiple
+      # Daemons cluster + C/C++ FFI examples are release-time confidence
+      # checks, not per-commit signal. Dora's Windows user surface is
+      # narrow; paying double Windows CI compute on every main push to
+      # catch regressions that mostly matter at tag time isn't worth the
+      # spend. Trade-off accepted: a Windows-heavy regression landing
+      # mid-cycle won't surface until the next `v*` tag.
       - examples-windows:
           filters:
             branches:
               only: main
+      - examples-windows-heavy:
+          filters:
+            tags:
+              only: /^v[0-9]+\.[0-9]+.*/
+            branches:
+              ignore: /.*/
       - cli-windows:
           filters:
             branches:
