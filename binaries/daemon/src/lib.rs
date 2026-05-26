@@ -65,6 +65,7 @@ use tokio::{
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::error;
 use uuid::{NoContext, Timestamp, Uuid};
+use zenoh::qos::{CongestionControl, Priority};
 
 pub use flume;
 pub use log::LogDestination;
@@ -2964,6 +2965,9 @@ impl Daemon {
                 let publisher = self
                     .zenoh_session
                     .declare_publisher(publish_topic)
+                    .congestion_control(CongestionControl::Drop)
+                    .express(true)
+                    .priority(Priority::RealTime)
                     .await
                     .map_err(|err| eyre!(err))
                     .context("failed to create zenoh publisher")?;

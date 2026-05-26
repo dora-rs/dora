@@ -1021,7 +1021,7 @@ impl DoraNode {
         data: &[u8],
     ) -> eyre::Result<bool> {
         use zenoh::Wait;
-        use zenoh::qos::Priority;
+        use zenoh::qos::{CongestionControl, Priority};
 
         let session = self.zenoh_session.as_ref().unwrap();
 
@@ -1030,10 +1030,9 @@ impl DoraNode {
         // zenoh's adaptive batch timer (the single biggest small-message
         // latency win — without it, per-put delivery on the bare local config
         // collapses to a few msg/s), and `Priority::RealTime` keeps data-plane
-        // messages off the bulk-data queues. We leave `CongestionControl` at
-        // its default (`Drop`) so a stalled subscriber cannot back-pressure
-        // the publishing node; per-publication QoS setters are only available
-        // on session-level `Session::put` builders in zenoh 1.8.
+        // messages off the bulk-data queues. `CongestionControl::Drop`
+        // prevents a stalled subscriber from back-pressuring the publishing
+        // node.
         let declared_publisher = if !self.zenoh_publishers.contains_key(output_id) {
             let topic = dora_core::topics::zenoh_output_publish_topic(
                 self.dataflow_id,
@@ -1045,6 +1044,7 @@ impl DoraNode {
                 .into_owned();
             let publisher = session
                 .declare_publisher(key_expr)
+                .congestion_control(CongestionControl::Drop)
                 .express(true)
                 .priority(Priority::RealTime)
                 .wait()

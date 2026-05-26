@@ -50,16 +50,23 @@ pub async fn open_zenoh_session_with_listen(
                     .unwrap();
             }
 
-            // Latency note: each data-plane publisher in
-            // `apis/rust/node/src/node/mod.rs::zenoh_publish` is declared with
-            // `express(true)`, which bypasses zenoh's adaptive batch timer per
-            // publication. We deliberately do NOT enable Zenoh's inter-peer
-            // SHM transport (`transport/shared_memory/enabled`) — it is
-            // page-aligned and its setup overhead does not pay off below
-            // 4 KiB, where the existing daemon-relay path is used instead.
-            // Zenoh's TCP link layer already sets TCP_NODELAY unconditionally
-            // (see `zenoh-link-tcp::unicast::set_nodelay(true)`), so no
-            // tcp_nodelay knob is needed here.
+            // Dora's data plane favors per-message latency over Zenoh's
+            // default adaptive batching path. Publishers also set
+            // `express(true)`, but low-latency unicast lets peer transports
+            // skip the universal batching/priority queues entirely when both
+            // ends use Dora's default config. Zenoh's low-latency transport is
+            // negotiated without QoS, so disable QoS together with it instead
+            // of falling back during session open. We deliberately do NOT enable
+            // Zenoh's inter-peer SHM transport (`transport/shared_memory/enabled`):
+            // Dora nodes select Zenoh SHM per payload, while small payloads
+            // stay heap-buffered because page-aligned SHM setup does not pay
+            // off below the zero-copy threshold.
+            zenoh_config
+                .insert_json5("transport/unicast/lowlatency", "true")
+                .unwrap();
+            zenoh_config
+                .insert_json5("transport/unicast/qos/enabled", "false")
+                .unwrap();
 
             // Daemon-bootstrapped local discovery: when DORA_ZENOH_CONNECT is
             // set in the process env (the daemon injects it into spawned
@@ -99,15 +106,18 @@ pub async fn open_zenoh_session_with_listen(
                     )
                     .unwrap();
             }
-            if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                zenoh_session
-            } else {
-                warn!("failed to open zenoh session, retrying with default config");
-                let zenoh_config = zenoh::Config::default();
-                zenoh::open(zenoh_config)
-                    .await
-                    .map_err(|e| eyre!(e))
-                    .context("failed to open zenoh session")?
+            match zenoh::open(zenoh_config).await {
+                Ok(zenoh_session) => zenoh_session,
+                Err(err) => {
+                    warn!(
+                        "failed to open tuned zenoh session ({err}), retrying with default config"
+                    );
+                    let zenoh_config = zenoh::Config::default();
+                    zenoh::open(zenoh_config)
+                        .await
+                        .map_err(|e| eyre!(e))
+                        .context("failed to open zenoh session")?
+                }
             }
         }
         Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
