@@ -158,13 +158,20 @@ dora run examples/python-dataflow/dataflow.yml
 This runs a sender -> transformer -> receiver pipeline. Here's what the Python node code looks like:
 
 ```python
-# sender.py -- sends 100 messages
+# sender.py -- sends messages and polls for STOP
 from dora import Node
 import pyarrow as pa
+import time
 
 node = Node()
-for i in range(100):
-    node.send_output("message", pa.array([i]))
+sent = 0
+while sent < 100:
+    event = node.try_recv()
+    if event is not None and event["type"] == "STOP":
+        break
+    node.send_output("message", pa.array([sent]))
+    sent += 1
+    time.sleep(0.1)
 ```
 
 ```python
