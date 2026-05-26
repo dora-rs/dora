@@ -290,6 +290,12 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     let resolved_nodes = dataflow_descriptor
         .resolve_aliases_and_set_defaults()
         .context("failed to resolve nodes")?;
+    // Compute the session-level build-inputs fingerprint up front, while we
+    // still hold a borrow of `resolved_nodes` (Pass 2 below consumes it).
+    // This is what `dora start` / `dora run` / `dora daemon --run-dataflow`
+    // compare against to decide whether the cached `build_id` is still
+    // valid for the current descriptor (#1444).
+    let session_build_fingerprint = DataflowSession::fingerprint_build_inputs(&resolved_nodes);
     // Pass 1 (fail-fast): derive descriptor git-source fingerprint and validate lockfile
     // provenance before any per-node locked-source lookups.
     for (node_id, node) in &resolved_nodes {
@@ -403,6 +409,11 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 dataflow_session.build_id = Some(BuildId::generate());
             }
             dataflow_session.local_build = Some(build_info);
+            // Record the build-inputs fingerprint so subsequent `dora start`
+            // / `dora run` / `dora daemon --run-dataflow` invocations can
+            // detect descriptor drift and invalidate cached build metadata
+            // (#1444).
+            dataflow_session.build_fingerprint = Some(session_build_fingerprint.clone());
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
@@ -437,6 +448,10 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
 
             dataflow_session.build_id = Some(build_id);
             dataflow_session.local_build = None;
+            // Same fingerprint-recording rationale as the local-build branch
+            // above (#1444). The session file is the source of truth for
+            // "what descriptor produced this `build_id`."
+            dataflow_session.build_fingerprint = Some(session_build_fingerprint.clone());
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
