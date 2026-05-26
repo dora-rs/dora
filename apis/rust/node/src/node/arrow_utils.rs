@@ -20,6 +20,9 @@ const MAX_ENTRIES: usize = 256;
 /// fault on under-aligned SIMD loads, so the raw data-plane format keeps every
 /// buffer start at a 64-byte boundary relative to the payload base.
 pub(crate) const ARROW_BUFFER_ALIGNMENT: usize = 64;
+pub(crate) const ARROW_BUFFER_ALIGNMENT_EXPONENT: u8 =
+    ARROW_BUFFER_ALIGNMENT.trailing_zeros() as u8;
+const _: () = assert!(ARROW_BUFFER_ALIGNMENT.is_power_of_two());
 
 fn payload_buffer_alignment(spec: &BufferSpec) -> usize {
     let arrow_alignment = match *spec {

@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -1150,7 +1153,7 @@ fn zenoh_payload_to_arrow_array(
                     )
                 }
             } else {
-                warn_misaligned_payload_once("zenoh SHM", slice.as_ptr());
+                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohShm, slice.as_ptr());
                 copy_to_aligned_arrow_buffer(slice)
             }
         }
@@ -1160,7 +1163,7 @@ fn zenoh_payload_to_arrow_array(
                 // buffer own that Vec directly — no copy, correct ownership.
                 arrow::buffer::Buffer::from_vec(vec)
             } else {
-                warn_misaligned_payload_once("zenoh heap", vec.as_ptr());
+                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohHeap, vec.as_ptr());
                 copy_to_aligned_arrow_buffer(&vec)
             }
         }
@@ -1173,11 +1176,34 @@ fn is_aligned_for_arrow(ptr: *const u8) -> bool {
     (ptr as usize).is_multiple_of(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
 }
 
-fn warn_misaligned_payload_once(source: &str, ptr: *const u8) {
-    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+enum MisalignedPayloadSource {
+    ZenohShm,
+    ZenohHeap,
+}
+
+impl MisalignedPayloadSource {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::ZenohShm => "zenoh SHM",
+            Self::ZenohHeap => "zenoh heap",
+        }
+    }
+
+    fn warned_flag(&self) -> &'static AtomicBool {
+        static WARNED_SHM: AtomicBool = AtomicBool::new(false);
+        static WARNED_HEAP: AtomicBool = AtomicBool::new(false);
+
+        match self {
+            Self::ZenohShm => &WARNED_SHM,
+            Self::ZenohHeap => &WARNED_HEAP,
+        }
+    }
+}
+
+fn warn_misaligned_payload_once(source: MisalignedPayloadSource, ptr: *const u8) {
+    if !source.warned_flag().swap(true, Ordering::Relaxed) {
         tracing::warn!(
-            source = source,
+            source = source.as_str(),
             address = %format_args!("{:#x}", ptr as usize),
             alignment = crate::arrow_utils::ARROW_BUFFER_ALIGNMENT,
             "received misaligned Zenoh payload, copying before Arrow decode"
@@ -1188,6 +1214,8 @@ fn warn_misaligned_payload_once(source: &str, ptr: *const u8) {
 fn copy_to_aligned_arrow_buffer(slice: &[u8]) -> arrow::buffer::Buffer {
     use std::ptr::NonNull;
 
+    // The raw Arrow layout requires 64-byte alignment; this follows the
+    // codebase-wide AVec convention of over-aligning data buffers to 128 bytes.
     let mut aligned: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
         aligned_vec::AVec::__from_elem(128, 0, slice.len());
     aligned.copy_from_slice(slice);

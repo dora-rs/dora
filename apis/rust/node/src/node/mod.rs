@@ -607,13 +607,11 @@ impl DoraNode {
                 use zenoh::Wait;
                 use zenoh::shm::{AllocAlignment, MemoryLayout, ShmProviderBuilder};
 
-                let alignment = AllocAlignment::new(6).expect("64-byte alignment is valid");
+                let alignment =
+                    AllocAlignment::new(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT_EXPONENT)
+                        .expect("ARROW_BUFFER_ALIGNMENT is a valid power-of-two alignment");
                 let layout = shm_pool_size
-                    .checked_add(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT - 1)
-                    .map(|size| {
-                        (size / crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
-                            * crate::arrow_utils::ARROW_BUFFER_ALIGNMENT
-                    })
+                    .checked_next_multiple_of(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
                     .and_then(|aligned| MemoryLayout::new(aligned, alignment).ok());
 
                 match layout {
