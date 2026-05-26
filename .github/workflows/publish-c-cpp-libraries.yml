@@ -31,7 +31,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -113,13 +113,13 @@ jobs:
         run: Compress-Archive -Path "dora-cpp-libraries-${{ matrix.target }}" -DestinationPath "dora-cpp-libraries-${{ matrix.target }}.zip"
 
       - name: Upload C libraries artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dora-c-libraries-${{ matrix.target }}
           path: dora-c-libraries-${{ matrix.target }}.*
 
       - name: Upload C++ libraries artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dora-cpp-libraries-${{ matrix.target }}
           path: dora-cpp-libraries-${{ matrix.target }}.*
@@ -131,7 +131,7 @@ jobs:
     if: github.event_name == 'release'
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true

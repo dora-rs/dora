@@ -54,15 +54,15 @@ jobs:
     # when the timeout fired. 60 min gives margin without being wasteful.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -79,7 +79,7 @@ jobs:
           cargo test -p dora-examples --test example-smoke -- --test-threads=1 2>&1 | tee smoke-output.log
           echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
       - name: Upload smoke log
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: smoke-output
           path: smoke-output.log
@@ -95,7 +95,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -103,7 +103,7 @@ jobs:
       - name: Install dora CLI to ./dist
         run: cargo install --path binaries/cli --locked --root ./dist
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dora-cli
           path: dist/bin/dora
@@ -115,15 +115,15 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -136,7 +136,7 @@ jobs:
           uv pip install pyarrow
           uv pip install -e apis/python/node
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -159,13 +159,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -191,11 +191,11 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -208,7 +208,7 @@ jobs:
           uv pip install pyarrow
           uv pip install -e apis/python/node
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -228,13 +228,13 @@ jobs:
     # exit 124 during `Compiling pin-project-internal` on rc.1 (145ccce04).
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -298,13 +298,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -390,15 +390,15 @@ jobs:
     needs: build-cli
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv with local dora-rs
@@ -411,7 +411,7 @@ jobs:
           uv pip install pyarrow
           uv pip install -e apis/python/node
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -562,13 +562,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -614,13 +614,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -711,13 +711,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -803,13 +803,13 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
       - name: Download dora CLI
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dora-cli
           path: ./cli-bin
@@ -885,7 +885,7 @@ jobs:
         platform: [macos-latest, windows-latest]
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1003,7 +1003,7 @@ jobs:
       fail-fast: false
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1093,7 +1093,7 @@ jobs:
     # platforms; 60 min is not enough when the runner is under load.
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1146,11 +1146,11 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1305,7 +1305,7 @@ jobs:
       fail-fast: false
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1364,7 +1364,7 @@ jobs:
             target: x86_64-apple-darwin
       fail-fast: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1404,7 +1404,7 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1432,11 +1432,11 @@ jobs:
       # Python version 3.11 higher than the interpreter version 3.10".
       # Previously this step lived AFTER the cargo steps below, so it
       # only protected the Python example, not the build. Fixes #1866.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Install pyarrow + numpy
@@ -1483,7 +1483,7 @@ jobs:
     runs-on: ubuntu-latest
     # (PR-CI gate removed; runs independently in nightly)
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -1491,7 +1491,7 @@ jobs:
       # publishable Python helper crates that embed/link Python. Without this,
       # pyo3-ffi falls back to an abi3 config without lib_name and the MSRV
       # check fails before reaching crate code.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
@@ -1531,7 +1531,7 @@ jobs:
     # skipped (plain `failure()` would miss the skipped-cascade case).
     if: always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Create or update regression issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
