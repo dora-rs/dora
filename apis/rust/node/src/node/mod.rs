@@ -970,7 +970,14 @@ impl DoraNode {
                 false
             };
 
-        if !zenoh_published {
+        if zenoh_published {
+            // Keep the daemon's control-plane state in sync (input deadlines,
+            // circuit-breaker recovery) without duplicating the data payload
+            // that Zenoh already delivered.
+            self.control_channel
+                .report_output_sent(output_id.clone(), metadata)
+                .wrap_err_with(|| format!("failed to report output {output_id}"))?;
+        } else {
             // Fallback: no zenoh session, deliver via daemon.
             self.control_channel
                 .send_message(output_id.clone(), metadata, data)
