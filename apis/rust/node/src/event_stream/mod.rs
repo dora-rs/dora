@@ -273,24 +273,6 @@ impl EventStream {
         input_config: &BTreeMap<DataId, Input>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-        let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::Subscribe,
-                timestamp: clock.new_timestamp(),
-            })
-            .map_err(|e| eyre!(e))
-            .wrap_err("failed to create subscription with dora-daemon")?;
-
-        match reply {
-            DaemonReply::Result(Ok(())) => {}
-            DaemonReply::Result(Err(err)) => {
-                eyre::bail!("subscribe failed: {err}")
-            }
-            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
-        }
-
-        close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
-
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
 
         let use_scheduler = match &channel {
@@ -410,6 +392,24 @@ impl EventStream {
                 }
             }
         }
+
+        let reply = channel
+            .request(&Timestamped {
+                inner: DaemonRequest::Subscribe,
+                timestamp: clock.new_timestamp(),
+            })
+            .map_err(|e| eyre!(e))
+            .wrap_err("failed to create subscription with dora-daemon")?;
+
+        match reply {
+            DaemonReply::Result(Ok(())) => {}
+            DaemonReply::Result(Err(err)) => {
+                eyre::bail!("subscribe failed: {err}")
+            }
+            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
+        }
+
+        close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
 
