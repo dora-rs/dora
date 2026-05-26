@@ -25,13 +25,14 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 /// multicast scouting.
 ///
 /// Returns `(session, effective_listen_endpoint)`. The second element is
-/// `Some(ep)` only when `listen_endpoint` was requested AND zenoh accepted
-/// the `listen/endpoints` insert. It is `None` if `listen_endpoint` was
-/// `None`, the insert failed, or the open path used the
-/// `ZENOH_CONFIG_PATH`-from-file branch. Callers must inject the returned
-/// endpoint into peers (e.g. via `DORA_ZENOH_CONNECT`) instead of the value
-/// they passed in, so peers never receive a stale endpoint the listener
-/// did not actually bind (#1856).
+/// `Some(ep)` only when `listen_endpoint` was requested, zenoh accepted the
+/// `listen/endpoints` insert, and `session.info().locators()` confirms that
+/// it actually bound. It is `None` if `listen_endpoint` was `None`, the insert
+/// failed, the open path used the `ZENOH_CONFIG_PATH`-from-file branch, or the
+/// configured listener did not bind. Callers must inject the returned endpoint
+/// into peers (e.g. via `DORA_ZENOH_CONNECT`) instead of the value they passed
+/// in, so peers never receive a stale endpoint the listener did not actually
+/// bind (#1856, #1858).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
     coordinator_addr: Option<IpAddr>,
@@ -66,16 +67,23 @@ pub async fn open_zenoh_session_with_listen(
                 warn!("failed to set zenoh routing/peer to linkstate: {err}");
             }
 
-            // Latency note: each data-plane publisher in
-            // `apis/rust/node/src/node/mod.rs::zenoh_publish` is declared with
-            // `express(true)`, which bypasses zenoh's adaptive batch timer per
-            // publication. We deliberately do NOT enable Zenoh's inter-peer
-            // SHM transport (`transport/shared_memory/enabled`) — it is
-            // page-aligned and its setup overhead does not pay off below
-            // 4 KiB, where the existing daemon-relay path is used instead.
-            // Zenoh's TCP link layer already sets TCP_NODELAY unconditionally
-            // (see `zenoh-link-tcp::unicast::set_nodelay(true)`), so no
-            // tcp_nodelay knob is needed here.
+            // Dora's data plane favors per-message latency over Zenoh's
+            // default adaptive batching path. Publishers also set
+            // `express(true)`, but low-latency unicast lets peer transports
+            // skip the universal batching/priority queues entirely when both
+            // ends use Dora's default config. Zenoh's low-latency transport is
+            // negotiated without QoS, so disable QoS together with it instead
+            // of falling back during session open. We deliberately do NOT enable
+            // Zenoh's inter-peer SHM transport (`transport/shared_memory/enabled`):
+            // Dora nodes select Zenoh SHM per payload, while small payloads
+            // stay heap-buffered because page-aligned SHM setup does not pay
+            // off below the zero-copy threshold.
+            zenoh_config
+                .insert_json5("transport/unicast/lowlatency", "true")
+                .unwrap();
+            zenoh_config
+                .insert_json5("transport/unicast/qos/enabled", "false")
+                .unwrap();
 
             // Daemon-bootstrapped local discovery: when DORA_ZENOH_CONNECT is
             // set in the process env (the daemon injects it into spawned
@@ -148,71 +156,76 @@ pub async fn open_zenoh_session_with_listen(
             {
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
-            if let Ok(zenoh_session) = zenoh::open(zenoh_config).await {
-                // Verify the listener actually bound. `zenoh::open` returning
-                // Ok is necessary but not sufficient — with
-                // `listen/exit_on_failure: false` (set above), zenoh tolerates
-                // a silently-failed listen bind. The most plausible cause is
-                // the race between `reserve_loopback_zenoh_endpoint` dropping
-                // its reservation socket and zenoh's own bind, during which
-                // some other process could grab the port. Trusting `Ok` here
-                // would advertise an endpoint nothing is listening on, and
-                // spawned nodes would fail their `DORA_ZENOH_CONNECT` connect
-                // attempts (#1858).
-                //
-                // `info().locators()` is the zenoh-canonical "what actually
-                // bound" query (unstable API gated behind the workspace
-                // `unstable` feature, already enabled in the root Cargo.toml
-                // zenoh dependency).
-                if let Some(requested) = listen_inserted_into_configured {
-                    let bound_locators: Vec<String> = zenoh_session
-                        .info()
-                        .locators()
-                        .await
-                        .into_iter()
-                        .map(|l| l.as_str().to_string())
-                        .collect();
-                    // Strip zenoh's endpoint-string separators before
-                    // comparing. Per `zenoh-protocol::core::endpoint`,
-                    // `?` separates metadata and `#` separates config
-                    // (e.g. `tcp/127.0.0.1:43217?prio=high#iface=lo0`).
-                    // `Locator::from(EndPoint)` already truncates `#`,
-                    // but a `?`-metadata suffix would survive into
-                    // `info().locators()`'s output. Strip both, then
-                    // exact-match — substring `contains` would
-                    // false-positive on port-prefix collisions (e.g.
-                    // requested `:5000` matching bound `:50000`), which
-                    // is exactly the mismatch this check exists to
-                    // catch. NOTE: the comparison is by canonical
-                    // `tcp/127.0.0.1:<port>` form; callers passing
-                    // non-canonical loopback forms (`localhost`, IPv6
-                    // mapped) won't match — `reserve_loopback_zenoh_
-                    // endpoint` only emits the canonical form, so this
-                    // is fine for the daemon's only call site.
-                    let bound = bound_locators
-                        .iter()
-                        .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
-                    if bound {
-                        effective_listen_endpoint = Some(requested);
-                    } else {
-                        warn!(
-                            "zenoh session opened but listener for `{requested}` \
-                             did not bind (actually bound: {bound_locators:?}); \
-                             spawned nodes will use multicast scouting only"
-                        );
+            match zenoh::open(zenoh_config).await {
+                Ok(zenoh_session) => {
+                    // Verify the listener actually bound. `zenoh::open` returning
+                    // Ok is necessary but not sufficient — with
+                    // `listen/exit_on_failure: false` (set above), zenoh tolerates
+                    // a silently-failed listen bind. The most plausible cause is
+                    // the race between `reserve_loopback_zenoh_endpoint` dropping
+                    // its reservation socket and zenoh's own bind, during which
+                    // some other process could grab the port. Trusting `Ok` here
+                    // would advertise an endpoint nothing is listening on, and
+                    // spawned nodes would fail their `DORA_ZENOH_CONNECT` connect
+                    // attempts (#1858).
+                    //
+                    // `info().locators()` is the zenoh-canonical "what actually
+                    // bound" query (unstable API gated behind the workspace
+                    // `unstable` feature, already enabled in the root Cargo.toml
+                    // zenoh dependency).
+                    if let Some(requested) = listen_inserted_into_configured {
+                        let bound_locators: Vec<String> = zenoh_session
+                            .info()
+                            .locators()
+                            .await
+                            .into_iter()
+                            .map(|l| l.as_str().to_string())
+                            .collect();
+                        // Strip zenoh's endpoint-string separators before
+                        // comparing. Per `zenoh-protocol::core::endpoint`,
+                        // `?` separates metadata and `#` separates config
+                        // (e.g. `tcp/127.0.0.1:43217?prio=high#iface=lo0`).
+                        // `Locator::from(EndPoint)` already truncates `#`,
+                        // but a `?`-metadata suffix would survive into
+                        // `info().locators()`'s output. Strip both, then
+                        // exact-match — substring `contains` would
+                        // false-positive on port-prefix collisions (e.g.
+                        // requested `:5000` matching bound `:50000`), which
+                        // is exactly the mismatch this check exists to
+                        // catch. NOTE: the comparison is by canonical
+                        // `tcp/127.0.0.1:<port>` form; callers passing
+                        // non-canonical loopback forms (`localhost`, IPv6
+                        // mapped) won't match — `reserve_loopback_zenoh_
+                        // endpoint` only emits the canonical form, so this
+                        // is fine for the daemon's only call site.
+                        let bound = bound_locators
+                            .iter()
+                            .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
+                        if bound {
+                            effective_listen_endpoint = Some(requested);
+                        } else {
+                            warn!(
+                                "zenoh session opened but listener for `{requested}` \
+                                 did not bind (actually bound: {bound_locators:?}); \
+                                 spawned nodes will use multicast scouting only"
+                            );
+                        }
                     }
+                    zenoh_session
                 }
-                zenoh_session
-            } else {
-                warn!("failed to open zenoh session, retrying with default config");
-                // Default fallback has no listener; `effective_listen_endpoint`
-                // stays `None` so peers don't try to reach a bind that isn't
-                // there (#1856).
-                let zenoh_config = zenoh::Config::default();
-                zenoh::open(zenoh_config)
-                    .await
-                    .map_err(|e| eyre!(e))
-                    .context("failed to open zenoh session")?
+                Err(err) => {
+                    warn!(
+                        "failed to open tuned zenoh session ({err}), retrying with default config"
+                    );
+                    // Default fallback has no listener; `effective_listen_endpoint`
+                    // stays `None` so peers don't try to reach a bind that isn't
+                    // there (#1856).
+                    let zenoh_config = zenoh::Config::default();
+                    zenoh::open(zenoh_config)
+                        .await
+                        .map_err(|e| eyre!(e))
+                        .context("failed to open zenoh session")?
+                }
             }
         }
         Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(

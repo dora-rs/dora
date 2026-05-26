@@ -117,6 +117,10 @@ pub enum DaemonNodeEvent {
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
     },
+    OutputSent {
+        output_id: DataId,
+        metadata: metadata::Metadata,
+    },
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },

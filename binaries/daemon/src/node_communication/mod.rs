@@ -271,6 +271,16 @@ impl Listener {
                 };
                 self.process_daemon_event(event, None, connection).await?;
             }
+            DaemonRequest::OutputSent {
+                output_id,
+                metadata,
+            } => {
+                let event = crate::DaemonNodeEvent::OutputSent {
+                    output_id,
+                    metadata,
+                };
+                self.process_daemon_event(event, None, connection).await?;
+            }
             DaemonRequest::Subscribe => {
                 let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let pending_counter = Arc::new(AtomicU64::new(0));

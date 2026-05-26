@@ -115,4 +115,26 @@ impl ControlChannel {
             other => bail!("unexpected SendMessage reply: {other:?}"),
         }
     }
+
+    pub fn report_output_sent(
+        &mut self,
+        output_id: DataId,
+        metadata: Metadata,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::OutputSent {
+            output_id,
+            metadata,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send OutputSent request to dora-daemon")?;
+        match reply {
+            DaemonReply::Empty => Ok(()),
+            other => bail!("unexpected OutputSent reply: {other:?}"),
+        }
+    }
 }
