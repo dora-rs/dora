@@ -185,7 +185,7 @@ impl Executable for Run {
             ..Default::default()
         })
         .context("failed to build dataflow before run")?;
-        let dataflow_session = DataflowSession::read_session(&dataflow_path)
+        let mut dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
         let working_dir = working_dir_or_parent(self.working_dir.as_deref(), &dataflow_path);
@@ -199,6 +199,21 @@ impl Executable for Run {
             })?
             .expand(working_dir)
             .wrap_err("failed to expand modules in dataflow descriptor")?;
+        // Defense-in-depth invalidation. The preceding `build()` call should
+        // have refreshed the fingerprint, but if any code path skips the
+        // build (e.g. future flag) the cached `build_id` must still match
+        // current build-inputs — otherwise the embedded coordinator below
+        // would start nodes from stale artifacts (#1444).
+        let resolved_for_fingerprint = dataflow_descriptor
+            .resolve_aliases_and_set_defaults()
+            .context("failed to resolve nodes for session fingerprint")?;
+        if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
+            dataflow_session
+                .write_out_for_dataflow(&dataflow_path)
+                .context("failed to persist invalidated dataflow session")?;
+        }
+        drop(resolved_for_fingerprint);
+
         if self.debug {
             dataflow_descriptor.debug.enable_debug_inspection = true;
         }

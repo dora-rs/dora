@@ -1,8 +1,11 @@
 use super::Executable;
 use crate::{common::handle_dataflow_result, session::DataflowSession};
-use dora_core::topics::{
-    DORA_COORDINATOR_PORT_WS_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
-    DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
+use dora_core::{
+    descriptor::DescriptorExt,
+    topics::{
+        DORA_COORDINATOR_PORT_WS_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
+    },
 };
 
 use dora_daemon::LogDestination;
@@ -170,8 +173,34 @@ impl Executable for Daemon {
                                 self.coordinator_addr
                             );
                         }
-                        let dataflow_session =
+                        let mut dataflow_session =
                             DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
+                        // Invalidate cached build metadata if the descriptor's
+                        // build-inputs changed since the last `dora build`.
+                        // Without this, the daemon would consume a stale
+                        // `build_id` and spawn nodes from the previous build's
+                        // artifacts (#1444).
+                        let dataflow_descriptor = dora_core::descriptor::Descriptor::blocking_read(&dataflow_path)
+                            .wrap_err_with(|| format!(
+                                "failed to read dataflow at `{}` for session fingerprinting",
+                                dataflow_path.display()
+                            ))?;
+                        let working_dir = dataflow_path
+                            .parent()
+                            .filter(|p| !p.as_os_str().is_empty())
+                            .unwrap_or_else(|| std::path::Path::new("."));
+                        let expanded = dataflow_descriptor
+                            .expand(working_dir)
+                            .wrap_err("failed to expand modules in dataflow descriptor")?;
+                        let resolved_for_fingerprint = expanded
+                            .resolve_aliases_and_set_defaults()
+                            .context("failed to resolve nodes for session fingerprint")?;
+                        if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
+                            dataflow_session
+                                .write_out_for_dataflow(&dataflow_path)
+                                .context("failed to persist invalidated dataflow session")?;
+                        }
+                        drop(resolved_for_fingerprint);
 
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,

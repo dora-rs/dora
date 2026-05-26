@@ -126,8 +126,22 @@ fn start_dataflow(
         })?
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
-    let dataflow_session =
+    let mut dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+    // Invalidate cached `build_id`/`local_build`/`git_sources` if the
+    // descriptor's build-inputs (build command, source, env, cwd) changed
+    // since the last `dora build`. Without this, `dora start` would send a
+    // stale `build_id` to the coordinator and silently target the previous
+    // build's artifacts (#1444).
+    let resolved_for_fingerprint = dataflow_descriptor
+        .resolve_aliases_and_set_defaults()
+        .context("failed to resolve nodes for session fingerprint")?;
+    if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
+        dataflow_session
+            .write_out_for_dataflow(&dataflow)
+            .context("failed to persist invalidated dataflow session")?;
+    }
+    drop(resolved_for_fingerprint);
 
     if debug {
         dataflow_descriptor.debug.enable_debug_inspection = true;
