@@ -59,7 +59,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -70,7 +70,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -90,7 +90,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -116,13 +116,21 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
       - name: Build (excluding Python packages)
         run: >
           cargo build --all
@@ -219,7 +227,7 @@ jobs:
     needs: test
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -235,6 +243,21 @@ jobs:
       - name: Run fault-tolerance tests
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
+        timeout-minutes: 15
+      # `dora node` lifecycle E2E (issue #1703). The shared test
+      # binary lives under the `dora-examples` package which the bulk
+      # `cargo test --all` step excludes, so it needs an explicit
+      # invocation here. Filter to the Rust + C++ variants because
+      # the Python variant requires uv (handled in `contract-tests`
+      # below where uv is already installed).
+      - name: Run dora node lifecycle E2E (Rust + C++)
+        # Cargo's TESTNAME positional is single-valued; multiple
+        # substring filters go after `--` for libtest.
+        run: >
+          cargo test -p dora-examples --test node-lifecycle-e2e
+          --
+          --test-threads=1
+          lifecycle_rust lifecycle_cxx
         timeout-minutes: 15
 
   # Semantic contract tests — promoted from nightly per #1632.
@@ -263,17 +286,17 @@ jobs:
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -292,6 +315,16 @@ jobs:
           --
           --test-threads=1
           --nocapture
+      # Python variant of the lifecycle test piggybacks on this job
+      # because it needs uv (already set up above). See the e2e job
+      # for the Rust + C++ variants.
+      - name: Run dora node lifecycle E2E (Python)
+        run: >
+          cargo test -p dora-examples --test node-lifecycle-e2e
+          --
+          --test-threads=1
+          lifecycle_python
+        timeout-minutes: 15
 
   # Benchmark regression check — Ubuntu only (intentional).
   # Upstream dora runs bench on 3 platforms but only for the benchmark
@@ -305,7 +338,7 @@ jobs:
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -316,7 +349,7 @@ jobs:
       # so the most recent main-branch save is found.
       - name: Restore baseline
         id: cache-baseline
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-not-used
@@ -347,7 +380,7 @@ jobs:
       # On main branch: save criterion data as the new baseline
       - name: Cache baseline
         if: github.ref == 'refs/heads/main' && success()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-${{ github.sha }}
@@ -356,7 +389,7 @@ jobs:
     name: Typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: crate-ci/typos@master
 
   # ===== Fast supply-chain gates =====
@@ -369,7 +402,7 @@ jobs:
     name: Audit (cargo-audit + cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -382,7 +415,7 @@ jobs:
     name: Unwrap budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: make qa-unwrap
@@ -395,7 +428,7 @@ jobs:
     name: License check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}

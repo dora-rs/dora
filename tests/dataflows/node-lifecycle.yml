@@ -1,0 +1,28 @@
+# Long-running dataflow for `dora node list/info/stop/restart` E2E tests.
+# Uses a 1-second tick so the rust-node runs for ~100 seconds, giving
+# tests enough time to issue node-level commands before the dataflow ends.
+
+nodes:
+  - id: rust-node
+    build: cargo build -p rust-dataflow-example-node
+    path: ../../target/debug/rust-dataflow-example-node
+    restart_policy: never
+    inputs:
+      tick: dora/timer/secs/1
+    outputs:
+      - random
+
+  - id: rust-status-node
+    build: cargo build -p rust-dataflow-example-status-node
+    path: ../../target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/500
+      random: rust-node/random
+    outputs:
+      - status
+
+  - id: rust-sink
+    build: cargo build -p rust-dataflow-example-sink
+    path: ../../target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status

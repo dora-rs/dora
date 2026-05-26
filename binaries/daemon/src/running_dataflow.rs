@@ -80,6 +80,13 @@ pub struct RunningNode {
     pub(crate) restart_count: Arc<AtomicU32>,
     pub(crate) restart_policy: RestartPolicy,
     pub(crate) disable_restart: Arc<AtomicBool>,
+    /// One-shot flag set by `restart_single_node` (operator-requested
+    /// `dora node restart`). When `true`, the restart loop forces a
+    /// respawn on the next exit **regardless of `restart_policy`**, then
+    /// clears the flag. Without this, `dora node restart` is a no-op on
+    /// nodes with the default `restart_policy: Never` — contradicting
+    /// the CLI help ("the daemon's restart loop re-spawns it").
+    pub(crate) force_restart_next: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,
     pub(crate) health_check_timeout: Option<Duration>,
 }
@@ -460,6 +467,26 @@ impl RunningDataflow {
             .running_nodes
             .get_mut(node_id)
             .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
+        // Reject the restart if the process slot is empty. `process ==
+        // None` means the previous incarnation has exited and either:
+        //   (a) `restart_loop` is between exit and respawn (transient),
+        //       in which case a second restart would arm
+        //       `force_restart_next` a second time and the leftover
+        //       `true` would spuriously force a restart on the next
+        //       natural exit — poisoning a future incarnation.
+        //   (b) `restart_loop` has already exited for good (`restart=
+        //       false` branch at spawn/prepared.rs:396), in which case
+        //       no consumer for `force_restart_next` remains. Setting
+        //       the flag here would leak silently: the CLI would see
+        //       success but the node would stay down.
+        // Both (a) and (b) are silent-failure paths; reject loudly.
+        if node.process.is_none() {
+            return Err(eyre!(
+                "node `{node_id}` is not in a restartable state (process \
+                 slot is empty; the node is between restarts or has \
+                 already exited terminally)"
+            ));
+        }
         let process = node.process.take();
         // Clear any prior disable (e.g. from an earlier stop_single_node
         // or a cascading AllInputsClosed) so the restart_loop will pick
@@ -471,6 +498,13 @@ impl RunningDataflow {
         // between this store and the grace-kill submission no longer
         // matters.
         node.disable_restart.store(false, atomic::Ordering::Release);
+        // Arm the one-shot force-restart flag so the restart loop
+        // bypasses `restart_policy` for this single incarnation. Without
+        // this a node with the default `restart_policy: Never` would
+        // exit on SIGTERM and never come back, violating the CLI help's
+        // promise that `dora node restart` "re-spawns it".
+        node.force_restart_next
+            .store(true, atomic::Ordering::Release);
         self.send_stop_and_schedule_kill(
             node_id,
             process,
@@ -499,11 +533,25 @@ impl RunningDataflow {
 
         if let Some(proc) = process {
             let duration = grace_duration.unwrap_or(default_grace);
+            // Mirror `stop_all`'s population of `grace_duration_kills`
+            // so SpawnedNodeResult can distinguish "daemon explicitly
+            // sent SIGTERM to this node" from "node received SIGTERM
+            // from somewhere else". Without this marker, a source node
+            // (which has `disable_restart` set at subscribe time, see
+            // lib.rs:3203) cannot be told apart from an externally
+            // killed source node when classifying the exit status
+            // (dora-rs/dora#1882).
+            let grace_duration_kills = self.grace_duration_kills.clone();
+            let node_id = node_id.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
-                proc.submit(ProcessOperation::SoftKill);
+                if proc.submit(ProcessOperation::SoftKill) {
+                    grace_duration_kills.insert(node_id.clone());
+                }
                 tokio::time::sleep(duration / 2).await;
-                proc.submit(ProcessOperation::Kill);
+                if proc.submit(ProcessOperation::Kill) {
+                    grace_duration_kills.insert(node_id);
+                }
             });
         }
     }

@@ -16,7 +16,7 @@ use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
     integration_testing_format::{
-        IncomingEvent, InputData, IntegrationTestInput, TimedIncomingEvent,
+        IncomingEvent, InputData, IntegrationTestInput, RecordingStatus, TimedIncomingEvent,
     },
     metadata::{ArrowTypeInfo, Metadata},
     node_to_daemon::DaemonRequest,
@@ -52,6 +52,30 @@ impl IntegrationTestingEvents {
             .with_context(|| format!("failed to deserialize {}", input_file_path.display()))?,
             TestingInput::Input(input) => input,
         };
+
+        // Refuse to replay poisoned recordings. The `events` array is
+        // known incomplete relative to the original run; loading it
+        // anyway would defeat the whole point of recording (#1857).
+        // Hand-authored fixtures and pre-#1857 recordings have
+        // `recording_status: None` and pass through cleanly.
+        if let Some(boxed) = &node_info.recording_status
+            && let RecordingStatus::Poisoned {
+                first_failure_event_index,
+                first_failure_time_offset_secs,
+                first_failure_error,
+                additional_failures,
+            } = boxed.as_ref()
+        {
+            eyre::bail!(
+                "refusing to replay poisoned recording for node `{node_id}`: \
+                 the original recorder failed at event index {first_failure_event_index} \
+                 (~{first_failure_time_offset_secs:.3}s into the run), then \
+                 {additional_failures} additional event(s) also failed to record. \
+                 The `events` array is incomplete and replay will not reproduce \
+                 the original behavior. First failure: {first_failure_error}",
+                node_id = node_info.id,
+            );
+        }
 
         let output_writer = match output {
             TestingOutput::ToFile(output_file_path) => {

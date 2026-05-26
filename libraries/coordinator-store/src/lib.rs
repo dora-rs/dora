@@ -79,6 +79,21 @@ pub enum DataflowStatus {
     Succeeded,
     Failed {
         error: String,
+        /// Marks the failure as terminal -- subsequent daemon reports
+        /// must NOT promote the record back to `Running` via the
+        /// reconcile path. Set by coordinator-side failure paths
+        /// (e.g. the spawn-timeout watchdog) where the verdict has
+        /// already been delivered to the user via `wait_for_spawn`
+        /// and resurrection would create an inconsistent
+        /// store-vs-CLI view across coordinator restarts.
+        ///
+        /// `#[serde(default)]` so persisted records written by older
+        /// coordinators (which never set this field) deserialize with
+        /// `terminal: false` -- preserving the pre-#1854 behaviour
+        /// where a daemon report could promote Failed -> Running.
+        /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
+        #[serde(default)]
+        terminal: bool,
     },
 }
 
@@ -124,6 +139,17 @@ pub trait CoordinatorStore: Send + Sync {
     fn put_dataflow(&self, record: &DataflowRecord) -> Result<()>;
     fn get_dataflow(&self, uuid: &Uuid) -> Result<Option<DataflowRecord>>;
     fn list_dataflows(&self) -> Result<Vec<DataflowRecord>>;
+    /// Delete a dataflow record. Cascades to every `put_node_param`
+    /// row that belongs to the same `uuid` so callers (e.g.
+    /// `dora clean`) don't have to walk node params separately and
+    /// orphan param rows can't accumulate in long-lived stores.
+    ///
+    /// The redb backend performs the cascade atomically in one write
+    /// transaction; the in-memory backend uses one lock per table
+    /// (consistent with the rest of the impl), which is safe because
+    /// the coordinator dispatches events serially.
+    ///
+    /// Returns `Ok(())` if no record exists for `uuid`.
     fn delete_dataflow(&self, uuid: &Uuid) -> Result<()>;
 
     // -- Build state --

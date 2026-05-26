@@ -1,0 +1,33 @@
+[project]
+name = "___name___"
+version = "0.0.0"
+requires-python = ">=3.11"
+# Depend on the workspace members so `uv run` (which syncs the
+# workspace-root `.venv` before executing) installs each node package
+# AND its transitive deps (`dora-rs` → `pyarrow`, `numpy`, `pyyaml`)
+# into the env. Without this, `uv run pytest` fails with
+# `ModuleNotFoundError: No module named 'pyarrow'` because the test
+# stubs do `import pyarrow as pa` but uv only installs the root
+# project's own deps, not member deps.
+dependencies = ["talker-1", "talker-2", "listener-1"]
+
+[tool.uv.workspace]
+members = ["talker-1", "talker-2", "listener-1"]
+
+# Tell uv to resolve the named workspace members from the local
+# directories (not from PyPI) when satisfying `dependencies` above.
+[tool.uv.sources]
+talker-1 = { workspace = true }
+talker-2 = { workspace = true }
+listener-1 = { workspace = true }
+___DORA_RS_PATH_SOURCE___
+
+# Dev tools must live in the workspace-root pyproject (not just the
+# per-node ones) because `uv run` resolves against the workspace root.
+# Without this, `uv run ruff` / `uv run pytest` from the project
+# directory fail with "Failed to spawn: ruff / No such file or
+# directory" — `uv` creates a fresh `.venv` for the workspace and
+# doesn't install per-node `[dependency-groups] dev` into it.
+# Matches the versions pinned in the per-node template.
+[dependency-groups]
+dev = ["pytest >=8.1.1", "ruff >=0.9.1"]

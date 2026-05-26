@@ -27,7 +27,7 @@ fn main() -> eyre::Result<()> {
     build_cxx_node(
         &root,
         &[
-            &dunce::canonicalize(Path::new("node-rust-api").join("main.cc"))?,
+            &dunce::canonicalize(Path::new("./").join("main.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("dora-node-api.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/sensor_msgs.cc"))?,
             &dunce::canonicalize(node_cxxbridge.join("ros2-bridge/msg/geometry_msgs.cc"))?,
@@ -150,7 +150,7 @@ fn build_cxx_node(root: &Path, paths: &[&Path], out_name: &str, args: &[&str]) -
     clang.arg("-L").arg(root.join("target").join("debug"));
     clang
         .arg("--output")
-        .arg(Path::new("../build").join(format!("{out_name}{EXE_SUFFIX}")));
+        .arg(Path::new("./build").join(format!("{out_name}{EXE_SUFFIX}")));
     if let Some(parent) = paths[0].parent() {
         clang.current_dir(parent);
     }

@@ -70,10 +70,33 @@ dora start dataflow.yml
 dora list          # show running dataflows
 dora logs my-node  # stream node logs
 dora top           # resource usage
+dora clean         # drop finished/failed entries from the list (keeps coordinator running)
 
 # Stop
 dora stop --all
 dora down
+```
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant CLI as dora CLI
+    participant Coordinator
+    participant Daemon
+    participant Nodes
+
+    User->>CLI: dora up
+    CLI->>Coordinator: start coordinator
+    CLI->>Daemon: start local daemon
+    Daemon->>Coordinator: register
+    User->>CLI: dora start dataflow.yml
+    CLI->>Coordinator: submit dataflow
+    Coordinator->>Daemon: spawn node processes
+    Daemon->>Nodes: start nodes
+    Nodes->>Nodes: exchange messages
+    User->>CLI: dora stop --all
+    CLI->>Coordinator: stop dataflow
+    Coordinator->>Daemon: stop nodes
 ```
 
 ## Next Steps

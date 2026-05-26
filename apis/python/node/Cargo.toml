@@ -38,7 +38,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-pyo3-build-config = "0.28"
+pyo3-build-config = { workspace = true }
 
 [lib]
 name = "dora"

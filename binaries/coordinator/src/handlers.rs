@@ -609,6 +609,8 @@ pub(crate) async fn start_dataflow(
         nodes,
         node_to_daemon,
         node_metrics: BTreeMap::new(),
+        node_finalized: BTreeSet::new(),
+        node_stopped_at: BTreeMap::new(),
         network_metrics: None,
         spawn_result: CachedResult::default(),
         stop_reply_senders: Vec::new(),
@@ -617,6 +619,12 @@ pub(crate) async fn start_dataflow(
         topic_subscribers: BTreeMap::new(),
         daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
         pending_spawn_results: daemons,
+        // Capture the spawn-dispatch start time before any per-daemon
+        // spawn RPC has fired so the watchdog can compare against the
+        // earliest meaningful moment. The dispatch itself happened in
+        // `spawn_dataflow` just above; the `Instant::now()` here is at
+        // most a few microseconds late.
+        spawn_started_at: std::time::Instant::now(),
         created_at: state::now_millis(),
         store_generation: 0,
         last_recovery_attempt: BTreeMap::new(),

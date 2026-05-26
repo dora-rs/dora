@@ -211,6 +211,7 @@ impl EventStream {
                     node_id: node_id.clone(),
                     file,
                     events_buffer: Vec::new(),
+                    poisoned: None,
                 })
             }
             None => None,
@@ -586,7 +587,26 @@ impl EventStream {
     }
 
     fn add_event(&mut self, event: EventItem) {
-        self.record_event(&event).unwrap();
+        // Event recording is observability-only (writes to the optional
+        // `write_events_to` log). A write failure must not panic the event
+        // loop — drop the log line and continue scheduling.
+        if let Err(err) = self.record_event(&event) {
+            tracing::warn!(
+                node = %self.node_id,
+                "failed to record event to write_events_to log: {err:?}"
+            );
+            // Mark the recording poisoned so consumers can detect events
+            // are missing from the final JSON. `write_out()` surfaces this
+            // as a top-level `recording_status` field (#1857).
+            if let Some(write_events_to) = self.write_events_to.as_mut() {
+                let time_offset_secs = self
+                    .clock
+                    .new_timestamp()
+                    .get_diff_duration(&self.start_timestamp)
+                    .as_secs_f64();
+                write_events_to.mark_poisoned(&err, time_offset_secs);
+            }
+        }
         self.scheduler.add_event(event);
     }
 
@@ -1262,17 +1282,81 @@ pub(crate) struct WriteEventsTo {
     node_id: NodeId,
     file: std::fs::File,
     events_buffer: Vec<serde_json::Value>,
+    /// `None` while the recording is complete. Becomes `Some(...)` on
+    /// the first `record_event` failure; subsequent failures bump the
+    /// counter inside. Surfaced in `write_out()` as a top-level
+    /// `recording_status` field so consumers (replay tools, audit
+    /// pipelines) can detect partial recordings instead of silently
+    /// treating a syntactically-valid file as complete (#1857).
+    poisoned: Option<PoisonInfo>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PoisonInfo {
+    /// `events_buffer.len()` at the moment of the first failure — i.e.
+    /// the number of events successfully recorded before the gap.
+    first_failure_event_index: usize,
+    /// Seconds since `EventStream::start_timestamp` at the first failure.
+    first_failure_time_offset_secs: f64,
+    /// `format!("{err:?}")` of the first `record_event()` error.
+    first_failure_error: String,
+    /// Count of subsequent failures after the first one.
+    additional_failures: u64,
 }
 
 impl WriteEventsTo {
+    /// Mark the recording poisoned. First call captures the failure
+    /// detail; later calls just bump `additional_failures`.
+    fn mark_poisoned(&mut self, err: &eyre::Report, time_offset_secs: f64) {
+        match &mut self.poisoned {
+            None => {
+                self.poisoned = Some(PoisonInfo {
+                    first_failure_event_index: self.events_buffer.len(),
+                    first_failure_time_offset_secs: time_offset_secs,
+                    first_failure_error: format!("{err:?}"),
+                    additional_failures: 0,
+                });
+            }
+            Some(info) => {
+                info.additional_failures += 1;
+            }
+        }
+    }
+
     fn write_out(self) -> eyre::Result<()> {
+        use dora_message::integration_testing_format::RecordingStatus;
+
         let Self {
             node_id,
             file,
             events_buffer,
+            poisoned,
         } = self;
         let mut inputs_file = serde_json::Map::new();
         inputs_file.insert("id".into(), node_id.to_string().into());
+        // Emit `recording_status` for clean recordings too, so consumers
+        // can rely on its presence as a definitive signal rather than
+        // having to treat "field absent" as ambiguous between "clean"
+        // and "older format" (#1857). Serialized via the canonical
+        // `RecordingStatus` enum in `dora-message` so the wire format
+        // stays in lockstep with the consumer-side type. The wire
+        // shape is unaffected by `IntegrationTestInput`'s
+        // `Option<Box<RecordingStatus>>` storage choice — serde
+        // transparently serializes through the `Box`.
+        let recording_status = match poisoned {
+            None => RecordingStatus::Clean,
+            Some(info) => RecordingStatus::Poisoned {
+                first_failure_event_index: info.first_failure_event_index,
+                first_failure_time_offset_secs: info.first_failure_time_offset_secs,
+                first_failure_error: info.first_failure_error,
+                additional_failures: info.additional_failures,
+            },
+        };
+        inputs_file.insert(
+            "recording_status".into(),
+            serde_json::to_value(&recording_status)
+                .context("failed to serialize recording_status")?,
+        );
         inputs_file.insert("events".into(), events_buffer.into());
 
         serde_json::to_writer_pretty(file, &inputs_file)
@@ -1347,6 +1431,96 @@ mod tests {
                 other => panic!("expected ParamUpdate, got {other:?}"),
             }
         }
+    }
+
+    // -- WriteEventsTo poisoned-state tests (#1857) ------------------------
+    //
+    // Build a `WriteEventsTo` against a tempfile, exercise the public
+    // surface (push events / mark_poisoned / write_out), then parse the
+    // resulting JSON and assert on the `recording_status` field shape.
+    // No new dev-deps — uses std::env::temp_dir() + uuid (already a dep).
+
+    fn write_events_to_with_tempfile() -> (WriteEventsTo, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "dora-write-events-test-{}.json",
+            uuid::Uuid::new_v4()
+        ));
+        let file = std::fs::File::create(&path).expect("create tempfile");
+        let w = WriteEventsTo {
+            node_id: "test-node".parse().unwrap(),
+            file,
+            events_buffer: Vec::new(),
+            poisoned: None,
+        };
+        (w, path)
+    }
+
+    fn read_back(path: &std::path::Path) -> serde_json::Value {
+        let s = std::fs::read_to_string(path).expect("read back tempfile");
+        std::fs::remove_file(path).ok();
+        serde_json::from_str(&s).expect("output is valid JSON")
+    }
+
+    #[test]
+    fn write_events_clean_recording_emits_state_clean() {
+        let (mut w, path) = write_events_to_with_tempfile();
+        w.events_buffer.push(serde_json::json!({"type": "Stop"}));
+        w.write_out().expect("write_out clean recording");
+
+        let v = read_back(&path);
+        assert_eq!(v["recording_status"]["state"], "clean");
+        assert_eq!(v["events"].as_array().unwrap().len(), 1);
+        assert_eq!(v["id"], "test-node");
+    }
+
+    #[test]
+    fn write_events_poisoned_recording_emits_state_poisoned_with_first_failure() {
+        let (mut w, path) = write_events_to_with_tempfile();
+        // 2 events recorded cleanly, then a failure, then 1 more event
+        w.events_buffer.push(serde_json::json!({"type": "Input"}));
+        w.events_buffer.push(serde_json::json!({"type": "Input"}));
+        w.mark_poisoned(&eyre!("arrow conversion failed: bad type"), 1.5);
+        w.events_buffer.push(serde_json::json!({"type": "Stop"}));
+        w.write_out().expect("write_out poisoned recording");
+
+        let v = read_back(&path);
+        let status = &v["recording_status"];
+        assert_eq!(status["state"], "poisoned");
+        assert_eq!(status["first_failure_event_index"], 2);
+        assert_eq!(status["first_failure_time_offset_secs"], 1.5);
+        assert!(
+            status["first_failure_error"]
+                .as_str()
+                .unwrap()
+                .contains("arrow conversion failed: bad type")
+        );
+        assert_eq!(status["additional_failures"], 0);
+        // `events` keeps the 2 clean + 1 post-failure-but-successful events.
+        assert_eq!(v["events"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn write_events_multiple_failures_keep_first_and_count_rest() {
+        let (mut w, path) = write_events_to_with_tempfile();
+        w.mark_poisoned(&eyre!("first error"), 0.5);
+        w.mark_poisoned(&eyre!("second error"), 1.0);
+        w.mark_poisoned(&eyre!("third error"), 1.5);
+        w.write_out().expect("write_out with multiple failures");
+
+        let v = read_back(&path);
+        let status = &v["recording_status"];
+        assert_eq!(status["state"], "poisoned");
+        // First failure detail is preserved, NOT overwritten by later ones.
+        assert_eq!(status["first_failure_event_index"], 0);
+        assert_eq!(status["first_failure_time_offset_secs"], 0.5);
+        assert!(
+            status["first_failure_error"]
+                .as_str()
+                .unwrap()
+                .contains("first error")
+        );
+        // Two additional failures after the first.
+        assert_eq!(status["additional_failures"], 2);
     }
 
     #[test]

@@ -1,0 +1,7 @@
+# Dynamic-node spec for the cxx-dynamic-add-remove fixture.
+# Added at runtime via `dora node add --from-yaml filter-node.yml`.
+
+id: filter
+path: build/cxx_filter
+outputs:
+  - output

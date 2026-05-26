@@ -9,6 +9,7 @@
 
 use std::path::Path;
 
+use proc_macro2::Ident;
 use quote::{format_ident, quote};
 
 pub mod parser;
@@ -16,6 +17,70 @@ pub mod types;
 
 pub use crate::parser::get_packages;
 use crate::types::Package;
+
+/// Pick the `ros2_client::ServiceMapping` variant for the user's ROS2 middleware.
+///
+/// Reads `RMW_IMPLEMENTATION` (primary) and `ROS_DISTRO` (fallback). Falls
+/// back to `Enhanced` with a warning if neither env var gives a usable
+/// answer — `Enhanced` is the historical default and keeps existing builds
+/// working when env is unset.
+///
+/// Restores the logic from `dora-rs/dora@e2c1370f`, which was lost during
+/// the 1.0 consolidation. See dora-rs/dora#449.
+pub fn detect_ros_service_mapping_ident() -> Ident {
+    detect_ros_service_mapping_ident_from(
+        std::env::var("RMW_IMPLEMENTATION"),
+        std::env::var("ROS_DISTRO"),
+    )
+}
+
+/// Pure inner version of [`detect_ros_service_mapping_ident`]: takes the
+/// env-var results as arguments so it can be unit-tested without mutating
+/// the process environment.
+fn detect_ros_service_mapping_ident_from(
+    rmw_implementation: Result<String, std::env::VarError>,
+    ros_distro: Result<String, std::env::VarError>,
+) -> Ident {
+    let enhanced = || format_ident!("Enhanced");
+    let cyclone = || format_ident!("Cyclone");
+
+    match rmw_implementation {
+        Ok(middleware) => match middleware.as_str() {
+            "rmw_fastrtps_cpp" => return enhanced(),
+            "rmw_cyclonedds_cpp" => return cyclone(),
+            other => {
+                eprintln!(
+                    "cargo:warning=unknown RMW_IMPLEMENTATION `{other}`, \
+                     falling back to ServiceMapping::Enhanced (see dora-rs/dora#449)"
+                );
+                return enhanced();
+            }
+        },
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eprintln!(
+                "cargo:warning=RMW_IMPLEMENTATION is not valid unicode, \
+                 falling back to ServiceMapping::Enhanced"
+            );
+            return enhanced();
+        }
+        Err(std::env::VarError::NotPresent) => {}
+    }
+
+    ros_distro.map_or_else(
+        |_| enhanced(),
+        |distro| match distro.as_str() {
+            "humble" | "iron" | "jazzy" | "kilted" | "rolling" => enhanced(),
+            "galactic" => cyclone(),
+            other => {
+                eprintln!(
+                    "cargo:warning=unknown ROS_DISTRO `{other}`, \
+                     falling back to ServiceMapping::Enhanced (see dora-rs/dora#449)"
+                );
+                enhanced()
+            }
+        },
+    )
+}
 
 #[allow(clippy::cognitive_complexity)]
 pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macro2::TokenStream {
@@ -100,6 +165,9 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
 
                     type U16String = crate::ros2::default_impl::ffi::U16String;
 
+                    type ActionGoalId = crate::ros2::default_impl::ActionGoalId;
+                    type ActionStatusEnum = crate::ros2::default_impl::ffi::ActionStatusEnum;
+
                     #reuse_bindings
                 }
             },
@@ -107,6 +175,8 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
                 #rust_imports
 
                 use crate::ros2::default_impl::Ros2Node;
+                #[allow(unused_imports)]
+                use crate::ros2::default_impl::ActionGoalId;
             },
         )
     } else {
@@ -206,6 +276,7 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         extern "Rust" {
             type Ros2Context;
             type Ros2Node;
+            type ActionGoalId;
             fn init_ros2_context() -> Result<Box<Ros2Context>>;
             fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
             fn qos_default() -> Ros2QosPolicies;
@@ -247,6 +318,25 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             Automatic,
             ManualByParticipant,
             ManualByTopic,
+        }
+
+        /// Named goal statuses from [GoalStatus](https://docs.ros2.org/foxy/api/action_msgs/msg/GoalStatus.html)
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        #[repr(i8)]
+        pub enum ActionStatusEnum {
+            /// Let's use "Unknown" also for "New"
+            Unknown = 0,
+            Accepted = 1,
+            Executing = 2,
+            Canceling = 3,
+            Succeeded = 4,
+            Canceled = 5,
+            Aborted = 6,
+        }
+
+        // It's used to auto-generate code about Box<ActionGoalId> with CXX crate
+        pub struct ActionGoalIdBoxed {
+            inner: Box<ActionGoalId>,
         }
     };
     let cxx_ros2_impl = quote! {
@@ -296,6 +386,16 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
 
         unsafe impl cxx::ExternType for Ros2Context {
             type Id = cxx::type_id!("Ros2Context");
+            type Kind = cxx::kind::Opaque;
+        }
+
+        #[derive(Clone)]
+        pub struct ActionGoalId {
+            pub id: ros2_client::action::GoalId,
+        }
+
+        unsafe impl cxx::ExternType for ActionGoalId {
+            type Id = cxx::type_id!("ActionGoalId");
             type Kind = cxx::kind::Opaque;
         }
 
@@ -422,6 +522,20 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                 }
             }
         }
+
+        impl From<crate::ros2_client::action::GoalStatusEnum> for ffi::ActionStatusEnum {
+            fn from(value: crate::ros2_client::action::GoalStatusEnum) -> Self {
+                match value {
+                    crate::ros2_client::action::GoalStatusEnum::Unknown => ffi::ActionStatusEnum::Unknown,
+                    crate::ros2_client::action::GoalStatusEnum::Accepted => ffi::ActionStatusEnum::Accepted,
+                    crate::ros2_client::action::GoalStatusEnum::Executing => ffi::ActionStatusEnum::Executing,
+                    crate::ros2_client::action::GoalStatusEnum::Canceling => ffi::ActionStatusEnum::Canceling,
+                    crate::ros2_client::action::GoalStatusEnum::Succeeded => ffi::ActionStatusEnum::Succeeded,
+                    crate::ros2_client::action::GoalStatusEnum::Canceled => ffi::ActionStatusEnum::Canceled,
+                    crate::ros2_client::action::GoalStatusEnum::Aborted => ffi::ActionStatusEnum::Aborted,
+                }
+            }
+        }
     };
     let u16str_decl = quote! {
         #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -489,5 +603,120 @@ fn generate_rust_imports_for_cxx() -> proc_macro2::TokenStream {
     quote! {
         #[allow(unused_imports)]
         use crate::prelude::*;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env::VarError;
+    use std::ffi::OsString;
+
+    use super::*;
+
+    fn detect(rmw: Result<&str, VarError>, distro: Result<&str, VarError>) -> String {
+        detect_ros_service_mapping_ident_from(rmw.map(String::from), distro.map(String::from))
+            .to_string()
+    }
+
+    // ---- RMW_IMPLEMENTATION ----
+
+    #[test]
+    fn rmw_fastrtps_returns_enhanced() {
+        assert_eq!(
+            detect(Ok("rmw_fastrtps_cpp"), Err(VarError::NotPresent)),
+            "Enhanced"
+        );
+    }
+
+    #[test]
+    fn rmw_cyclonedds_returns_cyclone() {
+        assert_eq!(
+            detect(Ok("rmw_cyclonedds_cpp"), Err(VarError::NotPresent)),
+            "Cyclone"
+        );
+    }
+
+    #[test]
+    fn rmw_unknown_falls_back_to_enhanced() {
+        assert_eq!(
+            detect(Ok("rmw_some_third_party_dds"), Err(VarError::NotPresent)),
+            "Enhanced"
+        );
+    }
+
+    #[test]
+    fn rmw_not_unicode_falls_back_to_enhanced() {
+        let bytes = OsString::from("placeholder");
+        let result = detect_ros_service_mapping_ident_from(
+            Err(VarError::NotUnicode(bytes)),
+            Err(VarError::NotPresent),
+        );
+        assert_eq!(result.to_string(), "Enhanced");
+    }
+
+    // ---- RMW takes precedence over ROS_DISTRO ----
+
+    #[test]
+    fn rmw_takes_precedence_over_distro_for_enhanced() {
+        // RMW says fastrtps -> Enhanced, even though distro says galactic.
+        assert_eq!(detect(Ok("rmw_fastrtps_cpp"), Ok("galactic")), "Enhanced");
+    }
+
+    #[test]
+    fn rmw_takes_precedence_over_distro_for_cyclone() {
+        // RMW says cyclonedds -> Cyclone, even though distro says humble.
+        assert_eq!(detect(Ok("rmw_cyclonedds_cpp"), Ok("humble")), "Cyclone");
+    }
+
+    // ---- ROS_DISTRO fallback ----
+
+    #[test]
+    fn distro_humble_returns_enhanced() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("humble")), "Enhanced");
+    }
+
+    #[test]
+    fn distro_iron_returns_enhanced() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("iron")), "Enhanced");
+    }
+
+    #[test]
+    fn distro_jazzy_returns_enhanced() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("jazzy")), "Enhanced");
+    }
+
+    #[test]
+    fn distro_kilted_returns_enhanced() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("kilted")), "Enhanced");
+    }
+
+    #[test]
+    fn distro_rolling_returns_enhanced() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("rolling")), "Enhanced");
+    }
+
+    #[test]
+    fn distro_galactic_returns_cyclone() {
+        assert_eq!(detect(Err(VarError::NotPresent), Ok("galactic")), "Cyclone");
+    }
+
+    #[test]
+    fn distro_unknown_falls_back_to_enhanced() {
+        assert_eq!(
+            detect(Err(VarError::NotPresent), Ok("future_distro_99")),
+            "Enhanced"
+        );
+    }
+
+    // ---- No env at all ----
+
+    #[test]
+    fn no_env_falls_back_to_enhanced() {
+        // Most common case: neither env var set. Preserves historical
+        // hardcoded-Enhanced behavior so existing builds keep working.
+        assert_eq!(
+            detect(Err(VarError::NotPresent), Err(VarError::NotPresent)),
+            "Enhanced"
+        );
     }
 }

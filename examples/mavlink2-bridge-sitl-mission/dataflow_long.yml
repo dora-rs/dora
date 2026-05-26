@@ -1,0 +1,44 @@
+nodes:
+  # Topology:
+  #   dronekit-sitl ──tcp 5760──► dora bridge (here, ?proto=v1)
+  #   dronekit-sitl ──tcp 5762──► forward_to_qgc.py ──udp 14550──► QGC
+  # Bridge owns 5760 directly. forward_to_qgc.py ships frames from the
+  # parallel UART (5762) to QGC's UDP port. start_mavlink_long.sh wires
+  # both before `dora run`.
+  - id: bridge
+    path: /home/demo/work/dora-mavlink/target/release/dora-mavlink2-bridge-node
+    env:
+      # Bridge connects directly to dronekit-sitl as a TCP client. SITL
+      # ships ArduCopter 3.3 which speaks MAVLink V1, so we override the
+      # bridge's default V2 wire-format with ?proto=v1 to keep mavlink-rust's
+      # version-filtered recv() from silently dropping every frame.
+      MAVLINK_BRIDGE_CONFIG: |
+        endpoint: tcp://127.0.0.1:5760?proto=v1
+    inputs:
+      command_long_cmd: mission/command_long_cmd
+      set_mode_cmd: mission/set_mode_cmd
+    outputs:
+      - heartbeat
+      - global_position_int
+      - command_ack
+      - sys_status
+      - system_time
+      - attitude
+      - attitude_quaternion
+      - local_position_ned
+      - gps_raw_int
+      - rc_channels
+      - servo_output_raw
+      - command_long
+      - mission_current
+
+  # Long-and-obvious closed-loop mission (square + climb + 30s hover + LAND).
+  - id: mission
+    path: mission_long.py
+    inputs:
+      heartbeat: bridge/heartbeat
+      global_position_int: bridge/global_position_int
+      command_ack: bridge/command_ack
+    outputs:
+      - command_long_cmd
+      - set_mode_cmd

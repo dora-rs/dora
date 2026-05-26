@@ -6,6 +6,9 @@ extend-exclude = ["Changelog.md"]
 DeviceNDArray = "DeviceNDArray"
 Feedforward_2nd_Gain = "Feedforward_2nd_Gain"
 clonable_command = "clonable_command"
+# CPython buffer-protocol flag constants. PyBUF_ND = "N-Dimensional buffer".
+# Introduced by the Python zero-copy send work (#1833).
+PyBUF_ND = "PyBUF_ND"
 
 [default.extend-words]
 # ratatui is a Rust TUI crate name, not a misspelling of ratatouille
@@ -19,6 +22,14 @@ ser = "ser"
 BA = "BA"
 # Windows system library name (used by the C/C++ publish workflow)
 secur = "secur"
+# ArduPilot Software-In-The-Loop simulator; standard acronym in the
+# flight-controller community. Introduced by the mavlink2-bridge example.
+SITL = "SITL"
+sitl = "sitl"
+# MAVLink coordinate frame: North-East-Down. Field/message name in
+# common-dialect MAVLink messages such as LOCAL_POSITION_NED.
+NED = "NED"
+ned = "ned"
 
 [default]
 # Scoped allow: GitHub user name "YOR-robot" appears in the downstream-user

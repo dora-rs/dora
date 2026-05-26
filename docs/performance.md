@@ -125,6 +125,37 @@ Operators run in-process with the runtime (zero IPC overhead) but share the GIL 
 
 For cross-machine communication, Dora uses Zenoh pub-sub. Latency depends on network quality. Use local deployment (single-machine) when sub-millisecond latency is required.
 
+### Profile-Guided Optimization (PGO)
+
+PGO trains the compiler on real execution traces and can give 5-15% wins on i-cache-heavy hot loops. For dora's pub/sub data path it typically helps throughput more than latency — the throughput phase of the benchmark is the canonical "tight loop with biased branches" workload PGO is designed for.
+
+**Measurement on macOS-arm64** ([#331](https://github.com/dora-rs/dora/issues/331)):
+
+| Metric | PGO / baseline geomean | Delta |
+|---|---|---|
+| p50 latency | 1.022 | +2.2% (noise) |
+| p99 latency | 1.010 | +1.0% (noise) |
+| **Throughput** | **1.256** | **+25.6%** |
+
+Numbers above are from a **single** `make qa-pgo` run with n=100 per payload size. Geomean across sizes is the load-bearing metric; individual size rows have ~10-20% single-run noise, and the geomean itself has roughly ±5% noise floor. Re-run 3-5 times and take the median before drawing a conclusion either way.
+
+**Run the measurement on your platform.** Results don't transfer across OS/arch — Linux x86 may show different numbers, and only your-platform numbers should drive your-platform decisions.
+
+```bash
+make qa-pgo-install   # one-time: cargo-pgo + llvm-tools-preview
+make qa-pgo           # ~30-40 min: instrument, train, optimize, compare
+```
+
+`make qa-pgo` prints a side-by-side comparison and an explicit verdict based on the throughput geomean. Decision rule:
+
+- **≥ +5% throughput** — PGO is worth integrating into the release pipeline for that platform
+- **within ±5%** — inconclusive, re-run with multiple iterations for stable medians
+- **≤ -5% throughput** — PGO regresses on this platform; do not ship
+
+The PGO build pipeline adds roughly 2.5-3× the wall time of a plain `--profile dist` build (~17 min total on macOS-arm64). That puts it firmly in release-pipeline territory — **don't add it to per-commit CI**. The recommended shape is a one-shot job that runs against a release tag and uploads PGO'd binaries as release artifacts.
+
+**What gets PGO'd:** only `dora-cli` (which embeds the coordinator, daemon, and runtime). User node binaries are not instrumented by this recipe; they would need their own per-binary PGO pass if their hot paths matter.
+
 ## CSV Output Format
 
 All benchmarks support `BENCH_CSV` environment variable for machine-readable output:

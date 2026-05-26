@@ -5,6 +5,7 @@ use std::sync::Once;
 use std::time::Duration;
 
 static BUILD_NODES: Once = Once::new();
+static BUILD_FIRE_AND_FORGET: Once = Once::new();
 
 fn ensure_nodes_built() {
     BUILD_NODES.call_once(|| {
@@ -21,6 +22,19 @@ fn ensure_nodes_built() {
             .status()
             .expect("failed to run cargo build");
         assert!(status.success(), "failed to build example nodes");
+    });
+}
+
+fn ensure_fire_and_forget_built() {
+    BUILD_FIRE_AND_FORGET.call_once(|| {
+        let status = std::process::Command::new("cargo")
+            .args(["build", "-p", "fire-and-forget-source-node"])
+            .status()
+            .expect("failed to run cargo build");
+        assert!(
+            status.success(),
+            "failed to build fire-and-forget-source-node"
+        );
     });
 }
 
@@ -794,5 +808,57 @@ async fn health_check_timeout_exhausts_restart_budget() {
     assert!(
         node_result.is_err(),
         "after two health-check SIGKILLs with max_restarts: 1, expected Err; got {node_result:?}"
+    );
+}
+
+/// Planned-stop SIGTERM of a non-cooperative node is reported as clean.
+///
+/// `fire-and-forget-source-node` never polls `events.recv()` so it cannot
+/// honor the cooperative `Event::Stop`. With `--stop-after` shorter than
+/// the node's wall-clock runtime, the daemon must SIGTERM it after the
+/// grace period. Before dora-rs/dora#1882's fix, the daemon reported the
+/// resulting non-zero exit as a node failure (`exited with code 143` for
+/// wrapper-spawned nodes, `killed by signal SIGTERM` for direct spawns).
+/// After the fix, the daemon recognizes the SIGTERM-like exit as a clean
+/// stop because the operator asked the dataflow to stop.
+#[tokio::test(flavor = "multi_thread")]
+async fn planned_stop_sigterm_reports_clean() {
+    ensure_fire_and_forget_built();
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/planned-stop-sigterm.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // Node loops for 100s; we stop the dataflow at 3s, well before it
+        // would finish naturally. Long enough for at least one output to
+        // fire, short enough that the test stays fast.
+        Some(Duration::from_secs(3)),
+        false,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete without error");
+    eprintln!(
+        "dataflow completed with {} node results",
+        dr.node_results.len()
+    );
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+
+    let node_result = dr
+        .node_results
+        .get(&"fire-and-forget".to_string().into())
+        .expect("fire-and-forget should be in node_results");
+    assert!(
+        node_result.is_ok(),
+        "fire-and-forget node SIGTERMed during operator-requested stop should be reported as Ok(()); got {node_result:?}"
     );
 }

@@ -65,6 +65,8 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
 | `apis/rust/operator` | dora-operator-api | Rust API for writing in-process operators |
 | `apis/python/node` | dora-node-api-python | Python node API (PyO3) |
+| `libraries/extensions/mavlink2-bridge` | dora-mavlink2-bridge | MAVLink 2 ↔ Apache Arrow conversion (common dialect) |
+| `binaries/mavlink2-bridge-node` | dora-mavlink2-bridge-node | Daemon-spawnable MAVLink 2 bridge (TCP/UDP/serial) |
 
 ## Architecture
 
@@ -154,7 +156,7 @@ All three steps are required for every commit. Do NOT push without completing th
 
 ### Do NOT run the full QA suite on every commit/push
 
-The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make qa-release-gate`, `make qa-mutation-audit`, `make qa-examples`, `make qa-coverage`, `make qa-mutants`, `make qa-semver` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
+The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make qa-release-gate`, `make qa-mutation-audit`, `make qa-examples`, `make qa-coverage`, `make qa-mutants`, `make qa-semver`, `make qa-pgo` — are designed for **focused investigation and pre-release gating**, not the per-commit loop. Do not run them routinely, and do not add them to remote CI:
 
 - `make qa-full` (qa-fast + full tests + coverage) — ~5-10 minutes. Run before a significant push if you want extra confidence; coverage is too slow for every push.
 - `make qa-deep` (qa-full + mutation testing + semver) — ~15 minutes. The **target** Tier 1 local gate. Today's CI PR gate only runs the fast subset (fmt/clippy/typos/audit/unwrap-budget + tests); `qa-deep` adds coverage, adversarial review, diff-scoped mutation, and semver — kept laptop-only because they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5). Alias: `make qa-tier1`, kept for back-compat.
@@ -165,6 +167,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.
+- `make qa-pgo` — ~30-40 min. Profile-Guided Optimization measurement: builds `dora-cli` with `cargo-pgo` (instrument → train on `examples/benchmark/` → optimize), then runs the benchmark twice (baseline vs PGO) and prints a side-by-side comparison with a +5%-throughput-geomean verdict. Run on your target platform — PGO results don't transfer across OS/arch. macOS-arm64 first-measurement showed +25% throughput geomean, latency unchanged (see [#331](https://github.com/dora-rs/dora/issues/331)). **Do not add to CI** — the build pipeline cost is release-pipeline scope, not per-commit. Install via `make qa-pgo-install`.
 
 **Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 

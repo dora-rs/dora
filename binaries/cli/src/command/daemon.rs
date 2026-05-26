@@ -81,15 +81,24 @@ impl Executable for Daemon {
         let rt = builder.build().context("tokio runtime failed")?;
 
         // Apply real-time profile if requested.
+        //
+        // These diagnostics use `eprintln!` rather than `tracing::*` because
+        // the tracing subscriber is not yet installed at this point (see the
+        // `init_tracing_subscriber` call below) — `tracing::info!`/`warn!`
+        // calls before global subscriber registration route to
+        // `NoSubscriber` and are silently dropped (#1701). Going to stderr
+        // also ensures these are visible even with `--quiet`, which matters
+        // because a failed RT setup is an operational warning the user must
+        // see.
         if self.rt {
             #[cfg(unix)]
             {
                 // Lock all memory to prevent page faults.
                 let lock_result = unsafe { libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE) };
                 if lock_result == 0 {
-                    tracing::info!("RT: mlockall enabled (memory locked)");
+                    eprintln!("RT: mlockall enabled (memory locked)");
                 } else {
-                    tracing::warn!(
+                    eprintln!(
                         "RT: mlockall failed: {}. Ensure CAP_IPC_LOCK or ulimit -l unlimited.",
                         std::io::Error::last_os_error()
                     );
@@ -107,19 +116,22 @@ impl Executable for Daemon {
                     let sched_result =
                         unsafe { libc::sched_setscheduler(0, libc::SCHED_FIFO, &param) };
                     if sched_result == 0 {
-                        tracing::info!("RT: SCHED_FIFO priority 50 enabled");
+                        eprintln!("RT: SCHED_FIFO priority 50 enabled");
                     } else {
-                        tracing::warn!(
+                        eprintln!(
                             "RT: sched_setscheduler failed: {}. Ensure CAP_SYS_NICE.",
                             std::io::Error::last_os_error()
                         );
                     }
                 }
+                // Note: the previous "(mlockall applied)" parenthetical here
+                // could lie on macOS where `mlockall` returns ENOTSUP, so the
+                // message now stands on its own.
                 #[cfg(not(target_os = "linux"))]
-                tracing::info!("RT: SCHED_FIFO not available on this platform (mlockall applied)");
+                eprintln!("RT: SCHED_FIFO not available on this platform");
             }
             #[cfg(not(unix))]
-            tracing::warn!("RT: --rt flag is only supported on Unix systems");
+            eprintln!("RT: --rt flag is only supported on Unix systems");
         }
 
         #[cfg(feature = "tracing")]

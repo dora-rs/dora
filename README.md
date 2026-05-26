@@ -30,7 +30,7 @@
 
 [**User Guide**](https://dora-rs.ai/dora/) | [**用户指南 (中文)**](https://dora-rs.ai/dora/zh-CN/)
 
-> Built and maintained with **agentic engineering** -- code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents.
+> Built and maintained with **agentic engineering** -- AI agents do the heavy lifting on code generation, reviews, refactoring, and testing; humans set direction and gate every merge.
 
 ---
 
@@ -158,13 +158,20 @@ dora run examples/python-dataflow/dataflow.yml
 This runs a sender -> transformer -> receiver pipeline. Here's what the Python node code looks like:
 
 ```python
-# sender.py -- sends 100 messages
+# sender.py -- sends messages and polls for STOP
 from dora import Node
 import pyarrow as pa
+import time
 
 node = Node()
-for i in range(100):
-    node.send_output("message", pa.array([i]))
+sent = 0
+while sent < 100:
+    event = node.try_recv()
+    if event is not None and event["type"] == "STOP":
+        break
+    node.send_output("message", pa.array([sent]))
+    sent += 1
+    time.sleep(0.1)
 ```
 
 ```python
@@ -245,6 +252,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | Command | Description |
 |---------|-------------|
 | `dora list` | List running dataflows (alias: `ps`) |
+| `dora clean` | Remove finished and failed dataflows from the coordinator |
 | `dora logs <ID>` | Show logs for a dataflow or node |
 | `dora top` | Real-time resource monitor (TUI); also `dora inspect top` |
 | `dora topic list` | List topics in a dataflow |
@@ -366,9 +374,11 @@ nodes:
 
 ## Architecture
 
-```
-CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
-             (orchestration)  (per machine)    (user code)
+```mermaid
+flowchart LR
+    CLI[CLI<br/>dora] --> Coordinator[Coordinator<br/>orchestration]
+    Coordinator --> Daemons[Daemon(s)<br/>per machine]
+    Daemons --> Nodes[Nodes / Operators<br/>user code]
 ```
 
 | Layer | Protocol | Purpose |
@@ -396,6 +406,7 @@ binaries/
   daemon/               # Node manager + IPC
   runtime/              # In-process operator runtime
   ros2-bridge-node/     # ROS2 bridge binary
+  mavlink2-bridge-node/ # MAVLink 2 bridge binary
   record-node/          # Dataflow message recorder
   replay-node/          # Recorded message replayer
 libraries/
@@ -409,6 +420,7 @@ libraries/
   extensions/
     telemetry/          # OpenTelemetry tracing + metrics
     ros2-bridge/        # ROS2 interop (bridge, msg-gen, arrow, python)
+    mavlink2-bridge/    # MAVLink 2 interop (Arrow ↔ MAVLink, TCP/UDP/serial)
     download/           # Download utilities
 apis/
   rust/node/            # Rust node API (dora-node-api)
@@ -428,7 +440,7 @@ examples/               # Example dataflows
 | Language | Node API | Operator API | Docs | Status |
 |----------|----------|--------------|------|--------|
 | Rust | `dora-node-api` | `dora-operator-api` | [API Reference](docs/api-rust.md) | First-class |
-| Python >= 3.8 | `pip install dora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
+| Python >= 3.11 | `pip install dora-rs` | included | [Getting Started](docs/python-guide.md), [API Reference](docs/api-python.md) | First-class |
 | C | `dora-node-api-c` | `dora-operator-api-c` | [API Reference](docs/api-c.md) | Supported |
 | C++ | `dora-node-api-cxx` | `dora-operator-api-cxx` | [API Reference](docs/api-cxx.md) | Supported |
 | ROS2 >= Foxy | `dora-ros2-bridge` | -- | [Bridge Guide](docs/ros2-bridge.md) | Experimental |
@@ -535,6 +547,15 @@ See [docs/patterns.md](docs/patterns.md) for the full guide.
 | [ros2-bridge/yaml-bridge-action](examples/ros2-bridge/yaml-bridge-action) | YAML ROS2 action client |
 | [ros2-bridge/yaml-bridge-action-server](examples/ros2-bridge/yaml-bridge-action-server) | YAML ROS2 action server |
 
+### MAVLink 2 integration
+
+| Example | Description |
+|---------|-------------|
+| [mavlink2-bridge (Rust)](examples/mavlink2-bridge/dataflow-rust.yml) | MAVLink 2 ↔ dora bridge, Rust telemetry consumer |
+| [mavlink2-bridge (Python)](examples/mavlink2-bridge/dataflow-python.yml) | Same bridge, Python telemetry consumer (`--uv`) |
+| [mavlink2-bridge (C++)](examples/mavlink2-bridge/dataflow-cxx.yml) | Same bridge, C++ telemetry consumer (`cargo run --example mavlink2-bridge-cxx`) |
+| [mavlink2-bridge-sitl-mission](examples/mavlink2-bridge-sitl-mission) | Closed-loop ArduCopter SITL: arm + takeoff + hover + land driven from a Python dora node (Ubuntu / macOS, local-only) |
+
 ## Development
 
 **Rust edition 2024; MSRV and default workspace package metadata are
@@ -639,9 +660,9 @@ For non-trivial work, discuss the approach in a GitHub issue, discussion, or Dis
 - [Discord](https://discord.gg/6eMGGutkfE)
 - [GitHub Discussions](https://github.com/orgs/dora-rs/discussions)
 
-## AI-Assisted Development
+## Agentic Engineering
 
-This repository is maintained with AI-assisted agentic engineering. Code generation, reviews, refactoring, testing, and commits are driven by autonomous AI agents -- enabling faster iteration and higher code quality at scale.
+This repository is built with agentic engineering. AI agents collaborate on day-to-day work -- code generation, reviews, refactoring, testing, drafting PR comments, triaging nightly regressions -- while maintainers set direction, review judgments, and authorize what ships. The two roles compound: AI agents move fast on mechanical work; humans catch the things that matter.
 
 ## License
 

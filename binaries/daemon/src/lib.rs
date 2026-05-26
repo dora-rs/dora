@@ -786,7 +786,7 @@ impl Daemon {
         // Reserve a loopback port and have zenoh listen on it. The endpoint is
         // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
         // discovery works without multicast (#1778).
-        let zenoh_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
+        let requested_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
             Ok(ep) => Some(ep),
             Err(err) => {
                 tracing::warn!(
@@ -796,9 +796,21 @@ impl Daemon {
                 None
             }
         };
-        let zenoh_session = open_zenoh_session_with_listen(None, zenoh_listen_endpoint.as_deref())
-            .await
-            .wrap_err("failed to open zenoh session")?;
+        // The helper is the source of truth for whether the listener actually
+        // bound: `zenoh_listen_endpoint` only becomes `Some` if zenoh accepted
+        // the listen/endpoints insert. Otherwise we must not inject
+        // `DORA_ZENOH_CONNECT` into spawned nodes — they would try to connect
+        // to an endpoint that nothing is listening on (#1856).
+        let (zenoh_session, zenoh_listen_endpoint) =
+            open_zenoh_session_with_listen(None, requested_listen_endpoint.as_deref())
+                .await
+                .wrap_err("failed to open zenoh session")?;
+        if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
+            tracing::warn!(
+                "requested zenoh listener but zenoh did not bind it; \
+                 spawned nodes will use multicast scouting only"
+            );
+        }
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
@@ -1047,7 +1059,8 @@ impl Daemon {
                             .entry(dataflow_id)
                             .or_default()
                             .insert(node_id.clone(), Err(error));
-                        self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                        // Error arm: surface as Failed (not Stopped).
+                        self.handle_node_stop(dataflow_id, &node_id, dynamic_node, false)
                             .await?;
                     }
                 },
@@ -1616,10 +1629,15 @@ impl Daemon {
                         .try_clone()
                         .await
                         .context("failed to clone logger")?;
+                    // Re-derive the managed Python env dir deterministically so
+                    // node restarts reuse the same venv that `dora build` prepared.
+                    let python_env_dir =
+                        dora_core::build::managed_python_env_dir(&node, &base_working_dir);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
                             base_working_dir,
+                            python_env_dir,
                             node_stderr,
                             None,
                             &mut logger,
@@ -1754,7 +1772,13 @@ impl Daemon {
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
                 }
-                let _ = reply_tx.send(None);
+                // Return a specific `AddNodeResult` variant so the
+                // coordinator can validate the reply against its
+                // expected request, instead of treating any non-error
+                // reply as success (#1682, rescue of #1757).
+                let reply =
+                    DaemonCoordinatorReply::AddNodeResult(result.map_err(|err| format!("{err:?}")));
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::RemoveNode {
@@ -1763,8 +1787,12 @@ impl Daemon {
                 grace_duration,
             } => {
                 tracing::info!(%dataflow_id, %node_id, "removing node from running dataflow");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let _ = dataflow.stop_single_node(&node_id, &self.clock, grace_duration);
+                let result: eyre::Result<()> = (|| {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    dataflow.stop_single_node(&node_id, &self.clock, grace_duration)?;
 
                     // Clean up routing tables: remove all mappings where this
                     // node is a source, and close inputs on downstream nodes.
@@ -1796,8 +1824,16 @@ impl Daemon {
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
                     dataflow.descriptor.nodes.retain(|n| n.id != node_id);
+                    Ok(())
+                })();
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");
                 }
-                let _ = reply_tx.send(None);
+                let reply = DaemonCoordinatorReply::RemoveNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::AddMapping {
@@ -1808,7 +1844,13 @@ impl Daemon {
                 target_input,
             } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -> {target_node}/{target_input}");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                // Previously this handler ignored unknown dataflow_id and
+                // always replied `None`, which the WS layer dropped on the
+                // floor → coordinator timed out after 30s without ever
+                // knowing whether the mapping applied. Reply with an
+                // explicit `AddMappingResult` so the coordinator can pattern-
+                // match the outcome (same class as #1682's AddNodeResult).
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     let output_id = OutputId(source_node, source_output);
                     dataflow
                         .mappings
@@ -1820,8 +1862,11 @@ impl Daemon {
                         .entry(target_node)
                         .or_default()
                         .insert(target_input);
-                }
-                let _ = reply_tx.send(None);
+                    Ok(())
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::AddMappingResult(result)));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::RemoveMapping {
@@ -1832,15 +1877,32 @@ impl Daemon {
                 target_input,
             } => {
                 tracing::info!(%dataflow_id, "{source_node}/{source_output} -x- {target_node}/{target_input}");
-                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let output_id = OutputId(source_node, source_output);
-                    if let Some(receivers) = dataflow.mappings.get_mut(&output_id)
-                        && receivers.remove(&(target_node.clone(), target_input.clone()))
-                    {
+                // Same silent-reply fix as AddMapping above.
+                // Errors on missing-mapping (rather than silently succeeding)
+                // to match the `RemoveNode` semantics in stop_single_node,
+                // which surface "node not found" as a daemon Err. A double-
+                // disconnect or typo'd edge then produces a clear CLI error
+                // instead of a misleading "Mapping removed" message.
+                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                    let output_id = OutputId(source_node.clone(), source_output.clone());
+                    let removed = dataflow
+                        .mappings
+                        .get_mut(&output_id)
+                        .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
+                        .unwrap_or(false);
+                    if removed {
                         close_input(dataflow, &target_node, &target_input, &self.clock);
+                        Ok(())
+                    } else {
+                        Err(format!(
+                            "mapping `{source_node}/{source_output}` -> \
+                             `{target_node}/{target_input}` not found"
+                        ))
                     }
-                }
-                let _ = reply_tx.send(None);
+                } else {
+                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
+                };
+                let _ = reply_tx.send(Some(DaemonCoordinatorReply::RemoveMappingResult(result)));
                 RunStatus::Continue
             }
             DaemonCoordinatorEvent::StartTopicDebugStream {
@@ -2222,6 +2284,7 @@ impl Daemon {
         let task = async move {
             let mut info = BuildInfo {
                 node_working_dirs: Default::default(),
+                python_env_dirs: Default::default(),
             };
             for task in tasks {
                 let NodeBuildTask {
@@ -2233,7 +2296,10 @@ impl Daemon {
                     .await
                     .with_context(|| format!("failed to build node `{node_id}`"))?;
                 info.node_working_dirs
-                    .insert(node_id, node.node_working_dir);
+                    .insert(node_id.clone(), node.node_working_dir);
+                if let Some(python_env_dir) = node.python_env_dir {
+                    info.python_env_dirs.insert(node_id, python_env_dir);
+                }
             }
             Ok(info)
         };
@@ -2289,8 +2355,10 @@ impl Daemon {
                 git_node.id
             )
         }
-        let node_working_dirs = build_info
-            .map(|info| info.node_working_dirs.clone())
+        // Reuse build-time metadata so runtime spawn can follow the same
+        // working-directory and managed-env decisions.
+        let (node_working_dirs, python_env_dirs) = build_info
+            .map(|info| (info.node_working_dirs.clone(), info.python_env_dirs.clone()))
             .unwrap_or_default();
 
         // calculate info about mappings
@@ -2400,11 +2468,30 @@ impl Daemon {
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
+                let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
+                // Fail closed under `--uv` when the build artifacts don't include a
+                // managed env for a node that needs one — happens with a stale session
+                // file, a prior non--uv build, or `dora start --uv` without rebuilding.
+                // Falling back silently would lose the isolation guarantees the user
+                // asked for by passing `--uv`.
+                if uv && configured_python_env_dir.is_none() {
+                    let expected =
+                        dora_core::build::managed_python_env_dir(&node, &node_working_dir);
+                    if expected.is_some() {
+                        eyre::bail!(
+                            "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
+                             but no managed env was recorded for it during build. \
+                             Re-run `dora build --uv <dataflow>` against the current build session, \
+                             or omit `--uv` to run against the ambient Python."
+                        );
+                    }
+                }
                 match spawner
                     .clone()
                     .spawn_node(
                         node,
                         node_working_dir,
+                        configured_python_env_dir,
                         node_stderr_most_recent,
                         node_write_events_to,
                         &mut logger,
@@ -2503,7 +2590,9 @@ impl Daemon {
             }
         }
         for (node_id, dynamic) in stopped {
-            self.handle_node_stop(dataflow_id, &node_id, dynamic)
+            // Pre-spawn failures (resolve/validate errors). Surface
+            // as Failed so the dataflow doesn't silently hide them.
+            self.handle_node_stop(dataflow_id, &node_id, dynamic, false)
                 .await?;
         }
 
@@ -3212,9 +3301,10 @@ impl Daemon {
         dataflow_id: Uuid,
         node_id: &NodeId,
         dynamic_node: bool,
+        exit_clean: bool,
     ) -> eyre::Result<()> {
         let result = self
-            .handle_node_stop_inner(dataflow_id, node_id, dynamic_node)
+            .handle_node_stop_inner(dataflow_id, node_id, dynamic_node, exit_clean)
             .await;
         let _ = self
             .events_tx
@@ -3229,11 +3319,20 @@ impl Daemon {
         result
     }
 
+    /// `exit_clean` indicates the process exited successfully (Success
+    /// exit status). Combined with `restarts_disabled` (operator
+    /// requested stop via `dora node stop` → `disable_restart()` set,
+    /// even when the SIGTERM-induced exit code is non-zero) it produces
+    /// the `clean_stop` flag sent to the coordinator: clean_stop = true
+    /// → `NodeStatus::Stopped` (auto-expires from `dora node list` after
+    /// the 60s grace), clean_stop = false → `NodeStatus::Failed` (stays
+    /// visible so `dora doctor` keeps reporting it).
     async fn handle_node_stop_inner(
         &mut self,
         dataflow_id: Uuid,
         node_id: &NodeId,
         dynamic_node: bool,
+        exit_clean: bool,
     ) -> eyre::Result<()> {
         let mut logger = self.logger.for_dataflow(dataflow_id);
         let dataflow = match self.running.get_mut(&dataflow_id) {
@@ -3268,20 +3367,64 @@ impl Daemon {
         self.handle_outputs_done(dataflow_id, node_id, might_restart)
             .await?;
 
-        let should_finish = {
+        // Capture `restarts_disabled` BEFORE the remove. Combined with
+        // `exit_clean` (passed from the caller, set when the exit_status
+        // was Success), produces the `clean_stop` flag:
+        //   - operator-requested stop: stop_single_node() set
+        //     disable_restart, SIGTERM-induced exit is non-zero
+        //     (exit_clean=false). restarts_disabled covers it.
+        //   - node finished its own work and exited 0: exit_clean=true.
+        //   - crash / panic / restart_policy=Never with non-zero exit:
+        //     neither bit is set → clean_stop=false → `Failed`, so the
+        //     row sticks around and `dora doctor` keeps reporting it.
+        let (should_finish, clean_stop) = {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                 format!(
                     "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
                 )
             })?;
+            let restarts_disabled = dataflow
+                .running_nodes
+                .get(node_id)
+                .map(|n| n.restarts_disabled())
+                .unwrap_or(false);
+            let clean_stop = exit_clean || restarts_disabled;
             dataflow.running_nodes.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
-            !dataflow.pending_nodes.local_nodes_pending()
+            let should_finish = !dataflow.pending_nodes.local_nodes_pending()
                 && dataflow
                     .running_nodes
                     .iter()
-                    .all(|(_id, n)| n.node_config.dynamic)
+                    .all(|(_id, n)| n.node_config.dynamic);
+            (should_finish, clean_stop)
         };
+
+        // Tell the coordinator the node is gone so its cached
+        // `node_metrics[node_id]` row stops claiming `Running` with the
+        // pre-exit PID/CPU/memory snapshot. Without this signal the
+        // daemon's metrics-snapshot loop simply omits the dead node and
+        // the coordinator's cache stays frozen at the last pre-exit
+        // values forever.
+        if let Some(sender) = self.coordinator_sender.as_mut() {
+            let msg = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::NodeStopped {
+                        dataflow_id,
+                        node_id: node_id.clone(),
+                        clean_stop,
+                    },
+                },
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to serialize NodeStopped")?;
+            if let Err(err) = sender.send_event(&msg).await {
+                tracing::warn!(
+                    %dataflow_id, %node_id,
+                    "failed to send NodeStopped to coordinator: {err}"
+                );
+            }
+        }
 
         if should_finish {
             self.finish_dataflow(dataflow_id).await?;
@@ -3560,46 +3703,121 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
-
-                        let cause = match caused_by_node {
-                            Some(caused_by_node) => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        Some("daemon".into()),
-                                        format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
-                                    )
-                                    .await;
-
-                                NodeErrorCause::Cascading { caused_by_node }
-                            }
-                            None if grace_duration_kill => NodeErrorCause::GraceDuration,
-                            None => {
-                                let cause = dataflow
-                                    .and_then(|d| d.node_stderr_most_recent.get(&node_id))
-                                    .map(|queue| {
-                                        let mut lines = Vec::new();
-                                        if queue.is_full() {
-                                            lines.push("[...]".into());
-                                        }
-                                        while let Some(line) = queue.pop() {
-                                            lines.push(line);
-                                        }
-                                        lines
-                                    })
-                                    .map(extract_err_from_stderr)
-                                    .unwrap_or_default();
-
-                                NodeErrorCause::Other { stderr: cause }
-                            }
-                        };
-                        Err(NodeError {
-                            timestamp: self.clock.new_timestamp(),
-                            cause,
+                        // The daemon explicitly sent SoftKill (SIGTERM)
+                        // to this node as part of an operator-initiated
+                        // stop (`dora stop`, `dora destroy`, `dora run
+                        // --stop-after`, `dora node stop`, `dora node
+                        // restart`) and the node responded by exiting.
+                        // On Unix the exit reports as `Signal(15)`.
+                        // Wrappers like `uv run python` catch SIGTERM
+                        // and exit with code 143 (= 128 + 15) instead
+                        // of propagating the signal, so `child.wait()`
+                        // returns `ExitCode(143)` not `Signal(15)`.
+                        // Same shape for SIGINT (2 / 130). Treat any of
+                        // those as a clean planned stop so `dora run
+                        // --stop-after` doesn't report a fake "Node
+                        // failed: exited with code 143" when the
+                        // dataflow shut down exactly as requested
+                        // (dora-rs/dora#1882).
+                        //
+                        // `grace_duration_kill` is the right
+                        // discriminant — not `restarts_disabled` —
+                        // because `disable_restart()` fires at subscribe
+                        // time for source nodes (see lib.rs:3203 where
+                        // `open_inputs().is_empty()` triggers it).
+                        // Using `restarts_disabled` would silently
+                        // swallow externally-sent SIGTERMs on source
+                        // nodes (e.g. `kill -TERM <pid>`) as clean.
+                        // `grace_duration_kills` is only populated by
+                        // the daemon's own SoftKill/Kill submission
+                        // path (`running_dataflow.rs::stop_all` and
+                        // `::send_stop_and_schedule_kill`), so it
+                        // accurately encodes "daemon asked this node to
+                        // stop."
+                        //
+                        // SIGKILL exits (Signal(9), happens when the
+                        // node didn't respond to SoftKill within the
+                        // secondary grace) fall through to the existing
+                        // `GraceDuration` branch — that's the original
+                        // semantic of GraceDuration and we want to
+                        // preserve it.
+                        //
+                        // Cascading failures still win — if some other
+                        // node failed first and this one was killed as
+                        // collateral, we want to surface the original
+                        // failure rather than hide it behind the
+                        // shutdown that followed.
+                        let is_sigterm_like = matches!(
                             exit_status,
-                        })
+                            NodeExitStatus::Signal(15)
+                                | NodeExitStatus::Signal(2)
+                                | NodeExitStatus::ExitCode(143)
+                                | NodeExitStatus::ExitCode(130)
+                        );
+                        if caused_by_node.is_none() && grace_duration_kill && is_sigterm_like {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("daemon".into()),
+                                    format!(
+                                        "`{node_id}` exited with {exit_status:?} during planned stop; treating as clean"
+                                    ),
+                                )
+                                .await;
+                            Ok(())
+                        } else {
+                            let cause = match caused_by_node {
+                                Some(caused_by_node) => {
+                                    logger
+                                        .log(
+                                            LogLevel::Info,
+                                            Some("daemon".into()),
+                                            format!("marking `{node_id}` as cascading error caused by `{caused_by_node}`")
+                                        )
+                                        .await;
+
+                                    NodeErrorCause::Cascading { caused_by_node }
+                                }
+                                None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                                None => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut lines = Vec::new();
+                                            if queue.is_full() {
+                                                lines.push("[...]".into());
+                                            }
+                                            while let Some(line) = queue.pop() {
+                                                lines.push(line);
+                                            }
+                                            lines
+                                        })
+                                        .map(extract_err_from_stderr)
+                                        .unwrap_or_default();
+
+                                    NodeErrorCause::Other { stderr: cause }
+                                }
+                            };
+                            Err(NodeError {
+                                timestamp: self.clock.new_timestamp(),
+                                cause,
+                                exit_status,
+                            })
+                        }
                     }
                 };
+
+                // Clear the per-incarnation kill marker so it doesn't
+                // leak into the next incarnation. `grace_duration_kills`
+                // is keyed only by `node_id`; if `restart=true` and we
+                // didn't clear here, a later external SIGTERM or
+                // unrelated 143 exit from the restarted process would
+                // still see `grace_duration_kill=true` and be
+                // misreported as `Ok(())`. The marker has done its job
+                // for this exit — drop it.
+                if let Some(dataflow) = self.running.get(&dataflow_id) {
+                    dataflow.grace_duration_kills.remove(&node_id);
+                }
 
                 logger
                     .log(
@@ -3740,12 +3958,13 @@ impl Daemon {
                         }
                     }
 
+                    let exit_clean = node_result.is_ok();
                     self.dataflow_node_results
                         .entry(dataflow_id)
                         .or_default()
                         .insert(node_id.clone(), node_result);
 
-                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node)
+                    self.handle_node_stop(dataflow_id, &node_id, dynamic_node, exit_clean)
                         .await?;
                 }
             }
@@ -4483,6 +4702,7 @@ mod fault_tolerance_tests {
             restart_count: Arc::new(AtomicU32::new(0)),
             restart_policy: RestartPolicy::Never,
             disable_restart: Arc::new(AtomicBool::new(false)),
+            force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
             health_check_timeout: None,
         }

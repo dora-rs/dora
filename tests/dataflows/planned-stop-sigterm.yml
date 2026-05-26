@@ -1,0 +1,14 @@
+# Regression fixture for dora-rs/dora#1882.
+#
+# `fire-and-forget-source-node` never calls `events.recv()`, so it
+# cannot honor the cooperative `Event::Stop`. The daemon is forced to
+# SIGTERM it after the grace period. With the dora-rs/dora#1882 fix,
+# that SIGTERM-induced exit must be reported as a clean stop (because
+# the operator asked the dataflow to stop), not as a node failure.
+
+nodes:
+  - id: fire-and-forget
+    build: cargo build -p fire-and-forget-source-node
+    path: ../../target/debug/fire-and-forget-source-node
+    outputs:
+      - value

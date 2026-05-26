@@ -21,3 +21,30 @@ DoraOnInputResult on_input(Operator &op, rust::Str id, rust::Slice<const uint8_t
     DoraOnInputResult result = {send_result.error, false};
     return result;
 }
+
+DoraOnInputResult on_input_closed(Operator &op, rust::Str id, OutputSender &output_sender)
+{
+    (void)output_sender;  // Example doesn't need to emit on input close.
+    std::cout << "Rust API operator: input `" << std::string(id) << "` closed" << std::endl;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}
+
+DoraOnInputResult on_stop(Operator &op, OutputSender &output_sender)
+{
+    (void)output_sender;  // Example doesn't emit a final output; a real
+                          // operator might call `send_output(output_sender, ...)`
+                          // here to flush buffered state before shutdown.
+    std::cout << "Rust API operator: stop received (counter was " << (unsigned int)op.counter << ")" << std::endl;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}
+
+DoraOnInputResult on_input_parse_error(Operator &op, rust::Str id, rust::Str error, OutputSender &output_sender)
+{
+    (void)op;
+    (void)output_sender;
+    std::cerr << "Rust API operator: input parse error on `" << std::string(id) << "`: " << std::string(error) << std::endl;
+    DoraOnInputResult result = {rust::String(), false};
+    return result;
+}

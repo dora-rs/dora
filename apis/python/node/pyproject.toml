@@ -5,11 +5,12 @@ build-backend = "maturin"
 [project]
 name = "dora-rs"
 dynamic = ["version"]
-# Install pyarrow at the same time of dora-rs
-requires-python = ">=3.8"
+# Install pyarrow at the same time of dora-rs.
+# Python >= 3.11 because abi3-py311 is the Cargo.toml floor (#1833 / #1291).
+requires-python = ">=3.11"
 license = { text = "MIT" }
 readme = "README.md"
-dependencies = ['pyarrow>=14.0.1', "pyyaml>=6.0"]
+dependencies = ['pyarrow>=14.0.1', "pyyaml>=6.0", "numpy>=1.20"]
 
 [dependency-groups]
 dev = ["pytest >=7.1.1", "ruff >=0.9.1"]

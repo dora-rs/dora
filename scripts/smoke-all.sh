@@ -307,6 +307,20 @@ if [ "$RUN_RUST" = true ]; then
         2>&1 | tail -1
 fi
 
+# mavlink2-bridge example: Rust variant runs in --rust-only mode; Python
+# variant adds the python printer; C++ variant is its own cargo example.
+# Build the Rust nodes (sim + emitter + bridge + rust printer) whenever
+# RUN_RUST is on; they're shared across the rust + python YAML variants.
+if [ "$RUN_RUST" = true ]; then
+    echo "Building mavlink2-bridge example nodes..."
+    cargo build \
+        -p dora-mavlink2-bridge-node \
+        -p mavlink2-bridge-example-mavlink-sim \
+        -p mavlink2-bridge-example-heartbeat-emitter \
+        -p mavlink2-bridge-example-telemetry-printer-rust \
+        2>&1 | tail -1
+fi
+
 # ---------------------------------------------------------------------------
 # Rust examples
 # ---------------------------------------------------------------------------
@@ -418,8 +432,22 @@ if [ "$RUN_RUST" = true ] && [ "$RUN_PYTHON" = true ]; then
     echo "=== Cross-language examples (local) ==="
     run_local "local-cross-language-rust-to-python" "examples/cross-language/rust-to-python.yml" 15
     run_local "local-cross-language-python-to-rust" "examples/cross-language/python-to-rust.yml" 15
+
+    echo ""
+    echo "=== MAVLink 2 bridge — Python variant ==="
+    run_networked "mavlink2-bridge-python"       "examples/mavlink2-bridge/dataflow-python.yml" 30
+    run_local     "local-mavlink2-bridge-python" "examples/mavlink2-bridge/dataflow-python.yml" 10
 else
-    log_skip "cross-language" "requires both Rust and Python"
+    log_skip "cross-language"          "requires both Rust and Python"
+    log_skip "mavlink2-bridge-python"  "requires both Rust and Python"
+fi
+
+# MAVLink 2 bridge — Rust variant runs without Python at all.
+if [ "$RUN_RUST" = true ]; then
+    echo ""
+    echo "=== MAVLink 2 bridge — Rust variant ==="
+    run_networked "mavlink2-bridge-rust"       "examples/mavlink2-bridge/dataflow-rust.yml" 30
+    run_local     "local-mavlink2-bridge-rust" "examples/mavlink2-bridge/dataflow-rust.yml" 10
 fi
 
 # ---------------------------------------------------------------------------
@@ -441,6 +469,7 @@ log_skip "cmake-dataflow" "CMake + C++"
 log_skip "python-dataflow-builder" "no YAML (API-based)"
 log_skip "dynamic-add-remove" "interactive dynamic topology CLI"
 log_skip "dynamic-agent-tools" "interactive dynamic topology CLI"
+log_skip "mavlink2-bridge-cxx" "C++ + Arrow C++ libs (covered by cxx examples job)"
 
 # ---------------------------------------------------------------------------
 # Summary

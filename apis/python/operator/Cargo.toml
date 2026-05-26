@@ -13,7 +13,7 @@ repository.workspace = true
 
 [dependencies]
 dora-node-api = { workspace = true }
-pyo3 = { workspace = true, features = ["eyre", "abi3-py37"] }
+pyo3 = { workspace = true, features = ["eyre", "abi3-py311"] }
 eyre = { workspace = true }
 serde_yaml = { workspace = true }
 flume = { workspace = true }
@@ -25,3 +25,6 @@ futures-concurrency = "7.3.0"
 chrono = { version = "0.4", features = ["serde"] }
 pythonize = { workspace = true }
 serde_json = { workspace = true }
+
+[build-dependencies]
+pyo3-build-config = { workspace = true }

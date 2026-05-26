@@ -353,6 +353,8 @@ dora build <PATH> [OPTIONS]
 
 **Git sources:** Nodes with a `git:` field are cloned/updated before building. The build command runs from the git repository root.
 
+**Managed Python environments (`--uv`):** For Python nodes (`.py` custom nodes with a `build:` block, and runtime nodes with Python operators), `--uv` now creates a dedicated `uv` virtual environment per node at `<working-dir>/.dora/python-envs/<node-id>/`. The build commands run inside that venv with `VIRTUAL_ENV` set and the env's `bin/` (or `Scripts/` on Windows) prepended to `PATH`. `dora start` and `dora run` automatically reuse the same interpreter at spawn time, so a Python node sees the exact dependencies installed at build time — no more drift between build and runtime, and no contamination across nodes. Custom Python nodes without a `build:` block keep using the caller's ambient `uv` environment. The env is reused (not re-created) on subsequent builds.
+
 #### `dora start`
 
 Start a dataflow on a running coordinator.
@@ -378,6 +380,14 @@ If neither `--attach` nor `--detach` is specified: attaches if running in a TTY,
 **Attach mode:** Streams logs, handles Ctrl-C gracefully (first = stop, second = force kill).
 
 **Hot reload:** Watches Python operator source files. On change, sends a reload request to the coordinator which propagates to the daemon.
+
+**Known limitation — editors that save by atomic rename (vim, JetBrains, some IDEs):** the watcher only triggers on `Modify(Data)` events from `notify-rs`, but vim's default save flow writes to a temp file and renames it over the original, which surfaces as `Remove(File)` instead. The reload then misses the change. See [#530](https://github.com/dora-rs/dora/issues/530) and the upstream notify-rs discussion at [notify-rs/notify#247](https://github.com/notify-rs/notify/issues/247).
+
+Workaround until [#530](https://github.com/dora-rs/dora/issues/530) lands a fix: configure your editor to write in place rather than atomic-rename.
+
+- **vim / neovim:** add `:set backupcopy=yes` to your `.vimrc`, or set it ad-hoc per session. This makes vim copy the file and overwrite in place (instead of write-temp + rename).
+- **JetBrains IDEs (PyCharm, IntelliJ):** Settings → Appearance & Behavior → System Settings → uncheck "Use 'safe write' (save changes to a temporary file first)".
+- **VS Code:** uses in-place writes by default; no workaround needed.
 
 #### `dora stop`
 
@@ -484,6 +494,49 @@ dora list [OPTIONS]
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
 **Output columns:** UUID, Name, Status, Nodes, CPU, Memory
+
+#### `dora clean`
+
+Remove fully-completed dataflows from the coordinator's state. Running dataflows are unaffected. Multi-daemon dataflows where some daemons have finished but others haven't are also skipped so the final status stays correct when the last daemon completes.
+
+```
+dora clean [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json` |
+| `--quiet`, `-q` | false | Print only cleaned UUIDs |
+| `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
+| `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+**What's removed:** Records of fully-completed (finished/failed) dataflows from `dataflow_results` and their archived descriptors, plus any persisted-only Succeeded/Failed records that exist on disk (in redb) but not in memory — typically the historical rows from before a coordinator restart, since the recovery loop intentionally does not reload completed dataflows into memory. The coordinator deletes each cleaned dataflow from the persisted store *first*, and only then drops it from in-memory state — so a dataflow only appears in the command's output when both sides actually got cleaned. The persisted-store deletion cascades to every `dora param` row that belonged to the cleaned dataflow, so the on-disk state file does not grow unboundedly and `param`-style commands that resolve targets via the persisted record stop seeing "ghost" cleaned dataflows.
+
+**What happens on a persisted-store failure:** If the persisted-store delete fails for one or more dataflows, the in-memory entries for those dataflows are preserved so a later `dora clean` can retry. The CLI prints a `warning:` line per failure to stderr and exits non-zero, so scripted callers can tell a partial outage apart from a clean (no-eligible) run. The successful entries on the same call are still printed to stdout in the chosen format.
+
+If the persisted-store *enumeration* itself fails (e.g. the redb file is corrupted or unreadable), the coordinator hard-fails the request: it returns a request error, the CLI exits non-zero with a message that names the underlying error, and no in-memory state is mutated. Degrading silently to in-memory-only would let the command report "nothing to clean" while historical rows are still sitting on disk — once the operator fixes the store, the next `dora clean` reaps everything.
+
+**What's NOT removed:**
+- Running dataflows.
+- Multi-daemon dataflows still finishing (some daemons reported results, others haven't yet) — these are intentionally skipped to preserve the partial state the coordinator needs to compute the final status correctly.
+- Cached build results (`finished_builds`) — clearing them would break concurrent `dora build` calls with "unknown build id" errors.
+
+**What's lost:** After cleaning, `dora logs <uuid>` no longer works for the cleaned dataflows (the archived metadata that backs log lookup is gone), and the persisted record is removed (so `dora param` commands against the cleaned UUID also fail). Save anything you might want to reference later before running `dora clean`.
+
+**When to use:** When `dora list` is cluttered with finished/failed dataflows from past runs and you want to see only what's currently running, or when a long-lived coordinator's redb state file has grown too large. Less destructive than `dora down + dora up` because the coordinator stays up and daemons stay connected.
+
+**Examples:**
+
+```bash
+# Drop all finished/failed records
+dora clean
+
+# Just print the UUIDs that were cleaned (for scripts)
+dora clean --quiet
+
+# Get JSON output (for tooling)
+dora clean --format json
+```
 
 #### `dora logs`
 

@@ -183,6 +183,22 @@ pub(crate) struct RunningDataflow {
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
     /// Latest metrics for each node (from daemons)
     pub(crate) node_metrics: BTreeMap<NodeId, NodeMetrics>,
+    /// Nodes the daemon has reported as finalized via `DaemonEvent::NodeStopped`.
+    /// Authoritative: any subsequent `NodeMetrics` push from the daemon for
+    /// a node in this set is dropped on the floor (stale pre-exit snapshot).
+    /// Covers BOTH `NodeStatus::Stopped` (clean) and `NodeStatus::Failed`
+    /// (crash / final-failure) so a delayed metrics task cannot resurrect
+    /// either kind of finalized row back to "Running" indefinitely.
+    /// Cleared by the grace-period sweep (for Stopped) or by `AddNode`
+    /// (when the same node id is added back to the dataflow).
+    pub(crate) node_finalized: BTreeSet<NodeId>,
+    /// When a node entered `NodeStatus::Stopped` (clean teardown only).
+    /// Drives the auto-expire sweep: after the grace window the row is
+    /// dropped from `node_metrics`/`node_finalized` so `dora node list`
+    /// stops showing zombies. `Failed` rows are NOT inserted here — they
+    /// stay visible until the dataflow itself is stopped so `dora doctor`
+    /// keeps reporting the crash.
+    pub(crate) node_stopped_at: BTreeMap<NodeId, Instant>,
     pub(crate) network_metrics: Option<dora_message::daemon_to_coordinator::NetworkMetrics>,
 
     pub(crate) spawn_result: CachedResult,
@@ -194,6 +210,13 @@ pub(crate) struct RunningDataflow {
     pub(crate) topic_subscribers: BTreeMap<Uuid, TopicSubscriber>,
 
     pub(crate) pending_spawn_results: BTreeSet<DaemonId>,
+    /// Coordinator-local timestamp captured when this `RunningDataflow` was
+    /// constructed (i.e. just before the per-daemon spawn dispatch). Used by
+    /// the heartbeat-driven watchdog to detect spawn flows that have been
+    /// pending past `SPAWN_RESULT_TIMEOUT` so waiters can be released with a
+    /// clear error instead of hanging on the client-side RPC deadline.
+    /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
+    pub(crate) spawn_started_at: Instant,
 
     /// Timestamp (unix millis) when this dataflow was first persisted.
     pub(crate) created_at: u64,
@@ -343,8 +366,9 @@ impl RunningDataflow {
         let descriptor_json = serde_json::to_string(&self.descriptor)
             .map_err(|e| eyre::eyre!("failed to serialize descriptor: {e}"))?;
         let status = match status {
-            DataflowStatus::Failed { error } => DataflowStatus::Failed {
+            DataflowStatus::Failed { error, terminal } => DataflowStatus::Failed {
                 error: truncate_str(&error, MAX_ERROR_BYTES).to_owned(),
+                terminal,
             },
             other => other,
         };
@@ -407,6 +431,22 @@ impl CachedResult {
             }
             CachedResult::Cached { .. } => {}
         }
+    }
+
+    /// Returns `true` if no result has been recorded yet. Used by the
+    /// heartbeat-driven spawn-timeout watchdog to decide whether to fire a
+    /// rollback-with-error path on a stuck pending spawn.
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self, CachedResult::Pending { .. })
+    }
+
+    /// Returns `true` if a terminally-failed result has already been cached.
+    /// Used by other handlers (auto-recovery, late `DataflowSpawnResult`
+    /// arms) to skip operations that would resurrect or muddle a dataflow
+    /// the spawn-timeout watchdog (or any other terminal-failure path)
+    /// has already marked as failed.
+    pub(crate) fn is_terminal_error(&self) -> bool {
+        matches!(self, CachedResult::Cached { result: Err(_) })
     }
 
     fn send_result_to(

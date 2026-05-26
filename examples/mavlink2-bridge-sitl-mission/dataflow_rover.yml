@@ -1,0 +1,41 @@
+nodes:
+  # Bridge connects to dronekit-sitl rover-2.50 over TCP 5760 (autopilot
+  # UART0). Rover-2.50 speaks MAVLink V1, so ?proto=v1 is required. The
+  # bridge auto-issues REQUEST_DATA_STREAM(MAV_DATA_STREAM_ALL) so
+  # GLOBAL_POSITION_INT, HEARTBEAT, COMMAND_ACK flow without a GCS asking.
+  - id: bridge
+    path: /home/demo/work/dora-mavlink/target/release/dora-mavlink2-bridge-node
+    env:
+      MAVLINK_BRIDGE_CONFIG: |
+        endpoint: tcp://127.0.0.1:5760?proto=v1
+    inputs:
+      command_long_cmd: mission/command_long_cmd
+      set_mode_cmd: mission/set_mode_cmd
+      rc_channels_override_cmd: mission/rc_channels_override_cmd
+    outputs:
+      - heartbeat
+      - global_position_int
+      - command_ack
+      - sys_status
+      - system_time
+      - attitude
+      - attitude_quaternion
+      - local_position_ned
+      - gps_raw_int
+      - rc_channels
+      - servo_output_raw
+      - command_long
+      - mission_current
+
+  # Rover mission: drives a square clockwise via RC override, telemetry
+  # via the bridge.
+  - id: mission
+    path: mission_rover.py
+    inputs:
+      heartbeat: bridge/heartbeat
+      global_position_int: bridge/global_position_int
+      command_ack: bridge/command_ack
+    outputs:
+      - command_long_cmd
+      - set_mode_cmd
+      - rc_channels_override_cmd

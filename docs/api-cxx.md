@@ -51,9 +51,44 @@ rust::Box<DoraEvent> next_event(rust::Box<Events>& events);
 
 Both forms block until the next event arrives and return an owned `DoraEvent`.
 
+### Non-blocking and timed receive
+
+For nodes that need to do work between events, or react to deadlines, the `Events` stream also offers non-blocking and timed variants of `next_event()`:
+
+```cpp
+// Block up to `timeout_ms` milliseconds for the next event. Returns
+// an event with `event_type() == Timeout` if the deadline elapses
+// before one arrives, or `AllInputsClosed` if the stream closed.
+rust::Box<DoraEvent> next_event_timeout(rust::Box<Events>& events, uint64_t timeout_ms);
+
+// Non-blocking poll. Returns `event_type() == Empty` if no event is
+// immediately available, or `AllInputsClosed` if the stream is closed.
+rust::Box<DoraEvent> try_next_event(rust::Box<Events>& events);
+
+// Hint: true when the event queue is currently empty. Treat as
+// advisory only -- the daemon can produce a new event between the
+// check and a subsequent receive.
+bool events_is_empty(const rust::Box<Events>& events);
+```
+
+For draining buffered events into a snapshot (useful when you want to process a batch all at once without racing the daemon):
+
+```cpp
+// Take a snapshot of all currently-buffered events. Subsequent
+// `next_event` / `try_next_event` calls only see events that arrive
+// after this point.
+rust::Box<DrainedEvents> drain_events(rust::Box<Events>& events);
+
+size_t drained_events_len(const rust::Box<DrainedEvents>& drained);
+
+// Pop the next event from a drained snapshot. Returns
+// `event_type() == Empty` once the snapshot is exhausted.
+rust::Box<DoraEvent> drained_events_next(rust::Box<DrainedEvents>& drained);
+```
+
 ### DoraEvent
 
-Opaque Rust type. Inspect its kind with `event_type()`, then downcast with `event_as_input()` or `event_as_arrow_input()`.
+Opaque Rust type. Inspect its kind with `event_type()`, then downcast with one of the variant extractors below.
 
 ```cpp
 // Determine the event kind.
@@ -75,6 +110,9 @@ ArrowInputInfo event_as_arrow_input_with_info(
     rust::Box<DoraEvent> event,
     uint8_t* out_array,
     uint8_t* out_schema);
+
+// Downcast to a NodeFailed payload. Throws if the event is not NodeFailed.
+DoraNodeFailed event_as_node_failed(rust::Box<DoraEvent> event);
 ```
 
 ### DoraEventType
@@ -87,8 +125,14 @@ enum class DoraEventType : uint8_t {
     Error,            // an error occurred
     Unknown,          // unrecognized event variant
     AllInputsClosed,  // all inputs closed (stream ended)
+    Empty,            // try_next_event / drained_events_next found no event ready
+    Timeout,          // next_event_timeout deadline elapsed without an event
+    NodeFailed,       // an upstream node failed (use event_as_node_failed to inspect)
+    Reload,           // hot-reload notification for an operator
 };
 ```
+
+`Empty` is distinct from `Timeout`: `Empty` means "no event available right now" (the caller did not request a timeout); `Timeout` means "the caller-supplied deadline elapsed before an event arrived". A non-blocking poll never returns `Timeout`; a timed receive returns either `Timeout` or `AllInputsClosed` if no event arrived in time.
 
 ### DoraInput
 
@@ -99,6 +143,29 @@ struct DoraInput {
     rust::String     id;    // input identifier (e.g. "tick", "image")
     rust::Vec<uint8_t> data;  // raw payload bytes
 };
+```
+
+### DoraNodeFailed
+
+Returned by `event_as_node_failed()`. Carries the failure information from an upstream node that exited unexpectedly. Use it to log the cause, flush downstream state, or trigger graceful shutdown.
+
+```cpp
+struct DoraNodeFailed {
+    rust::Vec<rust::String> affected_input_ids;  // inputs on this node that will stop receiving data
+    rust::String            error;               // human-readable error message from the failed node
+    rust::String            source_node_id;      // id of the node that failed
+};
+```
+
+Example:
+
+```cpp
+auto event = next_event(dora_node.events);
+if (event_type(event) == DoraEventType::NodeFailed) {
+    auto failed = event_as_node_failed(std::move(event));
+    std::cerr << "Upstream node `" << std::string(failed.source_node_id)
+              << "` failed: " << std::string(failed.error) << std::endl;
+}
 ```
 
 ### ArrowInputInfo
@@ -169,6 +236,40 @@ DoraResult send_arrow_output(
     uint8_t* schema_ptr,
     rust::Box<Metadata> metadata);
 ```
+
+#### close_outputs
+
+Selectively close one or more of this node's outputs without shutting the whole node down. Downstream subscribers see the corresponding `InputClosed` event for each closed output.
+
+```cpp
+DoraResult close_outputs(
+    rust::Box<OutputSender>& sender,
+    rust::Vec<rust::String> output_ids);
+```
+
+`output_ids` are validated as `DataId`s; an invalid id (e.g. one containing characters not allowed by the data-id grammar) returns a `DoraResult` whose `error` names the offending id and the underlying validation message, instead of aborting the process.
+
+#### node_config_json
+
+Return this node's `NodeRunConfig` (inputs, outputs, type annotations, framing overrides, etc. — the per-node block from the dataflow descriptor) serialized as JSON. Lets a C++ node reason about its own declared interface at runtime without re-parsing the dataflow yaml.
+
+```cpp
+rust::String node_config_json(const rust::Box<OutputSender>& sender);
+```
+
+Throws `rust::Error` if serialization fails (rare — `NodeRunConfig` has no fields that can produce serde errors in practice).
+
+#### dataflow_descriptor_json
+
+Return the full parsed `Descriptor` (the entire dataflow yaml) serialized as JSON. Useful for introspecting peer nodes, listing all topics, etc.
+
+```cpp
+rust::String dataflow_descriptor_json(const rust::Box<OutputSender>& sender);
+```
+
+Throws `rust::Error` if the daemon hasn't delivered the descriptor yet, or on serialization failure.
+
+> **Caution:** the returned JSON includes any `env` blocks declared on nodes in the dataflow yaml. Inline literals (`API_KEY: "..."`) **and** host-environment substitutions (`API_KEY: "${HOST_VAR}"`, expanded at descriptor parse time) both appear as plain strings in the output. Don't pipe the result into shared logs or telemetry without sanitizing if your dataflow can carry secrets in env vars.
 
 #### log_message
 
@@ -317,11 +418,13 @@ ROS2 subscriptions add their own events to the merged stream. Use `subscription-
 
 ## Operator API (`dora-operator-api-cxx`)
 
-Operators are shared libraries loaded by the Dora runtime. The C++ side implements two functions that the CXX bridge calls into.
+Operators are shared libraries loaded by the Dora runtime. The C++ side implements five functions that the CXX bridge calls into.
+
+> **Breaking change vs. earlier dora releases:** the operator API used to require only `new_operator` + `on_input`; `Event::InputClosed` and `Event::Stop` were silently dropped on the C++ side. As of dora #1849 the bridge calls `on_input_closed` and `on_stop` instead. As of dora #1879 the bridge also calls `on_input_parse_error`. Existing operators must add a no-op stub for each new function — `return { rust::String(), false };` is sufficient.
 
 ### Required C++ interface
 
-You must provide a header `operator.h` and an implementation file. The header declares an `Operator` class and two free functions:
+You must provide a header `operator.h` and an implementation file. The header declares an `Operator` class and five free functions:
 
 ```cpp
 // operator.h
@@ -342,14 +445,23 @@ DoraOnInputResult on_input(
     rust::Str id,
     rust::Slice<const uint8_t> data,
     OutputSender& output_sender);
+
+DoraOnInputResult on_input_closed(Operator& op, rust::Str id, OutputSender& output_sender);
+DoraOnInputResult on_stop(Operator& op, OutputSender& output_sender);
+DoraOnInputResult on_input_parse_error(Operator& op, rust::Str id, rust::Str error, OutputSender& output_sender);
 ```
 
 - `new_operator()` -- called once at startup; returns the operator instance.
 - `on_input()` -- called for every input event; process data and optionally send outputs.
+- `on_input_closed()` -- called when an upstream input stream closes (the daemon delivers `Event::InputClosed { id }`). Operator can log, flush per-input state, or `send_output(output_sender, ...)` to emit a final/status message in response. Set `result.stop = true` to request shutdown.
+- `on_stop()` -- called on graceful shutdown (the daemon delivers `Event::Stop`). Operator can drain output queues, persist final state, or `send_output(output_sender, ...)` to flush buffered data before returning.
+- `on_input_parse_error()` -- called when an input's Arrow data fails to deserialize (`Event::InputParseError { id, error }`). `id` identifies the affected input; `error` is the deserialization error string. Operator can log the error, surface it as health state, or request shutdown. Previously these events were silently dropped.
+
+Default implementations that simply log + return success are sufficient for operators that don't need to react to these events. See `examples/c++-dataflow/operator-rust-api/operator.cc` for a minimal reference.
 
 ### OutputSender (operator)
 
-Available inside `on_input()`. Sends data on a named output.
+Available inside all operator callbacks. Sends data on a named output.
 
 ```cpp
 DoraSendOutputResult send_output(
@@ -365,7 +477,11 @@ struct DoraOnInputResult {
     rust::String error;  // empty on success
     bool         stop;   // true to request graceful shutdown
 };
+```
 
+> **`error` and `stop` are mutually exclusive.** If `error` is non-empty the runtime treats the result as a fatal failure regardless of the `stop` field. Use `stop = true` only when `error` is empty.
+
+```cpp
 struct DoraSendOutputResult {
     rust::String error;  // empty on success
 };

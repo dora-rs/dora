@@ -1,0 +1,43 @@
+# Rust analog of examples/dynamic-add-remove. Used by the
+# tests/node-lifecycle-e2e.rs::lifecycle_rust_dynamic_add_remove test
+# (issue #1703).
+#
+# Base topology: sender -> receiver. Long-running (sender does NOT
+# exit after N ticks — it emits indefinitely until the dataflow is
+# torn down) so the lifecycle harness has time to exercise add /
+# connect / disconnect / remove / stop / restart against it without
+# the nodes terminating mid-test.
+#
+# Add a filter dynamically:
+#   dora node add --from-yaml filter-node.yml --dataflow <name>
+#   dora node connect <name> sender/value filter/input
+#   dora node connect <name> filter/output receiver/filtered
+
+nodes:
+  - id: sender
+    # `--target-dir` is forced to the workspace-relative `target` so the
+    # artifact lands at the path the `path:` field below resolves to,
+    # even when the surrounding shell sets `CARGO_TARGET_DIR` to a
+    # different location. Without this pin, `dora build` succeeds (cargo
+    # honors the env var) but `dora start` fails because the daemon
+    # looks at `../../target/debug/...` per the descriptor.
+    build: cargo build -p rust-dynamic-add-remove-sender --target-dir ../../target
+    path: ../../target/debug/rust-dynamic-add-remove-sender
+    outputs:
+      - value
+    inputs:
+      tick: dora/timer/millis/200
+
+  - id: receiver
+    build: cargo build -p rust-dynamic-add-remove-receiver --target-dir ../../target
+    path: ../../target/debug/rust-dynamic-add-remove-receiver
+    inputs:
+      value: sender/value
+      # The timer keeps the receiver's open_inputs set non-empty even
+      # after sender is operator-stopped, so dora-rs's Rust binding does
+      # not synthesize an `Event::Stop(AllInputsClosed)` that would
+      # auto-close the event stream (see
+      # `apis/rust/node/src/event_stream/mod.rs:484`). Without it the
+      # lifecycle harness would lose visibility on the dataflow as soon
+      # as `dora node stop sender` cascades through close_input.
+      tick: dora/timer/millis/500

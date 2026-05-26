@@ -1,5 +1,6 @@
 #include "../build/dora-node-api.h"
 
+#include <exception>
 #include <iostream>
 #include <vector>
 
@@ -9,6 +10,27 @@ int main()
     unsigned char counter = 0;
 
     auto dora_node = init_dora_node();
+
+    // Demonstrate runtime introspection: a node can ask the daemon
+    // what its own declared inputs/outputs look like, and what the
+    // full dataflow descriptor is, without re-parsing the yaml.
+    try
+    {
+        auto config = node_config_json(dora_node.send_output);
+        std::cout << "Node config: " << std::string(config) << std::endl;
+
+        auto descriptor = dataflow_descriptor_json(dora_node.send_output);
+        std::cout << "Dataflow descriptor length: " << descriptor.length() << std::endl;
+    }
+    catch (const std::exception &e)
+    {
+        // cxx throws `rust::Error` (a `std::exception` subclass) when a
+        // Rust function returning `Result<T>` fails. We catch by
+        // `std::exception` because `rust::Error` is part of cxx's runtime
+        // (`rust/cxx.h`) and is not re-exported into the bridge-specific
+        // header that user code sees.
+        std::cerr << "Introspection failed: " << e.what() << std::endl;
+    }
 
     for (int i = 0; i < 20; i++)
     {
@@ -37,6 +59,16 @@ int main()
                 std::cerr << "Error: " << error << std::endl;
                 return -1;
             }
+        }
+        else if (ty == DoraEventType::NodeFailed)
+        {
+            auto failed = event_as_node_failed(std::move(event));
+            std::cerr << "Node failed: source=" << std::string(failed.source_node_id)
+                      << " error=" << std::string(failed.error) << std::endl;
+        }
+        else if (ty == DoraEventType::Reload)
+        {
+            std::cout << "Reload event received" << std::endl;
         }
         else
         {

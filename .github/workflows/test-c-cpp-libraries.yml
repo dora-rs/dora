@@ -1,0 +1,149 @@
+name: Test C/C++ find_package
+
+# Exercises the find_package round-trip end-to-end on each platform
+# for all four crates the publish workflow packages:
+# dora-node-api-c, dora-operator-api-c, dora-node-api-cxx,
+# dora-operator-api-cxx. Each crate path: cargo build → xtask stage →
+# cmake configure → cmake build of a checked-in smoke fixture.
+# Guards #1756's find_package contract.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apis/c/**"
+      - 'apis/c\+\+/**'
+      # Transitive Rust deps — the C/C++ surfaces wrap these, so an
+      # ABI-breaking change here can silently regress find_package
+      # consumers without touching apis/c{,++}/.
+      - "apis/rust/node/**"
+      - "apis/rust/operator/**"
+      - "libraries/core/**"
+      - "libraries/message/**"
+      - "xtask/**"
+      - "tests/cmake-find-package-c/**"
+      - "tests/cmake-find-package-cxx/**"
+      - "tests/cmake-find-package-operator-c/**"
+      - "tests/cmake-find-package-operator-cxx/**"
+      - ".github/workflows/test-c-cpp-libraries.yml"
+  pull_request:
+    paths:
+      - "apis/c/**"
+      - 'apis/c\+\+/**'
+      # Transitive Rust deps — the C/C++ surfaces wrap these, so an
+      # ABI-breaking change here can silently regress find_package
+      # consumers without touching apis/c{,++}/.
+      - "apis/rust/node/**"
+      - "apis/rust/operator/**"
+      - "libraries/core/**"
+      - "libraries/message/**"
+      - "xtask/**"
+      - "tests/cmake-find-package-c/**"
+      - "tests/cmake-find-package-cxx/**"
+      - "tests/cmake-find-package-operator-c/**"
+      - "tests/cmake-find-package-operator-cxx/**"
+      - ".github/workflows/test-c-cpp-libraries.yml"
+  workflow_dispatch:
+
+jobs:
+  find-package-smoke:
+    name: find_package smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo target
+        uses: Swatinem/rust-cache@v2
+
+      # ============================================================
+      # C API: node + operator
+      # ============================================================
+      - name: Build C API crates
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p dora-node-api-c \
+            -p dora-operator-api-c
+
+      - name: Stage C libraries
+        shell: bash
+        # `--target` exercises the same cmake-config rewrite path that
+        # publish-c-cpp-libraries.yml uses for cross builds. On a
+        # single-platform smoke this is a no-op, but it pins the
+        # invocation shape against publish.
+        run: |
+          cargo run -p xtask -- stage dora-node-api-c "target/${{ matrix.target }}/release" dora-c-prefix --target "${{ matrix.target }}"
+          cargo run -p xtask -- stage dora-operator-api-c "target/${{ matrix.target }}/release" dora-c-prefix --target "${{ matrix.target }}"
+
+      - name: cmake smoke (C node)
+        shell: bash
+        run: |
+          cmake -S tests/cmake-find-package-c -B build-c \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/dora-c-prefix"
+          cmake --build build-c --config Release
+
+      - name: cmake smoke (C operator)
+        shell: bash
+        run: |
+          cmake -S tests/cmake-find-package-operator-c -B build-operator-c \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/dora-c-prefix"
+          cmake --build build-operator-c --config Release
+
+      # ============================================================
+      # C++ API: node + operator
+      # ============================================================
+      - name: Build C++ API crates
+        shell: bash
+        run: |
+          cargo build --release --target ${{ matrix.target }} \
+            -p dora-node-api-cxx \
+            -p dora-operator-api-cxx
+
+      - name: Generate host cxxbridge files
+        shell: bash
+        # Bridge headers/sources are platform-independent and the cxx
+        # tool writes them under `target/<triple>/cxxbridge/`. A host
+        # build (no --target) populates `target/cxxbridge/`, which is
+        # what xtask falls back to on cross builds.
+        run: cargo build --release -p dora-node-api-cxx -p dora-operator-api-cxx
+
+      - name: Stage C++ libraries
+        shell: bash
+        run: |
+          cargo run -p xtask -- stage dora-node-api-cxx "target/${{ matrix.target }}/release" dora-cpp-prefix --target "${{ matrix.target }}"
+          cargo run -p xtask -- stage dora-operator-api-cxx "target/${{ matrix.target }}/release" dora-cpp-prefix --target "${{ matrix.target }}"
+
+      - name: cmake smoke (C++ node)
+        shell: bash
+        run: |
+          cmake -S tests/cmake-find-package-cxx -B build-cxx \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/dora-cpp-prefix"
+          cmake --build build-cxx --config Release
+
+      - name: cmake smoke (C++ operator)
+        shell: bash
+        run: |
+          cmake -S tests/cmake-find-package-operator-cxx -B build-operator-cxx \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/dora-cpp-prefix"
+          cmake --build build-operator-cxx --config Release
