@@ -60,6 +60,14 @@ impl InteractiveEvents {
                 );
                 DaemonReply::Empty
             }
+            DaemonRequest::OutputSent { output_id, .. } => {
+                println!(
+                    "{} {}",
+                    "node reports output sent".yellow(),
+                    output_id.bright_blue().bold()
+                );
+                DaemonReply::Empty
+            }
             DaemonRequest::CloseOutputs(data_ids) => {
                 println!("{} {data_ids:?}", "node reports closed outputs".blue());
                 DaemonReply::Result(Ok(()))
