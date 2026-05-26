@@ -24,17 +24,20 @@ use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
 #[derive(Debug, Args)]
-/// Show logs of a given dataflow and node.
+/// Show logs of a given dataflow.
 pub struct LogsArgs {
-    /// Identifier of the dataflow
+    /// Identifier of the dataflow (UUID or name)
     #[clap(value_name = "UUID_OR_NAME")]
     pub dataflow: Option<String>,
-    /// Show logs for the given node (omit with --all-nodes)
-    #[clap(value_name = "NAME")]
+    /// Deprecated positional node name. Use --node instead.
+    #[clap(value_name = "NAME", hide = true, conflicts_with_all = ["node", "all_nodes"])]
+    pub legacy_node: Option<NodeId>,
+    /// Show logs for the given node
+    #[clap(long, short = 'n', value_name = "NAME", conflicts_with = "all_nodes")]
     pub node: Option<NodeId>,
     /// Show logs from all nodes merged by timestamp.
     /// Streams from coordinator by default, falls back to local out/ directory.
-    #[clap(long)]
+    #[clap(long, conflicts_with = "node")]
     pub all_nodes: bool,
     /// Number of lines to show from the end of the logs
     #[clap(long)]
@@ -94,6 +97,8 @@ impl Executable for LogsArgs {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
 
+        reject_legacy_node_arg(&self)?;
+
         // --local always uses local file path
         if self.local {
             if self.follow {
@@ -102,14 +107,12 @@ impl Executable for LogsArgs {
             return read_local_logs(&self);
         }
 
-        // Single node via coordinator (unchanged)
-        if let Some(ref _node) = self.node
-            && !self.all_nodes
-        {
-            let node = self.node.clone().unwrap();
+        // Single node via coordinator
+        if let Some(ref node) = self.node {
+            let node = node.clone();
             let config = build_log_config(&self)?;
             let session = self.coordinator.connect()?;
-            let uuid = resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+            let uuid = resolve_logs_dataflow_identifier(&session, self.dataflow.as_deref(), None)?;
             return logs(
                 &session,
                 uuid,
@@ -128,8 +131,11 @@ impl Executable for LogsArgs {
         // Try coordinator first, fall back to local
         match self.coordinator.connect() {
             Ok(session) => {
-                let uuid =
-                    resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
+                let uuid = resolve_logs_dataflow_identifier(
+                    &session,
+                    self.dataflow.as_deref(),
+                    legacy_positional_node(&self),
+                )?;
                 let config = build_log_config(&self)?;
                 stream_logs_from_coordinator(
                     &session,
@@ -149,24 +155,77 @@ impl Executable for LogsArgs {
     }
 }
 
+fn reject_legacy_node_arg(args: &LogsArgs) -> Result<()> {
+    if let Some(node) = &args.legacy_node {
+        let dataflow = args.dataflow.as_deref().unwrap_or("<DATAFLOW>");
+        bail!(
+            "positional node argument `{node}` is no longer supported\n\n  \
+             hint: use `dora logs {dataflow} --node {node}` instead"
+        );
+    }
+    Ok(())
+}
+
+fn legacy_positional_node(args: &LogsArgs) -> Option<&str> {
+    args.dataflow
+        .as_deref()
+        .filter(|_| args.node.is_none() && !args.all_nodes)
+}
+
+fn resolve_logs_dataflow_identifier(
+    session: &WsSession,
+    dataflow: Option<&str>,
+    legacy_node_hint: Option<&str>,
+) -> Result<Uuid> {
+    match resolve_dataflow_identifier_interactive(session, dataflow) {
+        Ok(uuid) => Ok(uuid),
+        Err(err) if legacy_node_hint.is_some() => {
+            let node = legacy_node_hint.unwrap();
+            Err(err).wrap_err_with(|| {
+                format!(
+                    "failed to resolve dataflow `{node}`\n\n  \
+                     hint: if you intended `{node}` as a node name, use `dora logs --node {node}`"
+                )
+            })
+        }
+        Err(err) => Err(err),
+    }
+}
+
+fn find_logs_dataflow_dir(out_dir: &Path, args: &LogsArgs) -> Result<PathBuf> {
+    match find_dataflow_dir(out_dir, args.dataflow.as_deref()) {
+        Ok(dir) => Ok(dir),
+        Err(err) if legacy_positional_node(args).is_some() => {
+            let node = legacy_positional_node(args).unwrap();
+            Err(err).wrap_err_with(|| {
+                format!(
+                    "failed to resolve local log dataflow `{node}`\n\n  \
+                     hint: if you intended `{node}` as a node name, use `dora logs --local --node {node}`"
+                )
+            })
+        }
+        Err(err) => Err(err),
+    }
+}
+
 fn read_local_logs(args: &LogsArgs) -> Result<()> {
     let out_dir = Path::new("out");
     if !out_dir.exists() {
         bail!(
             "no out/ directory found in current directory\n\n  \
              hint: local logs are stored in ./out/ when running with `dora run`.\n  \
-             For remote dataflows, connect to the coordinator with `dora logs -d <DATAFLOW>`"
+             For remote dataflows, connect to the coordinator with `dora logs <DATAFLOW>`"
         );
     }
 
     // Find the dataflow directory (most recent if not specified)
-    let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
+    let dataflow_dir = find_logs_dataflow_dir(out_dir, args)?;
 
     let config = build_log_config(args)?;
     let now = Utc::now();
 
     let log_files = match &args.node {
-        Some(node) if !args.all_nodes => find_node_log_files(&dataflow_dir, node)?,
+        Some(node) => find_node_log_files(&dataflow_dir, node)?,
         _ => find_log_files(&dataflow_dir)?,
     };
     if log_files.is_empty() {
@@ -200,16 +259,16 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         bail!(
             "no out/ directory found in current directory\n\n  \
              hint: local logs are stored in ./out/ when running with `dora run`.\n  \
-             For remote dataflows, connect to the coordinator with `dora logs -d <DATAFLOW>`"
+             For remote dataflows, connect to the coordinator with `dora logs <DATAFLOW>`"
         );
     }
 
-    let dataflow_dir = find_dataflow_dir(out_dir, args.dataflow.as_deref())?;
+    let dataflow_dir = find_logs_dataflow_dir(out_dir, args)?;
     let config = build_log_config(args)?;
     let now = Utc::now();
 
     let files = match &args.node {
-        Some(node) if !args.all_nodes => find_node_log_files(&dataflow_dir, node)?,
+        Some(node) => find_node_log_files(&dataflow_dir, node)?,
         _ => find_log_files(&dataflow_dir)?,
     };
 
