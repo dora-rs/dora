@@ -98,8 +98,7 @@ pub enum Command {
     /// Remove finished and failed dataflows from the coordinator
     #[clap(display_order = 10)]
     Clean(CleanArgs),
-    /// Show logs of a given dataflow and node
-    #[command(allow_missing_positional = true)]
+    /// Show logs of a given dataflow
     #[clap(display_order = 11)]
     Logs(LogsArgs),
     /// Inspect running dataflows in real-time
@@ -298,6 +297,54 @@ mod tests {
     #[test]
     fn parse_logs() {
         parse_ok(&["dora", "logs"]);
+    }
+
+    #[test]
+    fn parse_logs_dataflow() {
+        parse_ok(&["dora", "logs", "my-dataflow"]);
+    }
+
+    #[test]
+    fn parse_logs_node_flag() {
+        parse_ok(&["dora", "logs", "--node", "sensor"]);
+        parse_ok(&["dora", "logs", "-n", "sensor"]);
+    }
+
+    #[test]
+    fn parse_logs_dataflow_node_flag() {
+        parse_ok(&["dora", "logs", "my-dataflow", "--node", "sensor"]);
+    }
+
+    #[test]
+    fn parse_logs_all_nodes() {
+        parse_ok(&["dora", "logs", "my-dataflow", "--all-nodes"]);
+    }
+
+    #[test]
+    fn parse_logs_legacy_positional_node_for_runtime_hint() {
+        parse_ok(&["dora", "logs", "my-dataflow", "sensor"]);
+    }
+
+    #[test]
+    fn reject_logs_legacy_positional_node_with_node_flag() {
+        parse_err(&["dora", "logs", "my-dataflow", "sensor", "--node", "other"]);
+    }
+
+    #[test]
+    fn reject_logs_legacy_positional_node_with_all_nodes_flag() {
+        parse_err(&["dora", "logs", "my-dataflow", "sensor", "--all-nodes"]);
+    }
+
+    #[test]
+    fn reject_logs_node_and_all_nodes() {
+        parse_err(&[
+            "dora",
+            "logs",
+            "my-dataflow",
+            "--node",
+            "sensor",
+            "--all-nodes",
+        ]);
     }
 
     #[test]
