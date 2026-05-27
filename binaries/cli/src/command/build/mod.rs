@@ -52,7 +52,7 @@ use dora_core::{
     topics::{DORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST},
     types::TypeRegistry,
 };
-use dora_message::{BuildId, descriptor::NodeSource};
+use dora_message::{BuildId, common::GitSource, descriptor::NodeSource, id::NodeId};
 use eyre::Context;
 use std::{
     collections::BTreeMap,
@@ -437,24 +437,17 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 uv,
             )?;
 
-            dataflow_session.git_sources = git_sources;
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
-
             // wait until dataflow build is finished
+            let build_result =
+                wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info);
 
-            wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info)?;
-
-            dataflow_session.build_id = Some(build_id);
-            dataflow_session.local_build = None;
-            // Same fingerprint-recording rationale as the local-build branch
-            // above (#1444). The session file is the source of truth for
-            // "what descriptor produced this `build_id`."
-            dataflow_session.build_fingerprint = Some(session_build_fingerprint.clone());
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to write out dataflow session file")?;
+            finalize_distributed_build_session(
+                &mut dataflow_session,
+                &dataflow_path,
+                git_sources,
+                build_result,
+                session_build_fingerprint,
+            )?;
         }
     };
 
@@ -490,6 +483,29 @@ fn select_distributed_working_dir(
         ),
         (None, inferred) => Ok(inferred),
     }
+}
+
+fn finalize_distributed_build_session(
+    dataflow_session: &mut DataflowSession,
+    dataflow_path: &Path,
+    git_sources: BTreeMap<NodeId, GitSource>,
+    build_result: eyre::Result<BuildId>,
+    session_build_fingerprint: String,
+) -> eyre::Result<()> {
+    let build_id = build_result?;
+
+    dataflow_session.git_sources = git_sources;
+    dataflow_session.build_id = Some(build_id);
+    dataflow_session.local_build = None;
+    // Same fingerprint-recording rationale as the local-build branch above
+    // (#1444). The session file is the source of truth for "what descriptor
+    // produced this `build_id`."
+    dataflow_session.build_fingerprint = Some(session_build_fingerprint);
+    dataflow_session
+        .write_out_for_dataflow(dataflow_path)
+        .context("failed to write out dataflow session file")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -595,5 +611,105 @@ mod tests {
             select_distributed_working_dir(None, inferred.clone(), Path::new("/tmp/dataflow.yml"))
                 .unwrap();
         assert_eq!(selected, inferred);
+    }
+
+    fn git_source(repo: &str, commit_hash: &str) -> GitSource {
+        GitSource {
+            repo: repo.to_owned(),
+            commit_hash: commit_hash.to_owned(),
+        }
+    }
+
+    #[test]
+    fn distributed_build_failure_does_not_persist_new_git_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow_path = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow_path, "nodes: []\n").unwrap();
+
+        let old_build_id = BuildId::generate();
+        let old_git_sources = BTreeMap::from([(
+            "old-node".parse().unwrap(),
+            git_source("https://example.com/old.git", "old-commit"),
+        )]);
+        let initial_session = DataflowSession {
+            build_id: Some(old_build_id.clone()),
+            git_sources: old_git_sources.clone(),
+            build_fingerprint: Some("old-fingerprint".to_owned()),
+            ..DataflowSession::default()
+        };
+        let mut in_memory_session = initial_session.clone();
+        initial_session
+            .write_out_for_dataflow(&dataflow_path)
+            .unwrap();
+
+        let new_git_sources = BTreeMap::from([(
+            "new-node".parse().unwrap(),
+            git_source("https://example.com/new.git", "new-commit"),
+        )]);
+        let err = finalize_distributed_build_session(
+            &mut in_memory_session,
+            &dataflow_path,
+            new_git_sources,
+            Err(eyre::eyre!("coordinator build failed")),
+            "new-fingerprint".to_owned(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("coordinator build failed"));
+        assert_eq!(in_memory_session.build_id, Some(old_build_id));
+        assert_eq!(in_memory_session.git_sources, old_git_sources);
+        assert_eq!(
+            in_memory_session.build_fingerprint.as_deref(),
+            Some("old-fingerprint")
+        );
+
+        let persisted = DataflowSession::read_session(&dataflow_path).unwrap();
+        assert_eq!(persisted.build_id, initial_session.build_id);
+        assert_eq!(persisted.git_sources, initial_session.git_sources);
+        assert_eq!(
+            persisted.build_fingerprint,
+            initial_session.build_fingerprint
+        );
+    }
+
+    #[test]
+    fn distributed_build_success_persists_git_sources_and_build_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dataflow_path = tmp.path().join("dataflow.yml");
+        std::fs::write(&dataflow_path, "nodes: []\n").unwrap();
+
+        let mut session = DataflowSession::default();
+        session.write_out_for_dataflow(&dataflow_path).unwrap();
+
+        let build_id = BuildId::generate();
+        let git_sources = BTreeMap::from([(
+            "node".parse().unwrap(),
+            git_source("https://example.com/repo.git", "abc123"),
+        )]);
+        finalize_distributed_build_session(
+            &mut session,
+            &dataflow_path,
+            git_sources.clone(),
+            Ok(build_id.clone()),
+            "new-fingerprint".to_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(session.build_id, Some(build_id.clone()));
+        assert_eq!(session.git_sources, git_sources);
+        assert!(session.local_build.is_none());
+        assert_eq!(
+            session.build_fingerprint.as_deref(),
+            Some("new-fingerprint")
+        );
+
+        let persisted = DataflowSession::read_session(&dataflow_path).unwrap();
+        assert_eq!(persisted.build_id, Some(build_id));
+        assert_eq!(persisted.git_sources, session.git_sources);
+        assert!(persisted.local_build.is_none());
+        assert_eq!(
+            persisted.build_fingerprint.as_deref(),
+            Some("new-fingerprint")
+        );
     }
 }
