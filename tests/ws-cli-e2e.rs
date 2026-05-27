@@ -1426,9 +1426,10 @@ mod real_dataflow {
             let session = connect_session();
             let reply = super::send_request(&session, &ControlRequest::List).unwrap();
             if let ControlRequestReply::DataflowList(list) = reply
-                && let Some(entry) = list.0.first() {
-                    break entry.id.uuid;
-                }
+                && let Some(entry) = list.0.first()
+            {
+                break entry.id.uuid;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "dataflow never appeared in list"

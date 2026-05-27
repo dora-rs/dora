@@ -87,8 +87,6 @@ mod tests {
         parse_errors: Vec<(String, String)>,
     }
 
-    
-
     impl DoraOperator for RecordingOperator {
         fn on_event(
             &mut self,
