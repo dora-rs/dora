@@ -1980,45 +1980,16 @@ async fn start_inner(
                             tracing::warn!("failed to persist daemon unregistration: {e}");
                         }
                     }
-                    // Clean up running_dataflows: remove disconnected daemon references.
-                    //
-                    // Note: this intentionally does NOT fire `spawn_result.set_result()`
-                    // even if the disconnect leaves `pending_spawn_results` empty.
-                    // The spawn timeout watchdog (`check_spawn_timeouts`, below)
-                    // is the single chokepoint that releases `wait_for_spawn`
-                    // waiters with an error -- it fires regardless of *why*
-                    // `spawn_result` is still Pending past the deadline
-                    // (stuck daemon OR disconnect-mid-spawn). Adding a
-                    // direct set_result here would create two firing paths
-                    // and risk inconsistent error messages.
-                    for (_uuid, df) in running_dataflows.iter_mut() {
-                        for machine_id in &disconnected {
-                            df.daemons.remove(machine_id);
-                            df.pending_daemons.remove(machine_id);
-                            df.pending_spawn_results.remove(machine_id);
-                        }
-                        if df.daemons.is_empty() {
-                            tracing::error!(
-                                dataflow = %df.uuid,
-                                "all daemons disconnected — dataflow has no live daemons"
-                            );
-                        }
-                    }
-                    // Notify remaining daemons about disconnected peers
-                    for disconnected_id in &disconnected {
-                        let msg = serde_json::to_vec(&Timestamped {
-                            inner: DaemonCoordinatorEvent::PeerDaemonDisconnected {
-                                daemon_id: disconnected_id.clone(),
-                            },
-                            timestamp: clock.new_timestamp(),
-                        })
-                        .wrap_err("failed to serialize PeerDaemonDisconnected")?;
-                        for (_id, conn) in daemon_connections.iter_mut() {
-                            if let Err(err) = conn.send(&msg).await {
-                                tracing::warn!("failed to notify daemon of peer disconnect: {err}");
-                            }
-                        }
-                    }
+                    cleanup_disconnected_daemons_from_running_dataflows(
+                        &mut running_dataflows,
+                        &disconnected,
+                    );
+                    notify_daemons_about_disconnected_peers(
+                        &disconnected,
+                        &mut daemon_connections,
+                        &clock,
+                    )
+                    .await?;
                 }
                 // Spawn timeout watchdog: detect distributed starts that are
                 // stuck waiting for one or more `spawn_result` reports and
@@ -2160,6 +2131,17 @@ async fn start_inner(
                 if let Err(e) = store.unregister_daemon(&daemon_id) {
                     tracing::warn!("failed to persist daemon unregistration: {e}");
                 }
+                let disconnected = BTreeSet::from([daemon_id]);
+                cleanup_disconnected_daemons_from_running_dataflows(
+                    &mut running_dataflows,
+                    &disconnected,
+                );
+                notify_daemons_about_disconnected_peers(
+                    &disconnected,
+                    &mut daemon_connections,
+                    &clock,
+                )
+                .await?;
             }
             Event::NodeMetrics {
                 dataflow_id,
@@ -2861,6 +2843,53 @@ async fn fire_and_forget_rollback(
         }
     }
     errors
+}
+
+/// Remove disconnected daemon ids from all in-memory dataflow membership sets.
+///
+/// This intentionally does not resolve `spawn_result`: the spawn timeout
+/// watchdog remains the single path that releases spawn waiters for
+/// disconnect-mid-spawn cases.
+fn cleanup_disconnected_daemons_from_running_dataflows(
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    disconnected: &BTreeSet<DaemonId>,
+) {
+    for df in running_dataflows.values_mut() {
+        let mut affected = false;
+        for daemon_id in disconnected {
+            affected |= df.daemons.remove(daemon_id);
+            affected |= df.pending_daemons.remove(daemon_id);
+            affected |= df.pending_spawn_results.remove(daemon_id);
+        }
+        if affected && df.daemons.is_empty() {
+            tracing::error!(
+                dataflow = %df.uuid,
+                "all daemons disconnected - dataflow has no live daemons"
+            );
+        }
+    }
+}
+
+async fn notify_daemons_about_disconnected_peers(
+    disconnected: &BTreeSet<DaemonId>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+) -> Result<()> {
+    for disconnected_id in disconnected {
+        let msg = serde_json::to_vec(&Timestamped {
+            inner: DaemonCoordinatorEvent::PeerDaemonDisconnected {
+                daemon_id: disconnected_id.clone(),
+            },
+            timestamp: clock.new_timestamp(),
+        })
+        .wrap_err("failed to serialize PeerDaemonDisconnected")?;
+        for (_id, conn) in daemon_connections.iter_mut() {
+            if let Err(err) = conn.send(&msg).await {
+                tracing::warn!("failed to notify daemon of peer disconnect: {err}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Scan `running_dataflows` for spawns that have been pending past
@@ -4103,6 +4132,38 @@ mod tests {
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn disconnect_cleanup_removes_daemon_from_running_dataflow_membership() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        df.pending_daemons.insert(daemon_id.clone());
+        df.pending_spawn_results.insert(daemon_id.clone());
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_id.clone()]);
+
+        cleanup_disconnected_daemons_from_running_dataflows(&mut running_dataflows, &disconnected);
+
+        let df = running_dataflows
+            .get(&dataflow_id)
+            .expect("disconnect cleanup must not remove the dataflow");
+        assert!(!df.daemons.contains(&daemon_id));
+        assert!(!df.pending_daemons.contains(&daemon_id));
+        assert!(!df.pending_spawn_results.contains(&daemon_id));
+        assert_eq!(
+            df.node_to_daemon.get(&node_id),
+            Some(&daemon_id),
+            "original node assignment stays available for later failure synthesis"
+        );
+        assert!(
+            df.spawn_result.is_pending(),
+            "disconnect cleanup must leave spawn_result to the watchdog"
+        );
     }
 
     #[test]
