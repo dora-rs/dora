@@ -66,6 +66,20 @@ pub enum Event {
         dataflow_id: uuid::Uuid,
         node_id: NodeId,
     },
+    /// A data-plane output observed by the daemon's debug subscriber.
+    ///
+    /// Only emitted when the dataflow has `enable_debug_inspection` set.
+    /// Since #1787 routes node→node data directly over Zenoh (bypassing the
+    /// daemon's `send_out`), the daemon subscribes to its local nodes' output
+    /// topics so `dora topic info/echo/hz` can still observe live traffic.
+    /// Forwarded only to coordinator debug watchers — never re-delivered to
+    /// local receivers, which already got the payload directly via Zenoh.
+    DebugTopicData {
+        dataflow_id: DataflowId,
+        output_id: OutputId,
+        metadata: metadata::Metadata,
+        data: Option<Vec<u8>>,
+    },
 }
 
 impl From<DoraEvent> for Event {
@@ -93,6 +107,7 @@ impl Event {
             Event::BuildDataflowResult { .. } => "BuildDataflowResult",
             Event::SpawnDataflowResult { .. } => "SpawnDataflowResult",
             Event::NodeStopped { .. } => "NodeStopped",
+            Event::DebugTopicData { .. } => "DebugTopicData",
         }
     }
 }
