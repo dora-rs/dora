@@ -64,6 +64,14 @@ jobs:
         if: steps.check_pr.outputs.exists == 'false'
         run: cargo clippy --fix --allow-dirty --allow-staged --workspace --exclude rust-ros2-example-node --exclude dora-ros2-bridge --exclude dora-ros2-bridge-msg-gen --exclude dora-ros2-bridge-python --all-targets --all-features
 
+      # `clippy --fix` rewrites code structurally but does not run rustfmt, so its
+      # output can fail the required Format check (trailing whitespace, un-reindented
+      # blocks). Format here so the generated PR is fmt-clean (#1957). Same scope as
+      # CI's `cargo fmt --all -- --check`.
+      - name: Format clippy fixes
+        if: steps.check_pr.outputs.exists == 'false'
+        run: cargo fmt --all
+
       - name: Configure git
         if: steps.check_pr.outputs.exists == 'false'
         run: |
