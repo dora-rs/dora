@@ -374,12 +374,9 @@ nodes:
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    CLI[CLI<br/>dora] --> Coordinator[Coordinator<br/>orchestration]
-    Coordinator --> Daemons[Daemon(s)<br/>per machine]
-    Daemons --> Nodes[Nodes / Operators<br/>user code]
-```
+<p align="center">
+  <img src="docs/src/architecture.svg" alt="Dora architecture: dora CLI drives the Coordinator over a WebSocket control plane; the Coordinator launches a Daemon per host; Daemons and Nodes exchange data over the Zenoh data plane" width="680"/>
+</p>
 
 | Layer | Protocol | Purpose |
 |-------|----------|---------|
