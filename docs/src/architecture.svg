@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 440" width="720" height="440" role="img" aria-labelledby="title desc" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace">
+  <title id="title">Dora architecture</title>
+  <desc id="desc">dora CLI talks to the Coordinator over a WebSocket control plane; the Coordinator launches Daemons on each host; Daemons and Nodes exchange data over the Zenoh data plane.</desc>
+
+  <!-- card -->
+  <rect x="0.5" y="0.5" width="719" height="439" rx="18" fill="#14161d" stroke="#262b38"/>
+
+  <!-- control-plane connectors (solid + dashed green) -->
+  <path d="M360 72 V108" fill="none" stroke="#2fc78a" stroke-width="2"/>
+  <g fill="none" stroke="#2fc78a" stroke-width="1.5" stroke-dasharray="5 4">
+    <path d="M360 166 V186"/>
+    <path d="M160 186 H560"/>
+    <path d="M160 186 V208"/>
+    <path d="M360 186 V208"/>
+    <path d="M560 186 V208"/>
+  </g>
+
+  <!-- data-plane connectors (dashed blue) -->
+  <g fill="none" stroke="#5b73ff" stroke-width="1.3" stroke-dasharray="6 5">
+    <path d="M160 252 V286"/>
+    <path d="M360 252 V286"/>
+    <path d="M560 252 V286"/>
+    <path d="M86 326 V368"/>
+    <path d="M195.6 326 V368"/>
+    <path d="M305.2 326 V368"/>
+    <path d="M414.8 326 V368"/>
+    <path d="M524.4 326 V368"/>
+    <path d="M634 326 V368"/>
+  </g>
+
+  <!-- dora CLI -->
+  <rect x="300" y="28" width="120" height="44" rx="8" fill="#f2b33d"/>
+  <text x="360" y="55" text-anchor="middle" font-size="15" font-weight="700" fill="#1b1b1b">dora CLI</text>
+
+  <!-- Coordinator -->
+  <rect x="270" y="108" width="180" height="58" rx="8" fill="#2fc78a"/>
+  <text x="360" y="132" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">Coordinator</text>
+  <text x="360" y="151" text-anchor="middle" font-size="10.5" fill="#0b5238">WebSocket control plane</text>
+
+  <!-- Daemons -->
+  <g>
+    <rect x="85" y="208" width="150" height="44" rx="8" fill="#4d5bf0"/>
+    <text x="160" y="235" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">Daemon (host-1)</text>
+    <rect x="285" y="208" width="150" height="44" rx="8" fill="#4d5bf0"/>
+    <text x="360" y="235" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">Daemon (host-2)</text>
+    <rect x="485" y="208" width="150" height="44" rx="8" fill="#4d5bf0"/>
+    <text x="560" y="235" text-anchor="middle" font-size="12.5" font-weight="700" fill="#ffffff">Daemon (host-3)</text>
+  </g>
+
+  <!-- Zenoh data plane band -->
+  <rect x="55" y="286" width="610" height="40" rx="8" fill="none" stroke="#5b73ff" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="360" y="310" text-anchor="middle" font-size="12" fill="#8a99ff">Zenoh data plane</text>
+
+  <!-- Nodes -->
+  <g>
+    <rect x="40" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="86" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node A</text>
+    <rect x="149.6" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="195.6" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node B</text>
+    <rect x="259.2" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="305.2" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node C</text>
+    <rect x="368.8" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="414.8" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node D</text>
+    <rect x="478.4" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="524.4" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node E</text>
+    <rect x="588" y="368" width="92" height="40" rx="8" fill="#3c4254" stroke="#565d70"/>
+    <text x="634" y="392" text-anchor="middle" font-size="12" fill="#cdd2e0">Node F</text>
+  </g>
+</svg>
