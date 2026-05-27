@@ -143,6 +143,24 @@ fn start_dataflow(
     }
     drop(resolved_for_fingerprint);
 
+    // A local `dora build` produces artifacts that only exist on this machine.
+    // A distributed (`deploy`) dataflow is started through the coordinator and
+    // runs on remote daemons that cannot see that build, so the cached id is
+    // useless there and `dora start` cannot rebuild. Refuse early with an
+    // actionable message instead of letting the daemon fail confusingly (#1955).
+    let has_deploy_nodes = dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some());
+    if local_build_blocks_distributed_start(
+        dataflow_session.local_build.is_some(),
+        has_deploy_nodes,
+    ) {
+        eyre::bail!(
+            "this dataflow was built locally, but it has `deploy` sections and is started \
+             through the coordinator — remote daemons cannot use a local build.\n\n  \
+             run `dora build` against the running coordinator (without `--local`) to build on \
+             the target machines before `dora start`"
+        );
+    }
+
     if debug {
         dataflow_descriptor.debug.enable_debug_inspection = true;
     }
@@ -238,4 +256,37 @@ fn wait_until_dataflow_started(
         }
     }
     Ok(())
+}
+
+/// Whether a cached **local** build makes a **distributed** `dora start`
+/// unusable.
+///
+/// A local `dora build` records `local_build`; its artifacts live only on this
+/// machine. A distributed dataflow (one with `deploy` sections) is started
+/// through the coordinator and runs on remote daemons that cannot see that
+/// build. The daemon resolves build metadata by id (`self.builds.get(id)`), so
+/// the local id is unknown there and behaves exactly like no build: git-source
+/// nodes fail with "no `dora build` was run yet" and other nodes silently spawn
+/// with default working dirs/env. `dora start` does not build, so it cannot
+/// recover — refuse early and tell the user to run a distributed `dora build`
+/// (#1955). Local builds for non-distributed dataflows are fine and allowed.
+fn local_build_blocks_distributed_start(has_local_build: bool, has_deploy_nodes: bool) -> bool {
+    has_local_build && has_deploy_nodes
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_build_blocks_distributed_start_only_when_deployed_and_local() {
+        // local build on a `deploy` dataflow: remote daemons can't use it -> block.
+        assert!(local_build_blocks_distributed_start(true, true));
+        // distributed build (no local_build): the coordinator knows the id -> allow.
+        assert!(!local_build_blocks_distributed_start(false, true));
+        // single-machine dataflow with a local build: don't regress -> allow.
+        assert!(!local_build_blocks_distributed_start(true, false));
+        // nothing built: nothing to block -> allow.
+        assert!(!local_build_blocks_distributed_start(false, false));
+    }
 }
