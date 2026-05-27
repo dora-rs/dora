@@ -960,6 +960,15 @@ impl Daemon {
                 Event::Daemon(event) => {
                     self.handle_inter_daemon_event(event).await?;
                 }
+                Event::DebugTopicData {
+                    dataflow_id,
+                    output_id,
+                    metadata,
+                    data,
+                } => {
+                    self.handle_debug_topic_data(dataflow_id, output_id, metadata, data)
+                        .await?;
+                }
                 Event::Node {
                     dataflow_id: dataflow,
                     node_id,
@@ -2127,6 +2136,48 @@ impl Daemon {
         });
     }
 
+    /// Forward a debug-observed local output to coordinator debug watchers.
+    ///
+    /// Reconstructs the same `InterDaemonEvent::Output` frame that `send_out`
+    /// produced before #1787 moved data routing off the daemon, so the CLI's
+    /// `dora topic` inspection sees an unchanged wire format. Does **not**
+    /// deliver to local receivers — the publishing node already did that over
+    /// Zenoh.
+    async fn handle_debug_topic_data(
+        &self,
+        dataflow_id: DataflowId,
+        output_id: OutputId,
+        metadata: dora_message::metadata::Metadata,
+        data: Option<Vec<u8>>,
+    ) -> eyre::Result<()> {
+        // Skip (re)serialization when no CLI is currently watching this topic.
+        let has_watchers = self
+            .running
+            .get(&dataflow_id)
+            .map(|df| df.debug_topic_watchers.contains_key(&output_id))
+            .unwrap_or(false);
+        if !has_watchers {
+            return Ok(());
+        }
+
+        let event = InterDaemonEvent::Output {
+            dataflow_id,
+            node_id: output_id.0.clone(),
+            output_id: output_id.1.clone(),
+            metadata,
+            data: data.map(|d| AVec::from_slice(128, &d)),
+        };
+        let serialized_event = Timestamped {
+            inner: event,
+            timestamp: self.clock.new_timestamp(),
+        }
+        .serialize()
+        .wrap_err("failed to serialize debug topic event")?;
+
+        self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event)
+            .await
+    }
+
     async fn handle_inter_daemon_event(&mut self, event: InterDaemonEvent) -> eyre::Result<()> {
         match event {
             InterDaemonEvent::Output {
@@ -2413,6 +2464,73 @@ impl Daemon {
                     dataflow
                         .open_external_mappings
                         .insert(OutputId(mapping.source, mapping.output));
+                }
+            }
+        }
+
+        // When debug inspection is enabled, the daemon subscribes to its own
+        // local nodes' Zenoh output topics so `dora topic info/echo/hz` keep
+        // working. Since #1787, node→node data flows directly over Zenoh and
+        // never reaches the daemon's `send_out`; without this the inspection
+        // commands observe zero messages. Each sample is forwarded as an
+        // `Event::DebugTopicData` and only relayed to coordinator debug
+        // watchers — never re-delivered to local receivers (the publishing
+        // node already delivered the payload via Zenoh).
+        if dataflow.enable_debug_inspection {
+            for node in nodes.values().filter(|n| spawn_nodes.contains(&n.id)) {
+                for output_id in node.kind.run_config().outputs {
+                    let topic = zenoh_output_publish_topic(dataflow_id, &node.id, &output_id);
+                    tracing::debug!("declaring debug subscriber on {topic}");
+                    let subscriber = self
+                        .zenoh_session
+                        .declare_subscriber(topic.clone())
+                        .await
+                        .map_err(|e| eyre!(e))
+                        .wrap_err_with(|| {
+                            format!("failed to declare debug subscriber on {topic}")
+                        })?;
+                    let events_tx = self.events_tx.clone();
+                    let clock = self.clock.clone();
+                    let node_id = node.id.clone();
+                    let mut finished_rx = dataflow.finished_tx.subscribe();
+                    tokio::spawn(async move {
+                        let mut finished = pin!(finished_rx.recv());
+                        loop {
+                            match future::select(finished, subscriber.recv_async()).await {
+                                future::Either::Left((_, _)) => break,
+                                future::Either::Right((sample, f)) => {
+                                    finished = f;
+                                    let Ok(sample) = sample else { break };
+                                    // Node publishes raw payload + bincode metadata
+                                    // attachment (see `DoraNode::zenoh_publish`).
+                                    let Some(metadata) = sample.attachment().and_then(|a| {
+                                        bincode::deserialize::<dora_message::metadata::Metadata>(
+                                            &a.to_bytes(),
+                                        )
+                                        .ok()
+                                    }) else {
+                                        continue;
+                                    };
+                                    let event = Event::DebugTopicData {
+                                        dataflow_id,
+                                        output_id: OutputId(node_id.clone(), output_id.clone()),
+                                        metadata,
+                                        data: Some(sample.payload().to_bytes().to_vec()),
+                                    };
+                                    if events_tx
+                                        .send(Timestamped {
+                                            inner: event,
+                                            timestamp: clock.new_timestamp(),
+                                        })
+                                        .await
+                                        .is_err()
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    });
                 }
             }
         }
