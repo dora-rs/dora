@@ -26,6 +26,7 @@
   --quote-border: #2fc78a;
   --table-border-color: #CACFE0;
   --table-header-bg: #1A1D29;
+  --table-header-fg: #F0F2F8;
   --table-alternate-bg: #F5F7FA;
   --searchbar-border-color: #CACFE0;
   --searchbar-bg: #FFFFFF;
@@ -55,6 +56,7 @@ html.ayu, html.navy, html.coal, .ayu, .navy, .coal {
   --quote-border: #2fc78a;
   --table-border-color: #2f3346;
   --table-header-bg: #1a1d29;
+  --table-header-fg: #E8EAF2;
   --table-alternate-bg: #181b27;
   --searchbar-border-color: #2f3346;
   --searchbar-bg: #1a1d29;
@@ -160,7 +162,10 @@ html.light .content pre, html:not(.js) .content pre {
 /* ============ Tables ============ */
 .content table thead {
   background-color: var(--table-header-bg);
-  color: var(--fg);
+  /* Always-light header foreground: the navy header bg is dark in both
+     themes (sidebar-identity), so the fg must be light in both — using
+     --fg would resolve to dark text in the light theme. */
+  color: var(--table-header-fg);
 }
 
 .content table tr:nth-child(even) {
