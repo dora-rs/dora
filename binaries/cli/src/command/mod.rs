@@ -66,7 +66,7 @@ use validate::Validate;
 #[derive(Debug, clap::Subcommand)]
 pub enum Command {
     // -- Lifecycle --
-    /// Run a dataflow locally with embedded coordinator and daemon
+    /// Run a dataflow locally in isolation (no coordinator)
     #[clap(display_order = 1)]
     Run(Run),
     /// Start coordinator and daemon in local mode

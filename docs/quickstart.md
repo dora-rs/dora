@@ -36,15 +36,21 @@ cd my-project
 # Build all nodes
 dora build dataflow.yml
 
-# Run the dataflow (embedded coordinator + daemon)
+# Run the dataflow in isolation
 dora run dataflow.yml
 ```
 
 Press `Ctrl+C` to stop.
 
+`dora run` is an isolated single-shot mode: it spawns nodes in-process
+without a coordinator, so CLI monitoring commands (`dora list`, `dora
+stop`, `dora logs`, `dora top`, ...) do **not** attach to it. Use `dora
+up` + `dora start` (see [Networked Mode](#networked-mode) below) when
+you want to attach those tools or run more than one dataflow at a time.
+
 ## What Just Happened?
 
-`dora run` starts an embedded coordinator and daemon, builds your nodes, and runs the dataflow defined in `dataflow.yml`:
+`dora run` builds your nodes and runs the dataflow defined in `dataflow.yml`:
 
 ```
 Timer (1Hz) --> Talker --> Listener

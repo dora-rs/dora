@@ -6,7 +6,7 @@ use dora_core::{
     config::{DataId, Input, InputMapping, NodeId, NodeRunConfig, OperatorId},
     descriptor::{
         CoreNodeKind, DYNAMIC_SOURCE, Descriptor, DescriptorExt, ResolvedNode, RuntimeNode,
-        read_as_descriptor,
+        read_as_descriptor, validate,
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
@@ -611,15 +611,26 @@ impl Daemon {
         write_events_to: Option<PathBuf>,
         stop_after: Option<Duration>,
         debug: bool,
+        working_dir_override: Option<PathBuf>,
     ) -> eyre::Result<DataflowResult> {
-        let working_dir = dataflow_path
-            .canonicalize()
-            .context("failed to canonicalize dataflow path")?
-            .parent()
-            .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-            .to_owned();
+        let working_dir = match working_dir_override {
+            Some(p) => p
+                .canonicalize()
+                .context("failed to canonicalize working_dir override")?,
+            None => dataflow_path
+                .canonicalize()
+                .context("failed to canonicalize dataflow path")?
+                .parent()
+                .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
+                .to_owned(),
+        };
 
-        let mut descriptor = read_as_descriptor(dataflow_path).await?;
+        let raw_descriptor = read_as_descriptor(dataflow_path).await?;
+        // Expand module composition (must run before resolution; module
+        // nodes cause `resolve_aliases_and_set_defaults` to fail otherwise).
+        let mut descriptor = raw_descriptor
+            .expand(&working_dir)
+            .wrap_err("failed to expand modules in dataflow descriptor")?;
         if debug {
             descriptor.debug.enable_debug_inspection = true;
         }
@@ -632,7 +643,8 @@ impl Daemon {
             )
         }
 
-        descriptor.check(&working_dir)?;
+        validate::check_dataflow(&descriptor, &working_dir, None, false)
+            .wrap_err("Dataflow could not be validated.")?;
         let health_check_interval = descriptor
             .health_check_interval
             .map(Duration::from_secs_f64);
