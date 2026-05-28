@@ -157,7 +157,7 @@ jobs:
           set -e
           for sub in run up down build start stop restart list logs top \
                      topic node param record replay trace doctor status \
-                     new graph expand validate; do
+                     new graph expand validate completion inspect self; do
             cargo run --quiet -p dora-cli -- "$sub" --help > /dev/null
           done
           cargo run --quiet -p dora-cli -- --help > /dev/null
@@ -220,6 +220,14 @@ jobs:
             echo "$out" | grep -q "$id" \
               || { echo "ERROR: graph output missing node '$id'"; exit 1; }
           done
+      # Offline shell-completion generation must emit a non-empty script.
+      # Guards against clap_complete wiring regressions (#1800 A2).
+      - name: CLI smoke — dora completion
+        shell: bash
+        run: |
+          out=$(cargo run --quiet -p dora-cli -- completion bash)
+          echo "$out" | grep -q '_dora' \
+            || { echo "ERROR: dora completion bash produced no completion script"; exit 1; }
 
   e2e:
     name: E2E Tests
