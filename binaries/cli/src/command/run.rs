@@ -1,38 +1,39 @@
-//! The `dora run` command runs a dataflow locally with an embedded
-//! coordinator and daemon so that CLI monitoring commands (`dora list`,
-//! `dora stop`, `dora logs`, etc.) work during execution.
+//! The `dora run` command runs a dataflow locally in isolation: it
+//! spawns nodes in-process via `dora_daemon::Daemon::run_dataflow`
+//! without binding any coordinator port. As a result, `dora run` does
+//! NOT integrate with the CLI monitoring commands (`dora list`,
+//! `dora stop`, `dora logs`, `dora top`, ...). Use `dora up` + `dora
+//! start` instead when you need to attach those tools.
+//!
+//! Running isolated means:
+//!   - `dora run` can be invoked while `dora up` is already running
+//!     (the coordinator port is not contested).
+//!   - Multiple `dora run` calls can execute in parallel.
 
-use super::{Executable, system::status::daemon_running};
+use super::Executable;
 use crate::{
-    BuildConfig, LOCALHOST, build as build_dataflow,
-    common::{
-        canonicalize_working_dir, connect_with_retry, error_indicates_dataflow_finished,
-        handle_dataflow_result, resolve_dataflow, working_dir_or_parent, write_events_to,
-    },
+    BuildConfig, build as build_dataflow,
+    common::{handle_dataflow_result, resolve_dataflow, write_events_to},
     output::{
         LogFormat, LogOutputConfig, parse_log_filter, parse_log_level_str, print_log_message,
     },
     session::DataflowSession,
 };
-use dora_coordinator::{CoordinatorStore, InMemoryStore, SpanStore};
-use dora_core::{
-    build::LogLevelOrStdout,
-    descriptor::{Descriptor, DescriptorExt},
-    topics::DORA_COORDINATOR_PORT_WS_DEFAULT,
-};
-use dora_message::{
-    cli_to_coordinator::ControlRequest, common::LogMessage, coordinator_to_cli::ControlRequestReply,
-};
+use dora_core::build::LogLevelOrStdout;
+use dora_daemon::{Daemon, LogDestination, flume};
 use duration_str::parse as parse_duration_str;
-use eyre::{Context, bail};
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use eyre::Context;
+use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Builder;
 
 #[derive(Debug, clap::Args)]
-/// Run a dataflow locally.
+/// Run a dataflow locally in isolation.
 ///
-/// Runs the given dataflow with an embedded coordinator and daemon so that
-/// CLI commands like `dora list`, `dora stop`, and `dora logs` work.
+/// Spawns nodes in-process without a coordinator. CLI monitoring
+/// commands (`dora list`, `dora stop`, `dora logs`, ...) do NOT attach
+/// to a `dora run` execution. Use `dora up` + `dora start` instead when
+/// you need to attach those tools or run multiple coordinated
+/// dataflows.
 pub struct Run {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
@@ -131,12 +132,6 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
     run.execute()
 }
 
-/// Events delivered to the main wait loop.
-enum RunEvent {
-    CtrlC,
-    StopAfterElapsed,
-}
-
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
         if self.allow_shell_nodes {
@@ -144,15 +139,6 @@ impl Executable for Run {
             // so there are no concurrent reads of environment variables.
             unsafe { std::env::set_var("DORA_ALLOW_SHELL_NODES", "true") };
         }
-
-        // Register ctrlc handler FIRST (before tokio runtime) so the daemon's
-        // handler gracefully skips (it already handles the "already registered" case).
-        let (event_tx, event_rx) = std::sync::mpsc::channel::<RunEvent>();
-        let ctrlc_tx = event_tx.clone();
-        ctrlc::set_handler(move || {
-            let _ = ctrlc_tx.send(RunEvent::CtrlC);
-        })
-        .context("failed to set ctrl-c handler")?;
 
         let rt = Builder::new_multi_thread()
             .enable_all()
@@ -185,203 +171,12 @@ impl Executable for Run {
             ..Default::default()
         })
         .context("failed to build dataflow before run")?;
-        let mut dataflow_session = DataflowSession::read_session(&dataflow_path)
+        let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
 
-        let working_dir = working_dir_or_parent(self.working_dir.as_deref(), &dataflow_path);
-        let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
-            .wrap_err_with(|| {
-                format!(
-                    "failed to read dataflow at `{}`\n\n  \
-                     hint: check the file exists and is valid YAML",
-                    dataflow_path.display()
-                )
-            })?
-            .expand(working_dir)
-            .wrap_err("failed to expand modules in dataflow descriptor")?;
-        // Defense-in-depth invalidation. The preceding `build()` call should
-        // have refreshed the fingerprint, but if any code path skips the
-        // build (e.g. future flag) the cached `build_id` must still match
-        // current build-inputs — otherwise the embedded coordinator below
-        // would start nodes from stale artifacts (#1444).
-        let resolved_for_fingerprint = dataflow_descriptor
-            .resolve_aliases_and_set_defaults()
-            .context("failed to resolve nodes for session fingerprint")?;
-        if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
-            dataflow_session
-                .write_out_for_dataflow(&dataflow_path)
-                .context("failed to persist invalidated dataflow session")?;
-        }
-        drop(resolved_for_fingerprint);
-
-        if self.debug {
-            dataflow_descriptor.debug.enable_debug_inspection = true;
-        }
-
-        // Validate: dora run doesn't support deploy keys
-        if let Some(node) = dataflow_descriptor
-            .nodes
-            .iter()
-            .find(|n| n.deploy.is_some())
-        {
-            bail!(
-                "node {} has a `deploy` section, which is not supported in `dora run`\n\n\
-                 Instead, you need to spawn a `dora coordinator` and one or more `dora daemon`\n\
-                 instances and then use `dora start`.",
-                node.id
-            );
-        }
-
-        // --- Spawn embedded coordinator ---
-        log::warn!(
-            "embedded coordinator has no authentication enabled; \
-             any local process can connect and control dataflows. \
-             For production use, run `dora up --auth` instead."
-        );
-        let bind_addr: SocketAddr = (LOCALHOST, DORA_COORDINATOR_PORT_WS_DEFAULT).into();
-        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-        #[cfg(feature = "tracing")]
-        let span_store: SpanStore = None;
-        #[cfg(not(feature = "tracing"))]
-        let span_store: SpanStore = ();
-
-        let (coordinator_port, coordinator_handle) = rt.block_on(async {
-            let (port, future) = dora_coordinator::start_embedded(
-                bind_addr,
-                futures::stream::empty(),
-                store,
-                span_store,
-            )
-            .await
-            .context("failed to start embedded coordinator")?;
-
-            let handle = tokio::spawn(future);
-            Ok::<_, eyre::Report>((port, handle))
-        })?;
-
-        let coordinator_addr: SocketAddr = (LOCALHOST, coordinator_port).into();
-
-        // --- Spawn embedded daemon ---
-        // Pass build info from the session so git-source nodes can be found.
-        let initial_builds = match (
-            dataflow_session.build_id,
-            dataflow_session.local_build.clone(),
-        ) {
-            (Some(id), Some(info)) => {
-                let mut m = BTreeMap::new();
-                m.insert(id, info);
-                m
-            }
-            _ => BTreeMap::new(),
-        };
-        let daemon_handle = rt.spawn(dora_daemon::Daemon::run_with_builds(
-            coordinator_addr,
-            None,
-            BTreeMap::new(),
-            0,
-            initial_builds,
-        ));
-
-        // --- Wait for coordinator to accept connections ---
-        let session = connect_with_retry(coordinator_addr, Duration::from_secs(10))
-            .context("failed to connect to embedded coordinator")?;
-
-        // --- Wait for daemon to connect (poll on the same session) ---
-        {
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            loop {
-                match daemon_running(&session) {
-                    Ok(true) => break,
-                    Ok(false) if std::time::Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                    Ok(false) => {
-                        bail!("timed out waiting for daemon to connect to coordinator");
-                    }
-                    Err(e) => return Err(e).context("failed to check daemon status"),
-                }
-            }
-        }
-
-        // --- Start the dataflow via coordinator ---
-        let local_working_dir = Some(canonicalize_working_dir(
-            self.working_dir.as_deref(),
-            &dataflow_path,
-        )?);
-
-        let dataflow_id = {
-            let reply_raw = session
-                .request(
-                    &serde_json::to_vec(&ControlRequest::Start {
-                        build_id: dataflow_session.build_id,
-                        session_id: dataflow_session.session_id,
-                        dataflow: dataflow_descriptor.clone(),
-                        name: None,
-                        local_working_dir,
-                        uv: self.uv,
-                        write_events_to: write_events_to(),
-                    })
-                    .unwrap(),
-                )
-                .context("failed to send start dataflow message")?;
-
-            let result: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).context("failed to parse reply")?;
-            match result {
-                ControlRequestReply::DataflowStartTriggered { uuid } => uuid,
-                ControlRequestReply::Error(err) => bail!("{err}"),
-                other => bail!("unexpected start dataflow reply: {other:?}"),
-            }
-        };
-
-        // --- Wait for spawn ---
-        //
-        // Sub-second dataflows race against this request: the coordinator
-        // drops the running-dataflow entry on completion, so a WaitForSpawn
-        // that arrives afterwards comes back as `Error("unknown dataflow X")`.
-        // That's not a startup failure — the DataflowStartTriggered we
-        // already received proves the coordinator accepted the spawn. Treat
-        // it as evidence the dataflow ran to completion.
-        let mut spawn_already_finished = false;
-        {
-            let reply_raw = session
-                .request(
-                    &serde_json::to_vec(&ControlRequest::WaitForSpawn { dataflow_id }).unwrap(),
-                )
-                .context("failed to send WaitForSpawn message")?;
-            let result: ControlRequestReply =
-                serde_json::from_slice(&reply_raw).context("failed to parse reply")?;
-            match result {
-                ControlRequestReply::DataflowSpawned { uuid: _ } => {}
-                ControlRequestReply::Error(err) if error_indicates_dataflow_finished(&err) => {
-                    tracing::debug!(
-                        "dataflow {dataflow_id} finished before WaitForSpawn arrived: {err}"
-                    );
-                    spawn_already_finished = true;
-                }
-                ControlRequestReply::Error(err) => bail!(
-                    "dataflow failed to start: {err}\n\n  \
-                     hint: if nodes require building, run `dora build <dataflow.yml>` first"
-                ),
-                other => bail!("unexpected WaitForSpawn reply: {other:?}"),
-            }
-        }
-
-        // --- Subscribe to logs ---
         let node_filters = match &self.log_filter {
             Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,
             None => Default::default(),
-        };
-
-        let log_level = match &self.log_level {
-            LogLevelOrStdout::LogLevel(level) => match level {
-                ::log::Level::Error => ::log::LevelFilter::Error,
-                ::log::Level::Warn => ::log::LevelFilter::Warn,
-                ::log::Level::Info => ::log::LevelFilter::Info,
-                ::log::Level::Debug => ::log::LevelFilter::Debug,
-                ::log::Level::Trace => ::log::LevelFilter::Trace,
-            },
-            LogLevelOrStdout::Stdout => ::log::LevelFilter::Trace,
         };
 
         let log_config = LogOutputConfig {
@@ -392,144 +187,25 @@ impl Executable for Run {
             print_daemon_name: false,
         };
 
-        // Subscribing to logs also races against sub-second dataflows: the
-        // ack can come back with "no running dataflow with id X" even after
-        // a successful WaitForSpawn. Skip the stream (nothing to tail) but
-        // keep running so the remaining lifecycle bookkeeping still
-        // reports the dataflow exit status correctly.
-        let log_subscribe_request = serde_json::to_vec(&ControlRequest::LogSubscribe {
-            dataflow_id,
-            level: log_level,
-        })
-        .context("failed to serialize log subscribe")?;
-        let log_subscription = if spawn_already_finished {
-            None
-        } else {
-            match session.subscribe_logs(&log_subscribe_request) {
-                Ok(rx) => Some(rx),
-                Err(err) if error_indicates_dataflow_finished(&err.to_string()) => {
-                    tracing::debug!(
-                        "dataflow {dataflow_id} finished before log subscribe arrived: {err}"
-                    );
-                    None
-                }
-                Err(err) => return Err(err).context("failed to subscribe to logs"),
+        let (log_tx, log_rx) = flume::bounded(100);
+        std::thread::spawn(move || {
+            for message in log_rx {
+                print_log_message(message, &log_config);
             }
-        };
-
-        if let Some(log_rx) = log_subscription {
-            let log_event_tx = event_tx.clone();
-            std::thread::spawn(move || {
-                // Forward log messages to the print loop.
-                // When the log subscription closes (coordinator shuts down), the thread exits.
-                while let Ok(raw) = log_rx.recv() {
-                    let parsed: eyre::Result<LogMessage> = match raw {
-                        Ok(bytes) => {
-                            serde_json::from_slice(&bytes).context("failed to parse log message")
-                        }
-                        Err(err) => Err(err),
-                    };
-                    match parsed {
-                        Ok(msg) => print_log_message(msg, &log_config),
-                        Err(err) => tracing::warn!("failed to parse log message: {err:#}"),
-                    }
-                }
-                // Signal the main loop when log subscription closes (coordinator shutting down)
-                let _ = log_event_tx;
-            });
-        }
-
-        // --- Stop-after timer ---
-        if let Some(stop_after) = self.stop_after {
-            let stop_tx = event_tx;
-            std::thread::spawn(move || {
-                std::thread::sleep(stop_after);
-                let _ = stop_tx.send(RunEvent::StopAfterElapsed);
-            });
-        }
-
-        // --- Main wait loop ---
-        let mut ctrlc_count = 0u32;
-        let result = loop {
-            match event_rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(RunEvent::CtrlC) => {
-                    ctrlc_count += 1;
-                    if ctrlc_count >= 2 {
-                        // Force stop
-                        let _ = session.request(
-                            &serde_json::to_vec(&ControlRequest::Stop {
-                                dataflow_uuid: dataflow_id,
-                                grace_duration: None,
-                                force: true,
-                            })
-                            .unwrap(),
-                        );
-                        break None;
-                    }
-                    // Graceful stop
-                    let _ = session.request(
-                        &serde_json::to_vec(&ControlRequest::Stop {
-                            dataflow_uuid: dataflow_id,
-                            grace_duration: None,
-                            force: false,
-                        })
-                        .unwrap(),
-                    );
-                }
-                Ok(RunEvent::StopAfterElapsed) => {
-                    let _ = session.request(
-                        &serde_json::to_vec(&ControlRequest::Stop {
-                            dataflow_uuid: dataflow_id,
-                            grace_duration: None,
-                            force: false,
-                        })
-                        .unwrap(),
-                    );
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Poll dataflow status
-                    let reply_raw = session.request(
-                        &serde_json::to_vec(&ControlRequest::Check {
-                            dataflow_uuid: dataflow_id,
-                        })
-                        .unwrap(),
-                    );
-                    match reply_raw {
-                        Ok(raw) => {
-                            let result: ControlRequestReply = match serde_json::from_slice(&raw) {
-                                Ok(r) => r,
-                                Err(_) => continue,
-                            };
-                            if let ControlRequestReply::DataflowStopped { uuid, result } = result {
-                                break Some((uuid, result));
-                            }
-                        }
-                        Err(_) => {
-                            // Connection lost (coordinator gone), break out
-                            break None;
-                        }
-                    }
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    // All senders dropped, break out
-                    break None;
-                }
-            }
-        };
-
-        // --- Cleanup: destroy coordinator + daemon ---
-        let _ = session.request(&serde_json::to_vec(&ControlRequest::Destroy).unwrap());
-        drop(session);
-
-        // Wait for coordinator and daemon to finish
-        rt.block_on(async {
-            let _ = coordinator_handle.await;
-            let _ = daemon_handle.await;
         });
 
-        match result {
-            Some((uuid, dataflow_result)) => handle_dataflow_result(dataflow_result, Some(uuid)),
-            None => Ok(()),
-        }
+        let result = rt.block_on(Daemon::run_dataflow(
+            &dataflow_path,
+            dataflow_session.build_id,
+            dataflow_session.local_build,
+            dataflow_session.session_id,
+            self.uv,
+            LogDestination::Channel { sender: log_tx },
+            write_events_to(),
+            self.stop_after,
+            self.debug,
+            self.working_dir.clone(),
+        ))?;
+        handle_dataflow_result(result, None)
     }
 }
