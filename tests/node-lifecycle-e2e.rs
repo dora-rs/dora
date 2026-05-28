@@ -12,8 +12,7 @@
 //!
 //! Run with `cargo test --test node-lifecycle-e2e -- --test-threads=1`.
 //! Each test spawns a coordinator + daemon on the hard-coded port 6013
-//! (`binaries/cli/src/command/run.rs:226` for `dora run`,
-//! `dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT` for `dora up`),
+//! (`dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT` for `dora up`),
 //! so the in-file `LIFECYCLE_LOCK` serializes the tests within this
 //! binary and `--test-threads=1` is required for safety against other
 //! integration-test binaries that also use the default port.

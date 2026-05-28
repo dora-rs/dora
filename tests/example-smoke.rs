@@ -1650,18 +1650,12 @@ fn ensure_marker_absent(marker: &std::path::Path) {
 }
 
 /// Defense in depth, narrow scope: serializes ONLY these two shell-gate
-/// tests against each other. `dora run` embeds a coordinator on the
-/// hardcoded default port `binaries/cli/src/command/run.rs:226`, so two
-/// `dora run` instances race on bind(). The lock does NOT protect
-/// against:
-///   - Other tests in this file that also invoke `dora run` (e.g.
-///     `run_smoke_test_local` callers). Those would need a file-level
-///     lock or a project-wide refactor.
-///   - Multi-process runners like `cargo nextest run` or sharded CI:
-///     the mutex is process-local. A file lock (`fs2::FileExt::lock_exclusive`
-///     or similar) would cover that case.
-/// Both are out of scope for #1702. The file is documented to run with
-/// `--test-threads=1`, which is the canonical fix.
+/// tests against each other. The file is documented to run with
+/// `--test-threads=1`, which is the canonical fix; the mutex is a
+/// last-resort guard for accidental in-process parallel invocations.
+/// It does NOT protect against multi-process runners like `cargo
+/// nextest run` or sharded CI — those would need a file lock
+/// (`fs2::FileExt::lock_exclusive` or similar).
 static SHELL_GATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]

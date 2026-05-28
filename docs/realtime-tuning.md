@@ -356,9 +356,9 @@ Only if the PR touches code that could affect jitter (daemon hot path,
 send/recv loops, allocator changes).
 
 Both runs must go through an externally-started daemon so the `--rt`
-profile actually applies. `dora run` spawns its own embedded coordinator
-and daemon (see `binaries/cli/src/command/run.rs`) and will silently
-ignore the background `--rt` daemon, so use `dora start` instead.
+profile actually applies. `dora run` spawns its own in-process daemon
+(see `binaries/cli/src/command/run.rs`) and will silently ignore the
+background `--rt` daemon, so use `dora start` instead.
 
 ```bash
 # Stock run — plain daemon, no --rt
