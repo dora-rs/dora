@@ -546,6 +546,42 @@ jobs:
           dora topic pub -d tui-smoke ticker/count '42' --count 3 2>&1 | tee pub.out
           # `topic pub` prints "Published message N/3" on success.
           grep -q 'Published message 3/3' pub.out || { echo "ERROR: pub didn't emit all 3 messages"; exit 1; }
+      # CLI subcommand coverage (#1800 A2) — exercise the live commands that
+      # need a running coordinator + dataflow, reusing the tui-smoke fixture.
+      - name: dora doctor (coordinator reachable)
+        run: |
+          # doctor probes CLI/uv/coordinator/daemon/dataflow health. With the
+          # network up and a dataflow running, the coordinator check must pass.
+          # `tee` masks doctor's exit code, so the grep is the real assertion.
+          dora doctor 2>&1 | tee doctor.out || true
+          grep -q 'PASS  Coordinator' doctor.out \
+            || { echo "ERROR: doctor didn't report coordinator reachable"; cat doctor.out; exit 1; }
+      - name: dora inspect top --once (top alias)
+        run: |
+          # `inspect top` is the canonical path behind `dora top`; assert the
+          # alias produces the same JSON-array snapshot.
+          out=$(dora inspect top --once)
+          echo "$out" | grep -qE '^\[' \
+            || { echo "ERROR: inspect top --once didn't produce JSON array"; exit 1; }
+      - name: dora param list (running node)
+        run: |
+          # ticker declares no params; `param list` must still succeed and
+          # report the empty state (exercises the param-store query path).
+          dora param list ticker -d tui-smoke 2>&1 | tee param.out
+          grep -qi 'parameter' param.out \
+            || { echo "ERROR: param list produced no recognizable output"; cat param.out; exit 1; }
+      - name: dora logs (running dataflow)
+        run: |
+          # Smoke the log-retrieval path end-to-end. ticker may have no stdout
+          # yet, so the assertion is that the command succeeds (exit 0).
+          dora logs tui-smoke --node ticker
+      - name: dora restart (stop + re-start with stored descriptor)
+        run: |
+          # Disruptive (re-IDs the dataflow) — keep last among the live steps.
+          # Asserts the restart round-trips and reports the new dataflow id.
+          dora restart --name tui-smoke 2>&1 | tee restart.out
+          grep -q 'restarted' restart.out \
+            || { echo "ERROR: restart didn't report success"; cat restart.out; exit 1; }
       - name: Stop dataflow + tear down
         if: always()
         run: |
