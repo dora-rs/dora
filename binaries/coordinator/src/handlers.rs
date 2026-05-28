@@ -564,6 +564,7 @@ pub(crate) async fn build_dataflow(
         buffered_log_messages: Vec::new(),
         log_subscribers: Vec::new(),
         pending_build_results: daemons,
+        build_started_at: std::time::Instant::now(),
     })
 }
 
