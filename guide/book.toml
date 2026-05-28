@@ -12,5 +12,8 @@ create-missing = false
 after = ["links"]
 
 [output.html]
+default-theme = "ayu"
+preferred-dark-theme = "ayu"
 git-repository-url = "https://github.com/dora-rs/dora"
 edit-url-template = "https://github.com/dora-rs/dora/edit/main/guide/{path}"
+additional-css = ["theme/dora.css"]

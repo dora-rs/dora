@@ -1,0 +1,173 @@
+/* Dora User Guide Theme — Architecture-SVG Palette
+   Mint Accent:    #2fc78a / #1d9e6b  (primary accent, active links, headings)
+   Amber Title:    #f2b33d / #cc8f2a  (highlights, search marks, code emphasis)
+   Indigo:         #4d5bf0 / #3a45cc  (sidebar bg dark, branding accents)
+   Data Plane:     #5b73ff             (links in dark, secondary accent)
+   Carbon Dark:    #14161d / #1a1d29  (dark theme bg — matches the README SVG card)
+
+   Structurally inspired by adora-book's theme/adora.css (style only); colors
+   match the dora-rs.ai architecture diagram landed via #1954. */
+
+/* ============ Light Theme (Dora Light) ============ */
+.light, html:not(.js) {
+  --bg: #F5F7FA;
+  --fg: #181B27;
+  --sidebar-bg: #1A1D29;
+  --sidebar-fg: #B5BACC;
+  --sidebar-active: #2fc78a;
+  --sidebar-non-existant: #585d72;
+  --sidebar-spacer: #2f3346;
+  --links: #1d9e6b;
+  --inline-code-color: #cc8f2a;
+  --theme-popup-bg: #EAEDF5;
+  --theme-popup-border: #CACFE0;
+  --theme-hover: #DFE3F0;
+  --quote-bg: #EAEDF5;
+  --quote-border: #2fc78a;
+  --table-border-color: #CACFE0;
+  --table-header-bg: #1A1D29;
+  --table-header-fg: #F0F2F8;
+  --table-alternate-bg: #F5F7FA;
+  --searchbar-border-color: #CACFE0;
+  --searchbar-bg: #FFFFFF;
+  --searchbar-fg: #181B27;
+  --searchbar-shadow-color: rgba(47, 199, 138, 0.12);
+  --searchresults-border-color: #CACFE0;
+  --searchresults-li-bg: #EAEDF5;
+  --search-mark-bg: #f2b33d;
+  --color-scheme: light;
+}
+
+/* ============ Dark Themes (ayu, navy, coal) ============ */
+html.ayu, html.navy, html.coal, .ayu, .navy, .coal {
+  --bg: #14161d;
+  --fg: #E8EAF2;
+  --sidebar-bg: #1a1d29;
+  --sidebar-fg: #8a91ab;
+  --sidebar-active: #2fc78a;
+  --sidebar-non-existant: #585d72;
+  --sidebar-spacer: #262b3a;
+  --links: #5b73ff;
+  --inline-code-color: #f2b33d;
+  --theme-popup-bg: #1a1d29;
+  --theme-popup-border: #2f3346;
+  --theme-hover: #262b3a;
+  --quote-bg: #1a1d29;
+  --quote-border: #2fc78a;
+  --table-border-color: #2f3346;
+  --table-header-bg: #1a1d29;
+  --table-header-fg: #E8EAF2;
+  --table-alternate-bg: #181b27;
+  --searchbar-border-color: #2f3346;
+  --searchbar-bg: #1a1d29;
+  --searchbar-fg: #E8EAF2;
+  --searchbar-shadow-color: rgba(47, 199, 138, 0.18);
+  --searchresults-border-color: #2f3346;
+  --searchresults-li-bg: #1a1d29;
+  --search-mark-bg: #f2b33d;
+  --color-scheme: dark;
+}
+
+/* ============ Typography ============ */
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+code, pre code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* ============ Sidebar — Indigo accent on dark, matches architecture SVG ============ */
+.sidebar {
+  background-color: var(--sidebar-bg);
+  color: var(--sidebar-fg);
+}
+
+.sidebar ol.chapter li.chapter-item a {
+  color: var(--sidebar-fg);
+}
+
+.sidebar ol.chapter li.chapter-item a:hover {
+  color: var(--sidebar-active);
+}
+
+.sidebar ol.chapter li.chapter-item a.active {
+  color: var(--sidebar-active);
+  font-weight: 600;
+}
+
+/* Sidebar part titles (e.g. "Getting Started", "Concepts") */
+.sidebar .chapter li.part-title {
+  color: var(--sidebar-active);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 0.78em;
+  margin-top: 1.2em;
+}
+
+.sidebar .chapter li.part-title:first-child {
+  margin-top: 0.5em;
+}
+
+/* ============ Content — mint headings on dark, amber on light ============ */
+.content h1 {
+  color: var(--sidebar-active);
+  border-bottom: 1px solid var(--table-border-color);
+  padding-bottom: 0.3em;
+}
+
+.content h2 {
+  color: var(--inline-code-color);
+}
+
+.content h3 {
+  color: var(--links);
+}
+
+/* ============ Links — mint hover ============ */
+.content a {
+  color: var(--links);
+}
+
+.content a:hover {
+  color: var(--sidebar-active);
+  text-decoration: underline;
+}
+
+/* ============ Code blocks — dark cards with subtle border ============ */
+.content pre {
+  background-color: var(--sidebar-bg);
+  border: 1px solid var(--table-border-color);
+  border-radius: 6px;
+}
+
+html.light .content pre, html:not(.js) .content pre {
+  background-color: #F0F2F8;
+}
+
+.content code:not(pre code) {
+  color: var(--inline-code-color);
+  background: transparent;
+}
+
+/* ============ Blockquotes — mint left border, matches architecture SVG accent ============ */
+.content blockquote {
+  border-left: 4px solid var(--quote-border);
+  background-color: var(--quote-bg);
+  padding: 0.6em 1em;
+  border-radius: 0 4px 4px 0;
+}
+
+/* ============ Tables ============ */
+.content table thead {
+  background-color: var(--table-header-bg);
+  /* Always-light header foreground: the navy header bg is dark in both
+     themes (sidebar-identity), so the fg must be light in both — using
+     --fg would resolve to dark text in the light theme. */
+  color: var(--table-header-fg);
+}
+
+.content table tr:nth-child(even) {
+  background-color: var(--table-alternate-bg);
+}
