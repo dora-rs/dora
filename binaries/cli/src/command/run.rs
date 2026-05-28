@@ -194,18 +194,42 @@ impl Executable for Run {
             }
         });
 
-        let result = rt.block_on(Daemon::run_dataflow(
-            &dataflow_path,
-            dataflow_session.build_id,
-            dataflow_session.local_build,
-            dataflow_session.session_id,
-            self.uv,
-            LogDestination::Channel { sender: log_tx },
-            write_events_to(),
-            self.stop_after,
-            self.debug,
-            self.working_dir.clone(),
-        ))?;
+        // Drive `Daemon::run_dataflow` on a tokio worker thread, not the
+        // calling main thread. On Windows the main thread's default stack
+        // is 1 MiB, which the daemon's deeply-nested async state machine
+        // (zenoh + arrow + flume + coordinator I/O) overflows in debug
+        // builds — `target\debug\examples\rust-dataflow.exe` crashed with
+        // STATUS_STACK_OVERFLOW in the 05-28 nightly (#1964). tokio worker
+        // threads default to 2 MiB, which clears the overflow. Linux and
+        // macOS were unaffected because their main-thread stacks are
+        // multi-MiB by default. Regression from #1962.
+        //
+        // `run_dataflow` takes `&Path`, so the returned future borrows
+        // non-`'static`; move an owned `PathBuf` (plus the other Run
+        // fields) into the spawned task so the future is `'static`.
+        let dataflow_path_for_daemon = dataflow_path.clone();
+        let uv = self.uv;
+        let stop_after = self.stop_after;
+        let debug = self.debug;
+        let working_dir_override = self.working_dir.clone();
+        let handle = rt.spawn(async move {
+            Daemon::run_dataflow(
+                &dataflow_path_for_daemon,
+                dataflow_session.build_id,
+                dataflow_session.local_build,
+                dataflow_session.session_id,
+                uv,
+                LogDestination::Channel { sender: log_tx },
+                write_events_to(),
+                stop_after,
+                debug,
+                working_dir_override,
+            )
+            .await
+        });
+        let result = rt
+            .block_on(handle)
+            .context("dora-run daemon task panicked")??;
         handle_dataflow_result(result, None)
     }
 }
