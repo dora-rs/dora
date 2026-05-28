@@ -222,11 +222,15 @@ jobs:
           done
       # Offline shell-completion generation must emit a non-empty script.
       # Guards against clap_complete wiring regressions (#1800 A2).
+      # Use a here-string instead of `echo "$out" | grep -q`: under
+      # `set -eo pipefail`, `grep -q` exits as soon as it matches (line 1 of
+      # the 3712-line completion script), closing the pipe; `echo` is still
+      # writing, gets SIGPIPE, and `pipefail` fails the whole step.
       - name: CLI smoke — dora completion
         shell: bash
         run: |
           out=$(cargo run --quiet -p dora-cli -- completion bash)
-          echo "$out" | grep -q '_dora' \
+          grep -q '_dora' <<<"$out" \
             || { echo "ERROR: dora completion bash produced no completion script"; exit 1; }
 
   e2e:
