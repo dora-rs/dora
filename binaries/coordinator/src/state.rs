@@ -167,6 +167,15 @@ pub(crate) struct RunningBuild {
     pub(crate) log_subscribers: Vec<LogSubscriber>,
 
     pub(crate) pending_build_results: BTreeSet<DaemonId>,
+
+    /// Coordinator-local timestamp captured when this `RunningBuild` was
+    /// constructed (i.e. just after the per-daemon `TriggerBuild` dispatch).
+    /// Used by the heartbeat-driven watchdog to detect distributed builds
+    /// that have been pending past `BUILD_RESULT_TIMEOUT` so `wait_for_build`
+    /// waiters can be released with a clear error instead of hanging on the
+    /// client-side RPC deadline. Mirrors `RunningDataflow::spawn_started_at`
+    /// (#1465).
+    pub(crate) build_started_at: Instant,
 }
 
 pub(crate) struct RunningDataflow {

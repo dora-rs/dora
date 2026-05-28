@@ -52,6 +52,11 @@ const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
 /// failed dataflows. Keep the two in sync.
 const MAX_ARCHIVED_DATAFLOWS: usize = 200;
 
+/// Cap on the in-memory finished-builds history (FIFO via `IndexMap`).
+/// Lifted to module scope so the build-timeout watchdog and the
+/// `DataflowBuildResult` handler share the same eviction policy (#1465).
+const MAX_FINISHED_BUILDS: usize = 100;
+
 /// Default deadline after which a distributed spawn that has not received
 /// every daemon's `spawn_result` is considered stuck. The heartbeat-driven
 /// watchdog fails such spawns and rolls back any daemons that already
@@ -79,6 +84,30 @@ fn spawn_result_timeout() -> Duration {
             .filter(|&n| n > 0)
             .map(Duration::from_secs)
             .unwrap_or(SPAWN_RESULT_TIMEOUT_DEFAULT)
+    })
+}
+
+/// Default deadline after which a distributed build that has not received
+/// a `build_result` from every assigned daemon is treated as terminally
+/// failed by the watchdog. Mirrors [`SPAWN_RESULT_TIMEOUT_DEFAULT`] but is
+/// far larger because cold `--uv` Rust builds legitimately take 5–10 min;
+/// 20 min is a safety net for genuine hangs, not for slow-but-progressing
+/// builds. Overridable via `DORA_BUILD_RESULT_TIMEOUT_SECS` (#1465).
+const BUILD_RESULT_TIMEOUT_DEFAULT: Duration = Duration::from_secs(20 * 60);
+
+/// Reads `DORA_BUILD_RESULT_TIMEOUT_SECS` once and caches the result, same
+/// pattern as [`spawn_result_timeout`]. Invalid or non-positive values fall
+/// back to [`BUILD_RESULT_TIMEOUT_DEFAULT`].
+fn build_result_timeout() -> Duration {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<Duration> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("DORA_BUILD_RESULT_TIMEOUT_SECS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .filter(|&n| n > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(BUILD_RESULT_TIMEOUT_DEFAULT)
     })
 }
 
@@ -1984,6 +2013,10 @@ async fn start_inner(
                         &mut running_dataflows,
                         &disconnected,
                     );
+                    cleanup_disconnected_daemons_from_running_builds(
+                        &mut running_builds,
+                        &disconnected,
+                    );
                     notify_daemons_about_disconnected_peers(
                         &disconnected,
                         &mut daemon_connections,
@@ -2014,6 +2047,13 @@ async fn start_inner(
                     store.as_ref(),
                 )
                 .await;
+
+                // Build timeout watchdog — mirror of `check_spawn_timeouts`
+                // for `running_builds`. Releases `wait_for_build` waiters
+                // that would otherwise hang on the client-side RPC deadline
+                // when a daemon participating in `dora build` disconnects
+                // or otherwise never reports its `build_result`. #1465.
+                check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
 
                 // Recovery timeout: transition stale Recovering dataflows to Failed.
                 // Dataflows are marked Recovering on coordinator startup and should
@@ -2240,16 +2280,22 @@ async fn start_inner(
                         ));
 
                         finished_builds.insert(build_id, build.build_result);
-                        // Cap cached builds — evict oldest (FIFO via IndexMap)
-                        const MAX_FINISHED_BUILDS: usize = 100;
                         while finished_builds.len() > MAX_FINISHED_BUILDS {
                             finished_builds.shift_remove_index(0);
                         }
                     }
                 }
                 None => {
+                    // Build no longer in `running_builds` — usually means
+                    // the watchdog (`check_build_timeouts`) already marked
+                    // it as terminally failed and moved it to
+                    // `finished_builds`. Late replies are expected in that
+                    // case; warn but do not resurrect (the cached failure
+                    // result is the authoritative one). #1465.
                     tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                        build_id = %build_id,
+                        daemon_id = %daemon_id,
+                        "received DataflowBuildResult for a build no longer in `running_builds` (already finalized or timed out — ignoring)"
                     );
                 }
             },
@@ -2870,6 +2916,25 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     }
 }
 
+/// Mirror of [`cleanup_disconnected_daemons_from_running_dataflows`] for
+/// `running_builds`: prune disconnected daemon IDs from each running build's
+/// `pending_build_results` so the in-memory state matches the live cluster.
+///
+/// This intentionally does NOT resolve `build_result` — the build timeout
+/// watchdog ([`check_build_timeouts`]) remains the single path that releases
+/// build waiters, preserving the chokepoint architecture documented at the
+/// disconnect-handler comment above (#1465).
+fn cleanup_disconnected_daemons_from_running_builds(
+    running_builds: &mut HashMap<BuildId, RunningBuild>,
+    disconnected: &BTreeSet<DaemonId>,
+) {
+    for build in running_builds.values_mut() {
+        for daemon_id in disconnected {
+            build.pending_build_results.remove(daemon_id);
+        }
+    }
+}
+
 async fn notify_daemons_about_disconnected_peers(
     disconnected: &BTreeSet<DaemonId>,
     daemon_connections: &mut DaemonConnections,
@@ -3189,6 +3254,102 @@ async fn check_spawn_timeouts(
             archived_dataflows.shift_remove_index(0);
         }
         // `df` drops here, releasing all remaining resources.
+    }
+}
+
+/// Scan `running_builds` for builds that have been pending past
+/// [`build_result_timeout`] and resolve them as terminally failed.
+///
+/// Mirrors [`check_spawn_timeouts`] but for builds, and is simpler:
+/// there is no per-daemon "succeeded" state to roll back — a timed-out
+/// build is just released. Daemons' local build artifacts (if any)
+/// stay on disk and can be reused by a future `dora build`; the user
+/// gets an actionable error immediately instead of a hung
+/// `wait_for_build`.
+///
+/// For each stuck build the watchdog:
+/// 1. Removes the entry from `running_builds`.
+/// 2. Sets `build_result` to `Err` with a clear timeout message so
+///    already-registered `wait_for_build` waiters are released.
+/// 3. Sends a final log line to subscribers (`dora build --attach`).
+/// 4. Inserts the cached result into `finished_builds` (FIFO-capped)
+///    so a `wait_for_build` registered AFTER the watchdog fired also
+///    receives the cached error rather than "unknown build id".
+///
+/// Idempotent: `CachedResult::set_result` is a no-op on already-Cached
+/// values, and a build removed from `running_builds` simply doesn't
+/// reappear in the next heartbeat tick's filter. Late
+/// `DataflowBuildResult` replies after this fires fall into the
+/// `running_builds.get_mut → None` arm in the event handler (warn
+/// only, no resurrection).
+///
+/// Rescue of [#1465](https://github.com/dora-rs/dora/issues/1465).
+async fn check_build_timeouts(
+    running_builds: &mut HashMap<BuildId, RunningBuild>,
+    finished_builds: &mut IndexMap<BuildId, CachedResult>,
+    clock: &HLC,
+) {
+    let timeout_threshold = build_result_timeout();
+    let stuck: Vec<(BuildId, usize)> = running_builds
+        .iter()
+        .filter_map(|(id, build)| {
+            if build.build_result.is_pending()
+                && build.build_started_at.elapsed() > timeout_threshold
+            {
+                Some((*id, build.pending_build_results.len()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (build_id, pending_count) in stuck {
+        tracing::warn!(
+            build_id = %build_id,
+            timeout_secs = timeout_threshold.as_secs(),
+            pending = pending_count,
+            "build timeout: releasing wait_for_build waiters",
+        );
+        let Some(mut build) = running_builds.remove(&build_id) else {
+            // Concurrent removal — nothing to do. (Single-task event
+            // loop makes this unreachable today; defensive.)
+            continue;
+        };
+        let err_msg = format!(
+            "build timed out after {}s; {} daemon(s) never reported build_result",
+            timeout_threshold.as_secs(),
+            pending_count,
+        );
+        build.build_result.set_result(Err(eyre!(err_msg.clone())));
+
+        // Final log to subscribers so attached `dora build --attach`
+        // sessions see a clean end-of-stream rather than hanging.
+        send_log_message(
+            &mut build.log_subscribers,
+            &LogMessage {
+                build_id: Some(build_id),
+                dataflow_id: None,
+                node_id: None,
+                daemon_id: None,
+                level: LogLevel::Error.into(),
+                target: Some("coordinator".into()),
+                module_path: None,
+                file: None,
+                line: None,
+                message: err_msg.clone(),
+                timestamp: clock.new_timestamp().get_time().to_system_time().into(),
+                fields: None,
+            },
+        )
+        .await;
+
+        // Insert into finished_builds so a `wait_for_build` registered
+        // AFTER the watchdog fired also receives the cached error
+        // (handler at the `WaitForBuild` arm above).
+        finished_builds.insert(build_id, build.build_result);
+        while finished_builds.len() > MAX_FINISHED_BUILDS {
+            finished_builds.shift_remove_index(0);
+        }
     }
 }
 
@@ -6668,5 +6829,182 @@ mod tests {
             !per_daemon.values().all(DataflowDaemonResult::is_ok),
             "sentinel must classify as Failed (not vacuously Finished)"
         );
+    }
+
+    // ===== check_build_timeouts watchdog tests (#1465) =====
+    //
+    // Mirror the four spawn watchdog tests above for the build path.
+    // Build's analog is simpler: no daemon rollback, no archived_dataflows /
+    // dataflow_results synthesis — just release waiters and move the entry
+    // from `running_builds` to `finished_builds`.
+
+    fn test_running_build(daemon_id: DaemonId, backdate: bool) -> RunningBuild {
+        let mut pending = BTreeSet::new();
+        pending.insert(daemon_id);
+        RunningBuild {
+            errors: Vec::new(),
+            build_result: CachedResult::default(),
+            buffered_log_messages: Vec::new(),
+            log_subscribers: Vec::new(),
+            pending_build_results: pending,
+            build_started_at: if backdate {
+                Instant::now() - build_result_timeout() - Duration::from_secs(1)
+            } else {
+                Instant::now()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn check_build_timeouts_fires_error_when_pending_past_deadline() {
+        let clock = HLC::default();
+        let build_id = BuildId::generate();
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut build = test_running_build(daemon_id, /*backdate=*/ true);
+
+        // Register a waiter so we can prove `wait_for_build` unblocks with
+        // an error rather than hanging on the client-side RPC deadline.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        build.build_result.register(tx);
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+
+        // Waiter resolved with an error.
+        let reply = timeout(TokioDuration::from_secs(1), rx)
+            .await
+            .expect("waiter should resolve, not hang")
+            .expect("sender should not drop");
+        let err = reply.expect_err("timed-out build must surface as Err");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("build timed out"),
+            "error should explain the timeout, got: {msg}"
+        );
+
+        // Build moved from running_builds to finished_builds.
+        assert!(
+            !running_builds.contains_key(&build_id),
+            "watchdog must remove timed-out build from running_builds"
+        );
+        assert!(
+            finished_builds.contains_key(&build_id),
+            "watchdog must move timed-out build into finished_builds so late \
+             WaitForBuild requests find the cached error",
+        );
+    }
+
+    #[tokio::test]
+    async fn check_build_timeouts_no_op_when_within_deadline() {
+        let clock = HLC::default();
+        let build_id = BuildId::generate();
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut build = test_running_build(daemon_id, /*backdate=*/ false);
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        build.build_result.register(tx);
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+
+        // Waiter still pending.
+        let polled = tokio::time::timeout(TokioDuration::from_millis(50), rx).await;
+        assert!(polled.is_err(), "waiter must still be pending pre-deadline");
+
+        let build = running_builds.get(&build_id).expect("build still present");
+        assert!(
+            build.build_result.is_pending(),
+            "build_result must remain Pending pre-deadline"
+        );
+        assert!(
+            finished_builds.is_empty(),
+            "fresh build must not be moved to finished_builds"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_build_timeouts_idempotent_on_already_cached_result() {
+        let clock = HLC::default();
+        let build_id = BuildId::generate();
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut build = test_running_build(daemon_id, /*backdate=*/ true);
+        // Build already resolved successfully — the watchdog must NOT
+        // re-fire on subsequent heartbeats and clobber the cached result.
+        build
+            .build_result
+            .set_result(Ok(ControlRequestReply::DataflowBuildFinished {
+                build_id,
+                result: Ok(()),
+            }));
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+
+        let build = running_builds.get_mut(&build_id).expect(
+            "Cached(Ok) build must stay in running_builds — only is_pending() \
+             triggers the watchdog",
+        );
+        // Registering a new waiter on a Cached result must immediately
+        // deliver the cached Ok — proving the watchdog did not clobber it.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        build.build_result.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached result should deliver immediately")
+            .expect("sender should not drop");
+        let ok = reply.expect("the cached Ok result must be preserved");
+        assert!(matches!(
+            ok,
+            ControlRequestReply::DataflowBuildFinished { result: Ok(()), .. }
+        ));
+        assert!(
+            finished_builds.is_empty(),
+            "watchdog must not move a non-timed-out build into finished_builds"
+        );
+    }
+
+    /// Build-specific edge: a `WaitForBuild` registered AFTER the watchdog
+    /// fired must still receive the cached error via `finished_builds`
+    /// (the second branch of the `WaitForBuild` arm). This proves the
+    /// late-arriver path, complementing the pre-registered waiter path
+    /// in `check_build_timeouts_fires_error_when_pending_past_deadline`.
+    #[tokio::test]
+    async fn check_build_timeouts_late_wait_for_build_gets_cached_error() {
+        let clock = HLC::default();
+        let build_id = BuildId::generate();
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let build = test_running_build(daemon_id, /*backdate=*/ true);
+        // NB: NO waiter registered yet — this is the late-arriver path.
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+
+        // Build was moved to finished_builds with a Cached Err.
+        let cached = finished_builds
+            .get_mut(&build_id)
+            .expect("build must be in finished_builds after watchdog");
+
+        // A late WaitForBuild registers on the finished CachedResult and
+        // must receive the cached error immediately, NOT hang.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        cached.register(tx);
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("Cached error should deliver immediately")
+            .expect("sender should not drop");
+        let err = reply.expect_err("late wait_for_build must surface the watchdog's Err");
+        assert!(format!("{err:?}").contains("build timed out"));
     }
 }
