@@ -2013,6 +2013,10 @@ async fn start_inner(
                         &mut running_dataflows,
                         &disconnected,
                     );
+                    cleanup_disconnected_daemons_from_running_builds(
+                        &mut running_builds,
+                        &disconnected,
+                    );
                     notify_daemons_about_disconnected_peers(
                         &disconnected,
                         &mut daemon_connections,
@@ -2908,6 +2912,25 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
                 dataflow = %df.uuid,
                 "all daemons disconnected - dataflow has no live daemons"
             );
+        }
+    }
+}
+
+/// Mirror of [`cleanup_disconnected_daemons_from_running_dataflows`] for
+/// `running_builds`: prune disconnected daemon IDs from each running build's
+/// `pending_build_results` so the in-memory state matches the live cluster.
+///
+/// This intentionally does NOT resolve `build_result` — the build timeout
+/// watchdog ([`check_build_timeouts`]) remains the single path that releases
+/// build waiters, preserving the chokepoint architecture documented at the
+/// disconnect-handler comment above (#1465).
+fn cleanup_disconnected_daemons_from_running_builds(
+    running_builds: &mut HashMap<BuildId, RunningBuild>,
+    disconnected: &BTreeSet<DaemonId>,
+) {
+    for build in running_builds.values_mut() {
+        for daemon_id in disconnected {
+            build.pending_build_results.remove(daemon_id);
         }
     }
 }
