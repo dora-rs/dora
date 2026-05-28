@@ -264,7 +264,15 @@ When nodes are on different machines, communication automatically switches from 
 
 #### `dora run`
 
-Run a dataflow locally without coordinator or daemon. Best for development and testing.
+Run a dataflow locally **in isolation**: spawns nodes in-process via the daemon
+library, without binding any coordinator port. Best for development and testing.
+
+Because `dora run` does NOT bind the coordinator port:
+- It can be invoked while `dora up` is already running (no port contention).
+- Multiple `dora run` invocations can execute in parallel.
+- The CLI monitoring commands (`dora list`, `dora stop`, `dora logs`,
+  `dora top`, …) do **NOT** attach to a `dora run` execution. Use
+  `dora up` + `dora start` instead when you need to attach those tools.
 
 ```
 dora run <PATH> [OPTIONS]
@@ -280,6 +288,9 @@ dora run <PATH> [OPTIONS]
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
 | `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
 | `--log-filter <FILTER>` | | Per-node level overrides: `"node1=debug,node2=warn"` |
+| `--locked` | false | Use pinned git source commits from a build lockfile |
+| `--write-lockfile` | false | Write resolved git source commits to a lockfile during pre-run build |
+| `--lockfile <PATH>` | `<dataflow-stem>.dora-lock.yaml` | Override lockfile path |
 
 **Examples:**
 
@@ -349,6 +360,12 @@ dora build <PATH> [OPTIONS]
 #### `dora start`
 
 Start a dataflow on a running coordinator.
+
+A dataflow with `deploy` sections that was last built locally (via `dora build
+--local`, or via `dora build` with no coordinator reachable) is **rejected**
+with an actionable error: the remote daemons that will run the deploy targets
+have no access to the local build artifacts. Re-run `dora build` against a
+running coordinator before `dora start` (#1956).
 
 ```
 dora start <PATH> [OPTIONS]
@@ -514,13 +531,15 @@ dora clean [OPTIONS]
 Show and follow logs of a dataflow and node.
 
 ```
-dora logs [UUID_OR_NAME] [NODE] [OPTIONS]
+dora logs [OPTIONS] [UUID_OR_NAME]
 ```
+
+Node selection is via the `--node <NAME>` flag (not positional, as of #1883).
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `[UUID_OR_NAME]` | | Dataflow UUID or name |
-| `[NODE]` | | Node name (required unless `--all-nodes`) |
+| `--node <NAME>` | | Single node to show logs for (omit with `--all-nodes`) |
 | `--all-nodes` | false | Merge logs from all nodes by timestamp |
 | `--tail <N>` | all | Show last N lines |
 | `--follow`, `-f` | false | Stream new log entries |
@@ -543,7 +562,7 @@ dora logs [UUID_OR_NAME] [NODE] [OPTIONS]
 dora logs my-dataflow --all-nodes --follow
 
 # Last 50 errors from a specific node
-dora logs my-dataflow sensor --level error --tail 50
+dora logs my-dataflow --node sensor --level error --tail 50
 
 # Search logs from last 5 minutes
 dora logs my-dataflow --all-nodes --since 5m --grep "timeout"
@@ -552,7 +571,7 @@ dora logs my-dataflow --all-nodes --since 5m --grep "timeout"
 dora logs --local --all-nodes --tail 100
 
 # Post-mortem analysis: errors in time window
-dora logs --local sensor --since 1h --until 30m --level error
+dora logs --local --node sensor --since 1h --until 30m --level error
 ```
 
 **Duration formats:** `30` (seconds), `30s`, `5m`, `1h`, `2d`
@@ -1510,7 +1529,7 @@ dora start dataflow.yml --name my-robot --attach
 dora top
 
 # Logs from any node regardless of machine
-dora logs my-robot inference --follow
+dora logs my-robot --node inference --follow
 
 # List all dataflows
 dora list
@@ -1581,7 +1600,7 @@ dora run dataflow.yml --log-level trace --debug
 dora node info -d my-dataflow problem-node
 
 # 4. Monitor specific node logs
-dora logs my-dataflow problem-node --follow --level debug
+dora logs my-dataflow --node problem-node --follow --level debug
 
 # 5. Check resource usage
 dora top
