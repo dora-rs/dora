@@ -1142,6 +1142,15 @@ job_ros2_bridge() {
   timeout 600s cargo test -p dora-ros2-bridge-python
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
+
+  # Python service client/server examples need the workspace node bindings.
+  uv venv --seed -p 3.12 .venv-ros2-bridge >/dev/null
+  # shellcheck disable=SC1091
+  source .venv-ros2-bridge/bin/activate
+  uv pip install -q -e apis/python/node pyarrow
+  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-client
+  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-server
+  deactivate
 }
 
 # -----------------------------------------------------------------------------

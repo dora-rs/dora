@@ -1,0 +1,6 @@
+nodes:
+  - id: service-client
+    path: ./service_client_node.py
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []

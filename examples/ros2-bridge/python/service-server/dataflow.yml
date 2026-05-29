@@ -1,0 +1,14 @@
+nodes:
+  # dora node that serves /add_two_ints via the ROS2 bridge.
+  - id: service-server
+    path: ./service_server_node.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: []
+  # Reuse the service-client example node to drive the server (no external
+  # ROS2 process needed: both sides are dora nodes talking over the bridge).
+  - id: service-client
+    path: ../service-client/service_client_node.py
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []

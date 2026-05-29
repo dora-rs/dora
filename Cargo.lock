@@ -2253,6 +2253,7 @@ dependencies = [
  "dora-ros2-bridge-msg-gen",
  "eyre",
  "futures",
+ "futures-timer",
  "pyo3",
  "pyo3-build-config",
  "serde",
