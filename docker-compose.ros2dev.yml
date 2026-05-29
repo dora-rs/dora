@@ -1,0 +1,44 @@
+# ROS2-bridge dev environment for macOS — issue #1170, Phase 0.
+#
+# A single container that reproduces the nightly `ros2-bridge` CI job. dora and
+# all ROS2 nodes run together here, so DDS discovery stays inside one network
+# namespace (the only reliable topology on macOS — see docker/ros2dev/Dockerfile).
+#
+# Usage is via scripts/ros2dev.sh (build | shell | verify). Direct use:
+#   docker compose -f docker-compose.ros2dev.yml build
+#   docker compose -f docker-compose.ros2dev.yml run --rm ros2dev bash
+services:
+  ros2dev:
+    build:
+      context: .
+      dockerfile: docker/ros2dev/Dockerfile
+    image: dora-ros2dev:humble
+    working_dir: /work
+    # Default bridge networking is correct: everything runs in THIS container,
+    # so loopback/eth0 multicast SPDP works exactly as on the CI runner. Do not
+    # add host networking — on Docker Desktop for Mac it does not reach the Mac
+    # and is unnecessary when dora + ROS2 are co-located.
+    environment:
+      QT_QPA_PLATFORM: offscreen
+      # Do NOT set ROS_DOMAIN_ID. dora's ros2_client::Context::new() defaults to
+      # domain 0 and does not read ROS_DOMAIN_ID, while the CLI-spawned ROS2
+      # nodes (turtlesim, minimal-service) would honor it — a mismatch breaks DDS
+      # discovery. Leaving it unset keeps both sides on domain 0, matching CI.
+      # The container is isolated anyway, so domain 0 is collision-free.
+    volumes:
+      - .:/work
+      # Persist the cargo registry + build cache across runs. The target volume
+      # is mounted directly over /work/target: cargo's DEFAULT target dir then
+      # IS this named volume, so (a) the example dataflows' hardcoded
+      # `target/debug/<bin>` node paths resolve correctly, and (b) the
+      # macOS-native target/ is shadowed — no Linux/arch artifacts leak into the
+      # host repo (mixing arch fingerprints would thrash every rebuild).
+      - ros2dev-cargo-registry:/usr/local/cargo/registry
+      - ros2dev-target:/work/target
+    # Keep the container alive for `exec`-style iteration if started detached.
+    stdin_open: true
+    tty: true
+
+volumes:
+  ros2dev-cargo-registry:
+  ros2dev-target:
