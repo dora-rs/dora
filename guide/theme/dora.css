@@ -15,7 +15,6 @@
   --sidebar-bg: #1A1D29;
   --sidebar-fg: #B5BACC;
   --sidebar-active: #2fc78a;
-  --sidebar-non-existant: #585d72;
   --sidebar-spacer: #2f3346;
   --links: #1d9e6b;
   --inline-code-color: #cc8f2a;
@@ -45,7 +44,6 @@ html.ayu, html.navy, html.coal, .ayu, .navy, .coal {
   --sidebar-bg: #1a1d29;
   --sidebar-fg: #8a91ab;
   --sidebar-active: #2fc78a;
-  --sidebar-non-existant: #585d72;
   --sidebar-spacer: #262b3a;
   --links: #5b73ff;
   --inline-code-color: #f2b33d;
