@@ -8,8 +8,14 @@
 #
 #   scripts/ros2dev.sh build     Build the dev image.
 #   scripts/ros2dev.sh shell      Open an interactive shell (ROS2 pre-sourced).
-#   scripts/ros2dev.sh verify     Run the full CI ros2-bridge job (test + 3 examples).
+#   scripts/ros2dev.sh verify     Mirror the nightly ros2-bridge CI job (test + 3 examples).
 #   scripts/ros2dev.sh verify --quick   Test + Rust example only (faster smoke).
+#   scripts/ros2dev.sh qa         Release-QA: smoke-test EVERY ros2 example end-to-end.
+#
+# `qa` is the pre-release gate for the ROS2 bridge: since the bridge no longer
+# runs end-to-end on every PR (extension, small user base), run this on a Linux
+# box (or Docker) with ROS2 before cutting a release. Add new example targets to
+# the EXAMPLES list below as issue #1170 items land.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -81,8 +87,70 @@ EOF
     "${COMPOSE[@]}" run --rm -e QUICK="$quick" ros2dev bash -lc "$SCRIPT"
     ;;
 
+  qa)
+    require_daemon
+    # Release-QA: run EVERY ros2 example end-to-end and report a pass/fail
+    # summary. Each example's run.rs self-spawns the ROS2 peer it needs
+    # (turtlesim, minimal service/client/pub/sub, action server) — all are
+    # installed in the dev image.
+    read -r -d '' SCRIPT <<'EOF' || true
+set -eo pipefail
+source /opt/ros/humble/setup.bash
+echo "== ros2 release QA — distro: $ROS_DISTRO  rustc: $(rustc --version)"
+
+# Python examples need the workspace node bindings on the path.
+uv pip install -q -e apis/python/node pyarrow
+
+echo "::: cargo test -p dora-ros2-bridge-python"
+cargo test -p dora-ros2-bridge-python
+
+# Every ros2 [[example]] target (see libraries/extensions/ros2-bridge/Cargo.toml).
+# Add new examples here as issue #1170 items land (action server, C++ service
+# server, parameter service, ...). `--features ros2-examples` is required by the
+# cxx/action targets and harmless for the rest.
+EXAMPLES=(
+  rust-ros2-dataflow
+  rust-ros2-dataflow-topic-pub
+  rust-ros2-dataflow-topic-sub
+  rust-ros2-dataflow-service-client
+  rust-ros2-dataflow-service-server
+  rust-ros2-dataflow-action-client
+  python-ros2-dataflow
+  python-ros2-dataflow-service-client
+  python-ros2-dataflow-service-server
+  cxx-ros2-dataflow
+  cxx-ros2-dataflow-action-client
+)
+
+passed=()
+failed=()
+for ex in "${EXAMPLES[@]}"; do
+  echo "::: running example: $ex"
+  if QT_QPA_PLATFORM=offscreen timeout 600 \
+       cargo run -q -p dora-ros2-bridge --example "$ex" --features ros2-examples; then
+    passed+=("$ex")
+    echo "    PASS  $ex"
+  else
+    failed+=("$ex")
+    echo "    FAIL  $ex"
+  fi
+done
+
+echo
+echo "============================================================"
+echo "ros2-bridge release QA: ${#passed[@]}/${#EXAMPLES[@]} examples passed"
+if [ ${#failed[@]} -gt 0 ]; then
+  echo "FAILED:"; printf '  - %s\n' "${failed[@]}"
+  exit 1
+fi
+echo "ALL GREEN"
+EOF
+
+    "${COMPOSE[@]}" run --rm ros2dev bash -lc "$SCRIPT"
+    ;;
+
   *)
-    echo "usage: scripts/ros2dev.sh {build|shell|verify [--quick]}" >&2
+    echo "usage: scripts/ros2dev.sh {build|shell|verify [--quick]|qa}" >&2
     exit 2
     ;;
 esac

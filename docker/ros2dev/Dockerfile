@@ -25,7 +25,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential clang cmake pkg-config libssl-dev \
         curl git ca-certificates \
         ros-humble-turtlesim \
+        ros-humble-example-interfaces \
         ros-humble-examples-rclcpp-minimal-service \
+        ros-humble-examples-rclcpp-minimal-client \
+        ros-humble-examples-rclcpp-minimal-publisher \
+        ros-humble-examples-rclcpp-minimal-subscriber \
+        ros-humble-examples-rclcpp-minimal-action-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Rust toolchain pinned to CI's version.
