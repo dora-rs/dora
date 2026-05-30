@@ -139,14 +139,45 @@ impl Service {
                     qos.clone().into(),
                     qos.into(),
                 ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let client = std::sync::Arc::new(client);
                 let (response_tx, response_rx) = flume::bounded(1);
                 let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
                 let id = events.events.merge(Box::pin(stream));
 
+                // Single response pump per client. ros2-client's
+                // `async_receive_response(id)` discards samples whose id does not
+                // match, so spawning one receiver per request makes concurrent
+                // receivers steal and drop each other's responses (the C++ client
+                // then never sees any) — see dora-rs/dora#1970. A single consumer
+                // that forwards every response avoids that.
+                {
+                    let client = client.clone();
+                    std::thread::spawn(move || {
+                        loop {
+                            if response_tx.is_disconnected() {
+                                break;
+                            }
+                            match client.receive_response() {
+                                Ok(Some((_req_id, response))) => {
+                                    if response_tx.send(Ok(response)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(e) => {
+                                    let _ = response_tx
+                                        .send(Err(eyre::eyre!("failed to receive service response: {e:?}")));
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                            }
+                        }
+                    });
+                }
+
                 Ok(Box::new(#client_name {
-                    client: std::sync::Arc::new(client),
-                    response_tx: std::sync::Arc::new(response_tx),
-                    executor: node.executor.clone(),
+                    client,
                     stream_id: id,
                 }))
             }
@@ -154,8 +185,6 @@ impl Service {
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
-                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
-                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
                 stream_id: u32,
             }
 
@@ -185,20 +214,12 @@ impl Service {
                 #[allow(non_snake_case)]
                 fn #send_request(&mut self, request: ffi::#req_type_raw) -> eyre::Result<()> {
                     use eyre::WrapErr;
-                    use futures::task::SpawnExt as _;
 
-                    let request_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
+                    // Fire the request; the response is delivered by the per-client
+                    // response pump set up in the constructor (see dora-rs/dora#1970).
+                    futures::executor::block_on(self.client.async_send_request(request.clone()))
                         .context("failed to send request")
                         .map_err(|e| eyre::eyre!("{e:?}"))?;
-                    let client = self.client.clone();
-                    let response_tx = self.response_tx.clone();
-                    let send_result = async move {
-                        let response = client.async_receive_response(request_id).await.with_context(|| format!("failed to receive response for request {request_id:?}"));
-                        if response_tx.send_async(response).await.is_err() {
-                            tracing::warn!("failed to send service response");
-                        }
-                    };
-                    self.executor.spawn(send_result).context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
                     Ok(())
                 }
 
