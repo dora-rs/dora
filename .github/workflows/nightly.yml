@@ -1503,6 +1503,8 @@ jobs:
           uv pip install -e apis/python/node
           uv pip install pyarrow
           cargo run -p dora-ros2-bridge --example python-ros2-dataflow
+          cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-client
+          cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-server
       - name: C++ ROS2 Bridge example
         timeout-minutes: 30
         env:

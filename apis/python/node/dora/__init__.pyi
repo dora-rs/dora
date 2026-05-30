@@ -399,6 +399,42 @@ class Ros2Node:
         )
         ```"""
 
+    def create_service_client(
+        self, service_name: str, service_type: str, qos: dora.Ros2QosPolicies
+    ) -> dora.Ros2ServiceClient:
+        """Create a ROS2 service client.
+
+        Waits (bounded) for a matching service server to become available
+        before returning. ROS2 services require **reliable** QoS.
+
+        ```python
+        client = ros2_node.create_service_client(
+        "/add_two_ints", "example_interfaces/AddTwoInts",
+        Ros2QosPolicies(reliable=True),
+        )
+        response = client.call(pa.array([{"a": 2, "b": 3}]))
+        ```"""
+
+    def create_service_server(
+        self, service_name: str, service_type: str, qos: dora.Ros2QosPolicies
+    ) -> dora.Ros2ServiceServer:
+        """Create a ROS2 service server.
+
+        Drive it by polling `take_request` and replying with `send_response`.
+        ROS2 services require **reliable** QoS.
+
+        ```python
+        server = ros2_node.create_service_server(
+        "/add_two_ints", "example_interfaces/AddTwoInts",
+        Ros2QosPolicies(reliable=True),
+        )
+        req = server.take_request(timeout_s=0.1)
+        if req is not None:
+        request_id, value = req
+        args = value[0].as_py()
+        server.send_response(request_id, pa.array([{"sum": args["a"] + args["b"]}]))
+        ```"""
+
     def __repr__(self) -> str:
         """Return repr(self)."""
 
@@ -444,6 +480,52 @@ class Ros2Publisher:
         ),
         )
         ```"""
+
+    def __repr__(self) -> str:
+        """Return repr(self)."""
+
+    def __str__(self) -> str:
+        """Return str(self)."""
+
+@typing.final
+class Ros2ServiceClient:
+    """ROS2 service client. Create via `Ros2Node.create_service_client`.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
+
+    def call(self, request: pyarrow.Array, timeout_s: float = None) -> pyarrow.Array:
+        """Send a request and block until the response arrives.
+
+        The request must match the service's `_Request` structure as an Arrow
+        struct (e.g. `pa.array([{"a": 2, "b": 3}])`). Returns the `_Response`
+        as a pyarrow array. Raises on timeout (default 30s)."""
+
+    def __repr__(self) -> str:
+        """Return repr(self)."""
+
+    def __str__(self) -> str:
+        """Return str(self)."""
+
+@typing.final
+class Ros2ServiceServer:
+    """ROS2 service server. Create via `Ros2Node.create_service_server`.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change."""
+
+    def take_request(
+        self, timeout_s: float = None
+    ) -> typing.Optional[typing.Tuple[int, pyarrow.Array]]:
+        """Wait up to `timeout_s` (default 1s) for the next request.
+
+        Returns `(request_id, request_array)`, or `None` if no request arrived
+        within the timeout. Pass `request_id` back to `send_response`."""
+
+    def send_response(self, request_id: int, response: pyarrow.Array) -> None:
+        """Send the response for a request previously returned by `take_request`."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""
