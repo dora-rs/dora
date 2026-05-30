@@ -238,14 +238,21 @@ impl Service {
                 fn #send_request(&mut self, request: ffi::#req_type_raw) -> eyre::Result<()> {
                     use eyre::WrapErr;
 
-                    // Fire the request and record its id so the per-client response
-                    // pump can match the reply back to it (see dora-rs/dora#1970).
+                    // Register the request id *before* the response pump can act on
+                    // any reply. The id is only known once `async_send_request`
+                    // returns, so hold the `pending` lock across the send: the pump
+                    // must take the same lock to match (or drop) a response, so a
+                    // service that replies before the send call returns cannot have
+                    // its response dropped as "not ours" during the registration
+                    // window. See dora-rs/dora#1970.
+                    let mut pending = self
+                        .pending
+                        .lock()
+                        .map_err(|_| eyre::eyre!("service client response state poisoned"))?;
                     let req_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
                         .context("failed to send request")
                         .map_err(|e| eyre::eyre!("{e:?}"))?;
-                    if let Ok(mut pending) = self.pending.lock() {
-                        pending.push(req_id);
-                    }
+                    pending.push(req_id);
                     Ok(())
                 }
 
