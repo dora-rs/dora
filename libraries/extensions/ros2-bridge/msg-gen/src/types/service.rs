@@ -139,14 +139,67 @@ impl Service {
                     qos.clone().into(),
                     qos.into(),
                 ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let client = std::sync::Arc::new(client);
+                // Request ids this client has sent and not yet matched to a
+                // response. `receive_response` can hand back responses for *other*
+                // clients sharing the service topic (see its rustdoc), so the pump
+                // forwards only responses whose id is in this set.
+                let pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>> =
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let (response_tx, response_rx) = flume::bounded(1);
                 let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
                 let id = events.events.merge(Box::pin(stream));
 
+                // Single response pump per client. ros2-client's
+                // `async_receive_response(id)` discards samples whose id does not
+                // match, so spawning one receiver per request makes concurrent
+                // receivers steal and drop each other's responses (the C++ client
+                // then never sees any) — see dora-rs/dora#1970. A single consumer
+                // that forwards each response to the request it belongs to avoids
+                // that while still honoring the request/response id contract.
+                {
+                    let client = client.clone();
+                    let pending = pending.clone();
+                    std::thread::spawn(move || {
+                        loop {
+                            if response_tx.is_disconnected() {
+                                break;
+                            }
+                            match client.receive_response() {
+                                Ok(Some((req_id, response))) => {
+                                    // Drop responses we have no matching request for:
+                                    // they belong to another client and are delivered
+                                    // to that client's own pump too.
+                                    let is_ours = match pending.lock() {
+                                        Ok(mut pending) => match pending.iter().position(|pid| *pid == req_id) {
+                                            Some(pos) => {
+                                                pending.remove(pos);
+                                                true
+                                            }
+                                            None => false,
+                                        },
+                                        Err(_) => false,
+                                    };
+                                    if is_ours && response_tx.send(Ok(response)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(e) => {
+                                    let _ = response_tx
+                                        .send(Err(eyre::eyre!("failed to receive service response: {e:?}")));
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                            }
+                        }
+                    });
+                }
+
                 Ok(Box::new(#client_name {
-                    client: std::sync::Arc::new(client),
-                    response_tx: std::sync::Arc::new(response_tx),
-                    executor: node.executor.clone(),
+                    client,
+                    pending,
                     stream_id: id,
                 }))
             }
@@ -154,8 +207,7 @@ impl Service {
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
-                response_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<ffi::#res_type_raw>>>,
-                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
+                pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
                 stream_id: u32,
             }
 
@@ -185,20 +237,22 @@ impl Service {
                 #[allow(non_snake_case)]
                 fn #send_request(&mut self, request: ffi::#req_type_raw) -> eyre::Result<()> {
                     use eyre::WrapErr;
-                    use futures::task::SpawnExt as _;
 
-                    let request_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
+                    // Register the request id *before* the response pump can act on
+                    // any reply. The id is only known once `async_send_request`
+                    // returns, so hold the `pending` lock across the send: the pump
+                    // must take the same lock to match (or drop) a response, so a
+                    // service that replies before the send call returns cannot have
+                    // its response dropped as "not ours" during the registration
+                    // window. See dora-rs/dora#1970.
+                    let mut pending = self
+                        .pending
+                        .lock()
+                        .map_err(|_| eyre::eyre!("service client response state poisoned"))?;
+                    let req_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
                         .context("failed to send request")
                         .map_err(|e| eyre::eyre!("{e:?}"))?;
-                    let client = self.client.clone();
-                    let response_tx = self.response_tx.clone();
-                    let send_result = async move {
-                        let response = client.async_receive_response(request_id).await.with_context(|| format!("failed to receive response for request {request_id:?}"));
-                        if response_tx.send_async(response).await.is_err() {
-                            tracing::warn!("failed to send service response");
-                        }
-                    };
-                    self.executor.spawn(send_result).context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
+                    pending.push(req_id);
                     Ok(())
                 }
 
