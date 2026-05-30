@@ -140,6 +140,12 @@ impl Service {
                     qos.into(),
                 ).map_err(|e| eyre::eyre!("{e:?}"))?;
                 let client = std::sync::Arc::new(client);
+                // Request ids this client has sent and not yet matched to a
+                // response. `receive_response` can hand back responses for *other*
+                // clients sharing the service topic (see its rustdoc), so the pump
+                // forwards only responses whose id is in this set.
+                let pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>> =
+                    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
                 let (response_tx, response_rx) = flume::bounded(1);
                 let stream = response_rx.into_stream().map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
                 let id = events.events.merge(Box::pin(stream));
@@ -149,17 +155,32 @@ impl Service {
                 // match, so spawning one receiver per request makes concurrent
                 // receivers steal and drop each other's responses (the C++ client
                 // then never sees any) — see dora-rs/dora#1970. A single consumer
-                // that forwards every response avoids that.
+                // that forwards each response to the request it belongs to avoids
+                // that while still honoring the request/response id contract.
                 {
                     let client = client.clone();
+                    let pending = pending.clone();
                     std::thread::spawn(move || {
                         loop {
                             if response_tx.is_disconnected() {
                                 break;
                             }
                             match client.receive_response() {
-                                Ok(Some((_req_id, response))) => {
-                                    if response_tx.send(Ok(response)).is_err() {
+                                Ok(Some((req_id, response))) => {
+                                    // Drop responses we have no matching request for:
+                                    // they belong to another client and are delivered
+                                    // to that client's own pump too.
+                                    let is_ours = match pending.lock() {
+                                        Ok(mut pending) => match pending.iter().position(|pid| *pid == req_id) {
+                                            Some(pos) => {
+                                                pending.remove(pos);
+                                                true
+                                            }
+                                            None => false,
+                                        },
+                                        Err(_) => false,
+                                    };
+                                    if is_ours && response_tx.send(Ok(response)).is_err() {
                                         break;
                                     }
                                 }
@@ -178,6 +199,7 @@ impl Service {
 
                 Ok(Box::new(#client_name {
                     client,
+                    pending,
                     stream_id: id,
                 }))
             }
@@ -185,6 +207,7 @@ impl Service {
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<crate::ros2_client::service::Client< service :: #self_name >>,
+                pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ros2_client::service::RmwRequestId>>>,
                 stream_id: u32,
             }
 
@@ -215,11 +238,14 @@ impl Service {
                 fn #send_request(&mut self, request: ffi::#req_type_raw) -> eyre::Result<()> {
                     use eyre::WrapErr;
 
-                    // Fire the request; the response is delivered by the per-client
-                    // response pump set up in the constructor (see dora-rs/dora#1970).
-                    futures::executor::block_on(self.client.async_send_request(request.clone()))
+                    // Fire the request and record its id so the per-client response
+                    // pump can match the reply back to it (see dora-rs/dora#1970).
+                    let req_id = futures::executor::block_on(self.client.async_send_request(request.clone()))
                         .context("failed to send request")
                         .map_err(|e| eyre::eyre!("{e:?}"))?;
+                    if let Ok(mut pending) = self.pending.lock() {
+                        pending.push(req_id);
+                    }
                     Ok(())
                 }
 
