@@ -38,42 +38,6 @@ use dora_message::metadata::{
     REQUEST_ID,
 };
 
-/// Pick the `ros2_client::ServiceMapping` variant that matches the user's
-/// ROS2 middleware, based on `RMW_IMPLEMENTATION` (primary) and `ROS_DISTRO`
-/// (fallback). Falls back to `Enhanced` with a `tracing::warn!` if neither
-/// env var gives a usable answer — Enhanced is the historical default and
-/// keeps existing setups working when env is unset.
-///
-/// See dora-rs/dora#449 (restored from lost commit `e2c1370f`).
-fn detect_service_mapping() -> ros2_client::ServiceMapping {
-    match std::env::var("RMW_IMPLEMENTATION").ok().as_deref() {
-        Some("rmw_fastrtps_cpp") => return ros2_client::ServiceMapping::Enhanced,
-        Some("rmw_cyclonedds_cpp") => return ros2_client::ServiceMapping::Cyclone,
-        Some(other) => {
-            tracing::warn!(
-                "unknown RMW_IMPLEMENTATION `{other}`, falling back to \
-                 ServiceMapping::Enhanced (see dora-rs/dora#449)"
-            );
-            return ros2_client::ServiceMapping::Enhanced;
-        }
-        None => {}
-    }
-    match std::env::var("ROS_DISTRO").ok().as_deref() {
-        Some("humble" | "iron" | "jazzy" | "kilted" | "rolling") => {
-            ros2_client::ServiceMapping::Enhanced
-        }
-        Some("galactic") => ros2_client::ServiceMapping::Cyclone,
-        Some(other) => {
-            tracing::warn!(
-                "unknown ROS_DISTRO `{other}`, falling back to \
-                 ServiceMapping::Enhanced (see dora-rs/dora#449)"
-            );
-            ros2_client::ServiceMapping::Enhanced
-        }
-        None => ros2_client::ServiceMapping::Enhanced,
-    }
-}
-
 fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt::init();
 
@@ -222,7 +186,7 @@ fn run_service_mode(
         Ros2Role::Client => {
             let client = ros_node
                 .create_client::<BridgeServiceType>(
-                    detect_service_mapping(),
+                    dora_ros2_bridge::detect_service_mapping(),
                     &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
                         .map_err(|e| eyre!("failed to create service name: {e}"))?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -239,7 +203,7 @@ fn run_service_mode(
         Ros2Role::Server => {
             let server = ros_node
                 .create_server::<BridgeServiceType>(
-                    detect_service_mapping(),
+                    dora_ros2_bridge::detect_service_mapping(),
                     &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
                         .map_err(|e| eyre!("failed to create service name: {e}"))?,
                     &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -459,7 +423,7 @@ fn run_action_mode(
 
             let client = ros_node
                 .create_action_client::<BridgeActionType>(
-                    detect_service_mapping(),
+                    dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
                     action_qos,
@@ -485,7 +449,7 @@ fn run_action_mode(
 
             let server = ros_node
                 .create_action_server::<BridgeActionType>(
-                    detect_service_mapping(),
+                    dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
                     &action_type_name,
                     action_qos,

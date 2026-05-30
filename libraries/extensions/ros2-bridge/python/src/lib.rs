@@ -5,11 +5,11 @@ use std::{
     sync::Arc,
 };
 
+use ::dora_ros2_bridge::{ros2_client, rustdds};
 use arrow::{
     array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
 };
-use ::dora_ros2_bridge::{ros2_client, rustdds};
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, Result, eyre};
 use futures::{Stream, StreamExt};
@@ -18,7 +18,7 @@ use pyo3::{
     prelude::{pyclass, pymethods},
     types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use typed::{
     BridgeMessage, BridgeServiceType, TypeInfo, TypeInfoGuard, TypedValue,
     deserialize::StructDeserializer,
@@ -26,6 +26,13 @@ use typed::{
 
 pub mod qos;
 pub mod typed;
+
+/// Drop a taken-but-unanswered service request after this long, so a server
+/// whose handler skips `send_response` can't leak `pending` entries forever.
+/// Matches the standalone bridge daemon.
+const SERVICE_RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Hard cap on outstanding taken-but-unanswered requests. Matches the daemon.
+const MAX_PENDING_REQUESTS: usize = 64;
 
 /// ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 ///
@@ -152,7 +159,11 @@ impl Ros2Context {
             .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
 
         // Start a spinner so service/discovery status events are processed.
-        let spinner_pool = futures::executor::ThreadPool::new()
+        // One worker thread is enough (the spinner is a single task); this keeps
+        // the per-node thread cost at 1 instead of one-per-CPU-core.
+        let spinner_pool = futures::executor::ThreadPool::builder()
+            .pool_size(1)
+            .create()
             .map_err(|e| eyre!("failed to create ros2 spinner pool: {e}"))?;
         let spinner = node
             .spinner()
@@ -314,6 +325,7 @@ impl Ros2Node {
     /// :rtype: dora.Ros2ServiceClient
     pub fn create_service_client(
         &mut self,
+        py: Python<'_>,
         service_name: &str,
         service_type: String,
         qos: qos::Ros2QosPolicies,
@@ -325,7 +337,7 @@ impl Ros2Node {
         let client = self
             .node
             .create_client::<BridgeServiceType>(
-                detect_service_mapping(),
+                dora_ros2_bridge::detect_service_mapping(),
                 &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
                     .map_err(|e| eyre!("failed to parse service name: {e}"))?,
                 &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -335,20 +347,23 @@ impl Ros2Node {
             .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
 
         // Mirror the daemon: wait for the server before returning so the first
-        // `call()` does not race service discovery.
-        let ready = async {
-            for _ in 0..10 {
-                let wait = client.wait_for_service(&self.node);
-                futures::pin_mut!(wait);
-                let timeout = futures_timer::Delay::new(Duration::from_secs(2));
-                match futures::future::select(wait, timeout).await {
-                    futures::future::Either::Left(((), _)) => return Ok(()),
-                    futures::future::Either::Right(_) => {}
+        // `call()` does not race service discovery. Release the GIL: this blocks
+        // for up to 20s and must not freeze other Python threads.
+        let node = &self.node;
+        py.detach(|| {
+            futures::executor::block_on(async {
+                for _ in 0..10 {
+                    let wait = client.wait_for_service(node);
+                    futures::pin_mut!(wait);
+                    let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+                    match futures::future::select(wait, timeout).await {
+                        futures::future::Either::Left(((), _)) => return Ok(()),
+                        futures::future::Either::Right(_) => {}
+                    }
                 }
-            }
-            eyre::bail!("service `{service_name}` not available after 10 retries")
-        };
-        futures::executor::block_on(ready)?;
+                eyre::bail!("service `{service_name}` not available after 10 retries")
+            })
+        })?;
 
         Ok(Ros2ServiceClient {
             client,
@@ -395,7 +410,7 @@ impl Ros2Node {
         let server = self
             .node
             .create_server::<BridgeServiceType>(
-                detect_service_mapping(),
+                dora_ros2_bridge::detect_service_mapping(),
                 &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
                     .map_err(|e| eyre!("failed to parse service name: {e}"))?,
                 &ros2_client::ServiceTypeName::new(&package, &type_name),
@@ -657,12 +672,14 @@ impl Ros2ServiceClient {
                 .map_err(|e| eyre!("failed to send service request: {e:?}"))?
         };
 
-        // NOTE: blocks holding the GIL, matching the rest of this binding
-        // (e.g. `Ros2Subscription::next`). Releasing the GIL here is a future
-        // refinement (pyo3 0.28 reworked the GIL-release API).
+        // Release the GIL while blocking on the network so other Python threads
+        // (e.g. a service server producing this very response) can run. The
+        // TypeInfoGuard lives inside the closure, which runs on the same OS
+        // thread, so the deserialize thread-local stays correct.
         let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(30.0));
-        let response = {
-            let _guard = TypeInfoGuard::deserialize(self.response_type_info.clone());
+        let response_type_info = self.response_type_info.clone();
+        let response = py.detach(|| {
+            let _guard = TypeInfoGuard::deserialize(response_type_info);
             futures::executor::block_on(async {
                 let recv = self.client.async_receive_response(req_id);
                 futures::pin_mut!(recv);
@@ -675,8 +692,8 @@ impl Ros2ServiceClient {
                         eyre::bail!("service response timed out after {timeout:?}")
                     }
                 }
-            })?
-        };
+            })
+        })?;
 
         let data = response.0.context("service response contained no data")?;
         Ok(data.to_pyarrow(py)?.unbind())
@@ -694,9 +711,11 @@ pub struct Ros2ServiceServer {
     server: ros2_client::Server<BridgeServiceType>,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
-    // Maps the integer id handed to Python back to the ROS2 request id, so
-    // `send_response` can reply to the correct (possibly out-of-order) request.
-    pending: HashMap<u64, ros2_client::service::RmwRequestId>,
+    // Maps the integer id handed to Python back to the ROS2 request id (plus the
+    // time it was taken), so `send_response` can reply to the correct (possibly
+    // out-of-order) request. The insertion time bounds the map: stale entries
+    // from requests that never got a response are evicted in `take_request`.
+    pending: HashMap<u64, (ros2_client::service::RmwRequestId, Instant)>,
     next_id: u64,
 }
 
@@ -719,8 +738,10 @@ impl Ros2ServiceServer {
 
         // Deserialize the request under the request TypeInfo (guard clears the
         // thread-local on drop). Mirrors the daemon's `run_service_server`.
-        let received = {
-            let _guard = TypeInfoGuard::deserialize(self.request_type_info.clone());
+        // Release the GIL while waiting so other Python threads can run.
+        let request_type_info = self.request_type_info.clone();
+        let received = py.detach(|| {
+            let _guard = TypeInfoGuard::deserialize(request_type_info);
             futures::executor::block_on(async {
                 let recv = self.server.async_receive_request();
                 futures::pin_mut!(recv);
@@ -731,8 +752,8 @@ impl Ros2ServiceServer {
                         .map_err(|e| eyre!("failed to receive service request: {e:?}")),
                     futures::future::Either::Right(_) => Ok(None),
                 }
-            })?
-        };
+            })
+        })?;
 
         let Some((rmw_id, message)) = received else {
             return Ok(None);
@@ -741,9 +762,28 @@ impl Ros2ServiceServer {
             return Ok(None);
         };
 
+        // Bound `pending`: drop entries whose response was never sent (timed
+        // out), then enforce a hard cap by evicting the oldest. Without this a
+        // handler that skips `send_response` would leak entries forever.
+        let now = Instant::now();
+        self.pending
+            .retain(|_, (_, taken)| now.duration_since(*taken) < SERVICE_RESPONSE_TIMEOUT);
+        while self.pending.len() >= MAX_PENDING_REQUESTS {
+            if let Some(oldest) = self
+                .pending
+                .iter()
+                .min_by_key(|(_, (_, taken))| *taken)
+                .map(|(id, _)| *id)
+            {
+                self.pending.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.pending.insert(id, rmw_id);
+        self.pending.insert(id, (rmw_id, now));
         Ok(Some((id, data.to_pyarrow(py)?.unbind())))
     }
 
@@ -757,17 +797,33 @@ impl Ros2ServiceServer {
         request_id: u64,
         response: Bound<'_, PyAny>,
     ) -> eyre::Result<()> {
-        let rmw_id = self.pending.remove(&request_id).with_context(|| {
+        let py = response.py();
+        let (rmw_id, _taken) = self.pending.remove(&request_id).with_context(|| {
             format!("unknown request_id {request_id} (already answered or never taken)")
         })?;
         let array_data = pyarrow_to_array_data(&response)?;
 
-        let _guard = TypeInfoGuard::serialize(self.response_type_info.clone());
-        futures::executor::block_on(
-            self.server
-                .async_send_response(rmw_id, BridgeMessage(Some(array_data))),
-        )
-        .map_err(|e| eyre!("failed to send service response: {e:?}"))?;
+        // Release the GIL while sending; bound the send with a timeout so a
+        // congested transport can't freeze the Python thread indefinitely.
+        let response_type_info = self.response_type_info.clone();
+        py.detach(|| {
+            let _guard = TypeInfoGuard::serialize(response_type_info);
+            futures::executor::block_on(async {
+                let send = self
+                    .server
+                    .async_send_response(rmw_id, BridgeMessage(Some(array_data)));
+                futures::pin_mut!(send);
+                let delay = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                match futures::future::select(send, delay).await {
+                    futures::future::Either::Left((result, _)) => {
+                        result.map_err(|e| eyre!("failed to send service response: {e:?}"))
+                    }
+                    futures::future::Either::Right(_) => {
+                        eyre::bail!("service response send timed out")
+                    }
+                }
+            })
+        })?;
         Ok(())
     }
 }
@@ -793,22 +849,6 @@ fn pyarrow_to_array_data(data: &Bound<'_, PyAny>) -> eyre::Result<ArrayData> {
     };
 
     Ok(ArrayData::from_pyarrow_bound(&data)?)
-}
-
-/// Pick the `ServiceMapping` matching the active ROS2 middleware, from
-/// `RMW_IMPLEMENTATION` (primary) then `ROS_DISTRO` (fallback), defaulting to
-/// `Enhanced`. Mirrors the standalone bridge daemon (see dora-rs/dora#449).
-fn detect_service_mapping() -> ros2_client::ServiceMapping {
-    use ros2_client::ServiceMapping::{Cyclone, Enhanced};
-    match std::env::var("RMW_IMPLEMENTATION").ok().as_deref() {
-        Some("rmw_cyclonedds_cpp") => return Cyclone,
-        Some(_) => return Enhanced,
-        None => {}
-    }
-    match std::env::var("ROS_DISTRO").ok().as_deref() {
-        Some("galactic") => Cyclone,
-        _ => Enhanced,
-    }
 }
 
 pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
