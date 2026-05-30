@@ -394,38 +394,6 @@ jobs:
       - cargo-cache-save:
           prefix: cargo-macos
 
-  test-windows:
-    executor: win/default
-    environment:
-      CARGO_TERM_COLOR: always
-      # CircleCI Windows runners have less RAM than GitHub Actions;
-      # limit parallelism to avoid OOM during linking.
-      CARGO_BUILD_JOBS: "2"
-      # Same pyo3-build-config probe-skip as test-linux above.
-      PYO3_NO_PYTHON: "1"
-    steps:
-      - checkout
-      - install-rust-windows:
-          version: "1.92.0"
-      - cargo-cache-restore:
-          prefix: cargo-win
-      - run:
-          name: Test (excluding Python)
-          shell: bash.exe
-          command: >
-            cargo test --all
-            --exclude dora-node-api-python
-            --exclude dora-operator-api-python
-            --exclude dora-ros2-bridge-python
-            --exclude dora-cli-api-python
-            --exclude dora-examples
-          no_output_timeout: 45m
-      # Skip `cargo check --examples` on Windows — the full example set
-      # (including ROS2 bridge) exceeds the runner's memory budget.
-      # Linux and macOS still gate on it.
-      - cargo-cache-save:
-          prefix: cargo-win
-
   # ===== Examples (cross-platform) =====
 
   examples-linux:
@@ -534,62 +502,12 @@ jobs:
       - cargo-cache-save:
           prefix: cargo-macos-examples
 
-  # `examples-windows` was a single job covering Build + 5 examples
-  # (~65m total post-#1946). CircleCI Windows jobs cap at a 60-minute
-  # wall, so the cumulative runtime tripped the wall during "Multiple
-  # Daemons example" — even though the per-step `no_output_timeout`
-  # values are well above 60m. Split into two cooperating jobs:
-  #
-  #   examples-windows       — Build + Rust Dataflow + Rust Git Dataflow (~42m).
-  #                            Runs on every main push as a fast informational
-  #                            signal — exercises runtime + CLI + git source path.
-  #   examples-windows-heavy — Build + Multiple Daemons + C + C++ (~47m).
-  #                            Runs ONLY on release tags (see workflow filter).
-  #                            Dora has few Windows users; paying double Windows
-  #                            compute on every main push to catch regressions
-  #                            that mostly matter at tag time isn't worth the
-  #                            spend. Multi-daemon cluster + C/C++ FFI are
-  #                            release-time confidence checks.
-  #
-  # Both jobs do their own `cargo build --examples` because Windows
-  # runners don't share workspaces with each other today (no Windows
-  # job uses `persist_to_workspace`). Linux examples remain in a single
-  # `examples-linux` job — Linux is fast enough that the cumulative
-  # runtime stays under 50m.
-  examples-windows:
-    executor: win/default
-    environment:
-      CARGO_TERM_COLOR: always
-      # Same as examples-macos: build chain pulls dora-runtime which
-      # always calls pyo3-build-config; Windows runner has no guaranteed
-      # Python 3.11+. Skip the probe.
-      PYO3_NO_PYTHON: "1"
-    steps:
-      - checkout
-      - install-rust-windows:
-          version: "1.92.0"
-      - cargo-cache-restore:
-          prefix: cargo-win-examples
-      - run:
-          name: Build examples + CLI binary
-          shell: bash.exe
-          command: |
-            cargo build --examples
-            cargo build -p dora-cli
-          no_output_timeout: 30m
-      - run:
-          name: Rust Dataflow example
-          shell: bash.exe
-          command: cargo run --example rust-dataflow
-          no_output_timeout: 30m
-      - run:
-          name: Rust Git Dataflow example
-          shell: bash.exe
-          command: cargo run --example rust-dataflow-git
-          no_output_timeout: 30m
-      - cargo-cache-save:
-          prefix: cargo-win-examples
-
+  # examples-windows-heavy is the ONLY remaining Windows CircleCI job: it
+  # builds + runs the Multiple-Daemons / C / C++ examples on Windows and runs
+  # ONLY on release tags (see workflow filter). The per-PR/per-merge Windows
+  # jobs (test-windows, examples-windows, cli-windows) were removed — Dora's
+  # Windows user surface is narrow and the nightly workflow already tests +
+  # runs examples on Windows daily.
   examples-windows-heavy:
     executor: win/default
     environment:
@@ -599,8 +517,6 @@ jobs:
       - checkout
       - install-rust-windows:
           version: "1.92.0"
-      # Separate cache prefix from `examples-windows` so the two jobs
-      # never trip on each other's incremental compilation state.
       - cargo-cache-restore:
           prefix: cargo-win-examples-heavy
       - run:
@@ -856,58 +772,6 @@ jobs:
           no_output_timeout: 10m
       - cargo-cache-save:
           prefix: cargo-macos-cli
-
-  cli-windows:
-    executor: win/default
-    environment:
-      CARGO_TERM_COLOR: always
-      # Same as cli-macos.
-      PYO3_NO_PYTHON: "1"
-    steps:
-      - checkout
-      - install-rust-windows:
-          version: "1.92.0"
-      - cargo-cache-restore:
-          prefix: cargo-win-cli
-      - run:
-          name: Build + install CLI
-          shell: bash.exe
-          command: cargo install --path binaries/cli --locked
-          no_output_timeout: 45m
-      - run:
-          name: Test Rust template project
-          shell: bash.exe
-          command: |
-            dora new test_rust_project --internal-create-with-path-dependencies
-            cd test_rust_project
-            cargo build --all
-            dora run dataflow.yml --stop-after 10s
-          no_output_timeout: 45m
-      - run:
-          name: Test Dynamic Rust Dataflow
-          shell: bash.exe
-          command: |
-            dora up
-            dora list
-            dora build examples/rust-dataflow/dataflow_dynamic.yml
-            dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
-            cargo run -p rust-dataflow-example-sink-dynamic
-            sleep 5
-            dora stop --name ci-rust-dynamic --grace-duration 5s
-            dora destroy
-          no_output_timeout: 45m
-      - run:
-          name: Error Event example
-          shell: bash.exe
-          command: |
-            dora build examples/error-propagation/dataflow.yml
-            output=$(dora run examples/error-propagation/dataflow.yml 2>&1 || true)
-            echo "$output"
-            echo "$output" | grep -q "Received error from node" \
-              || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
-          no_output_timeout: 10m
-      - cargo-cache-save:
-          prefix: cargo-win-cli
 
   # ===== Benchmark example (Linux-only) =====
   # Reduced from 3 platforms -- criterion regression job below is the
@@ -1213,7 +1077,6 @@ workflows:
       # Each job fails on its own if there's a compilation error.
       - test-linux
       - test-macos
-      - test-windows
 
       # ── Linux integration (require test-linux for workspace artifact) ──
       - e2e:
@@ -1237,34 +1100,16 @@ workflows:
       - examples-macos
       - cli-macos
 
-      # ── Windows integration (slow runners, narrow user surface) ──
-      #
-      # `examples-windows` runs on every main push as a fast informational
-      # signal (Rust Dataflow + Rust Git Dataflow exercise the runtime +
-      # CLI + git-source paths — where most "did anything obvious break
-      # on Windows" lives).
-      #
-      # `examples-windows-heavy` runs ONLY on release tags. Multiple
-      # Daemons cluster + C/C++ FFI examples are release-time confidence
-      # checks, not per-commit signal. Dora's Windows user surface is
-      # narrow; paying double Windows CI compute on every main push to
-      # catch regressions that mostly matter at tag time isn't worth the
-      # spend. Trade-off accepted: a Windows-heavy regression landing
-      # mid-cycle won't surface until the next `v*` tag.
-      - examples-windows:
-          filters:
-            branches:
-              only: main
+      # ── Windows integration (release-tag only) ──
+      # Per-PR/per-merge Windows CI was removed (narrow user surface; the
+      # nightly workflow covers Windows). Only examples-windows-heavy remains,
+      # gated to release tags as a pre-release confidence check.
       - examples-windows-heavy:
           filters:
             tags:
               only: /^v[0-9]+\.[0-9]+.*/
             branches:
               ignore: /.*/
-      - cli-windows:
-          filters:
-            branches:
-              only: main
 
       # ── Cross-compilation ──
       - cross-check-native:
