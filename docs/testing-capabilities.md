@@ -183,12 +183,19 @@ Known gap: `dora self update` destructive swap path (tracked in
 
 ## ROS2 bridge
 
+> [!NOTE]
+> The ROS2 bridge is an optional extension. **PR CI only compiles it**
+> (clippy/check build the bridge crates) — it is **not** run end-to-end on PRs
+> or merges. Runtime coverage is the **nightly** `ros2-bridge` job (GitHub
+> Actions, non-blocking) plus manual pre-release QA via `scripts/ros2dev.sh qa`.
+> Do not rely on per-PR runtime coverage for the bridge.
+
 | Sub-capability | Test(s) | Tier | Strength |
 |---|---|---|---|
-| Rust ROS2 example | `ros2-bridge` job (ci.yml, Linux) | PR | Smoke |
-| Python ROS2 example | `ros2-bridge` job | PR | Smoke |
-| C++ ROS2 example | `ros2-bridge` job | PR | Smoke |
-| YAML bridge (topic / service / action) | `ros2-bridge` job subset | PR | Smoke |
+| Rust ROS2 example | nightly `ros2-bridge` job (GitHub Actions) + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
+| Python ROS2 example | nightly `ros2-bridge` job + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
+| C++ ROS2 example | nightly `ros2-bridge` job + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
+| YAML bridge (topic / service / action) | `scripts/ros2dev.sh qa` (manual harness) | Manual | Smoke |
 
 ## Soft real-time (`--rt`, SCHED_FIFO, mlock)
 

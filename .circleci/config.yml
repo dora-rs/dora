@@ -4,7 +4,9 @@
 # CircleCI-native improvements:
 #   - Workspaces share the CLI binary across downstream jobs (no rebuild)
 #   - Fast gates and core tests run in parallel from the start
-#   - Windows integration tests gated to main branch (2x slower than Linux)
+#   - Heavy runtime jobs (ROS2 bridge e2e, Windows runners) do NOT run on
+#     PRs or merges -- they live in the nightly workflow; PR CI only compiles
+#     them. Only the release-tag `examples-windows-heavy` job runs Windows here.
 #   - Cargo registry cached across runs; compilation is per-job
 
 
