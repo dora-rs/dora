@@ -38,9 +38,9 @@ Addresses [#1633](https://github.com/dora-rs/dora/issues/1633); parent
 | `dora --help` + per-subcommand `--help` | `test` job argparse block (ci.yml) | PR | Contract |
 | `dora validate` (basic + `--strict-types`) | `test` job validate block | PR | Contract |
 | `dora expand`, `dora graph` | `test` job CLI smoke block | PR | Contract |
-| `dora new` templates (rust, python) on 3 platforms | `cli` job (ci.yml) | PR | Smoke |
+| `dora new` templates (rust, python) on Linux + macOS | `cli-*` jobs (Linux + macOS; Windows is nightly-only) | PR | Smoke |
 | `dora new` templates (c, cxx, cmake) on Linux | `cli` job (ci.yml) | PR | Smoke |
-| `dora run` local mode, wide set of examples | `examples` job (3 platforms) | PR | Smoke |
+| `dora run` local mode, wide set of examples | `examples-linux` + `examples-macos` (Windows is nightly-only) | PR | Smoke |
 | `dora up`/`start`/`stop`/`down` lifecycle | `smoke_*` in `example-smoke.rs` | Nightly | Smoke |
 | `dora run --stop-after` contract on 4 examples | `contract_*` in `example-smoke.rs` | PR | Contract |
 | `dora self update --check-only` (read-only path) | `topic-and-top-smoke` job | Nightly | Smoke |
@@ -187,15 +187,16 @@ Known gap: `dora self update` destructive swap path (tracked in
 > The ROS2 bridge is an optional extension. **PR CI only compiles it**
 > (clippy/check build the bridge crates) — it is **not** run end-to-end on PRs
 > or merges. Runtime coverage is the **nightly** `ros2-bridge` job (GitHub
-> Actions, non-blocking) plus manual pre-release QA via `scripts/ros2dev.sh qa`.
+> Actions, non-blocking); for local pre-release QA, run
+> `scripts/qa/ci-nightly-jobs.sh ros2-bridge` on a Linux box with ROS2 Humble.
 > Do not rely on per-PR runtime coverage for the bridge.
 
 | Sub-capability | Test(s) | Tier | Strength |
 |---|---|---|---|
-| Rust ROS2 example | nightly `ros2-bridge` job (GitHub Actions) + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
-| Python ROS2 example | nightly `ros2-bridge` job + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
-| C++ ROS2 example | nightly `ros2-bridge` job + `scripts/ros2dev.sh qa` | Nightly + manual | Smoke |
-| YAML bridge (topic / service / action) | `scripts/ros2dev.sh qa` (manual harness) | Manual | Smoke |
+| Rust ROS2 example | nightly `ros2-bridge` job (GitHub Actions) | Nightly | Smoke |
+| Python ROS2 example | nightly `ros2-bridge` job | Nightly | Smoke |
+| C++ ROS2 example | nightly `ros2-bridge` job | Nightly | Smoke |
+| YAML bridge (topic / service / action) | manual QA (not run in CI) | Manual | Smoke |
 
 ## Soft real-time (`--rt`, SCHED_FIFO, mlock)
 
