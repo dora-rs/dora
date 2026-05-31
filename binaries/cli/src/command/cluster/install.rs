@@ -5,7 +5,10 @@ use clap::Args;
 use crate::command::{Executable, default_tracing};
 
 use super::config::ClusterConfig;
-use super::{format_labels_arg, print_summary, record_ssh_result, run_ssh, ssh_target};
+use super::{
+    format_daemon_port_arg, format_labels_arg, print_summary, record_ssh_result, run_ssh,
+    ssh_target,
+};
 
 /// Install dora-daemon as a systemd service on each machine.
 ///
@@ -32,6 +35,7 @@ impl Executable for Install {
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
+            let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
             let service_name = format!("dora-daemon-{}", machine.id);
 
             let unit = format!(
@@ -42,7 +46,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet
+ExecStart=dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{labels} --quiet
 Restart=on-failure
 RestartSec=5
 
