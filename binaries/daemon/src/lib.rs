@@ -498,12 +498,14 @@ impl Daemon {
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
+        inter_daemon_peer: Option<String>,
     ) -> eyre::Result<()> {
         Self::run_with_builds(
             coordinator_ws_addr,
             machine_id,
             labels,
             local_listen_port,
+            inter_daemon_peer,
             Default::default(),
         )
         .await
@@ -514,6 +516,7 @@ impl Daemon {
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
+        inter_daemon_peer: Option<String>,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
@@ -564,6 +567,7 @@ impl Daemon {
                         initial_builds.clone(),
                         log_destination,
                         None,
+                        inter_daemon_peer.clone(),
                     );
 
                     let result = tokio::select! {
@@ -749,6 +753,9 @@ impl Daemon {
             },
             log_destination,
             health_check_interval,
+            // Local dataflow runs (one daemon, no cluster) never need
+            // cross-daemon Zenoh discovery; the rendezvous is irrelevant.
+            None,
         );
 
         let spawn_result = reply_rx
@@ -794,6 +801,7 @@ impl Daemon {
         builds: BTreeMap<BuildId, BuildInfo>,
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
+        inter_daemon_peer: Option<String>,
     ) -> eyre::Result<DaemonRunResult> {
         // Reserve a loopback port and have zenoh listen on it. The endpoint is
         // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
@@ -813,10 +821,13 @@ impl Daemon {
         // the listen/endpoints insert. Otherwise we must not inject
         // `DORA_ZENOH_CONNECT` into spawned nodes — they would try to connect
         // to an endpoint that nothing is listening on (#1856).
-        let (zenoh_session, zenoh_listen_endpoint) =
-            open_zenoh_session_with_listen(None, requested_listen_endpoint.as_deref())
-                .await
-                .wrap_err("failed to open zenoh session")?;
+        let (zenoh_session, zenoh_listen_endpoint) = open_zenoh_session_with_listen(
+            None,
+            requested_listen_endpoint.as_deref(),
+            inter_daemon_peer.as_deref(),
+        )
+        .await
+        .wrap_err("failed to open zenoh session")?;
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
             tracing::warn!(
                 "requested zenoh listener but zenoh did not bind it; \

@@ -120,6 +120,8 @@ coordinator:
   addr: 10.0.0.1            # IP address the coordinator binds to (required)
   port: 6013                 # WebSocket port (default: 6013)
 
+zenoh_peer: tcp/10.0.0.1:5456  # Shared inter-daemon Zenoh rendezvous (optional)
+
 machines:
   - id: edge-01              # Unique machine identifier (required)
     host: 10.0.0.2           # SSH-reachable hostname or IP (required)
@@ -137,6 +139,14 @@ machines:
 ```
 
 ### Fields
+
+**top-level**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `coordinator` | object | (required) | Coordinator address + port (see below) |
+| `zenoh_peer` | string | none | Shared Zenoh peer endpoint that all daemons use as a rendezvous for cross-daemon discovery (e.g., `tcp/192.168.1.1:5456`). `dora cluster up` passes it to every daemon via `dora daemon --zenoh-peer <ep>`. The first daemon to bind serves as the gossip hub; the rest fall through to connect-only. **Set this when your network lacks multicast** (dev containers, hardened deployments, many CI runners) — otherwise daemons can't find each other and cross-daemon dataflows hang. |
+| `machines` | array | (required) | Machine list (see below) |
 
 **coordinator**
 

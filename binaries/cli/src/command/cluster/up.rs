@@ -18,7 +18,8 @@ use crate::{
 
 use super::config::ClusterConfig;
 use super::{
-    format_daemon_port_arg, format_labels_arg, query_connected_daemons, run_ssh, ssh_target,
+    format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
+    run_ssh, ssh_target,
 };
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
@@ -59,13 +60,14 @@ impl Executable for Up {
         };
 
         // 2. SSH into each machine to start a daemon
+        let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
             let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
             let remote_cmd = format!(
-                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
