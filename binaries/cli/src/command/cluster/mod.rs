@@ -72,6 +72,14 @@ pub(super) fn format_labels_arg(labels: &BTreeMap<String, String>) -> String {
     }
 }
 
+/// Format the `--local-listen-port <p>` argument string.
+pub(super) fn format_daemon_port_arg(daemon_port: Option<u16>) -> String {
+    match daemon_port {
+        Some(p) => format!(" --local-listen-port {p}"),
+        None => String::new(),
+    }
+}
+
 /// Run a command on a remote machine via SSH. Returns whether it succeeded.
 pub(super) fn run_ssh(target: &str, port: Option<u16>, cmd: &str) -> eyre::Result<bool> {
     let mut command = std::process::Command::new("ssh");

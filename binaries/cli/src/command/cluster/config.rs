@@ -36,6 +36,11 @@ pub struct MachineConfig {
     /// Custom SSH port. Defaults to the SSH client default (22).
     #[serde(default)]
     pub port: Option<u16>,
+    /// Custom daemon local-listen port. Defaults to 53291.
+    /// Set when running multiple daemons on the same host
+    /// (see `examples/multiple-daemons`).
+    #[serde(default)]
+    pub daemon_port: Option<u16>,
     /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -94,7 +99,25 @@ mod tests {
         assert_eq!(cfg.machines[0].id, "arm");
         assert!(cfg.machines[0].user.is_none());
         assert!(cfg.machines[0].port.is_none());
+        assert!(cfg.machines[0].daemon_port.is_none());
         assert!(cfg.machines[0].labels.is_empty());
+    }
+
+    #[test]
+    fn parse_with_daemon_port() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    daemon_port: 53292\n",
+        );
+        let cfg = ClusterConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.machines[0].daemon_port, Some(53292));
+    }
+
+    #[test]
+    fn reject_invalid_daemon_port() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    daemon_port: 99999\n",
+        );
+        assert!(ClusterConfig::load(f.path()).is_err());
     }
 
     #[test]

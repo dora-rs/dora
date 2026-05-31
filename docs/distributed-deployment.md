@@ -125,6 +125,7 @@ machines:
     host: 10.0.0.2           # SSH-reachable hostname or IP (required)
     user: ubuntu              # SSH user (optional, defaults to current user)
     port: 2222                # SSH port (optional, defaults to 22)
+    daemon_port: 53291        # Daemon local-listen port (optional, defaults to 53291)
     labels:                   # Key-value labels for scheduling (optional)
       gpu: "true"
       arch: arm64
@@ -152,6 +153,7 @@ machines:
 | `host` | string | (required) | SSH-reachable hostname or IP address |
 | `user` | string | current user | SSH username |
 | `port` | u16 | `22` | SSH port. Set when sshd listens on a non-standard port (e.g., containerized or hardened deployments). Applied to both `ssh` (`-p`) and `scp` (`-P`). |
+| `daemon_port` | u16 | `53291` | Daemon local-listen port (passed to `dora daemon --local-listen-port`). Set when running multiple `dora daemon` instances on the same host so each daemon binds a unique port. See [`examples/multiple-daemons/`](../examples/multiple-daemons/). |
 | `labels` | map | empty | Key-value pairs for label-based scheduling |
 
 ### Validation Rules
