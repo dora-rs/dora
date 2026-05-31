@@ -784,7 +784,7 @@ impl Ros2ActionClient {
         }
         let py = goal.py();
         let array_data = pyarrow_to_array_data(&goal)?;
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(ACTION_GOAL_TIMEOUT_S));
+        let timeout = timeout_or(timeout_s, ACTION_GOAL_TIMEOUT_S);
         let goal_type_info = self.goal_type_info.clone();
         let (goal_id, resp) = py.detach(|| {
             let _guard = TypeInfoGuard::serialize(goal_type_info);
@@ -823,7 +823,7 @@ impl Ros2ActionClient {
             .goals
             .get(goal_id)
             .with_context(|| format!("unknown goal_id {goal_id:?}"))?;
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(1.0));
+        let timeout = timeout_or(timeout_s, 1.0);
         let feedback_type_info = self.feedback_type_info.clone();
         let msg = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(feedback_type_info);
@@ -861,7 +861,7 @@ impl Ros2ActionClient {
             .goals
             .get(goal_id)
             .with_context(|| format!("unknown goal_id {goal_id:?}"))?;
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(ACTION_RESULT_TIMEOUT_S));
+        let timeout = timeout_or(timeout_s, ACTION_RESULT_TIMEOUT_S);
         let result_type_info = self.result_type_info.clone();
         let out = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(result_type_info);
@@ -898,7 +898,7 @@ impl Ros2ActionClient {
         goal_id: Option<&str>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<i8> {
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(10.0));
+        let timeout = timeout_or(timeout_s, 10.0);
         let gid = match goal_id {
             Some(s) => *self
                 .goals
@@ -946,7 +946,7 @@ impl Ros2ActionServer {
         py: Python<'_>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<(String, Py<PyAny>)>> {
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(1.0));
+        let timeout = timeout_or(timeout_s, 1.0);
         let goal_type_info = self.goal_type_info.clone();
         let taken = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(goal_type_info);
@@ -1054,7 +1054,7 @@ impl Ros2ActionServer {
             .clone();
         let end = map_status(status);
         let array_data = pyarrow_to_array_data(&result)?;
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(ACTION_RESULT_TIMEOUT_S));
+        let timeout = timeout_or(timeout_s, ACTION_RESULT_TIMEOUT_S);
         let result_type_info = self.result_type_info.clone();
         py.detach(|| {
             let _guard = TypeInfoGuard::serialize(result_type_info);
@@ -1088,7 +1088,7 @@ impl Ros2ActionServer {
         py: Python<'_>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<Vec<String>>> {
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(1.0));
+        let timeout = timeout_or(timeout_s, 1.0);
         py.detach(|| {
             futures::executor::block_on(async {
                 let recv = self.server.receive_cancel_request();
@@ -1114,6 +1114,15 @@ impl Ros2ActionServer {
             })
         })
     }
+}
+
+/// Convert an optional `timeout_s` (seconds) from Python into a `Duration`,
+/// falling back to `default_s` for `None` and for any non-finite, negative, or
+/// overflowing value. Guards against `Duration::from_secs_f64` panicking on a
+/// NaN/inf/negative argument (a process crash from public API input).
+fn timeout_or(timeout_s: Option<f64>, default_s: f64) -> Duration {
+    let secs = timeout_s.unwrap_or(default_s);
+    Duration::try_from_secs_f64(secs).unwrap_or_else(|_| Duration::from_secs_f64(default_s))
 }
 
 fn status_enum_to_str(status: ros2_client::action::GoalStatusEnum) -> String {
@@ -1182,7 +1191,7 @@ impl Ros2ServiceClient {
         // (e.g. a service server producing this very response) can run. The
         // TypeInfoGuard lives inside the closure, which runs on the same OS
         // thread, so the deserialize thread-local stays correct.
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(30.0));
+        let timeout = timeout_or(timeout_s, 30.0);
         let response_type_info = self.response_type_info.clone();
         let response = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(response_type_info);
@@ -1240,7 +1249,7 @@ impl Ros2ServiceServer {
         py: Python<'_>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<(u64, Py<PyAny>)>> {
-        let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(1.0));
+        let timeout = timeout_or(timeout_s, 1.0);
 
         // Deserialize the request under the request TypeInfo (guard clears the
         // thread-local on drop). Mirrors the daemon's `run_service_server`.
