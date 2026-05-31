@@ -71,6 +71,12 @@ impl ClusterConfig {
             if m.host.is_empty() {
                 bail!("machine `{}` host must not be empty", m.id);
             }
+            // Reject daemon_port = 0: the daemon would bind an ephemeral port
+            // but exports DORA_DAEMON_LOCAL_LISTEN_PORT=0 to spawned nodes
+            // (binaries/cli/src/command/daemon.rs), so they fail to connect.
+            if m.daemon_port == Some(0) {
+                bail!("machine `{}` daemon_port must not be 0", m.id);
+            }
         }
         Ok(())
     }
@@ -118,6 +124,15 @@ mod tests {
             "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    daemon_port: 99999\n",
         );
         assert!(ClusterConfig::load(f.path()).is_err());
+    }
+
+    #[test]
+    fn reject_zero_daemon_port() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    daemon_port: 0\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err();
+        assert!(err.to_string().contains("daemon_port must not be 0"));
     }
 
     #[test]
