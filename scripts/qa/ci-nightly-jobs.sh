@@ -543,10 +543,25 @@ PY
 
   # SSH key material. The wrapper script below forces ssh to use this key
   # and ignore the user's real ~/.ssh — we never touch the user's identity.
+  # NOTE on error handling in this function: `set -e` is disabled inside
+  # functions invoked via `if "$fn"; then` (run_job's pattern), so failures
+  # do NOT abort automatically — every command on a critical path needs an
+  # explicit check. We do so for ssh-keygen, cargo build, and `cluster down`
+  # below. Pure local-FS operations (mkdir/chmod on $WORK) are left
+  # unchecked: $WORK is a fresh mktemp dir we own, so they only fail under
+  # disk pressure, which surfaces later anyway.
   mkdir -p "$WORK/.ssh"
   chmod 700 "$WORK/.ssh"
-  ssh-keygen -t ed25519 -f "$WORK/.ssh/id_ed25519" -N "" -q
-  ssh-keygen -t ed25519 -f "$WORK/host_key" -N "" -q
+  if ! ssh-keygen -t ed25519 -f "$WORK/.ssh/id_ed25519" -N "" -q; then
+    echo "ERROR: failed to generate test identity key"
+    rm -rf "$WORK"
+    return 1
+  fi
+  if ! ssh-keygen -t ed25519 -f "$WORK/host_key" -N "" -q; then
+    echo "ERROR: failed to generate sshd host key"
+    rm -rf "$WORK"
+    return 1
+  fi
 
   # Prefix the pubkey with an `environment=` option so PATH=<scratch CLI>
   # is set for sessions that authenticate with this key. The remote command
@@ -571,19 +586,26 @@ PY
   REAL_SCP=$(command -v scp || echo "")
   cat > "$WORK/bin/ssh" <<EOF
 #!/bin/sh
-# Test wrapper: force our key, ignore the user's defaults.
-exec $REAL_SSH -i "$WORK/.ssh/id_ed25519" \\
+# Test wrapper: force our key + isolate from the user's SSH config.
+# -F /dev/null skips ~/.ssh/config (a local \`Host localhost\` rule could
+# otherwise rewrite HostName or inject ProxyCommand). UserKnownHostsFile
+# + GlobalKnownHostsFile keep all host-key state inside \$WORK.
+exec $REAL_SSH -F /dev/null \\
+     -i "$WORK/.ssh/id_ed25519" \\
      -o IdentitiesOnly=yes \\
      -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     -o GlobalKnownHostsFile=/dev/null \\
      "\$@"
 EOF
   chmod +x "$WORK/bin/ssh"
   if [ -n "$REAL_SCP" ]; then
     cat > "$WORK/bin/scp" <<EOF
 #!/bin/sh
-exec $REAL_SCP -i "$WORK/.ssh/id_ed25519" \\
+exec $REAL_SCP -F /dev/null \\
+     -i "$WORK/.ssh/id_ed25519" \\
      -o IdentitiesOnly=yes \\
      -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     -o GlobalKnownHostsFile=/dev/null \\
      "\$@"
 EOF
     chmod +x "$WORK/bin/scp"
@@ -713,10 +735,14 @@ EOF
   # endpoint into the per-daemon env, or run a zenohd router as part of
   # the fixture.
   echo "=== build dataflow nodes ==="
-  cargo build --quiet \
-    -p rust-dataflow-example-node \
-    -p rust-dataflow-example-status-node \
-    -p rust-dataflow-example-sink
+  if ! cargo build --quiet \
+       -p rust-dataflow-example-node \
+       -p rust-dataflow-example-status-node \
+       -p rust-dataflow-example-sink; then
+    echo "ERROR: cargo build of dataflow nodes failed"
+    rm -rf "$WORK"
+    return 1
+  fi
 
   local REPO_ROOT
   REPO_ROOT="$(pwd)"
@@ -790,7 +816,11 @@ EOF
   sleep 1
 
   echo "=== dora cluster down ==="
-  dora cluster down
+  if ! dora cluster down; then
+    echo "ERROR: dora cluster down returned non-zero"
+    rm -rf "$WORK"
+    return 1
+  fi
   sleep 1
   if dora cluster status 2>/dev/null; then
     echo "ERROR: cluster status succeeded after 'cluster down'"

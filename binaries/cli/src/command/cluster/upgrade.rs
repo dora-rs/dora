@@ -115,6 +115,7 @@ impl Executable for Upgrade {
 
         if failures.is_empty() {
             println!("All {} machine(s) upgraded", config.machines.len());
+            Ok(())
         } else {
             println!(
                 "Upgraded {}/{} machine(s)",
@@ -124,8 +125,11 @@ impl Executable for Upgrade {
             for (id, reason) in &failures {
                 eprintln!("  {id}: {reason}");
             }
+            eyre::bail!(
+                "upgrade failed on {}/{} machine(s)",
+                failures.len(),
+                config.machines.len()
+            )
         }
-
-        Ok(())
     }
 }

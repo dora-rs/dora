@@ -104,6 +104,7 @@ impl Executable for Up {
             .map(|m| m.id.as_str())
             .collect();
 
+        let mut missing_daemons: Vec<String> = Vec::new();
         if !expected.is_empty() {
             println!("Waiting for {} daemon(s) to connect...", expected.len());
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -118,7 +119,7 @@ impl Executable for Up {
                     break;
                 }
                 if Instant::now() >= deadline {
-                    let missing: Vec<&str> = expected
+                    missing_daemons = expected
                         .iter()
                         .copied()
                         .filter(|machine_id| {
@@ -126,10 +127,11 @@ impl Executable for Up {
                                 .iter()
                                 .any(|d| d.daemon_id.matches_machine_id(machine_id))
                         })
+                        .map(String::from)
                         .collect();
                     eprintln!(
                         "WARNING: timed out waiting for daemon(s): {}",
-                        missing.join(", ")
+                        missing_daemons.join(", ")
                     );
                     break;
                 }
@@ -137,13 +139,17 @@ impl Executable for Up {
             }
         }
 
-        // 4. Report
-        let ok_count = config.machines.len() - ssh_failures.len();
-        if ssh_failures.is_empty() {
+        // 4. Report. A partial-up state (some daemons unreachable or never
+        // registered) must exit non-zero so callers — scripts, CI, the
+        // cluster-e2e job — can react instead of silently treating
+        // "Cluster partially up" as success.
+        let ok_count = config.machines.len() - ssh_failures.len() - missing_daemons.len();
+        if ssh_failures.is_empty() && missing_daemons.is_empty() {
             println!(
                 "Cluster is up: coordinator + {} daemon(s)",
                 config.machines.len()
             );
+            Ok(())
         } else {
             println!(
                 "Cluster partially up: coordinator + {ok_count}/{} daemon(s)",
@@ -152,9 +158,12 @@ impl Executable for Up {
             for (id, reason) in &ssh_failures {
                 eprintln!("  {id}: {reason}");
             }
+            eyre::bail!(
+                "cluster up incomplete: {} ssh failure(s), {} daemon(s) did not register",
+                ssh_failures.len(),
+                missing_daemons.len()
+            )
         }
-
-        Ok(())
     }
 }
 

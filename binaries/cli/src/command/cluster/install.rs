@@ -82,6 +82,14 @@ WantedBy=multi-user.target
             &failures,
         );
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            eyre::bail!(
+                "install failed on {}/{} machine(s)",
+                failures.len(),
+                config.machines.len()
+            )
+        }
     }
 }

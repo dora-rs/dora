@@ -52,6 +52,14 @@ impl Executable for Uninstall {
 
         print_summary("daemon(s) uninstalled", config.machines.len(), &failures);
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            eyre::bail!(
+                "uninstall failed on {}/{} machine(s)",
+                failures.len(),
+                config.machines.len()
+            )
+        }
     }
 }
