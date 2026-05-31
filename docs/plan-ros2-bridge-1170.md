@@ -17,6 +17,88 @@ The canonical **"add a feature" recipe** is:
 
 ---
 
+## 1.1 Architecture & feature status
+
+How a dora node reaches the ROS2 wire, and what each language surface supports.
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  USER CODE  (dora node)          Rust  ·  C++  ·  Python                   │
+└───────────────┬──────────────────────────────────┬───────────────────────┘
+                │                                   │
+   ┌────────────▼─────────────┐       ┌─────────────▼──────────────────────┐
+   │  (a) CODEGEN NATIVE API   │       │  (b) DYNAMIC BRIDGE                 │
+   │  compile-time typed        │       │  YAML-driven, language-agnostic     │
+   │  structs from .msg/.srv/   │       │  binaries/ros2-bridge-node          │
+   │  .action  (msg-gen/)       │       │  + pyo3 (Python, in-process)        │
+   │  →  Rust / C++             │       │  Apache Arrow + thread-local        │
+   │                            │       │  TypeInfo (BridgeMessage,           │
+   │                            │       │  TypeInfoGuard, BridgeServiceType,  │
+   │                            │       │  BridgeActionType)                  │
+   └────────────┬─────────────┘       └─────────────┬──────────────────────┘
+                │                                    │
+                └──────────────┬─────────────────────┘
+                               │  serialize ↔ Arrow ↔ CDR
+                  ┌────────────▼─────────────┐
+                  │  PURE-RUST DDS/RTPS STACK │   ← never links rcl / rclcpp
+                  │  ros2-client 0.8          │
+                  │  rustdds 0.11.4           │
+                  └────────────┬─────────────┘
+                               │  RTPS over UDP (SPDP discovery)
+        ╔══════════════════════▼═══════════════════════════════════╗
+        ║  DDS WIRE  ──  ROS2 ECOSYSTEM (rclcpp / rclpy nodes,       ║
+        ║                turtlesim, ros2 CLI, Nav2, ...)            ║
+        ╚═══════════════════════════════════════════════════════════╝
+```
+
+Both surfaces ride the same pure-Rust `ros2-client` / `rustdds` stack — no
+`rcl`/`rclcpp` linkage. "client" = a dora node calling into ROS2 (dora→ROS2);
+"server" = a dora node serving ROS2 clients (ROS2→dora).
+
+**Capability × language (current):**
+
+```
+                    │ topic │ service │ service │ action │ action │
+                    │ pub/  │ client  │ server  │ client │ server │
+                    │ sub   │         │         │        │        │
+  ──────────────────┼───────┼─────────┼─────────┼────────┼────────┤
+  Rust  (codegen)   │  ##   │   ##    │   ##    │   ##   │   --   │
+  C++   (codegen)   │  ##   │   ##*   │   --    │   ##   │   --   │
+  Python(dynamic)   │  ##   │   ##    │   ##    │   ~~   │   ~~   │
+  ──────────────────┴───────┴─────────┴─────────┴────────┴────────┘
+  Cross-cutting:  -- parameter service    -- examples aligned w/ ros2/examples
+
+  ## landed    ~~ in review (PR #1975)    -- planned
+  * C++ service client: response-delivery bug (#1970) fixed via #1971
+```
+
+**Landed this cycle:** Python service client+server (#1969, dynamic/pyo3);
+C++ service client fix for #1970 (#1971, codegen); CI moved ros2-bridge to
+nightly-only (#1973). **In review:** Python action client+server (#1975) —
+once merged, the Python row is full (topic/service/action); design in
+[`plan-ros2-bridge-1170-phase2.md`](plan-ros2-bridge-1170-phase2.md).
+
+**Remaining for #1170 to fully land:** Rust action server (Phase 4, codegen);
+C++ service server then C++ action server (Phase 5, codegen+cxx); parameter
+service (Phase 3, composes on the service server); examples alignment.
+
+**End state — full interop parity across all three surfaces:**
+
+```
+                    │ topic │ service │ service │ action │ action │ param │
+  ──────────────────┼───────┼─────────┼─────────┼────────┼────────┼───────┤
+  Rust / C++ / Py   │  ##   │   ##    │   ##    │   ##   │   ##   │  ##   │
+  ──────────────────┴───────┴─────────┴─────────┴────────┴────────┴───────┘
+```
+
+**Known transport limitation:** real-ROS2-client → dora-hosted-server discovery
+is gated by [ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4),
+so dora-hosted servers are validated dora↔dora (and via send-result completion),
+matching how the standalone daemon is tested. dora→ROS2 (the harder direction)
+works against real ROS2 nodes.
+
+---
+
 ## 2. Sub-item assessment table
 
 Difficulty: S≈1-2 days, M≈3-5 days, L≈1-2 wk, XL≈2-4 wk. "Mirrors" cites the existing code an engineer adapts.
