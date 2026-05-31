@@ -83,6 +83,14 @@ name = "python-ros2-dataflow-service-server"
 path = "../../../examples/ros2-bridge/python/service-server/run.rs"
 
 [[example]]
+name = "python-ros2-dataflow-action-client"
+path = "../../../examples/ros2-bridge/python/action-client/run.rs"
+
+[[example]]
+name = "python-ros2-dataflow-action-server"
+path = "../../../examples/ros2-bridge/python/action-server/run.rs"
+
+[[example]]
 name = "cxx-ros2-dataflow"
 path = "../../../examples/ros2-bridge/c++/turtle/run.rs"
 required-features = ["ros2-examples"]

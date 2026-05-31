@@ -1,0 +1,6 @@
+nodes:
+  - id: action-client
+    path: ./action_client_node.py
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []
