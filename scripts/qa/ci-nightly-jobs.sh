@@ -523,13 +523,17 @@ job_cluster_e2e() {
   local WORK
   WORK=$(mktemp -d -t dora-cluster-e2e-XXXXXX)
 
-  # Pick 5 free loopback ports in one shot: 1 sshd, 1 coordinator, 3 daemons.
-  # bind+release leaves a small race window but is the standard approach and
-  # is fine for a single-runner integration test.
+  # Pick 6 free loopback ports in one shot: 1 sshd, 1 coordinator, 3 daemons,
+  # 1 inter-daemon Zenoh rendezvous (the shared peer endpoint plumbed through
+  # `cluster.zenoh_peer` -> `dora daemon --zenoh-peer` in the cluster-zenoh-peer
+  # PR; without it, daemons rely on multicast scouting which doesn't work on
+  # loopback in nested containers, and the spread-across-machines dataflow
+  # below hangs). bind+release leaves a small race window but is the standard
+  # approach and is fine for a single-runner integration test.
   local PORTS
   PORTS=$(python3 - <<'PY'
 import socket
-ss = [socket.socket() for _ in range(5)]
+ss = [socket.socket() for _ in range(6)]
 for s in ss:
     s.bind(('127.0.0.1', 0))
 print(*(s.getsockname()[1] for s in ss))
@@ -539,7 +543,7 @@ PY
 )
   # shellcheck disable=SC2086
   set -- $PORTS
-  local SSHD_PORT=$1 COORD_PORT=$2 D1=$3 D2=$4 D3=$5
+  local SSHD_PORT=$1 COORD_PORT=$2 D1=$3 D2=$4 D3=$5 ZENOH_PORT=$6
 
   # SSH key material. The wrapper script below forces ssh to use this key
   # and ignore the user's real ~/.ssh — we never touch the user's identity.
@@ -651,13 +655,16 @@ EOF
   fi
   echo "OK: sshd up on 127.0.0.1:$SSHD_PORT"
 
-  # cluster.yml: 3 machines all on localhost, distinct ssh + daemon ports.
+  # cluster.yml: 3 machines all on localhost, distinct ssh + daemon ports,
+  # shared zenoh_peer so cross-daemon discovery works without multicast
+  # (the spread-across-m1/m2/m3 dataflow below depends on this).
   local SSH_USER
   SSH_USER=$(id -un)
   cat > "$WORK/cluster.yml" <<EOF
 coordinator:
   addr: 127.0.0.1
   port: $COORD_PORT
+zenoh_peer: tcp/127.0.0.1:$ZENOH_PORT
 machines:
   - id: m1
     host: localhost
@@ -717,23 +724,15 @@ EOF
   fi
   echo "OK: 3 daemons connected via SSH"
 
-  # === Dataflow run on an SSH-spawned daemon ===
-  # Build the rust-dataflow example nodes and run a dataflow through the
-  # cluster, pinned to m1. This exercises real dataflow execution on a
-  # daemon that was spawned via SSH from `cluster up` — the part the
-  # up/status/down assertions don't cover.
-  #
-  # All three nodes go to m1 (single-machine dataflow). The
-  # spread-across-m1/m2/m3 variant would exercise the cross-daemon Zenoh
-  # data plane, but the daemon opens its Zenoh session without an
-  # explicit peer endpoint (libraries/core/src/topics.rs:817 passes
-  # coordinator_addr=None to open_zenoh_session_with_listen), so peers
-  # rely on multicast scouting for discovery. Dev containers and many CI
-  # environments don't have multicast on loopback, and there's no
-  # cluster.yml hook to set `DORA_ZENOH_CONNECT` per-daemon today.
-  # Follow-up: either teach `cluster up` to plumb a shared zenoh peer
-  # endpoint into the per-daemon env, or run a zenohd router as part of
-  # the fixture.
+  # === Distributed dataflow run on the SSH-spawned cluster ===
+  # Build the rust-dataflow example nodes and run a dataflow spread
+  # across m1/m2/m3 via `_unstable_deploy.machine`. With the shared
+  # `zenoh_peer` set in cluster.yml above, daemons find each other via
+  # the explicit rendezvous endpoint (one binds, the rest connect) —
+  # cross-daemon messages flow over the inter-daemon Zenoh data plane
+  # rather than the within-daemon shared-memory shortcut, exercising
+  # the actual distributed code path even though every daemon is on the
+  # same loopback host.
   echo "=== build dataflow nodes ==="
   if ! cargo build --quiet \
        -p rust-dataflow-example-node \
@@ -760,7 +759,7 @@ nodes:
       random: std/core/v1/UInt64
   - id: rust-status-node
     _unstable_deploy:
-      machine: m1
+      machine: m2
     path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
@@ -773,7 +772,7 @@ nodes:
       status: std/core/v1/String
   - id: rust-sink
     _unstable_deploy:
-      machine: m1
+      machine: m3
     path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
@@ -781,36 +780,83 @@ nodes:
       message: std/core/v1/String
 EOF
 
-  echo "=== dora start (dataflow on SSH-spawned m1) ==="
+  echo "=== dora start (distributed across m1/m2/m3) ==="
   if ! dora start "$WORK/dataflow.yml" --detach --name cluster-e2e 2>&1; then
     echo "ERROR: dora start failed"
     rm -rf "$WORK"
     return 1
   fi
 
-  # Give nodes time to spawn and process messages. rust-node ticks every
-  # 10ms for 100 iterations (~1s), then rust-status-node + rust-sink drain
-  # their input queues. 5s leaves margin for the SSH-spawned daemon's
-  # extra-cold spawn path. We do not poll `dora list` for disappearance
-  # because finished dataflows can linger in the list view for a while
-  # after node exit, which would race against a hard timeout.
-  sleep 5
-
-  # Confirm the dataflow is tracked by the coordinator (i.e. it actually
-  # made it to the daemon and got spawned, not just registered).
-  echo "=== dora list ==="
-  local list_out
-  list_out=$(dora list 2>&1)
+  # Poll until the dataflow reaches Running state (max 15s). We don't use
+  # a fixed sleep because cold-start on the SSH-spawned daemons + cross-
+  # daemon Zenoh handshake adds variable overhead. Using `Running` as the
+  # signal also means we then call `cluster restart` against an actively
+  # running dataflow — RestartByName only matches running_dataflows, not
+  # archived ones (binaries/coordinator/src/lib.rs::restart_dataflow).
+  echo "=== wait for cluster-e2e to reach Running ==="
+  local i list_out
+  for i in $(seq 1 30); do
+    list_out=$(dora list 2>/dev/null || true)
+    if echo "$list_out" | grep cluster-e2e | grep -q Running; then
+      break
+    fi
+    sleep 0.5
+  done
+  if ! echo "$list_out" | grep cluster-e2e | grep -q Running; then
+    echo "$list_out"
+    echo "ERROR: dataflow cluster-e2e did not reach Running within 15s"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "OK: dataflow reached Running"
   echo "$list_out"
-  if ! echo "$list_out" | grep -q cluster-e2e; then
-    echo "ERROR: dataflow cluster-e2e not visible in dora list"
+
+  # `dora cluster restart` against a real running dataflow. Two positional
+  # args: cluster.yml + dataflow name. Sends RestartByName to the
+  # coordinator, which stops the old instance and starts a new one with
+  # the same descriptor — exercises the full restart control path
+  # (coordinator -> daemons -> nodes -> coordinator) and uniquely
+  # validates that SSH-spawned daemons can be addressed by name across
+  # subsequent control requests, not just the initial `cluster up`.
+  echo "=== dora cluster restart cluster.yml cluster-e2e ==="
+  local restart_out
+  if ! restart_out=$(dora cluster restart "$WORK/cluster.yml" cluster-e2e 2>&1); then
+    echo "$restart_out"
+    echo "ERROR: dora cluster restart failed"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "$restart_out"
+  # CLI prints "dataflow restarted: <old_uuid> -> <new_uuid>" on success
+  # (binaries/cli/src/command/cluster/restart.rs). Extract the new UUID
+  # so we can assert the restarted instance is the one actually visible
+  # in dora list afterwards (the coordinator replaces the old entry in
+  # the by-name view, so a count-based assertion would mis-fire).
+  local new_uuid
+  new_uuid=$(echo "$restart_out" | sed -nE 's/.*dataflow restarted: [^ ]+ -> ([^ ]+).*/\1/p')
+  if [ -z "$new_uuid" ]; then
+    echo "ERROR: couldn't parse new UUID from restart output"
     rm -rf "$WORK"
     return 1
   fi
 
-  # Stop the dataflow explicitly so cluster down has a clean slate.
-  # `dora stop` is a no-op (with a warning) if the dataflow already
-  # finished — either way, the dataflow is gone after this.
+  # Let the restarted instance drain. Finite (~1s); 5s leaves margin for
+  # the SSH/Zenoh path on cold runners.
+  sleep 5
+
+  echo "=== dora list (expecting restarted UUID $new_uuid) ==="
+  list_out=$(dora list 2>&1)
+  echo "$list_out"
+  if ! echo "$list_out" | grep -q "$new_uuid"; then
+    echo "ERROR: restarted dataflow UUID $new_uuid not visible in dora list"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "OK: cluster restart produced a new instance ($new_uuid)"
+
+  # Stop any still-running instance(s) so cluster down has a clean slate.
+  # `dora stop --name` matches by name; a non-zero exit usually means the
+  # dataflow already finished — either way the cluster is clean after.
   echo "=== dora stop --name cluster-e2e ==="
   dora stop --name cluster-e2e 2>&1 || echo "(dora stop returned non-zero; dataflow may have already finished)"
   sleep 1
