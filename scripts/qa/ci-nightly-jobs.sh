@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 18 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 19 test jobs
 # post-#1716. `cargo test -p dora-examples --test example-smoke` (run by
 # qa-nightly's example-smoke step) covers 4 of them (smoke-suite + log-sinks
-# + service-action + streaming). This script covers the other 14, with
+# + service-action + streaming). This script covers the other 15, with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
@@ -210,9 +210,22 @@ ensure_cli_installed() {
   # the unique pattern we use to identify our own processes (see PROCESS SAFETY
   # in the header).
   CLI_ROOT="$(mktemp -d -t dora-qa-XXXXXX)"
-  echo
-  echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
-  cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
+  # CI fast-path: if `DORA_QA_CLI_BIN` points to a prebuilt dora binary
+  # (e.g. the `build-cli` artifact in .github/workflows/nightly.yml), copy
+  # it into CLI_ROOT instead of rebuilding. Local dev typically leaves this
+  # unset and pays the cargo install cost. The CLI_ROOT mktemp dir is still
+  # unique per run, so /proc/<pid>/exe-based process matching keeps working.
+  if [ -n "${DORA_QA_CLI_BIN:-}" ] && [ -x "$DORA_QA_CLI_BIN" ]; then
+    mkdir -p "$CLI_ROOT/bin"
+    cp "$DORA_QA_CLI_BIN" "$CLI_ROOT/bin/dora"
+    chmod +x "$CLI_ROOT/bin/dora"
+    echo
+    echo "=== reuse prebuilt dora from \$DORA_QA_CLI_BIN ($DORA_QA_CLI_BIN -> $CLI_ROOT/bin/dora) ==="
+  else
+    echo
+    echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
+    cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
+  fi
   export PATH="$CLI_ROOT/bin:$PATH"
   dora --version
   CLI_INSTALLED=1
@@ -237,26 +250,51 @@ terminate_pid() {
   kill -TERM "$pid" 2>/dev/null || true
 }
 
-# Kill dora processes that were spawned by our scratch CLI but that we don't
-# have an explicit PID for (e.g., coord/daemon started via `dora up`, which
-# itself returns after forking them off). Matching on CLI_ROOT ensures we
-# never touch dora binaries installed elsewhere -- $CLI_ROOT is a unique
-# per-run mktemp path.
-terminate_our_dora_children() {
+# List PIDs that we spawned via our scratch CLI. Combines two methods:
+#   1. `pgrep -f "$CLI_ROOT/bin/dora"` — matches argv (full cmdline). Catches
+#      processes invoked by absolute path, which is what `dora up` does for
+#      its coord/daemon children.
+#   2. `/proc/<pid>/exe` symlink resolution — matches the actual binary
+#      regardless of argv[0]. Catches PATH-resolved children whose argv[0]
+#      is just "dora" (e.g. `nohup dora daemon ...` over SSH in cluster-e2e
+#      with `environment="PATH=$CLI_ROOT/bin:..."` in authorized_keys).
+# Either alone misses one of these spawn patterns; together they catch both
+# without false positives, since CLI_ROOT is a unique per-run mktemp path.
+# Skips $$ and $PPID. /proc is Linux-only; macOS uses pgrep only.
+find_our_dora_pids() {
   if [ -z "$CLI_ROOT" ]; then
     return 0
   fi
-  if ! command -v pgrep > /dev/null 2>&1; then
-    return 0
+  local target="$CLI_ROOT/bin/dora"
+  local pids=""
+  if command -v pgrep > /dev/null 2>&1; then
+    pids=$(pgrep -f "$target" 2>/dev/null || true)
   fi
-  local pids
-  pids=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
-  if [ -z "$pids" ]; then
-    return 0
+  if [ -d /proc ]; then
+    local entry pid exe
+    for entry in /proc/[0-9]*; do
+      pid="${entry##/proc/}"
+      if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
+        continue
+      fi
+      exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+      if [ "$exe" = "$target" ]; then
+        pids="$pids $pid"
+      fi
+    done
   fi
+  # Dedup + drop blanks.
+  echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' || true
+}
+
+# Kill dora processes that were spawned by our scratch CLI but that we don't
+# have an explicit PID for (e.g., coord/daemon started via `dora up`, or
+# remote daemons spawned over SSH by cluster-e2e). Matching on CLI_ROOT
+# ensures we never touch dora binaries installed elsewhere -- $CLI_ROOT is
+# a unique per-run mktemp path.
+terminate_our_dora_children() {
   local pid
-  for pid in $pids; do
-    # Don't target ourselves or the parent shell.
+  for pid in $(find_our_dora_pids); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
       continue
     fi
@@ -283,19 +321,13 @@ cleanup_all_managed() {
       wait "$pid" 2>/dev/null || true
     done
   fi
-  if [ -n "$CLI_ROOT" ] && command -v pgrep > /dev/null 2>&1; then
-    local remaining
-    remaining=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
-    if [ -n "$remaining" ]; then
-      local rpid
-      for rpid in $remaining; do
-        if [ "$rpid" = "$$" ] || [ "$rpid" = "$PPID" ]; then
-          continue
-        fi
-        kill -KILL "$rpid" 2>/dev/null || true
-      done
+  local rpid
+  for rpid in $(find_our_dora_pids); do
+    if [ "$rpid" = "$$" ] || [ "$rpid" = "$PPID" ]; then
+      continue
     fi
-  fi
+    kill -KILL "$rpid" 2>/dev/null || true
+  done
   MANAGED_PIDS=()
 }
 
@@ -668,17 +700,20 @@ EOF
     return 1
   fi
 
-  # Leftover-process check: scoped to our scratch CLI path only.
+  # Leftover-process check: scoped to our scratch CLI binary. Uses both
+  # pgrep -f (argv match) and /proc/<pid>/exe (binary match) — the latter
+  # is essential here because SSH-spawned daemons have argv[0]="dora", not
+  # "$CLI_ROOT/bin/dora", and a pgrep-only check would miss them silently.
   sleep 1
-  if command -v pgrep > /dev/null 2>&1; then
-    local leftover
-    leftover=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
-    if [ -n "$leftover" ]; then
-      echo "ERROR: leftover dora processes after cluster down (from our CLI):"
-      pgrep -fa "$CLI_ROOT/bin/dora" || true
-      rm -rf "$WORK"
-      return 1
+  local leftover
+  leftover=$(find_our_dora_pids | tr '\n' ' ')
+  if [ -n "${leftover// /}" ]; then
+    echo "ERROR: leftover dora processes after cluster down (from our CLI): $leftover"
+    if command -v pgrep > /dev/null 2>&1; then
+      pgrep -fa "$CLI_ROOT/bin/dora" 2>/dev/null || true
     fi
+    rm -rf "$WORK"
+    return 1
   fi
 
   # Sshd is in MANAGED_PIDS so cleanup_all_managed handles it between jobs;

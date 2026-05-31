@@ -403,13 +403,16 @@ jobs:
         with:
           name: dora-cli
           path: ./cli-bin
-      - name: Install CLI to PATH
-        run: |
-          chmod +x ./cli-bin/dora
-          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Make CLI executable
+        run: chmod +x ./cli-bin/dora
       - name: Run cluster-e2e via shared helper
-        # All real work lives in `job_cluster_e2e` so a green local
-        # `make qa-cluster-e2e` predicts a green CI run.
+        # `DORA_QA_CLI_BIN` tells `ensure_cli_installed` to reuse the
+        # downloaded artifact instead of running `cargo install` again
+        # (~3-5 min savings on cold cache). All real work lives in
+        # `job_cluster_e2e` so a green local `make qa-cluster-e2e`
+        # predicts a green CI run.
+        env:
+          DORA_QA_CLI_BIN: ${{ github.workspace }}/cli-bin/dora
         run: scripts/qa/ci-nightly-jobs.sh cluster-e2e
 
   topic-and-top-smoke:

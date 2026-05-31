@@ -13,17 +13,17 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 18 test jobs: example-smoke
+#                                        nightly.yml has 19 test jobs: example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
-#                                        the 14 remaining with platform-aware dispatch
-#                                        (record-replay, cluster-smoke, topic-and-top,
-#                                        cpu-affinity [Linux], redb-backend, daemon-reconnect
-#                                        [Linux], state-reconstruction, test-cross-platform,
-#                                        examples, cli-tests, bench-example, cross-check,
-#                                        ros2-bridge [Linux+ROS2], msrv). Green local run
-#                                        on platform X predicts green CI nightly for
-#                                        platform X's jobs.
+#                                        the 15 remaining with platform-aware dispatch
+#                                        (record-replay, cluster-smoke, cluster-e2e [Linux],
+#                                        topic-and-top, cpu-affinity [Linux], redb-backend,
+#                                        daemon-reconnect [Linux], state-reconstruction,
+#                                        test-cross-platform, examples, cli-tests,
+#                                        bench-example, cross-check, ros2-bridge [Linux+ROS2],
+#                                        msrv). Green local run on platform X predicts
+#                                        green CI nightly for platform X's jobs.
 #   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
 #                                        audit/dogfood are human)
 #   make qa-mutation-audit   ~10-18 hrs  full-repo cargo-mutants; deliberate
