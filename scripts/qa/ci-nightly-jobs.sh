@@ -831,7 +831,7 @@ EOF
   # (binaries/cli/src/command/cluster/restart.rs). Extract the new UUID
   # so we can assert the restarted instance is the one actually visible
   # in dora list afterwards (the coordinator replaces the old entry in
-  # the by-name view, so a count-based assertion would mis-fire).
+  # the by-name view, so a count-based assertion would misfire).
   local new_uuid
   new_uuid=$(echo "$restart_out" | sed -nE 's/.*dataflow restarted: [^ ]+ -> ([^ ]+).*/\1/p')
   if [ -z "$new_uuid" ]; then
