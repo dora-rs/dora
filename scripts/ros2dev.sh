@@ -118,6 +118,8 @@ EXAMPLES=(
   python-ros2-dataflow
   python-ros2-dataflow-service-client
   python-ros2-dataflow-service-server
+  python-ros2-dataflow-action-client
+  python-ros2-dataflow-action-server
   cxx-ros2-dataflow
   cxx-ros2-dataflow-action-client
 )
