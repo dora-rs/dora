@@ -80,6 +80,14 @@ pub(super) fn format_daemon_port_arg(daemon_port: Option<u16>) -> String {
     }
 }
 
+/// Format the `--zenoh-peer <ep>` argument string.
+pub(super) fn format_zenoh_peer_arg(zenoh_peer: Option<&str>) -> String {
+    match zenoh_peer {
+        Some(ep) => format!(" --zenoh-peer {ep}"),
+        None => String::new(),
+    }
+}
+
 /// Run a command on a remote machine via SSH. Returns whether it succeeded.
 pub(super) fn run_ssh(target: &str, port: Option<u16>, cmd: &str) -> eyre::Result<bool> {
     let mut command = std::process::Command::new("ssh");

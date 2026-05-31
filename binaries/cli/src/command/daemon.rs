@@ -39,6 +39,16 @@ pub struct Daemon {
     /// Used for label-based node scheduling.
     #[clap(long, value_parser = parse_labels)]
     labels: Option<BTreeMap<String, String>>,
+    /// Shared inter-daemon Zenoh peer endpoint (e.g.
+    /// `tcp/192.168.1.1:5456`). When set, the daemon adds this to both
+    /// its Zenoh listen and connect endpoints; the first daemon to bind
+    /// it serves as the rendezvous for cross-daemon discovery, the rest
+    /// connect through it. Required when running multiple daemons in
+    /// environments without multicast (dev containers, hardened
+    /// networks, many CI runners). `dora cluster up` plumbs this from
+    /// the `zenoh_peer` field in cluster.yml.
+    #[clap(long, value_name = "ENDPOINT")]
+    zenoh_peer: Option<String>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -209,7 +219,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port).await
+                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer).await
                     }
                 }
             })
