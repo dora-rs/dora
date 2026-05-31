@@ -655,11 +655,15 @@ machines:
 EOF
 
   # Prepend $WORK/bin so dora's `Command::new("ssh")` picks up the wrapper.
-  local TEST_PATH="$WORK/bin:$PATH"
+  # Export DORA_COORDINATOR_PORT so every subsequent dora CLI call picks
+  # up our random port via CoordinatorOptions' env hook (binaries/cli/src/
+  # common.rs) — no need to pass --coordinator-port to each command.
+  export PATH="$WORK/bin:$PATH"
+  export DORA_COORDINATOR_PORT="$COORD_PORT"
 
   echo "=== dora cluster up ==="
   local up_out
-  if ! up_out=$(PATH="$TEST_PATH" dora cluster up "$WORK/cluster.yml" 2>&1); then
+  if ! up_out=$(dora cluster up "$WORK/cluster.yml" 2>&1); then
     echo "$up_out"
     echo "ERROR: dora cluster up failed"
     rm -rf "$WORK"
@@ -674,7 +678,7 @@ EOF
 
   echo "=== dora cluster status ==="
   local status_out
-  status_out=$(PATH="$TEST_PATH" dora cluster status --coordinator-port "$COORD_PORT" 2>&1)
+  status_out=$(dora cluster status 2>&1)
   echo "$status_out"
   if ! echo "$status_out" | grep -q 'DAEMON ID'; then
     echo "ERROR: status output missing header"
@@ -691,10 +695,104 @@ EOF
   fi
   echo "OK: 3 daemons connected via SSH"
 
-  echo "=== dora cluster down ==="
-  PATH="$TEST_PATH" dora cluster down --coordinator-port "$COORD_PORT"
+  # === Dataflow run on an SSH-spawned daemon ===
+  # Build the rust-dataflow example nodes and run a dataflow through the
+  # cluster, pinned to m1. This exercises real dataflow execution on a
+  # daemon that was spawned via SSH from `cluster up` — the part the
+  # up/status/down assertions don't cover.
+  #
+  # All three nodes go to m1 (single-machine dataflow). The
+  # spread-across-m1/m2/m3 variant would exercise the cross-daemon Zenoh
+  # data plane, but the daemon opens its Zenoh session without an
+  # explicit peer endpoint (libraries/core/src/topics.rs:817 passes
+  # coordinator_addr=None to open_zenoh_session_with_listen), so peers
+  # rely on multicast scouting for discovery. Dev containers and many CI
+  # environments don't have multicast on loopback, and there's no
+  # cluster.yml hook to set `DORA_ZENOH_CONNECT` per-daemon today.
+  # Follow-up: either teach `cluster up` to plumb a shared zenoh peer
+  # endpoint into the per-daemon env, or run a zenohd router as part of
+  # the fixture.
+  echo "=== build dataflow nodes ==="
+  cargo build --quiet \
+    -p rust-dataflow-example-node \
+    -p rust-dataflow-example-status-node \
+    -p rust-dataflow-example-sink
+
+  local REPO_ROOT
+  REPO_ROOT="$(pwd)"
+  cat > "$WORK/dataflow.yml" <<EOF
+nodes:
+  - id: rust-node
+    _unstable_deploy:
+      machine: m1
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+    output_types:
+      random: std/core/v1/UInt64
+  - id: rust-status-node
+    _unstable_deploy:
+      machine: m1
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    input_types:
+      random: std/core/v1/UInt64
+    outputs:
+      - status
+    output_types:
+      status: std/core/v1/String
+  - id: rust-sink
+    _unstable_deploy:
+      machine: m1
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status
+    input_types:
+      message: std/core/v1/String
+EOF
+
+  echo "=== dora start (dataflow on SSH-spawned m1) ==="
+  if ! dora start "$WORK/dataflow.yml" --detach --name cluster-e2e 2>&1; then
+    echo "ERROR: dora start failed"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Give nodes time to spawn and process messages. rust-node ticks every
+  # 10ms for 100 iterations (~1s), then rust-status-node + rust-sink drain
+  # their input queues. 5s leaves margin for the SSH-spawned daemon's
+  # extra-cold spawn path. We do not poll `dora list` for disappearance
+  # because finished dataflows can linger in the list view for a while
+  # after node exit, which would race against a hard timeout.
+  sleep 5
+
+  # Confirm the dataflow is tracked by the coordinator (i.e. it actually
+  # made it to the daemon and got spawned, not just registered).
+  echo "=== dora list ==="
+  local list_out
+  list_out=$(dora list 2>&1)
+  echo "$list_out"
+  if ! echo "$list_out" | grep -q cluster-e2e; then
+    echo "ERROR: dataflow cluster-e2e not visible in dora list"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Stop the dataflow explicitly so cluster down has a clean slate.
+  # `dora stop` is a no-op (with a warning) if the dataflow already
+  # finished — either way, the dataflow is gone after this.
+  echo "=== dora stop --name cluster-e2e ==="
+  dora stop --name cluster-e2e 2>&1 || echo "(dora stop returned non-zero; dataflow may have already finished)"
   sleep 1
-  if PATH="$TEST_PATH" dora cluster status --coordinator-port "$COORD_PORT" 2>/dev/null; then
+
+  echo "=== dora cluster down ==="
+  dora cluster down
+  sleep 1
+  if dora cluster status 2>/dev/null; then
     echo "ERROR: cluster status succeeded after 'cluster down'"
     rm -rf "$WORK"
     return 1
