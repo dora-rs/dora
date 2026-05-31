@@ -351,14 +351,19 @@ fn status_enum_to_str(status: ros2_client::action_msgs::GoalStatusEnum) -> Strin
 ## 5.4 `Ros2ActionServer`
 
 Owned by value (mirrors `Ros2ServiceServer`). Stores Executing handles
-(`Copy`, no lifetime) in a bounded `HashMap`. **Verify fix (issue 7):** the
-capacity policy mirrors the daemon — abort the **oldest** goal only when at
-`MAX_CONCURRENT_GOALS` on insert; the unconditional 300s time-sweep is dropped
-(it could silently abort a legitimately long-running action). **Verify fix
-(issue / FSM gap 7):** every `abort`/`send_result` is bounded by a `select`
-timeout so an absent client cannot freeze the Python thread for 5 minutes; the
-abort timeout is shortened from `ACTION_RESULT_TIMEOUT` to a small bound on the
-accept hot path.
+(`Clone`, no lifetime — see Spike correction 2) in a bounded `HashMap`. The
+capacity policy bounds the local map at `MAX_CONCURRENT_GOALS` by dropping the
+**oldest** tracked goal on insert.
+
+> **Pre-landing review correction (cross-model, 2026-05-30).** The original
+> design aborted the evicted/no-payload goal with an empty `send_result_response`
+> on the accept hot path. That was **removed**: `BridgeMessage(None)` cannot
+> serialize (`arrow/src/lib.rs` rejects it), and `send_result_response` blocks
+> until the client requests the result, so an abandoned goal would stall the
+> node event loop. Eviction now just drops the goal from the local map (leak
+> guard preserved); the dropped/no-payload goal dangles on the wire (best
+> effort). Single-goal usage never reaches the cap, so the proven round-trip is
+> unaffected. The `abort()` helper and `ACTION_ABORT_TIMEOUT` are gone.
 
 ```rust
 /// ROS2 action server. Create via [`Ros2Node::create_action_server`].

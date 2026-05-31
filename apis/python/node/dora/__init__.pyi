@@ -435,6 +435,44 @@ class Ros2Node:
         server.send_response(request_id, pa.array([{"sum": args["a"] + args["b"]}]))
         ```"""
 
+    def create_action_client(
+        self, action_name: str, action_type: str, qos: dora.Ros2QosPolicies
+    ) -> dora.Ros2ActionClient:
+        """Create a ROS2 action client.
+
+        There is no `wait_for_action_server`; the first `send_goal` simply times
+        out (default 30s) if no server is present. ROS2 actions require
+        **reliable** QoS.
+
+        ```python
+        client = ros2_node.create_action_client(
+        "/fibonacci", "example_interfaces/Fibonacci",
+        Ros2QosPolicies(reliable=True),
+        )
+        goal_id = client.send_goal(pa.array([{"order": 5}]))
+        status, result = client.take_result(goal_id, timeout_s=30.0)
+        ```"""
+
+    def create_action_server(
+        self, action_name: str, action_type: str, qos: dora.Ros2QosPolicies
+    ) -> dora.Ros2ActionServer:
+        """Create a ROS2 action server.
+
+        Drive it by polling `take_goal`, then `send_feedback` / `send_result`
+        (and optionally `take_cancel`). Goals are auto-accepted and driven to
+        Executing on `take_goal`. ROS2 actions require **reliable** QoS.
+
+        ```python
+        server = ros2_node.create_action_server(
+        "/fibonacci", "example_interfaces/Fibonacci",
+        Ros2QosPolicies(reliable=True),
+        )
+        goal = server.take_goal(timeout_s=0.1)
+        if goal is not None:
+        goal_id, value = goal
+        server.send_result(goal_id, pa.array([{"sequence": [0, 1, 1]}]), status="succeeded")
+        ```"""
+
     def __repr__(self) -> str:
         """Return repr(self)."""
 
@@ -526,6 +564,106 @@ class Ros2ServiceServer:
 
     def send_response(self, request_id: int, response: pyarrow.Array) -> None:
         """Send the response for a request previously returned by `take_request`."""
+
+    def __repr__(self) -> str:
+        """Return repr(self)."""
+
+    def __str__(self) -> str:
+        """Return str(self)."""
+
+@typing.final
+class Ros2ActionClient:
+    """ROS2 action client. Create via `Ros2Node.create_action_client`.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change.
+    - There is no `wait_for_action_server`; the first `send_goal` times out
+    (default 30s) if no server is present.
+    - Feedback for concurrent goals shares one subscription; prefer one in-flight
+    goal per client."""
+
+    def send_goal(
+        self, goal: pyarrow.Array, timeout_s: float = None
+    ) -> typing.Optional[str]:
+        """Send a goal and block until the server accepts or rejects it.
+
+        The goal must match the action's `_Goal` structure as an Arrow struct
+        (e.g. `pa.array([{"order": 5}])`). Returns the goal_id string on accept,
+        or `None` on rejection. Raises on timeout (default 30s)."""
+
+    def take_feedback(
+        self, goal_id: str, timeout_s: float = None
+    ) -> typing.Optional[pyarrow.Array]:
+        """Poll up to `timeout_s` (default 1s) for one feedback message.
+
+        Returns the `_Feedback` array, or `None` if none arrived within the
+        timeout (poll-again semantics, not an error)."""
+
+    def take_result(
+        self, goal_id: str, timeout_s: float = None
+    ) -> typing.Optional[typing.Tuple[str, pyarrow.Array]]:
+        """Request and block for the terminal result of `goal_id`.
+
+        Returns `(status_str, result_array)` on completion, or `None` on timeout
+        (the goal is kept so the caller can retry). Default timeout 300s."""
+
+    def cancel(self, goal_id: str = None, timeout_s: float = None) -> int:
+        """Cancel a goal, or all goals when `goal_id` is `None`.
+
+        Returns the CancelGoalResponse return_code (0=accepted, 1=rejected,
+        2=unknown goal, 3=already terminated). Default timeout 10s."""
+
+    def __repr__(self) -> str:
+        """Return repr(self)."""
+
+    def __str__(self) -> str:
+        """Return str(self)."""
+
+@typing.final
+class Ros2ActionServer:
+    """ROS2 action server. Create via `Ros2Node.create_action_server`.
+
+    warnings:
+    - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
+    at any point without it being considered a breaking change.
+    - Goals are auto-accepted and driven to Executing on `take_goal`. There is no
+    reject path; reject by accepting then `send_result(status="aborted")`.
+    - `send_result` blocks until the client requests the result (bounded by a
+    send timeout)."""
+
+    def take_goal(
+        self, timeout_s: float = None
+    ) -> typing.Optional[typing.Tuple[str, pyarrow.Array]]:
+        """Wait up to `timeout_s` (default 1s) for the next goal.
+
+        Auto-accepts and starts executing it. Returns `(goal_id, goal_array)`,
+        or `None` on timeout. Pass `goal_id` to `send_feedback` / `send_result`."""
+
+    def send_feedback(self, goal_id: str, feedback: pyarrow.Array) -> None:
+        """Publish one feedback message for an executing goal."""
+
+    def send_result(
+        self,
+        goal_id: str,
+        result: pyarrow.Array,
+        status: str = None,
+        timeout_s: float = None,
+    ) -> None:
+        """Send the terminal result and retire the goal.
+
+        `status` is one of `"succeeded"` (default / `None`), `"aborted"`,
+        `"canceled"`; any other value maps to aborted. Blocks until the client
+        requests the result, bounded by `timeout_s` (default 300s)."""
+
+    def take_cancel(
+        self, timeout_s: float = None
+    ) -> typing.Optional[typing.List[str]]:
+        """Poll up to `timeout_s` (default 1s) for a cancel request.
+
+        Returns the list of goal_id strings the client asked to cancel that this
+        server still tracks (respond to each with `send_result(status="canceled")`),
+        or `None` on timeout."""
 
     def __repr__(self) -> str:
         """Return repr(self)."""

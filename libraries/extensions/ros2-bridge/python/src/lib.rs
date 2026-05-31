@@ -768,7 +768,6 @@ pub struct Ros2ActionServer {
 const MAX_CONCURRENT_GOALS: usize = 8;
 const ACTION_GOAL_TIMEOUT_S: f64 = 30.0;
 const ACTION_RESULT_TIMEOUT_S: f64 = 300.0;
-const ACTION_ABORT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[pymethods]
 impl Ros2ActionClient {
@@ -982,12 +981,16 @@ impl Ros2ActionServer {
             return Ok(None);
         };
         let goal_id = executing.goal_id().uuid.to_string();
-        // No payload => mirror daemon AbortGoal (main.rs:688). Bounded abort.
+        // No payload: drop the handle (don't track it). The goal dangles on the
+        // wire; we can't send a meaningful terminal result without a payload.
         let Some(arr) = data.and_then(|m| m.0) else {
-            self.abort(py, executing, ACTION_ABORT_TIMEOUT)?;
             return Ok(None);
         };
-        // Leak guard (daemon main.rs:805-829): abort the oldest only when at cap.
+        // Leak guard: bound the local map by dropping the oldest tracked goal
+        // when at cap. We do NOT send a wire abort — there is no valid empty
+        // result to serialize, and waiting on a client that may never request
+        // the result would stall the node. The dropped goal dangles on the wire
+        // (best effort); single-goal usage never reaches the cap.
         let now = Instant::now();
         while self.executing.len() >= MAX_CONCURRENT_GOALS {
             let Some(oldest) = self
@@ -998,9 +1001,7 @@ impl Ros2ActionServer {
             else {
                 break;
             };
-            if let Some((h, _)) = self.executing.remove(&oldest) {
-                self.abort(py, h, ACTION_ABORT_TIMEOUT)?;
-            }
+            self.executing.remove(&oldest);
         }
         self.executing.insert(goal_id.clone(), (executing, now));
         Ok(Some((goal_id, arr.to_pyarrow(py)?.unbind())))
@@ -1104,38 +1105,6 @@ impl Ros2ActionServer {
                 Ok(Some(mine))
             })
         })
-    }
-}
-
-impl Ros2ActionServer {
-    /// Abort an executing goal with an empty Aborted result so the client's
-    /// pending result request resolves. Bounded by `timeout`.
-    fn abort(
-        &self,
-        py: Python<'_>,
-        handle: ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
-        timeout: Duration,
-    ) -> eyre::Result<()> {
-        let result_type_info = self.result_type_info.clone();
-        py.detach(|| {
-            let _guard = TypeInfoGuard::serialize(result_type_info);
-            futures::executor::block_on(async {
-                let send = self.server.send_result_response(
-                    handle,
-                    ros2_client::action::GoalEndStatus::Aborted,
-                    BridgeMessage(None),
-                );
-                futures::pin_mut!(send);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(send, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("abort send_result_response: {e:?}"))
-                    }
-                    futures::future::Either::Right(_) => Ok(()),
-                }
-            })
-        })?;
-        Ok(())
     }
 }
 
