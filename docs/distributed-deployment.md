@@ -371,22 +371,23 @@ Upgrading gpu-server (ubuntu@10.0.0.3)...
 
 ### dora cluster restart
 
-Restart a running dataflow by name or UUID. Stops the dataflow and immediately re-starts it using the stored descriptor (no YAML path needed).
+Restart a running dataflow by name. Stops the dataflow and immediately re-starts it using the stored descriptor.
 
 ```
-dora cluster restart <DATAFLOW>
+dora cluster restart <PATH> <NAME>
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `DATAFLOW` | Name or UUID of the dataflow to restart |
+| `PATH` | Path to the cluster configuration file |
+| `NAME` | Name of the dataflow to restart (must match the `--name` passed to `dora start`; UUID lookup is not supported by this subcommand). |
 
 **Example:**
 
 ```bash
-$ dora cluster restart my-app
+$ dora cluster restart cluster.yml my-app
 Restarting dataflow `my-app`
 dataflow restarted: a1b2c3d4-... -> e5f6a7b8-...
 ```
