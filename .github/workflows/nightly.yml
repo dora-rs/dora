@@ -374,6 +374,44 @@ jobs:
             exit 1
           fi
 
+  cluster-e2e:
+    # End-to-end test of `dora cluster` against a real sshd. Stands up an
+    # openssh-server on a random loopback port, then runs `cluster up`
+    # against a cluster.yml with 3 machines all pointing at localhost
+    # (distinct ssh/daemon ports). cluster-smoke (above) does not exercise
+    # the SSH path; this job covers it. Linux-only — see the job comment in
+    # scripts/qa/ci-nightly-jobs.sh for rationale.
+    name: Cluster SSH end-to-end
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install openssh-server
+        # ubuntu-latest typically has sshd preinstalled but it's not started.
+        # `apt-get install` is harmless if it's already present and brings
+        # the binary in if it isn't.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+      - name: Download dora CLI
+        uses: actions/download-artifact@v8
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        run: |
+          chmod +x ./cli-bin/dora
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Run cluster-e2e via shared helper
+        # All real work lives in `job_cluster_e2e` so a green local
+        # `make qa-cluster-e2e` predicts a green CI run.
+        run: scripts/qa/ci-nightly-jobs.sh cluster-e2e
+
   topic-and-top-smoke:
     # Smoke-tests the inspection commands: `dora top --once`, `dora topic
     # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
@@ -1552,6 +1590,7 @@ jobs:
       - streaming
       - record-replay
       - cluster-smoke
+      - cluster-e2e
       - topic-and-top-smoke
       - cpu-affinity-smoke
       - redb-backend-smoke
@@ -1619,6 +1658,9 @@ jobs:
               cluster-smoke)
                 echo 'scripts/qa/ci-nightly-jobs.sh cluster-smoke'
                 ;;
+              cluster-e2e)
+                echo 'scripts/qa/ci-nightly-jobs.sh cluster-e2e'
+                ;;
               topic-and-top-smoke)
                 echo 'scripts/qa/ci-nightly-jobs.sh topic-and-top-smoke'
                 ;;
@@ -1674,6 +1716,7 @@ jobs:
               streaming) echo '^Streaming example \(Python\)$' ;;
               record-replay) echo '^Record/replay round-trip$' ;;
               cluster-smoke) echo '^Cluster lifecycle smoke$' ;;
+              cluster-e2e) echo '^Cluster SSH end-to-end$' ;;
               topic-and-top-smoke) echo '^Topic & top inspection smoke$' ;;
               cpu-affinity-smoke) echo '^cpu_affinity end-to-end \(Linux\)$' ;;
               redb-backend-smoke) echo '^redb backend end-to-end$' ;;

@@ -46,7 +46,7 @@
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
-        qa-examples \
+        qa-examples qa-cluster-e2e \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-pgo qa-install qa-pgo-install
 
@@ -81,6 +81,14 @@ qa-mutation-audit:
 #   make qa-examples ARGS="-v"    # stream dora output live
 qa-examples:
 	@scripts/smoke-all.sh $(ARGS)
+
+# Real-sshd end-to-end test of `dora cluster up/status/down`. Linux-only.
+# Hard-fails if openssh-server is not installed (install via
+# `sudo apt-get install -y openssh-server`). Subset of qa-nightly; this
+# target is here so developers can run just this job locally without
+# invoking the full nightly suite.
+qa-cluster-e2e:
+	@scripts/qa/ci-nightly-jobs.sh cluster-e2e
 
 # Individual gates
 

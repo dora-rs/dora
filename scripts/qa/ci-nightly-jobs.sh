@@ -11,6 +11,10 @@
 #   Integration smokes (all platforms unless noted):
 #   - record-replay             record + replay with build: directives INTACT.
 #   - cluster-smoke             dora up + cluster status + start --detach + cluster down
+#   - cluster-e2e               Linux-only. Real-sshd end-to-end:
+#                               dora cluster up/status/down against 3 SSH-spawned
+#                               daemons on a loopback sshd. Hard-fails if
+#                               openssh-server is not installed.
 #   - topic-and-top-smoke       dora top/trace/topic/self update against a zenoh-debug fixture
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
@@ -112,7 +116,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+    record-replay|cluster-smoke|cluster-e2e|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
       return 0
       ;;
     *)
@@ -131,6 +135,7 @@ With no job names, runs every supported job for the current platform.
 Supported jobs:
   record-replay
   cluster-smoke
+  cluster-e2e
   topic-and-top-smoke
   cpu-affinity-smoke
   redb-backend-smoke
@@ -438,7 +443,255 @@ job_cluster_smoke() {
 }
 
 # -----------------------------------------------------------------------------
-# Job 2: topic-and-top-smoke
+# Job 3: cluster-e2e
+#
+# End-to-end test of the `dora cluster` SSH lifecycle. cluster-smoke (above)
+# uses `dora up` to launch a local coordinator+daemon and exercises only the
+# post-up commands (status/down) — it does NOT cover the SSH path of
+# `cluster up`, which is the most failure-prone part of the feature.
+#
+# This job stands up a real sshd on a random loopback port, then runs
+# `dora cluster up` against a cluster.yml with 3 machines all pointing at
+# localhost (via the `port` and `daemon_port` fields added by the cluster-ssh-port
+# and cluster-daemon-port PRs). Validates that:
+#   1. ssh-based daemon spawn works (3 daemons reach the coordinator)
+#   2. `cluster status` lists all 3
+#   3. `cluster down` tears everything down with no leftover processes
+#
+# Linux-only: macOS sshd has different defaults and locked-down config paths
+# that don't map cleanly to this fixture, and the only Windows path would be
+# OpenSSH-server-for-Windows which isn't worth the maintenance. The script
+# does NOT install openssh-server itself — it hard-fails with an install
+# hint if sshd is missing (per the agreed policy in the PR plan). GHA
+# installs openssh-server in the workflow before invoking this script.
+# -----------------------------------------------------------------------------
+job_cluster_e2e() {
+  case "$OS" in
+    Linux) ;;
+    *)
+      echo "SKIP: cluster-e2e is Linux-only ($OS)"
+      SKIPPED+=("cluster-e2e: $OS not supported")
+      return 0
+      ;;
+  esac
+
+  local SSHD_BIN
+  if [ -x /usr/sbin/sshd ]; then
+    SSHD_BIN=/usr/sbin/sshd
+  elif command -v sshd > /dev/null 2>&1; then
+    SSHD_BIN=$(command -v sshd)
+  else
+    echo "ERROR: openssh-server not installed. Install with:"
+    echo "  sudo apt-get install -y openssh-server"
+    return 1
+  fi
+
+  ensure_cli_installed
+
+  local WORK
+  WORK=$(mktemp -d -t dora-cluster-e2e-XXXXXX)
+
+  # Pick 5 free loopback ports in one shot: 1 sshd, 1 coordinator, 3 daemons.
+  # bind+release leaves a small race window but is the standard approach and
+  # is fine for a single-runner integration test.
+  local PORTS
+  PORTS=$(python3 - <<'PY'
+import socket
+ss = [socket.socket() for _ in range(5)]
+for s in ss:
+    s.bind(('127.0.0.1', 0))
+print(*(s.getsockname()[1] for s in ss))
+for s in ss:
+    s.close()
+PY
+)
+  # shellcheck disable=SC2086
+  set -- $PORTS
+  local SSHD_PORT=$1 COORD_PORT=$2 D1=$3 D2=$4 D3=$5
+
+  # SSH key material. The wrapper script below forces ssh to use this key
+  # and ignore the user's real ~/.ssh — we never touch the user's identity.
+  mkdir -p "$WORK/.ssh"
+  chmod 700 "$WORK/.ssh"
+  ssh-keygen -t ed25519 -f "$WORK/.ssh/id_ed25519" -N "" -q
+  ssh-keygen -t ed25519 -f "$WORK/host_key" -N "" -q
+
+  # Prefix the pubkey with an `environment=` option so PATH=<scratch CLI>
+  # is set for sessions that authenticate with this key. The remote command
+  # built by `dora cluster up` is `dora daemon ...` — without this, the
+  # SSH session's default PATH wouldn't include $CLI_ROOT/bin and the
+  # daemon would silently fail to spawn. Requires `PermitUserEnvironment`
+  # in sshd_config below.
+  local REMOTE_PATH="$CLI_ROOT/bin:/usr/local/bin:/usr/bin:/bin"
+  printf 'environment="PATH=%s" ' "$REMOTE_PATH" > "$WORK/.ssh/authorized_keys"
+  cat "$WORK/.ssh/id_ed25519.pub" >> "$WORK/.ssh/authorized_keys"
+  chmod 600 "$WORK/.ssh/id_ed25519" "$WORK/.ssh/authorized_keys" "$WORK/host_key"
+
+  # PATH-shadow ssh wrapper. The ssh client reads the default IdentityFile
+  # from the user's passwd home (~/.ssh/id_*), NOT from $HOME — so setting
+  # HOME=$WORK does not redirect the key lookup. `dora cluster` invokes ssh
+  # without `-i`, so the only way to force our test key without modifying
+  # the user's real ~/.ssh is to wrap ssh on PATH. Same for scp (unused
+  # here, but kept in lockstep for any future path that calls it).
+  mkdir -p "$WORK/bin"
+  local REAL_SSH REAL_SCP
+  REAL_SSH=$(command -v ssh)
+  REAL_SCP=$(command -v scp || echo "")
+  cat > "$WORK/bin/ssh" <<EOF
+#!/bin/sh
+# Test wrapper: force our key, ignore the user's defaults.
+exec $REAL_SSH -i "$WORK/.ssh/id_ed25519" \\
+     -o IdentitiesOnly=yes \\
+     -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     "\$@"
+EOF
+  chmod +x "$WORK/bin/ssh"
+  if [ -n "$REAL_SCP" ]; then
+    cat > "$WORK/bin/scp" <<EOF
+#!/bin/sh
+exec $REAL_SCP -i "$WORK/.ssh/id_ed25519" \\
+     -o IdentitiesOnly=yes \\
+     -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     "\$@"
+EOF
+    chmod +x "$WORK/bin/scp"
+  fi
+
+  # Minimal sshd_config, loopback only. StrictModes=no because $WORK isn't
+  # root-owned. UsePAM=no so we don't need /etc/pam.d/sshd. PidFile in $WORK
+  # avoids needing /var/run write access.
+  cat > "$WORK/sshd_config" <<EOF
+Port $SSHD_PORT
+ListenAddress 127.0.0.1
+HostKey $WORK/host_key
+PidFile $WORK/sshd.pid
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile $WORK/.ssh/authorized_keys
+PermitUserEnvironment yes
+StrictModes no
+UsePAM no
+PrintMotd no
+EOF
+
+  "$SSHD_BIN" -D -f "$WORK/sshd_config" -e &
+  local SSHD_PID=$!
+  track_pid "$SSHD_PID"
+
+  # Wait for sshd to accept connections (max 5s). bash's /dev/tcp avoids a
+  # netcat dependency.
+  local i ok=0
+  for i in $(seq 1 50); do
+    if (exec 3<>/dev/tcp/127.0.0.1/"$SSHD_PORT") 2>/dev/null; then
+      exec 3<&-
+      ok=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [ "$ok" -ne 1 ]; then
+    echo "ERROR: sshd did not start on 127.0.0.1:$SSHD_PORT within 5s"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "OK: sshd up on 127.0.0.1:$SSHD_PORT"
+
+  # cluster.yml: 3 machines all on localhost, distinct ssh + daemon ports.
+  local SSH_USER
+  SSH_USER=$(id -un)
+  cat > "$WORK/cluster.yml" <<EOF
+coordinator:
+  addr: 127.0.0.1
+  port: $COORD_PORT
+machines:
+  - id: m1
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D1
+  - id: m2
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D2
+  - id: m3
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D3
+EOF
+
+  # Prepend $WORK/bin so dora's `Command::new("ssh")` picks up the wrapper.
+  local TEST_PATH="$WORK/bin:$PATH"
+
+  echo "=== dora cluster up ==="
+  local up_out
+  if ! up_out=$(PATH="$TEST_PATH" dora cluster up "$WORK/cluster.yml" 2>&1); then
+    echo "$up_out"
+    echo "ERROR: dora cluster up failed"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "$up_out"
+  if ! echo "$up_out" | grep -q "Cluster is up: coordinator + 3 daemon(s)"; then
+    echo "ERROR: 'cluster up' did not report 3 daemons up"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  echo "=== dora cluster status ==="
+  local status_out
+  status_out=$(PATH="$TEST_PATH" dora cluster status --coordinator-port "$COORD_PORT" 2>&1)
+  echo "$status_out"
+  if ! echo "$status_out" | grep -q 'DAEMON ID'; then
+    echo "ERROR: status output missing header"
+    rm -rf "$WORK"
+    return 1
+  fi
+  # Named daemons show as `<machine-id>-<uuid>`. Count rows for m1/m2/m3.
+  local rows
+  rows=$(echo "$status_out" | grep -cE '^m[1-3]-' || true)
+  if [ "$rows" -lt 3 ]; then
+    echo "ERROR: expected 3 daemons (m1/m2/m3) in status, got $rows"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "OK: 3 daemons connected via SSH"
+
+  echo "=== dora cluster down ==="
+  PATH="$TEST_PATH" dora cluster down --coordinator-port "$COORD_PORT"
+  sleep 1
+  if PATH="$TEST_PATH" dora cluster status --coordinator-port "$COORD_PORT" 2>/dev/null; then
+    echo "ERROR: cluster status succeeded after 'cluster down'"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Leftover-process check: scoped to our scratch CLI path only.
+  sleep 1
+  if command -v pgrep > /dev/null 2>&1; then
+    local leftover
+    leftover=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
+    if [ -n "$leftover" ]; then
+      echo "ERROR: leftover dora processes after cluster down (from our CLI):"
+      pgrep -fa "$CLI_ROOT/bin/dora" || true
+      rm -rf "$WORK"
+      return 1
+    fi
+  fi
+
+  # Sshd is in MANAGED_PIDS so cleanup_all_managed handles it between jobs;
+  # we terminate explicitly here too so the per-job tempdir can be removed
+  # cleanly while sshd is definitely down.
+  terminate_pid "$SSHD_PID"
+  wait "$SSHD_PID" 2>/dev/null || true
+  rm -rf "$WORK"
+  echo "OK: cluster-e2e completed cleanly"
+}
+
+# -----------------------------------------------------------------------------
+# Job 4: topic-and-top-smoke
 # -----------------------------------------------------------------------------
 job_topic_and_top() {
   # Python venv with local dora-rs matching the daemon's message format.
@@ -1159,6 +1412,7 @@ job_ros2_bridge() {
 
 run_job "record-replay"             job_record_replay
 run_job "cluster-smoke"             job_cluster_smoke
+run_job "cluster-e2e"               job_cluster_e2e
 run_job "topic-and-top-smoke"       job_topic_and_top
 run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
