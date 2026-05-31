@@ -17,7 +17,9 @@ use crate::{
 };
 
 use super::config::ClusterConfig;
-use super::{format_labels_arg, query_connected_daemons, run_ssh, ssh_target};
+use super::{
+    format_daemon_port_arg, format_labels_arg, query_connected_daemons, run_ssh, ssh_target,
+};
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
 ///
@@ -61,8 +63,9 @@ impl Executable for Up {
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
+            let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
             let remote_cmd = format!(
-                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
