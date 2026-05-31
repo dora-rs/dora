@@ -41,7 +41,7 @@ impl Executable for Uninstall {
             );
 
             println!("Uninstalling {service_name} from {} ({target})", machine.id);
-            let result = run_ssh(&target, &cmd);
+            let result = run_ssh(&target, machine.port, &cmd);
             record_ssh_result(
                 &mut failures,
                 &machine.id,

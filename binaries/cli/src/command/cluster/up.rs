@@ -70,7 +70,7 @@ impl Executable for Up {
             );
 
             println!("Starting daemon on {} ({})", machine.id, target);
-            match run_ssh(&target, &remote_cmd) {
+            match run_ssh(&target, machine.port, &remote_cmd) {
                 Ok(true) => {}
                 Ok(false) => {
                     let msg = "ssh command failed".to_string();

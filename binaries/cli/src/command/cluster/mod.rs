@@ -73,18 +73,21 @@ pub(super) fn format_labels_arg(labels: &BTreeMap<String, String>) -> String {
 }
 
 /// Run a command on a remote machine via SSH. Returns whether it succeeded.
-pub(super) fn run_ssh(target: &str, cmd: &str) -> eyre::Result<bool> {
-    let status = std::process::Command::new("ssh")
-        .args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            target,
-            cmd,
-        ])
+pub(super) fn run_ssh(target: &str, port: Option<u16>, cmd: &str) -> eyre::Result<bool> {
+    let mut command = std::process::Command::new("ssh");
+    command.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+    ]);
+    if let Some(p) = port {
+        command.args(["-p", &p.to_string()]);
+    }
+    command.args([target, cmd]);
+    let status = command
         .status()
         .with_context(|| format!("failed to run ssh to {target}"))?;
     Ok(status.success())
