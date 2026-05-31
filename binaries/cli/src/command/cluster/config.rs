@@ -33,6 +33,9 @@ pub struct MachineConfig {
     pub host: String,
     #[serde(default)]
     pub user: Option<String>,
+    /// Custom SSH port. Defaults to the SSH client default (22).
+    #[serde(default)]
+    pub port: Option<u16>,
     /// Labels for label-based scheduling (e.g. `gpu: "true"`, `arch: arm64`).
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -90,7 +93,25 @@ mod tests {
         assert_eq!(cfg.machines.len(), 1);
         assert_eq!(cfg.machines[0].id, "arm");
         assert!(cfg.machines[0].user.is_none());
+        assert!(cfg.machines[0].port.is_none());
         assert!(cfg.machines[0].labels.is_empty());
+    }
+
+    #[test]
+    fn parse_with_port() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    port: 2222\n",
+        );
+        let cfg = ClusterConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.machines[0].port, Some(2222));
+    }
+
+    #[test]
+    fn reject_invalid_port() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n    port: 99999\n",
+        );
+        assert!(ClusterConfig::load(f.path()).is_err());
     }
 
     #[test]

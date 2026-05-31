@@ -62,7 +62,7 @@ WantedBy=multi-user.target
             );
 
             println!("Installing {service_name} on {} ({target})", machine.id);
-            let result = run_ssh(&target, &cmd);
+            let result = run_ssh(&target, machine.port, &cmd);
             record_ssh_result(
                 &mut failures,
                 &machine.id,
