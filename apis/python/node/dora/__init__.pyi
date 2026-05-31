@@ -269,15 +269,25 @@ class Ros2Context:
         ```"""
 
     def new_node(
-        self, name: str, namespace: str, options: dora.Ros2NodeOptions
+        self,
+        name: str,
+        namespace: str,
+        options: dora.Ros2NodeOptions,
+        parameters: typing.Optional[dict] = None,
     ) -> dora.Ros2Node:
         """Create a new ROS2 node
+
+        `parameters` is an optional dict of initial ROS2 parameters to declare
+        (name -> bool/int/float/str/bytes/list); they are then served via the
+        standard ROS2 parameter services and can be read/updated with
+        `Ros2Node.get_parameter` / `set_parameter`.
 
         ```python
         ros2_node = ros2_context.new_node(
         "turtle_teleop",
         "/ros2_demo",
         Ros2NodeOptions(rosout=True),
+        parameters={"speed": 1.5},
         )
         ```
 
@@ -387,6 +397,25 @@ class Ros2Node:
         warnings:
         - Dora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change."""
+
+    def set_parameter(
+        self, name: str, value: typing.Union[bool, int, float, str, bytes, list]
+    ) -> None:
+        """Set a ROS2 parameter (declared via `new_node(parameters=...)`).
+
+        The change is published on `/parameter_events` and is visible to
+        `ros2 param get` and rclpy parameter clients."""
+
+    def get_parameter(
+        self, name: str
+    ) -> typing.Optional[typing.Union[bool, int, float, str, bytes, list]]:
+        """Get a ROS2 parameter value, or `None` if it is not set."""
+
+    def list_parameters(self) -> typing.List[str]:
+        """List the names of all declared ROS2 parameters."""
+
+    def has_parameter(self, name: str) -> bool:
+        """Whether a ROS2 parameter with the given name is declared."""
 
     def create_topic(
         self, name: str, message_type: str, qos: dora.Ros2QosPolicies
