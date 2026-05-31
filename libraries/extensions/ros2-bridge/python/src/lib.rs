@@ -1042,11 +1042,16 @@ impl Ros2ActionServer {
         timeout_s: Option<f64>,
     ) -> eyre::Result<()> {
         let py = result.py();
-        // terminal: consume the handle out of the map (owned, no clone needed).
-        let (handle, _) = self
+        // Clone the handle but keep the goal tracked: send_result_response does
+        // not resolve until the client requests the result, so on a timeout (or
+        // serialize/send error) we must leave the goal in `executing` so the
+        // caller can retry. We only retire it after the send succeeds.
+        let handle = self
             .executing
-            .remove(goal_id)
-            .with_context(|| format!("unknown/finished goal {goal_id}"))?;
+            .get(goal_id)
+            .with_context(|| format!("unknown/finished goal {goal_id}"))?
+            .0
+            .clone();
         let end = map_status(status);
         let array_data = pyarrow_to_array_data(&result)?;
         let timeout = Duration::from_secs_f64(timeout_s.unwrap_or(ACTION_RESULT_TIMEOUT_S));
@@ -1069,6 +1074,9 @@ impl Ros2ActionServer {
                 }
             })
         })?;
+        // Success: retire the goal. On any error/timeout above, the `?` returns
+        // early and the goal stays in `executing` for a retry.
+        self.executing.remove(goal_id);
         Ok(())
     }
 
