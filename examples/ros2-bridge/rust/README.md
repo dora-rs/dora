@@ -1,17 +1,55 @@
-# `ros2-bridge` Rust Examples
+# `ros2-bridge` Rust examples
 
-These examples show how to interact between ROS2 and Dora with Rust, including topic pub/sub service client/server and action client/server.
-The dataflow consists of the [ROS2's examples package](https://index.ros.org/r/examples/).
+These examples show how to interact between ROS2 and dora from Rust, using the
+generated message types and a `ros2-client` node. They cover topic pub/sub,
+service client/server, action client/server, and parameters.
+
+See the [top-level README](../README.md) for the capability×language matrix and
+[`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md) for the full reference.
+
+## Examples
+
+| Directory        | `--example` name                    | Needs sourced ROS2 / peer    |
+| ---------------- | ----------------------------------- | ---------------------------- |
+| `parameter`      | `rust-ros2-dataflow-parameter`      | no (local parameter API)     |
+| `topic-pub`      | `rust-ros2-dataflow-topic-pub`      | yes (publishes to ROS2)      |
+| `topic-sub`      | `rust-ros2-dataflow-topic-sub`      | yes (subscribes from ROS2)   |
+| `service-client` | `rust-ros2-dataflow-service-client` | yes (rclcpp service server)  |
+| `service-server` | `rust-ros2-dataflow-service-server` | yes (rclcpp minimal client)  |
+| `action-client`  | `rust-ros2-dataflow-action-client`  | yes (rclcpp action server)¹  |
+| `action-server`  | `rust-ros2-dataflow-action-server`  | no (dora server + client)¹   |
+| `turtle`         | `rust-ros2-dataflow`                | yes (`turtlesim`)            |
+
+¹ Action examples are gated behind `--features ros2-examples`. A dora-hosted
+action server is not discoverable by a real `rcl` client
+([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
+`action-server` example pairs a dora server with a dora client; x86 nightly CI
+is the oracle (the deferred `get_result` round-trip stalls on the arm64 dev
+harness). See [`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md).
 
 ## Setup
 
-These examples requires a sourced ROS2 installation.
+The examples that talk to a real ROS2 node require a sourced ROS2 installation
+and the matching example message package:
 
-- To set up ROS2, follow the [ROS2 installation](https://docs.ros.org/en/iron/Installation.html) guide.
-- Don't forget to [source the ROS2 setup files](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Configuring-ROS2-Environment.html#source-the-setup-files)
-- Install the corresponding ROS2 examples package
+- [Install ROS2](https://docs.ros.org/en/iron/Installation.html) and
+  [source the setup files](https://docs.ros.org/en/iron/Tutorials/Beginner-CLI-Tools/Configuring-ROS2-Environment.html#source-the-setup-files).
+- Install the corresponding ROS2 examples package (e.g.
+  `ros-humble-examples-rclcpp-minimal-client`).
+
+The `parameter` example is self-contained (pure-Rust DDS, local parameter API)
+and needs no ROS2 install.
 
 ## Running
 
-- Run the corresponding ROS2 node.
-- Run the Dora dataflow.
+```bash
+# self-contained
+cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
+
+# against a real ROS2 node (source ROS2 first)
+source /opt/ros/humble/setup.bash
+cargo run -p dora-ros2-bridge --example rust-ros2-dataflow            # turtlesim
+
+# action examples need the ros2-examples feature
+cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-action-server --features ros2-examples
+```

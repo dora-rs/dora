@@ -1141,6 +1141,9 @@ job_ros2_bridge() {
   source /opt/ros/humble/setup.bash
   timeout 600s cargo test -p dora-ros2-bridge-python
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+  # Self-contained parameter example: declares + exercises ROS2 parameters via
+  # the local API (no discovery), so it runs on every platform incl. arm64.
+  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 
   # C++ service server, driven by the rclcpp minimal client. Mirrors the

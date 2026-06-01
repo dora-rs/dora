@@ -46,6 +46,11 @@ name = "rust-ros2-example-node-action-server"
 path = "src/action_server.rs"
 required-features = ["ros2"]
 
+[[bin]]
+name = "rust-ros2-example-node-parameter"
+path = "src/parameter.rs"
+required-features = ["ros2"]
+
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
 eyre = { workspace = true }
