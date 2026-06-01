@@ -1,0 +1,16 @@
+nodes:
+    # A dora node hosting a ROS2 Fibonacci action server, driven by a dora ROS2
+    # action client in the same dataflow. Both use ros2-client, so they discover
+    # each other over DDS and share a consistent CDR (a real `ros2 action` client
+    # cannot discover a ros2-client-hosted server -- ros2-client#4 -- which is why
+    # the peer here is another dora node rather than rclcpp/rclpy).
+    - id: action-server
+      build: cargo build -p rust-ros2-example-node --bin rust-ros2-example-node-action-server --features ros2
+      path: ../../../../target/debug/rust-ros2-example-node-action-server
+      inputs:
+          tick: dora/timer/millis/500
+    - id: action-client
+      build: cargo build -p rust-ros2-example-node --bin rust-ros2-example-node-action-client --features ros2
+      path: ../../../../target/debug/rust-ros2-example-node-action-client
+      inputs:
+          tick: dora/timer/millis/500
