@@ -1539,6 +1539,18 @@ jobs:
           sudo apt-get install -y ros-humble-examples-rclcpp-minimal-client &&
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
+      - name: C++ ROS2 Bridge action-server example
+        # The dora C++ node hosts a Fibonacci action server, driven by a dora C++
+        # action client in the same dataflow (both ros2-client; a real rmw client
+        # cannot discover a ros2-client server -- ros2-client#4). Self-contained,
+        # no extra ROS2 package needed. x86 is the oracle: the deferred get_result
+        # service round-trip does not complete on the arm64 dev harness.
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-action-server --features ros2-examples
 
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported

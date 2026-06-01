@@ -139,6 +139,10 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
             let action_creation_impl = quote! { #action_creation_impl };
             action_creation_defs.push(action_creation_def);
             action_creation_impls.push(action_creation_impl);
+            let (action_server_def, action_server_impl) =
+                action.cxx_action_server_creation_functions(&package.name);
+            action_creation_defs.push(quote! { #action_server_def });
+            action_creation_impls.push(quote! { #action_server_impl });
         }
     }
 
