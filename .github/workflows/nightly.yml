@@ -1495,7 +1495,7 @@ jobs:
       - name: Rust ROS2 Bridge action examples
         # x86 is the oracle for the Rust action client/server: the macOS arm64
         # Docker harness cannot complete the deferred get_result service round-trip
-        # (see docs/plan-ros2-bridge-1170.md). The action-server example is
+        # (see docs/ros2-bridge.md). The action-server example is
         # self-contained (it runs a dora action server + dora action client, both
         # ros2-client); the action-client example drives the rclcpp minimal action
         # server, so we install that example package first.
