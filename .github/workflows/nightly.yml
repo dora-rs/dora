@@ -1492,6 +1492,22 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+      - name: Rust ROS2 Bridge action examples
+        # x86 is the oracle for the Rust action client/server: the macOS arm64
+        # Docker harness cannot complete the deferred get_result service round-trip
+        # (see docs/plan-ros2-bridge-1170.md). The action-server example is
+        # self-contained (it runs a dora action server + dora action client, both
+        # ros2-client); the action-client example drives the rclcpp minimal action
+        # server, so we install that example package first.
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y ros-humble-examples-rclcpp-minimal-action-server &&
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-action-server --features ros2-examples &&
+          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-action-client --features ros2-examples
       - name: Python ROS2 Bridge example
         timeout-minutes: 30
         env:
