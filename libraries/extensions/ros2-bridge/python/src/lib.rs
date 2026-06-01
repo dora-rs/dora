@@ -16,7 +16,9 @@ use futures::{Stream, StreamExt};
 use pyo3::{
     Bound, Py, PyAny, PyResult, Python,
     prelude::{pyclass, pymethods},
-    types::{PyAnyMethods, PyDict, PyList, PyModule, PyModuleMethods},
+    types::{
+        PyAnyMethods, PyDict, PyDictMethods, PyList, PyListMethods, PyModule, PyModuleMethods,
+    },
 };
 use std::time::{Duration, Instant};
 use typed::{
@@ -144,18 +146,66 @@ impl Ros2Context {
     /// :type name: str
     /// :type namespace: str
     /// :type options: dora.Ros2NodeOptions
+    /// :type parameters: dict, optional   # initial ROS2 parameters to declare
     /// :rtype: dora.Ros2Node
+    #[pyo3(signature = (name, namespace, options, parameters=None))]
     pub fn new_node(
         &self,
         name: &str,
         namespace: &str,
         options: Ros2NodeOptions,
+        parameters: Option<Bound<'_, PyDict>>,
     ) -> eyre::Result<Ros2Node> {
         let name = ros2_client::NodeName::new(namespace, name)
             .map_err(|err| eyre!("invalid node name: {err}"))?;
+        // ros2-client hosts the ROS2 parameter services natively (driven by the
+        // spinner below); declare any initial parameters on the node options so
+        // `ros2 param` / rclpy clients see them and `set_parameter` can update
+        // them at runtime.
+        let mut node_options: ros2_client::NodeOptions = options.into();
+        // Records each declared parameter's value type so the validator below can
+        // enforce type stability on *every* set path (the local `set_parameter`
+        // and the native rcl_interfaces services the spinner serves to remote
+        // `ros2 param` / rclpy clients), not just the Python one.
+        let mut declared_types: HashMap<
+            String,
+            std::mem::Discriminant<ros2_client::ParameterValue>,
+        > = HashMap::new();
+        if let Some(parameters) = parameters {
+            for (key, value) in parameters.iter() {
+                let key: String = key.extract().wrap_err("parameter name must be a str")?;
+                // `use_sim_time` is a built-in: ros2-client re-declares it as
+                // Boolean(false) after user declarations, silently dropping any
+                // value set here. Reject so the footgun is loud; it can still be
+                // changed at runtime via `set_parameter`.
+                if key == "use_sim_time" {
+                    eyre::bail!(
+                        "`use_sim_time` is a built-in parameter and cannot be declared here; \
+                         set it at runtime with `set_parameter` instead"
+                    );
+                }
+                let value = py_to_parameter_value(&value)
+                    .wrap_err_with(|| format!("invalid value for parameter `{key}`"))?;
+                declared_types.insert(key.clone(), std::mem::discriminant(&value));
+                node_options = node_options.declare_parameter(&key, value);
+            }
+        }
+        // Type-stability validator: reject a set whose value type differs from the
+        // declared one. ros2-client invokes this on both the local and the
+        // service-served set paths, and calls it without holding the parameter
+        // lock, so touching only this private map cannot deadlock.
+        let validator_types = declared_types.clone();
+        node_options = node_options.parameter_validator(Box::new(
+            move |name: &str, value: &ros2_client::ParameterValue| match validator_types.get(name) {
+                Some(declared) if *declared != std::mem::discriminant(value) => Err(format!(
+                    "parameter `{name}` is type-stable; cannot change its declared type"
+                )),
+                _ => Ok(()),
+            },
+        ));
         let mut node = self
             .context
-            .new_node(name, options.into())
+            .new_node(name, node_options)
             .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
 
         // Start a spinner so service/discovery status events are processed.
@@ -338,8 +388,7 @@ impl Ros2Node {
             .node
             .create_client::<BridgeServiceType>(
                 dora_ros2_bridge::detect_service_mapping(),
-                &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to parse service name: {e}"))?,
+                &parse_ros2_name(service_name)?,
                 &ros2_client::ServiceTypeName::new(&package, &type_name),
                 service_qos.clone(),
                 service_qos,
@@ -411,8 +460,7 @@ impl Ros2Node {
             .node
             .create_server::<BridgeServiceType>(
                 dora_ros2_bridge::detect_service_mapping(),
-                &ros2_client::Name::new("/", service_name.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to parse service name: {e}"))?,
+                &parse_ros2_name(service_name)?,
                 &ros2_client::ServiceTypeName::new(&package, &type_name),
                 service_qos.clone(),
                 service_qos,
@@ -442,8 +490,7 @@ impl Ros2Node {
             .node
             .create_action_client::<BridgeActionType>(
                 dora_ros2_bridge::detect_service_mapping(),
-                &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to parse action name: {e}"))?,
+                &parse_ros2_name(action_name)?,
                 &ros2_client::ActionTypeName::new(&package, &type_name),
                 ros2_client::action::ActionClientQosPolicies {
                     goal_service: q.clone(),
@@ -477,8 +524,7 @@ impl Ros2Node {
             .node
             .create_action_server::<BridgeActionType>(
                 dora_ros2_bridge::detect_service_mapping(),
-                &ros2_client::Name::new("/", action_name.trim_start_matches('/'))
-                    .map_err(|e| eyre!("failed to parse action name: {e}"))?,
+                &parse_ros2_name(action_name)?,
                 &ros2_client::ActionTypeName::new(&package, &type_name),
                 ros2_client::action::ActionServerQosPolicies {
                     goal_service: q.clone(),
@@ -499,6 +545,224 @@ impl Ros2Node {
         })
     }
     // ---- END SPIKE ----
+
+    /// Set a ROS2 parameter. The parameter must have been declared (via the
+    /// `parameters=` argument of `new_node`); the change is published on
+    /// `/parameter_events` and visible to `ros2 param get` and rclpy clients.
+    ///
+    /// :type name: str
+    /// :type value: bool | int | float | str | bytes | list
+    pub fn set_parameter(&self, name: &str, value: Bound<'_, PyAny>) -> eyre::Result<()> {
+        let value = py_to_parameter_value(&value)
+            .wrap_err_with(|| format!("invalid value for parameter `{name}`"))?;
+        // Type stability is enforced by the validator registered in `new_node`,
+        // which ros2-client also applies to remote `ros2 param set` calls.
+        self.node
+            .set_parameter(name, value)
+            .map_err(|e| eyre!("failed to set parameter `{name}`: {e}"))
+    }
+
+    /// Get a ROS2 parameter value, or `None` if it is not set.
+    ///
+    /// :type name: str
+    /// :rtype: bool | int | float | str | bytes | list | None
+    pub fn get_parameter(&self, py: Python<'_>, name: &str) -> eyre::Result<Py<PyAny>> {
+        match self.node.get_parameter(name) {
+            Some(value) => parameter_value_to_py(py, &value),
+            None => Ok(py.None()),
+        }
+    }
+
+    /// List the names of all declared ROS2 parameters.
+    ///
+    /// :rtype: list[str]
+    pub fn list_parameters(&self) -> Vec<String> {
+        self.node.list_parameters()
+    }
+
+    /// Whether a ROS2 parameter with the given name is declared.
+    ///
+    /// :type name: str
+    /// :rtype: bool
+    pub fn has_parameter(&self, name: &str) -> bool {
+        self.node.has_parameter(name)
+    }
+}
+
+/// Parse a fully-qualified ROS2 name (e.g. `/ns/sub/base`) into a
+/// `ros2_client::Name`. `ros2_client::Name` requires the base name to be a
+/// single token (no slashes) while the namespace may be multi-component, so we
+/// split at the last `/`: `/demo_params/get_parameters` -> namespace
+/// `/demo_params`, base `get_parameters`. A single-segment name (`/base` or
+/// `base`) keeps namespace `/`.
+fn parse_ros2_name(full: &str) -> eyre::Result<ros2_client::Name> {
+    let trimmed = full.trim_end_matches('/');
+    let (namespace, base) = match trimmed.rsplit_once('/') {
+        Some((ns, base)) => (if ns.is_empty() { "/" } else { ns }, base),
+        None => ("/", trimmed),
+    };
+    ros2_client::Name::new(namespace, base)
+        .map_err(|e| eyre!("failed to parse ROS2 name `{full}`: {e}"))
+}
+
+/// Convert a Python value into a `ros2_client::ParameterValue`, mirroring the
+/// ROS2 ParameterValue variants. `bool` is checked before `int` (Python `bool`
+/// is an `int` subclass); arrays must be homogeneous and non-empty (an empty
+/// list is ambiguous).
+fn py_to_parameter_value(v: &Bound<'_, PyAny>) -> eyre::Result<ros2_client::ParameterValue> {
+    use ros2_client::ParameterValue as P;
+    if v.is_instance_of::<pyo3::types::PyBytes>() {
+        return Ok(P::ByteArray(v.extract::<Vec<u8>>()?));
+    }
+    if v.is_instance_of::<pyo3::types::PyBool>() {
+        return Ok(P::Boolean(v.extract::<bool>()?));
+    }
+    // A Python `int` always maps to ROS Integer; never silently demote an
+    // out-of-i64-range int to Double (ROS2 has no uint64 / bigint param type).
+    if v.is_instance_of::<pyo3::types::PyInt>() {
+        return v
+            .extract::<i64>()
+            .map(P::Integer)
+            .map_err(|_| eyre!("integer parameter out of i64 range"));
+    }
+    // Gate float on the concrete `PyFloat` type rather than a permissive
+    // `extract::<f64>()`, which would also accept anything with `__float__`
+    // (e.g. `numpy.int64`) and silently demote an int-typed value to Double.
+    if v.is_instance_of::<pyo3::types::PyFloat>() {
+        return Ok(P::Double(v.extract::<f64>()?));
+    }
+    if v.is_instance_of::<pyo3::types::PyString>() {
+        return Ok(P::String(v.extract::<String>()?));
+    }
+    if let Ok(list) = v.cast::<PyList>() {
+        return py_list_to_parameter_value(list);
+    }
+    eyre::bail!(
+        "unsupported parameter value (use bool/int/float/str/bytes or a non-empty homogeneous list)"
+    )
+}
+
+/// Convert a Python `list` into a ROS2 array `ParameterValue`. The element type
+/// is taken from the first item and *every* element must match it: classifying
+/// by repeated `extract::<Vec<T>>()` instead would silently coerce a stray
+/// `bool` into an integer array (`[True, 2]` -> `[1, 2]`), violating the
+/// homogeneous-array contract. Empty lists are rejected (ambiguous type).
+fn py_list_to_parameter_value(
+    list: &Bound<'_, PyList>,
+) -> eyre::Result<ros2_client::ParameterValue> {
+    use pyo3::types::{PyBool, PyFloat, PyInt, PyString};
+    use ros2_client::ParameterValue as P;
+    let Some(first) = list.iter().next() else {
+        eyre::bail!(
+            "empty list is an ambiguous parameter type (cannot infer the array element type)"
+        )
+    };
+    // `bool` before `int`: Python `bool` is an `int` subclass.
+    if first.is_instance_of::<PyBool>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            if !item.is_instance_of::<PyBool>() {
+                eyre::bail!("non-homogeneous list: expected every element to be a bool");
+            }
+            out.push(item.extract::<bool>()?);
+        }
+        return Ok(P::BooleanArray(out));
+    }
+    if first.is_instance_of::<PyInt>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            // `bool` is an `int` subclass, so exclude it explicitly: `[1, True]`
+            // must be rejected, not coerced into `[1, 1]`.
+            if item.is_instance_of::<PyBool>() || !item.is_instance_of::<PyInt>() {
+                eyre::bail!("non-homogeneous list: expected every element to be an int");
+            }
+            out.push(
+                item.extract::<i64>()
+                    .map_err(|_| eyre!("integer list element out of i64 range"))?,
+            );
+        }
+        return Ok(P::IntegerArray(out));
+    }
+    if first.is_instance_of::<PyFloat>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            if !item.is_instance_of::<PyFloat>() {
+                eyre::bail!("non-homogeneous list: expected every element to be a float");
+            }
+            out.push(item.extract::<f64>()?);
+        }
+        return Ok(P::DoubleArray(out));
+    }
+    if first.is_instance_of::<PyString>() {
+        let mut out = Vec::with_capacity(list.len());
+        for item in list.iter() {
+            if !item.is_instance_of::<PyString>() {
+                eyre::bail!("non-homogeneous list: expected every element to be a str");
+            }
+            out.push(item.extract::<String>()?);
+        }
+        return Ok(P::StringArray(out));
+    }
+    eyre::bail!("unsupported list element type (use bool/int/float/str)")
+}
+
+/// Convert a `ros2_client::ParameterValue` into a Python object.
+fn parameter_value_to_py(
+    py: Python<'_>,
+    v: &ros2_client::ParameterValue,
+) -> eyre::Result<Py<PyAny>> {
+    use pyo3::IntoPyObject;
+    use ros2_client::ParameterValue as P;
+    let obj = match v {
+        P::NotSet => py.None(),
+        P::Boolean(b) => b
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .to_owned()
+            .into_any()
+            .unbind(),
+        P::Integer(i) => i
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::Double(d) => d
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::String(s) => s
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::ByteArray(b) => pyo3::types::PyBytes::new(py, b).into_any().unbind(),
+        P::BooleanArray(a) => a
+            .clone()
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::IntegerArray(a) => a
+            .clone()
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::DoubleArray(a) => a
+            .clone()
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+        P::StringArray(a) => a
+            .clone()
+            .into_pyobject(py)
+            .map_err(|e| eyre!("{e:?}"))?
+            .into_any()
+            .unbind(),
+    };
+    Ok(obj)
 }
 
 /// Parse a `namespace/Service` (or `namespace::Service`) type string into its
