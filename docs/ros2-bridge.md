@@ -1,6 +1,11 @@
 # ROS2 Bridge
 
-Dora provides a declarative YAML-based ROS2 bridge that lets any Dora node communicate with ROS2 topics, services, and actions without importing ROS2 libraries. You define the bridge in your dataflow YAML using the `ros2:` key, and the framework automatically spawns a bridge binary that converts between Apache Arrow (Dora's native format) and ROS2 CDR/DDS. Your user nodes stay ROS2-free -- they send and receive pure Arrow `StructArray` data.
+Dora talks to the ROS2 ecosystem (topics, services, actions, parameters) over a **pure-Rust DDS/RTPS stack** (`ros2-client` + `rustdds`) -- it never links `rcl`/`rclcpp`, and data crosses as Apache Arrow `StructArray`, converted to/from ROS2 CDR at the boundary.
+
+There are **two ways** to use the bridge, covered in this guide:
+
+1. **YAML / dynamic bridge** -- add a `ros2:` key to a node and the framework spawns a bridge binary; your node code stays ROS2-free and exchanges pure Arrow. Language-agnostic, zero code. This is the bulk of this guide.
+2. **Native code APIs** -- call ROS2 directly from your node code with typed, per-language APIs: a Python (`dora.Ros2Context`) surface, and codegen-generated Rust / C++ surfaces. Use these when you want to drive ROS2 imperatively from a node. See [Native Code APIs](#native-code-apis-rust--python--c) below.
 
 ## Features at a Glance
 
@@ -15,6 +20,56 @@ Dora provides a declarative YAML-based ROS2 bridge that lets any Dora node commu
 | Action server | `action` + `role: server` | Receive goals, send feedback + result |
 | QoS policies | `qos` | Reliability, durability, history, liveliness |
 | Auto-spawn | Automatic | Bridge binary spawned by daemon as a Custom node |
+
+---
+
+## Two Surfaces, One Stack
+
+How a Dora node reaches the ROS2 wire, and what each surface offers:
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  USER CODE  (dora node)          Rust  ·  C++  ·  Python                   │
+└───────────────┬──────────────────────────────────┬───────────────────────┘
+                │                                   │
+   ┌────────────▼─────────────┐       ┌─────────────▼──────────────────────┐
+   │  (a) NATIVE CODE API      │       │  (b) YAML / DYNAMIC BRIDGE          │
+   │  compile-time typed        │       │  YAML-driven, language-agnostic     │
+   │  structs from .msg/.srv/   │       │  dora-ros2-bridge-node binary       │
+   │  .action  (codegen)        │       │  + pyo3 (Python, in-process)        │
+   │  →  Rust / C++             │       │  Apache Arrow + thread-local        │
+   │  + pyo3 classes (Python)   │       │  TypeInfo                           │
+   └────────────┬─────────────┘       └─────────────┬──────────────────────┘
+                │                                    │
+                └──────────────┬─────────────────────┘
+                               │  serialize ↔ Arrow ↔ CDR
+                  ┌────────────▼─────────────┐
+                  │  PURE-RUST DDS/RTPS STACK │   ← never links rcl / rclcpp
+                  │  ros2-client · rustdds     │
+                  └────────────┬─────────────┘
+                               │  RTPS over UDP (SPDP discovery)
+        ╔══════════════════════▼═══════════════════════════════════╗
+        ║  DDS WIRE  ──  ROS2 ECOSYSTEM (rclcpp / rclpy nodes,       ║
+        ║                turtlesim, ros2 CLI, Nav2, ...)            ║
+        ╚═══════════════════════════════════════════════════════════╝
+```
+
+Both surfaces ride the same `ros2-client` / `rustdds` stack. "Client" = a Dora
+node calling into ROS2 (dora→ROS2); "server" = a Dora node serving ROS2 clients
+(ROS2→dora).
+
+**Capability × surface (all supported):**
+
+| | topic pub/sub | service client | service server | action client | action server | parameters |
+|---|---|---|---|---|---|---|
+| **YAML bridge** | ✅ | ✅ | ✅ | ✅ | ✅ | (node-hosted) |
+| **Rust** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
+| **C++** (codegen) | ✅ | ✅ | ✅ | ✅ | ✅ | via `ros2-client` |
+| **Python** (pyo3) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+Runnable examples for every cell live under
+[`examples/ros2-bridge/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge)
+(`rust/`, `python/`, `c++/`, and the `yaml-bridge*` dataflows).
 
 ---
 
@@ -846,11 +901,141 @@ ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10
 
 ---
 
+## Native Code APIs (Rust / Python / C++)
+
+The YAML bridge above is language-agnostic and needs no ROS2 code in your node.
+When you instead want to drive ROS2 **imperatively** from node code -- typed
+structs, explicit request/reply, goal handles -- use the native per-language
+APIs. They wrap the same `ros2-client` stack; message types are generated at
+build time from the `.msg`/`.srv`/`.action` files on `AMENT_PREFIX_PATH`.
+
+All three languages support topic pub/sub, service client + server, and action
+client + server. Full runnable examples live under
+[`examples/ros2-bridge/{rust,python,c++}/`](https://github.com/dora-rs/dora/tree/main/examples/ros2-bridge).
+
+### Python (`dora.Ros2Context`)
+
+A Python node creates a ROS2 context + node, then publishers/subscriptions,
+service/action clients/servers, or parameters. Data is PyArrow.
+
+```python
+from dora import Node, Ros2Context, Ros2NodeOptions, Ros2QosPolicies
+import pyarrow as pa
+
+dora_node = Node()                       # connect to the dora daemon FIRST
+ctx = Ros2Context()
+node = ctx.new_node("my_node", "/", Ros2NodeOptions(rosout=True))
+
+qos = Ros2QosPolicies(reliable=True, keep_last=1)
+```
+
+| Method | Purpose |
+|--------|---------|
+| `ctx.new_node(name, namespace, options, parameters=None)` | Create the ROS2 node; `parameters` declares initial ROS2 parameters |
+| `node.create_topic(name, type, qos)` / `create_publisher(topic)` / `create_subscription(topic)` | Topic pub/sub |
+| `node.create_service_client(name, type, qos=None)` → `Ros2ServiceClient` | `.call(request, timeout_s=None)` |
+| `node.create_service_server(name, type, qos=None)` → `Ros2ServiceServer` | `.take_request()` → `(id, req)` / `None`, then `.send_response(id, resp)` |
+| `node.create_action_client(name, type, qos)` → `Ros2ActionClient` | `.send_goal(goal)` → `goal_id`, `.take_feedback(goal_id)`, `.take_result(goal_id)`, `.cancel(goal_id=None)` |
+| `node.create_action_server(name, type, qos)` → `Ros2ActionServer` | `.take_goal()` → `(goal_id, goal)`, `.send_feedback(goal_id, fb)`, `.send_result(goal_id, result, status=None)`, `.take_cancel()` |
+| `node.set_parameter` / `get_parameter` / `list_parameters` / `has_parameter` | Runtime parameters (also served to `ros2 param`) |
+
+Service client example (call an external ROS2 `AddTwoInts`):
+
+```python
+client = node.create_service_client("/add_two_ints", "example_interfaces/AddTwoInts", qos)
+client.wait_for_service()
+resp = client.call(pa.array([{"a": 2, "b": 3}]))
+print(resp[0]["sum"].as_py())            # 5
+```
+
+Parameters (declared at node creation, then served to `ros2 param`):
+
+```python
+node = ctx.new_node("demo", "/", Ros2NodeOptions(rosout=True),
+                    parameters={"speed": 1.5, "name": "robot"})
+node.set_parameter("speed", 2.0)
+print(node.get_parameter("speed"), node.list_parameters())
+```
+
+The blocking calls (`call`, `take_*`) release the GIL while waiting. See
+`examples/ros2-bridge/python/{service-client,service-server,action-client,action-server,parameter}/`.
+
+### Rust (`dora-ros2-bridge`)
+
+A Rust node uses `ros2-client` directly with the generated message structs from
+`dora_ros2_bridge::messages::<package>`. Topic, service, and action client/server
+are all native `ros2-client` calls; the action server uses
+`AsyncActionServer<A>` (no extra codegen needed).
+
+```rust
+use dora_ros2_bridge::{ros2_client, messages::example_interfaces::action::Fibonacci};
+
+let server = ros_node.create_action_server::<Fibonacci>(
+    ros2_client::ServiceMapping::Enhanced,
+    &ros2_client::Name::new("/", "fibonacci").unwrap(),
+    &ros2_client::ActionTypeName::new("example_interfaces", "Fibonacci"),
+    action_qos,
+)?;
+```
+
+See `examples/ros2-bridge/rust/{topic-pub,topic-sub,service-client,service-server,action-client,action-server,turtle}/`.
+
+### C++ (cxx codegen)
+
+A C++ node includes the generated headers and calls package-namespaced creation
+functions; data is `rust::Box`/generated structs. Service and action servers are
+driven by a `matches` / `downcast` event loop, mirroring the clients.
+
+```cpp
+#include "ros2-bridge/msg/example_interfaces.h"
+
+auto server = example_interfaces::create_Fibonacci_action_server(
+    *node, "/", "fibonacci", qos, merged_events);
+// in the event loop:
+if (server->matches(event)) {
+    auto goal_event = server->downcast(std::move(event));
+    auto goal = goal_event->get_goal();
+    // ... compute ...
+    server->publish_feedback(goal_event->get_goal_id(), feedback);
+    server->send_result(goal_event->get_goal_id(), ActionStatusEnum::Succeeded, result);
+}
+```
+
+| C++ surface | Creation function |
+|---|---|
+| topic | `create_topic_<pkg>_<Type>` + `create_publisher` / `create_subscription` |
+| service client | `create_client_<pkg>_<Name>` → `wait_for_service` / `send_request` / `matches` / `downcast` |
+| service server | `create_service_server_<pkg>_<Name>` → `matches` / `downcast` (`get_request` / `get_id`) / `send_response` |
+| action client | `<pkg>::create_<Name>_action_client` → `wait_for_action` / `send_goal` / `request_result` / `matches_*` / `downcast_*` |
+| action server | `<pkg>::create_<Name>_action_server` → `matches` / `downcast` (`get_goal` / `get_goal_id`) / `publish_feedback` / `send_result` |
+
+See `examples/ros2-bridge/c++/{turtle,service-server,action-client,action-server}/`.
+
+### Discovery & RMW notes (native servers)
+
+- **A Dora-hosted *server* is not discoverable by a real `rcl`/`rclcpp`/`rclpy`
+  client for *actions*** ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)):
+  the action examples pair a Dora server with a Dora client in one dataflow.
+  *Service* servers, by contrast, are discovered fine by a real `ros2` client.
+- **RMW must match.** Service/action correlation differs between Fast-DDS
+  (`Enhanced`) and Cyclone mappings; the bridge picks the mapping from
+  `RMW_IMPLEMENTATION` (at codegen time for native, runtime for the YAML bridge).
+  A mismatch makes calls hang. Set `RMW_IMPLEMENTATION` consistently on both sides.
+- There is **no `wait_for_action_server`** in `ros2-client`; a client's first
+  `send_goal` simply times out if no server is present.
+
+---
+
 ## Limitations and Known Constraints
 
+These constraints apply to the **YAML / dynamic bridge**. The native code APIs
+have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-servers)
+(notably: the Python action client/server *do* support cancel).
+
 - **Action server auto-accept**: All incoming goals are automatically accepted. The handler cannot reject goals before execution starts.
-- **No action cancel support**: Neither client nor server handles ROS2 cancel requests.
+- **No action cancel support (YAML bridge)**: The YAML action bridge does not handle ROS2 cancel requests (the Python native action API does).
 - **No `wait_for_action_server`**: The `ros2_client` library does not provide this API. Start the action server before the dataflow. The first goal will time out (30s) if the server is unavailable.
+- **Native action server discovery (ros2-client#4)**: a Dora-hosted *action* server is not discoverable by a real `rcl`-based client; pair it with a Dora client. Service servers are unaffected.
 - **Single-flight service client**: The service client processes requests sequentially -- each request blocks until the response arrives (or times out at 30s).
 - **QoS uniform for service/action channels**: The `qos` config applies to all service/action sub-channels (goal, result, cancel, feedback, status). Per-channel QoS is not configurable.
 - **`AMENT_PREFIX_PATH` required**: The bridge fails at startup if no ROS2 message definitions are found.
