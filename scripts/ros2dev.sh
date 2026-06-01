@@ -123,6 +123,7 @@ EXAMPLES=(
   python-ros2-dataflow-parameter
   cxx-ros2-dataflow
   cxx-ros2-dataflow-action-client
+  cxx-ros2-dataflow-service-server
 )
 
 passed=()

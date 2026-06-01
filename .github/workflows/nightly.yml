@@ -1528,6 +1528,17 @@ jobs:
         run: |
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
+      - name: C++ ROS2 Bridge service-server example
+        # The dora C++ node hosts an AddTwoInts service server; the rclcpp
+        # minimal client (installed below) discovers it and sends a request.
+        timeout-minutes: 30
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          sudo apt-get update &&
+          sudo apt-get install -y ros-humble-examples-rclcpp-minimal-client &&
+          source /opt/ros/humble/setup.bash &&
+          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
 
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported

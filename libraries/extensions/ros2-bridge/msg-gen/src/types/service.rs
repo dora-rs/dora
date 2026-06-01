@@ -284,6 +284,212 @@ impl Service {
         (def, imp)
     }
 
+    /// C++ FFI for hosting a ROS2 service **server**. Mirrors
+    /// `cxx_service_creation_functions` (the client) in reverse: a background
+    /// pump receives requests and forwards them (tagged with a `u64` token)
+    /// into the merged event stream; the C++ side inspects each request and
+    /// calls `send_response(id, response)`, which correlates the token back to
+    /// the ros2-client `RmwRequestId`. The token avoids exposing `RmwRequestId`
+    /// across the cxx boundary.
+    pub fn cxx_service_server_creation_functions(
+        &self,
+        package_name: &str,
+    ) -> (impl ToTokens, impl ToTokens) {
+        let server_name = format_ident!("Server__{package_name}__{}", self.name);
+        let cxx_server_name = format_ident!("Server_{}", self.name);
+        let create_server = format_ident!("new_Server__{package_name}__{}", self.name);
+        let cxx_create_server = format!("create_service_server_{package_name}_{}", self.name);
+
+        let request_event_name = format_ident!("ServiceRequest__{package_name}__{}", self.name);
+        let cxx_request_event_name = format_ident!("ServiceRequest_{}", self.name);
+        let get_request = format_ident!("get_request__{package_name}__{}", self.name);
+        let get_id = format_ident!("get_id__{package_name}__{}", self.name);
+
+        let self_name = format_ident!("{}", self.name);
+        let self_name_str = &self.name;
+
+        let matches = format_ident!("server_matches__{package_name}__{}", self.name);
+        let downcast = format_ident!("server_downcast__{package_name}__{}", self.name);
+        let send_response = format_ident!("send_response__{package_name}__{}", self.name);
+
+        let req_type_raw = format_ident!("{package_name}__{}_Request", self.name);
+        let res_type_raw = format_ident!("{package_name}__{}_Response", self.name);
+        let req_type_raw_str = req_type_raw.to_string();
+
+        let ros_service_mapping = crate::detect_ros_service_mapping_ident();
+
+        let def = quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_request_event_name]
+            type #request_event_name;
+            #[namespace = #package_name]
+            #[cxx_name = get_request]
+            fn #get_request(self: &#request_event_name) -> &#req_type_raw;
+            #[namespace = #package_name]
+            #[cxx_name = get_id]
+            fn #get_id(self: &#request_event_name) -> u64;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_server_name]
+            type #server_name;
+            #[cxx_name = #cxx_create_server]
+            fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#server_name>>;
+            #[namespace = #package_name]
+            #[cxx_name = matches]
+            fn #matches(self: &#server_name, event: &CombinedEvent) -> bool;
+            #[namespace = #package_name]
+            #[cxx_name = downcast]
+            fn #downcast(self: &#server_name, event: CombinedEvent) -> Result<Box<#request_event_name>>;
+            #[namespace = #package_name]
+            #[cxx_name = send_response]
+            fn #send_response(self: &mut #server_name, id: u64, response: #res_type_raw) -> Result<()>;
+        };
+        let imp = quote! {
+            #[allow(non_snake_case)]
+            pub fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
+                use futures::StreamExt as _;
+
+                let server = node.node.create_server::< service :: #self_name >(
+                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
+                    qos.clone().into(),
+                    qos.into(),
+                ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let server = std::sync::Arc::new(server);
+                // Token -> (ros2-client request id, receive time). The C++ side
+                // gets the opaque `u64` token with each request and passes it back
+                // to `send_response`, so `RmwRequestId` never crosses the FFI. The
+                // receive time bounds the map: an entry whose C++ handler never
+                // calls `send_response` (crash, early return, dropped request) is
+                // evicted, so a misbehaving server cannot leak unboundedly. Mirrors
+                // the daemon's SERVICE_RESPONSE_TIMEOUT / MAX_PENDING_REQUESTS.
+                let requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (crate::ros2_client::service::RmwRequestId, std::time::Instant)>>> =
+                    std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                let next_id = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+                let (request_tx, request_rx) = flume::bounded(64);
+                let stream = request_rx.into_stream().map(|v: eyre::Result<(u64, ffi::#req_type_raw)>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let id = events.events.merge(Box::pin(stream));
+
+                // Single request pump per server: poll for requests, tag each with
+                // a token, record its `RmwRequestId`, and forward it to the merged
+                // stream. Mirrors the per-client response pump.
+                {
+                    // Cap unanswered requests so a server that never replies cannot
+                    // grow the map forever (matches the daemon's eviction policy).
+                    const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+                    const MAX_PENDING_REQUESTS: usize = 64;
+                    let server = server.clone();
+                    let requests = requests.clone();
+                    let next_id = next_id.clone();
+                    std::thread::spawn(move || {
+                        loop {
+                            if request_tx.is_disconnected() {
+                                break;
+                            }
+                            match server.receive_request() {
+                                Ok(Some((rmw_id, request))) => {
+                                    let token = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    if let Ok(mut map) = requests.lock() {
+                                        let now = std::time::Instant::now();
+                                        // Evict entries whose response never came.
+                                        map.retain(|_, (_, t)| now.duration_since(*t) < REQUEST_TIMEOUT);
+                                        // If still at capacity, drop the oldest
+                                        // (smallest token) to make room.
+                                        if map.len() >= MAX_PENDING_REQUESTS {
+                                            if let Some(&oldest) = map.keys().min() {
+                                                map.remove(&oldest);
+                                            }
+                                        }
+                                        map.insert(token, (rmw_id, now));
+                                    }
+                                    if request_tx.send(Ok((token, request))).is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(e) => {
+                                    let _ = request_tx
+                                        .send(Err(eyre::eyre!("failed to receive service request: {e:?}")));
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                            }
+                        }
+                    });
+                }
+
+                Ok(Box::new(#server_name {
+                    server,
+                    requests,
+                    stream_id: id,
+                }))
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #server_name {
+                server: std::sync::Arc<crate::ros2_client::service::Server< service :: #self_name >>,
+                requests: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, (crate::ros2_client::service::RmwRequestId, std::time::Instant)>>>,
+                stream_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #request_event_name {
+                id: u64,
+                request: ffi::#req_type_raw,
+            }
+
+            impl #request_event_name {
+                #[allow(non_snake_case)]
+                fn #get_request(&self) -> &ffi::#req_type_raw {
+                    &self.request
+                }
+                #[allow(non_snake_case)]
+                fn #get_id(&self) -> u64 {
+                    self.id
+                }
+            }
+
+            impl #server_name {
+                #[allow(non_snake_case)]
+                fn #matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => true,
+                        _ => false,
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#request_event_name>> {
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => {
+                            let result = event.event.downcast::<eyre::Result<(u64, ffi::#req_type_raw)>>()
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", #req_type_raw_str))?;
+                            let (id, request) = (*result).map_err(|e| eyre::eyre!("{e:?}"))?;
+                            Ok(Box::new(#request_event_name { id, request }))
+                        }
+                        _ => eyre::bail!("not a {} request event", #self_name_str),
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #send_response(&mut self, id: u64, response: ffi::#res_type_raw) -> eyre::Result<()> {
+                    let (rmw_id, _received_at) = self
+                        .requests
+                        .lock()
+                        .map_err(|_| eyre::eyre!("service server request state poisoned"))?
+                        .remove(&id)
+                        .ok_or_else(|| eyre::eyre!("no pending request with id {id} (it may have timed out)"))?;
+                    futures::executor::block_on(self.server.async_send_response(rmw_id, response))
+                        .map_err(|e| eyre::eyre!("failed to send service response: {e:?}"))?;
+                    Ok(())
+                }
+            }
+        };
+        (def, imp)
+    }
+
     pub fn token_stream_with_mod(&self) -> impl ToTokens + use<> {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
         let inner = self.token_stream();
