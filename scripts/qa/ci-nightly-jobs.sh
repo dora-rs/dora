@@ -1143,6 +1143,32 @@ job_ros2_bridge() {
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 
+  # C++ service server, driven by the rclcpp minimal client. Mirrors the
+  # nightly.yml "C++ ROS2 Bridge service-server example" step. The example peer
+  # `examples_rclcpp_minimal_client` must be present in the ROS2 env (the
+  # ros2dev image / a dev ROS2 setup). We do NOT escalate privileges
+  # interactively here -- a `sudo apt-get` that prompts for a password would
+  # hang this driver with no timeout. So: install only non-interactively (as
+  # root directly, or via `sudo -n`), and if the package still isn't available,
+  # skip with a clear message rather than hang or fail the whole job.
+  if ! ros2 pkg executables examples_rclcpp_minimal_client 2>/dev/null | grep -q client_main; then
+    if [ "$(id -u)" = 0 ]; then
+      apt-get install -y ros-humble-examples-rclcpp-minimal-client >/dev/null 2>&1 || true
+    else
+      sudo -n apt-get install -y ros-humble-examples-rclcpp-minimal-client >/dev/null 2>&1 || true
+    fi
+  fi
+  if ros2 pkg executables examples_rclcpp_minimal_client 2>/dev/null | grep -q client_main; then
+    timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
+  else
+    echo "SKIP cxx-ros2-dataflow-service-server: examples_rclcpp_minimal_client not installed (apt-get install ros-humble-examples-rclcpp-minimal-client)"
+    SKIPPED+=("ros2-bridge: cxx-service-server (examples_rclcpp_minimal_client missing)")
+  fi
+  # Note: the Rust action client/server examples are in nightly.yml but are
+  # intentionally NOT mirrored here -- their deferred get_result service
+  # round-trip does not complete on arm64/Docker (this local driver runs on
+  # arm64 too), so they would hang to the timeout. They are x86-nightly-only.
+
   # Python service client/server examples need the workspace node bindings.
   uv venv --seed -p 3.12 .venv-ros2-bridge >/dev/null
   # shellcheck disable=SC1091

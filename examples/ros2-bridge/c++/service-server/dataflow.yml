@@ -1,0 +1,6 @@
+nodes:
+  - id: cxx-service-server
+    path: build/service_server
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []
