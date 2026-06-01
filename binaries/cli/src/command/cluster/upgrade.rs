@@ -49,18 +49,17 @@ impl Executable for Upgrade {
             println!("Upgrading {} ({target})...", machine.id);
 
             // 1. SCP binary
-            let scp_status = std::process::Command::new("scp")
-                .args([
-                    "-o",
-                    "BatchMode=yes",
-                    "-o",
-                    "ConnectTimeout=10",
-                    local_binary
-                        .to_str()
-                        .ok_or_else(|| eyre::eyre!("local binary path is not valid UTF-8"))?,
-                    &format!("{target}:/usr/local/bin/dora"),
-                ])
-                .status();
+            let local_binary_str = local_binary
+                .to_str()
+                .ok_or_else(|| eyre::eyre!("local binary path is not valid UTF-8"))?;
+            let mut scp = std::process::Command::new("scp");
+            scp.args(["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]);
+            if let Some(p) = machine.port {
+                // scp uses `-P` (capital) for the port; `-p` means "preserve mtimes"
+                scp.args(["-P", &p.to_string()]);
+            }
+            scp.args([local_binary_str, &format!("{target}:/usr/local/bin/dora")]);
+            let scp_status = scp.status();
 
             match scp_status {
                 Ok(s) if s.success() => {}
@@ -80,7 +79,7 @@ impl Executable for Upgrade {
 
             // 2. Restart systemd service
             let restart_cmd = format!("sudo systemctl restart {service_name}");
-            match run_ssh(&target, &restart_cmd) {
+            match run_ssh(&target, machine.port, &restart_cmd) {
                 Ok(true) => {}
                 _ => {
                     let msg = "systemctl restart failed".to_string();

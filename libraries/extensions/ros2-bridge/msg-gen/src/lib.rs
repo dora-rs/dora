@@ -114,10 +114,17 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
         service_defs.push(def);
         service_impls.push(imp);
         if create_cxx_bridge {
+            // Wrap each opaque `impl ToTokens` in `quote!` so client and server
+            // creation functions share one `Vec<TokenStream>` element type
+            // (distinct `impl Trait` returns are otherwise distinct opaque types).
             let (service_creation_def, service_creation_impl) =
                 service.cxx_service_creation_functions(&package.name);
-            service_creation_defs.push(service_creation_def);
-            service_creation_impls.push(service_creation_impl);
+            service_creation_defs.push(quote! { #service_creation_def });
+            service_creation_impls.push(quote! { #service_creation_impl });
+            let (server_creation_def, server_creation_impl) =
+                service.cxx_service_server_creation_functions(&package.name);
+            service_creation_defs.push(quote! { #server_creation_def });
+            service_creation_impls.push(quote! { #server_creation_impl });
         }
     }
 
@@ -132,6 +139,10 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
             let action_creation_impl = quote! { #action_creation_impl };
             action_creation_defs.push(action_creation_def);
             action_creation_impls.push(action_creation_impl);
+            let (action_server_def, action_server_impl) =
+                action.cxx_action_server_creation_functions(&package.name);
+            action_creation_defs.push(quote! { #action_server_def });
+            action_creation_impls.push(quote! { #action_server_impl });
         }
     }
 

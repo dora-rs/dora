@@ -1,0 +1,9 @@
+nodes:
+  # dora node exposing ROS2 parameters on /demo_params. The rcl_interfaces
+  # parameter services are hosted natively by ros2-client (driven by the node
+  # spinner); this node declares + exercises them via the local parameter API.
+  - id: parameter-server
+    path: ./parameter_node.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: []

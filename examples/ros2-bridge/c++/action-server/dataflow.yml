@@ -1,0 +1,15 @@
+nodes:
+  # dora C++ node hosting a ROS2 Fibonacci action server, driven by a dora C++
+  # action client (the existing c++/action-client example) in the same dataflow.
+  # Both use ros2-client, so they discover each other over DDS and share a
+  # consistent CDR (a real `ros2 action` client cannot discover a
+  # ros2-client-hosted server -- ros2-client#4; both C++ nodes are built by run.rs).
+  - id: cxx-action-server
+    path: build/action_server
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []
+  - id: cxx-action-client
+    path: build/action_client
+    inputs:
+      tick: dora/timer/millis/500

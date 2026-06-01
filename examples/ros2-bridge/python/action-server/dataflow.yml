@@ -1,0 +1,14 @@
+nodes:
+  # dora node that serves /fibonacci via the ROS2 bridge.
+  - id: action-server
+    path: ./action_server_node.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: []
+  # Reuse the action-client example node to drive the server (no external ROS2
+  # process needed: both sides are dora nodes talking over the bridge).
+  - id: action-client
+    path: ../action-client/action_client_node.py
+    inputs:
+      tick: dora/timer/millis/500
+    outputs: []
