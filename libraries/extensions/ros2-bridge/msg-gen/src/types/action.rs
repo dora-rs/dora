@@ -725,6 +725,323 @@ impl Action {
         (def, imp)
     }
 
+    /// C++ FFI for hosting a ROS2 action **server**. Mirrors the daemon's
+    /// `run_action_server` FSM: a dedicated-thread pump (beside the spinner)
+    /// receives goals, auto-accepts + starts executing them, stores the
+    /// `ExecutingGoalHandle` keyed by goal id, and forwards `(goal_id, goal)` to
+    /// the merged event stream. The C++ side does `matches` -> `downcast` (-> a
+    /// `GoalEvent` exposing `get_goal_id()` + `get_goal()`), then
+    /// `publish_feedback(goal_id, feedback)` and `send_result(goal_id, status,
+    /// result)`, which look the handle back up by goal id. `ActionGoalId` (the
+    /// existing shared cxx type) carries the goal id across the FFI.
+    ///
+    /// The handle map is bounded two ways so a C++ server that abandons goals
+    /// cannot wedge: goals past `MAX_CONCURRENT_GOALS` in flight are rejected,
+    /// and a goal not finished within `GOAL_TIMEOUT` is aborted + evicted.
+    /// `send_result` is itself time-bounded so a never-arriving client
+    /// get_result request can't freeze the caller's event loop.
+    pub fn cxx_action_server_creation_functions(
+        &self,
+        package_name: &str,
+    ) -> (impl ToTokens, impl ToTokens) {
+        let server_name = format_ident!("ActionServer__{package_name}__{}", self.name);
+        let cxx_server_name = format!("Actionserver_{}", self.name);
+        let create_server = format_ident!("new_ActionServer__{package_name}__{}", self.name);
+        let cxx_create_server = format!("create_{}_action_server", self.name);
+
+        let goal_event_name = format_ident!("ActionServerGoalEvent__{package_name}__{}", self.name);
+        let cxx_goal_event = format!("GoalEvent_{}", self.name);
+        let goal_event_get_goal_id = format_ident!(
+            "ActionServerGoalEvent_get_goal_id__{package_name}__{}",
+            self.name
+        );
+        let goal_event_get_goal = format_ident!(
+            "ActionServerGoalEvent_get_goal__{package_name}__{}",
+            self.name
+        );
+
+        let matches = format_ident!("action_server_matches__{package_name}__{}", self.name);
+        let downcast = format_ident!("action_server_downcast__{package_name}__{}", self.name);
+        let publish_feedback = format_ident!(
+            "action_server_publish_feedback__{package_name}__{}",
+            self.name
+        );
+        let send_result = format_ident!("action_server_send_result__{package_name}__{}", self.name);
+
+        let self_name = format_ident!("{}", self.name);
+        let self_name_str = &self.name;
+
+        let goal_type_raw = format_ident!("{package_name}__{}_Goal", self.name);
+        let feedback_type_raw = format_ident!("{package_name}__{}_Feedback", self.name);
+        let result_type_raw = format_ident!("{package_name}__{}_Result", self.name);
+        let goal_type_raw_str = goal_type_raw.to_string();
+
+        let ros_service_mapping = crate::detect_ros_service_mapping_ident();
+
+        let def = quote! {
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_goal_event]
+            type #goal_event_name;
+            #[namespace = #package_name]
+            #[cxx_name = get_goal_id]
+            fn #goal_event_get_goal_id(self: &#goal_event_name) -> Box<ActionGoalId>;
+            #[namespace = #package_name]
+            #[cxx_name = get_goal]
+            fn #goal_event_get_goal(self: &#goal_event_name) -> &#goal_type_raw;
+
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_server_name]
+            type #server_name;
+            #[namespace = #package_name]
+            #[cxx_name = #cxx_create_server]
+            fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: Ros2QosPolicies, events: &mut CombinedEvents) -> Result<Box<#server_name>>;
+            #[namespace = #package_name]
+            #[cxx_name = matches]
+            fn #matches(self: &#server_name, event: &CombinedEvent) -> bool;
+            #[namespace = #package_name]
+            #[cxx_name = downcast]
+            fn #downcast(self: &#server_name, event: CombinedEvent) -> Result<Box<#goal_event_name>>;
+            #[namespace = #package_name]
+            #[cxx_name = publish_feedback]
+            fn #publish_feedback(self: &mut #server_name, goal_id: &Box<ActionGoalId>, feedback: #feedback_type_raw) -> Result<()>;
+            #[namespace = #package_name]
+            #[cxx_name = send_result]
+            fn #send_result(self: &mut #server_name, goal_id: &Box<ActionGoalId>, status: ActionStatusEnum, result: #result_type_raw) -> Result<()>;
+        };
+
+        let imp = quote! {
+            #[allow(non_snake_case)]
+            pub fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
+                use futures::StreamExt as _;
+                use std::sync::Arc;
+
+                // One QoS profile for all five action endpoints (mirrors the
+                // native Rust action-server example).
+                let q: crate::rustdds::QosPolicies = qos.into();
+                let server = node.node.create_action_server::< action :: #self_name >(
+                    crate::ros2_client::ServiceMapping:: #ros_service_mapping,
+                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::ActionTypeName::new(#package_name, #self_name_str),
+                    crate::ros2_client::action::ActionServerQosPolicies {
+                        goal_service: q.clone(),
+                        result_service: q.clone(),
+                        cancel_service: q.clone(),
+                        feedback_publisher: q.clone(),
+                        status_publisher: q,
+                    },
+                ).map_err(|e| eyre::eyre!("{e:?}"))?;
+                let server = Arc::new(crate::ros2_client::action::AsyncActionServer::new(server));
+                // goal id (uuid string) -> (handle, accept time) for dispatching
+                // feedback/result. The accept time bounds the map: a goal whose
+                // C++ handler never calls `send_result` (crash, early return,
+                // abandoned goal) is aborted after a timeout so the server cannot
+                // wedge at the in-flight cap.
+                let executing: Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>> =
+                    Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+                let (goal_tx, goal_rx) = flume::bounded(16);
+                let stream = goal_rx.into_stream().map(|v: eyre::Result<(ffi::ActionGoalId, ffi::#goal_type_raw)>| Box::new(v) as Box<dyn std::any::Any + 'static>);
+                let id = events.events.merge(Box::pin(stream));
+
+                // Goal pump: receive -> (bound check) accept -> execute -> store
+                // handle -> forward to C++. Runs on a dedicated thread (not the
+                // node executor) so it never competes with the spinner that
+                // announces + drives the action services -- on a thread-starved
+                // executor the spinner could otherwise be blocked, leaving the
+                // server undiscoverable.
+                {
+                    const MAX_CONCURRENT_GOALS: usize = 16;
+                    // A goal whose C++ handler never finishes it is aborted after
+                    // this long, so abandoned goals can't wedge the server at the
+                    // cap. Matches the daemon's ACTION_RESULT_TIMEOUT.
+                    const GOAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+                    let server = server.clone();
+                    let executing = executing.clone();
+                    std::thread::spawn(move || futures::executor::block_on(async move {
+                        loop {
+                            if goal_tx.is_disconnected() {
+                                break;
+                            }
+                            let new_goal = match server.receive_new_goal().await {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    eprintln!("action server: failed to receive goal: {e:?}");
+                                    // Back off so a persistent receive error can't
+                                    // busy-spin / flood the log.
+                                    futures_timer::Delay::new(std::time::Duration::from_millis(2)).await;
+                                    continue;
+                                }
+                            };
+                            // Evict (abort) goals abandoned past the timeout so the
+                            // map can't wedge at the cap, then reject if still full.
+                            let now = std::time::Instant::now();
+                            let stale: Vec<_> = match executing.lock() {
+                                Ok(mut map) => {
+                                    let keys: Vec<String> = map
+                                        .iter()
+                                        .filter(|(_, (_, t))| now.duration_since(*t) >= GOAL_TIMEOUT)
+                                        .map(|(k, _)| k.clone())
+                                        .collect();
+                                    keys.into_iter().filter_map(|k| map.remove(&k).map(|(h, _)| h)).collect()
+                                }
+                                Err(_) => Vec::new(),
+                            };
+                            for handle in stale {
+                                eprintln!("action server: goal abandoned past timeout, aborting");
+                                let _ = server.abort_executing_goal(handle).await;
+                            }
+                            let full = executing.lock().map(|m| m.len() >= MAX_CONCURRENT_GOALS).unwrap_or(false);
+                            if full {
+                                eprintln!("action server: {MAX_CONCURRENT_GOALS} goals in flight, rejecting new goal");
+                                let _ = server.reject_goal(new_goal).await;
+                                continue;
+                            }
+                            let goal_data = server.get_new_goal(new_goal.clone());
+                            let accepted = match server.accept_goal(new_goal).await {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    eprintln!("action server: failed to accept goal: {e:?}");
+                                    continue;
+                                }
+                            };
+                            let handle = match server.start_executing_goal(accepted).await {
+                                Ok(h) => h,
+                                Err(e) => {
+                                    eprintln!("action server: failed to start executing goal: {e:?}");
+                                    continue;
+                                }
+                            };
+                            let goal_id = handle.goal_id();
+                            let goal = match goal_data {
+                                Some(g) => g,
+                                None => {
+                                    eprintln!("action server: goal had no data, aborting");
+                                    let _ = server.abort_executing_goal(handle).await;
+                                    continue;
+                                }
+                            };
+                            if let Ok(mut map) = executing.lock() {
+                                map.insert(goal_id.uuid.to_string(), (handle, std::time::Instant::now()));
+                            }
+                            if goal_tx.send(Ok((ffi::ActionGoalId { id: goal_id }, goal))).is_err() {
+                                break;
+                            }
+                        }
+                    }));
+                }
+
+                Ok(Box::new(#server_name {
+                    server,
+                    executing,
+                    stream_id: id,
+                }))
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #server_name {
+                server: std::sync::Arc<crate::ros2_client::action::AsyncActionServer< action :: #self_name >>,
+                executing: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (crate::ros2_client::action::ExecutingGoalHandle< ffi :: #goal_type_raw >, std::time::Instant)>>>,
+                stream_id: u32,
+            }
+
+            #[allow(non_camel_case_types)]
+            pub struct #goal_event_name {
+                goal_id: ffi::ActionGoalId,
+                goal: ffi::#goal_type_raw,
+            }
+
+            impl #goal_event_name {
+                #[allow(non_snake_case)]
+                fn #goal_event_get_goal_id(&self) -> Box<ffi::ActionGoalId> {
+                    Box::new(self.goal_id.clone())
+                }
+                #[allow(non_snake_case)]
+                fn #goal_event_get_goal(&self) -> &ffi::#goal_type_raw {
+                    &self.goal
+                }
+            }
+
+            impl #server_name {
+                #[allow(non_snake_case)]
+                fn #matches(&self, event: &crate::ffi::CombinedEvent) -> bool {
+                    match &event.event.as_ref().0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => true,
+                        _ => false,
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<Box<#goal_event_name>> {
+                    match (*event.event).0 {
+                        Some(crate::MergedEvent::External(event)) if event.id == self.stream_id => {
+                            let result = event.event.downcast::<eyre::Result<(ffi::ActionGoalId, ffi::#goal_type_raw)>>()
+                                .map_err(|_| eyre::eyre!("downcast to {} failed", #goal_type_raw_str))?;
+                            let (goal_id, goal) = (*result).map_err(|e| eyre::eyre!("{e:?}"))?;
+                            Ok(Box::new(#goal_event_name { goal_id, goal }))
+                        }
+                        _ => eyre::bail!("not a {} goal event", #self_name_str),
+                    }
+                }
+
+                #[allow(non_snake_case)]
+                fn #publish_feedback(&mut self, goal_id: &Box<ffi::ActionGoalId>, feedback: ffi::#feedback_type_raw) -> eyre::Result<()> {
+                    let key = goal_id.id.uuid.to_string();
+                    let handle = self
+                        .executing
+                        .lock()
+                        .map_err(|_| eyre::eyre!("action server goal state poisoned"))?
+                        .get(&key)
+                        .map(|(handle, _)| handle.clone())
+                        .ok_or_else(|| eyre::eyre!("no executing goal with id {key}"))?;
+                    futures::executor::block_on(self.server.publish_feedback(handle, feedback))
+                        .map_err(|e| eyre::eyre!("failed to publish feedback: {e:?}"))?;
+                    Ok(())
+                }
+
+                #[allow(non_snake_case)]
+                fn #send_result(&mut self, goal_id: &Box<ffi::ActionGoalId>, status: ffi::ActionStatusEnum, result: ffi::#result_type_raw) -> eyre::Result<()> {
+                    let key = goal_id.id.uuid.to_string();
+                    // Clone the handle but KEEP the map entry until the send
+                    // succeeds: on a timeout/error the goal stays recoverable (the
+                    // caller can retry `send_result`) and evictable (the pump
+                    // aborts it after GOAL_TIMEOUT) rather than being orphaned.
+                    let handle = self
+                        .executing
+                        .lock()
+                        .map_err(|_| eyre::eyre!("action server goal state poisoned"))?
+                        .get(&key)
+                        .map(|(handle, _)| handle.clone())
+                        .ok_or_else(|| eyre::eyre!("no executing goal with id {key}"))?;
+                    let end_status = match status {
+                        ffi::ActionStatusEnum::Succeeded => crate::ros2_client::action::GoalEndStatus::Succeeded,
+                        ffi::ActionStatusEnum::Canceled => crate::ros2_client::action::GoalEndStatus::Canceled,
+                        _ => crate::ros2_client::action::GoalEndStatus::Aborted,
+                    };
+                    // `send_result_response` waits for the client's get_result
+                    // request; bound it (like the daemon's ACTION_RESULT_TIMEOUT)
+                    // so a missing/stalled request can't freeze the caller's event
+                    // loop forever.
+                    let send = self.server.send_result_response(handle, end_status, result);
+                    futures::executor::block_on(async {
+                        futures::pin_mut!(send);
+                        let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(300));
+                        match futures::future::select(send, timeout).await {
+                            futures::future::Either::Left((r, _)) => {
+                                r.map_err(|e| eyre::eyre!("failed to send result: {e:?}"))
+                            }
+                            futures::future::Either::Right(_) => {
+                                Err(eyre::eyre!("timed out waiting to send result for goal {key}"))
+                            }
+                        }
+                    })?;
+                    // Only drop the goal once the result was delivered.
+                    let _ = self.executing.lock().map(|mut m| m.remove(&key));
+                    Ok(())
+                }
+            }
+        };
+        (def, imp)
+    }
+
     pub fn token_stream_with_mod(&self) -> impl ToTokens {
         let mod_name = format_ident!("_{}", self.name.to_snake_case());
         let inner = self.token_stream();
