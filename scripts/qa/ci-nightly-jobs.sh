@@ -1170,10 +1170,10 @@ job_ros2_bridge() {
   # Note: the Rust action client/server AND the C++ action examples are NOT
   # mirrored here, and as of PR #1988 are no longer in nightly.yml either --
   # their deferred get_result round-trip is flaky in upstream ros2-client/rustdds
-  # (~20% of cold starts never return on x86; does not complete at all on
-  # arm64/Docker, which this local driver runs on). Validate them via
-  # `scripts/ros2dev.sh qa` on x86 Linux at release time (tracked in #1170). The
-  # C++ *service* server above is mirrored because it completes reliably.
+  # (it repeatedly hung the x86 nightly job and stalls on arm64/Docker, which
+  # this local driver runs on). Validate them via `scripts/ros2dev.sh qa` on x86
+  # Linux at release time (tracked in #1170). The C++ *service* server above is
+  # mirrored because it completes reliably.
 
   # Python service client/server examples need the workspace node bindings.
   uv venv --seed -p 3.12 .venv-ros2-bridge >/dev/null

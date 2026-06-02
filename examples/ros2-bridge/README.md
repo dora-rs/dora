@@ -74,10 +74,10 @@ Some examples have platform caveats (full detail in
   so the action examples pair a dora server with a dora client in one dataflow.
   **Service** servers are discovered fine by a real `ros2` client.
 - The deferred action `get_result` round-trip is flaky in upstream
-  `ros2-client`/`rustdds` (~20% of cold starts never return on x86, and it does
-  not complete at all on the macOS/arm64 dev harness). The Rust/C++ action
-  examples are therefore **not run in nightly CI**; validate them with
-  `scripts/ros2dev.sh qa` on x86 Linux before a release. Tracked in
+  `ros2-client`/`rustdds` (it repeatedly hung the x86 nightly job and stalls on
+  the macOS/arm64 dev harness). The Rust/C++ action examples are therefore
+  **not run in nightly CI**; validate them with `scripts/ros2dev.sh qa` on x86
+  Linux before a release. Tracked in
   [#1170](https://github.com/dora-rs/dora/issues/1170).
 
 The `parameter` examples use the *local* parameter API (no discovery), so they
