@@ -11,6 +11,16 @@ use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 #[serde(deny_unknown_fields)]
 pub struct ClusterConfig {
     pub coordinator: CoordinatorConfig,
+    /// Shared Zenoh peer endpoint that all daemons use as a rendezvous
+    /// for cross-daemon discovery (e.g. `tcp/192.168.1.1:5456`). When
+    /// set, `dora cluster up` passes it to every daemon via
+    /// `dora daemon --zenoh-peer <ep>`. The first daemon to bind the
+    /// endpoint serves as the gossip hub; the rest fall through to
+    /// connect-only. Set this when running on networks without working
+    /// multicast (dev containers, hardened deployments, many CI
+    /// runners) — otherwise daemons can't find each other.
+    #[serde(default)]
+    pub zenoh_peer: Option<String>,
     pub machines: Vec<MachineConfig>,
 }
 
@@ -133,6 +143,24 @@ mod tests {
         );
         let err = ClusterConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("daemon_port must not be 0"));
+    }
+
+    #[test]
+    fn parse_with_zenoh_peer() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nzenoh_peer: tcp/10.0.0.1:5456\nmachines:\n  - id: a\n    host: 10.0.0.2\n",
+        );
+        let cfg = ClusterConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.zenoh_peer.as_deref(), Some("tcp/10.0.0.1:5456"));
+    }
+
+    #[test]
+    fn parse_without_zenoh_peer_defaults_to_none() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: 10.0.0.2\n",
+        );
+        let cfg = ClusterConfig::load(f.path()).unwrap();
+        assert!(cfg.zenoh_peer.is_none());
     }
 
     #[test]
