@@ -1,5 +1,5 @@
 use futures::StreamExt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dora_node_api::{
     self, DoraNode, Event,
@@ -60,8 +60,15 @@ fn main() -> eyre::Result<()> {
     let merged_events = dora_events.merge_external(Box::pin(client_stream));
     let mut events = futures::executor::block_on_stream(merged_events);
 
+    // Fail fast instead of hanging: the upstream get_result round-trip can wedge
+    // the node forever (it never returns on ~20% of cold starts). The dora timer
+    // ticks at 2 Hz, so this loop always wakes to check the deadline.
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut sent = false;
     loop {
+        if Instant::now() >= deadline {
+            eyre::bail!("timed out waiting for a terminal Fibonacci action result");
+        }
         let event = match events.next() {
             Some(input) => input,
             None => break,
@@ -112,17 +119,17 @@ fn main() -> eyre::Result<()> {
                 other => eprintln!("Received unexpected input: {other:?}"),
             },
             MergedEvent::External(action_event) => match action_event {
-                ActionEvent::Result { id, result } => {
-                    if let Ok((status, result)) = result {
-                        if status == GoalStatusEnum::Unknown {
-                            client_stream_handle.push(result_stream(&client, id));
-                            // there are tons of unknown status :(
-                        } else {
-                            println!("status: {:?}", result);
-                            break;
-                        }
+                ActionEvent::Result { id, result } => match result {
+                    Ok((GoalStatusEnum::Unknown, _)) => {
+                        // there are tons of unknown status :(
+                        client_stream_handle.push(result_stream(&client, id));
                     }
-                }
+                    Ok((_, result)) => {
+                        println!("status: {:?}", result);
+                        break;
+                    }
+                    Err(err) => eyre::bail!("get_result service call failed: {err:?}"),
+                },
                 other => {
                     println!("{:?}", other);
                 }

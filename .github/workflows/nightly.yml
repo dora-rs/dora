@@ -1493,22 +1493,11 @@ jobs:
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example rust-ros2-dataflow &&
           cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
-      - name: Rust ROS2 Bridge action examples
-        # x86 is the oracle for the Rust action client/server: the macOS arm64
-        # Docker harness cannot complete the deferred get_result service round-trip
-        # (see docs/ros2-bridge.md). The action-server example is
-        # self-contained (it runs a dora action server + dora action client, both
-        # ros2-client); the action-client example drives the rclcpp minimal action
-        # server, so we install that example package first.
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          sudo apt-get update &&
-          sudo apt-get install -y ros-humble-examples-rclcpp-minimal-action-server &&
-          source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-action-server --features ros2-examples &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-action-client --features ros2-examples
+      # ROS2 action examples (rust + cxx action-server/client) are intentionally
+      # NOT run in nightly: their deferred get_result round-trip is flaky upstream
+      # (ros2-client/rustdds) and hangs on ~20% of cold starts. They stay in the
+      # repo and in scripts/ros2dev.sh qa (release-time QA). Re-add here once the
+      # upstream flake is fixed (#1170).
       - name: Python ROS2 Bridge example
         timeout-minutes: 30
         env:
@@ -1540,18 +1529,6 @@ jobs:
           sudo apt-get install -y ros-humble-examples-rclcpp-minimal-client &&
           source /opt/ros/humble/setup.bash &&
           cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
-      - name: C++ ROS2 Bridge action-server example
-        # The dora C++ node hosts a Fibonacci action server, driven by a dora C++
-        # action client in the same dataflow (both ros2-client; a real rmw client
-        # cannot discover a ros2-client server -- ros2-client#4). Self-contained,
-        # no extra ROS2 package needed. x86 is the oracle: the deferred get_result
-        # service round-trip does not complete on the arm64 dev harness.
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-action-server --features ros2-examples
 
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported
