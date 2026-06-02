@@ -57,14 +57,13 @@ async fn main() -> eyre::Result<()> {
     tracing::info!("coordinator running on {coordinator_port}");
 
     let coordinator_addr = Ipv4Addr::LOCALHOST;
-    let daemon_a = run_daemon(coordinator_addr.to_string(), "A");
-    let daemon_b = run_daemon(coordinator_addr.to_string(), "B");
+    // Distinct ports: two daemons on one host can't share a local listener.
+    let mut daemon_a = run_daemon(coordinator_addr.to_string(), "A", 9843)?;
+    let mut daemon_b = run_daemon(coordinator_addr.to_string(), "B", 9844)?;
 
     tracing::info!("Spawning coordinator and daemons");
     let mut tasks = JoinSet::new();
     tasks.spawn(coordinator);
-    tasks.spawn(daemon_b);
-    tasks.spawn(daemon_a);
 
     tracing::info!("waiting until daemons are connected to coordinator");
     let mut retries = 0;
@@ -111,6 +110,16 @@ async fn main() -> eyre::Result<()> {
     }
     tracing::info!("dataflow `{uuid}` finished, destroying coordinator");
     destroy(&coordinator_events_tx).await?;
+
+    // The daemons are intentionally NOT in the JoinSet above: a daemon does not
+    // promptly exit when its coordinator goes away (it retry-reconnects with
+    // backoff; see dora-rs/dora#1996), so awaiting them would hang. On a normal
+    // shutdown they exit on their own once the coordinator broadcasts Destroy.
+    // This kill is a best-effort net for the `cargo run` wrappers (it does not
+    // reap the daemon grandchild; that's covered by graceful exit / #1996).
+    tracing::info!("stopping daemons");
+    let _ = daemon_a.kill().await;
+    let _ = daemon_b.kill().await;
 
     tracing::info!("joining tasks");
     while let Some(res) = tasks.join_next().await {
@@ -246,7 +255,11 @@ async fn build_dataflow(dataflow: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
+fn run_daemon(
+    coordinator: String,
+    machine_id: &str,
+    local_listen_port: u16,
+) -> eyre::Result<tokio::process::Child> {
     let cargo = std::env::var("CARGO").unwrap();
     let mut cmd = tokio::process::Command::new(&cargo);
     cmd.arg("run");
@@ -259,9 +272,8 @@ async fn run_daemon(coordinator: String, machine_id: &str) -> eyre::Result<()> {
         .arg("--coordinator-addr")
         .arg(coordinator)
         .arg("--local-listen-port")
-        .arg("9843"); // random port
-    if !cmd.status().await?.success() {
-        bail!("failed to run dataflow");
-    };
-    Ok(())
+        .arg(local_listen_port.to_string());
+    // Best-effort cleanup if we exit before the explicit kill below.
+    cmd.kill_on_drop(true);
+    cmd.spawn().wrap_err("failed to spawn daemon")
 }
