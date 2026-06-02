@@ -10,7 +10,7 @@ use crate::{
 
 use super::config::ClusterConfig;
 
-/// Restart a running dataflow by name or UUID.
+/// Restart a running dataflow by name.
 ///
 /// Stops the dataflow and immediately re-starts it with the stored descriptor.
 ///
@@ -24,8 +24,11 @@ pub struct Restart {
     #[clap(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     config: PathBuf,
 
-    /// Name or UUID of the dataflow to restart
-    #[clap(value_name = "DATAFLOW")]
+    /// Name of the dataflow to restart (must match the `--name` passed
+    /// to `dora start`). UUID lookup is not supported via this subcommand:
+    /// the request is sent as `RestartByName`, which the coordinator
+    /// matches against the dataflow's `name` field only, not its UUID.
+    #[clap(value_name = "NAME")]
     dataflow: String,
 }
 

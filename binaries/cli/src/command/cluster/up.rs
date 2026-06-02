@@ -18,7 +18,8 @@ use crate::{
 
 use super::config::ClusterConfig;
 use super::{
-    format_daemon_port_arg, format_labels_arg, query_connected_daemons, run_ssh, ssh_target,
+    format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
+    run_ssh, ssh_target,
 };
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
@@ -59,13 +60,14 @@ impl Executable for Up {
         };
 
         // 2. SSH into each machine to start a daemon
+        let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
             let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
             let remote_cmd = format!(
-                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
@@ -102,6 +104,7 @@ impl Executable for Up {
             .map(|m| m.id.as_str())
             .collect();
 
+        let mut missing_daemons: Vec<String> = Vec::new();
         if !expected.is_empty() {
             println!("Waiting for {} daemon(s) to connect...", expected.len());
             let deadline = Instant::now() + Duration::from_secs(30);
@@ -116,7 +119,7 @@ impl Executable for Up {
                     break;
                 }
                 if Instant::now() >= deadline {
-                    let missing: Vec<&str> = expected
+                    missing_daemons = expected
                         .iter()
                         .copied()
                         .filter(|machine_id| {
@@ -124,10 +127,11 @@ impl Executable for Up {
                                 .iter()
                                 .any(|d| d.daemon_id.matches_machine_id(machine_id))
                         })
+                        .map(String::from)
                         .collect();
                     eprintln!(
                         "WARNING: timed out waiting for daemon(s): {}",
-                        missing.join(", ")
+                        missing_daemons.join(", ")
                     );
                     break;
                 }
@@ -135,13 +139,17 @@ impl Executable for Up {
             }
         }
 
-        // 4. Report
-        let ok_count = config.machines.len() - ssh_failures.len();
-        if ssh_failures.is_empty() {
+        // 4. Report. A partial-up state (some daemons unreachable or never
+        // registered) must exit non-zero so callers — scripts, CI, the
+        // cluster-e2e job — can react instead of silently treating
+        // "Cluster partially up" as success.
+        let ok_count = config.machines.len() - ssh_failures.len() - missing_daemons.len();
+        if ssh_failures.is_empty() && missing_daemons.is_empty() {
             println!(
                 "Cluster is up: coordinator + {} daemon(s)",
                 config.machines.len()
             );
+            Ok(())
         } else {
             println!(
                 "Cluster partially up: coordinator + {ok_count}/{} daemon(s)",
@@ -150,9 +158,12 @@ impl Executable for Up {
             for (id, reason) in &ssh_failures {
                 eprintln!("  {id}: {reason}");
             }
+            eyre::bail!(
+                "cluster up incomplete: {} ssh failure(s), {} daemon(s) did not register",
+                ssh_failures.len(),
+                missing_daemons.len()
+            )
         }
-
-        Ok(())
     }
 }
 

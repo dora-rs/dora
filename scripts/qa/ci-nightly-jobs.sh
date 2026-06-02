@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 18 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 19 test jobs
 # post-#1716. `cargo test -p dora-examples --test example-smoke` (run by
 # qa-nightly's example-smoke step) covers 4 of them (smoke-suite + log-sinks
-# + service-action + streaming). This script covers the other 14, with
+# + service-action + streaming). This script covers the other 15, with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
 #   Integration smokes (all platforms unless noted):
 #   - record-replay             record + replay with build: directives INTACT.
 #   - cluster-smoke             dora up + cluster status + start --detach + cluster down
+#   - cluster-e2e               Linux-only. Real-sshd end-to-end:
+#                               dora cluster up/status/down against 3 SSH-spawned
+#                               daemons on a loopback sshd. Hard-fails if
+#                               openssh-server is not installed.
 #   - topic-and-top-smoke       dora top/trace/topic/self update against a zenoh-debug fixture
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
@@ -112,7 +116,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+    record-replay|cluster-smoke|cluster-e2e|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
       return 0
       ;;
     *)
@@ -131,6 +135,7 @@ With no job names, runs every supported job for the current platform.
 Supported jobs:
   record-replay
   cluster-smoke
+  cluster-e2e
   topic-and-top-smoke
   cpu-affinity-smoke
   redb-backend-smoke
@@ -205,9 +210,22 @@ ensure_cli_installed() {
   # the unique pattern we use to identify our own processes (see PROCESS SAFETY
   # in the header).
   CLI_ROOT="$(mktemp -d -t dora-qa-XXXXXX)"
-  echo
-  echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
-  cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
+  # CI fast-path: if `DORA_QA_CLI_BIN` points to a prebuilt dora binary
+  # (e.g. the `build-cli` artifact in .github/workflows/nightly.yml), copy
+  # it into CLI_ROOT instead of rebuilding. Local dev typically leaves this
+  # unset and pays the cargo install cost. The CLI_ROOT mktemp dir is still
+  # unique per run, so /proc/<pid>/exe-based process matching keeps working.
+  if [ -n "${DORA_QA_CLI_BIN:-}" ] && [ -x "$DORA_QA_CLI_BIN" ]; then
+    mkdir -p "$CLI_ROOT/bin"
+    cp "$DORA_QA_CLI_BIN" "$CLI_ROOT/bin/dora"
+    chmod +x "$CLI_ROOT/bin/dora"
+    echo
+    echo "=== reuse prebuilt dora from \$DORA_QA_CLI_BIN ($DORA_QA_CLI_BIN -> $CLI_ROOT/bin/dora) ==="
+  else
+    echo
+    echo "=== install dora CLI to $CLI_ROOT (so ~/.cargo/bin/dora is not clobbered) ==="
+    cargo install --path binaries/cli --locked --root "$CLI_ROOT" --quiet
+  fi
   export PATH="$CLI_ROOT/bin:$PATH"
   dora --version
   CLI_INSTALLED=1
@@ -232,26 +250,51 @@ terminate_pid() {
   kill -TERM "$pid" 2>/dev/null || true
 }
 
-# Kill dora processes that were spawned by our scratch CLI but that we don't
-# have an explicit PID for (e.g., coord/daemon started via `dora up`, which
-# itself returns after forking them off). Matching on CLI_ROOT ensures we
-# never touch dora binaries installed elsewhere -- $CLI_ROOT is a unique
-# per-run mktemp path.
-terminate_our_dora_children() {
+# List PIDs that we spawned via our scratch CLI. Combines two methods:
+#   1. `pgrep -f "$CLI_ROOT/bin/dora"` — matches argv (full cmdline). Catches
+#      processes invoked by absolute path, which is what `dora up` does for
+#      its coord/daemon children.
+#   2. `/proc/<pid>/exe` symlink resolution — matches the actual binary
+#      regardless of argv[0]. Catches PATH-resolved children whose argv[0]
+#      is just "dora" (e.g. `nohup dora daemon ...` over SSH in cluster-e2e
+#      with `environment="PATH=$CLI_ROOT/bin:..."` in authorized_keys).
+# Either alone misses one of these spawn patterns; together they catch both
+# without false positives, since CLI_ROOT is a unique per-run mktemp path.
+# Skips $$ and $PPID. /proc is Linux-only; macOS uses pgrep only.
+find_our_dora_pids() {
   if [ -z "$CLI_ROOT" ]; then
     return 0
   fi
-  if ! command -v pgrep > /dev/null 2>&1; then
-    return 0
+  local target="$CLI_ROOT/bin/dora"
+  local pids=""
+  if command -v pgrep > /dev/null 2>&1; then
+    pids=$(pgrep -f "$target" 2>/dev/null || true)
   fi
-  local pids
-  pids=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
-  if [ -z "$pids" ]; then
-    return 0
+  if [ -d /proc ]; then
+    local entry pid exe
+    for entry in /proc/[0-9]*; do
+      pid="${entry##/proc/}"
+      if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
+        continue
+      fi
+      exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+      if [ "$exe" = "$target" ]; then
+        pids="$pids $pid"
+      fi
+    done
   fi
+  # Dedup + drop blanks.
+  echo "$pids" | tr ' ' '\n' | sort -u | grep -v '^$' || true
+}
+
+# Kill dora processes that were spawned by our scratch CLI but that we don't
+# have an explicit PID for (e.g., coord/daemon started via `dora up`, or
+# remote daemons spawned over SSH by cluster-e2e). Matching on CLI_ROOT
+# ensures we never touch dora binaries installed elsewhere -- $CLI_ROOT is
+# a unique per-run mktemp path.
+terminate_our_dora_children() {
   local pid
-  for pid in $pids; do
-    # Don't target ourselves or the parent shell.
+  for pid in $(find_our_dora_pids); do
     if [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ]; then
       continue
     fi
@@ -278,19 +321,13 @@ cleanup_all_managed() {
       wait "$pid" 2>/dev/null || true
     done
   fi
-  if [ -n "$CLI_ROOT" ] && command -v pgrep > /dev/null 2>&1; then
-    local remaining
-    remaining=$(pgrep -f "$CLI_ROOT/bin/dora" 2>/dev/null || true)
-    if [ -n "$remaining" ]; then
-      local rpid
-      for rpid in $remaining; do
-        if [ "$rpid" = "$$" ] || [ "$rpid" = "$PPID" ]; then
-          continue
-        fi
-        kill -KILL "$rpid" 2>/dev/null || true
-      done
+  local rpid
+  for rpid in $(find_our_dora_pids); do
+    if [ "$rpid" = "$$" ] || [ "$rpid" = "$PPID" ]; then
+      continue
     fi
-  fi
+    kill -KILL "$rpid" 2>/dev/null || true
+  done
   MANAGED_PIDS=()
 }
 
@@ -438,7 +475,454 @@ job_cluster_smoke() {
 }
 
 # -----------------------------------------------------------------------------
-# Job 2: topic-and-top-smoke
+# Job 3: cluster-e2e
+#
+# End-to-end test of the `dora cluster` SSH lifecycle. cluster-smoke (above)
+# uses `dora up` to launch a local coordinator+daemon and exercises only the
+# post-up commands (status/down) — it does NOT cover the SSH path of
+# `cluster up`, which is the most failure-prone part of the feature.
+#
+# This job stands up a real sshd on a random loopback port, then runs
+# `dora cluster up` against a cluster.yml with 3 machines all pointing at
+# localhost (via the `port` and `daemon_port` fields added by the cluster-ssh-port
+# and cluster-daemon-port PRs). Validates that:
+#   1. ssh-based daemon spawn works (3 daemons reach the coordinator)
+#   2. `cluster status` lists all 3
+#   3. `cluster down` tears everything down with no leftover processes
+#
+# Linux-only: macOS sshd has different defaults and locked-down config paths
+# that don't map cleanly to this fixture, and the only Windows path would be
+# OpenSSH-server-for-Windows which isn't worth the maintenance. The script
+# does NOT install openssh-server itself — it hard-fails with an install
+# hint if sshd is missing (per the agreed policy in the PR plan). GHA
+# installs openssh-server in the workflow before invoking this script.
+# -----------------------------------------------------------------------------
+job_cluster_e2e() {
+  case "$OS" in
+    Linux) ;;
+    *)
+      echo "SKIP: cluster-e2e is Linux-only ($OS)"
+      SKIPPED+=("cluster-e2e: $OS not supported")
+      return 0
+      ;;
+  esac
+
+  local SSHD_BIN
+  if [ -x /usr/sbin/sshd ]; then
+    SSHD_BIN=/usr/sbin/sshd
+  elif command -v sshd > /dev/null 2>&1; then
+    SSHD_BIN=$(command -v sshd)
+  else
+    echo "ERROR: openssh-server not installed. Install with:"
+    echo "  sudo apt-get install -y openssh-server"
+    return 1
+  fi
+
+  ensure_cli_installed
+
+  local WORK
+  WORK=$(mktemp -d -t dora-cluster-e2e-XXXXXX)
+
+  # Pick 6 free loopback ports in one shot: 1 sshd, 1 coordinator, 3 daemons,
+  # 1 inter-daemon Zenoh rendezvous (the shared peer endpoint plumbed through
+  # `cluster.zenoh_peer` -> `dora daemon --zenoh-peer` in the cluster-zenoh-peer
+  # PR; without it, daemons rely on multicast scouting which doesn't work on
+  # loopback in nested containers, and the spread-across-machines dataflow
+  # below hangs). bind+release leaves a small race window but is the standard
+  # approach and is fine for a single-runner integration test.
+  local PORTS
+  PORTS=$(python3 - <<'PY'
+import socket
+ss = [socket.socket() for _ in range(6)]
+for s in ss:
+    s.bind(('127.0.0.1', 0))
+print(*(s.getsockname()[1] for s in ss))
+for s in ss:
+    s.close()
+PY
+)
+  # shellcheck disable=SC2086
+  set -- $PORTS
+  local SSHD_PORT=$1 COORD_PORT=$2 D1=$3 D2=$4 D3=$5 ZENOH_PORT=$6
+
+  # SSH key material. The wrapper script below forces ssh to use this key
+  # and ignore the user's real ~/.ssh — we never touch the user's identity.
+  # NOTE on error handling in this function: `set -e` is disabled inside
+  # functions invoked via `if "$fn"; then` (run_job's pattern), so failures
+  # do NOT abort automatically — every command on a critical path needs an
+  # explicit check. We do so for ssh-keygen, cargo build, and `cluster down`
+  # below. Pure local-FS operations (mkdir/chmod on $WORK) are left
+  # unchecked: $WORK is a fresh mktemp dir we own, so they only fail under
+  # disk pressure, which surfaces later anyway.
+  mkdir -p "$WORK/.ssh"
+  chmod 700 "$WORK/.ssh"
+  if ! ssh-keygen -t ed25519 -f "$WORK/.ssh/id_ed25519" -N "" -q; then
+    echo "ERROR: failed to generate test identity key"
+    rm -rf "$WORK"
+    return 1
+  fi
+  if ! ssh-keygen -t ed25519 -f "$WORK/host_key" -N "" -q; then
+    echo "ERROR: failed to generate sshd host key"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Prefix the pubkey with an `environment=` option so PATH=<scratch CLI>
+  # is set for sessions that authenticate with this key. The remote command
+  # built by `dora cluster up` is `dora daemon ...` — without this, the
+  # SSH session's default PATH wouldn't include $CLI_ROOT/bin and the
+  # daemon would silently fail to spawn. Requires `PermitUserEnvironment`
+  # in sshd_config below.
+  local REMOTE_PATH="$CLI_ROOT/bin:/usr/local/bin:/usr/bin:/bin"
+  printf 'environment="PATH=%s" ' "$REMOTE_PATH" > "$WORK/.ssh/authorized_keys"
+  cat "$WORK/.ssh/id_ed25519.pub" >> "$WORK/.ssh/authorized_keys"
+  chmod 600 "$WORK/.ssh/id_ed25519" "$WORK/.ssh/authorized_keys" "$WORK/host_key"
+
+  # PATH-shadow ssh wrapper. The ssh client reads the default IdentityFile
+  # from the user's passwd home (~/.ssh/id_*), NOT from $HOME — so setting
+  # HOME=$WORK does not redirect the key lookup. `dora cluster` invokes ssh
+  # without `-i`, so the only way to force our test key without modifying
+  # the user's real ~/.ssh is to wrap ssh on PATH. Same for scp (unused
+  # here, but kept in lockstep for any future path that calls it).
+  mkdir -p "$WORK/bin"
+  local REAL_SSH REAL_SCP
+  REAL_SSH=$(command -v ssh)
+  REAL_SCP=$(command -v scp || echo "")
+  cat > "$WORK/bin/ssh" <<EOF
+#!/bin/sh
+# Test wrapper: force our key + isolate from the user's SSH config.
+# -F /dev/null skips ~/.ssh/config (a local \`Host localhost\` rule could
+# otherwise rewrite HostName or inject ProxyCommand). UserKnownHostsFile
+# + GlobalKnownHostsFile keep all host-key state inside \$WORK.
+exec $REAL_SSH -F /dev/null \\
+     -i "$WORK/.ssh/id_ed25519" \\
+     -o IdentitiesOnly=yes \\
+     -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     -o GlobalKnownHostsFile=/dev/null \\
+     "\$@"
+EOF
+  chmod +x "$WORK/bin/ssh"
+  if [ -n "$REAL_SCP" ]; then
+    cat > "$WORK/bin/scp" <<EOF
+#!/bin/sh
+exec $REAL_SCP -F /dev/null \\
+     -i "$WORK/.ssh/id_ed25519" \\
+     -o IdentitiesOnly=yes \\
+     -o UserKnownHostsFile="$WORK/.ssh/known_hosts" \\
+     -o GlobalKnownHostsFile=/dev/null \\
+     "\$@"
+EOF
+    chmod +x "$WORK/bin/scp"
+  fi
+
+  # Minimal sshd_config, loopback only. StrictModes=no because $WORK isn't
+  # root-owned. UsePAM=no so we don't need /etc/pam.d/sshd. PidFile in $WORK
+  # avoids needing /var/run write access.
+  cat > "$WORK/sshd_config" <<EOF
+Port $SSHD_PORT
+ListenAddress 127.0.0.1
+HostKey $WORK/host_key
+PidFile $WORK/sshd.pid
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+AuthorizedKeysFile $WORK/.ssh/authorized_keys
+PermitUserEnvironment yes
+StrictModes no
+UsePAM no
+PrintMotd no
+EOF
+
+  "$SSHD_BIN" -D -f "$WORK/sshd_config" -e &
+  local SSHD_PID=$!
+  track_pid "$SSHD_PID"
+
+  # Wait for sshd to accept connections (max 5s). bash's /dev/tcp avoids a
+  # netcat dependency.
+  local i ok=0
+  for i in $(seq 1 50); do
+    if (exec 3<>/dev/tcp/127.0.0.1/"$SSHD_PORT") 2>/dev/null; then
+      exec 3<&-
+      ok=1
+      break
+    fi
+    sleep 0.1
+  done
+  if [ "$ok" -ne 1 ]; then
+    echo "ERROR: sshd did not start on 127.0.0.1:$SSHD_PORT within 5s"
+    rm -rf "$WORK"
+    return 1
+  fi
+  echo "OK: sshd up on 127.0.0.1:$SSHD_PORT"
+
+  # cluster.yml: 3 machines all on localhost, distinct ssh + daemon ports,
+  # shared zenoh_peer so cross-daemon discovery works without multicast
+  # (the spread-across-m1/m2/m3 dataflow below depends on this).
+  local SSH_USER
+  SSH_USER=$(id -un)
+  cat > "$WORK/cluster.yml" <<EOF
+coordinator:
+  addr: 127.0.0.1
+  port: $COORD_PORT
+zenoh_peer: tcp/127.0.0.1:$ZENOH_PORT
+machines:
+  - id: m1
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D1
+  - id: m2
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D2
+  - id: m3
+    host: localhost
+    user: $SSH_USER
+    port: $SSHD_PORT
+    daemon_port: $D3
+EOF
+
+  # The test body runs in a subshell so PATH and DORA_COORDINATOR_PORT
+  # exports stay scoped to this job — this script runs subsequent jobs
+  # (record-replay, topic-and-top-smoke, etc.) in the same shell, and
+  # an exported coord port would misroute their CLI traffic. The
+  # subshell inherits CLI_ROOT, $WORK, $SSHD_PID, etc., but env mutations
+  # don't propagate back. Failure paths use `exit 1` (which exits the
+  # subshell); the outer `terminate_pid + rm -rf` cleanup runs regardless
+  # of pass/fail.
+  local test_rc=0
+  (
+    # Prepend $WORK/bin so dora's `Command::new("ssh")` picks up the wrapper.
+    # Export DORA_COORDINATOR_PORT so every subsequent dora CLI call picks
+    # up our random port via CoordinatorOptions' env hook (binaries/cli/src/
+    # common.rs) — no need to pass --coordinator-port to each command.
+    export PATH="$WORK/bin:$PATH"
+    export DORA_COORDINATOR_PORT="$COORD_PORT"
+
+    echo "=== dora cluster up ==="
+    local up_out
+    if ! up_out=$(dora cluster up "$WORK/cluster.yml" 2>&1); then
+      echo "$up_out"
+      echo "ERROR: dora cluster up failed"
+      exit 1
+    fi
+    echo "$up_out"
+    if ! echo "$up_out" | grep -q "Cluster is up: coordinator + 3 daemon(s)"; then
+      echo "ERROR: 'cluster up' did not report 3 daemons up"
+      exit 1
+    fi
+
+    echo "=== dora cluster status ==="
+    local status_out
+    status_out=$(dora cluster status 2>&1)
+    echo "$status_out"
+    if ! echo "$status_out" | grep -q 'DAEMON ID'; then
+      echo "ERROR: status output missing header"
+      exit 1
+    fi
+    # Named daemons show as `<machine-id>-<uuid>`. Count rows for m1/m2/m3.
+    local rows
+    rows=$(echo "$status_out" | grep -cE '^m[1-3]-' || true)
+    if [ "$rows" -lt 3 ]; then
+      echo "ERROR: expected 3 daemons (m1/m2/m3) in status, got $rows"
+      exit 1
+    fi
+    echo "OK: 3 daemons connected via SSH"
+
+    # === Distributed dataflow run on the SSH-spawned cluster ===
+    # Build the rust-dataflow example nodes and run a dataflow spread
+    # across m1/m2/m3 via `_unstable_deploy.machine`. With the shared
+    # `zenoh_peer` set in cluster.yml above, daemons find each other via
+    # the explicit rendezvous endpoint (one binds, the rest connect) —
+    # cross-daemon messages flow over the inter-daemon Zenoh data plane
+    # rather than the within-daemon shared-memory shortcut, exercising
+    # the actual distributed code path even though every daemon is on the
+    # same loopback host.
+    echo "=== build dataflow nodes ==="
+    if ! cargo build --quiet \
+         -p rust-dataflow-example-node \
+         -p rust-dataflow-example-status-node \
+         -p rust-dataflow-example-sink; then
+      echo "ERROR: cargo build of dataflow nodes failed"
+      exit 1
+    fi
+
+    local REPO_ROOT
+    REPO_ROOT="$(pwd)"
+    cat > "$WORK/dataflow.yml" <<EOF
+nodes:
+  - id: rust-node
+    _unstable_deploy:
+      machine: m1
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+    output_types:
+      random: std/core/v1/UInt64
+  - id: rust-status-node
+    _unstable_deploy:
+      machine: m2
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    input_types:
+      random: std/core/v1/UInt64
+    outputs:
+      - status
+    output_types:
+      status: std/core/v1/String
+  - id: rust-sink
+    _unstable_deploy:
+      machine: m3
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status
+    input_types:
+      message: std/core/v1/String
+EOF
+
+    echo "=== dora start (distributed across m1/m2/m3) ==="
+    if ! dora start "$WORK/dataflow.yml" --detach --name cluster-e2e 2>&1; then
+      echo "ERROR: dora start failed"
+      exit 1
+    fi
+
+    # Poll until the dataflow reaches Running state (max 15s). We don't use
+    # a fixed sleep because cold-start on the SSH-spawned daemons + cross-
+    # daemon Zenoh handshake adds variable overhead. Using `Running` as the
+    # signal also means we then call `cluster restart` against an actively
+    # running dataflow — RestartByName only matches running_dataflows, not
+    # archived ones (binaries/coordinator/src/lib.rs::restart_dataflow).
+    echo "=== wait for cluster-e2e to reach Running ==="
+    local i list_out
+    for i in $(seq 1 30); do
+      list_out=$(dora list 2>/dev/null || true)
+      if echo "$list_out" | grep cluster-e2e | grep -q Running; then
+        break
+      fi
+      sleep 0.5
+    done
+    if ! echo "$list_out" | grep cluster-e2e | grep -q Running; then
+      echo "$list_out"
+      echo "ERROR: dataflow cluster-e2e did not reach Running within 15s"
+      exit 1
+    fi
+    echo "OK: dataflow reached Running"
+    echo "$list_out"
+
+    # `dora cluster restart` against a real running dataflow. Two positional
+    # args: cluster.yml + dataflow name. Sends RestartByName to the
+    # coordinator, which stops the old instance and starts a new one with
+    # the same descriptor — exercises the full restart control path
+    # (coordinator -> daemons -> nodes -> coordinator) and uniquely
+    # validates that SSH-spawned daemons can be addressed by name across
+    # subsequent control requests, not just the initial `cluster up`.
+    echo "=== dora cluster restart cluster.yml cluster-e2e ==="
+    local restart_out
+    if ! restart_out=$(dora cluster restart "$WORK/cluster.yml" cluster-e2e 2>&1); then
+      echo "$restart_out"
+      echo "ERROR: dora cluster restart failed"
+      exit 1
+    fi
+    echo "$restart_out"
+    # CLI prints "dataflow restarted: <old_uuid> -> <new_uuid>" on success
+    # (binaries/cli/src/command/cluster/restart.rs).
+    local new_uuid
+    new_uuid=$(echo "$restart_out" | sed -nE 's/.*dataflow restarted: [^ ]+ -> ([^ ]+).*/\1/p')
+    if [ -z "$new_uuid" ]; then
+      echo "ERROR: couldn't parse new UUID from restart output"
+      exit 1
+    fi
+
+    # Poll the restarted instance for Finished status. This is the only
+    # assertion in this job that proves the cross-daemon Zenoh data plane
+    # actually carries messages: rust-status-node on m2 only exits when
+    # its `random` input (from rust-node on m1) closes, and rust-sink on
+    # m3 only exits when its `message` input (from rust-status-node on m2)
+    # closes — both closures propagate over inter-daemon Zenoh. If that
+    # plane is broken, the dataflow stays Running forever and this poll
+    # times out. (A Running/Failed check alone would not catch the broken
+    # case: with broken Zenoh, the source finishes but downstream nodes
+    # block in `events.recv()` indefinitely, leaving the dataflow Running.)
+    echo "=== poll restarted dataflow $new_uuid for Finished (max 30s) ==="
+    local status=""
+    for i in $(seq 1 60); do
+      list_out=$(dora list 2>/dev/null || true)
+      status=$(echo "$list_out" | grep "$new_uuid" | awk '{print $3}' | head -1)
+      case "$status" in
+        Finished) break ;;
+        Failed)
+          echo "$list_out"
+          echo "ERROR: restarted dataflow reached Failed status"
+          exit 1
+          ;;
+      esac
+      sleep 0.5
+    done
+    if [ "$status" != "Finished" ]; then
+      echo "$list_out"
+      echo "ERROR: restarted dataflow $new_uuid did not reach Finished within 30s"
+      echo "       (status: ${status:-<not in list>}). This usually means the"
+      echo "       inter-daemon Zenoh data plane isn't carrying messages —"
+      echo "       check that cluster.yml's zenoh_peer is reachable and that"
+      echo "       the daemons started with --zenoh-peer."
+      exit 1
+    fi
+    echo "OK: cross-daemon data plane verified — restarted dataflow reached Finished"
+
+    # Stop any still-running instance(s) so cluster down has a clean slate.
+    # `dora stop --name` matches by name; a non-zero exit usually means the
+    # dataflow already finished — either way the cluster is clean after.
+    echo "=== dora stop --name cluster-e2e ==="
+    dora stop --name cluster-e2e 2>&1 || echo "(dora stop returned non-zero; dataflow may have already finished)"
+    sleep 1
+
+    echo "=== dora cluster down ==="
+    if ! dora cluster down; then
+      echo "ERROR: dora cluster down returned non-zero"
+      exit 1
+    fi
+    sleep 1
+    if dora cluster status 2>/dev/null; then
+      echo "ERROR: cluster status succeeded after 'cluster down'"
+      exit 1
+    fi
+
+    # Leftover-process check: scoped to our scratch CLI binary. Uses both
+    # pgrep -f (argv match) and /proc/<pid>/exe (binary match) — the latter
+    # is essential here because SSH-spawned daemons have argv[0]="dora", not
+    # "$CLI_ROOT/bin/dora", and a pgrep-only check would miss them silently.
+    sleep 1
+    local leftover
+    leftover=$(find_our_dora_pids | tr '\n' ' ')
+    if [ -n "${leftover// /}" ]; then
+      echo "ERROR: leftover dora processes after cluster down (from our CLI): $leftover"
+      if command -v pgrep > /dev/null 2>&1; then
+        pgrep -fa "$CLI_ROOT/bin/dora" 2>/dev/null || true
+      fi
+      exit 1
+    fi
+  ) || test_rc=$?
+
+  # Cleanup happens regardless of pass/fail. Sshd is also in MANAGED_PIDS
+  # so cleanup_all_managed would catch it between jobs anyway, but
+  # terminating explicitly lets us remove the per-job tempdir while sshd
+  # is definitely down.
+  terminate_pid "$SSHD_PID"
+  wait "$SSHD_PID" 2>/dev/null || true
+  rm -rf "$WORK"
+  if [ "$test_rc" -eq 0 ]; then
+    echo "OK: cluster-e2e completed cleanly"
+  fi
+  return $test_rc
+}
+
+# -----------------------------------------------------------------------------
+# Job 4: topic-and-top-smoke
 # -----------------------------------------------------------------------------
 job_topic_and_top() {
   # Python venv with local dora-rs matching the daemon's message format.
@@ -1191,6 +1675,7 @@ job_ros2_bridge() {
 
 run_job "record-replay"             job_record_replay
 run_job "cluster-smoke"             job_cluster_smoke
+run_job "cluster-e2e"               job_cluster_e2e
 run_job "topic-and-top-smoke"       job_topic_and_top
 run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
