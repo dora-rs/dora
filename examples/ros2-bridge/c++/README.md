@@ -15,10 +15,17 @@ See the [top-level README](../README.md) for the capability×language matrix and
 | ---------------- | ---------------------------------- | ---------------------------- |
 | `service-server` | `cxx-ros2-dataflow-service-server` | yes (rclcpp minimal client)  |
 | `action-client`  | `cxx-ros2-dataflow-action-client`  | yes (rclcpp action server)¹  |
+| `action-client-concurrent` | `cxx-ros2-dataflow-action-client-concurrent` | yes (rclcpp action server)¹ |
 | `action-server`  | `cxx-ros2-dataflow-action-server`  | no (dora server + client)¹   |
 | `turtle`         | `cxx-ros2-dataflow`                | yes (`turtlesim`)            |
 
 All C++ examples are gated behind `--features ros2-examples`.
+
+`action-client-concurrent` is the regression test for
+[#1972](https://github.com/dora-rs/dora/issues/1972): it fires several goals at
+once and requires a result for every one. Before the fix the generated client
+spawned a result receiver per goal, and those receivers stole each other's
+`GetResult` responses, so concurrent goals lost results.
 
 ¹ A dora-hosted action server is not discoverable by a real `rcl` client
 ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the

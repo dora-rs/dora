@@ -410,6 +410,74 @@ impl Action {
                     .map(|v: eyre::Result<_>| Box::new(v) as Box<dyn std::any::Any + 'static>);
                 let result_id = events.events.merge(Box::pin(result_stream));
 
+                // GetResult request ids this client has sent and not yet matched to a
+                // response, each paired with the goal it belongs to.
+                let pending: Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>> =
+                    Arc::new(std::sync::Mutex::new(Vec::new()));
+
+                // dora #1972 (same class as #1970): one GetResult response pump that
+                // demuxes by request id. ros2-client's `async_request_result` discards
+                // responses whose id does not match, so a per-goal receiver lets
+                // concurrent goals steal each other's results; one pump avoids that.
+                {
+                    let client = Arc::clone(&client);
+                    let pending = pending.clone();
+                    let result_tx = result_tx.clone();
+                    std::thread::spawn(move || {
+                        loop {
+                            if result_tx.is_disconnected() {
+                                break;
+                            }
+                            // SAFETY: the `&mut`-via-ptr cast mirrors the feedback stream
+                            // above — `result_client(&mut self)` only needs `&mut` to hand
+                            // back the sub-client, and `receive_response` itself takes &self.
+                            // Only this pump thread receives. The concurrent &self
+                            // `send_request` from `request_result` is data-race-free on the
+                            // ros2-client `Client` (disjoint request/response paths + atomic
+                            // sequence ids) — the same concurrency the #1971 service pump relies on.
+                            let recv = unsafe {
+                                let ptr = Arc::as_ptr(&client)
+                                    as *mut crate::ros2_client::action::ActionClient< action :: #self_name >;
+                                (&mut *ptr).result_client().receive_response()
+                            };
+                            match recv {
+                                Ok(Some((req_id, response))) => {
+                                    // Route the response to its goal; drop responses we
+                                    // have no pending request for (they belong to another
+                                    // client sharing the topic).
+                                    let goal_id = match pending.lock() {
+                                        Ok(mut guard) => guard
+                                            .iter()
+                                            .position(|(pid, _)| *pid == req_id)
+                                            .map(|pos| guard.remove(pos).1),
+                                        Err(_) => None,
+                                    };
+                                    if let Some(goal_id) = goal_id {
+                                        let status: ffi::ActionStatusEnum = response.status.into();
+                                        let event = #result_event_name {
+                                            goal_id,
+                                            status,
+                                            result: response.result,
+                                        };
+                                        if result_tx.send(Ok(event)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                                Ok(None) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                                Err(e) => {
+                                    let _ = result_tx.send(Err(eyre::eyre!(
+                                        "failed to receive action result: {e:?}"
+                                    )));
+                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                }
+                            }
+                        }
+                    });
+                }
+
                 let feedback_id = {
                     let stream = futures_lite::stream::unfold(Arc::clone(&client), |client| async {
                         // SAFETY:
@@ -460,8 +528,7 @@ impl Action {
 
                 Ok(Box::new(#client_name {
                     client,
-                    result_tx: Arc::new(result_tx),
-                    executor: node.executor.clone(),
+                    pending,
                     result_id,
                     feedback_id,
                     status_id,
@@ -471,8 +538,7 @@ impl Action {
             #[allow(non_camel_case_types)]
             pub struct #client_name {
                 client: std::sync::Arc<crate::ros2_client::action::ActionClient< action :: #self_name>>,
-                result_tx: std::sync::Arc<crate::flume::Sender<eyre::Result<#result_event_name>>>,
-                executor: std::sync::Arc<crate::futures::executor::ThreadPool>,
+                pending: std::sync::Arc<std::sync::Mutex<Vec<(crate::ros2_client::service::RmwRequestId, ffi::ActionGoalId)>>>,
                 result_id: u32,
                 feedback_id: u32,
                 status_id: u32,
@@ -623,30 +689,23 @@ impl Action {
 
                 #[allow(non_snake_case)]
                 fn #request_result(&self, goal_id: &Box<ActionGoalId>) -> eyre::Result<()> {
-                    use eyre::WrapErr;
-                    use futures::task::SpawnExt as _;
-
-                    let request_result_handle = {
-                        let client_ref = std::sync::Arc::clone(&self.client);
-                        let result_tx = self.result_tx.clone();
-                        let goal_id = *goal_id.clone();
-                        async move {
-                            let resp = client_ref.async_request_result(goal_id.id).await;
-                            let resp = resp.map(|(status, response)| {
-                                let status: ffi::ActionStatusEnum = status.into();
-                                #result_event_name {
-                                    goal_id: goal_id.clone(),
-                                    status,
-                                    result: response
-                                }
-                            }).map_err(|e| eyre::eyre!("Failed to request result: {:?}", e));
-                            if result_tx.send_async(resp).await.is_err() {
-                                tracing::warn!("failed to send action result");
-                            }
-                        }
-                    };
-                    self.executor.spawn(request_result_handle)
-                        .context("failed to spawn response task").map_err(|e| eyre::eyre!("{e:?}"))?;
+                    // dora #1972 (same class as #1970): register this goal's GetResult
+                    // request id -> goal_id under the same lock the result pump uses,
+                    // holding it across the synchronous send so a result that arrives
+                    // before registration completes is not dropped as "not ours". The
+                    // single pump (see the client constructor) then routes responses by
+                    // request id, instead of a per-goal receiver that would steal other
+                    // goals' responses.
+                    let goal_id = (**goal_id).clone();
+                    let mut pending = self
+                        .pending
+                        .lock()
+                        .map_err(|_| eyre::eyre!("action client result state poisoned"))?;
+                    let req_id = self
+                        .client
+                        .request_result(goal_id.id)
+                        .map_err(|e| eyre::eyre!("Failed to request result: {:?}", e))?;
+                    pending.push((req_id, goal_id));
                     Ok(())
                 }
 
