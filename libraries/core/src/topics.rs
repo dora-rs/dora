@@ -319,6 +319,17 @@ pub fn reserve_loopback_zenoh_endpoint() -> std::io::Result<String> {
     Ok(format!("tcp/127.0.0.1:{port}"))
 }
 
+/// Zenoh key for a node output. Two message classes share this key, and the
+/// **Zenoh attachment distinguishes them** (a load-bearing contract relied on by
+/// both the daemon and the consumer node — see dora #1992):
+/// - **attachment present** => a node's raw output publish (raw payload + bincode
+///   `Metadata` in the attachment). Read directly by the consumer node; the daemon
+///   ignores it (data routing moved off the daemon in #1787).
+/// - **attachment absent** => a bincode `Timestamped<InterDaemonEvent>` frame
+///   emitted by the daemon (Output fallback / OutputClosed) or coordinator.
+///
+/// A new publisher to this key MUST follow this rule: raw output sets an
+/// attachment, daemon/coordinator frames never do.
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_publish_topic(
     dataflow_id: uuid::Uuid,

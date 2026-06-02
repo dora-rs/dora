@@ -2709,19 +2709,47 @@ impl Daemon {
                                 },
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
-                                    let event = sample.map_err(|e| eyre!(e)).and_then(|s| {
-                                        let bytes = s.payload().to_bytes();
-                                        net_bytes_rx.fetch_add(
-                                            bytes.len() as u64,
-                                            std::sync::atomic::Ordering::Relaxed,
-                                        );
-                                        net_msgs_rx
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        Timestamped::deserialize_inter_daemon_event(&bytes)
-                                    });
-                                    if tx.send_async(event).await.is_err() {
-                                        // daemon finished
-                                        break;
+                                    match sample {
+                                        Ok(s) => {
+                                            // Count telemetry for every received sample. Use the
+                                            // cheap length accessor so we don't materialize the
+                                            // payload (`to_bytes()` copies for multi-region buffers)
+                                            // for the samples we skip below.
+                                            net_bytes_rx.fetch_add(
+                                                s.payload().len() as u64,
+                                                std::sync::atomic::Ordering::Relaxed,
+                                            );
+                                            net_msgs_rx
+                                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                            // dora #1992: since #1787 moved data routing off the
+                                            // daemon, nodes publish their raw output directly to
+                                            // this same Zenoh key (raw payload + bincode Metadata
+                                            // in the Zenoh ATTACHMENT) and the consumer node reads
+                                            // it directly (apis/rust/node/src/event_stream/mod.rs).
+                                            // Such samples carry an attachment; daemon-emitted
+                                            // InterDaemonEvent frames (Output fallback /
+                                            // OutputClosed in send_to_remote_receivers) NEVER set
+                                            // one. Skip attachment-bearing samples here so the
+                                            // daemon does not bincode-decode node raw output (which
+                                            // fails with "failed to deserialize InterDaemonEvent").
+                                            if s.attachment().is_some() {
+                                                continue;
+                                            }
+                                            let bytes = s.payload().to_bytes();
+                                            let event =
+                                                Timestamped::deserialize_inter_daemon_event(&bytes)
+                                                    .map_err(|e| eyre!(e));
+                                            if tx.send_async(event).await.is_err() {
+                                                // daemon finished
+                                                break;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            if tx.send_async(Err(eyre!(e))).await.is_err() {
+                                                // daemon finished
+                                                break;
+                                            }
+                                        }
                                     }
                                 }
                             }
