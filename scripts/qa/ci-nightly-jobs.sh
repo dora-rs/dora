@@ -1167,12 +1167,13 @@ job_ros2_bridge() {
     echo "SKIP cxx-ros2-dataflow-service-server: examples_rclcpp_minimal_client not installed (apt-get install ros-humble-examples-rclcpp-minimal-client)"
     SKIPPED+=("ros2-bridge: cxx-service-server (examples_rclcpp_minimal_client missing)")
   fi
-  # Note: the Rust action client/server AND the C++ action-server example
-  # (cxx-ros2-dataflow-action-server) are in nightly.yml but are intentionally
-  # NOT mirrored here -- their deferred get_result service round-trip does not
-  # complete on arm64/Docker (this local driver runs on arm64 too), so they
-  # would hang to the timeout. They are x86-nightly-only. (The C++ *service*
-  # server above is mirrored because it completes on arm64.)
+  # Note: the Rust action client/server AND the C++ action examples are NOT
+  # mirrored here, and as of PR #1988 are no longer in nightly.yml either --
+  # their deferred get_result round-trip is flaky in upstream ros2-client/rustdds
+  # (~20% of cold starts never return on x86; does not complete at all on
+  # arm64/Docker, which this local driver runs on). Validate them via
+  # `scripts/ros2dev.sh qa` on x86 Linux at release time (tracked in #1170). The
+  # C++ *service* server above is mirrored because it completes reliably.
 
   # Python service client/server examples need the workspace node bindings.
   uv venv --seed -p 3.12 .venv-ros2-bridge >/dev/null
