@@ -10,13 +10,15 @@ int run(void *dora_context)
 {
     unsigned char counter = 0;
 
-    for (int i = 0; i < 20; i++)
+    while (true)
     {
         void *event = dora_next_event(dora_context);
         if (event == NULL)
         {
-            printf("[c node] ERROR: unexpected end of event\n");
-            return -1;
+            // Stream exhausted (all inputs closed) -- the normal end of the
+            // dataflow, not an error. Don't assume a fixed input count: pub/sub
+            // discovery can drop early messages before subscriptions match.
+            break;
         }
 
         enum DoraEventType ty = read_dora_event_type(event);
