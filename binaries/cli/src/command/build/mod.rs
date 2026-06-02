@@ -632,7 +632,7 @@ mod tests {
             git_source("https://example.com/old.git", "old-commit"),
         )]);
         let initial_session = DataflowSession {
-            build_id: Some(old_build_id.clone()),
+            build_id: Some(old_build_id),
             git_sources: old_git_sources.clone(),
             build_fingerprint: Some("old-fingerprint".to_owned()),
             ..DataflowSession::default()
@@ -690,12 +690,12 @@ mod tests {
             &mut session,
             &dataflow_path,
             git_sources.clone(),
-            Ok(build_id.clone()),
+            Ok(build_id),
             "new-fingerprint".to_owned(),
         )
         .unwrap();
 
-        assert_eq!(session.build_id, Some(build_id.clone()));
+        assert_eq!(session.build_id, Some(build_id));
         assert_eq!(session.git_sources, git_sources);
         assert!(session.local_build.is_none());
         assert_eq!(
