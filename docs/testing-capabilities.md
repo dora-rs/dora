@@ -190,6 +190,10 @@ Known gap: `dora self update` destructive swap path (tracked in
 > Actions, non-blocking); for local pre-release QA, run
 > `scripts/qa/ci-nightly-jobs.sh ros2-bridge` on a Linux box with ROS2 Humble.
 > Do not rely on per-PR runtime coverage for the bridge.
+> The **action** examples are excluded from both nightly and that script (their
+> deferred `get_result` round-trip is flaky in upstream `ros2-client`/`rustdds`,
+> [#1170](https://github.com/dora-rs/dora/issues/1170)); validate them with
+> `scripts/ros2dev.sh qa` on x86 Linux before a release.
 
 | Sub-capability | Test(s) | Tier | Strength |
 |---|---|---|---|
