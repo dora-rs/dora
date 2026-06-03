@@ -197,6 +197,13 @@ const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+/// How long the daemon keeps trying to (re)connect to the coordinator before
+/// giving up and exiting. Bounds the orphan-daemon window when the coordinator
+/// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
+/// well within this, so transient outages and reconnects are unaffected.
+const COORDINATOR_RECONNECT_TIMEOUT: Duration = Duration::from_secs(90);
+/// Pause between losing the coordinator connection and attempting to reconnect.
+const COORDINATOR_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 
 fn deliver_param_update_strict(
     dataflow: &RunningDataflow,
@@ -521,7 +528,12 @@ impl Daemon {
     ) -> eyre::Result<()> {
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
-        let mut reconnect_attempt = 0u32;
+        // Tracks whether we've ever connected to the coordinator. The initial
+        // connect is left to set_up_event_stream's own retry loop (the
+        // coordinator may simply not be up yet at startup), but once connected,
+        // a coordinator gone past the reconnect timeout is treated as
+        // permanently gone -> exit instead of orphaning (dora-rs/dora#1996).
+        let mut connected_once = false;
 
         loop {
             // Sized for bursts of inter-daemon events
@@ -537,19 +549,38 @@ impl Daemon {
                     local_listen_port,
                 );
 
+                // Bound reconnects (but not the initial connect) so a
+                // permanently gone coordinator makes the daemon exit rather than
+                // orphan; see `connected_once` above. A reachable coordinator
+                // reconnects well within the timeout, so legitimate reconnection
+                // (e.g. the daemon-reconnect test) is unaffected.
+                let connect = async move {
+                    if connected_once {
+                        tokio::time::timeout(COORDINATOR_RECONNECT_TIMEOUT, incoming_events).await
+                    } else {
+                        Ok(incoming_events.await)
+                    }
+                };
+
                 let ctrl_c = pin!(ctrlc_events.recv());
-                match futures::future::select(ctrl_c, pin!(incoming_events)).await {
+                match futures::future::select(ctrl_c, pin!(connect)).await {
                     future::Either::Left((_ctrl_c, _)) => {
                         tracing::info!("received ctrl-c signal -> stopping daemon");
                         return Ok(());
                     }
-                    future::Either::Right((events, _)) => events,
+                    future::Either::Right((Ok(events), _)) => events,
+                    future::Either::Right((Err(_elapsed), _)) => {
+                        return Err(eyre::eyre!(
+                            "coordinator unreachable after \
+                             {COORDINATOR_RECONNECT_TIMEOUT:?}; daemon exiting"
+                        ));
+                    }
                 }
             };
 
             match connect_result {
                 Ok((daemon_id, coordinator_sender, incoming_events)) => {
-                    reconnect_attempt = 0;
+                    connected_once = true;
                     let log_destination = LogDestination::Coordinator {
                         sender: coordinator_sender.clone(),
                     };
@@ -589,18 +620,23 @@ impl Daemon {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(
-                        attempt = reconnect_attempt,
-                        "failed to connect to coordinator: {e:#}"
-                    );
+                    if connected_once {
+                        // Connected before, can't reconnect -> coordinator gone;
+                        // exit rather than orphan (see `connected_once` above).
+                        return Err(eyre::eyre!(
+                            "failed to reconnect to coordinator: {e:#}; daemon exiting"
+                        ));
+                    }
+                    // Still waiting for the initial connect: keep retrying, the
+                    // coordinator may not be up yet.
+                    tracing::warn!("waiting for coordinator: {e:#}");
                 }
             }
 
-            // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s...
-            let delay = Duration::from_secs((1u64 << reconnect_attempt.min(5)).min(30));
-            reconnect_attempt += 1;
-            tracing::info!("reconnecting in {delay:?}...");
-            tokio::time::sleep(delay).await;
+            // Reached while waiting for the initial connect, or after a mid-run
+            // disconnect (to reconnect). Pause briefly before the next attempt.
+            tracing::info!("retrying in {COORDINATOR_RECONNECT_BACKOFF:?}...");
+            tokio::time::sleep(COORDINATOR_RECONNECT_BACKOFF).await;
         }
     }
 
