@@ -319,17 +319,12 @@ pub fn reserve_loopback_zenoh_endpoint() -> std::io::Result<String> {
     Ok(format!("tcp/127.0.0.1:{port}"))
 }
 
-/// Zenoh key for a node output. Two message classes share this key, and the
-/// **Zenoh attachment distinguishes them** (a load-bearing contract relied on by
-/// both the daemon and the consumer node — see dora #1992):
-/// - **attachment present** => a node's raw output publish (raw payload + bincode
-///   `Metadata` in the attachment). Read directly by the consumer node; the daemon
-///   ignores it (data routing moved off the daemon in #1787).
-/// - **attachment absent** => a bincode `Timestamped<InterDaemonEvent>` frame
-///   emitted by the daemon (Output fallback / OutputClosed) or coordinator.
+/// Zenoh key for node output data.
 ///
-/// A new publisher to this key MUST follow this rule: raw output sets an
-/// attachment, daemon/coordinator frames never do.
+/// Payload format: raw Arrow bytes with bincode `Metadata` in the Zenoh
+/// attachment. This topic is published by nodes and consumed directly by
+/// downstream nodes (plus debug-inspection subscribers). Daemon control frames
+/// must not be published here; use [`zenoh_daemon_control_topic`] instead.
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_publish_topic(
     dataflow_id: uuid::Uuid,
@@ -338,6 +333,23 @@ pub fn zenoh_output_publish_topic(
 ) -> String {
     let network_id = "default";
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
+}
+
+/// Zenoh key for control frames associated with a node output.
+///
+/// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh
+/// attachment. Published by daemons for inter-daemon control (for example
+/// `OutputClosed`) and by the coordinator for explicit topic injection. Keeping
+/// this separate from [`zenoh_output_publish_topic`] avoids mixing control frames
+/// with raw node output payloads on the same key.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_daemon_control_topic(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
+) -> String {
+    let network_id = "default";
+    format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
 #[cfg(test)]
@@ -357,5 +369,34 @@ mod tests {
             .and_then(|p| p.parse().ok())
             .expect("endpoint has a numeric port");
         assert!(port > 0, "kernel must hand out a non-zero ephemeral port");
+    }
+
+    // Node raw output and daemon control frames MUST live on distinct Zenoh
+    // keys: they share neither format nor consumer, and merging them caused the
+    // #1992 crossover (daemon bincode-decoding node output). Guard the split.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn output_and_control_topics_are_distinct() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+
+        let output_topic = zenoh_output_publish_topic(dataflow_id, &node, &output);
+        let control_topic = zenoh_daemon_control_topic(dataflow_id, &node, &output);
+
+        assert!(
+            output_topic.contains("/output/"),
+            "node output key must contain `/output/`, got {output_topic}"
+        );
+        assert!(
+            control_topic.contains("/control/"),
+            "daemon control key must contain `/control/`, got {control_topic}"
+        );
+        assert_ne!(
+            output_topic, control_topic,
+            "node output and daemon control must not share a Zenoh key (dora #1992/#2008)"
+        );
     }
 }
