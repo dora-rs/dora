@@ -2466,6 +2466,10 @@ impl Daemon {
 
         let mut stopped = Vec::new();
 
+        // A present `build_id` means the session has a build that wasn't
+        // invalidated (the CLI clears it when build inputs change). We use this
+        // below to decide whether re-deriving an on-disk managed env is safe.
+        let have_build_id = build_id.is_some();
         let build_info = build_id.and_then(|build_id| self.builds.get(&build_id));
         let node_with_git_source = nodes.values().find(|n| n.has_git_source());
         if let Some(git_node) = node_with_git_source
@@ -2658,20 +2662,34 @@ impl Daemon {
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
-                let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
-                // Fail closed under `--uv` when the build artifacts don't include a
-                // managed env for a node that needs one — happens with a stale session
-                // file, a prior non--uv build, or `dora start --uv` without rebuilding.
-                // Falling back silently would lose the isolation guarantees the user
-                // asked for by passing `--uv`.
-                if uv && configured_python_env_dir.is_none() {
-                    let expected =
-                        dora_core::build::managed_python_env_dir(&node, &node_working_dir);
-                    if expected.is_some() {
+                let mut configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
+                // Under `--uv`, a node may have no recorded managed env even when
+                // `dora build` prepared one: a networked build runs in a separate
+                // process from the daemon that later serves `dora start`, so the
+                // daemon's in-memory build record can be empty (dora-rs/dora#2004).
+                // The env dir is deterministic, so re-derive it (the restart path
+                // does the same) and reuse the on-disk env -- but ONLY when a
+                // build id is present, i.e. a build occurred and this daemon just
+                // lacks the in-memory record. When the build id was cleared (the
+                // CLI invalidates it on build-input changes, a prior non-`--uv`
+                // build, or `start --uv` with no build), do NOT reuse a possibly
+                // stale env; require a rebuild. Either way, never silently fall
+                // back to the ambient Python.
+                if uv
+                    && configured_python_env_dir.is_none()
+                    && let Some(expected) =
+                        dora_core::build::managed_python_env_dir(&node, &node_working_dir)
+                {
+                    if have_build_id
+                        && dora_core::build::managed_python_interpreter(&expected).is_file()
+                    {
+                        configured_python_env_dir = Some(expected);
+                    } else {
                         eyre::bail!(
                             "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
-                             but no managed env was recorded for it during build. \
-                             Re-run `dora build --uv <dataflow>` against the current build session, \
+                             but no current build provides one (the build cache is absent or was \
+                             invalidated by changed build inputs). \
+                             Run `dora build --uv <dataflow>` before `dora start --uv`, \
                              or omit `--uv` to run against the ambient Python."
                         );
                     }
