@@ -2658,21 +2658,30 @@ impl Daemon {
                 let node_write_events_to = write_events_to
                     .as_ref()
                     .map(|p| p.join(format!("inputs-{}.json", node.id)));
-                let configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
-                // Fail closed under `--uv` when the build artifacts don't include a
-                // managed env for a node that needs one — happens with a stale session
-                // file, a prior non--uv build, or `dora start --uv` without rebuilding.
-                // Falling back silently would lose the isolation guarantees the user
-                // asked for by passing `--uv`.
-                if uv && configured_python_env_dir.is_none() {
-                    let expected =
-                        dora_core::build::managed_python_env_dir(&node, &node_working_dir);
-                    if expected.is_some() {
+                let mut configured_python_env_dir = python_env_dirs.get(&node_id).cloned();
+                // Under `--uv`, a node may have no recorded managed env even when
+                // `dora build` prepared one: a networked build runs in a separate
+                // process from the daemon that later serves `dora start`, so the
+                // daemon's in-memory build record can be empty (dora-rs/dora#2004).
+                // The env dir is deterministic, so re-derive it (the restart path
+                // does the same), and use it IF `dora build` actually created it on
+                // disk. Fail closed only when the env is genuinely missing (stale
+                // session, prior non-`--uv` build, or `start --uv` without a build)
+                // so `--uv` never silently falls back to the ambient Python.
+                if uv
+                    && configured_python_env_dir.is_none()
+                    && let Some(expected) =
+                        dora_core::build::managed_python_env_dir(&node, &node_working_dir)
+                {
+                    if dora_core::build::managed_python_interpreter(&expected).is_file() {
+                        configured_python_env_dir = Some(expected);
+                    } else {
                         eyre::bail!(
                             "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
-                             but no managed env was recorded for it during build. \
-                             Re-run `dora build --uv <dataflow>` against the current build session, \
-                             or omit `--uv` to run against the ambient Python."
+                             but none was found at `{}`. \
+                             Run `dora build --uv <dataflow>` before `dora start --uv`, \
+                             or omit `--uv` to run against the ambient Python.",
+                            expected.display()
                         );
                     }
                 }
