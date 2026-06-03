@@ -12,14 +12,16 @@
 #      `#[cfg(test)] mod tests;` from a sibling source file — the file
 #      content does not carry the cfg(test) attribute but the whole
 #      file is test-only)
-#   3. Content after the first `#[cfg(test)]` line in any remaining
-#      source file (inline `mod tests {}` blocks at the bottom of a
-#      source file — dora's convention)
+#   3. Each `#[cfg(test)]`-attributed item (the brace-balanced `mod`/`fn`/
+#      `impl` block that follows the attribute) — inline test modules and
+#      test helpers anywhere in a source file, not just at EOF.
 #
-# Rule 3 uses simple line-based truncation, which works because dora
-# consistently places `#[cfg(test)]` only at the top of a test module
-# and only at the end of source files. Verified 2026-04-08 by grep —
-# if this convention changes, this script must be updated.
+# Rule 3 brace-balances each `#[cfg(test)]` block instead of truncating to
+# EOF, so production code that follows an interspersed test block (e.g. a
+# `#[cfg(test)]` helper fn before more production fns, as in
+# binaries/cli/src/output.rs) is still counted. All `#[cfg(test)]` items in
+# the counted source are brace blocks (mod/fn/impl); brace-less attributed
+# items (`#[cfg(test)] use ...;`) do not occur and are not handled.
 
 set -euo pipefail
 
@@ -36,8 +38,8 @@ fi
 # Count unwrap/expect in non-test source code. Three steps:
 # 1. Enumerate candidate .rs files (excluding tests/, examples/, build.rs)
 # 2. Drop files named tests.rs (submodule test files)
-# 3. For each remaining file, strip content from the first #[cfg(test)]
-#    line to EOF, then count .unwrap() / .expect( occurrences.
+# 3. For each remaining file, skip each #[cfg(test)] brace-balanced block
+#    (mod/fn/impl) and count .unwrap() / .expect( in the rest.
 count_unwraps() {
   local total=0
   local file
@@ -46,10 +48,37 @@ count_unwraps() {
     case "$file" in
       */tests.rs) continue ;;
     esac
-    # Rule 3: truncate at first #[cfg(test)] line, count unwraps in head
+    # Rule 3: skip each #[cfg(test)] block, count unwrap/expect in the rest.
+    # A MULTI-LINE block opener ends with `{` (rustfmt puts the opening brace
+    # last); its matching close is the only `}` DEDENTED back to the attribute
+    # indent. We key off dedent + the trailing-`{`, not raw brace counting,
+    # because counting `{`/`}` miscounts braces inside string literals and
+    # `format!("{}")` macros that pepper test code. A SELF-CONTAINED one-line
+    # item (`#[cfg(test)] fn helper() {}` or a `mod tests;` decl) is fully on
+    # one line and is skipped without entering block mode, so production code
+    # after it is still counted.
     local n
     n=$(awk '
-      /^[[:space:]]*#\[cfg\(test\)\]/ { exit }
+      # Inside a multi-line test block: ends at a `}` dedented to its indent.
+      in_test {
+        if ($0 ~ ("^" ind "[}]")) in_test = 0
+        next
+      }
+      # Saw #[cfg(test)] with the item on later line(s): skip signature lines
+      # until the opener ends with `{` (enter block), or the item resolves on a
+      # single line (one-line `{...}` body, or a `;`-terminated decl).
+      awaiting {
+        if ($0 ~ /\{[[:space:]]*$/) { awaiting = 0; in_test = 1 }
+        else if ($0 ~ /[{};]/) awaiting = 0
+        next
+      }
+      /^[[:space:]]*#\[cfg\(test\)\]/ {
+        ind = $0; sub(/[^ \t].*/, "", ind)   # leading whitespace = indent
+        if ($0 ~ /\{[[:space:]]*$/) in_test = 1      # multi-line block opener
+        else if ($0 !~ /[{]/) awaiting = 1           # brace is on a later line
+        # else: self-contained one-line `{...}` item -> skip just this line
+        next
+      }
       {
         n = gsub(/\.unwrap\(\)|\.expect\(/, "&")
         if (n > 0) count += n

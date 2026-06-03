@@ -41,8 +41,20 @@ done
 
 if [[ "$FAILED" == "1" ]]; then
   echo
-  echo "SemVer check found breaking changes."
-  echo "During 0.x this is a warning. After 1.0 this will be a hard fail."
-  # Soft warning during 0.x — exit 0 even on breaks
-  exit 0
+  # Soft warning during 0.x; hard gate once the workspace hits 1.0 (API
+  # stability is the 1.0 promise). Read the workspace version from the root
+  # Cargo.toml ([workspace.package] version).
+  WORKSPACE_VERSION=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+  echo "SemVer check found breaking changes (workspace version: ${WORKSPACE_VERSION:-unknown})."
+  case "$WORKSPACE_VERSION" in
+    0.*|"")
+      echo "During 0.x this is a soft warning (exit 0)."
+      exit 0
+      ;;
+    *)
+      echo "Post-1.0: breaking changes are a hard failure. Bump the major"
+      echo "version or revert the breaking change."
+      exit 1
+      ;;
+  esac
 fi
