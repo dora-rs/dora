@@ -419,8 +419,10 @@ async fn ensure_local_dora_python_wheel(
     let mut cmd = Command::new("uv");
     cmd.arg("build");
     cmd.arg("--wheel");
-    cmd.arg("--clear");
-    cmd.arg("--no-create-gitignore");
+    // NOTE: `--clear` and `--no-create-gitignore` are NOT valid for `uv build`
+    // (current uv, 0.8.x) -- `--clear` belongs to `uv venv`. Passing them makes
+    // `uv build` exit 2 ("unexpected argument '--clear'"), which broke `dora
+    // build` for every node using a managed Python env. See dora-rs/dora#2003.
     cmd.arg("--out-dir");
     cmd.arg(&wheel_dir);
     cmd.arg(&source.package_dir);
