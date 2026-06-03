@@ -535,6 +535,19 @@ impl Daemon {
         // permanently gone -> exit instead of orphaning (dora-rs/dora#1996).
         let mut connected_once = false;
 
+        // Dynamic-node listener: bind once for the daemon's lifetime, not once
+        // per reconnect. Rebinding on every reconnect leaked the listener task
+        // and hit AddrInUse on the second bind, silently dropping dynamic-node
+        // support (dora-rs/dora#1999). Keep `dynamic_node_events_rx` alive for
+        // the whole loop so the channel stays open across reconnect gaps; each
+        // iteration streams a clone of it.
+        let (dynamic_node_events_tx, dynamic_node_events_rx) = flume::bounded(10);
+        let _listen_port = local_listener::spawn_listener_loop(
+            (LOCALHOST, local_listen_port).into(),
+            dynamic_node_events_tx,
+        )
+        .await?;
+
         loop {
             // Sized for bursts of inter-daemon events
             let (remote_daemon_events_tx, remote_daemon_events_rx) = flume::bounded(100);
@@ -546,7 +559,7 @@ impl Daemon {
                     labels.clone(),
                     &clock,
                     remote_daemon_events_rx,
-                    local_listen_port,
+                    dynamic_node_events_rx.clone(),
                 );
 
                 // Bound reconnects (but not the initial connect) so a
@@ -4398,8 +4411,10 @@ async fn set_up_event_stream(
     labels: BTreeMap<String, String>,
     clock: &Arc<HLC>,
     remote_daemon_events_rx: flume::Receiver<eyre::Result<Timestamped<InterDaemonEvent>>>,
-    // used for dynamic nodes
-    local_listen_port: u16,
+    // Events from the dynamic-node listener. The listener is bound once by the
+    // caller (for the daemon's lifetime) and its receiver passed in, rather than
+    // rebinding the port on every reconnect (dora-rs/dora#1999).
+    dynamic_node_events_rx: flume::Receiver<Timestamped<DynamicNodeEventWrapper>>,
 ) -> eyre::Result<(
     DaemonId,
     coordinator::CoordinatorSender,
@@ -4433,11 +4448,7 @@ async fn set_up_event_stream(
             timestamp,
         },
     );
-    let (events_tx, events_rx) = flume::bounded(10);
-    let _listen_port =
-        local_listener::spawn_listener_loop((LOCALHOST, local_listen_port).into(), events_tx)
-            .await?;
-    let dynamic_node_events = events_rx.into_stream().map(|e| Timestamped {
+    let dynamic_node_events = dynamic_node_events_rx.into_stream().map(|e| Timestamped {
         inner: Event::DynamicNode(e.inner),
         timestamp: e.timestamp,
     });
