@@ -370,4 +370,33 @@ mod tests {
             .expect("endpoint has a numeric port");
         assert!(port > 0, "kernel must hand out a non-zero ephemeral port");
     }
+
+    // Node raw output and daemon control frames MUST live on distinct Zenoh
+    // keys: they share neither format nor consumer, and merging them caused the
+    // #1992 crossover (daemon bincode-decoding node output). Guard the split.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn output_and_control_topics_are_distinct() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+
+        let output_topic = zenoh_output_publish_topic(dataflow_id, &node, &output);
+        let control_topic = zenoh_daemon_control_topic(dataflow_id, &node, &output);
+
+        assert!(
+            output_topic.contains("/output/"),
+            "node output key must contain `/output/`, got {output_topic}"
+        );
+        assert!(
+            control_topic.contains("/control/"),
+            "daemon control key must contain `/control/`, got {control_topic}"
+        );
+        assert_ne!(
+            output_topic, control_topic,
+            "node output and daemon control must not share a Zenoh key (dora #1992/#2008)"
+        );
+    }
 }
