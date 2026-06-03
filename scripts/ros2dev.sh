@@ -108,6 +108,10 @@ cargo test -p dora-ros2-bridge-python
 # Add new examples here as issue #1170 items land (action server, C++ service
 # server, parameter service, ...). `--features ros2-examples` is required by the
 # cxx/action targets and harmless for the rest.
+# Keep in sync with the [[example]] targets in
+# libraries/extensions/ros2-bridge/Cargo.toml -- every shipped ros2-bridge
+# example should be exercised by the release QA gate, or the gate reports
+# "all green" while real surfaces go untested.
 EXAMPLES=(
   rust-ros2-dataflow
   rust-ros2-dataflow-topic-pub
@@ -115,6 +119,8 @@ EXAMPLES=(
   rust-ros2-dataflow-service-client
   rust-ros2-dataflow-service-server
   rust-ros2-dataflow-action-client
+  rust-ros2-dataflow-action-server
+  rust-ros2-dataflow-parameter
   python-ros2-dataflow
   python-ros2-dataflow-service-client
   python-ros2-dataflow-service-server
@@ -125,6 +131,7 @@ EXAMPLES=(
   cxx-ros2-dataflow-action-client
   cxx-ros2-dataflow-action-client-concurrent
   cxx-ros2-dataflow-service-server
+  cxx-ros2-dataflow-action-server
 )
 
 passed=()
