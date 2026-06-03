@@ -49,27 +49,34 @@ count_unwraps() {
       */tests.rs) continue ;;
     esac
     # Rule 3: skip each #[cfg(test)] block, count unwrap/expect in the rest.
-    # The block ends at a `}` DEDENTED to the attribute's indentation. We use
-    # dedent (not raw brace counting) because counting `{`/`}` would miscount
-    # braces inside string literals and `format!("{}")` macros that pepper test
-    # code; the block-closing brace is the only `}` back at the attribute indent.
+    # A MULTI-LINE block opener ends with `{` (rustfmt puts the opening brace
+    # last); its matching close is the only `}` DEDENTED back to the attribute
+    # indent. We key off dedent + the trailing-`{`, not raw brace counting,
+    # because counting `{`/`}` miscounts braces inside string literals and
+    # `format!("{}")` macros that pepper test code. A SELF-CONTAINED one-line
+    # item (`#[cfg(test)] fn helper() {}` or a `mod tests;` decl) is fully on
+    # one line and is skipped without entering block mode, so production code
+    # after it is still counted.
     local n
     n=$(awk '
-      # Inside a test block: ends when a `}` dedents to the attribute indent.
+      # Inside a multi-line test block: ends at a `}` dedented to its indent.
       in_test {
         if ($0 ~ ("^" ind "[}]")) in_test = 0
         next
       }
-      # Saw #[cfg(test)]; skip the items signature lines until its opening `{`
-      # (block, e.g. mod/fn/impl) or a `;` terminator (one-line decl).
+      # Saw #[cfg(test)] with the item on later line(s): skip signature lines
+      # until the opener ends with `{` (enter block), or the item resolves on a
+      # single line (one-line `{...}` body, or a `;`-terminated decl).
       awaiting {
-        if ($0 ~ /[{]/) { awaiting = 0; in_test = 1 }
-        else if ($0 ~ /;[[:space:]]*$/) awaiting = 0
+        if ($0 ~ /\{[[:space:]]*$/) { awaiting = 0; in_test = 1 }
+        else if ($0 ~ /[{};]/) awaiting = 0
         next
       }
       /^[[:space:]]*#\[cfg\(test\)\]/ {
         ind = $0; sub(/[^ \t].*/, "", ind)   # leading whitespace = indent
-        if ($0 ~ /[{]/) in_test = 1; else awaiting = 1
+        if ($0 ~ /\{[[:space:]]*$/) in_test = 1      # multi-line block opener
+        else if ($0 !~ /[{]/) awaiting = 1           # brace is on a later line
+        # else: self-contained one-line `{...}` item -> skip just this line
         next
       }
       {
