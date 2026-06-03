@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 19 test jobs
-# post-#1716. `cargo test -p dora-examples --test example-smoke` (run by
-# qa-nightly's example-smoke step) covers 4 of them (smoke-suite + log-sinks
-# + service-action + streaming). This script covers the other 15, with
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 20 test jobs
+# (post-#1716, plus cluster-record-replay from #2013). `cargo test -p
+# dora-examples --test example-smoke` (run by qa-nightly's example-smoke step)
+# covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
+# This script covers the other 16, with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
@@ -15,6 +16,10 @@
 #                               dora cluster up/status/down against 3 SSH-spawned
 #                               daemons on a loopback sshd. Hard-fails if
 #                               openssh-server is not installed.
+#   - cluster-record-replay     Linux-only. Stitches cluster-e2e + record-replay:
+#                               record a dataflow spread across the 3 SSH daemons,
+#                               then replay it locally and validate the replayed
+#                               state against the seed(42) baseline (#2013).
 #   - topic-and-top-smoke       dora top/trace/topic/self update against a zenoh-debug fixture
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
@@ -116,7 +121,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
       return 0
       ;;
     *)
@@ -136,6 +141,7 @@ Supported jobs:
   record-replay
   cluster-smoke
   cluster-e2e
+  cluster-record-replay
   topic-and-top-smoke
   cpu-affinity-smoke
   redb-backend-smoke
@@ -475,37 +481,25 @@ job_cluster_smoke() {
 }
 
 # -----------------------------------------------------------------------------
-# Job 3: cluster-e2e
+# Shared scaffolding: bring up a loopback SSH cluster
 #
-# End-to-end test of the `dora cluster` SSH lifecycle. cluster-smoke (above)
-# uses `dora up` to launch a local coordinator+daemon and exercises only the
-# post-up commands (status/down) — it does NOT cover the SSH path of
-# `cluster up`, which is the most failure-prone part of the feature.
+# Stands up a real sshd on a random loopback port with a throwaway key, then
+# starts it and writes a 3-machine cluster.yml (m1/m2/m3, all on localhost,
+# distinct ssh + daemon ports, shared zenoh_peer). Used by both cluster-e2e
+# and cluster-record-replay so the SSH/key/sshd boilerplate lives in one place.
 #
-# This job stands up a real sshd on a random loopback port, then runs
-# `dora cluster up` against a cluster.yml with 3 machines all pointing at
-# localhost (via the `port` and `daemon_port` fields added by the cluster-ssh-port
-# and cluster-daemon-port PRs). Validates that:
-#   1. ssh-based daemon spawn works (3 daemons reach the coordinator)
-#   2. `cluster status` lists all 3
-#   3. `cluster down` tears everything down with no leftover processes
+# Linux-only; callers must gate on $OS before calling. Hard-fails (return 1)
+# if openssh-server is missing. On success, sets these globals for the caller:
+#   WORK        scratch tempdir (caller removes with `rm -rf "$WORK"`)
+#   SSHD_PID    sshd pid (caller stops with `terminate_pid "$SSHD_PID"`)
+#   COORD_PORT  coordinator WS port to export as DORA_COORDINATOR_PORT
+# and leaves the SSH wrapper at "$WORK/bin/ssh" and the descriptor at
+# "$WORK/cluster.yml". On failure it removes its own tempdir before returning.
 #
-# Linux-only: macOS sshd has different defaults and locked-down config paths
-# that don't map cleanly to this fixture, and the only Windows path would be
-# OpenSSH-server-for-Windows which isn't worth the maintenance. The script
-# does NOT install openssh-server itself — it hard-fails with an install
-# hint if sshd is missing (per the agreed policy in the PR plan). GHA
-# installs openssh-server in the workflow before invoking this script.
+# Arg 1 (optional): a label folded into the mktemp name for easier debugging.
 # -----------------------------------------------------------------------------
-job_cluster_e2e() {
-  case "$OS" in
-    Linux) ;;
-    *)
-      echo "SKIP: cluster-e2e is Linux-only ($OS)"
-      SKIPPED+=("cluster-e2e: $OS not supported")
-      return 0
-      ;;
-  esac
+setup_loopback_ssh_cluster() {
+  local label="${1:-cluster}"
 
   local SSHD_BIN
   if [ -x /usr/sbin/sshd ]; then
@@ -520,8 +514,7 @@ job_cluster_e2e() {
 
   ensure_cli_installed
 
-  local WORK
-  WORK=$(mktemp -d -t dora-cluster-e2e-XXXXXX)
+  WORK=$(mktemp -d -t "dora-${label}-XXXXXX")
 
   # Pick 6 free loopback ports in one shot: 1 sshd, 1 coordinator, 3 daemons,
   # 1 inter-daemon Zenoh rendezvous (the shared peer endpoint plumbed through
@@ -543,17 +536,18 @@ PY
 )
   # shellcheck disable=SC2086
   set -- $PORTS
-  local SSHD_PORT=$1 COORD_PORT=$2 D1=$3 D2=$4 D3=$5 ZENOH_PORT=$6
+  local SSHD_PORT=$1 D1=$3 D2=$4 D3=$5 ZENOH_PORT=$6
+  COORD_PORT=$2
 
   # SSH key material. The wrapper script below forces ssh to use this key
   # and ignore the user's real ~/.ssh — we never touch the user's identity.
-  # NOTE on error handling in this function: `set -e` is disabled inside
-  # functions invoked via `if "$fn"; then` (run_job's pattern), so failures
-  # do NOT abort automatically — every command on a critical path needs an
-  # explicit check. We do so for ssh-keygen, cargo build, and `cluster down`
-  # below. Pure local-FS operations (mkdir/chmod on $WORK) are left
-  # unchecked: $WORK is a fresh mktemp dir we own, so they only fail under
-  # disk pressure, which surfaces later anyway.
+  # NOTE on error handling: `set -e` is disabled inside functions invoked via
+  # `if "$fn"; then` (run_job's pattern), so failures do NOT abort
+  # automatically — every command on a critical path needs an explicit check.
+  # We do so for ssh-keygen and the sshd-startup wait below. Pure local-FS
+  # operations (mkdir/chmod on $WORK) are left unchecked: $WORK is a fresh
+  # mktemp dir we own, so they only fail under disk pressure, which surfaces
+  # later anyway.
   mkdir -p "$WORK/.ssh"
   chmod 700 "$WORK/.ssh"
   if ! ssh-keygen -t ed25519 -f "$WORK/.ssh/id_ed25519" -N "" -q; then
@@ -634,7 +628,7 @@ PrintMotd no
 EOF
 
   "$SSHD_BIN" -D -f "$WORK/sshd_config" -e &
-  local SSHD_PID=$!
+  SSHD_PID=$!
   track_pid "$SSHD_PID"
 
   # Wait for sshd to accept connections (max 5s). bash's /dev/tcp avoids a
@@ -657,7 +651,7 @@ EOF
 
   # cluster.yml: 3 machines all on localhost, distinct ssh + daemon ports,
   # shared zenoh_peer so cross-daemon discovery works without multicast
-  # (the spread-across-m1/m2/m3 dataflow below depends on this).
+  # (the spread-across-m1/m2/m3 dataflows below depend on this).
   local SSH_USER
   SSH_USER=$(id -un)
   cat > "$WORK/cluster.yml" <<EOF
@@ -683,6 +677,152 @@ machines:
     daemon_port: $D3
 EOF
 
+  return 0
+}
+
+# Bring the cluster up via SSH and assert all 3 daemons connected. Shared by
+# cluster-e2e and cluster-record-replay. Must run inside the per-job subshell
+# (where PATH points at "$WORK/bin" and DORA_COORDINATOR_PORT is exported);
+# returns non-zero on any check so the caller can `|| exit 1`.
+cluster_up_and_verify() {
+  echo "=== dora cluster up ==="
+  local up_out
+  if ! up_out=$(dora cluster up "$WORK/cluster.yml" 2>&1); then
+    echo "$up_out"
+    echo "ERROR: dora cluster up failed"
+    return 1
+  fi
+  echo "$up_out"
+  if ! echo "$up_out" | grep -q "Cluster is up: coordinator + 3 daemon(s)"; then
+    echo "ERROR: 'cluster up' did not report 3 daemons up"
+    return 1
+  fi
+
+  echo "=== dora cluster status ==="
+  local status_out
+  status_out=$(dora cluster status 2>&1)
+  echo "$status_out"
+  if ! echo "$status_out" | grep -q 'DAEMON ID'; then
+    echo "ERROR: status output missing header"
+    return 1
+  fi
+  # Named daemons show as `<machine-id>-<uuid>`. Count rows for m1/m2/m3.
+  local rows
+  rows=$(echo "$status_out" | grep -cE '^m[1-3]-' || true)
+  if [ "$rows" -lt 3 ]; then
+    echo "ERROR: expected 3 daemons (m1/m2/m3) in status, got $rows"
+    return 1
+  fi
+  echo "OK: 3 daemons connected via SSH"
+  return 0
+}
+
+# Tear the cluster down and assert it's gone with no leftover processes from
+# our scratch CLI. Shared by cluster-e2e and cluster-record-replay. Must run
+# inside the per-job subshell; returns non-zero on any check.
+assert_cluster_torn_down() {
+  echo "=== dora cluster down ==="
+  if ! dora cluster down; then
+    echo "ERROR: dora cluster down returned non-zero"
+    return 1
+  fi
+  sleep 1
+  if dora cluster status 2>/dev/null; then
+    echo "ERROR: cluster status succeeded after 'cluster down'"
+    return 1
+  fi
+
+  # Leftover-process check: scoped to our scratch CLI binary. Uses both
+  # pgrep -f (argv match) and /proc/<pid>/exe (binary match) — the latter
+  # is essential here because SSH-spawned daemons have argv[0]="dora", not
+  # "$CLI_ROOT/bin/dora", and a pgrep-only check would miss them silently.
+  sleep 1
+  local leftover
+  leftover=$(find_our_dora_pids | tr '\n' ' ')
+  if [ -n "${leftover// /}" ]; then
+    echo "ERROR: leftover dora processes after cluster down (from our CLI): $leftover"
+    if command -v pgrep > /dev/null 2>&1; then
+      pgrep -fa "$CLI_ROOT/bin/dora" 2>/dev/null || true
+    fi
+    return 1
+  fi
+  return 0
+}
+
+# Poll `dora list` until the given dataflow (by name or UUID) reaches Finished.
+# Returns 0 on Finished, 1 on Failed or 30s timeout. Shared by cluster-e2e and
+# cluster-record-replay; must run inside the per-job subshell (talks to the
+# cluster coordinator on DORA_COORDINATOR_PORT). Reaching Finished doubles as a
+# cross-daemon liveness check: downstream nodes only exit once their
+# inter-daemon inputs close, so a broken Zenoh data plane leaves the dataflow
+# Running forever and this poll times out.
+poll_dataflow_finished() {
+  local id="$1"
+  echo "=== poll dataflow $id for Finished (max 30s) ==="
+  local i list_out status=""
+  for i in $(seq 1 60); do
+    list_out=$(dora list 2>/dev/null || true)
+    status=$(echo "$list_out" | grep "$id" | awk '{print $3}' | head -1)
+    case "$status" in
+      Finished)
+        echo "OK: dataflow $id reached Finished (cross-daemon data plane verified)"
+        return 0
+        ;;
+      Failed)
+        echo "$list_out"
+        echo "ERROR: dataflow $id reached Failed status"
+        return 1
+        ;;
+    esac
+    sleep 0.5
+  done
+  echo "$list_out"
+  echo "ERROR: dataflow $id did not reach Finished within 30s (status: ${status:-<not in list>})."
+  echo "       This usually means the inter-daemon Zenoh data plane isn't carrying"
+  echo "       messages -- check that cluster.yml's zenoh_peer is reachable and that"
+  echo "       the daemons started with --zenoh-peer."
+  return 1
+}
+
+# -----------------------------------------------------------------------------
+# Job 3: cluster-e2e
+#
+# End-to-end test of the `dora cluster` SSH lifecycle. cluster-smoke (above)
+# uses `dora up` to launch a local coordinator+daemon and exercises only the
+# post-up commands (status/down) — it does NOT cover the SSH path of
+# `cluster up`, which is the most failure-prone part of the feature.
+#
+# This job stands up a real sshd on a random loopback port, then runs
+# `dora cluster up` against a cluster.yml with 3 machines all pointing at
+# localhost (via the `port` and `daemon_port` fields added by the cluster-ssh-port
+# and cluster-daemon-port PRs). Validates that:
+#   1. ssh-based daemon spawn works (3 daemons reach the coordinator)
+#   2. `cluster status` lists all 3
+#   3. `cluster down` tears everything down with no leftover processes
+#
+# Linux-only: macOS sshd has different defaults and locked-down config paths
+# that don't map cleanly to this fixture, and the only Windows path would be
+# OpenSSH-server-for-Windows which isn't worth the maintenance. The script
+# does NOT install openssh-server itself — it hard-fails with an install
+# hint if sshd is missing (per the agreed policy in the PR plan). GHA
+# installs openssh-server in the workflow before invoking this script.
+# -----------------------------------------------------------------------------
+job_cluster_e2e() {
+  case "$OS" in
+    Linux) ;;
+    *)
+      echo "SKIP: cluster-e2e is Linux-only ($OS)"
+      SKIPPED+=("cluster-e2e: $OS not supported")
+      return 0
+      ;;
+  esac
+
+  # Bring up the loopback SSH cluster (sshd + keys + cluster.yml). Sets
+  # $WORK, $SSHD_PID, $COORD_PORT; hard-fails if openssh-server is missing.
+  if ! setup_loopback_ssh_cluster cluster-e2e; then
+    return 1
+  fi
+
   # The test body runs in a subshell so PATH and DORA_COORDINATOR_PORT
   # exports stay scoped to this job — this script runs subsequent jobs
   # (record-replay, topic-and-top-smoke, etc.) in the same shell, and
@@ -700,35 +840,7 @@ EOF
     export PATH="$WORK/bin:$PATH"
     export DORA_COORDINATOR_PORT="$COORD_PORT"
 
-    echo "=== dora cluster up ==="
-    local up_out
-    if ! up_out=$(dora cluster up "$WORK/cluster.yml" 2>&1); then
-      echo "$up_out"
-      echo "ERROR: dora cluster up failed"
-      exit 1
-    fi
-    echo "$up_out"
-    if ! echo "$up_out" | grep -q "Cluster is up: coordinator + 3 daemon(s)"; then
-      echo "ERROR: 'cluster up' did not report 3 daemons up"
-      exit 1
-    fi
-
-    echo "=== dora cluster status ==="
-    local status_out
-    status_out=$(dora cluster status 2>&1)
-    echo "$status_out"
-    if ! echo "$status_out" | grep -q 'DAEMON ID'; then
-      echo "ERROR: status output missing header"
-      exit 1
-    fi
-    # Named daemons show as `<machine-id>-<uuid>`. Count rows for m1/m2/m3.
-    local rows
-    rows=$(echo "$status_out" | grep -cE '^m[1-3]-' || true)
-    if [ "$rows" -lt 3 ]; then
-      echo "ERROR: expected 3 daemons (m1/m2/m3) in status, got $rows"
-      exit 1
-    fi
-    echo "OK: 3 daemons connected via SSH"
+    cluster_up_and_verify || exit 1
 
     # === Distributed dataflow run on the SSH-spawned cluster ===
     # Build the rust-dataflow example nodes and run a dataflow spread
@@ -838,41 +950,13 @@ EOF
       exit 1
     fi
 
-    # Poll the restarted instance for Finished status. This is the only
-    # assertion in this job that proves the cross-daemon Zenoh data plane
-    # actually carries messages: rust-status-node on m2 only exits when
-    # its `random` input (from rust-node on m1) closes, and rust-sink on
-    # m3 only exits when its `message` input (from rust-status-node on m2)
-    # closes — both closures propagate over inter-daemon Zenoh. If that
-    # plane is broken, the dataflow stays Running forever and this poll
-    # times out. (A Running/Failed check alone would not catch the broken
-    # case: with broken Zenoh, the source finishes but downstream nodes
-    # block in `events.recv()` indefinitely, leaving the dataflow Running.)
-    echo "=== poll restarted dataflow $new_uuid for Finished (max 30s) ==="
-    local status=""
-    for i in $(seq 1 60); do
-      list_out=$(dora list 2>/dev/null || true)
-      status=$(echo "$list_out" | grep "$new_uuid" | awk '{print $3}' | head -1)
-      case "$status" in
-        Finished) break ;;
-        Failed)
-          echo "$list_out"
-          echo "ERROR: restarted dataflow reached Failed status"
-          exit 1
-          ;;
-      esac
-      sleep 0.5
-    done
-    if [ "$status" != "Finished" ]; then
-      echo "$list_out"
-      echo "ERROR: restarted dataflow $new_uuid did not reach Finished within 30s"
-      echo "       (status: ${status:-<not in list>}). This usually means the"
-      echo "       inter-daemon Zenoh data plane isn't carrying messages —"
-      echo "       check that cluster.yml's zenoh_peer is reachable and that"
-      echo "       the daemons started with --zenoh-peer."
-      exit 1
-    fi
-    echo "OK: cross-daemon data plane verified — restarted dataflow reached Finished"
+    # Poll the restarted instance for Finished. This is the assertion that
+    # proves the cross-daemon Zenoh data plane actually carries messages:
+    # rust-status-node on m2 only exits when its `random` input (from
+    # rust-node on m1) closes, and rust-sink on m3 only exits when its
+    # `message` input (from rust-status-node on m2) closes — both closures
+    # propagate over inter-daemon Zenoh.
+    poll_dataflow_finished "$new_uuid" || exit 1
 
     # Stop any still-running instance(s) so cluster down has a clean slate.
     # `dora stop --name` matches by name; a non-zero exit usually means the
@@ -881,31 +965,7 @@ EOF
     dora stop --name cluster-e2e 2>&1 || echo "(dora stop returned non-zero; dataflow may have already finished)"
     sleep 1
 
-    echo "=== dora cluster down ==="
-    if ! dora cluster down; then
-      echo "ERROR: dora cluster down returned non-zero"
-      exit 1
-    fi
-    sleep 1
-    if dora cluster status 2>/dev/null; then
-      echo "ERROR: cluster status succeeded after 'cluster down'"
-      exit 1
-    fi
-
-    # Leftover-process check: scoped to our scratch CLI binary. Uses both
-    # pgrep -f (argv match) and /proc/<pid>/exe (binary match) — the latter
-    # is essential here because SSH-spawned daemons have argv[0]="dora", not
-    # "$CLI_ROOT/bin/dora", and a pgrep-only check would miss them silently.
-    sleep 1
-    local leftover
-    leftover=$(find_our_dora_pids | tr '\n' ' ')
-    if [ -n "${leftover// /}" ]; then
-      echo "ERROR: leftover dora processes after cluster down (from our CLI): $leftover"
-      if command -v pgrep > /dev/null 2>&1; then
-        pgrep -fa "$CLI_ROOT/bin/dora" 2>/dev/null || true
-      fi
-      exit 1
-    fi
+    assert_cluster_torn_down || exit 1
   ) || test_rc=$?
 
   # Cleanup happens regardless of pass/fail. Sshd is also in MANAGED_PIDS
@@ -919,6 +979,263 @@ EOF
     echo "OK: cluster-e2e completed cleanly"
   fi
   return $test_rc
+}
+
+# -----------------------------------------------------------------------------
+# Job 3b: cluster-record-replay
+#
+# Stitches the two existing nightly ingredients -- `cluster-e2e` (multi-daemon
+# SSH cluster) and `record-replay` (record + replay round-trip) -- into one
+# end-to-end flow (issue #2013, "B1"):
+#
+#   1. bring up a 3-daemon SSH cluster (shared setup_loopback_ssh_cluster)
+#   2. start the rust-dataflow example spread across m1/m2/m3, with a
+#      `__dora_record__` node deployed on m3 capturing both upstream outputs
+#      (rust-node/random from m1, rust-status-node/status from m2) -- so the
+#      recording itself flows over the inter-daemon Zenoh data plane
+#   3. let the dataflow finish (the source self-terminates after 100 ticks)
+#   4. tear the cluster down
+#   5. replay the recording locally (`dora replay`, a single-daemon `dora run`)
+#   6. validate the *replayed state*: the replayed sink output must reproduce
+#      the deterministic fastrand::seed(42) random-value sequence committed in
+#      tests/sample-inputs/expected-outputs-rust-status-node.jsonl.
+#
+# The descriptor embedded in the .drec (DORA_RECORD_DESCRIPTOR) is the
+# deploy-free `plain.yml`, because local `dora run`/`dora replay` reject
+# `_unstable_deploy`; the cluster-started descriptor is that same plain.yml
+# with `_unstable_deploy.machine` injected per node. The record node is
+# generated by the real `dora record --output-yaml` so the record-node env
+# contract stays authoritative rather than hand-duplicated here.
+#
+# Linux-only for the same reasons as cluster-e2e (loopback sshd). Hard-fails
+# if openssh-server is missing.
+# -----------------------------------------------------------------------------
+job_cluster_record_replay() {
+  case "$OS" in
+    Linux) ;;
+    *)
+      echo "SKIP: cluster-record-replay is Linux-only ($OS)"
+      SKIPPED+=("cluster-record-replay: $OS not supported")
+      return 0
+      ;;
+  esac
+
+  ensure_cli_installed
+
+  # Pre-build every binary the cluster run and the local replay need, so
+  # neither `dora start` (cluster) nor `dora replay` (local) has to build
+  # anything at run time. Absolute target/debug paths in the descriptors
+  # below depend on these existing.
+  if ! cargo build --quiet \
+       -p rust-dataflow-example-node \
+       -p rust-dataflow-example-status-node \
+       -p rust-dataflow-example-sink \
+       -p dora-record-node \
+       -p dora-replay-node; then
+    echo "ERROR: cargo build of dataflow + record/replay nodes failed"
+    return 1
+  fi
+
+  if ! setup_loopback_ssh_cluster cluster-record-replay; then
+    return 1
+  fi
+
+  local DREC="$WORK/cluster-run.drec"
+  local test_rc=0
+  (
+    export PATH="$WORK/bin:$PATH"
+    export DORA_COORDINATOR_PORT="$COORD_PORT"
+
+    cluster_up_and_verify || exit 1
+
+    local REPO_ROOT
+    REPO_ROOT="$(pwd)"
+
+    # plain.yml: the deploy-free, build-free, absolute-path descriptor. This
+    # is what gets embedded in the .drec and replayed locally, so it must NOT
+    # carry `_unstable_deploy` (local `dora run` rejects it) or `build:`
+    # directives (the local replay runs from a scratch dir with no Cargo.toml
+    # reachable -- absolute prebuilt paths sidestep that).
+    cat > "$WORK/plain.yml" <<EOF
+nodes:
+  - id: rust-node
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - random
+    output_types:
+      random: std/core/v1/UInt64
+  - id: rust-status-node
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    inputs:
+      tick: dora/timer/millis/100
+      random: rust-node/random
+    input_types:
+      random: std/core/v1/UInt64
+    outputs:
+      - status
+    output_types:
+      status: std/core/v1/String
+  - id: rust-sink
+    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    inputs:
+      message: rust-status-node/status
+    input_types:
+      message: std/core/v1/String
+EOF
+
+    # Inject the record node with the real CLI (keeps the record-node env
+    # contract authoritative). Writes the .drec to an absolute loopback path
+    # so whichever daemon hosts the record node can write it and the later
+    # local replay can read it back.
+    echo "=== dora record --output-yaml (inject __dora_record__) ==="
+    if ! dora record --output-yaml "$WORK/recorded.yml" -o "$DREC" "$WORK/plain.yml" 2>&1; then
+      echo "ERROR: dora record --output-yaml failed"
+      exit 1
+    fi
+
+    # Spread the 4 nodes across m1/m2/m3 by inserting `_unstable_deploy.machine`
+    # right after each top-level `- id: <name>` line. serde_yaml emits those
+    # lines verbatim at column 0 with node properties at 2-space indent, so the
+    # 2-/4-space inserted block lands at the correct sibling level. Putting the
+    # record node on m3 while its inputs originate on m1 (random) and m2
+    # (status) forces the recording across the inter-daemon Zenoh data plane.
+    awk '
+      /^- id: rust-node$/        { print; print "  _unstable_deploy:"; print "    machine: m1"; next }
+      /^- id: rust-status-node$/ { print; print "  _unstable_deploy:"; print "    machine: m2"; next }
+      /^- id: rust-sink$/        { print; print "  _unstable_deploy:"; print "    machine: m3"; next }
+      /^- id: __dora_record__$/  { print; print "  _unstable_deploy:"; print "    machine: m3"; next }
+      { print }
+    ' "$WORK/recorded.yml" > "$WORK/cluster.dataflow.yml"
+
+    # Guard against serde_yaml emission drift: if the `- id:` line shape ever
+    # changes, the awk above silently injects nothing and every node defaults
+    # to one machine -- which still reaches Finished, quietly defeating the
+    # cross-daemon point of this job. Assert all 4 deploy blocks were inserted.
+    local injected
+    injected=$(grep -c '^  _unstable_deploy:$' "$WORK/cluster.dataflow.yml")
+    if [ "$injected" -ne 4 ]; then
+      echo "ERROR: expected to inject 4 _unstable_deploy blocks, injected $injected"
+      echo "       (the record CLI's YAML emission format may have changed)"
+      exit 1
+    fi
+
+    echo "=== dora start (record across m1/m2/m3) ==="
+    if ! dora start "$WORK/cluster.dataflow.yml" --detach --name cluster-record 2>&1; then
+      echo "ERROR: dora start failed"
+      exit 1
+    fi
+
+    # The source node sends 100 ticks at 10ms (~1s) then exits; the record
+    # node exits when its inputs close. If the inter-daemon data plane were
+    # broken, the record node on m3 would never see the m1/m2 outputs close
+    # and this poll would time out.
+    poll_dataflow_finished cluster-record || exit 1
+
+    echo "=== dora stop --name cluster-record ==="
+    dora stop --name cluster-record 2>&1 || echo "(dora stop returned non-zero; dataflow may have already finished)"
+    sleep 1
+
+    assert_cluster_torn_down || exit 1
+
+    if [ ! -s "$DREC" ]; then
+      echo "ERROR: recording is empty -- the record node captured nothing"
+      exit 1
+    fi
+    echo "OK: recording size: $(wc -c < "$DREC") bytes"
+  ) || test_rc=$?
+
+  # sshd teardown happens regardless of pass/fail.
+  terminate_pid "$SSHD_PID"
+  wait "$SSHD_PID" 2>/dev/null || true
+
+  if [ "$test_rc" -ne 0 ]; then
+    rm -rf "$WORK"
+    return "$test_rc"
+  fi
+
+  # === Replay the cluster recording locally and validate the replayed state ===
+  # `dora replay` runs a local single-daemon `dora run` from the deploy-free
+  # descriptor stored in the .drec. The recorded source nodes (rust-node and
+  # rust-status-node) are swapped for replay nodes; rust-sink reprocesses the
+  # replayed status strings. `--speed 0` replays as fast as possible. Invoked
+  # from the repo root so the replay-node binary resolves under target/debug;
+  # the run's working_dir is the .drec's parent ($WORK), so node logs land in
+  # $WORK/out/.
+  echo "=== dora replay $DREC (local single-daemon run) ==="
+  rm -rf "$WORK/out"
+  if ! timeout 120s dora replay "$DREC" --speed 0; then
+    echo "ERROR: dora replay failed or exceeded 120s"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Guard against a silent node crash: `dora replay` can exit 0 while a node
+  # actually failed mid-run (same class of gap assert_clean_dataflow_run was
+  # written for in the cli-tests job).
+  if ! assert_clean_dataflow_run "$WORK/out"; then
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  local sink_log
+  sink_log=$(find "$WORK/out" -name 'log_rust-sink.jsonl' -type f 2>/dev/null | head -1)
+  if [ -z "$sink_log" ]; then
+    echo "ERROR: no rust-sink log produced by replay (expected $WORK/out/<uuid>/log_rust-sink.jsonl)"
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  # Validate that the replayed random-value sequence exactly reproduces the
+  # committed seed(42) baseline. dora's transport delivers every recorded
+  # output (reliable, ordered), so the replayed sink must see the full
+  # baseline sequence in order -- any drop, reorder, or value change is a
+  # genuine record/replay regression, not expected noise.
+  echo "=== validate replayed state against seed(42) baseline ==="
+  local baseline="tests/sample-inputs/expected-outputs-rust-status-node.jsonl"
+  if ! python3 - "$sink_log" "$baseline" <<'PY'; then
+import re
+import sys
+
+sink_log, baseline_path = sys.argv[1], sys.argv[2]
+
+
+def values(path):
+    out = []
+    with open(path) as f:
+        for line in f:
+            out.extend(re.findall(r"random value (0x[0-9a-f]+)", line))
+    return out
+
+
+replayed = values(sink_log)
+baseline = values(baseline_path)
+
+if not replayed:
+    print("ERROR: replay produced no random values in the sink log")
+    sys.exit(1)
+if replayed != baseline:
+    print(
+        f"ERROR: replayed sequence ({len(replayed)} values) does not match the "
+        f"seed(42) baseline ({len(baseline)} values)"
+    )
+    for i, (r, b) in enumerate(zip(replayed, baseline)):
+        if r != b:
+            print(f"  first divergence at index {i}: replayed={r} baseline={b}")
+            break
+    else:
+        print("  sequences share a common prefix but differ in length")
+    sys.exit(1)
+
+print(f"OK: replayed {len(replayed)} random values exactly reproduce the seed(42) baseline")
+PY
+    rm -rf "$WORK"
+    return 1
+  fi
+
+  rm -rf "$WORK"
+  echo "OK: cluster-record-replay completed cleanly"
 }
 
 # -----------------------------------------------------------------------------
@@ -1676,6 +1993,7 @@ job_ros2_bridge() {
 run_job "record-replay"             job_record_replay
 run_job "cluster-smoke"             job_cluster_smoke
 run_job "cluster-e2e"               job_cluster_e2e
+run_job "cluster-record-replay"     job_cluster_record_replay
 run_job "topic-and-top-smoke"       job_topic_and_top
 run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
