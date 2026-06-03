@@ -2466,6 +2466,10 @@ impl Daemon {
 
         let mut stopped = Vec::new();
 
+        // A present `build_id` means the session has a build that wasn't
+        // invalidated (the CLI clears it when build inputs change). We use this
+        // below to decide whether re-deriving an on-disk managed env is safe.
+        let have_build_id = build_id.is_some();
         let build_info = build_id.and_then(|build_id| self.builds.get(&build_id));
         let node_with_git_source = nodes.values().find(|n| n.has_git_source());
         if let Some(git_node) = node_with_git_source
@@ -2664,24 +2668,29 @@ impl Daemon {
                 // process from the daemon that later serves `dora start`, so the
                 // daemon's in-memory build record can be empty (dora-rs/dora#2004).
                 // The env dir is deterministic, so re-derive it (the restart path
-                // does the same), and use it IF `dora build` actually created it on
-                // disk. Fail closed only when the env is genuinely missing (stale
-                // session, prior non-`--uv` build, or `start --uv` without a build)
-                // so `--uv` never silently falls back to the ambient Python.
+                // does the same) and reuse the on-disk env -- but ONLY when a
+                // build id is present, i.e. a build occurred and this daemon just
+                // lacks the in-memory record. When the build id was cleared (the
+                // CLI invalidates it on build-input changes, a prior non-`--uv`
+                // build, or `start --uv` with no build), do NOT reuse a possibly
+                // stale env; require a rebuild. Either way, never silently fall
+                // back to the ambient Python.
                 if uv
                     && configured_python_env_dir.is_none()
                     && let Some(expected) =
                         dora_core::build::managed_python_env_dir(&node, &node_working_dir)
                 {
-                    if dora_core::build::managed_python_interpreter(&expected).is_file() {
+                    if have_build_id
+                        && dora_core::build::managed_python_interpreter(&expected).is_file()
+                    {
                         configured_python_env_dir = Some(expected);
                     } else {
                         eyre::bail!(
                             "node `{node_id}` is a Python node that needs a managed env under `--uv`, \
-                             but none was found at `{}`. \
+                             but no current build provides one (the build cache is absent or was \
+                             invalidated by changed build inputs). \
                              Run `dora build --uv <dataflow>` before `dora start --uv`, \
-                             or omit `--uv` to run against the ambient Python.",
-                            expected.display()
+                             or omit `--uv` to run against the ambient Python."
                         );
                     }
                 }
