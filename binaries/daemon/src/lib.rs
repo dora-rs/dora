@@ -10,7 +10,7 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
-        reserve_loopback_zenoh_endpoint, zenoh_output_publish_topic,
+        reserve_loopback_zenoh_endpoint, zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -2726,8 +2726,8 @@ impl Daemon {
                         .wrap_err("no remote_daemon_events_tx channel")?;
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     let subscribe_topic =
-                        zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
-                    tracing::debug!("declaring subscriber on {subscribe_topic}");
+                        zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
+                    tracing::debug!("declaring control subscriber on {subscribe_topic}");
                     let subscriber = self
                         .zenoh_session
                         .declare_subscriber(subscribe_topic)
@@ -2760,30 +2760,13 @@ impl Daemon {
                                     finished = f;
                                     match sample {
                                         Ok(s) => {
-                                            // Count telemetry for every received sample. Use the
-                                            // cheap length accessor so we don't materialize the
-                                            // payload (`to_bytes()` copies for multi-region buffers)
-                                            // for the samples we skip below.
+                                            // Count telemetry for every received control sample.
                                             net_bytes_rx.fetch_add(
                                                 s.payload().len() as u64,
                                                 std::sync::atomic::Ordering::Relaxed,
                                             );
                                             net_msgs_rx
                                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                            // dora #1992: since #1787 moved data routing off the
-                                            // daemon, nodes publish their raw output directly to
-                                            // this same Zenoh key (raw payload + bincode Metadata
-                                            // in the Zenoh ATTACHMENT) and the consumer node reads
-                                            // it directly (apis/rust/node/src/event_stream/mod.rs).
-                                            // Such samples carry an attachment; daemon-emitted
-                                            // InterDaemonEvent frames (Output fallback /
-                                            // OutputClosed in send_to_remote_receivers) NEVER set
-                                            // one. Skip attachment-bearing samples here so the
-                                            // daemon does not bincode-decode node raw output (which
-                                            // fails with "failed to deserialize InterDaemonEvent").
-                                            if s.attachment().is_some() {
-                                                continue;
-                                            }
                                             let bytes = s.payload().to_bytes();
                                             let event =
                                                 Timestamped::deserialize_inter_daemon_event(&bytes)
@@ -3267,8 +3250,8 @@ impl Daemon {
             std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
             std::collections::btree_map::Entry::Vacant(e) => {
                 let publish_topic =
-                    zenoh_output_publish_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring publisher on {publish_topic}");
+                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
+                tracing::debug!("declaring control publisher on {publish_topic}");
                 let publisher = self
                     .zenoh_session
                     .declare_publisher(publish_topic)

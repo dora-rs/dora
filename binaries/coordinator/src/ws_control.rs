@@ -410,7 +410,7 @@ pub(crate) async fn handle_control_ws(
     }
 }
 
-/// Publish JSON data to a Zenoh topic as a serialized `InterDaemonEvent::Output`.
+/// Publish JSON data as a serialized `InterDaemonEvent::Output`.
 ///
 /// The JSON string is stored as raw UTF-8 bytes in a UInt8 Arrow array.
 async fn publish_topic(
@@ -421,7 +421,7 @@ async fn publish_topic(
     clock: &dora_core::uhlc::HLC,
     session: &mut Option<zenoh::Session>,
 ) -> Result<(), String> {
-    let topic = dora_core::topics::zenoh_output_publish_topic(dataflow_id, node_id, output_id);
+    let topic = dora_core::topics::zenoh_daemon_control_topic(dataflow_id, node_id, output_id);
 
     // Store JSON as raw UTF-8 bytes in a UInt8 array
     let data_bytes = data_json.as_bytes();
