@@ -90,7 +90,10 @@ for event in node:
         recv_ns = time.perf_counter_ns()
         event_id = event["id"]
         arrow_array = event["value"]
-        data = bytes(arrow_array.buffers()[1])
+        # Extract the raw uint8 bytes safely. `buffers()[1]` (the values buffer)
+        # is absent for a zero-length array, so the size-0 sample raised
+        # IndexError; to_numpy() handles every length (0 -> b"").
+        data = arrow_array.to_numpy(zero_copy_only=False).tobytes()
         data_len = len(arrow_array)
 
         if data_len != current_size:
