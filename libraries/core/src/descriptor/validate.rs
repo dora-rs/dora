@@ -323,7 +323,9 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
     };
     // Use integer parse when possible to avoid float rounding
     if let Ok(num) = num_str.parse::<u64>() {
-        return Ok(num * multiplier);
+        return num
+            .checked_mul(multiplier)
+            .ok_or_else(|| eyre!("byte size '{num_str}{unit}' overflows u64"));
     }
     let num: f64 = num_str
         .parse()
@@ -2021,6 +2023,14 @@ nodes:
         assert!(parse_byte_size("1TB").is_err());
         assert!(parse_byte_size("1XB").is_err());
         assert!(parse_byte_size("1foo").is_err());
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_integer_overflow() {
+        // num fits in u64 but num * multiplier overflows; must not panic
+        // (debug) or silently wrap (release).
+        assert!(parse_byte_size("20000000000GB").is_err());
+        assert!(parse_byte_size("18446744073709551615GB").is_err());
     }
 
     #[test]

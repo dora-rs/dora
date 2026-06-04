@@ -1047,7 +1047,10 @@ impl DoraNode {
         use zenoh::Wait;
         use zenoh::qos::{CongestionControl, Priority};
 
-        let session = self.zenoh_session.as_ref().unwrap();
+        let session = self
+            .zenoh_session
+            .as_ref()
+            .ok_or_else(|| eyre::eyre!("zenoh session not initialized"))?;
 
         // Get or create publisher for this output. QoS is configured at
         // declare time so it applies to every put: `express(true)` bypasses
@@ -1078,7 +1081,10 @@ impl DoraNode {
         } else {
             false
         };
-        let publisher = self.zenoh_publishers.get(output_id).unwrap();
+        let publisher = self
+            .zenoh_publishers
+            .get(output_id)
+            .ok_or_else(|| eyre::eyre!("zenoh publisher missing for output `{output_id}`"))?;
 
         if declared_publisher {
             let wait_until = Instant::now() + ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT;

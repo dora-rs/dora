@@ -282,7 +282,9 @@ impl FromStr for InputMapping {
                                     "hz must be a positive finite number (got `{value}`)"
                                 ));
                             }
-                            Duration::from_secs_f64(1.0 / hz)
+                            Duration::try_from_secs_f64(1.0 / hz).map_err(|e| {
+                                format!("hz `{value}` produces an out-of-range interval: {e}")
+                            })?
                         }
                         other => {
                             return Err(format!(
@@ -654,6 +656,17 @@ mod tests {
     #[test]
     fn parse_timer_hz_rejects_non_numeric() {
         let err = "dora/timer/hz/foo".parse::<InputMapping>().unwrap_err();
+        assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    #[test]
+    fn parse_timer_hz_rejects_overflow() {
+        // A pathologically small hz makes 1/hz overflow Duration; this must
+        // return an error, not panic (was `Duration::from_secs_f64`, which
+        // panics on out-of-range input).
+        let err = "dora/timer/hz/0.00000000000000000001"
+            .parse::<InputMapping>()
+            .unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
     }
 
