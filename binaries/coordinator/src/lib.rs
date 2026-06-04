@@ -4522,6 +4522,144 @@ mod tests {
         );
     }
 
+    // #2028: a spawn-pending dataflow stays the spawn-timeout watchdog's
+    // domain — disconnect cleanup must produce no action and not remove it.
+    #[test]
+    fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        // spawn_result left Pending (CachedResult::default()).
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_id]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            actions.is_empty(),
+            "spawn-pending dataflows must be left to the spawn-timeout watchdog"
+        );
+        assert!(
+            running_dataflows.contains_key(&dataflow_id),
+            "must not tear down a spawn-pending dataflow"
+        );
+    }
+
+    // #2028 deadlock #1: the last daemon awaited for ReadyOnDaemon disconnects
+    // after spawn succeeded -> the start barrier must be released for survivors.
+    #[test]
+    fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_a = DaemonId::new(Some("a".to_string()));
+        let daemon_b = DaemonId::new(Some("b".to_string()));
+        let node_a: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), node_a);
+        df.daemons.insert(daemon_b.clone());
+        df.node_to_daemon
+            .insert("receiver".to_string().into(), daemon_b.clone());
+        // spawn already succeeded; A reported ready, still waiting on B.
+        df.spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        df.pending_daemons.insert(daemon_b.clone());
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_b]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            matches!(actions.as_slice(), [DisconnectAction::ReleaseReadyBarrier(id)] if *id == dataflow_id),
+            "must release the ready barrier, got {} action(s)",
+            actions.len()
+        );
+        let df = running_dataflows
+            .get(&dataflow_id)
+            .expect("survivor dataflow must remain");
+        assert_eq!(df.daemons, BTreeSet::from([daemon_a]));
+        assert!(df.pending_daemons.is_empty());
+    }
+
+    // #2028 deadlocks #2 + #3: the sole daemon of a running dataflow dies ->
+    // the dataflow must be torn down (removed, classified Failed, archived) and
+    // any parked `dora stop` waiter resolved instead of hanging.
+    #[tokio::test]
+    async fn disconnect_tears_down_orphaned_running_dataflow() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = Arc::new(HLC::default());
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        df.spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        // a parked `dora stop` waiter
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.stop_reply_senders.push(tx);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_id]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            matches!(actions.as_slice(), [DisconnectAction::TearDownOrphaned(id)] if *id == dataflow_id),
+            "must tear down the orphaned dataflow"
+        );
+
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+        apply_disconnect_actions(
+            actions,
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &store,
+            &clock,
+        )
+        .await
+        .expect("apply_disconnect_actions");
+
+        assert!(
+            !running_dataflows.contains_key(&dataflow_id),
+            "orphaned dataflow must be removed from running set"
+        );
+        let per_daemon = dataflow_results
+            .get(&dataflow_id)
+            .expect("teardown must synthesize a result");
+        assert!(
+            !per_daemon.values().all(DataflowDaemonResult::is_ok),
+            "orphaned dataflow must classify as Failed, not vacuously Finished"
+        );
+        let reply = rx.await.expect("stop waiter must be resolved by teardown");
+        assert!(
+            matches!(reply, Ok(ControlRequestReply::DataflowStopped { uuid, .. }) if uuid == dataflow_id),
+            "parked dora stop must receive DataflowStopped"
+        );
+        assert!(
+            archived_dataflows.contains_key(&dataflow_id),
+            "torn-down dataflow must be archived for later `dora list`"
+        );
+    }
+
     #[test]
     fn resolve_param_target_returns_running_daemon_for_active_node() {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
