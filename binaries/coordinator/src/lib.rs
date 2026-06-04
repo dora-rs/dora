@@ -468,58 +468,28 @@ async fn start_inner(
                 DataflowEvent::ReadyOnDaemon {
                     daemon_id,
                     exited_before_subscribe,
-                } => {
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&daemon_id);
-                            dataflow
-                                .exited_before_subscribe
-                                .extend(exited_before_subscribe);
-                            if dataflow.pending_daemons.is_empty() {
-                                tracing::debug!("sending all nodes ready message to daemons");
-                                let message = serde_json::to_vec(&Timestamped {
-                                    inner: DaemonCoordinatorEvent::AllNodesReady {
-                                        dataflow_id: uuid,
-                                        exited_before_subscribe: dataflow
-                                            .exited_before_subscribe
-                                            .clone(),
-                                    },
-                                    timestamp: clock.new_timestamp(),
-                                })
-                                .wrap_err("failed to serialize AllNodesReady message")?;
-
-                                // notify all machines that run parts of the dataflow
-                                for daemon_id in &dataflow.daemons {
-                                    let Some(connection) = daemon_connections.get_mut(daemon_id)
-                                    else {
-                                        tracing::warn!(
-                                            "no daemon connection found for machine `{daemon_id}`"
-                                        );
-                                        continue;
-                                    };
-                                    connection.send(&message).await.wrap_err_with(|| {
-                                        format!(
-                                            "failed to send AllNodesReady({uuid}) message \
-                                            to machine {daemon_id}"
-                                        )
-                                    })?;
-                                }
-
-                                schedule_param_replay_for_ready_dataflow(
-                                    uuid,
-                                    dataflow,
-                                    &mut daemon_connections,
-                                    store.clone(),
-                                    clock.clone(),
-                                );
-                            }
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on ReadyOnMachine");
+                } => match running_dataflows.entry(uuid) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let dataflow = entry.get_mut();
+                        dataflow.pending_daemons.remove(&daemon_id);
+                        dataflow
+                            .exited_before_subscribe
+                            .extend(exited_before_subscribe);
+                        if dataflow.pending_daemons.is_empty() {
+                            broadcast_all_nodes_ready(
+                                uuid,
+                                dataflow,
+                                &mut daemon_connections,
+                                &store,
+                                &clock,
+                            )
+                            .await?;
                         }
                     }
-                }
+                    std::collections::hash_map::Entry::Vacant(_) => {
+                        tracing::warn!("dataflow not running on ReadyOnMachine");
+                    }
+                },
                 DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
                     tracing::debug!(
                         "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
@@ -3938,6 +3908,49 @@ fn ensure_remove_mapping_applied(reply_raw: &[u8], source: &str, target: &str) -
             "unexpected daemon reply for RemoveMapping `{source}` -> `{target}`: {other:?}"
         )),
     }
+}
+
+/// Broadcast `AllNodesReady` to every daemon running part of `dataflow` and
+/// schedule the persisted-parameter replay. Extracted from the `ReadyOnDaemon`
+/// handler so the disconnect/cleanup path can also release the start barrier
+/// when the last *pending* daemon goes away via disconnect rather than
+/// `ReadyOnDaemon` (see issue #2028).
+async fn broadcast_all_nodes_ready(
+    uuid: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_connections: &mut DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> eyre::Result<()> {
+    tracing::debug!("sending all nodes ready message to daemons");
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::AllNodesReady {
+            dataflow_id: uuid,
+            exited_before_subscribe: dataflow.exited_before_subscribe.clone(),
+        },
+        timestamp: clock.new_timestamp(),
+    })
+    .wrap_err("failed to serialize AllNodesReady message")?;
+
+    // notify all machines that run parts of the dataflow
+    for daemon_id in &dataflow.daemons {
+        let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+            tracing::warn!("no daemon connection found for machine `{daemon_id}`");
+            continue;
+        };
+        connection.send(&message).await.wrap_err_with(|| {
+            format!("failed to send AllNodesReady({uuid}) message to machine {daemon_id}")
+        })?;
+    }
+
+    schedule_param_replay_for_ready_dataflow(
+        uuid,
+        dataflow,
+        daemon_connections,
+        store.clone(),
+        clock.clone(),
+    );
+    Ok(())
 }
 
 fn schedule_param_replay_for_ready_dataflow(
