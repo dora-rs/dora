@@ -458,6 +458,15 @@ impl CachedResult {
         matches!(self, CachedResult::Cached { result: Err(_) })
     }
 
+    /// Returns `true` if a successful result has been cached, i.e. the dataflow
+    /// finished spawning successfully. Used by the daemon-disconnect cleanup to
+    /// gate ready-barrier release and orphaned-dataflow teardown to dataflows
+    /// that are past spawn — spawn-pending ones remain the spawn-timeout
+    /// watchdog's domain. See #2028.
+    pub(crate) fn is_cached_ok(&self) -> bool {
+        matches!(self, CachedResult::Cached { result: Ok(_) })
+    }
+
     fn send_result_to(
         result: &eyre::Result<ControlRequestReply>,
         sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
