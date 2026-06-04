@@ -1376,9 +1376,26 @@ job_cli_tests() {
   sleep 2
   dora build examples/rust-dataflow/dataflow_dynamic.yml
   dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
-  timeout 60s cargo run -p rust-dataflow-example-sink-dynamic
-  sleep 5
-  dora stop --name ci-rust-dynamic --grace-duration 5s 2>/dev/null || true
+  # The dynamic sink blocks on recv until its input closes. The upstream
+  # status-node runs an infinite timer and never exits, so the input only closes
+  # when the dataflow is stopped. Let the sink drain the producer's 100 messages
+  # (~10s), then stop the dataflow so the sink exits cleanly.
+  cargo run -p rust-dataflow-example-sink-dynamic &
+  sink_pid=$!
+  sleep 15
+  dora stop --name ci-rust-dynamic --grace-duration 5s
+  deadline=$((SECONDS + 30))
+  while kill -0 "$sink_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "dynamic sink did not exit within 30s after dora stop"
+      kill "$sink_pid" 2>/dev/null || true
+      wait "$sink_pid" 2>/dev/null || true
+      dora destroy 2>/dev/null || true
+      return 1
+    fi
+    sleep 1
+  done
+  wait "$sink_pid"
   dora destroy 2>/dev/null || true
 
   # Error Event Example
