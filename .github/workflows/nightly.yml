@@ -1205,14 +1205,29 @@ jobs:
         timeout-minutes: 45
         shell: bash
         run: |
+          cleanup() {
+            dora stop --name ci-rust-dynamic --grace-duration 5s 2>/dev/null || true
+            dora destroy 2>/dev/null || true
+          }
+          trap cleanup EXIT
           dora up
           dora list
           dora build examples/rust-dataflow/dataflow_dynamic.yml
           dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
-          cargo run -p rust-dataflow-example-sink-dynamic
+          cargo run -p rust-dataflow-example-sink-dynamic &
+          sink_pid=$!
+          deadline=$((SECONDS + 60))
+          while kill -0 "$sink_pid" 2>/dev/null; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "dynamic sink timed out after 60s"
+              kill "$sink_pid" 2>/dev/null || true
+              wait "$sink_pid" 2>/dev/null || true
+              exit 124
+            fi
+            sleep 1
+          done
+          wait "$sink_pid"
           sleep 5
-          dora stop --name ci-rust-dynamic --grace-duration 5s
-          dora destroy
 
       - name: Error Event Example
         timeout-minutes: 10
@@ -1472,12 +1487,14 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-cli-api-python
 
-  # ===== ROS2 bridge examples =====
-  # Restored from upstream dora CI — tests ROS2 integration on Ubuntu
-  # with ROS2 Humble.
+  # ===== ROS2 bridge basic checks =====
+  # Keep nightly coverage for ROS2 bridge code that does not require a full ROS
+  # distro install. Full ROS2 integration examples remain release/manual QA
+  # coverage because ros-tooling/setup-ros depends on external release assets
+  # (for example ros2-apt-source_*.deb) and has broken nightly on transient 404s.
   ros2-bridge:
-    name: ROS2 Bridge Examples
-    runs-on: ubuntu-22.04
+    name: ROS2 Bridge Basic Checks
+    runs-on: ubuntu-latest
     # (PR-CI gate removed; runs independently in nightly)
     timeout-minutes: 45
     steps:
@@ -1496,10 +1513,6 @@ jobs:
           large-packages: false
           docker-images: true
           swap-storage: false
-      - uses: ros-tooling/setup-ros@v0.7
-        with:
-          required-ros-distributions: humble
-      - run: 'source /opt/ros/humble/setup.bash && echo AMENT_PREFIX_PATH=${AMENT_PREFIX_PATH} >> "$GITHUB_ENV"'
       # Provision Python 3.12 BEFORE the first cargo invocation. The
       # workspace pins `abi3-py311` in pyo3 features (workspace
       # Cargo.toml:123) and pyo3-build-config 0.28+ rejects build-time
@@ -1524,52 +1537,12 @@ jobs:
         # surfaced as `ModuleNotFoundError: No module named 'numpy'` in
         # the 2026-05-20 nightly.
         run: pip install pyarrow numpy
-      - name: Test ROS2 bridge
+      - name: Check ROS2 bridge core without generated ROS messages
+        run: cargo check -p dora-ros2-bridge --no-default-features
+      - name: Test ROS2 message generator
+        run: cargo test -p dora-ros2-bridge-msg-gen
+      - name: Test ROS2 Python bridge basics
         run: cargo test -p dora-ros2-bridge-python
-      - name: Rust ROS2 Bridge example
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow &&
-          cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
-      # ROS2 action examples (rust + cxx action-server/client) are intentionally
-      # NOT run in nightly: their deferred get_result round-trip is flaky upstream
-      # (ros2-client/rustdds) and hangs on ~20% of cold starts. They stay in the
-      # repo and in scripts/ros2dev.sh qa (release-time QA). Re-add here once the
-      # upstream flake is fixed (#1170).
-      - name: Python ROS2 Bridge example
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          source /opt/ros/humble/setup.bash &&
-          uv venv --seed -p 3.12
-          source .venv/bin/activate
-          uv pip install -e apis/python/node
-          uv pip install pyarrow
-          cargo run -p dora-ros2-bridge --example python-ros2-dataflow
-          cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-client
-          cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-server
-      - name: C++ ROS2 Bridge example
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
-      - name: C++ ROS2 Bridge service-server example
-        # The dora C++ node hosts an AddTwoInts service server; the rclcpp
-        # minimal client (installed below) discovers it and sends a request.
-        timeout-minutes: 30
-        env:
-          QT_QPA_PLATFORM: offscreen
-        run: |
-          sudo apt-get update &&
-          sudo apt-get install -y ros-humble-examples-rclcpp-minimal-client &&
-          source /opt/ros/humble/setup.bash &&
-          cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
 
   # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported
@@ -1747,7 +1720,7 @@ jobs:
               cli-tests) echo '^CLI Tests \(.+\)$' ;;
               bench-example) echo '^Bench Example \(.+\)$' ;;
               cross-check) echo '^Cross-check \(.+\)$' ;;
-              ros2-bridge) echo '^ROS2 Bridge Examples$' ;;
+              ros2-bridge) echo '^ROS2 Bridge Basic Checks$' ;;
               msrv) echo '^MSRV check$' ;;
               *) echo '' ;;
             esac
