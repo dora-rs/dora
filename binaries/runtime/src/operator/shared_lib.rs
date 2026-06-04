@@ -168,7 +168,7 @@ impl SharedLibraryOperator<'_> {
             };
 
             let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
-            let _ = span.enter();
+            let _enter = span.enter();
             // Add metadata context if we have a tracer and
             // incoming input has some metadata.
             #[cfg(feature = "telemetry")]

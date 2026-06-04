@@ -59,6 +59,8 @@ OnEventResult_t dora_on_event(
             DoraResult_t res = dora_send_operator_output(send_output, out_id_heap, (uint8_t *)out_data, strlen(out_data));
             result.result = res;
 
+            free(out_id_heap);
+            free(out_data);
             dora_free_data(data);
         }
         else

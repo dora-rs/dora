@@ -189,7 +189,7 @@ pub fn run(
 
             let status = Python::attach(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
-                let _ = span.enter();
+                let _enter = span.enter();
 
                 // Add metadata context if we have a tracer and
                 // incoming input has some metadata.
@@ -349,7 +349,7 @@ mod callback_impl {
                     .context("failed to set parent span")
                     .unwrap_or_default();
             }
-            let _ = span.enter();
+            let _enter = span.enter();
 
             let allocate_sample = |data_len| {
                 if data_len > ZERO_COPY_THRESHOLD {
