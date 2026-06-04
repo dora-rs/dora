@@ -3118,76 +3118,7 @@ async fn check_spawn_timeouts(
         // misclassifying the dataflow as `Finished` (round-7
         // Finding 2). The original assignment is the right source of
         // truth for "what daemons should have been running this".
-        let synth_timestamp = clock.new_timestamp();
-        let assigned_daemons: BTreeSet<DaemonId> = df.node_to_daemon.values().cloned().collect();
-        let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = assigned_daemons
-            .iter()
-            .map(|daemon_id| {
-                let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
-                    .node_to_daemon
-                    .iter()
-                    .filter(|(_, did)| *did == daemon_id)
-                    .map(|(node_id, _)| {
-                        (
-                            node_id.clone(),
-                            Err(NodeError {
-                                timestamp: synth_timestamp,
-                                cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
-                                exit_status: NodeExitStatus::Unknown,
-                            }),
-                        )
-                    })
-                    .collect();
-                (
-                    daemon_id.clone(),
-                    DataflowDaemonResult {
-                        timestamp: synth_timestamp,
-                        node_results: nodes_for_daemon,
-                    },
-                )
-            })
-            .collect();
-        // Defense in depth: if `node_to_daemon` was also somehow empty
-        // (no nodes assigned — shouldn't happen via the construction
-        // path at handlers.rs:598, but be defensive), inject a sentinel
-        // entry under a synthetic daemon id so the dataflow still
-        // classifies as Failed. Empty `BTreeMap` would make List's
-        // `values().all(is_ok)` vacuously true.
-        let synth_results = if synth_results.is_empty() {
-            tracing::warn!(
-                dataflow = %uuid,
-                "watchdog teardown: node_to_daemon was empty; injecting \
-                 sentinel result so list classification is Failed",
-            );
-            let mut sentinel = BTreeMap::new();
-            let mut node_results = BTreeMap::new();
-            // Use `"watchdog"` (no angle brackets) because
-            // `NodeId::from(invalid_chars)` PANICS via `validate_node_id`
-            // -- the validator rejects characters outside `[a-zA-Z0-9_.-]`.
-            // This branch is dead code under normal construction (since
-            // `node_to_daemon` is populated at construction time), but
-            // a panic here would abort the coordinator if a future
-            // refactor empties `node_to_daemon` for any reason.
-            // Round-8 Finding 2.
-            node_results.insert(
-                NodeId::from("watchdog".to_string()),
-                Err(NodeError {
-                    timestamp: synth_timestamp,
-                    cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
-                    exit_status: NodeExitStatus::Unknown,
-                }),
-            );
-            sentinel.insert(
-                DaemonId::new(Some("watchdog".to_string())),
-                DataflowDaemonResult {
-                    timestamp: synth_timestamp,
-                    node_results,
-                },
-            );
-            sentinel
-        } else {
-            synth_results
-        };
+        let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
         // Insert before draining stop senders so the DataflowResult
         // they receive carries the synthesized node-level errors.
         dataflow_results
@@ -3907,6 +3838,84 @@ fn ensure_remove_mapping_applied(reply_raw: &[u8], source: &str, target: &str) -
         other => Err(eyre!(
             "unexpected daemon reply for RemoveMapping `{source}` -> `{target}`: {other:?}"
         )),
+    }
+}
+
+/// Build the per-daemon `DataflowDaemonResult` map that classifies a
+/// terminally-failed dataflow as `Failed` (every assigned node reported as
+/// `Err(FailedToSpawn(err_msg))`).
+///
+/// Iterates `node_to_daemon` (the original assignment), NOT `daemons`: the
+/// disconnect-cleanup path prunes `daemons` but leaves `node_to_daemon` intact,
+/// and an empty map would be vacuously classified `Finished` by `DataflowList`
+/// (round-7 Finding 2). Falls back to a sentinel entry when `node_to_daemon` is
+/// empty so the map is never empty (round-8 Finding 2).
+///
+/// Shared by the spawn-timeout watchdog and the daemon-disconnect teardown
+/// (#2028).
+fn synthesize_failed_dataflow_results(
+    df: &RunningDataflow,
+    uuid: DataflowId,
+    err_msg: &str,
+    clock: &HLC,
+) -> BTreeMap<DaemonId, DataflowDaemonResult> {
+    let synth_timestamp = clock.new_timestamp();
+    let assigned_daemons: BTreeSet<DaemonId> = df.node_to_daemon.values().cloned().collect();
+    let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = assigned_daemons
+        .iter()
+        .map(|daemon_id| {
+            let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
+                .node_to_daemon
+                .iter()
+                .filter(|(_, did)| *did == daemon_id)
+                .map(|(node_id, _)| {
+                    (
+                        node_id.clone(),
+                        Err(NodeError {
+                            timestamp: synth_timestamp,
+                            cause: NodeErrorCause::FailedToSpawn(err_msg.to_string()),
+                            exit_status: NodeExitStatus::Unknown,
+                        }),
+                    )
+                })
+                .collect();
+            (
+                daemon_id.clone(),
+                DataflowDaemonResult {
+                    timestamp: synth_timestamp,
+                    node_results: nodes_for_daemon,
+                },
+            )
+        })
+        .collect();
+    if synth_results.is_empty() {
+        tracing::warn!(
+            dataflow = %uuid,
+            "teardown: node_to_daemon was empty; injecting sentinel result \
+             so list classification is Failed",
+        );
+        let mut sentinel = BTreeMap::new();
+        let mut node_results = BTreeMap::new();
+        // Use `"watchdog"` (no angle brackets): `NodeId::from(invalid_chars)`
+        // PANICS via `validate_node_id` (rejects chars outside `[a-zA-Z0-9_.-]`).
+        node_results.insert(
+            NodeId::from("watchdog".to_string()),
+            Err(NodeError {
+                timestamp: synth_timestamp,
+                cause: NodeErrorCause::FailedToSpawn(err_msg.to_string()),
+                exit_status: NodeExitStatus::Unknown,
+            }),
+        );
+        sentinel.insert(
+            DaemonId::new(Some("watchdog".to_string())),
+            DataflowDaemonResult {
+                timestamp: synth_timestamp,
+                node_results,
+            },
+        );
+        sentinel
+    } else {
+        synth_results
     }
 }
 
