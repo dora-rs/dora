@@ -1376,9 +1376,26 @@ job_cli_tests() {
   sleep 2
   dora build examples/rust-dataflow/dataflow_dynamic.yml
   dora start examples/rust-dataflow/dataflow_dynamic.yml --name ci-rust-dynamic --detach
-  timeout 60s cargo run -p rust-dataflow-example-sink-dynamic
-  sleep 5
-  dora stop --name ci-rust-dynamic --grace-duration 5s 2>/dev/null || true
+  # The dynamic sink blocks on recv until its input closes. The upstream
+  # status-node runs an infinite timer and never exits, so the input only closes
+  # when the dataflow is stopped. Let the sink drain the producer's 100 messages
+  # (~10s), then stop the dataflow so the sink exits cleanly.
+  cargo run -p rust-dataflow-example-sink-dynamic &
+  sink_pid=$!
+  sleep 15
+  dora stop --name ci-rust-dynamic --grace-duration 5s
+  deadline=$((SECONDS + 30))
+  while kill -0 "$sink_pid" 2>/dev/null; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "dynamic sink did not exit within 30s after dora stop"
+      kill "$sink_pid" 2>/dev/null || true
+      wait "$sink_pid" 2>/dev/null || true
+      dora destroy 2>/dev/null || true
+      return 1
+    fi
+    sleep 1
+  done
+  wait "$sink_pid"
   dora destroy 2>/dev/null || true
 
   # Error Event Example
@@ -1606,24 +1623,44 @@ job_cross_check() {
 }
 
 # -----------------------------------------------------------------------------
-# Job 14: ros2-bridge (Linux + ROS2 Humble)
-# Mirrors nightly.yml `ros2-bridge`.
+# Job 14: ros2-bridge (Linux)
+# Mirrors nightly.yml `ros2-bridge`: basic checks that need no ROS distro.
+# When a ROS2 Humble env is present (e.g. the ros2dev image) it ALSO runs the
+# full bridge examples for extra local coverage -- CI no longer does, because
+# ros-tooling/setup-ros pulls external release assets that 404 and break
+# nightly; those examples live in scripts/ros2dev.sh qa (release QA) instead.
 # -----------------------------------------------------------------------------
 job_ros2_bridge() {
   if [ "$OS" != "Linux" ]; then
-    echo "SKIP ros2-bridge: GHA runs this on ubuntu-22.04 only"
+    echo "SKIP ros2-bridge: GHA runs this on ubuntu-latest only"
     SKIPPED+=("ros2-bridge: non-Linux ($OS)")
     return 0
   fi
+  # Basic checks -- mirror nightly.yml `ros2-bridge` (no ROS distro required).
+  timeout 600s cargo check -p dora-ros2-bridge --no-default-features
+  timeout 600s cargo test -p dora-ros2-bridge-msg-gen
+  # dora-ros2-bridge-python's test_utils.py imports numpy + pyarrow. The
+  # workflow installs them (`pip install pyarrow numpy`); do the same here in a
+  # throwaway venv so this runs cleanly on a Linux box without ROS2 instead of
+  # failing with ModuleNotFoundError.
+  local ros2_basic_venv
+  ros2_basic_venv="$(mktemp -d -t dora-ros2-basic-venv-XXXXXX)"
+  uv venv --seed -p 3.12 "$ros2_basic_venv" >/dev/null
+  # shellcheck disable=SC1091
+  source "$ros2_basic_venv/bin/activate"
+  uv pip install --quiet pyarrow numpy
+  timeout 600s cargo test -p dora-ros2-bridge-python
+  deactivate 2>/dev/null || true
+  rm -rf "$ros2_basic_venv"
+
+  # Extra local coverage: full bridge examples when ROS2 Humble is available.
   if [ ! -f /opt/ros/humble/setup.bash ]; then
-    echo "SKIP ros2-bridge: /opt/ros/humble/setup.bash not found"
-    echo "  install with: see https://docs.ros.org/en/humble/Installation.html"
-    SKIPPED+=("ros2-bridge: ROS2 Humble not installed")
+    echo "SKIP ros2-bridge full examples: /opt/ros/humble/setup.bash not found (basic checks ran)"
+    SKIPPED+=("ros2-bridge: full examples (ROS2 Humble not installed)")
     return 0
   fi
   # shellcheck disable=SC1091
   source /opt/ros/humble/setup.bash
-  timeout 600s cargo test -p dora-ros2-bridge-python
   timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
   # Self-contained parameter example: declares + exercises ROS2 parameters via
   # the local API (no discovery), so it runs on every platform incl. arm64.
