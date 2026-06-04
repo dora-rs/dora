@@ -1639,7 +1639,19 @@ job_ros2_bridge() {
   # Basic checks -- mirror nightly.yml `ros2-bridge` (no ROS distro required).
   timeout 600s cargo check -p dora-ros2-bridge --no-default-features
   timeout 600s cargo test -p dora-ros2-bridge-msg-gen
+  # dora-ros2-bridge-python's test_utils.py imports numpy + pyarrow. The
+  # workflow installs them (`pip install pyarrow numpy`); do the same here in a
+  # throwaway venv so this runs cleanly on a Linux box without ROS2 instead of
+  # failing with ModuleNotFoundError.
+  local ros2_basic_venv
+  ros2_basic_venv="$(mktemp -d -t dora-ros2-basic-venv-XXXXXX)"
+  uv venv --seed -p 3.12 "$ros2_basic_venv" >/dev/null
+  # shellcheck disable=SC1091
+  source "$ros2_basic_venv/bin/activate"
+  uv pip install --quiet pyarrow numpy
   timeout 600s cargo test -p dora-ros2-bridge-python
+  deactivate 2>/dev/null || true
+  rm -rf "$ros2_basic_venv"
 
   # Extra local coverage: full bridge examples when ROS2 Humble is available.
   if [ ! -f /opt/ros/humble/setup.bash ]; then
