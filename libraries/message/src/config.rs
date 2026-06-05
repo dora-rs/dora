@@ -273,6 +273,18 @@ impl FromStr for InputMapping {
                             })?;
                             Duration::from_millis(value)
                         }
+                        "micros" => {
+                            let value = value.parse().map_err(|_| {
+                                format!("micros must be an integer (got `{value}`)")
+                            })?;
+                            Duration::from_micros(value)
+                        }
+                        "nanos" => {
+                            let value = value
+                                .parse()
+                                .map_err(|_| format!("nanos must be an integer (got `{value}`)"))?;
+                            Duration::from_nanos(value)
+                        }
                         "hz" => {
                             let hz: f64 = value.parse().map_err(|_| {
                                 format!("hz must be a positive number (got `{value}`)")
@@ -288,7 +300,7 @@ impl FromStr for InputMapping {
                         }
                         other => {
                             return Err(format!(
-                                "timer unit must be `secs`, `millis`, or `hz` (got `{other}`)"
+                                "timer unit must be `secs`, `millis`, `micros`, `nanos`, or `hz` (got `{other}`)"
                             ));
                         }
                     };
@@ -365,10 +377,19 @@ pub struct FormattedDuration(pub Duration);
 
 impl fmt::Display for FormattedDuration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.0.subsec_millis() == 0 {
+        // Emit the coarsest unit that represents the interval exactly, so the
+        // value round-trips through `FromStr` without loss. Using `millis` for
+        // sub-millisecond intervals (e.g. `dora/timer/hz/3000` ~= 333µs) would
+        // truncate to `millis/0`, i.e. a 0ms busy-loop interval (dora-rs#2031).
+        let nanos = self.0.as_nanos();
+        if nanos.is_multiple_of(1_000_000_000) {
             write!(f, "secs/{}", self.0.as_secs())
-        } else {
+        } else if nanos.is_multiple_of(1_000_000) {
             write!(f, "millis/{}", self.0.as_millis())
+        } else if nanos.is_multiple_of(1_000) {
+            write!(f, "micros/{}", self.0.as_micros())
+        } else {
+            write!(f, "nanos/{nanos}")
         }
     }
 }
@@ -668,6 +689,87 @@ mod tests {
             .parse::<InputMapping>()
             .unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    /// Regression test for dora-rs#2031: the `Display` impl previously emitted
+    /// `millis/0` (or `secs/0`) for any sub-millisecond interval, so a valid
+    /// high-rate timer like `dora/timer/hz/3000` (~=333µs) round-tripped into a
+    /// 0ms busy-loop interval. Sub-ms intervals must survive Display -> parse.
+    #[test]
+    fn timer_subms_interval_roundtrips() {
+        let cases = [
+            "dora/timer/hz/3000",  // ~= 333_333 ns, not a whole µs
+            "dora/timer/micros/1", // 1µs
+            "dora/timer/nanos/1",  // 1ns
+            "dora/timer/nanos/500",
+            "dora/timer/micros/250",
+        ];
+        for case in cases {
+            let mapping: InputMapping = case.parse().unwrap();
+            let InputMapping::Timer { interval } = mapping else {
+                panic!("expected Timer for `{case}`, got {mapping:?}");
+            };
+            assert!(!interval.is_zero(), "`{case}` parsed to a zero interval");
+            let rendered = mapping.to_string();
+            let reparsed: InputMapping = rendered.parse().unwrap();
+            assert_eq!(
+                mapping, reparsed,
+                "`{case}` did not round-trip (rendered as `{rendered}`)"
+            );
+        }
+    }
+
+    #[test]
+    fn timer_display_uses_coarsest_exact_unit() {
+        let render = |d: Duration| format_duration(d).to_string();
+        assert_eq!(render(Duration::from_secs(5)), "secs/5");
+        assert_eq!(render(Duration::from_millis(100)), "millis/100");
+        assert_eq!(render(Duration::from_micros(250)), "micros/250");
+        assert_eq!(render(Duration::from_nanos(500)), "nanos/500");
+        // 1/3000 Hz = 333_333 ns (not a whole microsecond) -> nanos.
+        assert_eq!(render(Duration::from_nanos(333_333)), "nanos/333333");
+    }
+
+    #[test]
+    fn parse_timer_micros_and_nanos() {
+        let micros: InputMapping = "dora/timer/micros/250".parse().unwrap();
+        assert_eq!(
+            micros,
+            InputMapping::Timer {
+                interval: Duration::from_micros(250)
+            }
+        );
+        let nanos: InputMapping = "dora/timer/nanos/500".parse().unwrap();
+        assert_eq!(
+            nanos,
+            InputMapping::Timer {
+                interval: Duration::from_nanos(500)
+            }
+        );
+    }
+
+    #[test]
+    fn timer_whole_second_and_milli_still_roundtrip() {
+        for case in ["dora/timer/secs/2", "dora/timer/millis/100"] {
+            let mapping: InputMapping = case.parse().unwrap();
+            let reparsed: InputMapping = mapping.to_string().parse().unwrap();
+            assert_eq!(mapping, reparsed);
+        }
+        // Whole seconds/millis still render with their original unit.
+        assert_eq!(
+            "dora/timer/secs/2"
+                .parse::<InputMapping>()
+                .unwrap()
+                .to_string(),
+            "dora/timer/secs/2"
+        );
+        assert_eq!(
+            "dora/timer/millis/100"
+                .parse::<InputMapping>()
+                .unwrap()
+                .to_string(),
+            "dora/timer/millis/100"
+        );
     }
 
     #[test]
