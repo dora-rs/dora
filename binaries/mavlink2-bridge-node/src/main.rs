@@ -61,7 +61,9 @@ use dora_node_api::{
     flume,
 };
 use eyre::{Context, Result, bail, eyre};
-use mavlink::{MavConnection, MavHeader, MavlinkVersion, Message, common::MavMessage};
+use mavlink::{
+    MavConnection, MavHeader, MavlinkVersion, Message, common::MavMessage, error::MessageReadError,
+};
 use serde::Deserialize;
 use std::{
     sync::{
@@ -90,6 +92,49 @@ const READER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 /// budgeted retry rather than a one-shot connect.
 const CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+/// Minimum gap between `recv`-error warnings. mavlink-core 0.13's TCP
+/// transport returns `Err(WouldBlock)` every ~100 ms on a silent peer,
+/// so without rate-limiting a transient (or even a fatal, pre-fix) link
+/// would emit ~10 warns/second. We log at most one warning per this
+/// interval so a flaky or dead link doesn't flood the logs.
+const RECV_WARN_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How `run_reader` should react to an error returned by `conn.recv()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecvDisposition {
+    /// "No data yet" — a socket read timeout (`WouldBlock`/`TimedOut`),
+    /// an interrupted syscall, or a single corrupt frame on an
+    /// otherwise-live link. The reader keeps looping; the connection is
+    /// still usable.
+    Transient,
+    /// "Connection dead" — a fatal I/O error such as `UnexpectedEof`
+    /// (peer closed the socket), `ConnectionReset`, or `BrokenPipe`.
+    /// The reader must stop spinning and surface this so the node
+    /// terminates/restarts per the daemon's policy.
+    Fatal,
+}
+
+/// Classify a `conn.recv()` error so the reader can tell a transient
+/// "no data yet" timeout apart from a fatal "connection dead" error.
+///
+/// This is the core of the #2034 fix: the previous `Err` arm treated
+/// every error the same way — sleeping 50 ms and warning forever —
+/// which turned a dead link into a logging zombie and could never
+/// distinguish a 100 ms read timeout from an EOF.
+fn classify_recv_error(err: &MessageReadError) -> RecvDisposition {
+    match err {
+        // A parse failure means a frame arrived but was garbled (CRC
+        // mismatch, unknown id, bad enum). The link is still alive, so
+        // skip the bad frame and keep reading.
+        MessageReadError::Parse(_) => RecvDisposition::Transient,
+        MessageReadError::Io(io_err) => match io_err.kind() {
+            std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::Interrupted => RecvDisposition::Transient,
+            _ => RecvDisposition::Fatal,
+        },
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct Config {
@@ -137,7 +182,12 @@ impl Config {
 ///     self-loopback HEARTBEAT so the inner `recv_from` returns Ok
 ///     and we recheck the flag. Serial has no externally accessible
 ///     wake path in mavlink 0.13, so it falls back to the OS-reap-on-
-///     exit grace window in `main`.
+///     exit grace window in `main`, OR
+///   * `conn.recv()` returns a **fatal** error (a dead link, e.g.
+///     `UnexpectedEof`/`ConnectionReset`). Then it returns `Err` so
+///     `main` tears the node down instead of spinning forever. Transient
+///     errors (read timeouts, single corrupt frames) keep the loop
+///     running quietly; see `classify_recv_error`.
 fn run_reader(
     conn: Arc<dyn MavConnection<MavMessage> + Send + Sync>,
     tx: flume::Sender<(DataId, ArrayRef)>,
@@ -159,6 +209,9 @@ fn run_reader(
         }};
     }
 
+    // Rate-limit the recv-error warning: only the first error and then
+    // at most one per `RECV_WARN_INTERVAL` reaches the logs.
+    let mut last_warn: Option<Instant> = None;
     loop {
         if shutdown.load(Ordering::Relaxed) {
             return Ok(());
@@ -188,12 +241,32 @@ fn run_reader(
                 }
             }
             Err(e) => {
-                // Suppress the warn during shutdown: TCP's 100 ms read
-                // timeout will have produced a `WouldBlock` here, which
-                // is the *intended* path back to the shutdown flag check.
-                if !shutdown.load(Ordering::Relaxed) {
-                    tracing::warn!("mavlink recv error: {e}");
-                    std::thread::sleep(Duration::from_millis(50));
+                // During shutdown, swallow the error: TCP's 100 ms read
+                // timeout produces a `WouldBlock` here, which is the
+                // *intended* path back to the shutdown flag check.
+                if shutdown.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                match classify_recv_error(&e) {
+                    RecvDisposition::Fatal => {
+                        // Connection is dead. Surface the error so the
+                        // node terminates and the daemon restarts it per
+                        // policy, instead of spinning as a logging zombie
+                        // with a link that will never recover.
+                        return Err(eyre!("mavlink connection lost: {e}"));
+                    }
+                    RecvDisposition::Transient => {
+                        // "No data yet" (read timeout) or a single
+                        // corrupt frame. Keep looping quietly; rate-limit
+                        // the warn so a chatty-but-live link can't flood.
+                        let now = Instant::now();
+                        let should_warn = last_warn
+                            .is_none_or(|prev| now.duration_since(prev) >= RECV_WARN_INTERVAL);
+                        if should_warn {
+                            tracing::warn!("mavlink recv error (transient): {e}");
+                            last_warn = Some(now);
+                        }
+                    }
                 }
             }
         }
@@ -383,6 +456,14 @@ fn main() -> Result<()> {
                 .map_err(|e| eyre!("send_output: {e}"))?;
         }
 
+        // If the reader thread exited on its own (a fatal transport
+        // disconnect, see #2034), stop the event loop and let the
+        // join below surface its error so this node terminates rather
+        // than running blind without a live MAVLink link.
+        if reader_handle.is_finished() {
+            break;
+        }
+
         match events.recv_timeout(POLL_INTERVAL) {
             Some(Event::Input { id, data, .. }) => {
                 let array_ref: ArrayRef = data.into();
@@ -565,5 +646,135 @@ mod tests {
         }
         assert!(handle.is_finished(), "0.0.0.0-bind wake did not deliver");
         handle.join().expect("panic").expect("err");
+    }
+
+    // ---- #2034: recv-error classification ----------------------------
+    //
+    // The reader must tell a transient "no data yet" read timeout apart
+    // from a fatal "connection dead" error. The pre-fix `Err` arm
+    // conflated both and spun forever as a logging zombie.
+
+    fn io(kind: std::io::ErrorKind) -> MessageReadError {
+        MessageReadError::Io(std::io::Error::new(kind, "test"))
+    }
+
+    #[test]
+    fn would_block_is_transient() {
+        // TCP's 100 ms socket read timeout surfaces as WouldBlock; this
+        // is the normal "silent peer, no data yet" path and must NOT be
+        // treated as a dead link.
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::WouldBlock)),
+            RecvDisposition::Transient
+        );
+    }
+
+    #[test]
+    fn timed_out_is_transient() {
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::TimedOut)),
+            RecvDisposition::Transient
+        );
+    }
+
+    #[test]
+    fn interrupted_is_transient() {
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::Interrupted)),
+            RecvDisposition::Transient
+        );
+    }
+
+    #[test]
+    fn parse_error_is_transient() {
+        // A garbled frame on an otherwise-live link: skip it, keep reading.
+        let err = MessageReadError::Parse(mavlink::error::ParserError::UnknownMessage { id: 9999 });
+        assert_eq!(classify_recv_error(&err), RecvDisposition::Transient);
+    }
+
+    #[test]
+    fn unexpected_eof_is_fatal() {
+        // Peer closed the TCP socket: mavlink's `read_exact` returns
+        // UnexpectedEof. This is the disconnect that previously turned
+        // the reader into a logging zombie.
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::UnexpectedEof)),
+            RecvDisposition::Fatal
+        );
+    }
+
+    #[test]
+    fn connection_reset_is_fatal() {
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::ConnectionReset)),
+            RecvDisposition::Fatal
+        );
+    }
+
+    #[test]
+    fn broken_pipe_is_fatal() {
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::BrokenPipe)),
+            RecvDisposition::Fatal
+        );
+    }
+
+    /// End-to-end of the fix: a real TCP peer that accepts then closes
+    /// its socket makes `run_reader` return `Err` (fatal disconnect)
+    /// instead of spinning forever. Pre-fix, the reader looped on the
+    /// EOF error and never returned.
+    #[test]
+    fn run_reader_exits_on_fatal_tcp_disconnect() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let port = listener.local_addr().expect("local_addr").port();
+
+        // Accept the bridge's outbound TCP connection, hold it briefly so
+        // the reader settles into `recv`, then drop it to signal EOF.
+        let server = std::thread::spawn(move || {
+            let (stream, _addr) = listener.accept().expect("accept");
+            // Give the reader thread time to block in `recv`.
+            std::thread::sleep(Duration::from_millis(150));
+            // Read any REQUEST_DATA_STREAM the bridge might send, then
+            // close the socket to deliver EOF to the reader.
+            let mut stream = stream;
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+            let mut scratch = [0u8; 64];
+            let _ = stream.read(&mut scratch);
+            drop(stream);
+        });
+
+        let url = Url::parse(&format!("tcp://127.0.0.1:{port}")).unwrap();
+        let conn_box = transport::connect(&url).expect("transport::connect");
+        let conn: Arc<dyn MavConnection<MavMessage> + Send + Sync> = Arc::from(conn_box);
+
+        let (tx, _rx_keep_alive) = flume::bounded::<(DataId, ArrayRef)>(64);
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let handle = std::thread::spawn({
+            let conn = Arc::clone(&conn);
+            let shutdown = Arc::clone(&shutdown);
+            move || run_reader(conn, tx, shutdown)
+        });
+
+        // The reader must return promptly once the peer closes. The
+        // shutdown flag stays `false`, so the only way out is the fatal
+        // path. Cap at 3 s for CI headroom; pre-fix this never finishes.
+        let join_deadline = Instant::now() + Duration::from_secs(3);
+        while !handle.is_finished() && Instant::now() < join_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            handle.is_finished(),
+            "reader did not exit after fatal TCP disconnect (logging-zombie regression #2034)"
+        );
+        let result = handle.join().expect("reader thread panicked");
+        assert!(
+            result.is_err(),
+            "reader should surface a fatal error on disconnect, got Ok"
+        );
+        server.join().expect("server thread panicked");
     }
 }
