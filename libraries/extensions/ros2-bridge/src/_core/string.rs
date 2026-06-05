@@ -4,7 +4,7 @@ use std::{
     os::raw::c_char,
 };
 
-use widestring::{U16CStr, U16CString};
+use widestring::U16CString;
 
 use super::traits::{FFIFromRust, FFIToRust};
 
@@ -177,7 +177,12 @@ impl FFIToRust for FFIWString {
         if self.is_empty() {
             Self::Target::new()
         } else {
-            U16String(unsafe { U16CStr::from_ptr_str(self.data).to_ustring() })
+            // Use `size` to bound the read instead of `U16CStr::from_ptr_str`,
+            // which scans for a NUL terminator: that truncates wstrings with an
+            // embedded U+0000 and reads past the buffer if it isn't
+            // NUL-terminated. Mirrors the hardened 8-bit `FFIString::to_str`.
+            let slice = unsafe { std::slice::from_raw_parts(self.data, self.size) };
+            U16String(widestring::U16String::from_vec(slice.to_vec()))
         }
     }
 }
@@ -252,5 +257,27 @@ mod test {
         };
 
         assert_eq!(wstring, unsafe { native_wstring.to_rust() });
+    }
+
+    #[test]
+    fn ffi_wstring_preserves_embedded_nul() {
+        // A ROS2 wstring can legitimately contain an embedded U+0000. The
+        // rosidl C representation stores data + size + capacity precisely so
+        // that interior NULs are representable. `to_rust` must bound the read
+        // by `size` rather than scanning for a terminator, or the payload is
+        // silently truncated at the first NUL.
+        //
+        // Build the buffer directly: `OwnedFFIWString::from_rust` can't
+        // produce this case because `U16CString` rejects interior NULs.
+        let mut data: Vec<u16> = vec![0x0041, 0x0000, 0x0042]; // 'A', NUL, 'B'
+        let native = FFIWString {
+            data: data.as_mut_ptr(),
+            size: data.len(),
+            capacity: data.len(),
+        };
+        // `FFIWString` has no `Drop`, so it only borrows `data`; `to_rust`
+        // copies out before `data` is freed at end of scope.
+        let rust = unsafe { native.to_rust() };
+        assert_eq!(rust, U16String::from(vec![0x0041u16, 0x0000, 0x0042]));
     }
 }
