@@ -506,15 +506,26 @@ impl EventStream {
             // The scheduler gives `Stop` (a NON_INPUT_EVENT) strict priority
             // over buffered inputs (`scheduler::next`), so inputs enqueued
             // before Stop can still be queued when Stop is delivered. Drain
-            // those before closing instead of dropping them silently — the
-            // scheduler documents that events may follow `Stop`. Do NOT pull
-            // new events from `receiver` here; the dataflow is stopping, and on
-            // the non-scheduler path returning `None` is what closes the stream
-            // against zenoh-held senders.
-            if self.use_scheduler
-                && let Some(item) = self.scheduler.next()
-            {
-                return Some(Self::convert_event_item(item));
+            // those buffered *inputs* before closing instead of dropping them
+            // silently. Trailing non-input control events (a second Stop /
+            // AllInputsClosed / InputClosed / Reload) are discarded rather than
+            // re-delivered after Stop — the contract is "nothing after Stop
+            // except the inputs that were already queued". Do NOT pull new
+            // events from `receiver`; the dataflow is stopping, and on the
+            // non-scheduler path returning `None` closes the stream against
+            // zenoh-held senders.
+            if self.use_scheduler {
+                while let Some(item) = self.scheduler.next() {
+                    if matches!(
+                        &item,
+                        EventItem::NodeEvent {
+                            event: NodeEvent::Input { .. },
+                            ..
+                        } | EventItem::ZenohInput { .. }
+                    ) {
+                        return Some(Self::convert_event_item(item));
+                    }
+                }
             }
             return None;
         }
@@ -1082,9 +1093,18 @@ fn zenoh_payload_to_arrow_array(
         // zero-length *typed* array stays typed — matching the daemon path and
         // avoiding a downstream `as_primitive` panic on the zenoh transport
         // (cross-transport non-determinism, dora-rs/dora#2027).
-        return Ok(arrow::array::make_array(
-            arrow::array::ArrayData::new_empty(&metadata.type_info.data_type),
-        ));
+        //
+        // `data_type` is peer-controlled (bincode-decoded from the zenoh
+        // attachment). `new_empty` (-> `new_null`) panics on a few malformed
+        // types (empty `Union` fields, `Dictionary` with a non-integer key), so
+        // catch the unwind and surface a clean error instead of letting a buggy
+        // or malicious peer crash the node (#2027 anti-panic).
+        let data_type = &metadata.type_info.data_type;
+        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            arrow::array::ArrayData::new_empty(data_type)
+        }))
+        .map_err(|_| eyre!("cannot build an empty array for declared type {data_type:?}"))?;
+        return Ok(arrow::array::make_array(data));
     }
 
     if is_ipc {
@@ -1477,6 +1497,18 @@ impl EventStream {
                 metadata: std::sync::Arc::new(meta),
                 data: None,
             },
+        });
+    }
+
+    /// Test-only: buffer a `Stop` directly in the scheduler (a NON_INPUT_EVENT)
+    /// and force scheduler mode, to verify the post-Stop drain discards trailing
+    /// control events instead of re-delivering a second `Stop` (dora-rs/dora#2027).
+    fn push_scheduler_stop_for_testing(&mut self) {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::daemon_to_node::NodeEvent;
+        self.use_scheduler = true;
+        self.scheduler.add_event(EventItem::NodeEvent {
+            event: NodeEvent::Stop,
         });
     }
 }
@@ -2052,6 +2084,31 @@ mod tests {
         );
     }
 
+    /// #2027 review (P2): the post-Stop drain must deliver buffered *inputs*
+    /// only. A non-input control event buffered behind Stop (e.g. a second
+    /// `Stop`) must NOT be re-delivered to a loop-until-`None` caller.
+    #[test]
+    fn recv_after_stop_skips_trailing_control_events() {
+        let (_node, mut events) = test_event_stream();
+
+        // Deliver the seeded Stop (sets `stop_received`).
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        // Buffer a trailing Stop AND a real input behind it. The scheduler
+        // prioritizes the Stop (NON_INPUT), so the drain meets it first.
+        events.push_scheduler_stop_for_testing();
+        events.push_scheduler_input_for_testing("cam");
+
+        // The drain must skip the trailing Stop and return only the input...
+        let drained = events.recv();
+        assert!(
+            matches!(&drained, Some(Event::Input { id, .. }) if id.as_str() == "cam"),
+            "expected the buffered input, not a re-delivered Stop, got {drained:?}"
+        );
+        // ...then close (no second Stop ever surfaces).
+        assert!(events.recv().is_none(), "stream must close after the input");
+    }
+
     /// #2027: an empty payload over the zenoh transport must become a length-0
     /// array of the DECLARED type, matching the daemon path
     /// (`buffer_into_arrow_array` -> `new_empty(type_info.data_type)`). A
@@ -2096,6 +2153,21 @@ mod tests {
         let null =
             zenoh_payload_to_arrow_array(empty, &meta(arrow_schema::DataType::Null)).unwrap();
         assert_eq!(null.data_type(), &arrow_schema::DataType::Null);
+
+        // #2027 review (P2): `data_type` is peer-controlled, and `new_empty`
+        // panics on a few malformed types. A `Dictionary` with a non-integer
+        // key reaches `k.primitive_width().unwrap()` -> panic; the empty-payload
+        // path must surface that as `Err`, not crash the node. (A panic trace
+        // printed during this test is expected — it is the caught unwind.)
+        let malformed = arrow_schema::DataType::Dictionary(
+            Box::new(arrow_schema::DataType::Utf8),
+            Box::new(arrow_schema::DataType::Int32),
+        );
+        let result = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::new(), &meta(malformed));
+        assert!(
+            result.is_err(),
+            "malformed peer type must produce Err, not panic"
+        );
     }
 
     /// Same invariant as `recv_returns_none_after_stop`, verified via
