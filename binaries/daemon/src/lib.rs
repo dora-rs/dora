@@ -37,7 +37,7 @@ use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
-use log::{DaemonLogger, DataflowLogger, Logger};
+use log::{CoordinatorLogTarget, DaemonLogger, DataflowLogger, Logger};
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -634,9 +634,6 @@ impl Daemon {
                     // Fresh successful connection: a later disconnect starts a
                     // new retry window rather than inheriting an old deadline.
                     reconnect_deadline = None;
-                    let log_destination = LogDestination::Coordinator {
-                        sender: coordinator_sender.clone(),
-                    };
 
                     // Build the daemon on the first connect; on later connects
                     // just point the existing daemon at the new connection. The
@@ -644,6 +641,15 @@ impl Daemon {
                     // event channel) is preserved either way.
                     match daemon.as_mut() {
                         None => {
+                            // The coordinator log destination wraps a shared,
+                            // swappable target so per-node log-forwarding clones
+                            // follow later reconnects (#2029 P2).
+                            let log_destination = LogDestination::Coordinator {
+                                target: CoordinatorLogTarget::shared(
+                                    coordinator_sender.clone(),
+                                    daemon_id.clone(),
+                                ),
+                            };
                             let (built, rx) = Self::build_daemon(
                                 Some(coordinator_sender),
                                 daemon_id,
@@ -668,11 +674,16 @@ impl Daemon {
                             // nodes are unaffected: their data plane is keyed by
                             // dataflow/node/output, not by daemon id.
                             d.daemon_id = daemon_id.clone();
-                            d.logger.set_daemon_id(daemon_id);
+                            d.logger.set_daemon_id(daemon_id.clone());
+                            // Swap the shared coordinator log target in place so
+                            // surviving nodes' log-forwarding clones (captured at
+                            // spawn) emit over this new connection with the
+                            // freshly-assigned id (#2029 P2).
+                            d.logger
+                                .update_coordinator_target(coordinator_sender.clone(), daemon_id);
                             d.coordinator_sender = Some(coordinator_sender);
                             d.remote_daemon_events_tx = Some(remote_daemon_events_tx);
                             d.last_coordinator_heartbeat = Instant::now();
-                            d.logger.set_destination(log_destination);
                         }
                     }
 
