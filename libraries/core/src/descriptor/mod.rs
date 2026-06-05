@@ -8,9 +8,8 @@ use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
-    process::Stdio,
+    process::Command,
 };
-use tokio::process::Command;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
@@ -365,21 +364,43 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         Ok(abs_path)
     // Search path within $PATH
     } else if which::which("uv").is_ok() {
-        // spawn: uv run which <path>
-        let which = if cfg!(windows) { "where" } else { "which" };
-        let _output = Command::new("uv")
-            .arg("run")
-            .arg(which)
-            .arg(&path)
-            .stdout(Stdio::null())
-            .spawn()
-            .context("Could not find binary within uv")?;
-        Ok(path)
+        resolve_path_via_uv(&path)
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
     } else {
         bail!("Could not find source path {}", path.display())
     }
+}
+
+/// Resolve `path` against the `uv`-managed environment by running
+/// `uv run which <path>`, returning an absolute path.
+///
+/// Unlike a fire-and-forget spawn, this waits for the child, checks its
+/// exit status (so a missing binary surfaces as an error), and canonicalizes
+/// the captured location so the result matches the absolute-path contract of
+/// the other [`resolve_path`] branches.
+fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
+    let which = if cfg!(windows) { "where" } else { "which" };
+    let output = Command::new("uv")
+        .arg("run")
+        .arg(which)
+        .arg(path)
+        .output()
+        .context("failed to run `uv run which`")?;
+    if !output.status.success() {
+        bail!("Could not find source path {} within uv", path.display());
+    }
+    // `which`/`where` may emit multiple matches; the first line is the
+    // resolved binary.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resolved = stdout
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .ok_or_else(|| eyre::eyre!("`uv run which {}` produced no output", path.display()))?;
+    PathBuf::from(resolved)
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize uv-resolved path {resolved}"))
 }
 
 pub trait NodeExt {
@@ -527,6 +548,41 @@ nodes:
         assert_eq!(
             b_env.get("OTEL_ENDPOINT"),
             Some(&EnvValue::String("http://collector:4317".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_path_errors_for_nonexistent_binary() {
+        // Regression for #2016: the `uv` fallback previously spawned
+        // `uv run which <path>` fire-and-forget and returned the original
+        // (relative) path even when the binary did not exist. A missing
+        // binary must surface as an `Err`, and any successful resolution
+        // must be an absolute path.
+        let working_dir = std::env::current_dir().expect("cwd");
+        let result = resolve_path("dora_nonexistent_binary_2016_regression", &working_dir);
+        assert!(
+            result.is_err(),
+            "expected Err for a binary that exists nowhere, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_path_via_uv_errors_for_nonexistent_binary() {
+        // Pins the #2016 root cause directly on the `uv` branch. The buggy
+        // code spawned `uv run which <path>` fire-and-forget and returned
+        // `Ok(<relative path>)` regardless of the child's exit status, so a
+        // missing binary was silently accepted. This branch only runs when
+        // `uv` is installed (the only environment where the bug manifested),
+        // so guard on its presence to keep the test meaningful where it can
+        // actually discriminate the fix.
+        if which::which("uv").is_err() {
+            return;
+        }
+        let path = Path::new("dora_nonexistent_binary_2016_regression");
+        let result = resolve_path_via_uv(path);
+        assert!(
+            result.is_err(),
+            "expected Err from `uv run which` for a missing binary, got {result:?}"
         );
     }
 
