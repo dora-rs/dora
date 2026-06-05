@@ -415,6 +415,44 @@ jobs:
           DORA_QA_CLI_BIN: ${{ github.workspace }}/cli-bin/dora
         run: scripts/qa/ci-nightly-jobs.sh cluster-e2e
 
+  cluster-record-replay:
+    # Stitches cluster-e2e + record-replay (issue #2013, "B1"): records a
+    # dataflow spread across a 3-daemon SSH cluster, then replays it locally
+    # and validates the replayed state against the deterministic seed(42)
+    # baseline. Linux-only (loopback sshd), same as cluster-e2e — see the job
+    # comment in scripts/qa/ci-nightly-jobs.sh for rationale.
+    name: Cluster record/replay end-to-end
+    runs-on: ubuntu-latest
+    needs: build-cli
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install openssh-server
+        # ubuntu-latest typically has sshd preinstalled but it's not started.
+        # `apt-get install` is harmless if it's already present and brings
+        # the binary in if it isn't.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y openssh-server
+      - name: Download dora CLI
+        uses: actions/download-artifact@v8
+        with:
+          name: dora-cli
+          path: ./cli-bin
+      - name: Make CLI executable
+        run: chmod +x ./cli-bin/dora
+      - name: Run cluster-record-replay via shared helper
+        # `DORA_QA_CLI_BIN` reuses the downloaded CLI artifact; the example
+        # node + record/replay node binaries are still built from source by
+        # the job. All real work lives in `job_cluster_record_replay`.
+        env:
+          DORA_QA_CLI_BIN: ${{ github.workspace }}/cli-bin/dora
+        run: scripts/qa/ci-nightly-jobs.sh cluster-record-replay
+
   topic-and-top-smoke:
     # Smoke-tests the inspection commands: `dora top --once`, `dora topic
     # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
@@ -1589,6 +1627,7 @@ jobs:
       - record-replay
       - cluster-smoke
       - cluster-e2e
+      - cluster-record-replay
       - topic-and-top-smoke
       - cpu-affinity-smoke
       - redb-backend-smoke
@@ -1658,6 +1697,9 @@ jobs:
                 ;;
               cluster-e2e)
                 echo 'scripts/qa/ci-nightly-jobs.sh cluster-e2e'
+                ;;
+              cluster-record-replay)
+                echo 'scripts/qa/ci-nightly-jobs.sh cluster-record-replay'
                 ;;
               topic-and-top-smoke)
                 echo 'scripts/qa/ci-nightly-jobs.sh topic-and-top-smoke'
