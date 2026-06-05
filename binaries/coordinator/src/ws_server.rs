@@ -262,6 +262,68 @@ impl ShutdownTrigger {
 mod tests {
     use super::*;
 
+    // --- coordinator WebSocket auth (dora-rs/dora#2027 verified test gap) ---
+
+    fn bearer(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            "authorization",
+            axum::http::HeaderValue::from_str(value).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn validate_token_ok_when_auth_disabled() {
+        // `expected = None` means auth is disabled: any (or no) token passes.
+        assert!(validate_token(&None, &None).is_ok());
+        assert!(validate_token(&None, &Some("whatever".to_string())).is_ok());
+    }
+
+    #[test]
+    fn validate_token_accepts_matching_token() {
+        let expected = Some(AuthToken::from_hex("deadbeef"));
+        assert!(validate_token(&expected, &Some("deadbeef".to_string())).is_ok());
+    }
+
+    #[test]
+    fn validate_token_rejects_wrong_missing_and_empty() {
+        let expected = Some(AuthToken::from_hex("deadbeef"));
+        assert_eq!(
+            validate_token(&expected, &Some("cafebabe".to_string())),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            validate_token(&expected, &None),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+        assert_eq!(
+            validate_token(&expected, &Some(String::new())),
+            Err(StatusCode::UNAUTHORIZED)
+        );
+    }
+
+    #[test]
+    fn extract_token_parses_bearer() {
+        assert_eq!(
+            extract_token(&bearer("Bearer deadbeef")),
+            Some("deadbeef".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_token_none_for_missing_or_non_bearer() {
+        assert_eq!(extract_token(&HeaderMap::new()), None);
+        assert_eq!(extract_token(&bearer("Basic deadbeef")), None);
+        // The "Bearer " prefix is case-sensitive.
+        assert_eq!(extract_token(&bearer("bearer deadbeef")), None);
+    }
+
+    #[test]
+    fn extract_token_empty_after_bearer() {
+        assert_eq!(extract_token(&bearer("Bearer ")), Some(String::new()));
+    }
+
     #[test]
     fn rate_limiter_allows_within_limit() {
         let rl = IpRateLimiter::new();

@@ -424,4 +424,53 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("depth"));
     }
+
+    // Raw-buffer round-trip beyond the offset-0 case (dora-rs/dora#2027 verified
+    // test gap): a sliced (non-zero `offset`) array and the empty-buffer
+    // early-return path.
+
+    #[test]
+    fn raw_roundtrip_preserves_nonzero_offset() {
+        // Slice the `ArrayData` so it carries a non-zero logical `offset`.
+        let data = UInt64Array::from(vec![10, 20, 30, 40, 50])
+            .into_data()
+            .slice(2, 2); // offset = 2, len = 2 -> [30, 40]
+        assert_eq!(data.offset(), 2, "precondition: array is sliced");
+
+        let mut sample = vec![0; required_data_size(&data)];
+        let type_info = copy_array_into_sample(&mut sample, &data);
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn raw_roundtrip_empty_primitive_uses_empty_buffer_path() {
+        let data = UInt64Array::from(Vec::<u64>::new()).into_data();
+        let mut sample = vec![0; required_data_size(&data)];
+        let type_info = copy_array_into_sample(&mut sample, &data);
+        // An empty array yields a zero-length payload, exercising the
+        // `raw_buffer.is_empty()` early-return in `buffer_into_arrow_array`.
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
+        assert_eq!(decoded.len(), 0);
+        assert_eq!(decoded.data_type(), &DataType::UInt64);
+    }
+
+    #[test]
+    fn raw_roundtrip_empty_nested_struct() {
+        use arrow_schema::Field;
+        let empty_child = Arc::new(UInt64Array::from(Vec::<u64>::new())) as ArrayRef;
+        let data = StructArray::from(vec![(
+            Arc::new(Field::new("values", DataType::UInt64, false)),
+            empty_child,
+        )])
+        .into_data();
+        let mut sample = vec![0; required_data_size(&data)];
+        let type_info = copy_array_into_sample(&mut sample, &data);
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
+        assert_eq!(decoded.len(), 0);
+        assert!(matches!(decoded.data_type(), DataType::Struct(_)));
+    }
 }

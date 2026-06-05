@@ -108,3 +108,63 @@ fn tcp_receive(connection: &mut (impl Read + Unpin)) -> std::io::Result<Vec<u8>>
     connection.read_exact(&mut reply)?;
     Ok(reply)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{tcp_receive, tcp_send};
+    use std::io::Cursor;
+
+    // Length-prefixed framing guards on the node side of the daemon<->node TCP
+    // transport (dora-rs/dora#2027 verified test gap). A malformed/hostile frame
+    // must error, not over-allocate or hang.
+
+    #[test]
+    fn framing_roundtrip() {
+        let payload = b"hello dora framing".to_vec();
+        let mut wire = Vec::new();
+        tcp_send(&mut wire, &payload).expect("send");
+        // 8-byte little-endian length prefix + payload.
+        assert_eq!(wire.len(), 8 + payload.len());
+        let got = tcp_receive(&mut Cursor::new(wire)).expect("receive");
+        assert_eq!(got, payload);
+    }
+
+    #[test]
+    fn empty_payload_roundtrips() {
+        let mut wire = Vec::new();
+        tcp_send(&mut wire, &[]).expect("send empty");
+        let got = tcp_receive(&mut Cursor::new(wire)).expect("receive empty");
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn receive_rejects_oversized_length_prefix() {
+        // A hostile peer announces a body larger than MAX_MESSAGE_BYTES. The
+        // guard must reject *before* allocating the body buffer; we therefore
+        // supply only the 8-byte header (no body).
+        let claimed = dora_message::MAX_MESSAGE_BYTES as u64 + 1;
+        let header = claimed.to_le_bytes().to_vec();
+        let err = tcp_receive(&mut Cursor::new(header)).expect_err("must reject oversized frame");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn receive_rejects_truncated_header() {
+        // Fewer than 8 length bytes -> EOF, not a hang or panic.
+        let err = tcp_receive(&mut Cursor::new(vec![1, 2, 3])).expect_err("truncated header");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn receive_rejects_truncated_body() {
+        // Header claims 16 bytes but only 4 follow.
+        let mut wire = 16u64.to_le_bytes().to_vec();
+        wire.extend_from_slice(&[0xAB; 4]);
+        let err = tcp_receive(&mut Cursor::new(wire)).expect_err("truncated body");
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+}
