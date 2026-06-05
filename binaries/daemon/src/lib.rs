@@ -1070,8 +1070,16 @@ impl Daemon {
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
-                            // Return error to trigger reconnection loop in run().
-                            // Running dataflows continue — nodes are separate processes.
+                            // Returning `Err` propagates up to the reconnect loop in
+                            // `run_with_builds`, which drops this by-value `Daemon` and
+                            // rebuilds a fresh one. Dropping the `Daemon` drops every
+                            // `RunningNode`, whose `ProcessHandle::drop` submits a
+                            // `ProcessOperation::Kill` — so running nodes ARE terminated
+                            // on a coordinator heartbeat timeout, not preserved. This is
+                            // consistent with the coordinator tearing down / releasing a
+                            // disconnected daemon's dataflows (#2028). Transparent graceful
+                            // degradation (preserving running dataflows across a coordinator
+                            // reconnect) is future work tracked by #1799 — not implemented here.
                             bail!("coordinator heartbeat timeout (20s)")
                         }
                     }

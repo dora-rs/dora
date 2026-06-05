@@ -648,4 +648,28 @@ mod tests {
             "kill from the previous incarnation must not reach the replacement process"
         );
     }
+
+    // ---- #2029: a dropped ProcessHandle kills its node ----
+    //
+    // Pins the documented coordinator-reconnect behavior (lib.rs heartbeat
+    // timeout): when the by-value `Daemon` is dropped, each `RunningNode`'s
+    // `ProcessHandle::drop` submits a `Kill` to the still-alive wait task, so
+    // running nodes ARE terminated on coordinator disconnect. If anyone makes
+    // `Drop` stop killing (e.g. to "preserve nodes"), this test fails, forcing
+    // the lib.rs comment to be revisited rather than silently drifting.
+    #[test]
+    fn dropping_process_handle_submits_kill() {
+        let (tx, rx) = flume::bounded::<ProcessOperation>(2);
+        let handle = ProcessHandle::new(tx);
+        // Dropping the handle stands in for the `Daemon` (and thus the
+        // `RunningNode`) being dropped on the reconnect path.
+        drop(handle);
+        let op = rx
+            .try_recv()
+            .expect("dropping a ProcessHandle must enqueue an operation for the wait task");
+        assert!(
+            matches!(op, ProcessOperation::Kill),
+            "ProcessHandle::drop must submit Kill, terminating the node on disconnect"
+        );
+    }
 }
