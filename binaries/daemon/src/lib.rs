@@ -4475,9 +4475,27 @@ fn note_output_sent_to_local_receivers(
     let now = Instant::now();
 
     for (receiver_id, input_id) in local_receivers {
-        if let Some(deadline) = dataflow
-            .input_deadlines
-            .get_mut(&(receiver_id.clone(), input_id.clone()))
+        // Refresh the input deadline only when the receiver is actually
+        // keeping up. Since #1787 the data payload is published directly
+        // over zenoh (not routed through the daemon), so the bare
+        // `OutputSent` notification is *not* a delivery confirmation — the
+        // node-side zenoh callback drops the input with `try_send` when its
+        // event channel is full. Treating `OutputSent` as delivery made
+        // `input_timeout` deadlines never fire for a slow consumer (#2021).
+        //
+        // We use the receiver's daemon-side channel headroom as a
+        // backpressure proxy (the same signal `send_output_to_local_receivers`
+        // gates on): a node that has fallen far enough behind to saturate its
+        // channel is also dropping the zenoh payloads, so its deadline must be
+        // allowed to expire. A node that is keeping up still gets refreshed.
+        let receiver_keeping_up = dataflow
+            .subscribe_channels
+            .get(receiver_id)
+            .is_none_or(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+        if receiver_keeping_up
+            && let Some(deadline) = dataflow
+                .input_deadlines
+                .get_mut(&(receiver_id.clone(), input_id.clone()))
         {
             deadline.last_received = Some(now);
         }
@@ -5367,6 +5385,106 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 2);
         assert!(matches_event(&events[0], "Input"));
         assert!(matches_event(&events[1], "InputRecovered"));
+    }
+
+    // -- Regression test for #2021: `OutputSent` must not refresh an
+    //    input deadline when the receiver has fallen behind. --
+
+    /// Since #1787 data is published directly over zenoh, so the daemon's
+    /// `OutputSent` notification is not a delivery confirmation. A slow
+    /// consumer whose event channel is saturated drops the zenoh payloads,
+    /// so its `input_timeout` deadline must be allowed to expire instead of
+    /// being refreshed on every `OutputSent`.
+    #[test]
+    fn output_sent_does_not_refresh_deadline_for_backpressured_receiver() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        // Armed deadline that has already exceeded its timeout.
+        let timeout = Duration::from_millis(10);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // Saturate the receiver's channel so it has no headroom left —
+        // a proxy for "the node is dropping zenoh inputs".
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+            tx.try_send(Timestamped {
+                inner: NodeEvent::AllInputsClosed,
+                timestamp: clock.new_timestamp(),
+            })
+            .unwrap();
+        }
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        // The deadline must NOT have been refreshed, so it still times out.
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert_eq!(
+            deadline.last_received,
+            Some(stale),
+            "OutputSent must not refresh the deadline when the receiver is backpressured"
+        );
+        assert!(
+            deadline.is_timed_out(),
+            "input_timeout watchdog must still be able to fire for a slow consumer (#2021)"
+        );
+    }
+
+    /// Counterpart to the above: a receiver that is keeping up (channel has
+    /// headroom) still has its deadline refreshed on `OutputSent`.
+    #[test]
+    fn output_sent_refreshes_deadline_when_receiver_keeps_up() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        let timeout = Duration::from_secs(5);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // Empty channel: full headroom available.
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert!(
+            deadline.last_received.is_some_and(|t| t > stale),
+            "OutputSent must refresh the deadline when the receiver is keeping up"
+        );
+        assert!(!deadline.is_timed_out());
     }
 
     // -- Test: send_with_timestamp delivers ParamUpdate to subscribed node --
