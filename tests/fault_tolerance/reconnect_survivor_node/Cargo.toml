@@ -1,0 +1,25 @@
+[package]
+name = "reconnect-survivor-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node for the daemon coordinator-reconnect e2e
+# (`tests/daemon-reconnect-e2e.rs`, dora-rs/dora#2029). On startup it
+# appends its OS process id to `$DORA_TEST_PID_FILE` exactly once, then
+# stays responsive — draining inputs until it receives `Stop`. The test
+# kills and restarts the coordinator while this node is running and then
+# asserts the recorded pid is unchanged (no respawn) and still alive,
+# proving the daemon preserved the node across the reconnect.
+
+[[bin]]
+name = "reconnect-survivor-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

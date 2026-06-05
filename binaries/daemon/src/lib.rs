@@ -535,6 +535,16 @@ impl Daemon {
         // permanently gone -> exit instead of orphaning (dora-rs/dora#1996).
         let mut connected_once = false;
 
+        // Node-serving daemon state. Built lazily on the first successful
+        // connect, then reused across every reconnect so that running nodes —
+        // and the `ProcessHandle`s that would otherwise kill them on drop — are
+        // never torn down when the coordinator connection drops
+        // (dora-rs/dora#2029). Each reconnect refreshes only the per-connection
+        // fields (coordinator sender, inter-daemon event sender, heartbeat
+        // clock, log destination); everything else persists.
+        let mut daemon: Option<Daemon> = None;
+        let mut dora_events_rx: Option<mpsc::Receiver<Timestamped<Event>>> = None;
+
         // Dynamic-node listener: bind once for the daemon's lifetime, not once
         // per reconnect. Rebinding on every reconnect leaked the listener task
         // and hit AddrInUse on the second bind, silently dropping dynamic-node
@@ -598,24 +608,52 @@ impl Daemon {
                         sender: coordinator_sender.clone(),
                     };
 
-                    // Don't pass ctrlc_events into run_general — keep it in
-                    // the outer loop so Ctrl+C works across reconnect cycles.
-                    // (ctrlc::set_handler can only be called once per process)
-                    let run_future = Self::run_general(
-                        incoming_events,
-                        Some(coordinator_sender),
-                        daemon_id,
-                        None,
-                        clock.clone(),
-                        Some(remote_daemon_events_tx),
-                        initial_builds.clone(),
-                        log_destination,
-                        None,
-                        inter_daemon_peer.clone(),
-                    );
+                    // Build the daemon on the first connect; on later connects
+                    // just point the existing daemon at the new connection. The
+                    // node-serving state (running nodes, zenoh session, internal
+                    // event channel) is preserved either way.
+                    match daemon.as_mut() {
+                        None => {
+                            let (built, rx) = Self::build_daemon(
+                                Some(coordinator_sender),
+                                daemon_id,
+                                None,
+                                clock.clone(),
+                                Some(remote_daemon_events_tx),
+                                initial_builds.clone(),
+                                log_destination,
+                                inter_daemon_peer.clone(),
+                            )
+                            .await?;
+                            daemon = Some(built);
+                            dora_events_rx = Some(rx);
+                        }
+                        Some(d) => {
+                            // Adopt the daemon id the coordinator assigned on
+                            // this (re)registration. The coordinator allocates a
+                            // fresh id whenever it has no live record of us (a
+                            // reconnect always drops the old connection first, and
+                            // a coordinator restart wipes its memory), and it
+                            // rejects any event carrying a different id. Running
+                            // nodes are unaffected: their data plane is keyed by
+                            // dataflow/node/output, not by daemon id.
+                            d.daemon_id = daemon_id.clone();
+                            d.logger.set_daemon_id(daemon_id);
+                            d.coordinator_sender = Some(coordinator_sender);
+                            d.remote_daemon_events_tx = Some(remote_daemon_events_tx);
+                            d.last_coordinator_heartbeat = Instant::now();
+                            d.logger.set_destination(log_destination);
+                        }
+                    }
 
+                    let d = daemon.as_mut().expect("daemon present");
+                    let rx = dora_events_rx.as_mut().expect("dora_events_rx present");
+
+                    // Don't pass ctrlc_events into run_inner — keep it in the
+                    // outer loop so Ctrl+C works across reconnect cycles.
+                    // (ctrlc::set_handler can only be called once per process)
                     let result = tokio::select! {
-                        r = run_future => r,
+                        r = d.run_inner(incoming_events, rx, None) => r,
                         _ = ctrlc_events.recv() => {
                             tracing::info!("received ctrl-c signal -> stopping daemon");
                             return Ok(());
@@ -852,6 +890,50 @@ impl Daemon {
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
     ) -> eyre::Result<DaemonRunResult> {
+        // Single-shot path (`dora run`): build the daemon and run one event
+        // loop. The reconnecting daemon binary instead builds the daemon once
+        // and reuses it across reconnects (see `run_with_builds`), so that node
+        // processes are not killed when the coordinator connection drops.
+        let (mut daemon, mut dora_events_rx) = Self::build_daemon(
+            coordinator_sender,
+            daemon_id,
+            exit_when_done,
+            clock,
+            remote_daemon_events_tx,
+            builds,
+            log_destination,
+            inter_daemon_peer,
+        )
+        .await?;
+        daemon
+            .run_inner(
+                external_events,
+                &mut dora_events_rx,
+                health_check_interval_duration,
+            )
+            .await
+    }
+
+    /// Construct the node-serving daemon state: open the zenoh session, spawn
+    /// the publish-drain task, and assemble the `Daemon`. Returns the daemon
+    /// plus the receiver half of its internal event channel (`events_tx`),
+    /// which `run_inner` folds into the merged event stream.
+    ///
+    /// Split out from `run_inner` so the reconnecting daemon can build this
+    /// state **once** and keep it alive across coordinator reconnects. Dropping
+    /// it would drop every `ProcessHandle` and kill all running nodes — the bug
+    /// fixed in dora-rs/dora#2029.
+    #[allow(clippy::too_many_arguments)]
+    async fn build_daemon(
+        coordinator_sender: Option<coordinator::CoordinatorSender>,
+        daemon_id: DaemonId,
+        exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
+        clock: Arc<HLC>,
+        remote_daemon_events_tx: Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
+        builds: BTreeMap<BuildId, BuildInfo>,
+        log_destination: LogDestination,
+        inter_daemon_peer: Option<String>,
+    ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Reserve a loopback port and have zenoh listen on it. The endpoint is
         // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
         // discovery works without multicast (#1778).
@@ -937,35 +1019,60 @@ impl Daemon {
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
         };
 
-        let dora_events = ReceiverStream::new(dora_events_rx);
-        let watchdog_clock = daemon.clock.clone();
+        Ok((daemon, dora_events_rx))
+    }
+
+    /// Run the daemon event loop for one coordinator connection.
+    ///
+    /// Borrows `&mut self` (rather than consuming) so that returning on a
+    /// reconnect-triggering error (heartbeat timeout / coordinator-send
+    /// failure) leaves the node-serving state — including every node's
+    /// `ProcessHandle` — intact. The caller's reconnect loop then re-enters
+    /// with a fresh connection and the same running nodes (dora-rs/dora#2029).
+    ///
+    /// `dora_events_rx` (the receiver half of `self.events_tx`, into which node
+    /// listeners push events) is likewise owned by the caller and borrowed for
+    /// the connection's lifetime, so buffered node events survive a reconnect.
+    #[tracing::instrument(skip(external_events, dora_events_rx, self), fields(?self.daemon_id))]
+    async fn run_inner(
+        &mut self,
+        external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
+        dora_events_rx: &mut mpsc::Receiver<Timestamped<Event>>,
+        health_check_interval_duration: Option<Duration>,
+    ) -> eyre::Result<DaemonRunResult> {
+        // Borrow the persistent node-event receiver as a stream for this
+        // connection. The borrow ends when this function returns, so the
+        // caller can re-borrow it on the next reconnect iteration.
+        let dora_events = stream::poll_fn(|cx| dora_events_rx.poll_recv(cx));
+
+        let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
         ))
-        .map(|_| Timestamped {
+        .map(move |_| Timestamped {
             inner: Event::HeartbeatInterval,
             timestamp: watchdog_clock.new_timestamp(),
         });
 
-        let metrics_clock = daemon.clock.clone();
+        let metrics_clock = self.clock.clone();
         let metrics_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             METRICS_INTERVAL, // Collect metrics every 2 seconds
         ))
-        .map(|_| Timestamped {
+        .map(move |_| Timestamped {
             inner: Event::MetricsInterval,
             timestamp: metrics_clock.new_timestamp(),
         });
 
-        let health_check_clock = daemon.clock.clone();
+        let health_check_clock = self.clock.clone();
         let health_check_interval = tokio_stream::wrappers::IntervalStream::new(
             tokio::time::interval(health_check_interval_duration.unwrap_or(Duration::from_secs(5))),
         )
-        .map(|_| Timestamped {
+        .map(move |_| Timestamped {
             inner: Event::NodeHealthCheckInterval,
             timestamp: health_check_clock.new_timestamp(),
         });
 
-        let events = (
+        let mut events = (
             external_events,
             dora_events,
             watchdog_interval,
@@ -973,15 +1080,6 @@ impl Daemon {
             health_check_interval,
         )
             .merge();
-        daemon.run_inner(events).await
-    }
-
-    #[tracing::instrument(skip(incoming_events, self), fields(?self.daemon_id))]
-    async fn run_inner(
-        mut self,
-        incoming_events: impl Stream<Item = Timestamped<Event>> + Unpin,
-    ) -> eyre::Result<DaemonRunResult> {
-        let mut events = incoming_events;
 
         // Send status report to coordinator so it can reconcile dataflow state.
         if let Some(sender) = &self.coordinator_sender {
@@ -1070,8 +1168,12 @@ impl Daemon {
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
-                            // Return error to trigger reconnection loop in run().
-                            // Running dataflows continue — nodes are separate processes.
+                            // Return error to trigger the reconnection loop in
+                            // `run_with_builds`. Because `run_inner` borrows
+                            // `&mut self`, this error does NOT drop the daemon:
+                            // running nodes and their `ProcessHandle`s survive,
+                            // and the next reconnect re-adopts them
+                            // (dora-rs/dora#2029).
                             bail!("coordinator heartbeat timeout (20s)")
                         }
                     }
@@ -1240,7 +1342,9 @@ impl Daemon {
             }
         }
 
-        Ok(self.dataflow_node_results)
+        // `run_inner` borrows `&mut self`, so move the accumulated results out
+        // (the daemon may be reused for a reconnect, where these are ignored).
+        Ok(std::mem::take(&mut self.dataflow_node_results))
     }
 
     async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {

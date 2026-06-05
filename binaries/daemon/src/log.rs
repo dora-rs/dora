@@ -284,6 +284,22 @@ impl DaemonLogger {
         &self.daemon_id
     }
 
+    /// Swap the log destination. Used by the daemon's reconnect loop to point
+    /// logging at the freshly-established coordinator connection without
+    /// rebuilding the (node-serving) daemon state (dora-rs/dora#2029).
+    pub(crate) fn set_destination(&mut self, destination: LogDestination) {
+        self.logger.destination = destination;
+    }
+
+    /// Adopt the daemon id the coordinator assigned on (re)registration. The
+    /// coordinator rejects any event whose `daemon_id` differs from the one it
+    /// handed out, so log events must carry the current id after a reconnect
+    /// (dora-rs/dora#2029).
+    pub(crate) fn set_daemon_id(&mut self, daemon_id: DaemonId) {
+        self.logger.daemon_id = daemon_id.clone();
+        self.daemon_id = daemon_id;
+    }
+
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         Ok(Self {
             daemon_id: self.daemon_id.clone(),
