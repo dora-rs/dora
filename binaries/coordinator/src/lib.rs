@@ -3466,7 +3466,6 @@ async fn check_spawn_timeouts(
             .entry(uuid)
             .or_default()
             .extend(synth_results);
-        cap_dataflow_results(dataflow_results, running_dataflows);
 
         // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
         // waiting for the dataflow to stop; that's effectively what just
@@ -3496,6 +3495,12 @@ async fn check_spawn_timeouts(
         while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
             archived_dataflows.shift_remove_index(0);
         }
+
+        // Cap LAST: the synthesized entry was just read for the stop reply and
+        // archival above, so evicting it now (if it is over-cap finished
+        // history) can't mis-report this dataflow as `ok_empty`. `uuid` is no
+        // longer in `running_dataflows` here.
+        cap_dataflow_results(dataflow_results, running_dataflows);
         // `df` drops here, releasing all remaining resources.
     }
 }
