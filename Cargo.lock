@@ -1782,6 +1782,7 @@ dependencies = [
  "redb",
  "serde",
  "tempfile",
+ "tracing",
  "uuid",
 ]
 

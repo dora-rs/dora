@@ -162,7 +162,13 @@ impl CoordinatorStore for RedbStore {
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (_, value) = entry?;
-            result.push(decode(value.value())?);
+            // Skip a single undeserializable row rather than failing the whole
+            // listing — one corrupt record must not disable startup recovery /
+            // `dora list` / `clean` (dora-rs/dora#2027).
+            match decode(value.value()) {
+                Ok(record) => result.push(record),
+                Err(e) => tracing::warn!("skipping corrupt daemon record: {e}"),
+            }
         }
         Ok(result)
     }
@@ -216,7 +222,13 @@ impl CoordinatorStore for RedbStore {
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (_, value) = entry?;
-            result.push(decode(value.value())?);
+            // Skip a single undeserializable row rather than failing the whole
+            // listing — one corrupt record must not disable startup recovery /
+            // `dora list` / `clean` (dora-rs/dora#2027).
+            match decode(value.value()) {
+                Ok(record) => result.push(record),
+                Err(e) => tracing::warn!("skipping corrupt dataflow record: {e}"),
+            }
         }
         Ok(result)
     }
@@ -274,7 +286,13 @@ impl CoordinatorStore for RedbStore {
         let mut result = Vec::new();
         for entry in table.iter()? {
             let (_, value) = entry?;
-            result.push(decode(value.value())?);
+            // Skip a single undeserializable row rather than failing the whole
+            // listing — one corrupt record must not disable startup recovery /
+            // `dora list` / `clean` (dora-rs/dora#2027).
+            match decode(value.value()) {
+                Ok(record) => result.push(record),
+                Err(e) => tracing::warn!("skipping corrupt build record: {e}"),
+            }
         }
         Ok(result)
     }
@@ -472,6 +490,54 @@ mod tests {
 
         store.delete_build(&id).unwrap();
         assert!(store.get_build(&id).unwrap().is_none());
+    }
+
+    #[test]
+    fn list_dataflows_skips_corrupt_row() {
+        // #2027: a single undeserializable row must not fail the whole listing
+        // (which would disable startup recovery + `dora list` / `clean`); the
+        // healthy rows must still be returned.
+        let (store, _dir) = temp_store();
+
+        let uuid = Uuid::new_v4();
+        store
+            .put_dataflow(&DataflowRecord {
+                uuid,
+                name: Some("healthy".into()),
+                descriptor_json: "nodes: []".into(),
+                status: crate::DataflowStatus::Pending,
+                daemon_ids: vec![],
+                generation: 0,
+                created_at: 1,
+                updated_at: 1,
+                node_to_daemon: Default::default(),
+                uv: false,
+            })
+            .unwrap();
+
+        // Inject a corrupt row directly (value bytes that don't decode).
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut table = txn.open_table(DATAFLOWS).unwrap();
+                let bad_key = Uuid::new_v4();
+                table
+                    .insert(
+                        bad_key.as_bytes().as_slice(),
+                        [0xFFu8, 0xFF, 0xFF].as_slice(),
+                    )
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        let flows = store.list_dataflows().unwrap();
+        assert_eq!(
+            flows.len(),
+            1,
+            "corrupt row must be skipped and the healthy row returned"
+        );
+        assert_eq!(flows[0].uuid, uuid);
     }
 
     #[test]

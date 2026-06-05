@@ -52,6 +52,13 @@ const FALLBACK_REPLAY_BACKOFF: Duration = Duration::from_secs(5);
 /// failed dataflows. Keep the two in sync.
 const MAX_ARCHIVED_DATAFLOWS: usize = 200;
 
+/// Cap on the in-memory per-dataflow result history (FIFO via `IndexMap`).
+/// Finished dataflows normally have their result entry removed when archived,
+/// but synthetic entries (reconnect / spawn-timeout watchdog) and results for
+/// dataflows that never reach archival would otherwise accumulate without
+/// bound. Capped at the same size as the archived history (dora-rs/dora#2027).
+const MAX_DATAFLOW_RESULTS: usize = 200;
+
 /// Cap on the in-memory finished-builds history (FIFO via `IndexMap`).
 /// Lifted to module scope so the build-timeout watchdog and the
 /// `DataflowBuildResult` handler share the same eviction policy (#1465).
@@ -334,8 +341,8 @@ async fn start_inner(
     let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
     let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
-    let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-        HashMap::new();
+    let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+        IndexMap::new();
     let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
     let mut daemon_connections = DaemonConnections::default();
 
@@ -640,6 +647,10 @@ async fn start_inner(
                             }
                         }
                     }
+                    // Bound finished-history growth (active multi-daemon entries
+                    // are preserved). Done after the match so `running_dataflows`
+                    // is no longer borrowed by the `entry(uuid)` scrutinee.
+                    cap_dataflow_results(&mut dataflow_results, &running_dataflows);
                 }
             },
 
@@ -1182,7 +1193,7 @@ async fn start_inner(
                                     continue;
                                 }
                                 if in_memory {
-                                    dataflow_results.remove(&uuid);
+                                    dataflow_results.shift_remove(&uuid);
                                 }
                                 archived_dataflows.shift_remove(&uuid);
                                 cleaned.push(DataflowListEntry { id, status });
@@ -3255,13 +3266,40 @@ async fn notify_daemons_about_disconnected_peers(
 /// removed dataflows simply don't reappear in the next pass, so
 /// re-running this on subsequent heartbeats is safe.
 ///
+/// FIFO-evict *finished* entries from `dataflow_results` until it is within
+/// [`MAX_DATAFLOW_RESULTS`].
+///
+/// `dataflow_results` is not pure history: a partially-finished multi-daemon
+/// dataflow accumulates one entry per daemon while it is still running, and
+/// the final success/failure status is computed from the full set once the
+/// last daemon finishes. Evicting an entry whose dataflow is still in
+/// `running_dataflows` would drop an earlier daemon's failure and let the
+/// dataflow be reported as `Succeeded` (dora-rs/dora#2027 review). So only
+/// entries for dataflows no longer running are evictable; if every over-cap
+/// entry is still active the map is left above the cap rather than corrupting
+/// live state (the bound targets finished-history growth, not concurrency).
+fn cap_dataflow_results(
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+) {
+    while dataflow_results.len() > MAX_DATAFLOW_RESULTS {
+        let Some(idx) = dataflow_results
+            .keys()
+            .position(|uuid| !running_dataflows.contains_key(uuid))
+        else {
+            break;
+        };
+        dataflow_results.shift_remove_index(idx);
+    }
+}
+
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
 #[allow(clippy::too_many_arguments)]
 async fn check_spawn_timeouts(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
-    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
     clock: &HLC,
     store: &dyn CoordinatorStore,
@@ -3457,6 +3495,12 @@ async fn check_spawn_timeouts(
         while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
             archived_dataflows.shift_remove_index(0);
         }
+
+        // Cap LAST: the synthesized entry was just read for the stop reply and
+        // archival above, so evicting it now (if it is over-cap finished
+        // history) can't misreport this dataflow as `ok_empty`. `uuid` is no
+        // longer in `running_dataflows` here.
+        cap_dataflow_results(dataflow_results, running_dataflows);
         // `df` drops here, releasing all remaining resources.
     }
 }
@@ -6320,8 +6364,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6380,8 +6424,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6427,8 +6471,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6513,8 +6557,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6860,8 +6904,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6906,8 +6950,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -6967,8 +7011,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -7023,6 +7067,99 @@ mod tests {
         }
     }
 
+    /// #2027: `dataflow_results` is FIFO-bounded at `MAX_DATAFLOW_RESULTS`.
+    /// Synthetic watchdog entries (and any results that never get cleared via
+    /// archival) must not accumulate without bound. When an insert pushes the
+    /// map over the cap, the oldest entry is evicted and the new one survives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn watchdog_synthesis_keeps_dataflow_results_bounded() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        df.pending_spawn_results.insert(daemon_id.clone());
+        df.spawn_started_at = Instant::now() - spawn_result_timeout() - Duration::from_secs(1);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+
+        // Pre-fill to exactly the cap with stale entries; the oldest is first.
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
+        let oldest = DataflowId::from(Uuid::new_v4());
+        dataflow_results.insert(oldest, BTreeMap::new());
+        for _ in 1..MAX_DATAFLOW_RESULTS {
+            dataflow_results.insert(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+        }
+        assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS);
+
+        check_spawn_timeouts(
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+            store.as_ref(),
+        )
+        .await;
+
+        assert_eq!(
+            dataflow_results.len(),
+            MAX_DATAFLOW_RESULTS,
+            "map must stay capped after the watchdog synthesizes a new entry"
+        );
+        assert!(
+            dataflow_results.contains_key(&dataflow_id),
+            "the freshly synthesized entry must survive eviction"
+        );
+        assert!(
+            !dataflow_results.contains_key(&oldest),
+            "the oldest entry must be the one evicted (FIFO)"
+        );
+    }
+
+    /// #2027 review (P2): a partially-finished multi-daemon dataflow keeps its
+    /// `dataflow_results` entry while still running (one daemon reported, others
+    /// pending). The cap must evict only finished-dataflow history, never an
+    /// active entry — otherwise the earlier daemon's result is lost and the
+    /// final status (computed when the last daemon finishes) is wrong.
+    #[test]
+    fn cap_dataflow_results_preserves_running_dataflow_entries() {
+        let active = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(active, test_running_dataflow(active, daemon_id, node_id));
+
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
+        // Insert the active entry FIRST so it is the FIFO-oldest — i.e. the
+        // entry a blind cap would evict first.
+        dataflow_results.insert(active, BTreeMap::new());
+        for _ in 0..MAX_DATAFLOW_RESULTS {
+            dataflow_results.insert(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+        }
+        assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS + 1);
+
+        cap_dataflow_results(&mut dataflow_results, &running_dataflows);
+
+        assert_eq!(
+            dataflow_results.len(),
+            MAX_DATAFLOW_RESULTS,
+            "cap must bring the map back within the limit"
+        );
+        assert!(
+            dataflow_results.contains_key(&active),
+            "the active running dataflow's entry must be preserved even though \
+             it is the FIFO-oldest — a finished-history entry is evicted instead"
+        );
+    }
+
     /// Round-6 Finding 3: `dora stop <watchdog-failed-uuid>` must return
     /// `DataflowStopped` (via the cached `dataflow_results` early-return)
     /// rather than "no known running dataflow". This auto-resolves once
@@ -7044,8 +7181,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -7223,8 +7360,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -7294,8 +7431,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
@@ -7373,8 +7510,8 @@ mod tests {
         let mut running_dataflows = HashMap::new();
         running_dataflows.insert(dataflow_id, df);
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
 
         // If `NodeId::from("<watchdog>")` is reintroduced, this awaits
         // a panic and the test fails. Currently uses `"watchdog"` which
