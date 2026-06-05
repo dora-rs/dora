@@ -4488,10 +4488,17 @@ fn note_output_sent_to_local_receivers(
         // gates on): a node that has fallen far enough behind to saturate its
         // channel is also dropping the zenoh payloads, so its deadline must be
         // allowed to expire. A node that is keeping up still gets refreshed.
+        //
+        // A *missing* channel means the receiver has no daemon-side event
+        // stream at all — e.g. it dropped its stream (`EventStreamDropped`)
+        // or has not subscribed yet. Such a receiver is not draining inputs
+        // either, so it must NOT count as keeping up; mirror
+        // `send_output_to_local_receivers`, which does nothing without a
+        // channel.
         let receiver_keeping_up = dataflow
             .subscribe_channels
             .get(receiver_id)
-            .is_none_or(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+            .is_some_and(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
         if receiver_keeping_up
             && let Some(deadline) = dataflow
                 .input_deadlines
@@ -5485,6 +5492,53 @@ mod fault_tolerance_tests {
             "OutputSent must refresh the deadline when the receiver is keeping up"
         );
         assert!(!deadline.is_timed_out());
+    }
+
+    /// A receiver with no daemon-side channel at all (e.g. after
+    /// `EventStreamDropped`) is not draining inputs, so `OutputSent` must
+    /// not refresh its deadline either — otherwise a sender's continued
+    /// output would keep a disconnected receiver's deadline alive forever.
+    #[test]
+    fn output_sent_does_not_refresh_deadline_for_receiver_without_channel() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        // Armed deadline that has already exceeded its timeout.
+        let timeout = Duration::from_millis(10);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // No `subscribe_channels` entry for the receiver — it has dropped
+        // its event stream.
+        assert!(!df.subscribe_channels.contains_key(&receiver));
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert_eq!(
+            deadline.last_received,
+            Some(stale),
+            "OutputSent must not refresh the deadline when the receiver has no channel"
+        );
+        assert!(
+            deadline.is_timed_out(),
+            "input_timeout watchdog must still fire for a disconnected receiver (#2021)"
+        );
     }
 
     // -- Test: send_with_timestamp delivers ParamUpdate to subscribed node --
