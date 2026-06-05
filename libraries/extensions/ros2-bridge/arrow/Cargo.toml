@@ -13,3 +13,7 @@ arrow = { workspace = true }
 eyre = { workspace = true }
 ros2-client = "0.8"
 serde = { workspace = true }
+
+[dev-dependencies]
+cdr-encoding = "0.10"
+byteorder = "1.5"
