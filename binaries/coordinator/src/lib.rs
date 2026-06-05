@@ -2376,6 +2376,28 @@ async fn start_inner(
                                 if let Err(e) = store.put_dataflow(&record) {
                                     tracing::warn!("failed to reconcile dataflow {df_id}: {e}");
                                 }
+                                // Rebuild the live in-memory entry so the
+                                // surviving nodes are visible + manageable again
+                                // (#2029 P1) — store status alone doesn't drive
+                                // `dora list` / `stop` / `logs`.
+                                reestablish_running_dataflow(
+                                    &mut running_dataflows,
+                                    &record,
+                                    &daemon_id,
+                                    &entry.running_nodes,
+                                );
+                            }
+                            StoreDataflowStatus::Running => {
+                                // Already `Running` in the store but possibly
+                                // missing from the live map (e.g. a later report,
+                                // or a coordinator restart that loaded the record
+                                // but not the in-memory entry). Idempotent.
+                                reestablish_running_dataflow(
+                                    &mut running_dataflows,
+                                    &record,
+                                    &daemon_id,
+                                    &entry.running_nodes,
+                                );
                             }
                             StoreDataflowStatus::Failed { terminal: true, .. } => {
                                 // Terminal failure (watchdog or equivalent
@@ -2937,6 +2959,63 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     actions
 }
 
+/// Re-establish the in-memory [`RunningDataflow`] for a dataflow a daemon has
+/// just re-reported as running after a reconnect (dora-rs/dora#2029 P1).
+///
+/// `begin_orphaned_dataflow_reclaim` (and a coordinator restart) leave the
+/// dataflow only in the persisted store; the live control plane — `dora list`,
+/// `stop`, `logs`, `node`, `param` — all read `running_dataflows`, so without
+/// this the surviving nodes would be invisible and unmanageable even though the
+/// store says `Running`. If the entry is still present (a multi-daemon dataflow
+/// whose other daemons are live), just relink this daemon's share; otherwise
+/// reconstruct it from the persisted record + the daemon's report.
+fn reestablish_running_dataflow(
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    record: &dora_coordinator_store::DataflowRecord,
+    daemon_id: &DaemonId,
+    reported_nodes: &[dora_core::config::NodeId],
+) {
+    if let Some(df) = running_dataflows.get_mut(&record.uuid) {
+        df.daemons.insert(daemon_id.clone());
+        df.pending_daemons.remove(daemon_id);
+        df.pending_spawn_results.remove(daemon_id);
+        for node in reported_nodes {
+            df.node_to_daemon.insert(node.clone(), daemon_id.clone());
+        }
+        return;
+    }
+
+    let descriptor: dora_message::descriptor::Descriptor =
+        match serde_json::from_str(&record.descriptor_json) {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!(
+                    "cannot re-establish running dataflow {}: failed to parse descriptor: {e}",
+                    record.uuid
+                );
+                return;
+            }
+        };
+    let nodes = match descriptor.resolve_aliases_and_set_defaults() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(
+                "cannot re-establish running dataflow {}: failed to resolve nodes: {e}",
+                record.uuid
+            );
+            return;
+        }
+    };
+    running_dataflows.insert(
+        record.uuid,
+        RunningDataflow::recovered(record, descriptor, nodes, daemon_id.clone(), reported_nodes),
+    );
+    tracing::info!(
+        "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
+        record.uuid
+    );
+}
+
 /// Begin a reclaim window for a dataflow whose every daemon disconnected *after*
 /// it had already spawned successfully. This is the running-dataflow counterpart
 /// of [`check_spawn_timeouts`] (which only fires while `spawn_result` is pending),
@@ -2952,9 +3031,9 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
 ///   records — hence we must NOT archive here and must NOT mark it terminal);
 /// - releases parked `dora stop` waiters so they don't hang (deadlock #2 of
 ///   dora-rs/dora#2028) — a `stop` racing a disconnect still returns;
-/// - removes the dataflow from `running_dataflows` (the same in-memory handoff a
-///   coordinator restart performs: live re-linking of the in-memory entry to the
-///   reconnected daemon is the separate, deferred reconciliation work).
+/// - removes the dataflow from `running_dataflows`; the live entry is rebuilt by
+///   `reestablish_running_dataflow` when the daemon reconnects and re-reports it
+///   (so `dora list` / `stop` / `logs` work again — dora-rs/dora#2029 P1).
 ///
 /// If no daemon reclaims it, the recovery-timeout path (the `Recovering -> Failed`
 /// sweep) fails it terminally after `RECOVERY_TIMEOUT_SECS`.
@@ -4472,6 +4551,67 @@ mod tests {
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn reconcile_reestablishes_running_dataflow_after_reconnect() {
+        // #2029 P1: after a reclaim (or coordinator restart) removed the live
+        // entry, a reconnecting daemon's status report must rebuild it in
+        // `running_dataflows` so `dora list` / `stop` / `logs` see the survivor
+        // again — store status alone doesn't drive the control plane.
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("d1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        // A persisted record as it would exist after a reclaim/restart: status
+        // Recovering, descriptor with a resolvable node.
+        let record = dora_coordinator_store::DataflowRecord {
+            uuid: dataflow_id,
+            name: Some("df".to_string()),
+            descriptor_json: serde_json::json!({
+                "nodes": [{ "id": "sender", "path": "sleep", "outputs": ["message"] }]
+            })
+            .to_string(),
+            status: StoreDataflowStatus::Recovering,
+            daemon_ids: vec![daemon_id.clone()],
+            node_to_daemon: BTreeMap::new(),
+            uv: false,
+            generation: 3,
+            created_at: 7,
+            updated_at: 7,
+        };
+
+        // Absent (reclaimed away / restart) -> reconstruct from the record.
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        let rebuilt = running_dataflows
+            .get(&dataflow_id)
+            .expect("must reconstruct the live entry");
+        assert!(rebuilt.daemons.contains(&daemon_id));
+        assert_eq!(rebuilt.node_to_daemon.get(&node_id), Some(&daemon_id));
+        assert!(
+            matches!(&rebuilt.spawn_result, CachedResult::Cached { result } if result.is_ok()),
+            "spawn_result must be cached Ok so stop/wait waiters don't hang"
+        );
+
+        // Present (multi-daemon partial reconnect) -> relink, not duplicate.
+        let daemon2 = DaemonId::new(Some("d2".to_string()));
+        let node2: dora_core::config::NodeId = "receiver".to_string().into();
+        reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon2,
+            std::slice::from_ref(&node2),
+        );
+        let df = running_dataflows.get(&dataflow_id).expect("still present");
+        assert!(df.daemons.contains(&daemon_id) && df.daemons.contains(&daemon2));
+        assert_eq!(df.node_to_daemon.get(&node2), Some(&daemon2));
+        assert_eq!(running_dataflows.len(), 1, "must relink, not duplicate");
     }
 
     #[test]

@@ -322,17 +322,13 @@ fn node_survives_coordinator_reconnect() {
         "coordinator to restart",
     );
 
-    // Re-adoption signal: when the reconnected daemon reports the running
-    // dataflow, the coordinator reconciles its recovered ("Recovering") record
-    // back to Running instead of orphaning it. That reconcile is the
-    // authoritative proof the coordinator re-adopted the dataflow. (Rebuilding
-    // the coordinator's in-memory `running_dataflows` map after a restart —
-    // which `dora list` reads — is separate, explicitly-deferred coordinator
-    // work, so we assert on the reconcile rather than on `list`.)
-    let reconcile_marker = format!("reconciling dataflow {dataflow_id}");
+    // Re-adoption: when the reconnected daemon re-reports the running dataflow,
+    // the coordinator must put it back into its LIVE state so it is visible and
+    // manageable again — `dora list` shows it `Running` (the #2029 P1 fix), not
+    // merely flip the persisted store record. Poll `dora list` for it.
     let readopted = || {
-        std::fs::read_to_string(&coord_log)
-            .map(|s| s.contains(&reconcile_marker))
+        list_active(port)
+            .map(|v| v.contains(&dataflow_id))
             .unwrap_or(false)
     };
     let deadline = Instant::now() + Duration::from_secs(60);
@@ -356,10 +352,13 @@ fn node_survives_coordinator_reconnect() {
         "node pid {node_pid} must still be alive after the reconnect"
     );
 
-    // 7. The coordinator must re-adopt the dataflow (not orphan it).
+    // 7. The coordinator must re-adopt the dataflow into its live state so it is
+    //    manageable again (visible in `dora list`), not just left in the store.
     if !readopted() {
         dump_logs(&coord_log, &daemon_log);
-        panic!("coordinator did not re-adopt dataflow {dataflow_id} after reconnect");
+        panic!(
+            "coordinator did not re-adopt dataflow {dataflow_id} into `dora list` after reconnect"
+        );
     }
 
     // Teardown: stop the dataflow before Cleanup kills the processes.
@@ -495,15 +494,19 @@ fn node_survives_daemon_watchdog_disconnect() {
         "node must not be killed + respawned while the daemon is frozen"
     );
 
-    // Thaw the daemon; it reconnects and re-reports the running dataflow, and the
-    // coordinator reconciles the reclaim back to Running.
+    // Thaw the daemon; it reconnects and re-reports the running dataflow. The
+    // coordinator must reclaim it back into its live state — visible + manageable
+    // in `dora list` again (#2029 P1), not merely flipped in the store.
     signal(daemon_pid, "-CONT");
 
-    let reconcile_marker = format!("reconciling dataflow {dataflow_id}");
     wait_until(
-        || log_contains(&coord_log, &reconcile_marker),
+        || {
+            list_active(port)
+                .map(|v| v.contains(&dataflow_id))
+                .unwrap_or(false)
+        },
         Duration::from_secs(60),
-        "coordinator to reconcile the dataflow back to Running",
+        "coordinator to re-adopt the dataflow into `dora list` after reconnect",
     );
 
     let pids_after = read_pids(&pid_file);

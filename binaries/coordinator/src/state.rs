@@ -368,6 +368,60 @@ impl RunningDataflow {
         )
     }
 
+    /// Reconstruct the live `RunningDataflow` for a dataflow that survived a
+    /// coordinator-connection drop, from its persisted record + a reconnecting
+    /// daemon's status report (dora-rs/dora#2029 P1).
+    ///
+    /// Spawn already succeeded, so `spawn_result` is cached `Ok`; per-node
+    /// metrics / log-subscriber / topic-subscriber state starts empty and the
+    /// daemon re-reports/-subscribes. `node_to_daemon` is seeded from the
+    /// reporting daemon's nodes; in a multi-daemon dataflow each daemon's
+    /// reconnect relinks its own share (see the caller's relink branch).
+    pub(crate) fn recovered(
+        record: &DataflowRecord,
+        descriptor: Descriptor,
+        nodes: BTreeMap<NodeId, ResolvedNode>,
+        daemon_id: DaemonId,
+        reported_nodes: &[NodeId],
+    ) -> Self {
+        let daemons: BTreeSet<DaemonId> = std::iter::once(daemon_id.clone()).collect();
+        let node_to_daemon = reported_nodes
+            .iter()
+            .map(|n| (n.clone(), daemon_id.clone()))
+            .collect();
+        RunningDataflow {
+            uuid: record.uuid,
+            name: record.name.clone(),
+            descriptor,
+            daemons: daemons.clone(),
+            pending_daemons: BTreeSet::new(),
+            exited_before_subscribe: Vec::new(),
+            nodes,
+            node_to_daemon,
+            node_metrics: BTreeMap::new(),
+            node_finalized: BTreeSet::new(),
+            node_stopped_at: BTreeMap::new(),
+            network_metrics: None,
+            spawn_result: CachedResult::Cached {
+                result: Ok(ControlRequestReply::DataflowSpawned { uuid: record.uuid }),
+            },
+            stop_reply_senders: Vec::new(),
+            buffered_log_messages: Vec::new(),
+            log_subscribers: Vec::new(),
+            topic_subscribers: BTreeMap::new(),
+            pending_spawn_results: BTreeSet::new(),
+            spawn_started_at: Instant::now(),
+            created_at: record.created_at,
+            store_generation: record.generation,
+            last_recovery_attempt: BTreeMap::new(),
+            last_replay_attempt: BTreeMap::new(),
+            uv: record.uv,
+            state_log_sequence: 0,
+            state_log: Vec::new(),
+            daemon_ack_sequence: daemons.iter().map(|d| (d.clone(), 0)).collect(),
+        }
+    }
+
     /// Create a persistable [`DataflowRecord`] snapshot of this dataflow.
     /// Increments `store_generation` on each call.
     pub(crate) fn make_record(&mut self, status: DataflowStatus) -> eyre::Result<DataflowRecord> {
