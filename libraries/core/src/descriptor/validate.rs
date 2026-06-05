@@ -330,6 +330,11 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
     let num: f64 = num_str
         .parse()
         .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
+    // Casting a negative or non-finite f64 to u64 saturates (negatives and
+    // NaN to 0, +inf to u64::MAX) instead of erroring, so reject them up front.
+    if !num.is_finite() || num < 0.0 {
+        bail!("byte size must be a non-negative, finite number: '{s}'");
+    }
     Ok((num * multiplier as f64) as u64)
 }
 
@@ -2016,6 +2021,23 @@ nodes:
         assert_eq!(parse_byte_size(" 1KB ").unwrap(), 1024);
         assert_eq!(parse_byte_size("1 KB").unwrap(), 1024);
         assert_eq!(parse_byte_size("  1  KB  ").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_negative() {
+        // A negative f64 cast to u64 saturates to 0, which would silently
+        // disable a limit instead of being rejected (issue #2018).
+        assert!(parse_byte_size("-1KB").is_err());
+        assert!(parse_byte_size("-0.5MB").is_err());
+        assert!(parse_byte_size("-1").is_err());
+        assert!(parse_byte_size("-100").is_err());
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_non_finite() {
+        // inf/nan cast to u64 saturate (to u64::MAX / 0) rather than erroring.
+        assert!(parse_byte_size("infKB").is_err());
+        assert!(parse_byte_size("nanMB").is_err());
     }
 
     #[test]
