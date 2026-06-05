@@ -362,7 +362,8 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     // Search path within current working directory
     if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
         Ok(abs_path)
-    // Search path within $PATH
+    // Otherwise resolve against the `uv`-managed environment first (when `uv`
+    // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
         resolve_path_via_uv(&path)
     } else if let Ok(abs_path) = which::which(&path) {
@@ -386,7 +387,7 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .arg(which)
         .arg(path)
         .output()
-        .context("failed to run `uv run which`")?;
+        .with_context(|| format!("failed to run `uv run {which}`"))?;
     if !output.status.success() {
         bail!("Could not find source path {} within uv", path.display());
     }
@@ -397,7 +398,7 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .lines()
         .map(str::trim)
         .find(|line| !line.is_empty())
-        .ok_or_else(|| eyre::eyre!("`uv run which {}` produced no output", path.display()))?;
+        .ok_or_else(|| eyre::eyre!("`uv run {which} {}` produced no output", path.display()))?;
     PathBuf::from(resolved)
         .canonicalize()
         .with_context(|| format!("failed to canonicalize uv-resolved path {resolved}"))
