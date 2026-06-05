@@ -1,7 +1,7 @@
 use std::{
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use dora_core::{
@@ -284,6 +284,30 @@ impl DaemonLogger {
         &self.daemon_id
     }
 
+    /// Point the shared coordinator log target at a freshly-established
+    /// connection. Mutates the `Arc<Mutex<…>>` **in place** rather than swapping
+    /// the destination, so every per-node log-forwarding clone captured at spawn
+    /// follows the reconnect and emits under the current sender + daemon id
+    /// (dora-rs/dora#2029). No-op for non-coordinator destinations.
+    pub(crate) fn update_coordinator_target(&self, sender: CoordinatorSender, daemon_id: DaemonId) {
+        if let LogDestination::Coordinator { target } = &self.logger.destination
+            && let Ok(mut guard) = target.lock()
+        {
+            guard.sender = sender;
+            guard.daemon_id = daemon_id;
+        }
+    }
+
+    /// Adopt the daemon id the coordinator assigned on (re)registration. The
+    /// coordinator rejects any event whose `daemon_id` differs from the one it
+    /// handed out, so log payloads carry the current id after a reconnect
+    /// (dora-rs/dora#2029). The validated wire id for coordinator log events
+    /// comes from the shared target (`update_coordinator_target`).
+    pub(crate) fn set_daemon_id(&mut self, daemon_id: DaemonId) {
+        self.logger.daemon_id = daemon_id.clone();
+        self.daemon_id = daemon_id;
+    }
+
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         Ok(Self {
             daemon_id: self.daemon_id.clone(),
@@ -308,15 +332,26 @@ impl Logger {
 
     pub async fn log(&mut self, message: LogMessage) {
         match &mut self.destination {
-            LogDestination::Coordinator { sender } => {
+            LogDestination::Coordinator { target } => {
+                // Read the *current* sender + daemon id from the shared target,
+                // so a clone captured before a reconnect still forwards over the
+                // live connection with the freshly-assigned id (#2029). The guard
+                // is confined to this block — it must not span the await below
+                // (`MutexGuard` is `!Send`).
+                let Some((sender, daemon_id)) = (match target.lock() {
+                    Ok(t) => Some((t.sender.clone(), t.daemon_id.clone())),
+                    Err(_) => None,
+                }) else {
+                    return;
+                };
                 let message = Timestamped {
                     inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
+                        daemon_id,
                         event: DaemonEvent::Log(message.clone()),
                     },
                     timestamp: self.clock.new_timestamp(),
                 };
-                Self::log_to_coordinator(message, sender).await
+                Self::log_to_coordinator(message, &sender).await
             }
             LogDestination::Channel { sender } => {
                 let _ = sender.send_async(message).await;
@@ -399,8 +434,10 @@ impl Logger {
 
     pub async fn try_clone(&self) -> eyre::Result<Self> {
         let destination = match &self.destination {
-            LogDestination::Coordinator { sender } => LogDestination::Coordinator {
-                sender: sender.clone(),
+            LogDestination::Coordinator { target } => LogDestination::Coordinator {
+                // Clone the `Arc`, NOT the contents: every clone must share the
+                // same target so a reconnect update reaches them all (#2029).
+                target: target.clone(),
             },
             LogDestination::Channel { sender } => LogDestination::Channel {
                 sender: sender.clone(),
@@ -438,9 +475,32 @@ impl Logger {
 }
 
 pub enum LogDestination {
-    Coordinator { sender: CoordinatorSender },
-    Channel { sender: Sender<LogMessage> },
+    Coordinator {
+        target: Arc<Mutex<CoordinatorLogTarget>>,
+    },
+    Channel {
+        sender: Sender<LogMessage>,
+    },
     Tracing,
+}
+
+/// The coordinator connection the daemon currently forwards logs over.
+///
+/// Shared (behind `Arc<Mutex<…>>`) by the daemon's logger and every per-node
+/// log-forwarding clone, which capture it at spawn. On a reconnect the daemon
+/// swaps the contents **in place** (`update_coordinator_target`), so a
+/// surviving node's logs follow the new connection and carry the
+/// freshly-assigned daemon id — the coordinator validates that id and would
+/// reject a stale one (dora-rs/dora#2029).
+pub struct CoordinatorLogTarget {
+    pub sender: CoordinatorSender,
+    pub daemon_id: DaemonId,
+}
+
+impl CoordinatorLogTarget {
+    pub fn shared(sender: CoordinatorSender, daemon_id: DaemonId) -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self { sender, daemon_id }))
+    }
 }
 
 enum CowMut<'a, T> {
@@ -482,6 +542,47 @@ impl std::fmt::Display for Indent<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::coordinator::CoordinatorSender;
+
+    /// #2029 P2: a per-node log-forwarding clone captured at spawn must follow a
+    /// later reconnect — after `update_coordinator_target`, the clone emits under
+    /// the freshly-assigned daemon id (which the coordinator validates) and the
+    /// new sender, instead of the stale ones captured when the node was spawned.
+    #[tokio::test]
+    async fn coordinator_log_target_update_reaches_spawn_time_clones() {
+        let clock = Arc::new(uhlc::HLC::default());
+        let id_a = DaemonId::new(Some("daemon-a".to_string()));
+        let id_b = DaemonId::new(Some("daemon-b".to_string()));
+        let (sender_a, _rx_a) = CoordinatorSender::for_test();
+        let (sender_b, _rx_b) = CoordinatorSender::for_test();
+
+        let daemon_logger = Logger {
+            destination: LogDestination::Coordinator {
+                target: CoordinatorLogTarget::shared(sender_a, id_a.clone()),
+            },
+            daemon_id: id_a.clone(),
+            clock,
+        }
+        .for_daemon(id_a.clone());
+
+        // The node log task captures a clone at spawn (before any reconnect).
+        let node_clone = daemon_logger.try_clone().await.expect("clone logger");
+
+        // Reconnect: the daemon adopts a new id + connection and swaps the
+        // shared target in place.
+        daemon_logger.update_coordinator_target(sender_b, id_b.clone());
+
+        // The pre-reconnect clone must now read the new id (proves the shared
+        // target is what every clone observes).
+        let observed = match &node_clone.logger.destination {
+            LogDestination::Coordinator { target } => target.lock().unwrap().daemon_id.clone(),
+            _ => panic!("expected a coordinator log destination"),
+        };
+        assert_eq!(
+            observed, id_b,
+            "node log clone must follow the reconnect, not keep the spawn-time id"
+        );
+    }
 
     #[test]
     fn log_path_format() {

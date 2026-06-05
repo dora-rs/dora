@@ -256,6 +256,15 @@ jobs:
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
         timeout-minutes: 15
+      # Regression for #2029: a coordinator drop+restore must NOT kill the
+      # daemon's running nodes. Spawns a real coordinator+daemon, kills the
+      # coordinator mid-run, and asserts the node process survives + is
+      # re-adopted. Lives in `dora-examples` (excluded from the bulk
+      # `cargo test --all` step), so it needs an explicit invocation.
+      - name: Run daemon coordinator-reconnect E2E
+        run: >
+          cargo test -p dora-examples --test daemon-reconnect-e2e -- --test-threads=1
+        timeout-minutes: 15
       # `dora node` lifecycle E2E (issue #1703). The shared test
       # binary lives under the `dora-examples` package which the bulk
       # `cargo test --all` step excludes, so it needs an explicit

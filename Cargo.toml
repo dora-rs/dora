@@ -75,6 +75,7 @@ members = [
     "tests/fault_tolerance/fire_and_forget_source_node",
     "tests/fault_tolerance/hang_after_init_node",
     "tests/fault_tolerance/input_closed_observer_node",
+    "tests/fault_tolerance/reconnect_survivor_node",
     "tests/fault_tolerance/silent_source_node",
     "tests/fault_tolerance/timed_burst_source_node",
     "xtask",

@@ -79,6 +79,14 @@ impl CoordinatorSender {
             mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
         })
     }
+
+    /// Build a detached sender (and its receiver) for tests that only need a
+    /// distinct, valid `CoordinatorSender` instance.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> (Self, mpsc::Receiver<String>) {
+        let (sender, rx) = mpsc::channel(8);
+        (Self { sender }, rx)
+    }
 }
 
 pub async fn register(

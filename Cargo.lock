@@ -5679,6 +5679,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "reconnect-survivor-node"
+version = "1.0.0-rc1"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "redb"
 version = "2.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
