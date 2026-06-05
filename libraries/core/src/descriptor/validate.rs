@@ -645,8 +645,21 @@ fn validate_ros2_qos(
     Ok(())
 }
 
-/// Validate a ROS2 name (topic, service, or action) contains only valid characters.
-/// ROS2 names allow: ASCII alphanumeric, underscore, and forward slash.
+/// Validate a ROS2 name (topic, service, or action).
+///
+/// Enforces both the allowed character set (ASCII alphanumeric, underscore, and
+/// forward slash) and ROS2's structural naming rules, so that a malformed name
+/// fails at `dora check` time with a clear message instead of being rejected by
+/// `rmw` only when the bridge tries to create the publisher/subscriber.
+///
+/// Structural rules enforced (see <https://design.ros2.org/articles/topic_and_service_names.html>):
+/// * must not contain repeated forward slashes (`//`);
+/// * must not end with a forward slash, and must not be a bare `/`;
+/// * each `/`-delimited segment must not start with a digit.
+///
+/// Note: a leading underscore is intentionally *allowed* — ROS2 treats names
+/// whose segments start with `_` as valid "hidden" topics/services, so the rule
+/// is "must not start with a digit", not "must start with a letter".
 fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result<()> {
     if name.is_empty() {
         bail!("node `{node_id}`: `{field}` must not be empty");
@@ -659,6 +672,30 @@ fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result
             "node `{node_id}`: invalid `{field}` name `{name}`, \
              only ASCII alphanumeric, underscore, and '/' characters allowed"
         );
+    }
+    if name.contains("//") {
+        bail!(
+            "node `{node_id}`: invalid `{field}` name `{name}`, \
+             consecutive '/' separators are not allowed"
+        );
+    }
+    if name == "/" {
+        bail!("node `{node_id}`: invalid `{field}` name `{name}`, must not be a bare '/'");
+    }
+    if name.ends_with('/') {
+        bail!("node `{node_id}`: invalid `{field}` name `{name}`, must not end with '/'");
+    }
+    // A leading '/' yields an empty first segment (absolute name), which is
+    // fine; `//` and a trailing '/' are already rejected above, so the only
+    // empty segment that can reach here is that leading one. An empty segment
+    // never starts with a digit, so it passes the check naturally.
+    for segment in name.split('/') {
+        if segment.starts_with(|c: char| c.is_ascii_digit()) {
+            bail!(
+                "node `{node_id}`: invalid `{field}` name `{name}`, \
+                 name segment `{segment}` must not start with a digit"
+            );
+        }
     }
     Ok(())
 }
@@ -1481,6 +1518,53 @@ mod tests {
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("keep_last"));
+    }
+
+    // --- ROS2 name validation tests ---
+
+    #[test]
+    fn validate_ros2_name_accepts_valid() {
+        let node = NodeId::from("n".to_owned());
+        // relative, absolute, nested, underscores, hidden (leading '_'),
+        // digits inside a segment.
+        for name in [
+            "topic",
+            "/topic",
+            "/topic/sub",
+            "my_topic",
+            "/ns/my_topic_2",
+            "/_hidden",
+            "/ns/_internal/foo",
+            "cmd_vel0",
+        ] {
+            validate_ros2_name(&node, "topic", name)
+                .unwrap_or_else(|e| panic!("`{name}` should be valid, got: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_ros2_name_rejects_structural_violations() {
+        let node = NodeId::from("n".to_owned());
+        // (name, substring expected in the error)
+        let cases = [
+            ("", "must not be empty"),
+            ("bad name", "alphanumeric"),
+            ("//topic", "consecutive"),
+            ("topic//sub", "consecutive"),
+            ("topic/", "must not end with"),
+            ("/", "bare '/'"),
+            ("9topic", "must not start with a digit"),
+            ("/topic/9sub", "must not start with a digit"),
+        ];
+        for (name, expected) in cases {
+            let err = validate_ros2_name(&node, "topic", name)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains(expected),
+                "`{name}` should be rejected with `{expected}`, got: {err}"
+            );
+        }
     }
 
     // --- Type annotation tests ---
