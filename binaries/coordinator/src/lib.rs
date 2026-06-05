@@ -1986,8 +1986,6 @@ async fn start_inner(
                     apply_disconnect_actions(
                         disconnect_actions,
                         &mut running_dataflows,
-                        &mut archived_dataflows,
-                        &mut dataflow_results,
                         &mut daemon_connections,
                         &store,
                         &clock,
@@ -2159,8 +2157,6 @@ async fn start_inner(
                 apply_disconnect_actions(
                     disconnect_actions,
                     &mut running_dataflows,
-                    &mut archived_dataflows,
-                    &mut dataflow_results,
                     &mut daemon_connections,
                     &store,
                     &clock,
@@ -2893,9 +2889,14 @@ enum DisconnectAction {
     /// The last daemon we were awaiting `ReadyOnDaemon` from disconnected, but
     /// survivors remain — release the start barrier so they don't block forever.
     ReleaseReadyBarrier(DataflowId),
-    /// Every daemon running the dataflow disconnected — tear it down so spawn /
-    /// stop waiters are released and it stops appearing as running.
-    TearDownOrphaned(DataflowId),
+    /// Every daemon running the dataflow disconnected — begin a reclaim window
+    /// rather than failing terminally. The daemon may have only transiently lost
+    /// the coordinator (a heartbeat blip, a coordinator restart) while its node
+    /// processes keep running (dora-rs/dora#2029); marking the dataflow
+    /// `Recovering` lets the reconnecting daemon's `DaemonStatusReport` reconcile
+    /// it back to `Running`. If no daemon reclaims it within the recovery window,
+    /// the existing recovery-timeout path fails it terminally (dora-rs/dora#2028).
+    ReclaimOrphaned(DataflowId),
 }
 
 fn cleanup_disconnected_daemons_from_running_dataflows(
@@ -2920,12 +2921,12 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
         // must not race it here.
         let spawned_ok = df.spawn_result.is_cached_ok();
         if df.daemons.is_empty() {
-            tracing::error!(
+            tracing::warn!(
                 dataflow = %df.uuid,
-                "all daemons disconnected - dataflow has no live daemons"
+                "all daemons disconnected - entering reclaim window (waiting for daemon reconnect)"
             );
             if spawned_ok {
-                actions.push(DisconnectAction::TearDownOrphaned(df.uuid));
+                actions.push(DisconnectAction::ReclaimOrphaned(df.uuid));
             }
         } else if spawned_ok && pending_was_nonempty && df.pending_daemons.is_empty() {
             // The last daemon we were waiting on for `ReadyOnDaemon` vanished
@@ -2936,42 +2937,48 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     actions
 }
 
-/// Tear down a dataflow whose every daemon disconnected *after* it had already
-/// spawned successfully — the running-dataflow case that [`check_spawn_timeouts`]
-/// can't reach (it only fires while `spawn_result` is pending). Mirrors that
-/// watchdog's teardown tail (minus the spawn rollback, since the daemons are
-/// already gone): release spawn/stop waiters, persist `Failed`, synthesize a
-/// `Failed` result, archive, and remove from `running_dataflows`. See #2028.
+/// Begin a reclaim window for a dataflow whose every daemon disconnected *after*
+/// it had already spawned successfully. This is the running-dataflow counterpart
+/// of [`check_spawn_timeouts`] (which only fires while `spawn_result` is pending),
+/// but unlike that watchdog it does **not** fail the dataflow terminally: a
+/// daemon often only transiently loses the coordinator (a heartbeat blip or a
+/// coordinator restart) while its node processes keep running
+/// (dora-rs/dora#2029).
+///
+/// So instead of the terminal teardown tail (persist `Failed { terminal: true }`,
+/// synthesize a `Failed` result, archive), this:
+/// - persists `Recovering`, so a reconnecting daemon's `DaemonStatusReport` can
+///   reconcile it back to `Running` (the reconcile path skips archived/terminal
+///   records — hence we must NOT archive here and must NOT mark it terminal);
+/// - releases parked `dora stop` waiters so they don't hang (deadlock #2 of
+///   dora-rs/dora#2028) — a `stop` racing a disconnect still returns;
+/// - removes the dataflow from `running_dataflows` (the same in-memory handoff a
+///   coordinator restart performs: live re-linking of the in-memory entry to the
+///   reconnected daemon is the separate, deferred reconciliation work).
+///
+/// If no daemon reclaims it, the recovery-timeout path (the `Recovering -> Failed`
+/// sweep) fails it terminally after `RECOVERY_TIMEOUT_SECS`.
 ///
 /// Idempotent: `running_dataflows.remove` returning `None` makes a repeated call
-/// a no-op, and `CachedResult::set_result` is a no-op on an already-cached
-/// result.
-async fn tear_down_orphaned_dataflow(
+/// a no-op.
+async fn begin_orphaned_dataflow_reclaim(
     uuid: DataflowId,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
-    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
-    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     clock: &HLC,
     store: &dyn dora_coordinator_store::CoordinatorStore,
 ) {
     let Some(mut df) = running_dataflows.remove(&uuid) else {
         return;
     };
-    let err_msg = "all daemons running this dataflow disconnected".to_string();
-
-    // No-op if a result was already cached (it was — spawn succeeded); this
-    // just covers the defensive case.
-    df.spawn_result
-        .set_result(Err(eyre!("dataflow {uuid} failed: {err_msg}")));
+    let msg = "all daemons running this dataflow disconnected; \
+               waiting for daemon reconnect (Recovering)"
+        .to_string();
 
     if let Err(e) = df
-        .make_record(StoreDataflowStatus::Failed {
-            error: err_msg.clone(),
-            terminal: true,
-        })
+        .make_record(StoreDataflowStatus::Recovering)
         .and_then(|r| store.put_dataflow(&r))
     {
-        tracing::warn!(dataflow = %uuid, "failed to persist disconnect teardown: {e}");
+        tracing::warn!(dataflow = %uuid, "failed to persist reclaim (Recovering) state: {e}");
     }
 
     send_log_message(
@@ -2981,12 +2988,12 @@ async fn tear_down_orphaned_dataflow(
             dataflow_id: Some(uuid),
             node_id: None,
             daemon_id: None,
-            level: LogLevel::Error.into(),
+            level: LogLevel::Warn.into(),
             target: Some("coordinator".into()),
             module_path: None,
             file: None,
             line: None,
-            message: err_msg.clone(),
+            message: msg,
             timestamp: clock.new_timestamp().get_time().to_system_time().into(),
             fields: None,
         },
@@ -2995,43 +3002,27 @@ async fn tear_down_orphaned_dataflow(
 
     close_topic_subscribers_on_finish(&mut df);
 
-    let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
-    dataflow_results
-        .entry(uuid)
-        .or_default()
-        .extend(synth_results);
-
-    // Release any in-flight `dora stop` waiters with the synthesized result so
-    // they don't hang (deadlock #2 of #2028).
+    // Release any in-flight `dora stop` waiters so they don't hang across the
+    // reclaim window (deadlock #2 of #2028). There is no synthesized failure
+    // result here (the dataflow is recovering, not failed), so report an empty
+    // OK result.
     let stop_reply = ControlRequestReply::DataflowStopped {
         uuid,
-        result: dataflow_results
-            .get(&uuid)
-            .map(|r| dataflow_result(r, uuid, clock))
-            .unwrap_or_else(|| DataflowResult::ok_empty(uuid, clock.new_timestamp())),
+        result: DataflowResult::ok_empty(uuid, clock.new_timestamp()),
     };
     for sender in df.stop_reply_senders.drain(..) {
         let _ = sender.send(Ok(stop_reply.clone()));
-    }
-
-    archived_dataflows
-        .entry(uuid)
-        .or_insert_with(|| ArchivedDataflow::from(&df));
-    while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
-        archived_dataflows.shift_remove_index(0);
     }
 }
 
 /// Execute the [`DisconnectAction`]s produced by
 /// [`cleanup_disconnected_daemons_from_running_dataflows`]: release the start
-/// barrier for dataflows whose last pending daemon vanished, and tear down
-/// dataflows that lost every daemon. Runs at the (async) caller after the
-/// synchronous set-pruning. See #2028.
+/// barrier for dataflows whose last pending daemon vanished, and begin the
+/// reclaim window for dataflows that lost every daemon. Runs at the (async)
+/// caller after the synchronous set-pruning. See #2028 / #2029.
 async fn apply_disconnect_actions(
     actions: Vec<DisconnectAction>,
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
-    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
-    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
@@ -3043,16 +3034,9 @@ async fn apply_disconnect_actions(
                     broadcast_all_nodes_ready(uuid, df, daemon_connections, store, clock).await?;
                 }
             }
-            DisconnectAction::TearDownOrphaned(uuid) => {
-                tear_down_orphaned_dataflow(
-                    uuid,
-                    running_dataflows,
-                    archived_dataflows,
-                    dataflow_results,
-                    clock,
-                    store.as_ref(),
-                )
-                .await;
+            DisconnectAction::ReclaimOrphaned(uuid) => {
+                begin_orphaned_dataflow_reclaim(uuid, running_dataflows, clock, store.as_ref())
+                    .await;
             }
         }
     }
@@ -4589,11 +4573,17 @@ mod tests {
         assert!(df.pending_daemons.is_empty());
     }
 
-    // #2028 deadlocks #2 + #3: the sole daemon of a running dataflow dies ->
-    // the dataflow must be torn down (removed, classified Failed, archived) and
-    // any parked `dora stop` waiter resolved instead of hanging.
+    // #2028 deadlocks #2 + #3 + #2029 reclaim: the sole daemon of a running
+    // dataflow disconnects -> the dataflow must be removed from the running set
+    // and any parked `dora stop` waiter resolved instead of hanging. But unlike
+    // a terminal teardown, the disconnect now opens a *reclaim window*: the
+    // store record is `Recovering` (NOT terminal `Failed`) and the dataflow is
+    // NOT archived, so a reconnecting daemon's `DaemonStatusReport` can
+    // reconcile it back to `Running` (the reconcile path skips archived/terminal
+    // records). Permanent loss is handled by the `Recovering -> Failed` recovery
+    // timeout sweep.
     #[tokio::test]
-    async fn disconnect_tears_down_orphaned_running_dataflow() {
+    async fn disconnect_reclaims_orphaned_running_dataflow() {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
         let clock = Arc::new(HLC::default());
         let mut daemon_connections = DaemonConnections::default();
@@ -4606,6 +4596,14 @@ mod tests {
             .set_result(Ok(ControlRequestReply::DataflowSpawned {
                 uuid: dataflow_id,
             }));
+        // Seed the store with a Running record so we can observe the transition
+        // to Recovering (the production spawn path persists this).
+        store
+            .put_dataflow(
+                &df.make_record(StoreDataflowStatus::Running)
+                    .expect("make running record"),
+            )
+            .expect("seed running record");
         // a parked `dora stop` waiter
         let (tx, rx) = tokio::sync::oneshot::channel();
         df.stop_reply_senders.push(tx);
@@ -4619,18 +4617,13 @@ mod tests {
             &disconnected,
         );
         assert!(
-            matches!(actions.as_slice(), [DisconnectAction::TearDownOrphaned(id)] if *id == dataflow_id),
-            "must tear down the orphaned dataflow"
+            matches!(actions.as_slice(), [DisconnectAction::ReclaimOrphaned(id)] if *id == dataflow_id),
+            "must reclaim (not terminally tear down) the orphaned dataflow"
         );
 
-        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
-        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
-            HashMap::new();
         apply_disconnect_actions(
             actions,
             &mut running_dataflows,
-            &mut archived_dataflows,
-            &mut dataflow_results,
             &mut daemon_connections,
             &store,
             &clock,
@@ -4642,21 +4635,22 @@ mod tests {
             !running_dataflows.contains_key(&dataflow_id),
             "orphaned dataflow must be removed from running set"
         );
-        let per_daemon = dataflow_results
-            .get(&dataflow_id)
-            .expect("teardown must synthesize a result");
+        // Reclaimable, not terminal: store record is Recovering so a reconnecting
+        // daemon's status report can promote it back to Running.
+        let record = store
+            .get_dataflow(&dataflow_id)
+            .expect("store lookup")
+            .expect("record present");
         assert!(
-            !per_daemon.values().all(DataflowDaemonResult::is_ok),
-            "orphaned dataflow must classify as Failed, not vacuously Finished"
+            matches!(record.status, StoreDataflowStatus::Recovering),
+            "disconnect must mark the dataflow Recovering, got {:?}",
+            record.status
         );
-        let reply = rx.await.expect("stop waiter must be resolved by teardown");
+        // The parked `dora stop` must still be released (no hang).
+        let reply = rx.await.expect("stop waiter must be resolved by reclaim");
         assert!(
             matches!(reply, Ok(ControlRequestReply::DataflowStopped { uuid, .. }) if uuid == dataflow_id),
             "parked dora stop must receive DataflowStopped"
-        );
-        assert!(
-            archived_dataflows.contains_key(&dataflow_id),
-            "torn-down dataflow must be archived for later `dora list`"
         );
     }
 

@@ -94,6 +94,22 @@ fn read_pids(path: &Path) -> Vec<u32> {
         .collect()
 }
 
+/// Send `signal` (e.g. `-STOP`, `-CONT`) to `pid` via `kill(1)`.
+fn signal(pid: u32, sig: &str) {
+    let _ = Command::new("kill")
+        .arg(sig)
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn log_contains(path: &Path, needle: &str) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.contains(needle))
+        .unwrap_or(false)
+}
+
 fn wait_until(mut f: impl FnMut() -> bool, timeout: Duration, what: &str) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -347,6 +363,163 @@ fn node_survives_coordinator_reconnect() {
     }
 
     // Teardown: stop the dataflow before Cleanup kills the processes.
+    let _ = Command::new(&dora)
+        .arg("stop")
+        .arg("--all")
+        .arg("--coordinator-port")
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Companion to the coordinator-restart case: here the **coordinator stays up**
+/// and the daemon is frozen (SIGSTOP) past the coordinator's 30s heartbeat
+/// watchdog, then resumed. This exercises the #2028 disconnect path, which #2060
+/// changes from a terminal teardown to a reclaim: the coordinator marks the
+/// dataflow `Recovering` (not `Failed`+archived), and when the daemon thaws and
+/// reconnects with its nodes still running, the coordinator reconciles it back
+/// to `Running` instead of orphaning it. Regression for dora-rs/dora#2029 + the
+/// #2028 reclaim adjustment.
+#[test]
+fn node_survives_daemon_watchdog_disconnect() {
+    ensure_built();
+
+    let dora = bin("dora");
+    let node = bin("reconnect-survivor-node");
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let pid_file = tmp.path().join("survivor.pid");
+    let redb = tmp.path().join("coordinator.redb");
+    let coord_log = tmp.path().join("coordinator.log");
+    let daemon_log = tmp.path().join("daemon.log");
+    let dataflow_yml = tmp.path().join("dataflow.yml");
+
+    std::fs::write(
+        &dataflow_yml,
+        format!(
+            "nodes:\n  \
+             - id: survivor\n    \
+             path: {node}\n    \
+             inputs:\n      \
+             tick: dora/timer/millis/300\n    \
+             env:\n      \
+             DORA_TEST_PID_FILE: {pid}\n",
+            node = node.display(),
+            pid = pid_file.display(),
+        ),
+    )
+    .expect("write dataflow yml");
+
+    let port = free_port();
+    let daemon_listen_port = free_port();
+
+    let mut cleanup = Cleanup {
+        coordinator: None,
+        daemon: None,
+    };
+
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    wait_until(
+        || port_open(port),
+        Duration::from_secs(20),
+        "coordinator to accept connections",
+    );
+
+    let daemon_out = std::fs::File::create(&daemon_log).expect("create daemon log");
+    let daemon_err = daemon_out.try_clone().expect("clone daemon log");
+    cleanup.daemon = Some(
+        Command::new(&dora)
+            .arg("daemon")
+            .arg("--coordinator-port")
+            .arg(port.to_string())
+            .arg("--local-listen-port")
+            .arg(daemon_listen_port.to_string())
+            .stdout(Stdio::from(daemon_out))
+            .stderr(Stdio::from(daemon_err))
+            .spawn()
+            .expect("failed to spawn daemon"),
+    );
+    let daemon_pid = cleanup.daemon.as_ref().unwrap().id();
+
+    let start = Command::new(&dora)
+        .arg("start")
+        .arg(&dataflow_yml)
+        .arg("--detach")
+        .arg("--coordinator-port")
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run dora start");
+    if !start.success() {
+        dump_logs(&coord_log, &daemon_log);
+        panic!("dora start failed");
+    }
+
+    wait_until(
+        || read_pids(&pid_file).len() == 1,
+        Duration::from_secs(45),
+        "survivor node to record its pid",
+    );
+    let node_pid = read_pids(&pid_file)[0];
+    wait_until(
+        || list_active(port).map(|v| v.len() == 1).unwrap_or(false),
+        Duration::from_secs(30),
+        "dataflow to register as Running",
+    );
+    let dataflow_id = list_active(port).expect("list active")[0];
+
+    // Freeze the daemon so it misses heartbeats; the coordinator's watchdog
+    // (30s) disconnects it. The node is a separate process and keeps running.
+    signal(daemon_pid, "-STOP");
+
+    wait_until(
+        || log_contains(&coord_log, "failed watchdog"),
+        Duration::from_secs(50),
+        "coordinator watchdog to disconnect the frozen daemon",
+    );
+    // The disconnect must open a reclaim window, NOT terminally fail the dataflow.
+    if !log_contains(&coord_log, "entering reclaim window") {
+        signal(daemon_pid, "-CONT");
+        dump_logs(&coord_log, &daemon_log);
+        panic!("coordinator did not enter the reclaim window on daemon disconnect");
+    }
+    assert!(
+        pid_alive(node_pid),
+        "node pid {node_pid} must stay alive while the daemon is frozen"
+    );
+    assert_eq!(
+        read_pids(&pid_file),
+        vec![node_pid],
+        "node must not be killed + respawned while the daemon is frozen"
+    );
+
+    // Thaw the daemon; it reconnects and re-reports the running dataflow, and the
+    // coordinator reconciles the reclaim back to Running.
+    signal(daemon_pid, "-CONT");
+
+    let reconcile_marker = format!("reconciling dataflow {dataflow_id}");
+    wait_until(
+        || log_contains(&coord_log, &reconcile_marker),
+        Duration::from_secs(60),
+        "coordinator to reconcile the dataflow back to Running",
+    );
+
+    let pids_after = read_pids(&pid_file);
+    if pids_after != vec![node_pid] || !pid_alive(node_pid) {
+        dump_logs(&coord_log, &daemon_log);
+    }
+    assert_eq!(
+        pids_after,
+        vec![node_pid],
+        "node must survive the daemon freeze as the same pid (no kill + respawn)"
+    );
+    assert!(
+        pid_alive(node_pid),
+        "node pid {node_pid} must still be alive after the daemon reconnects"
+    );
+
     let _ = Command::new(&dora)
         .arg("stop")
         .arg("--all")
