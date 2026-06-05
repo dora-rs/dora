@@ -40,7 +40,7 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
                         check_input(
                             input,
                             &nodes,
-                            &format!("{}/{}/{input_id}", operator_definition.id, node.id),
+                            &format!("{}/{}/{input_id}", node.id, operator_definition.id),
                         )?;
                     }
                 }
@@ -1923,6 +1923,35 @@ nodes:
         assert!(
             err.to_string().contains("typo"),
             "expected error about missing output, got: {err}"
+        );
+    }
+
+    #[test]
+    fn wiring_runtime_input_id_order() {
+        // A runtime node's operator input that references a missing source
+        // must report the input in the conventional
+        // `{node_id}/{operator_id}/{input_id}` order (see #2019).
+        let yaml = r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: my-operator
+        shared-library: op
+        inputs:
+          tick: nonexistent/data
+        outputs:
+          - status
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("runtime-node/my-operator/tick"),
+            "expected node/operator/input order, got: {msg}"
+        );
+        assert!(
+            !msg.contains("my-operator/runtime-node/tick"),
+            "input id should not use reversed operator/node order, got: {msg}"
         );
     }
 
