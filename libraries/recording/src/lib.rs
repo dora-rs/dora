@@ -157,20 +157,18 @@ impl<R: Read> RecordingReader<R> {
         let mut pos = 0;
 
         let node_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let node_id = std::str::from_utf8(&record_buf[pos..pos + node_id_len])
+        let node_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, node_id_len)?)
             .wrap_err("invalid node_id utf8")?
             .to_string();
-        pos += node_id_len;
 
         let output_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let output_id = std::str::from_utf8(&record_buf[pos..pos + output_id_len])
+        let output_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, output_id_len)?)
             .wrap_err("invalid output_id utf8")?
             .to_string();
-        pos += output_id_len;
 
         let timestamp_offset_nanos = u64::from_le_bytes(read_array(&record_buf, &mut pos)?);
         let event_bytes_len = u32::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let event_bytes = record_buf[pos..pos + event_bytes_len].to_vec();
+        let event_bytes = read_slice(&record_buf, &mut pos, event_bytes_len)?.to_vec();
 
         Ok(Some(RecordEntry {
             node_id,
@@ -189,6 +187,25 @@ fn read_array<const N: usize>(buf: &[u8], pos: &mut usize) -> eyre::Result<[u8; 
     arr.copy_from_slice(&buf[*pos..*pos + N]);
     *pos += N;
     Ok(arr)
+}
+
+/// Borrow `len` bytes from `buf` at `*pos`, advancing `*pos`. Returns `Err`
+/// (never panics) when a decoded length field claims more bytes than the
+/// record actually holds -- corrupt/crafted records must fail gracefully, not
+/// out-of-bounds slice (`checked_add` also guards against `pos + len` wrapping).
+fn read_slice<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> eyre::Result<&'a [u8]> {
+    let end = pos
+        .checked_add(len)
+        .ok_or_else(|| eyre::eyre!("length {len} at offset {pos} overflows"))?;
+    if end > buf.len() {
+        eyre::bail!(
+            "buffer too short at offset {pos}: need {len} bytes, have {}",
+            buf.len() - *pos
+        );
+    }
+    let slice = &buf[*pos..end];
+    *pos = end;
+    Ok(slice)
 }
 
 fn write_header<W: Write>(w: &mut W, header: &RecordingHeader) -> eyre::Result<()> {
@@ -348,6 +365,52 @@ mod tests {
         assert_eq!(entry, read_entry);
         // Should gracefully return None at EOF
         assert!(reader.next_entry().unwrap().is_none());
+    }
+
+    /// A crafted `node_id_len` larger than the record buffer must return `Err`,
+    /// not panic on an out-of-bounds slice. Reachable from a user-supplied
+    /// `DORA_REPLAY_FILE` (dora-rs/dora#2027).
+    #[test]
+    fn corrupt_node_id_len_returns_err_not_panic() {
+        let header = sample_header();
+        let mut buf = Vec::new();
+        write_header(&mut buf, &header).unwrap();
+        // Record body claims node_id_len = 100 but only the 2 length bytes follow.
+        let body: &[u8] = &100u16.to_le_bytes();
+        buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(body);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "corrupt node_id_len must return Err, got: {result:?}"
+        );
+    }
+
+    /// Same guarantee for a crafted `event_bytes_len` (a `u32`, so it can claim
+    /// far more than the buffer holds).
+    #[test]
+    fn corrupt_event_bytes_len_returns_err_not_panic() {
+        let header = sample_header();
+        let mut buf = Vec::new();
+        write_header(&mut buf, &header).unwrap();
+        // Valid empty node_id + output_id + timestamp, then a huge event_bytes_len
+        // with no payload following it.
+        let mut body = Vec::new();
+        body.extend_from_slice(&0u16.to_le_bytes()); // node_id_len
+        body.extend_from_slice(&0u16.to_le_bytes()); // output_id_len
+        body.extend_from_slice(&0u64.to_le_bytes()); // timestamp
+        body.extend_from_slice(&u32::MAX.to_le_bytes()); // event_bytes_len
+        buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&body);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let result = reader.next_entry();
+        assert!(
+            result.is_err(),
+            "corrupt event_bytes_len must return Err, got: {result:?}"
+        );
     }
 
     #[test]
