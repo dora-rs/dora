@@ -167,13 +167,23 @@ where
         }
         values.push(arrow::array::make_array(value));
     }
-    let refs: Vec<_> = values.iter().map(|a| a.deref()).collect();
-    let concatenated = arrow::compute::concat(&refs).map_err(super::error)?;
+
+    // `arrow::compute::concat` errors on an empty slice, so an empty
+    // `sequence<struct>` (e.g. `MarkerArray.markers`, `Path.poses`,
+    // `DiagnosticArray.status`) would otherwise fail the whole message
+    // deserialize. Build a length-0 array of the correct child type instead.
+    let concatenated = if values.is_empty() {
+        let child_type = deserializer.struct_data_type().map_err(error)?;
+        arrow::array::new_empty_array(&child_type)
+    } else {
+        let refs: Vec<_> = values.iter().map(|a| a.deref()).collect();
+        arrow::compute::concat(&refs).map_err(super::error)?
+    };
 
     let list = ListArray::try_new(
         Arc::new(Field::new("item", concatenated.data_type().clone(), true)),
         OffsetBuffer::from_lengths([concatenated.len()]),
-        Arc::new(concatenated),
+        concatenated,
         None,
     )
     .map_err(error)?;
