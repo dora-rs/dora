@@ -503,6 +503,30 @@ impl EventStream {
         // already dropped its sender, but zenoh subscriber threads
         // hold clones that would otherwise keep `receiver` open.
         if self.stop_received {
+            // The scheduler gives `Stop` (a NON_INPUT_EVENT) strict priority
+            // over buffered inputs (`scheduler::next`), so inputs enqueued
+            // before Stop can still be queued when Stop is delivered. Drain
+            // those buffered *inputs* before closing instead of dropping them
+            // silently. Trailing non-input control events (a second Stop /
+            // AllInputsClosed / InputClosed / Reload) are discarded rather than
+            // re-delivered after Stop — the contract is "nothing after Stop
+            // except the inputs that were already queued". Do NOT pull new
+            // events from `receiver`; the dataflow is stopping, and on the
+            // non-scheduler path returning `None` closes the stream against
+            // zenoh-held senders.
+            if self.use_scheduler {
+                while let Some(item) = self.scheduler.next() {
+                    if matches!(
+                        &item,
+                        EventItem::NodeEvent {
+                            event: NodeEvent::Input { .. },
+                            ..
+                        } | EventItem::ZenohInput { .. }
+                    ) {
+                        return Some(Self::convert_event_item(item));
+                    }
+                }
+            }
             return None;
         }
         let event = if !self.use_scheduler {
@@ -1061,8 +1085,26 @@ fn zenoh_payload_to_arrow_array(
     ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
 
     if payload.is_empty() {
-        let empty = dora_arrow_convert::IntoArrow::into_arrow(());
-        return Ok(arrow::array::make_array(empty.into()));
+        // Mirror the daemon raw path (`arrow_utils::buffer_into_arrow_array`,
+        // which returns `ArrayData::new_empty(&type_info.data_type)` for an
+        // empty buffer): an empty payload becomes a length-0 array of the
+        // declared type, NOT a `NullArray`. A genuine unit/timer output has
+        // `type_info.data_type == Null`, so it still yields a `NullArray`; a
+        // zero-length *typed* array stays typed — matching the daemon path and
+        // avoiding a downstream `as_primitive` panic on the zenoh transport
+        // (cross-transport non-determinism, dora-rs/dora#2027).
+        //
+        // `data_type` is peer-controlled (bincode-decoded from the zenoh
+        // attachment). `new_empty` (-> `new_null`) panics on a few malformed
+        // types (empty `Union` fields, `Dictionary` with a non-integer key), so
+        // catch the unwind and surface a clean error instead of letting a buggy
+        // or malicious peer crash the node (#2027 anti-panic).
+        let data_type = &metadata.type_info.data_type;
+        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            arrow::array::ArrayData::new_empty(data_type)
+        }))
+        .map_err(|_| eyre!("cannot build an empty array for declared type {data_type:?}"))?;
+        return Ok(arrow::array::make_array(data));
     }
 
     if is_ipc {
@@ -1424,6 +1466,50 @@ impl EventStream {
     /// drain it correctly (dora-rs/adora#172).
     fn push_passthrough_for_testing(&mut self, event: Event) {
         self.pending_passthrough.push_back(event);
+    }
+
+    /// Test-only: buffer an empty input directly in the scheduler and force
+    /// scheduler mode, simulating an input the scheduler held back while
+    /// prioritizing `Stop`. Used to verify `recv_async` drains buffered inputs
+    /// after `Stop` instead of dropping them (dora-rs/dora#2027).
+    fn push_scheduler_input_for_testing(&mut self, id: &str) {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::{
+            daemon_to_node::NodeEvent,
+            metadata::{ArrowTypeInfo, Metadata},
+        };
+        self.use_scheduler = true;
+        let type_info = ArrowTypeInfo {
+            data_type: arrow_schema::DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info);
+        self.scheduler.add_event(EventItem::NodeEvent {
+            event: NodeEvent::Input {
+                id: id.into(),
+                metadata: std::sync::Arc::new(meta),
+                data: None,
+            },
+        });
+    }
+
+    /// Test-only: buffer a `Stop` directly in the scheduler (a NON_INPUT_EVENT)
+    /// and force scheduler mode, to verify the post-Stop drain discards trailing
+    /// control events instead of re-delivering a second `Stop` (dora-rs/dora#2027).
+    fn push_scheduler_stop_for_testing(&mut self) {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::daemon_to_node::NodeEvent;
+        self.use_scheduler = true;
+        self.scheduler.add_event(EventItem::NodeEvent {
+            event: NodeEvent::Stop,
+        });
     }
 }
 
@@ -1967,6 +2053,120 @@ mod tests {
         assert!(
             second.is_none(),
             "recv must return None after Stop, got {second:?}"
+        );
+    }
+
+    /// #2027: the scheduler gives `Stop` (a NON_INPUT_EVENT) strict priority
+    /// over buffered inputs, so an input enqueued before `Stop` is still in the
+    /// scheduler when `Stop` is delivered. `recv` must drain that input before
+    /// closing rather than dropping it silently (the previous `return None`
+    /// after `stop_received` lost it).
+    #[test]
+    fn recv_drains_buffered_scheduler_inputs_after_stop() {
+        let (_node, mut events) = test_event_stream();
+
+        // Deliver the seeded Stop (sets `stop_received`).
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        // Simulate the input the scheduler held back behind the prioritized Stop.
+        events.push_scheduler_input_for_testing("cam");
+
+        let drained = events.recv();
+        assert!(
+            matches!(&drained, Some(Event::Input { id, .. }) if id.as_str() == "cam"),
+            "buffered input must be drained after Stop, got {drained:?}"
+        );
+
+        // Once the scheduler is empty the stream closes.
+        assert!(
+            events.recv().is_none(),
+            "stream must close after draining buffered inputs"
+        );
+    }
+
+    /// #2027 review (P2): the post-Stop drain must deliver buffered *inputs*
+    /// only. A non-input control event buffered behind Stop (e.g. a second
+    /// `Stop`) must NOT be re-delivered to a loop-until-`None` caller.
+    #[test]
+    fn recv_after_stop_skips_trailing_control_events() {
+        let (_node, mut events) = test_event_stream();
+
+        // Deliver the seeded Stop (sets `stop_received`).
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        // Buffer a trailing Stop AND a real input behind it. The scheduler
+        // prioritizes the Stop (NON_INPUT), so the drain meets it first.
+        events.push_scheduler_stop_for_testing();
+        events.push_scheduler_input_for_testing("cam");
+
+        // The drain must skip the trailing Stop and return only the input...
+        let drained = events.recv();
+        assert!(
+            matches!(&drained, Some(Event::Input { id, .. }) if id.as_str() == "cam"),
+            "expected the buffered input, not a re-delivered Stop, got {drained:?}"
+        );
+        // ...then close (no second Stop ever surfaces).
+        assert!(events.recv().is_none(), "stream must close after the input");
+    }
+
+    /// #2027: an empty payload over the zenoh transport must become a length-0
+    /// array of the DECLARED type, matching the daemon path
+    /// (`buffer_into_arrow_array` -> `new_empty(type_info.data_type)`). A
+    /// zero-length typed array previously degraded to `NullArray` only on the
+    /// zenoh path, so a downstream `as_primitive` would panic on one transport
+    /// but not the other. A genuine unit/timer output (Null type) still yields
+    /// a `NullArray`.
+    #[test]
+    fn zenoh_empty_payload_preserves_declared_type() {
+        use dora_message::metadata::{ArrowTypeInfo, Metadata};
+
+        fn type_info(dt: arrow_schema::DataType) -> ArrowTypeInfo {
+            ArrowTypeInfo {
+                data_type: dt,
+                len: 0,
+                null_count: 0,
+                validity: None,
+                offset: 0,
+                buffer_offsets: vec![],
+                child_data: vec![],
+                field_names: None,
+                schema_hash: None,
+            }
+        }
+        fn meta(dt: arrow_schema::DataType) -> Metadata {
+            Metadata::new(
+                dora_core::uhlc::HLC::default().new_timestamp(),
+                type_info(dt),
+            )
+        }
+
+        let empty = zenoh::bytes::ZBytes::new();
+
+        // Zero-length typed array stays typed.
+        let typed =
+            zenoh_payload_to_arrow_array(empty.clone(), &meta(arrow_schema::DataType::Int32))
+                .unwrap();
+        assert_eq!(typed.data_type(), &arrow_schema::DataType::Int32);
+        assert_eq!(typed.len(), 0);
+
+        // Genuine unit/timer output stays a NullArray.
+        let null =
+            zenoh_payload_to_arrow_array(empty, &meta(arrow_schema::DataType::Null)).unwrap();
+        assert_eq!(null.data_type(), &arrow_schema::DataType::Null);
+
+        // #2027 review (P2): `data_type` is peer-controlled, and `new_empty`
+        // panics on a few malformed types. A `Dictionary` with a non-integer
+        // key reaches `k.primitive_width().unwrap()` -> panic; the empty-payload
+        // path must surface that as `Err`, not crash the node. (A panic trace
+        // printed during this test is expected — it is the caught unwind.)
+        let malformed = arrow_schema::DataType::Dictionary(
+            Box::new(arrow_schema::DataType::Utf8),
+            Box::new(arrow_schema::DataType::Int32),
+        );
+        let result = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::new(), &meta(malformed));
+        assert!(
+            result.is_err(),
+            "malformed peer type must produce Err, not panic"
         );
     }
 
