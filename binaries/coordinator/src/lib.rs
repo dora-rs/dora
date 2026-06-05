@@ -513,9 +513,6 @@ async fn start_inner(
                                 .entry(uuid)
                                 .or_default()
                                 .insert(daemon_id, result);
-                            while dataflow_results.len() > MAX_DATAFLOW_RESULTS {
-                                dataflow_results.shift_remove_index(0);
-                            }
 
                             if dataflow.daemons.is_empty() {
                                 // Archive finished dataflow (cap at 200 to prevent unbounded growth)
@@ -645,14 +642,15 @@ async fn start_inner(
                                     });
                                 existing.timestamp = result.timestamp;
                                 existing.node_results.extend(result.node_results);
-                                while dataflow_results.len() > MAX_DATAFLOW_RESULTS {
-                                    dataflow_results.shift_remove_index(0);
-                                }
                             } else {
                                 tracing::warn!("dataflow not running on DataflowFinishedOnDaemon",);
                             }
                         }
                     }
+                    // Bound finished-history growth (active multi-daemon entries
+                    // are preserved). Done after the match so `running_dataflows`
+                    // is no longer borrowed by the `entry(uuid)` scrutinee.
+                    cap_dataflow_results(&mut dataflow_results, &running_dataflows);
                 }
             },
 
@@ -3268,6 +3266,33 @@ async fn notify_daemons_about_disconnected_peers(
 /// removed dataflows simply don't reappear in the next pass, so
 /// re-running this on subsequent heartbeats is safe.
 ///
+/// FIFO-evict *finished* entries from `dataflow_results` until it is within
+/// [`MAX_DATAFLOW_RESULTS`].
+///
+/// `dataflow_results` is not pure history: a partially-finished multi-daemon
+/// dataflow accumulates one entry per daemon while it is still running, and
+/// the final success/failure status is computed from the full set once the
+/// last daemon finishes. Evicting an entry whose dataflow is still in
+/// `running_dataflows` would drop an earlier daemon's failure and let the
+/// dataflow be reported as `Succeeded` (dora-rs/dora#2027 review). So only
+/// entries for dataflows no longer running are evictable; if every over-cap
+/// entry is still active the map is left above the cap rather than corrupting
+/// live state (the bound targets finished-history growth, not concurrency).
+fn cap_dataflow_results(
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    running_dataflows: &HashMap<DataflowId, RunningDataflow>,
+) {
+    while dataflow_results.len() > MAX_DATAFLOW_RESULTS {
+        let Some(idx) = dataflow_results
+            .keys()
+            .position(|uuid| !running_dataflows.contains_key(uuid))
+        else {
+            break;
+        };
+        dataflow_results.shift_remove_index(idx);
+    }
+}
+
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
 #[allow(clippy::too_many_arguments)]
@@ -3441,9 +3466,7 @@ async fn check_spawn_timeouts(
             .entry(uuid)
             .or_default()
             .extend(synth_results);
-        while dataflow_results.len() > MAX_DATAFLOW_RESULTS {
-            dataflow_results.shift_remove_index(0);
-        }
+        cap_dataflow_results(dataflow_results, running_dataflows);
 
         // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
         // waiting for the dataflow to stop; that's effectively what just
@@ -7092,6 +7115,43 @@ mod tests {
         assert!(
             !dataflow_results.contains_key(&oldest),
             "the oldest entry must be the one evicted (FIFO)"
+        );
+    }
+
+    /// #2027 review (P2): a partially-finished multi-daemon dataflow keeps its
+    /// `dataflow_results` entry while still running (one daemon reported, others
+    /// pending). The cap must evict only finished-dataflow history, never an
+    /// active entry — otherwise the earlier daemon's result is lost and the
+    /// final status (computed when the last daemon finishes) is wrong.
+    #[test]
+    fn cap_dataflow_results_preserves_running_dataflow_entries() {
+        let active = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(active, test_running_dataflow(active, daemon_id, node_id));
+
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
+        // Insert the active entry FIRST so it is the FIFO-oldest — i.e. the
+        // entry a blind cap would evict first.
+        dataflow_results.insert(active, BTreeMap::new());
+        for _ in 0..MAX_DATAFLOW_RESULTS {
+            dataflow_results.insert(DataflowId::from(Uuid::new_v4()), BTreeMap::new());
+        }
+        assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS + 1);
+
+        cap_dataflow_results(&mut dataflow_results, &running_dataflows);
+
+        assert_eq!(
+            dataflow_results.len(),
+            MAX_DATAFLOW_RESULTS,
+            "cap must bring the map back within the limit"
+        );
+        assert!(
+            dataflow_results.contains_key(&active),
+            "the active running dataflow's entry must be preserved even though \
+             it is the FIFO-oldest — a finished-history entry is evicted instead"
         );
     }
 
