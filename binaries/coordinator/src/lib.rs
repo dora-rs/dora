@@ -3498,7 +3498,7 @@ async fn check_spawn_timeouts(
 
         // Cap LAST: the synthesized entry was just read for the stop reply and
         // archival above, so evicting it now (if it is over-cap finished
-        // history) can't mis-report this dataflow as `ok_empty`. `uuid` is no
+        // history) can't misreport this dataflow as `ok_empty`. `uuid` is no
         // longer in `running_dataflows` here.
         cap_dataflow_results(dataflow_results, running_dataflows);
         // `df` drops here, releasing all remaining resources.
