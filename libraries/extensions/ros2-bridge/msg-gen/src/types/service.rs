@@ -134,7 +134,8 @@ impl Service {
 
                 let client = node.node.create_client::< service :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::Name::new(name_space, base_name)
+                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
                     &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                     qos.clone().into(),
                     qos.into(),
@@ -351,7 +352,8 @@ impl Service {
 
                 let server = node.node.create_server::< service :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
-                    &crate::ros2_client::Name::new(name_space, base_name).unwrap(),
+                    &crate::ros2_client::Name::new(name_space, base_name)
+                        .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
                     &crate::ros2_client::ServiceTypeName::new(#package_name, #self_name_str),
                     qos.clone().into(),
                     qos.into(),
@@ -545,5 +547,45 @@ impl Service {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod codegen_tests {
+    use super::*;
+
+    fn empty_msg(name: &str) -> Message {
+        Message {
+            package: "test_pkg".to_string(),
+            name: name.to_string(),
+            members: vec![],
+            constants: vec![],
+        }
+    }
+
+    fn format_valid_rust(tokens: impl ToTokens) -> String {
+        use rust_format::Formatter;
+        rust_format::PrettyPlease::default()
+            .format_tokens(tokens.into_token_stream())
+            .expect("generated ROS2 service code must parse as valid Rust")
+    }
+
+    // #2027: the generated client/server `create` fns used to
+    // `Name::new(..).unwrap()` (a node-abort panic on a bad name/namespace);
+    // they now propagate via `?`. Guard that the generated code (a) still parses
+    // and (b) routes the `Name::new` error through `map_err` rather than panic.
+    #[test]
+    fn service_creation_functions_propagate_name_errors() {
+        let svc = Service {
+            package: "test_pkg".to_string(),
+            name: "AddTwoInts".to_string(),
+            request: empty_msg("AddTwoInts_Request"),
+            response: empty_msg("AddTwoInts_Response"),
+        };
+        let needle = "invalid ROS2 name/namespace"; // must propagate via `?`, not panic
+        let (_decl, imp) = svc.cxx_service_creation_functions("test_pkg");
+        assert!(format_valid_rust(imp).contains(needle), "client create fn");
+        let (_decl, imp) = svc.cxx_service_server_creation_functions("test_pkg");
+        assert!(format_valid_rust(imp).contains(needle), "server create fn");
     }
 }
