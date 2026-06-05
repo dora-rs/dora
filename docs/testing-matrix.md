@@ -10,6 +10,9 @@ See issue #215 for the original audit. See `CLAUDE.md` for the CI philosophy
 >
 > Looking for **how much validation** a given change needs (Class A /
 > B / C)? See [`agentic-qa-policy.md`](agentic-qa-policy.md) (#1634).
+>
+> Looking for coverage by **CLI command source file** (`binaries/cli/src/command/*`)?
+> See [`cli-command-coverage.md`](cli-command-coverage.md) (#1980).
 
 ## Tier 0 — Remote CI (every push and PR)
 

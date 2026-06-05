@@ -204,6 +204,28 @@ const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
 const COORDINATOR_RECONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Pause between losing the coordinator connection and attempting to reconnect.
 const COORDINATOR_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
+/// After the daemon has connected at least once, how long it keeps retrying
+/// failing reconnects before giving up and exiting. A fast TCP refusal (e.g.
+/// the coordinator briefly restarting, so the OS releases and re-grabs the
+/// port) returns an error almost instantly, which `COORDINATOR_RECONNECT_TIMEOUT`
+/// does not bound — that only guards a *hung* connect. Without this window a
+/// single refused attempt would exit the daemon and kill its running dataflows
+/// (dora-rs/dora#1998). A coordinator that stays gone past this window is
+/// treated as permanently gone -> exit rather than orphan (dora-rs/dora#1996).
+const COORDINATOR_RECONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+
+/// Records a failed reconnect attempt and reports whether the retry window has
+/// elapsed (so the daemon should give up and exit). `deadline` tracks the
+/// current run of consecutive failures: it is `None` until the first failure,
+/// when it is set to `now + window`; callers clear it back to `None` on a
+/// successful reconnect so each fresh outage gets a full window.
+fn reconnect_window_elapsed(
+    now: Instant,
+    deadline: &mut Option<Instant>,
+    window: Duration,
+) -> bool {
+    now >= *deadline.get_or_insert(now + window)
+}
 
 fn deliver_param_update_strict(
     dataflow: &RunningDataflow,
@@ -534,6 +556,11 @@ impl Daemon {
         // a coordinator gone past the reconnect timeout is treated as
         // permanently gone -> exit instead of orphaning (dora-rs/dora#1996).
         let mut connected_once = false;
+        // Deadline for the current run of consecutive failed reconnects. Set on
+        // the first failure after a successful connection and cleared whenever
+        // we reconnect, so each fresh outage gets a full
+        // `COORDINATOR_RECONNECT_RETRY_WINDOW` before the daemon exits.
+        let mut reconnect_deadline: Option<Instant> = None;
 
         // Node-serving daemon state. Built lazily on the first successful
         // connect, then reused across every reconnect so that running nodes —
@@ -604,6 +631,9 @@ impl Daemon {
             match connect_result {
                 Ok((daemon_id, coordinator_sender, incoming_events)) => {
                     connected_once = true;
+                    // Fresh successful connection: a later disconnect starts a
+                    // new retry window rather than inheriting an old deadline.
+                    reconnect_deadline = None;
                     let log_destination = LogDestination::Coordinator {
                         sender: coordinator_sender.clone(),
                     };
@@ -672,15 +702,30 @@ impl Daemon {
                 }
                 Err(e) => {
                     if connected_once {
-                        // Connected before, can't reconnect -> coordinator gone;
-                        // exit rather than orphan (see `connected_once` above).
-                        return Err(eyre::eyre!(
-                            "failed to reconnect to coordinator: {e:#}; daemon exiting"
-                        ));
+                        // Connected before but this attempt failed. A fast TCP
+                        // refusal (coordinator briefly restarting) fails almost
+                        // instantly and is not bounded by the connect timeout, so
+                        // retry within a window instead of exiting on the first
+                        // refusal (dora-rs/dora#1998). Only once the window
+                        // elapses do we treat the coordinator as permanently gone
+                        // and exit rather than orphan (dora-rs/dora#1996).
+                        if reconnect_window_elapsed(
+                            Instant::now(),
+                            &mut reconnect_deadline,
+                            COORDINATOR_RECONNECT_RETRY_WINDOW,
+                        ) {
+                            return Err(eyre::eyre!(
+                                "failed to reconnect to coordinator within \
+                                 {COORDINATOR_RECONNECT_RETRY_WINDOW:?}: {e:#}; \
+                                 daemon exiting"
+                            ));
+                        }
+                        tracing::warn!("failed to reconnect to coordinator: {e:#}; retrying");
+                    } else {
+                        // Still waiting for the initial connect: keep retrying,
+                        // the coordinator may not be up yet.
+                        tracing::warn!("waiting for coordinator: {e:#}");
                     }
-                    // Still waiting for the initial connect: keep retrying, the
-                    // coordinator may not be up yet.
-                    tracing::warn!("waiting for coordinator: {e:#}");
                 }
             }
 
@@ -4579,9 +4624,34 @@ fn note_output_sent_to_local_receivers(
     let now = Instant::now();
 
     for (receiver_id, input_id) in local_receivers {
-        if let Some(deadline) = dataflow
-            .input_deadlines
-            .get_mut(&(receiver_id.clone(), input_id.clone()))
+        // Refresh the input deadline only when the receiver is actually
+        // keeping up. Since #1787 the data payload is published directly
+        // over zenoh (not routed through the daemon), so the bare
+        // `OutputSent` notification is *not* a delivery confirmation — the
+        // node-side zenoh callback drops the input with `try_send` when its
+        // event channel is full. Treating `OutputSent` as delivery made
+        // `input_timeout` deadlines never fire for a slow consumer (#2021).
+        //
+        // We use the receiver's daemon-side channel headroom as a
+        // backpressure proxy (the same signal `send_output_to_local_receivers`
+        // gates on): a node that has fallen far enough behind to saturate its
+        // channel is also dropping the zenoh payloads, so its deadline must be
+        // allowed to expire. A node that is keeping up still gets refreshed.
+        //
+        // A *missing* channel means the receiver has no daemon-side event
+        // stream at all — e.g. it dropped its stream (`EventStreamDropped`)
+        // or has not subscribed yet. Such a receiver is not draining inputs
+        // either, so it must NOT count as keeping up; mirror
+        // `send_output_to_local_receivers`, which does nothing without a
+        // channel.
+        let receiver_keeping_up = dataflow
+            .subscribe_channels
+            .get(receiver_id)
+            .is_some_and(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+        if receiver_keeping_up
+            && let Some(deadline) = dataflow
+                .input_deadlines
+                .get_mut(&(receiver_id.clone(), input_id.clone()))
         {
             deadline.last_received = Some(now);
         }
@@ -5473,6 +5543,153 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[1], "InputRecovered"));
     }
 
+    // -- Regression test for #2021: `OutputSent` must not refresh an
+    //    input deadline when the receiver has fallen behind. --
+
+    /// Since #1787 data is published directly over zenoh, so the daemon's
+    /// `OutputSent` notification is not a delivery confirmation. A slow
+    /// consumer whose event channel is saturated drops the zenoh payloads,
+    /// so its `input_timeout` deadline must be allowed to expire instead of
+    /// being refreshed on every `OutputSent`.
+    #[test]
+    fn output_sent_does_not_refresh_deadline_for_backpressured_receiver() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        // Armed deadline that has already exceeded its timeout.
+        let timeout = Duration::from_millis(10);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // Saturate the receiver's channel so it has no headroom left —
+        // a proxy for "the node is dropping zenoh inputs".
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+            tx.try_send(Timestamped {
+                inner: NodeEvent::AllInputsClosed,
+                timestamp: clock.new_timestamp(),
+            })
+            .unwrap();
+        }
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        // The deadline must NOT have been refreshed, so it still times out.
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert_eq!(
+            deadline.last_received,
+            Some(stale),
+            "OutputSent must not refresh the deadline when the receiver is backpressured"
+        );
+        assert!(
+            deadline.is_timed_out(),
+            "input_timeout watchdog must still be able to fire for a slow consumer (#2021)"
+        );
+    }
+
+    /// Counterpart to the above: a receiver that is keeping up (channel has
+    /// headroom) still has its deadline refreshed on `OutputSent`.
+    #[test]
+    fn output_sent_refreshes_deadline_when_receiver_keeps_up() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        let timeout = Duration::from_secs(5);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // Empty channel: full headroom available.
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert!(
+            deadline.last_received.is_some_and(|t| t > stale),
+            "OutputSent must refresh the deadline when the receiver is keeping up"
+        );
+        assert!(!deadline.is_timed_out());
+    }
+
+    /// A receiver with no daemon-side channel at all (e.g. after
+    /// `EventStreamDropped`) is not draining inputs, so `OutputSent` must
+    /// not refresh its deadline either — otherwise a sender's continued
+    /// output would keep a disconnected receiver's deadline alive forever.
+    #[test]
+    fn output_sent_does_not_refresh_deadline_for_receiver_without_channel() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+
+        // Armed deadline that has already exceeded its timeout.
+        let timeout = Duration::from_millis(10);
+        let stale = Instant::now() - Duration::from_secs(60);
+        df.input_deadlines.insert(
+            (receiver.clone(), input.clone()),
+            InputDeadline {
+                timeout,
+                last_received: Some(stale),
+            },
+        );
+
+        // No `subscribe_channels` entry for the receiver — it has dropped
+        // its event stream.
+        assert!(!df.subscribe_channels.contains_key(&receiver));
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
+
+        let deadline = &df.input_deadlines[&(receiver.clone(), input.clone())];
+        assert_eq!(
+            deadline.last_received,
+            Some(stale),
+            "OutputSent must not refresh the deadline when the receiver has no channel"
+        );
+        assert!(
+            deadline.is_timed_out(),
+            "input_timeout watchdog must still fire for a disconnected receiver (#2021)"
+        );
+    }
+
     // -- Test: send_with_timestamp delivers ParamUpdate to subscribed node --
 
     #[test]
@@ -5675,5 +5892,63 @@ mod fault_tolerance_tests {
         let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
             .expect_err("strict delivery should fail when node channel is full");
         assert!(err.to_string().contains("channel full"));
+    }
+
+    #[test]
+    fn reconnect_window_retries_then_exits() {
+        let window = Duration::from_secs(30);
+        let mut deadline = None;
+
+        // First failed reconnect: starts the window, must not exit yet. This
+        // is the regression from dora-rs/dora#1998 where a fast TCP refusal
+        // (coordinator briefly restarting) exited the daemon immediately.
+        let t0 = Instant::now();
+        assert!(!reconnect_window_elapsed(t0, &mut deadline, window));
+        assert_eq!(deadline, Some(t0 + window));
+
+        // Subsequent failures inside the window keep retrying without
+        // resetting the deadline.
+        assert!(!reconnect_window_elapsed(
+            t0 + Duration::from_secs(5),
+            &mut deadline,
+            window
+        ));
+        assert!(!reconnect_window_elapsed(
+            t0 + Duration::from_secs(29),
+            &mut deadline,
+            window
+        ));
+        assert_eq!(deadline, Some(t0 + window));
+
+        // Once the window has elapsed, the daemon gives up and exits so a
+        // permanently-gone coordinator doesn't leave an orphan (#1996).
+        assert!(reconnect_window_elapsed(t0 + window, &mut deadline, window));
+        assert!(reconnect_window_elapsed(
+            t0 + Duration::from_secs(31),
+            &mut deadline,
+            window
+        ));
+    }
+
+    #[test]
+    fn reconnect_window_resets_after_successful_connect() {
+        let window = Duration::from_secs(30);
+        let mut deadline = None;
+
+        let t0 = Instant::now();
+        assert!(!reconnect_window_elapsed(t0, &mut deadline, window));
+
+        // A successful reconnect clears the deadline (the loop sets
+        // `reconnect_deadline = None`), so a later outage gets a full fresh
+        // window rather than inheriting the old, possibly-elapsed deadline.
+        deadline = None;
+        let t1 = t0 + Duration::from_secs(100);
+        assert!(!reconnect_window_elapsed(t1, &mut deadline, window));
+        assert_eq!(deadline, Some(t1 + window));
+        assert!(!reconnect_window_elapsed(
+            t1 + Duration::from_secs(29),
+            &mut deadline,
+            window
+        ));
     }
 }

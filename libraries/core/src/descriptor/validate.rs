@@ -40,7 +40,7 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
                         check_input(
                             input,
                             &nodes,
-                            &format!("{}/{}/{input_id}", operator_definition.id, node.id),
+                            &format!("{}/{}/{input_id}", node.id, operator_definition.id),
                         )?;
                     }
                 }
@@ -330,6 +330,11 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
     let num: f64 = num_str
         .parse()
         .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
+    // Casting a negative or non-finite f64 to u64 saturates (negatives and
+    // NaN to 0, +inf to u64::MAX) instead of erroring, so reject them up front.
+    if !num.is_finite() || num < 0.0 {
+        bail!("byte size must be a non-negative, finite number: '{s}'");
+    }
     Ok((num * multiplier as f64) as u64)
 }
 
@@ -647,8 +652,12 @@ fn validate_ros2_qos(
     Ok(())
 }
 
-/// Validate a ROS2 name (topic, service, or action) contains only valid characters.
-/// ROS2 names allow: ASCII alphanumeric, underscore, and forward slash.
+/// Validate a ROS2 name (topic, service, or action) follows ROS2 naming rules.
+///
+/// ROS2 names allow ASCII alphanumeric, underscore, and forward slash characters,
+/// and must additionally be structurally valid: no consecutive slashes, no trailing
+/// slash, not a bare `/`, and each `/`-delimited token must start with an ASCII letter.
+/// See <https://design.ros2.org/articles/topic_and_service_names.html>.
 fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result<()> {
     if name.is_empty() {
         bail!("node `{node_id}`: `{field}` must not be empty");
@@ -661,6 +670,34 @@ fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result
             "node `{node_id}`: invalid `{field}` name `{name}`, \
              only ASCII alphanumeric, underscore, and '/' characters allowed"
         );
+    }
+    if name == "/" {
+        bail!("node `{node_id}`: invalid `{field}` name, must not be a bare '/'");
+    }
+    if name.contains("//") {
+        bail!(
+            "node `{node_id}`: invalid `{field}` name `{name}`, \
+             consecutive slashes ('//') are not allowed"
+        );
+    }
+    if name.ends_with('/') {
+        bail!(
+            "node `{node_id}`: invalid `{field}` name `{name}`, \
+             name must not end with '/'"
+        );
+    }
+    // Each '/'-delimited token must start with an ASCII letter. A leading '/'
+    // (absolute name) produces an empty first token, which is allowed and skipped.
+    for (i, token) in name.split('/').enumerate() {
+        if i == 0 && token.is_empty() {
+            continue;
+        }
+        if !token.starts_with(|c: char| c.is_ascii_alphabetic()) {
+            bail!(
+                "node `{node_id}`: invalid `{field}` name `{name}`, \
+                 each token must start with an ASCII letter (offending token `{token}`)"
+            );
+        }
     }
     Ok(())
 }
@@ -1444,6 +1481,64 @@ mod tests {
     }
 
     #[test]
+    fn ros2_name_accepts_valid() {
+        let node = NodeId::from("n".to_owned());
+        for name in [
+            "topic",
+            "/topic",
+            "/a/b/c",
+            "/add_two_ints",
+            "ns/sub_topic",
+            "/navigate",
+        ] {
+            validate_ros2_name(&node, "topic", name)
+                .unwrap_or_else(|e| panic!("`{name}` should be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn ros2_name_rejects_double_leading_slash() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "//topic").unwrap_err();
+        assert!(err.to_string().contains("consecutive slashes"));
+    }
+
+    #[test]
+    fn ros2_name_rejects_trailing_slash() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "topic/").unwrap_err();
+        assert!(err.to_string().contains("end with"));
+    }
+
+    #[test]
+    fn ros2_name_rejects_consecutive_interior_slashes() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "topic//sub").unwrap_err();
+        assert!(err.to_string().contains("consecutive slashes"));
+    }
+
+    #[test]
+    fn ros2_name_rejects_bare_slash() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "/").unwrap_err();
+        assert!(err.to_string().contains("bare"));
+    }
+
+    #[test]
+    fn ros2_name_rejects_leading_underscore() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "___").unwrap_err();
+        assert!(err.to_string().contains("ASCII letter"));
+    }
+
+    #[test]
+    fn ros2_name_rejects_token_starting_with_digit() {
+        let node = NodeId::from("n".to_owned());
+        let err = validate_ros2_name(&node, "topic", "/2bad").unwrap_err();
+        assert!(err.to_string().contains("ASCII letter"));
+    }
+
+    #[test]
     fn validate_qos_bad_durability() {
         let config = Ros2BridgeConfig {
             service: Some("/svc".into()),
@@ -1921,6 +2016,35 @@ nodes:
         );
     }
 
+    #[test]
+    fn wiring_runtime_input_id_order() {
+        // A runtime node's operator input that references a missing source
+        // must report the input in the conventional
+        // `{node_id}/{operator_id}/{input_id}` order (see #2019).
+        let yaml = r#"
+nodes:
+  - id: runtime-node
+    operators:
+      - id: my-operator
+        shared-library: op
+        inputs:
+          tick: nonexistent/data
+        outputs:
+          - status
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let err = check_wiring(&descriptor).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("runtime-node/my-operator/tick"),
+            "expected node/operator/input order, got: {msg}"
+        );
+        assert!(
+            !msg.contains("my-operator/runtime-node/tick"),
+            "input id should not use reversed operator/node order, got: {msg}"
+        );
+    }
+
     // --- Focused unit tests for parse_byte_size and parse_log_level ---
     //
     // Added 2026-04-08 to close the biggest mutation-score gap in
@@ -2016,6 +2140,23 @@ nodes:
         assert_eq!(parse_byte_size(" 1KB ").unwrap(), 1024);
         assert_eq!(parse_byte_size("1 KB").unwrap(), 1024);
         assert_eq!(parse_byte_size("  1  KB  ").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_negative() {
+        // A negative f64 cast to u64 saturates to 0, which would silently
+        // disable a limit instead of being rejected (issue #2018).
+        assert!(parse_byte_size("-1KB").is_err());
+        assert!(parse_byte_size("-0.5MB").is_err());
+        assert!(parse_byte_size("-1").is_err());
+        assert!(parse_byte_size("-100").is_err());
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_non_finite() {
+        // inf/nan cast to u64 saturate (to u64::MAX / 0) rather than erroring.
+        assert!(parse_byte_size("infKB").is_err());
+        assert!(parse_byte_size("nanMB").is_err());
     }
 
     #[test]

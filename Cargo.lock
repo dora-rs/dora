@@ -2199,6 +2199,8 @@ name = "dora-ros2-bridge-arrow"
 version = "1.0.0-rc1"
 dependencies = [
  "arrow",
+ "byteorder",
+ "cdr-encoding",
  "dora-ros2-bridge-msg-gen",
  "eyre",
  "ros2-client",
