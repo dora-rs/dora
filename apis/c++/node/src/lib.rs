@@ -431,9 +431,11 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
         dora_node_api::arrow::datatypes::DataType::Null => {
             vec![]
         }
-        _ => {
-            todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8.
-                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
+        other => {
+            bail!(
+                "unsupported input arrow type {other:?}; \
+                 use event_as_arrow_input for typed access"
+            );
         }
     };
 
@@ -1026,5 +1028,50 @@ fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
         // bail-out error.
         None => Ok(Box::new(DoraEvent(EventOrReason::Closed))),
         _ => eyre::bail!("not a dora event"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_node_api::{
+        ArrowData,
+        arrow::{
+            array::{ArrayRef, Int32Array},
+            datatypes::DataType,
+        },
+        metadata::ArrowTypeInfo,
+        uhlc::HLC,
+    };
+    use std::sync::Arc;
+
+    fn type_info(data_type: DataType) -> ArrowTypeInfo {
+        ArrowTypeInfo {
+            data_type,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        }
+    }
+
+    /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
+    /// node) must return an `Err` from `event_as_input` instead of aborting
+    /// the process via `todo!()`.
+    #[test]
+    fn event_as_input_non_uint8_returns_err() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
+            id: "my_input".into(),
+            metadata: DoraMetadata::new(HLC::default().new_timestamp(), type_info(DataType::Int32)),
+            data: ArrowData(array),
+        })));
+
+        let result = event_as_input(event);
+        assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
     }
 }
