@@ -343,6 +343,18 @@ impl PreparedNode {
                         )
                         .await;
                 }
+                // Reset the health-check clock for the new incarnation.
+                // `last_activity` is a shared `Arc` reused across restarts, so
+                // it still holds the pre-crash timestamp here; without this the
+                // watchdog (`check_node_health`) can see a stale `last_activity`
+                // and kill the freshly restarted process before it reconnects
+                // and reports any activity. Matches the initial-spawn init in
+                // `spawner.rs` (dora-rs/dora#2027).
+                self.last_activity.store(
+                    crate::node_communication::current_millis(),
+                    atomic::Ordering::Release,
+                );
+
                 // Fresh `(op_tx, op_rx)` per incarnation so any
                 // grace-kill task holding an older `op_tx` cannot
                 // reach the new process — closes the race in

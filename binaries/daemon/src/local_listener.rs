@@ -4,7 +4,7 @@ use dora_message::{
     node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
 };
 use eyre::Context;
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::oneshot,
@@ -50,6 +50,11 @@ async fn listener_loop(
     listener: TcpListener,
     events_tx: flume::Sender<Timestamped<DynamicNodeEventWrapper>>,
 ) {
+    // Exponential backoff for repeated `accept()` failures. A persistent error
+    // (e.g. `EMFILE` — too many open files) would otherwise busy-spin the loop
+    // at 100% CPU and flood the logs with no pause (dora-rs/dora#2027).
+    const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+    let mut backoff: Option<Duration> = None;
     loop {
         match listener
             .accept()
@@ -57,9 +62,15 @@ async fn listener_loop(
             .wrap_err("failed to accept new connection")
         {
             Err(err) => {
-                tracing::warn!("{err}");
+                let delay = backoff
+                    .map_or(Duration::from_millis(10), |d| d * 2)
+                    .min(ACCEPT_BACKOFF_MAX);
+                backoff = Some(delay);
+                tracing::warn!("{err} (retrying in {delay:?})");
+                tokio::time::sleep(delay).await;
             }
             Ok((connection, _)) => {
+                backoff = None;
                 tokio::spawn(handle_connection_loop(connection, events_tx.clone()));
             }
         }
