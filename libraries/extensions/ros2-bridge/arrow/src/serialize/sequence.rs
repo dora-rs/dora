@@ -396,7 +396,7 @@ mod tests {
 
     /// Regression test for #2032: a variable-length `sequence<bool>` must be
     /// CDR-encoded with a u32 length prefix. Without it, an actual CDR reader
-    /// mis-parses both the sequence and every following field.
+    /// misparses both the sequence and every following field.
     #[test]
     fn bool_sequence_round_trips_through_real_cdr() {
         // Choose flags whose first element is `true` so that, under the buggy
