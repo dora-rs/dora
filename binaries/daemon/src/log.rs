@@ -419,7 +419,13 @@ impl Logger {
         message: Timestamped<CoordinatorRequest>,
         sender: &CoordinatorSender,
     ) {
-        let msg = serde_json::to_vec(&message).expect("failed to serialize log message");
+        let msg = match serde_json::to_vec(&message) {
+            Ok(msg) => msg,
+            Err(err) => {
+                tracing::warn!("failed to serialize log message: {err}");
+                return;
+            }
+        };
         match sender
             .send_event(&msg)
             .await

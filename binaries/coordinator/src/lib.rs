@@ -468,58 +468,28 @@ async fn start_inner(
                 DataflowEvent::ReadyOnDaemon {
                     daemon_id,
                     exited_before_subscribe,
-                } => {
-                    match running_dataflows.entry(uuid) {
-                        std::collections::hash_map::Entry::Occupied(mut entry) => {
-                            let dataflow = entry.get_mut();
-                            dataflow.pending_daemons.remove(&daemon_id);
-                            dataflow
-                                .exited_before_subscribe
-                                .extend(exited_before_subscribe);
-                            if dataflow.pending_daemons.is_empty() {
-                                tracing::debug!("sending all nodes ready message to daemons");
-                                let message = serde_json::to_vec(&Timestamped {
-                                    inner: DaemonCoordinatorEvent::AllNodesReady {
-                                        dataflow_id: uuid,
-                                        exited_before_subscribe: dataflow
-                                            .exited_before_subscribe
-                                            .clone(),
-                                    },
-                                    timestamp: clock.new_timestamp(),
-                                })
-                                .wrap_err("failed to serialize AllNodesReady message")?;
-
-                                // notify all machines that run parts of the dataflow
-                                for daemon_id in &dataflow.daemons {
-                                    let Some(connection) = daemon_connections.get_mut(daemon_id)
-                                    else {
-                                        tracing::warn!(
-                                            "no daemon connection found for machine `{daemon_id}`"
-                                        );
-                                        continue;
-                                    };
-                                    connection.send(&message).await.wrap_err_with(|| {
-                                        format!(
-                                            "failed to send AllNodesReady({uuid}) message \
-                                            to machine {daemon_id}"
-                                        )
-                                    })?;
-                                }
-
-                                schedule_param_replay_for_ready_dataflow(
-                                    uuid,
-                                    dataflow,
-                                    &mut daemon_connections,
-                                    store.clone(),
-                                    clock.clone(),
-                                );
-                            }
-                        }
-                        std::collections::hash_map::Entry::Vacant(_) => {
-                            tracing::warn!("dataflow not running on ReadyOnMachine");
+                } => match running_dataflows.entry(uuid) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        let dataflow = entry.get_mut();
+                        dataflow.pending_daemons.remove(&daemon_id);
+                        dataflow
+                            .exited_before_subscribe
+                            .extend(exited_before_subscribe);
+                        if dataflow.pending_daemons.is_empty() {
+                            broadcast_all_nodes_ready(
+                                uuid,
+                                dataflow,
+                                &mut daemon_connections,
+                                &store,
+                                &clock,
+                            )
+                            .await?;
                         }
                     }
-                }
+                    std::collections::hash_map::Entry::Vacant(_) => {
+                        tracing::warn!("dataflow not running on ReadyOnMachine");
+                    }
+                },
                 DataflowEvent::DataflowFinishedOnDaemon { daemon_id, result } => {
                     tracing::debug!(
                         "coordinator received DataflowFinishedOnDaemon ({daemon_id:?}, result: {result:?})"
@@ -2009,10 +1979,20 @@ async fn start_inner(
                             tracing::warn!("failed to persist daemon unregistration: {e}");
                         }
                     }
-                    cleanup_disconnected_daemons_from_running_dataflows(
+                    let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
                         &mut running_dataflows,
                         &disconnected,
                     );
+                    apply_disconnect_actions(
+                        disconnect_actions,
+                        &mut running_dataflows,
+                        &mut archived_dataflows,
+                        &mut dataflow_results,
+                        &mut daemon_connections,
+                        &store,
+                        &clock,
+                    )
+                    .await?;
                     cleanup_disconnected_daemons_from_running_builds(
                         &mut running_builds,
                         &disconnected,
@@ -2172,10 +2152,20 @@ async fn start_inner(
                     tracing::warn!("failed to persist daemon unregistration: {e}");
                 }
                 let disconnected = BTreeSet::from([daemon_id]);
-                cleanup_disconnected_daemons_from_running_dataflows(
+                let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
                     &mut running_dataflows,
                     &disconnected,
                 );
+                apply_disconnect_actions(
+                    disconnect_actions,
+                    &mut running_dataflows,
+                    &mut archived_dataflows,
+                    &mut dataflow_results,
+                    &mut daemon_connections,
+                    &store,
+                    &clock,
+                )
+                .await?;
                 notify_daemons_about_disconnected_peers(
                     &disconnected,
                     &mut daemon_connections,
@@ -2896,24 +2886,177 @@ async fn fire_and_forget_rollback(
 /// This intentionally does not resolve `spawn_result`: the spawn timeout
 /// watchdog remains the single path that releases spawn waiters for
 /// disconnect-mid-spawn cases.
+/// Action the daemon-disconnect cleanup asks the (async) caller to perform for
+/// a dataflow that was already past spawn when a daemon it depended on vanished.
+/// See #2028.
+enum DisconnectAction {
+    /// The last daemon we were awaiting `ReadyOnDaemon` from disconnected, but
+    /// survivors remain — release the start barrier so they don't block forever.
+    ReleaseReadyBarrier(DataflowId),
+    /// Every daemon running the dataflow disconnected — tear it down so spawn /
+    /// stop waiters are released and it stops appearing as running.
+    TearDownOrphaned(DataflowId),
+}
+
 fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
-) {
+) -> Vec<DisconnectAction> {
+    let mut actions = Vec::new();
     for df in running_dataflows.values_mut() {
+        let pending_was_nonempty = !df.pending_daemons.is_empty();
         let mut affected = false;
         for daemon_id in disconnected {
             affected |= df.daemons.remove(daemon_id);
             affected |= df.pending_daemons.remove(daemon_id);
             affected |= df.pending_spawn_results.remove(daemon_id);
         }
-        if affected && df.daemons.is_empty() {
+        if !affected {
+            continue;
+        }
+        // Only act on dataflows that already spawned successfully. While
+        // `spawn_result` is still pending, the spawn-timeout watchdog
+        // (`check_spawn_timeouts`) owns the disconnect-mid-spawn case, so we
+        // must not race it here.
+        let spawned_ok = df.spawn_result.is_cached_ok();
+        if df.daemons.is_empty() {
             tracing::error!(
                 dataflow = %df.uuid,
                 "all daemons disconnected - dataflow has no live daemons"
             );
+            if spawned_ok {
+                actions.push(DisconnectAction::TearDownOrphaned(df.uuid));
+            }
+        } else if spawned_ok && pending_was_nonempty && df.pending_daemons.is_empty() {
+            // The last daemon we were waiting on for `ReadyOnDaemon` vanished
+            // via disconnect; `AllNodesReady` would otherwise never fire.
+            actions.push(DisconnectAction::ReleaseReadyBarrier(df.uuid));
         }
     }
+    actions
+}
+
+/// Tear down a dataflow whose every daemon disconnected *after* it had already
+/// spawned successfully — the running-dataflow case that [`check_spawn_timeouts`]
+/// can't reach (it only fires while `spawn_result` is pending). Mirrors that
+/// watchdog's teardown tail (minus the spawn rollback, since the daemons are
+/// already gone): release spawn/stop waiters, persist `Failed`, synthesize a
+/// `Failed` result, archive, and remove from `running_dataflows`. See #2028.
+///
+/// Idempotent: `running_dataflows.remove` returning `None` makes a repeated call
+/// a no-op, and `CachedResult::set_result` is a no-op on an already-cached
+/// result.
+async fn tear_down_orphaned_dataflow(
+    uuid: DataflowId,
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    clock: &HLC,
+    store: &dyn dora_coordinator_store::CoordinatorStore,
+) {
+    let Some(mut df) = running_dataflows.remove(&uuid) else {
+        return;
+    };
+    let err_msg = "all daemons running this dataflow disconnected".to_string();
+
+    // No-op if a result was already cached (it was — spawn succeeded); this
+    // just covers the defensive case.
+    df.spawn_result
+        .set_result(Err(eyre!("dataflow {uuid} failed: {err_msg}")));
+
+    if let Err(e) = df
+        .make_record(StoreDataflowStatus::Failed {
+            error: err_msg.clone(),
+            terminal: true,
+        })
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!(dataflow = %uuid, "failed to persist disconnect teardown: {e}");
+    }
+
+    send_log_message(
+        &mut df.log_subscribers,
+        &LogMessage {
+            build_id: None,
+            dataflow_id: Some(uuid),
+            node_id: None,
+            daemon_id: None,
+            level: LogLevel::Error.into(),
+            target: Some("coordinator".into()),
+            module_path: None,
+            file: None,
+            line: None,
+            message: err_msg.clone(),
+            timestamp: clock.new_timestamp().get_time().to_system_time().into(),
+            fields: None,
+        },
+    )
+    .await;
+
+    close_topic_subscribers_on_finish(&mut df);
+
+    let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
+    dataflow_results
+        .entry(uuid)
+        .or_default()
+        .extend(synth_results);
+
+    // Release any in-flight `dora stop` waiters with the synthesized result so
+    // they don't hang (deadlock #2 of #2028).
+    let stop_reply = ControlRequestReply::DataflowStopped {
+        uuid,
+        result: dataflow_results
+            .get(&uuid)
+            .map(|r| dataflow_result(r, uuid, clock))
+            .unwrap_or_else(|| DataflowResult::ok_empty(uuid, clock.new_timestamp())),
+    };
+    for sender in df.stop_reply_senders.drain(..) {
+        let _ = sender.send(Ok(stop_reply.clone()));
+    }
+
+    archived_dataflows
+        .entry(uuid)
+        .or_insert_with(|| ArchivedDataflow::from(&df));
+    while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
+        archived_dataflows.shift_remove_index(0);
+    }
+}
+
+/// Execute the [`DisconnectAction`]s produced by
+/// [`cleanup_disconnected_daemons_from_running_dataflows`]: release the start
+/// barrier for dataflows whose last pending daemon vanished, and tear down
+/// dataflows that lost every daemon. Runs at the (async) caller after the
+/// synchronous set-pruning. See #2028.
+async fn apply_disconnect_actions(
+    actions: Vec<DisconnectAction>,
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    daemon_connections: &mut DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> eyre::Result<()> {
+    for action in actions {
+        match action {
+            DisconnectAction::ReleaseReadyBarrier(uuid) => {
+                if let Some(df) = running_dataflows.get(&uuid) {
+                    broadcast_all_nodes_ready(uuid, df, daemon_connections, store, clock).await?;
+                }
+            }
+            DisconnectAction::TearDownOrphaned(uuid) => {
+                tear_down_orphaned_dataflow(
+                    uuid,
+                    running_dataflows,
+                    archived_dataflows,
+                    dataflow_results,
+                    clock,
+                    store.as_ref(),
+                )
+                .await;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Mirror of [`cleanup_disconnected_daemons_from_running_dataflows`] for
@@ -3148,76 +3291,7 @@ async fn check_spawn_timeouts(
         // misclassifying the dataflow as `Finished` (round-7
         // Finding 2). The original assignment is the right source of
         // truth for "what daemons should have been running this".
-        let synth_timestamp = clock.new_timestamp();
-        let assigned_daemons: BTreeSet<DaemonId> = df.node_to_daemon.values().cloned().collect();
-        let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = assigned_daemons
-            .iter()
-            .map(|daemon_id| {
-                let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
-                    .node_to_daemon
-                    .iter()
-                    .filter(|(_, did)| *did == daemon_id)
-                    .map(|(node_id, _)| {
-                        (
-                            node_id.clone(),
-                            Err(NodeError {
-                                timestamp: synth_timestamp,
-                                cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
-                                exit_status: NodeExitStatus::Unknown,
-                            }),
-                        )
-                    })
-                    .collect();
-                (
-                    daemon_id.clone(),
-                    DataflowDaemonResult {
-                        timestamp: synth_timestamp,
-                        node_results: nodes_for_daemon,
-                    },
-                )
-            })
-            .collect();
-        // Defense in depth: if `node_to_daemon` was also somehow empty
-        // (no nodes assigned — shouldn't happen via the construction
-        // path at handlers.rs:598, but be defensive), inject a sentinel
-        // entry under a synthetic daemon id so the dataflow still
-        // classifies as Failed. Empty `BTreeMap` would make List's
-        // `values().all(is_ok)` vacuously true.
-        let synth_results = if synth_results.is_empty() {
-            tracing::warn!(
-                dataflow = %uuid,
-                "watchdog teardown: node_to_daemon was empty; injecting \
-                 sentinel result so list classification is Failed",
-            );
-            let mut sentinel = BTreeMap::new();
-            let mut node_results = BTreeMap::new();
-            // Use `"watchdog"` (no angle brackets) because
-            // `NodeId::from(invalid_chars)` PANICS via `validate_node_id`
-            // -- the validator rejects characters outside `[a-zA-Z0-9_.-]`.
-            // This branch is dead code under normal construction (since
-            // `node_to_daemon` is populated at construction time), but
-            // a panic here would abort the coordinator if a future
-            // refactor empties `node_to_daemon` for any reason.
-            // Round-8 Finding 2.
-            node_results.insert(
-                NodeId::from("watchdog".to_string()),
-                Err(NodeError {
-                    timestamp: synth_timestamp,
-                    cause: NodeErrorCause::FailedToSpawn(err_msg.clone()),
-                    exit_status: NodeExitStatus::Unknown,
-                }),
-            );
-            sentinel.insert(
-                DaemonId::new(Some("watchdog".to_string())),
-                DataflowDaemonResult {
-                    timestamp: synth_timestamp,
-                    node_results,
-                },
-            );
-            sentinel
-        } else {
-            synth_results
-        };
+        let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
         // Insert before draining stop senders so the DataflowResult
         // they receive carries the synthesized node-level errors.
         dataflow_results
@@ -3940,6 +4014,127 @@ fn ensure_remove_mapping_applied(reply_raw: &[u8], source: &str, target: &str) -
     }
 }
 
+/// Build the per-daemon `DataflowDaemonResult` map that classifies a
+/// terminally-failed dataflow as `Failed` (every assigned node reported as
+/// `Err(FailedToSpawn(err_msg))`).
+///
+/// Iterates `node_to_daemon` (the original assignment), NOT `daemons`: the
+/// disconnect-cleanup path prunes `daemons` but leaves `node_to_daemon` intact,
+/// and an empty map would be vacuously classified `Finished` by `DataflowList`
+/// (round-7 Finding 2). Falls back to a sentinel entry when `node_to_daemon` is
+/// empty so the map is never empty (round-8 Finding 2).
+///
+/// Shared by the spawn-timeout watchdog and the daemon-disconnect teardown
+/// (#2028).
+fn synthesize_failed_dataflow_results(
+    df: &RunningDataflow,
+    uuid: DataflowId,
+    err_msg: &str,
+    clock: &HLC,
+) -> BTreeMap<DaemonId, DataflowDaemonResult> {
+    let synth_timestamp = clock.new_timestamp();
+    let assigned_daemons: BTreeSet<DaemonId> = df.node_to_daemon.values().cloned().collect();
+    let synth_results: BTreeMap<DaemonId, DataflowDaemonResult> = assigned_daemons
+        .iter()
+        .map(|daemon_id| {
+            let nodes_for_daemon: BTreeMap<NodeId, Result<(), NodeError>> = df
+                .node_to_daemon
+                .iter()
+                .filter(|(_, did)| *did == daemon_id)
+                .map(|(node_id, _)| {
+                    (
+                        node_id.clone(),
+                        Err(NodeError {
+                            timestamp: synth_timestamp,
+                            cause: NodeErrorCause::FailedToSpawn(err_msg.to_string()),
+                            exit_status: NodeExitStatus::Unknown,
+                        }),
+                    )
+                })
+                .collect();
+            (
+                daemon_id.clone(),
+                DataflowDaemonResult {
+                    timestamp: synth_timestamp,
+                    node_results: nodes_for_daemon,
+                },
+            )
+        })
+        .collect();
+    if synth_results.is_empty() {
+        tracing::warn!(
+            dataflow = %uuid,
+            "teardown: node_to_daemon was empty; injecting sentinel result \
+             so list classification is Failed",
+        );
+        let mut sentinel = BTreeMap::new();
+        let mut node_results = BTreeMap::new();
+        // Use `"watchdog"` (no angle brackets): `NodeId::from(invalid_chars)`
+        // PANICS via `validate_node_id` (rejects chars outside `[a-zA-Z0-9_.-]`).
+        node_results.insert(
+            NodeId::from("watchdog".to_string()),
+            Err(NodeError {
+                timestamp: synth_timestamp,
+                cause: NodeErrorCause::FailedToSpawn(err_msg.to_string()),
+                exit_status: NodeExitStatus::Unknown,
+            }),
+        );
+        sentinel.insert(
+            DaemonId::new(Some("watchdog".to_string())),
+            DataflowDaemonResult {
+                timestamp: synth_timestamp,
+                node_results,
+            },
+        );
+        sentinel
+    } else {
+        synth_results
+    }
+}
+
+/// Broadcast `AllNodesReady` to every daemon running part of `dataflow` and
+/// schedule the persisted-parameter replay. Extracted from the `ReadyOnDaemon`
+/// handler so the disconnect/cleanup path can also release the start barrier
+/// when the last *pending* daemon goes away via disconnect rather than
+/// `ReadyOnDaemon` (see issue #2028).
+async fn broadcast_all_nodes_ready(
+    uuid: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_connections: &mut DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+    clock: &Arc<HLC>,
+) -> eyre::Result<()> {
+    tracing::debug!("sending all nodes ready message to daemons");
+    let message = serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::AllNodesReady {
+            dataflow_id: uuid,
+            exited_before_subscribe: dataflow.exited_before_subscribe.clone(),
+        },
+        timestamp: clock.new_timestamp(),
+    })
+    .wrap_err("failed to serialize AllNodesReady message")?;
+
+    // notify all machines that run parts of the dataflow
+    for daemon_id in &dataflow.daemons {
+        let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+            tracing::warn!("no daemon connection found for machine `{daemon_id}`");
+            continue;
+        };
+        connection.send(&message).await.wrap_err_with(|| {
+            format!("failed to send AllNodesReady({uuid}) message to machine {daemon_id}")
+        })?;
+    }
+
+    schedule_param_replay_for_ready_dataflow(
+        uuid,
+        dataflow,
+        daemon_connections,
+        store.clone(),
+        clock.clone(),
+    );
+    Ok(())
+}
+
 fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
@@ -4324,6 +4519,144 @@ mod tests {
         assert!(
             df.spawn_result.is_pending(),
             "disconnect cleanup must leave spawn_result to the watchdog"
+        );
+    }
+
+    // #2028: a spawn-pending dataflow stays the spawn-timeout watchdog's
+    // domain — disconnect cleanup must produce no action and not remove it.
+    #[test]
+    fn disconnect_of_spawn_pending_dataflow_produces_no_action() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        // spawn_result left Pending (CachedResult::default()).
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_id]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            actions.is_empty(),
+            "spawn-pending dataflows must be left to the spawn-timeout watchdog"
+        );
+        assert!(
+            running_dataflows.contains_key(&dataflow_id),
+            "must not tear down a spawn-pending dataflow"
+        );
+    }
+
+    // #2028 deadlock #1: the last daemon awaited for ReadyOnDaemon disconnects
+    // after spawn succeeded -> the start barrier must be released for survivors.
+    #[test]
+    fn disconnect_releases_ready_barrier_when_last_pending_daemon_drops() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_a = DaemonId::new(Some("a".to_string()));
+        let daemon_b = DaemonId::new(Some("b".to_string()));
+        let node_a: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), node_a);
+        df.daemons.insert(daemon_b.clone());
+        df.node_to_daemon
+            .insert("receiver".to_string().into(), daemon_b.clone());
+        // spawn already succeeded; A reported ready, still waiting on B.
+        df.spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        df.pending_daemons.insert(daemon_b.clone());
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_b]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            matches!(actions.as_slice(), [DisconnectAction::ReleaseReadyBarrier(id)] if *id == dataflow_id),
+            "must release the ready barrier, got {} action(s)",
+            actions.len()
+        );
+        let df = running_dataflows
+            .get(&dataflow_id)
+            .expect("survivor dataflow must remain");
+        assert_eq!(df.daemons, BTreeSet::from([daemon_a]));
+        assert!(df.pending_daemons.is_empty());
+    }
+
+    // #2028 deadlocks #2 + #3: the sole daemon of a running dataflow dies ->
+    // the dataflow must be torn down (removed, classified Failed, archived) and
+    // any parked `dora stop` waiter resolved instead of hanging.
+    #[tokio::test]
+    async fn disconnect_tears_down_orphaned_running_dataflow() {
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = Arc::new(HLC::default());
+        let mut daemon_connections = DaemonConnections::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        df.spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+        // a parked `dora stop` waiter
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        df.stop_reply_senders.push(tx);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let disconnected = BTreeSet::from([daemon_id]);
+
+        let actions = cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+        );
+        assert!(
+            matches!(actions.as_slice(), [DisconnectAction::TearDownOrphaned(id)] if *id == dataflow_id),
+            "must tear down the orphaned dataflow"
+        );
+
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: HashMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            HashMap::new();
+        apply_disconnect_actions(
+            actions,
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &store,
+            &clock,
+        )
+        .await
+        .expect("apply_disconnect_actions");
+
+        assert!(
+            !running_dataflows.contains_key(&dataflow_id),
+            "orphaned dataflow must be removed from running set"
+        );
+        let per_daemon = dataflow_results
+            .get(&dataflow_id)
+            .expect("teardown must synthesize a result");
+        assert!(
+            !per_daemon.values().all(DataflowDaemonResult::is_ok),
+            "orphaned dataflow must classify as Failed, not vacuously Finished"
+        );
+        let reply = rx.await.expect("stop waiter must be resolved by teardown");
+        assert!(
+            matches!(reply, Ok(ControlRequestReply::DataflowStopped { uuid, .. }) if uuid == dataflow_id),
+            "parked dora stop must receive DataflowStopped"
+        );
+        assert!(
+            archived_dataflows.contains_key(&dataflow_id),
+            "torn-down dataflow must be archived for later `dora list`"
         );
     }
 
