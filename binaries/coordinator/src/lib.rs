@@ -2343,6 +2343,16 @@ async fn start_inner(
                              dataflow {df_id} as running; skipping reconcile so the \
                              watchdog's Failed verdict is preserved"
                         );
+                        // The daemon kept these nodes alive but the coordinator
+                        // has terminally failed the dataflow; stop the orphans
+                        // rather than leave them unmanageable (#2029 P3).
+                        stop_orphaned_dataflow_on_daemon(
+                            *df_id,
+                            &daemon_id,
+                            &mut daemon_connections,
+                            &clock,
+                        )
+                        .await;
                         continue;
                     }
                     match store.get_dataflow(df_id) {
@@ -2408,6 +2418,16 @@ async fn start_inner(
                                     "daemon {daemon_id} reports terminally-failed \
                                      dataflow {df_id} as running; skipping reconcile",
                                 );
+                                // Stop the orphaned nodes the daemon kept alive
+                                // past the coordinator's terminal verdict, so
+                                // they don't run unmanageable forever (#2029 P3).
+                                stop_orphaned_dataflow_on_daemon(
+                                    *df_id,
+                                    &daemon_id,
+                                    &mut daemon_connections,
+                                    &clock,
+                                )
+                                .await;
                             }
                             _ => {}
                         },
@@ -3014,6 +3034,53 @@ fn reestablish_running_dataflow(
         "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
         record.uuid
     );
+}
+
+/// Tell a single daemon to stop a dataflow the coordinator has terminally given
+/// up on but the daemon still reports as running (dora-rs/dora#2029 P3).
+///
+/// Closes the orphan window where the daemon's reconnect window outlives the
+/// coordinator's recovery timeout: the daemon comes back with surviving nodes
+/// *after* the coordinator already failed the dataflow terminally, so the
+/// reconcile won't re-adopt it (the terminal verdict is deliberately preserved).
+/// Rather than leave those now-unmanageable nodes running, ask the daemon to
+/// stop them.
+///
+/// Fire-and-forget (`send`, not `send_and_receive`): the reconcile loop must not
+/// block on the daemon's stop round-trip, and no reply is needed (the daemon
+/// processes a `daemon_event` without replying).
+async fn stop_orphaned_dataflow_on_daemon(
+    dataflow_id: DataflowId,
+    daemon_id: &DaemonId,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+) {
+    let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+        return;
+    };
+    let message = match serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::StopDataflow {
+            dataflow_id,
+            grace_duration: None,
+            force: false,
+        },
+        timestamp: clock.new_timestamp(),
+    }) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to serialize orphan-stop for dataflow {dataflow_id}: {e}");
+            return;
+        }
+    };
+    match connection.send(&message).await {
+        Ok(()) => tracing::warn!(
+            "told daemon {daemon_id} to stop orphaned dataflow {dataflow_id}: it reconnected with \
+             the dataflow still running after the coordinator already failed it terminally (#2029)"
+        ),
+        Err(e) => tracing::warn!(
+            "failed to tell daemon {daemon_id} to stop orphaned dataflow {dataflow_id}: {e}"
+        ),
+    }
 }
 
 /// Begin a reclaim window for a dataflow whose every daemon disconnected *after*
@@ -4612,6 +4679,41 @@ mod tests {
         assert!(df.daemons.contains(&daemon_id) && df.daemons.contains(&daemon2));
         assert_eq!(df.node_to_daemon.get(&node2), Some(&daemon2));
         assert_eq!(running_dataflows.len(), 1, "must relink, not duplicate");
+    }
+
+    #[tokio::test]
+    async fn orphan_stop_sends_stopdataflow_to_reporting_daemon() {
+        // #2029 P3: when a daemon reconnects (within its own reconnect window)
+        // reporting a dataflow the coordinator already failed terminally — i.e.
+        // its recovery timeout fired first — the coordinator can't re-adopt it,
+        // so it must tell that daemon to stop the orphaned nodes.
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("d1".to_string()));
+        let clock = HLC::default();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let connection = state::DaemonConnection::new(
+            tx,
+            std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            BTreeMap::new(),
+        );
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        stop_orphaned_dataflow_on_daemon(dataflow_id, &daemon_id, &mut daemon_connections, &clock)
+            .await;
+
+        let sent = rx
+            .try_recv()
+            .expect("a stop message must be sent to the reporting daemon");
+        assert!(
+            sent.contains("StopDataflow"),
+            "must send StopDataflow, got: {sent}"
+        );
+        assert!(
+            sent.contains(&dataflow_id.to_string()),
+            "stop must target the orphaned dataflow"
+        );
     }
 
     #[test]
