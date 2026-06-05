@@ -37,8 +37,32 @@ mod tests {
     use serde_assert::Deserializer;
     #[test]
     fn test_python_array_code() -> Result<()> {
+        // This test round-trips real ROS2 message types (e.g. `std_msgs::UInt8`),
+        // so it needs the `.msg` definitions discoverable at runtime via
+        // `AMENT_PREFIX_PATH` — i.e. a sourced ROS distro. The nightly "ROS2
+        // Bridge Basic Checks" job deliberately runs without one
+        // (dora-rs/dora#2046). Skip *before* building `Ros2Context`: with no
+        // distro there is nothing to test, and constructing the ros2_client DDS
+        // context can itself fail (e.g. "Could not find free ParticipantId").
+        // Release QA (`scripts/ros2dev.sh`, with a real distro) still exercises
+        // the round-trips.
+        let ament = std::env::var("AMENT_PREFIX_PATH").unwrap_or_default();
+        if ament.split(':').all(str::is_empty) {
+            eprintln!(
+                "skipping test_python_array_code: AMENT_PREFIX_PATH empty/unset \
+                 — needs a sourced ROS distro"
+            );
+            return Ok(());
+        }
+
         let context = Ros2Context::new(None).context("Could not create a context")?;
         let messages = context.messages.clone();
+        // Belt-and-suspenders: a sourced distro path that yields no messages.
+        if messages.is_empty() {
+            eprintln!("skipping test_python_array_code: no ROS2 messages resolved");
+            return Ok(());
+        }
+
         let serializer = Serializer::builder().build();
 
         Python::attach(|py| -> Result<()> {
