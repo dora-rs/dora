@@ -192,9 +192,21 @@ pub unsafe extern "C" fn read_dora_input_data(
                 *out_ptr = ptr::null();
                 *out_len = 0;
             },
-            _ => {
-                todo!("dora C++ Node does not yet support higher level type of arrow. Only UInt8. 
-                The ultimate solution should be based on arrow FFI interface. Feel free to contribute :)")
+            ref other => {
+                // The raw-byte C API only supports UInt8 payloads. For any
+                // other Arrow type (a routine cross-language case, e.g. an
+                // Int32/Float payload from another node) we cannot expose a
+                // raw `u8` view without an Arrow-FFI escape hatch. Instead of
+                // aborting the process via `todo!()`, signal "no data" to the
+                // caller (out_ptr == NULL, out_len == 0) and log the type.
+                tracing::error!(
+                    "read_dora_input_data: unsupported input arrow type {other:?}; \
+                     only UInt8 is supported by the raw-byte C API"
+                );
+                unsafe {
+                    *out_ptr = ptr::null();
+                    *out_len = 0;
+                }
             }
         },
         _ => unsafe {
@@ -332,4 +344,62 @@ unsafe fn try_log(
     let message = std::str::from_utf8(unsafe { slice::from_raw_parts(msg_ptr, msg_len) })?;
     context.node.log(level, message, None);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_node_api::{
+        ArrowData, Metadata,
+        arrow::{
+            array::{ArrayRef, Int32Array},
+            datatypes::DataType,
+        },
+        metadata::ArrowTypeInfo,
+        uhlc::HLC,
+    };
+    use std::sync::Arc;
+
+    fn type_info(data_type: DataType) -> ArrowTypeInfo {
+        ArrowTypeInfo {
+            data_type,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        }
+    }
+
+    /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
+    /// node) must not abort the process. The caller should instead observe
+    /// `out_ptr == NULL` and `out_len == 0`.
+    #[test]
+    fn read_dora_input_data_non_uint8_returns_null() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let event = Event::Input {
+            id: "my_input".into(),
+            metadata: Metadata::new(HLC::default().new_timestamp(), type_info(DataType::Int32)),
+            data: ArrowData(array),
+        };
+        let event_ptr: *const () = (&event as *const Event).cast();
+
+        // Seed the out-params with non-null sentinels so we can prove the
+        // function actually overwrites them to null/0 (rather than aborting).
+        let sentinel: u8 = 0;
+        let mut out_ptr: *const u8 = &sentinel;
+        let mut out_len: usize = 42;
+        unsafe {
+            read_dora_input_data(event_ptr, &mut out_ptr, &mut out_len);
+        }
+
+        assert!(
+            out_ptr.is_null(),
+            "expected null out_ptr for non-UInt8 input"
+        );
+        assert_eq!(out_len, 0, "expected zero out_len for non-UInt8 input");
+    }
 }
