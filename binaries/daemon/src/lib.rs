@@ -204,6 +204,28 @@ const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
 const COORDINATOR_RECONNECT_TIMEOUT: Duration = Duration::from_secs(90);
 /// Pause between losing the coordinator connection and attempting to reconnect.
 const COORDINATOR_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
+/// After the daemon has connected at least once, how long it keeps retrying
+/// failing reconnects before giving up and exiting. A fast TCP refusal (e.g.
+/// the coordinator briefly restarting, so the OS releases and re-grabs the
+/// port) returns an error almost instantly, which `COORDINATOR_RECONNECT_TIMEOUT`
+/// does not bound — that only guards a *hung* connect. Without this window a
+/// single refused attempt would exit the daemon and kill its running dataflows
+/// (dora-rs/dora#1998). A coordinator that stays gone past this window is
+/// treated as permanently gone -> exit rather than orphan (dora-rs/dora#1996).
+const COORDINATOR_RECONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+
+/// Records a failed reconnect attempt and reports whether the retry window has
+/// elapsed (so the daemon should give up and exit). `deadline` tracks the
+/// current run of consecutive failures: it is `None` until the first failure,
+/// when it is set to `now + window`; callers clear it back to `None` on a
+/// successful reconnect so each fresh outage gets a full window.
+fn reconnect_window_elapsed(
+    now: Instant,
+    deadline: &mut Option<Instant>,
+    window: Duration,
+) -> bool {
+    now >= *deadline.get_or_insert(now + window)
+}
 
 fn deliver_param_update_strict(
     dataflow: &RunningDataflow,
@@ -534,6 +556,11 @@ impl Daemon {
         // a coordinator gone past the reconnect timeout is treated as
         // permanently gone -> exit instead of orphaning (dora-rs/dora#1996).
         let mut connected_once = false;
+        // Deadline for the current run of consecutive failed reconnects. Set on
+        // the first failure after a successful connection and cleared whenever
+        // we reconnect, so each fresh outage gets a full
+        // `COORDINATOR_RECONNECT_RETRY_WINDOW` before the daemon exits.
+        let mut reconnect_deadline: Option<Instant> = None;
 
         // Dynamic-node listener: bind once for the daemon's lifetime, not once
         // per reconnect. Rebinding on every reconnect leaked the listener task
@@ -594,6 +621,9 @@ impl Daemon {
             match connect_result {
                 Ok((daemon_id, coordinator_sender, incoming_events)) => {
                     connected_once = true;
+                    // Fresh successful connection: a later disconnect starts a
+                    // new retry window rather than inheriting an old deadline.
+                    reconnect_deadline = None;
                     let log_destination = LogDestination::Coordinator {
                         sender: coordinator_sender.clone(),
                     };
@@ -634,15 +664,30 @@ impl Daemon {
                 }
                 Err(e) => {
                     if connected_once {
-                        // Connected before, can't reconnect -> coordinator gone;
-                        // exit rather than orphan (see `connected_once` above).
-                        return Err(eyre::eyre!(
-                            "failed to reconnect to coordinator: {e:#}; daemon exiting"
-                        ));
+                        // Connected before but this attempt failed. A fast TCP
+                        // refusal (coordinator briefly restarting) fails almost
+                        // instantly and is not bounded by the connect timeout, so
+                        // retry within a window instead of exiting on the first
+                        // refusal (dora-rs/dora#1998). Only once the window
+                        // elapses do we treat the coordinator as permanently gone
+                        // and exit rather than orphan (dora-rs/dora#1996).
+                        if reconnect_window_elapsed(
+                            Instant::now(),
+                            &mut reconnect_deadline,
+                            COORDINATOR_RECONNECT_RETRY_WINDOW,
+                        ) {
+                            return Err(eyre::eyre!(
+                                "failed to reconnect to coordinator within \
+                                 {COORDINATOR_RECONNECT_RETRY_WINDOW:?}: {e:#}; \
+                                 daemon exiting"
+                            ));
+                        }
+                        tracing::warn!("failed to reconnect to coordinator: {e:#}; retrying");
+                    } else {
+                        // Still waiting for the initial connect: keep retrying,
+                        // the coordinator may not be up yet.
+                        tracing::warn!("waiting for coordinator: {e:#}");
                     }
-                    // Still waiting for the initial connect: keep retrying, the
-                    // coordinator may not be up yet.
-                    tracing::warn!("waiting for coordinator: {e:#}");
                 }
             }
 
@@ -5571,5 +5616,63 @@ mod fault_tolerance_tests {
         let err = deliver_param_delete_strict(&df, &node_id, "threshold".into(), &clock)
             .expect_err("strict delivery should fail when node channel is full");
         assert!(err.to_string().contains("channel full"));
+    }
+
+    #[test]
+    fn reconnect_window_retries_then_exits() {
+        let window = Duration::from_secs(30);
+        let mut deadline = None;
+
+        // First failed reconnect: starts the window, must not exit yet. This
+        // is the regression from dora-rs/dora#1998 where a fast TCP refusal
+        // (coordinator briefly restarting) exited the daemon immediately.
+        let t0 = Instant::now();
+        assert!(!reconnect_window_elapsed(t0, &mut deadline, window));
+        assert_eq!(deadline, Some(t0 + window));
+
+        // Subsequent failures inside the window keep retrying without
+        // resetting the deadline.
+        assert!(!reconnect_window_elapsed(
+            t0 + Duration::from_secs(5),
+            &mut deadline,
+            window
+        ));
+        assert!(!reconnect_window_elapsed(
+            t0 + Duration::from_secs(29),
+            &mut deadline,
+            window
+        ));
+        assert_eq!(deadline, Some(t0 + window));
+
+        // Once the window has elapsed, the daemon gives up and exits so a
+        // permanently-gone coordinator doesn't leave an orphan (#1996).
+        assert!(reconnect_window_elapsed(t0 + window, &mut deadline, window));
+        assert!(reconnect_window_elapsed(
+            t0 + Duration::from_secs(31),
+            &mut deadline,
+            window
+        ));
+    }
+
+    #[test]
+    fn reconnect_window_resets_after_successful_connect() {
+        let window = Duration::from_secs(30);
+        let mut deadline = None;
+
+        let t0 = Instant::now();
+        assert!(!reconnect_window_elapsed(t0, &mut deadline, window));
+
+        // A successful reconnect clears the deadline (the loop sets
+        // `reconnect_deadline = None`), so a later outage gets a full fresh
+        // window rather than inheriting the old, possibly-elapsed deadline.
+        deadline = None;
+        let t1 = t0 + Duration::from_secs(100);
+        assert!(!reconnect_window_elapsed(t1, &mut deadline, window));
+        assert_eq!(deadline, Some(t1 + window));
+        assert!(!reconnect_window_elapsed(
+            t1 + Duration::from_secs(29),
+            &mut deadline,
+            window
+        ));
     }
 }
