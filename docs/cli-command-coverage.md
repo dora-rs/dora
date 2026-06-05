@@ -43,19 +43,19 @@ anywhere in CI (parse/help don't execute the command's logic).
 | `stop.rs` | `stop` | **e2e** (`e2e`/ws-cli) | **e2e** (`cluster-smoke`, `cli-tests`) | no |
 | `restart.rs` | `restart` | **e2e** (`e2e`/ws-cli) | **e2e** (`topic-and-top-smoke`) | no |
 | `list.rs` | `list`/`ps` | **e2e** (`e2e`/ws-cli) | **e2e** (`cluster-smoke`, `cli-tests`) | no |
-| `node/` | `node` | **e2e** (`e2e` + `contract-tests`: `node-lifecycle-e2e`) | — | no |
+| `node/` | `node` | **e2e** (`e2e` + `contract-tests`: `node-lifecycle-e2e`) | **help** (`test-cross-platform` loop + parse) | no |
 | `param/` | `param` | **e2e** (`e2e`/ws-cli: set/get/list/delete) | **help/e2e** (`topic-and-top-smoke`: `param list`) | no |
 | `validate.rs` | `validate` | **semantic** (`test`: `--strict-types` ± mismatch) | **semantic** (`test-cross-platform`) | no |
 | `expand.rs` | `expand` | **semantic** (`test`: module flattening) | **semantic** (`test-cross-platform`) | no |
 | `graph.rs` | `graph` | **semantic** (`test`: mermaid node IDs) | **semantic** (`test-cross-platform`) | no |
-| `completion.rs` | `completion` | **semantic** (`test`: `completion bash`) | **help** (ci loop only; not in nightly loop) | no |
+| `completion.rs` | `completion` | **semantic** (`test`: `completion bash`) | — (ci help loop only; no nightly loop / no parse test) | no |
 | `new.rs` | `new` | **help** + parse | **e2e** (`cli-tests`: rust/python/c/cxx templates) | no |
 | `doctor.rs` | `doctor` | **help** + parse | **e2e** (`topic-and-top-smoke`: `PASS Coordinator`) | no |
 | `logs.rs` | `logs` | **help** + parse (12 cases) | **e2e** (`topic-and-top-smoke`) | no |
 | `record.rs` | `record` | **help** + parse | **e2e** (`record-replay`) | no |
 | `replay.rs` | `replay` | **help** + parse | **e2e** (`record-replay`) | no |
-| `trace/` | `trace` | **help** + parse (list/view) | **e2e** (`topic-and-top-smoke`: list/view) | no |
-| `topic/` | `topic` | **help** + parse (list/hz/echo/pub) | **e2e** (`topic-and-top-smoke`: list/info/echo/hz/pub) | no |
+| `trace.rs` | `trace` | **help** + parse (list/view) | **e2e** (`topic-and-top-smoke`: list/view) | no |
+| `topic.rs` | `topic` | **help** + parse (list/hz/echo/pub) | **e2e** (`topic-and-top-smoke`: list/info/echo/hz/pub) | no |
 | `inspect/` | `inspect`/`top` | **help** + parse (`inspect top`) | **e2e** (`topic-and-top-smoke`: `top --once`, `inspect top --once`) | no |
 | `self_.rs` | `self` | **help** (ci loop only) | **e2e** (`topic-and-top-smoke`: `self update --check-only`) | no |
 | `cluster/` | `cluster` | parse (up/status/down) | **e2e** (`cluster-smoke`: status/down; `cluster-e2e`: up via SSH) | no (see subcommand notes) |
@@ -63,8 +63,8 @@ anywhere in CI (parse/help don't execute the command's logic).
 | `daemon.rs` | `daemon` (hidden) | — | **e2e** (`redb`, `daemon-reconnect`, `state-reconstruction`; also via `dora up`) | no |
 | `runtime.rs` | `runtime` (hidden) | — | **e2e** (indirect: `examples` python-operator runtime nodes) | no (indirect only) |
 | `node_binary.rs` | *(helper, not a command)* | — | **e2e** (indirect: `record-replay` resolves record/replay node binaries) | no (indirect only) |
-| `system/` | `status`/`check`, `system` | **help** + parse (`status`) | — | **YES** — never executed |
-| `clean.rs` | `clean` | parse only (not in `--help` loop) | — | **YES** — never executed |
+| `system/` | `status`/`check`, `system` | **help** + parse (`status`) | **help** + parse (`status`) | **YES** — never executed |
+| `clean.rs` | `clean` | parse only (not in `--help` loop) | parse | **YES** — never executed |
 
 ## Subcommand-level notes
 
