@@ -4,7 +4,7 @@ use std::{
     os::raw::c_char,
 };
 
-use widestring::{U16CStr, U16CString};
+use widestring::U16CString;
 
 use super::traits::{FFIFromRust, FFIToRust};
 
@@ -177,7 +177,13 @@ impl FFIToRust for FFIWString {
         if self.is_empty() {
             Self::Target::new()
         } else {
-            U16String(unsafe { U16CStr::from_ptr_str(self.data).to_ustring() })
+            // Use `size` to bound the read instead of `U16CStr::from_ptr_str`,
+            // which scans for a NUL terminator. Scanning would truncate
+            // wstrings that contain an embedded U+0000 and could read past the
+            // buffer if it is not NUL-terminated. This mirrors the hardened
+            // 8-bit `FFIString::to_str` path.
+            let slice = unsafe { std::slice::from_raw_parts(self.data, self.size) };
+            U16String(widestring::U16String::from_vec(slice))
         }
     }
 }
@@ -252,5 +258,27 @@ mod test {
         };
 
         assert_eq!(wstring, unsafe { native_wstring.to_rust() });
+    }
+
+    #[test]
+    fn ffi_wstring_preserves_embedded_nul() {
+        // A `wstring` payload may legitimately contain an embedded U+0000.
+        // `to_rust` must bound the read by `size`, not scan for a NUL
+        // terminator, so the bytes after the embedded NUL are preserved.
+        // (We construct the `FFIWString` by hand because `OwnedFFIWString`
+        // round-trips through a NUL-terminated `U16CString`, which cannot hold
+        // an interior NUL.)
+        let mut data: Vec<u16> = vec![b'a'.into(), 0, b'b'.into()];
+        let native_wstring = FFIWString {
+            data: data.as_mut_ptr(),
+            size: data.len(),
+            capacity: data.len(),
+        };
+
+        let result = unsafe { native_wstring.to_rust() };
+
+        assert_eq!(result, U16String::from(vec![b'a'.into(), 0, b'b'.into()]));
+        // Keep `data` alive until after the read above; `FFIWString` borrows it.
+        drop(data);
     }
 }
