@@ -86,27 +86,44 @@ fn default_for_nestable_type(
             BasicType::U64 => UInt64Array::from(vec![0; size]).into(),
             BasicType::F32 => Float32Array::from(vec![0.; size]).into(),
             BasicType::F64 => Float64Array::from(vec![0.; size]).into(),
-            BasicType::Char => StringArray::from(vec![""]).into(),
+            BasicType::Char => StringArray::from(vec![""; size]).into(),
             BasicType::Byte => UInt8Array::from(vec![0u8; size]).into(),
             BasicType::Bool => BooleanArray::from(vec![false; size]).into(),
         },
-        NestableType::GenericString(_) => StringArray::from(vec![""]).into(),
+        NestableType::GenericString(_) => StringArray::from(vec![""; size]).into(),
         NestableType::NamedType(name) => {
             let referenced_message = package_messages
                 .get(&name.0)
                 .context("unknown referenced message")?;
 
-            default_for_referenced_message(referenced_message, package_name, messages)?
+            let one = default_for_referenced_message(referenced_message, package_name, messages)?;
+            repeat_default(one, size)?
         }
         NestableType::NamespacedType(t) => {
             let referenced_package_messages = messages.get(&t.package).unwrap_or(&empty);
             let referenced_message = referenced_package_messages
                 .get(&t.name)
                 .context("unknown referenced message")?;
-            default_for_referenced_message(referenced_message, &t.package, messages)?
+            let one = default_for_referenced_message(referenced_message, &t.package, messages)?;
+            repeat_default(one, size)?
         }
     };
     Ok(array)
+}
+
+/// Repeat a length-1 default `size` times so a fixed-size `T[N]` (or N-element
+/// sequence) default has a backing array of the right length. Without this,
+/// `list_default_values` builds a `[0, N]` offset over a length-1 backing and
+/// `ListArray::new` panics for `N > 1` (dora-rs/dora#2027).
+fn repeat_default(one: ArrayData, size: usize) -> Result<ArrayData> {
+    let array = make_array(one);
+    if size == 0 {
+        return Ok(arrow::array::new_empty_array(array.data_type()).to_data());
+    }
+    let copies = vec![array.as_ref(); size];
+    Ok(concat(&copies)
+        .context("failed to build repeated default value")?
+        .to_data())
 }
 
 fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<ArrayData> {
@@ -258,4 +275,70 @@ fn list_default_values(
     };
 
     Ok(defaults)
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::array::AsArray;
+    use dora_ros2_bridge_msg_gen::types::{
+        Member, MemberType, Message,
+        primitives::{GenericString, NamedType, NestableType},
+        sequences::Array as ArrayType,
+    };
+
+    use super::*;
+
+    fn array_member(value_type: NestableType, size: usize) -> Member {
+        Member {
+            name: "field".to_string(),
+            r#type: MemberType::Array(ArrayType { value_type, size }),
+            default: None,
+        }
+    }
+
+    /// #2027: an absent fixed-size `string[N]` (N>1) default must not panic in
+    /// `ListArray::new` (the backing array previously had length 1 while the
+    /// list offset declared N). The default list element must hold N strings.
+    #[test]
+    fn absent_fixed_string_array_default_has_correct_length() {
+        let member = array_member(NestableType::GenericString(GenericString::String), 3);
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        assert_eq!(list.len(), 1, "fixed array is a single-element list");
+        assert_eq!(list.value(0).len(), 3, "inner default must hold N elements");
+    }
+
+    /// Same guard for a fixed-size array of a referenced struct type.
+    #[test]
+    fn absent_fixed_struct_array_default_has_correct_length() {
+        let inner = Message {
+            package: "test_pkg".to_string(),
+            name: "Inner".to_string(),
+            members: vec![Member {
+                name: "x".to_string(),
+                r#type: MemberType::NestableType(NestableType::BasicType(
+                    dora_ros2_bridge_msg_gen::types::primitives::BasicType::I32,
+                )),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("Inner".to_string(), inner);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+
+        let member = array_member(NestableType::NamedType(NamedType("Inner".to_string())), 2);
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        assert_eq!(list.len(), 1);
+        assert_eq!(
+            list.value(0).len(),
+            2,
+            "inner struct default must hold N rows"
+        );
+    }
 }
