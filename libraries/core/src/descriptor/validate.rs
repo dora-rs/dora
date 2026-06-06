@@ -656,7 +656,8 @@ fn validate_ros2_qos(
 ///
 /// ROS2 names allow ASCII alphanumeric, underscore, and forward slash characters,
 /// and must additionally be structurally valid: no consecutive slashes, no trailing
-/// slash, not a bare `/`, and each `/`-delimited token must start with an ASCII letter.
+/// slash, not a bare `/`, and each `/`-delimited token must not start with a digit.
+/// Tokens may begin with an underscore (hidden topic/service convention in ROS2).
 /// See <https://design.ros2.org/articles/topic_and_service_names.html>.
 fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result<()> {
     if name.is_empty() {
@@ -686,16 +687,17 @@ fn validate_ros2_name(node_id: &NodeId, field: &str, name: &str) -> eyre::Result
              name must not end with '/'"
         );
     }
-    // Each '/'-delimited token must start with an ASCII letter. A leading '/'
+    // Each '/'-delimited token must not start with a digit. A leading '/'
     // (absolute name) produces an empty first token, which is allowed and skipped.
+    // Leading underscores are valid — they denote hidden topics/services in ROS2.
     for (i, token) in name.split('/').enumerate() {
         if i == 0 && token.is_empty() {
             continue;
         }
-        if !token.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        if token.starts_with(|c: char| c.is_ascii_digit()) {
             bail!(
                 "node `{node_id}`: invalid `{field}` name `{name}`, \
-                 each token must start with an ASCII letter (offending token `{token}`)"
+                 a token must not start with a digit (offending token `{token}`)"
             );
         }
     }
@@ -1490,6 +1492,9 @@ mod tests {
             "/add_two_ints",
             "ns/sub_topic",
             "/navigate",
+            "_hidden",
+            "/_internal/state",
+            "/_ros2cli_node",
         ] {
             validate_ros2_name(&node, "topic", name)
                 .unwrap_or_else(|e| panic!("`{name}` should be valid: {e}"));
@@ -1525,17 +1530,19 @@ mod tests {
     }
 
     #[test]
-    fn ros2_name_rejects_leading_underscore() {
+    fn ros2_name_accepts_leading_underscore() {
         let node = NodeId::from("n".to_owned());
-        let err = validate_ros2_name(&node, "topic", "___").unwrap_err();
-        assert!(err.to_string().contains("ASCII letter"));
+        for name in ["_hidden", "/_internal/state", "/_ros2cli_node"] {
+            validate_ros2_name(&node, "topic", name)
+                .unwrap_or_else(|e| panic!("`{name}` should be valid (hidden topic): {e}"));
+        }
     }
 
     #[test]
     fn ros2_name_rejects_token_starting_with_digit() {
         let node = NodeId::from("n".to_owned());
         let err = validate_ros2_name(&node, "topic", "/2bad").unwrap_err();
-        assert!(err.to_string().contains("ASCII letter"));
+        assert!(err.to_string().contains("digit"));
     }
 
     #[test]
