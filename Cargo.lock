@@ -2125,6 +2125,7 @@ dependencies = [
  "pythonize",
  "serde_json",
  "serde_yaml",
+ "tracing",
 ]
 
 [[package]]

@@ -734,7 +734,11 @@ impl Node {
     ///
     /// :type subscription: dora.Ros2Subscription
     /// :rtype: None
-    pub fn merge_external_events(&self, subscription: &mut Ros2Subscription) -> eyre::Result<()> {
+    pub fn merge_external_events(
+        &self,
+        py: Python,
+        subscription: &mut Ros2Subscription,
+    ) -> eyre::Result<()> {
         let subscription = subscription.into_stream()?;
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
@@ -753,14 +757,22 @@ impl Node {
             s.poll_next_unpin(cx)
         });
 
-        // take out the event stream and temporarily replace it with a dummy
-        let mut inner = self.events.inner.blocking_lock();
-        let events = std::mem::replace(
-            &mut *inner,
-            EventsInner::Merged(Box::new(futures::stream::empty())),
-        );
-        // update self.events with the merged stream
-        *inner = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
+        // Release the GIL while blocking on the node's event mutex. Holding the
+        // GIL across `blocking_lock()` can deadlock against a suspended
+        // `recv_async` task that holds the same lock (`inner.lock().await`) and
+        // needs the GIL to make progress (dora-rs/dora#2027). Clone the `Arc` so
+        // the closure doesn't capture `&self` (keeping the `Ungil` bound clean).
+        let inner = self.events.inner.clone();
+        py.detach(move || {
+            // take out the event stream and temporarily replace it with a dummy
+            let mut guard = inner.blocking_lock();
+            let events = std::mem::replace(
+                &mut *guard,
+                EventsInner::Merged(Box::new(futures::stream::empty())),
+            );
+            // update the stream with the merged one
+            *guard = EventsInner::Merged(events.merge_external_send(Box::pin(stream)));
+        });
 
         Ok(())
     }
