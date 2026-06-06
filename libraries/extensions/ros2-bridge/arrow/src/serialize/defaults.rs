@@ -192,7 +192,14 @@ fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<Array
                     .context("Could not parse preset default value")?,
             ])
             .into(),
-            BasicType::Char => StringArray::from(vec![preset]).into(),
+            // `char` is a `UInt8` on the wire (see `primitive.rs`); its preset
+            // default is the numeric byte value, not a string.
+            BasicType::Char => UInt8Array::from(vec![
+                preset
+                    .parse::<u8>()
+                    .context("Could not parse preset default value")?,
+            ])
+            .into(),
             BasicType::Byte => UInt8Array::from(preset.as_bytes().to_owned()).into(),
             BasicType::Bool => BooleanArray::from(vec![
                 preset
@@ -337,6 +344,43 @@ mod tests {
             &arrow::datatypes::DataType::UInt8,
             "char default element type must be UInt8"
         );
+    }
+
+    /// A preset `char` default (`char foo 100`) is the numeric byte value and
+    /// must produce a `UInt8` array, not a `StringArray` the serialize path
+    /// would reject (dora-rs/dora#2027 review).
+    #[test]
+    fn preset_char_default_is_uint8() {
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+        let member = Member {
+            name: "c".to_string(),
+            r#type: MemberType::NestableType(NestableType::BasicType(BasicType::Char)),
+            default: Some(vec!["100".to_string()]),
+        };
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let array = make_array(data);
+        assert_eq!(array.data_type(), &arrow::datatypes::DataType::UInt8);
+        assert_eq!(
+            array.as_primitive::<arrow::datatypes::UInt8Type>().value(0),
+            100
+        );
+    }
+
+    /// Same for a preset `char[N]` default (`char[3] [0, 1, 127]`): every
+    /// element must be `UInt8`. (The preset-array path returns the concatenated
+    /// element array directly rather than list-wrapping it — a separate
+    /// pre-existing shape quirk vs the no-default path; assert the element type.)
+    #[test]
+    fn preset_char_array_default_is_uint8() {
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+        let mut member = array_member(NestableType::BasicType(BasicType::Char), 3);
+        member.default = Some(vec!["0".to_string(), "1".to_string(), "127".to_string()]);
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let array = make_array(data);
+        assert_eq!(array.data_type(), &arrow::datatypes::DataType::UInt8);
+        assert_eq!(array.len(), 3);
     }
 
     /// Same guard for a fixed-size array of a referenced struct type.
