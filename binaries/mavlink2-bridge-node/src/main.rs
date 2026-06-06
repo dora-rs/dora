@@ -531,6 +531,14 @@ fn main() -> Result<()> {
         }
     }
 
+    // Final drain: forward any telemetry the reader already decoded into `rx`
+    // but the loop exited before emitting (a `Stop` arrives while frames are
+    // queued; the daemon is still alive on that path). Best-effort — on a
+    // closed stream `send_output` errors and is ignored (dora-rs/dora#2027).
+    while let Ok((id, arr)) = rx.try_recv() {
+        let _ = node.send_output(id, MetadataParameters::default(), arr);
+    }
+
     // Three-layer shutdown sequence — each layer covers a transport
     // mavlink-core 0.13 leaves un-interruptible at the previous layer:
     //
