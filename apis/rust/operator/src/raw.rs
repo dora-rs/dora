@@ -68,14 +68,39 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
             status: DoraStatus::Continue,
         };
     };
-    match operator.on_event(&event_variant, &mut output_sender) {
-        Ok(status) => OnEventResult {
+    // Catch a panic in the user's `on_event`: this function is called directly
+    // from the generated `extern "C" fn dora_on_event`, and unwinding across
+    // that boundary is a forced process abort. Convert it to a clean error +
+    // Stop so the runtime can report it (dora-rs/dora#2027).
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        operator.on_event(&event_variant, &mut output_sender)
+    }));
+    match result {
+        Ok(Ok(status)) => OnEventResult {
             result: DoraResult { error: None },
             status,
         },
-        Err(error) => OnEventResult {
+        Ok(Err(error)) => OnEventResult {
             result: DoraResult::from_error(error),
             status: DoraStatus::Stop,
         },
+        Err(panic) => OnEventResult {
+            result: DoraResult::from_error(format!(
+                "operator on_event panicked: {}",
+                panic_message(&*panic)
+            )),
+            status: DoraStatus::Stop,
+        },
+    }
+}
+
+/// Extract a human-readable message from a caught panic payload.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = panic.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = panic.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
     }
 }

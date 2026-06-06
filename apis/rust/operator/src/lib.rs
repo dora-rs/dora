@@ -215,4 +215,48 @@ mod tests {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SendOutput>();
     }
+
+    #[derive(Default)]
+    struct PanicOperator;
+
+    impl DoraOperator for PanicOperator {
+        fn on_event(
+            &mut self,
+            _event: &Event,
+            _output_sender: &mut DoraOutputSender,
+        ) -> Result<DoraStatus, String> {
+            panic!("boom in on_event");
+        }
+    }
+
+    /// #2027: a panic in the user's `on_event` must be caught and reported as
+    /// an error (Stop), not unwind across the generated `extern "C"
+    /// dora_on_event` boundary, which would force-abort the whole process.
+    /// (A panic backtrace printed during this test is expected — the caught
+    /// unwind.)
+    #[test]
+    fn on_event_panic_is_caught_not_aborted() {
+        let sender = noop_send_output();
+        let mut op = PanicOperator;
+        let ctx: *mut std::ffi::c_void = (&mut op as *mut PanicOperator).cast();
+        // A Stop event (no input) so the panicking `on_event` is reached.
+        let mut event = types::RawEvent {
+            input: None,
+            input_closed: None,
+            stop: true,
+            error: None,
+        };
+
+        let result =
+            unsafe { crate::raw::dora_on_event::<PanicOperator>(&mut event, &sender, ctx) };
+
+        assert!(
+            result.result.error.is_some(),
+            "panic must surface as an error"
+        );
+        assert!(
+            matches!(result.status, DoraStatus::Stop),
+            "panic must stop the operator"
+        );
+    }
 }
