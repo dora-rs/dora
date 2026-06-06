@@ -86,7 +86,10 @@ fn default_for_nestable_type(
             BasicType::U64 => UInt64Array::from(vec![0; size]).into(),
             BasicType::F32 => Float32Array::from(vec![0.; size]).into(),
             BasicType::F64 => Float64Array::from(vec![0.; size]).into(),
-            BasicType::Char => StringArray::from(vec![""; size]).into(),
+            // `Char` is serialized/deserialized as a `UInt8` primitive (see
+            // `array.rs` / `primitive.rs`), so its default must be a UInt8
+            // array, not a `StringArray` (which the serialize path rejects).
+            BasicType::Char => UInt8Array::from(vec![0u8; size]).into(),
             BasicType::Byte => UInt8Array::from(vec![0u8; size]).into(),
             BasicType::Bool => BooleanArray::from(vec![false; size]).into(),
         },
@@ -307,7 +310,33 @@ mod tests {
         let list = make_array(data);
         let list = list.as_list::<i32>();
         assert_eq!(list.len(), 1, "fixed array is a single-element list");
-        assert_eq!(list.value(0).len(), 3, "inner default must hold N elements");
+        let inner = list.value(0);
+        assert_eq!(inner.len(), 3, "inner default must hold N elements");
+        assert_eq!(
+            inner.data_type(),
+            &arrow::datatypes::DataType::Utf8,
+            "string default element type"
+        );
+    }
+
+    /// `char[N]` is serialized as `UInt8`, so its default element type must be
+    /// `UInt8` (not `Utf8`) — otherwise the serialize path rejects it
+    /// (dora-rs/dora#2027 review).
+    #[test]
+    fn absent_fixed_char_array_default_is_uint8() {
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+        let member = array_member(NestableType::BasicType(BasicType::Char), 3);
+        let messages = HashMap::new();
+        let data = default_for_member(&member, "test_pkg", &messages).unwrap();
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        let inner = list.value(0);
+        assert_eq!(inner.len(), 3);
+        assert_eq!(
+            inner.data_type(),
+            &arrow::datatypes::DataType::UInt8,
+            "char default element type must be UInt8"
+        );
     }
 
     /// Same guard for a fixed-size array of a referenced struct type.
