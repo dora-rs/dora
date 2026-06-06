@@ -244,6 +244,13 @@ pub fn run(
                     }
                 }
             })?;
+
+            // The post-reload error leniency above applies only to the event
+            // processed in the same iteration as the reload. Reset it so a
+            // single reload doesn't permanently swallow on_event errors for all
+            // subsequent events (dora-rs/dora#2027).
+            reload = false;
+
             match status {
                 s if s == DoraStatus::Continue as i32 => {} // ok
                 s if s == DoraStatus::Stop as i32 => break StopReason::ExplicitStop,
