@@ -70,8 +70,16 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
     };
     // Catch a panic in the user's `on_event`: this function is called directly
     // from the generated `extern "C" fn dora_on_event`, and unwinding across
-    // that boundary is a forced process abort. Convert it to a clean error +
-    // Stop so the runtime can report it (dora-rs/dora#2027).
+    // that boundary is a forced process abort. Report it as an operator error
+    // instead (dora-rs/dora#2027). The runtime treats any `error` as fatal
+    // regardless of `status`, so the `Stop` below just matches the normal
+    // error path. `AssertUnwindSafe` is sound here because the operator is torn
+    // down after an error and never re-entered.
+    //
+    // Caveats: this only protects under `panic = "unwind"` (the default) — an
+    // operator dylib built with `panic = "abort"` aborts before the unwind is
+    // caught. The default panic hook still prints to stderr in addition to the
+    // structured error returned here.
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         operator.on_event(&event_variant, &mut output_sender)
     }));
