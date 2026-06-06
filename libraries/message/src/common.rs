@@ -315,6 +315,11 @@ impl DaemonId {
     /// splitting on a hyphen drops or corrupts a hyphenated machine id. Split
     /// off the fixed-width 36-char canonical UUID suffix instead
     /// (dora-rs/dora#2027).
+    ///
+    /// Expects exact `Display` output (no surrounding whitespace). The
+    /// machine-id path requires the canonical 36-char UUID suffix that
+    /// `Display` emits; the bare path accepts any form `Uuid::parse_str`
+    /// recognizes (canonical / simple / urn / braced).
     pub fn from_display_str(s: &str) -> Option<Self> {
         // No machine id: the whole string is the UUID.
         if let Ok(uuid) = Uuid::parse_str(s) {
