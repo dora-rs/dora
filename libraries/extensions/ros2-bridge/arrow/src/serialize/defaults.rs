@@ -266,7 +266,18 @@ fn list_default_values(
                     .as_slice(),
             )
             .context("Failed to concatenate default list value")?;
-            default_values.to_data()
+            // Wrap the preset elements in a single-element `List`, exactly like
+            // the no-default arm below. `ArraySerializeWrapper` /
+            // `SequenceSerializeWrapper` unwrap the column via `as_list_opt`, so
+            // returning the bare concatenated array would fail to serialize
+            // ("value is not compatible with expected array type") for an
+            // omitted field with a preset array/sequence default
+            // (dora-rs/dora#2027 review).
+            let len = default_values.len();
+            let offsets = OffsetBuffer::new(ScalarBuffer::from(vec![0, len as i32]));
+            let field = Arc::new(Field::new("item", default_values.data_type().clone(), true));
+            let list = ListArray::new(field, offsets, default_values, None);
+            list.to_data()
         }
         None => {
             let size = size.unwrap_or(1);
@@ -370,7 +381,8 @@ mod tests {
     /// Same for a preset `char[N]` default (`char[3] [0, 1, 127]`): every
     /// element must be `UInt8`. (The preset-array path returns the concatenated
     /// element array directly rather than list-wrapping it — a separate
-    /// pre-existing shape quirk vs the no-default path; assert the element type.)
+    /// no-default path) so `ArraySerializeWrapper` can unwrap it, and each
+    /// element must be `UInt8`.
     #[test]
     fn preset_char_array_default_is_uint8() {
         use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
@@ -378,9 +390,55 @@ mod tests {
         member.default = Some(vec!["0".to_string(), "1".to_string(), "127".to_string()]);
         let messages = HashMap::new();
         let data = default_for_member(&member, "test_pkg", &messages).unwrap();
-        let array = make_array(data);
-        assert_eq!(array.data_type(), &arrow::datatypes::DataType::UInt8);
-        assert_eq!(array.len(), 3);
+        let list = make_array(data);
+        let list = list.as_list::<i32>();
+        assert_eq!(list.len(), 1, "preset fixed array is a single-element list");
+        let inner = list.value(0);
+        assert_eq!(inner.data_type(), &arrow::datatypes::DataType::UInt8);
+        assert_eq!(inner.len(), 3);
+    }
+
+    /// End-to-end: an Arrow input that OMITS a `char[3]` field with a preset
+    /// default must serialize using that default (it previously errored with
+    /// "value is not compatible with expected array type" because the preset
+    /// default was a bare array, not a single-element list).
+    #[test]
+    fn preset_char_array_default_serializes() {
+        use std::borrow::Cow;
+
+        use arrow::array::{ArrayRef, StructArray};
+        use byteorder::LittleEndian;
+        use dora_ros2_bridge_msg_gen::types::primitives::BasicType;
+
+        let mut member = array_member(NestableType::BasicType(BasicType::Char), 3);
+        member.name = "c".to_string();
+        member.default = Some(vec!["0".to_string(), "1".to_string(), "127".to_string()]);
+        let message = Message {
+            package: "test_pkg".to_string(),
+            name: "M".to_string(),
+            members: vec![member],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("M".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+
+        // Length-1 struct with no columns => every field uses its default.
+        let value: ArrayRef = Arc::new(StructArray::new_empty_fields(1, None));
+        let type_info = crate::TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("M"),
+            messages: Arc::new(messages),
+        };
+        let typed = crate::serialize::TypedValue {
+            value: &value,
+            type_info: &type_info,
+        };
+        let bytes = cdr_encoding::to_vec::<_, LittleEndian>(&typed)
+            .expect("preset char[3] default must serialize");
+        // Fixed `char[3]` => 3 raw UInt8 bytes, no length prefix.
+        assert_eq!(bytes, vec![0u8, 1, 127]);
     }
 
     /// Same guard for a fixed-size array of a referenced struct type.
