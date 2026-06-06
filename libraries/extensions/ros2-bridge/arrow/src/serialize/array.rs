@@ -357,7 +357,7 @@ mod tests {
     }
 
     /// #2027: a fixed-size `string[3]` field given the wrong number of elements
-    /// must error rather than silently emit a mis-sized (length-prefix-less)
+    /// must error rather than silently emit a wrong-sized (length-prefix-less)
     /// CDR tuple.
     #[test]
     fn fixed_string_array_length_is_checked() {
