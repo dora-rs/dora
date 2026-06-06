@@ -12,7 +12,7 @@ use serde::ser::SerializeTuple;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, error};
+use super::{TypedValue, check_array_len, error};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {
@@ -120,6 +120,7 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
                 let array = entry
                     .as_struct_opt()
                     .ok_or_else(|| error("not a struct array"))?;
+                check_array_len(array.len(), self.array_info.size)?;
                 let mut seq = serializer.serialize_tuple(self.array_info.size)?;
                 for i in 0..array.len() {
                     let row = array.slice(i, 1);
@@ -144,6 +145,7 @@ impl serde::Serialize for ArraySerializeWrapper<'_> {
                 let array = entry
                     .as_struct_opt()
                     .ok_or_else(|| error("not a struct array"))?;
+                check_array_len(array.len(), self.array_info.size)?;
                 let mut seq = serializer.serialize_tuple(self.array_info.size)?;
                 for i in 0..array.len() {
                     let row = array.slice(i, 1);
@@ -211,13 +213,7 @@ where
             .value
             .as_primitive_opt()
             .ok_or_else(|| error(format!("not a primitive {} array", type_name::<T>())))?;
-        if array.len() != self.len {
-            return Err(error(format!(
-                "expected array with length {}, got length {}",
-                self.len,
-                array.len()
-            )));
-        }
+        check_array_len(array.len(), self.len)?;
 
         for value in array.values() {
             seq.serialize_element(value)?;
@@ -242,13 +238,7 @@ impl serde::Serialize for BoolArrayAsTuple<'_> {
             .value
             .as_boolean_opt()
             .ok_or_else(|| error("not a boolean array"))?;
-        if array.len() != self.len {
-            return Err(error(format!(
-                "expected array with length {}, got length {}",
-                self.len,
-                array.len()
-            )));
-        }
+        check_array_len(array.len(), self.len)?;
 
         for value in array.values() {
             seq.serialize_element(&value)?;
@@ -267,6 +257,7 @@ where
     S: serde::Serializer,
     O: OffsetSizeTrait,
 {
+    check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
     for s in array.iter() {
         seq.serialize_element(s.unwrap_or_default())?;
@@ -283,10 +274,115 @@ where
     S: serde::Serializer,
     O: OffsetSizeTrait,
 {
+    check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
     for s in array.iter() {
         let utf16: Vec<u16> = s.unwrap_or_default().encode_utf16().collect();
         seq.serialize_element(&utf16)?;
     }
     seq.end()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{borrow::Cow, collections::HashMap, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, ListArray, StringArray, StructArray},
+        buffer::OffsetBuffer,
+        datatypes::{DataType, Field},
+    };
+    use byteorder::LittleEndian;
+    use dora_ros2_bridge_msg_gen::types::{
+        Member, MemberType, Message,
+        primitives::{GenericString, NestableType},
+        sequences::Array as ArrayType,
+    };
+
+    use super::*;
+    use crate::TypeInfo;
+
+    /// A message with a single fixed-size `<field_type>[3]` array field.
+    fn fixed_array_message(
+        field_type: NestableType,
+    ) -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "ArrMsg".to_string(),
+            members: vec![Member {
+                name: "names".to_string(),
+                r#type: MemberType::Array(ArrayType {
+                    value_type: field_type,
+                    size: 3,
+                }),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("ArrMsg".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    fn serializes_ok(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        names: &[&str],
+    ) -> bool {
+        // An array field's column is a single-element `List` whose inner value
+        // holds the array elements (mirrors how dora wraps message fields).
+        let item = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([names.len()]),
+            Arc::new(StringArray::from(names.to_vec())),
+            None,
+        );
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("names", DataType::List(item), false)),
+            Arc::new(list) as ArrayRef,
+        )]);
+        let value = Arc::new(struct_array) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ArrMsg"),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value: &value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).is_ok()
+    }
+
+    /// #2027: a fixed-size `string[3]` field given the wrong number of elements
+    /// must error rather than silently emit a wrong-sized (length-prefix-less)
+    /// CDR tuple.
+    #[test]
+    fn fixed_string_array_length_is_checked() {
+        let messages = fixed_array_message(NestableType::GenericString(GenericString::String));
+        assert!(
+            !serializes_ok(&messages, &["a", "b"]),
+            "size-3 field with 2 elements must error"
+        );
+        assert!(
+            serializes_ok(&messages, &["a", "b", "c"]),
+            "size-3 field with 3 elements must serialize"
+        );
+    }
+
+    /// Same guard on the `wstring[N]` path.
+    #[test]
+    fn fixed_wstring_array_length_is_checked() {
+        let messages = fixed_array_message(NestableType::GenericString(GenericString::WString));
+        assert!(
+            !serializes_ok(&messages, &["a", "b", "c", "d"]),
+            "size-3 field with 4 elements must error"
+        );
+        assert!(
+            serializes_ok(&messages, &["a", "b", "c"]),
+            "size-3 field with 3 elements must serialize"
+        );
+    }
 }
