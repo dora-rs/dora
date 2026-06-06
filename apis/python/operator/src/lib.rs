@@ -273,6 +273,13 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
             } else if value.is_instance_of::<PyString>() {
                 parameters.insert(key, Parameter::String(value.extract()?))
             } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
+                && value.len()? == 0
+            {
+                // Empty list/tuple: no element type to infer. Preserve
+                // list-ness with an empty list (round-trips to `[]`) instead of
+                // coercing to the string "[]" (dora-rs/dora#2027).
+                parameters.insert(key, Parameter::ListString(vec![]))
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyInt>()
             {
@@ -320,7 +327,10 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
 
                     parameters.insert(key, Parameter::Timestamp(dt))
                 } else {
-                    println!("could not convert type {value}");
+                    tracing::warn!(
+                        "unsupported metadata value type for key `{key}`; \
+                         coercing to its string representation: {value}"
+                    );
                     parameters.insert(key, Parameter::String(value.str()?.to_string()))
                 }
             };
