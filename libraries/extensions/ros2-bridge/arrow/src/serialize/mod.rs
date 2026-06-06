@@ -235,3 +235,16 @@ fn check_single_element<E: serde::ser::Error>(len: usize, type_name: &str) -> Re
     }
     Ok(())
 }
+
+/// Guard for fixed-size array fields: a ROS2 `T[N]` array has no length prefix
+/// on the CDR wire, so the Arrow column must have exactly `expected` elements.
+/// A mismatch would otherwise emit the wrong element count into a fixed tuple
+/// and silently corrupt the message (dora-rs/dora#2027).
+fn check_array_len<E: serde::ser::Error>(actual: usize, expected: usize) -> Result<(), E> {
+    if actual != expected {
+        return Err(serde::ser::Error::custom(format!(
+            "expected array with length {expected}, got length {actual}"
+        )));
+    }
+    Ok(())
+}
