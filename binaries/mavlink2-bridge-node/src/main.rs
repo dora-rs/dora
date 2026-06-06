@@ -55,7 +55,7 @@ use dora_mavlink2_bridge::{
     transport,
 };
 use dora_node_api::{
-    DoraNode, Event, MetadataParameters,
+    DoraNode, Event, MetadataParameters, TryRecvError,
     arrow::array::{ArrayRef, AsArray, RecordBatch, StructArray},
     dora_core::config::DataId,
     flume,
@@ -366,9 +366,47 @@ fn handle_input(
         }
         _ => return Ok(()), // unknown input id, ignore
     };
-    conn.send(header, &outgoing)
+    let sent = conn
+        .send(header, &outgoing)
         .map_err(|e| eyre!("mavlink send: {e}"))?;
+    if sent == 0 {
+        // UDP server mode (`udpin:`) reports a successful 0-byte send until a
+        // client has connected, so the command was silently dropped rather
+        // than transmitted. Surface it instead of logging a false success
+        // (dora-rs/dora#2027).
+        tracing::warn!("command '{id}' not transmitted: no MAVLink peer connected yet");
+    }
     Ok(())
+}
+
+/// Try to send the `REQUEST_DATA_STREAM` setup message. Returns `true` once it
+/// no longer needs retrying — either it was actually transmitted (`>0` bytes)
+/// or it failed with a hard error (treated as non-fatal, like the autopilots
+/// that ignore the legacy request). Returns `false` only for the UDP
+/// server-mode case where `send` succeeds with 0 bytes because no client has
+/// connected yet; the caller retries until a peer appears (dora-rs/dora#2027).
+fn attempt_data_stream_request(
+    conn: &(dyn MavConnection<MavMessage> + Send + Sync),
+    header: &MavHeader,
+) -> bool {
+    let req = mavlink::common::REQUEST_DATA_STREAM_DATA {
+        req_message_rate: 5,
+        target_system: 0, // 0 = broadcast to whichever autopilot answers
+        target_component: 0,
+        req_stream_id: 0, // MAV_DATA_STREAM_ALL
+        start_stop: 1,
+    };
+    match conn.send(header, &MavMessage::REQUEST_DATA_STREAM(req)) {
+        Ok(0) => false, // no UDP peer yet — retry once one connects
+        Ok(_) => {
+            tracing::info!("requested all data streams at 5 Hz");
+            true
+        }
+        Err(e) => {
+            tracing::warn!("REQUEST_DATA_STREAM send failed (non-fatal): {e}");
+            true
+        }
+    }
 }
 
 /// Open the MAVLink transport, retrying briefly if the peer is not yet
@@ -416,20 +454,10 @@ fn main() -> Result<()> {
     // Request all data streams from the autopilot at 5 Hz so HEARTBEAT,
     // GLOBAL_POSITION_INT, GPS_RAW_INT, COMMAND_ACK, etc. start flowing
     // on this link. Without this, ArduCopter 3.x sends only HEARTBEAT
-    // until a GCS asks. Failure is non-fatal (some autopilots ignore the
-    // legacy REQUEST_DATA_STREAM and prefer SET_MESSAGE_INTERVAL).
-    let req = mavlink::common::REQUEST_DATA_STREAM_DATA {
-        req_message_rate: 5,
-        target_system: 0, // 0 = broadcast to whichever autopilot answers
-        target_component: 0,
-        req_stream_id: 0, // MAV_DATA_STREAM_ALL
-        start_stop: 1,
-    };
-    if let Err(e) = conn.send(&header, &MavMessage::REQUEST_DATA_STREAM(req)) {
-        tracing::warn!("REQUEST_DATA_STREAM send failed (non-fatal): {e}");
-    } else {
-        tracing::info!("requested all data streams at 5 Hz");
-    }
+    // until a GCS asks. In UDP server mode this first attempt is dropped
+    // (no client yet), so it is retried in the event loop below until a peer
+    // connects (dora-rs/dora#2027).
+    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
 
     let (mut node, mut events) =
         DoraNode::init_from_env().map_err(|e| eyre!("DoraNode init: {e}"))?;
@@ -464,20 +492,51 @@ fn main() -> Result<()> {
             break;
         }
 
-        match events.recv_timeout(POLL_INTERVAL) {
-            Some(Event::Input { id, data, .. }) => {
-                let array_ref: ArrayRef = data.into();
-                if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
-                    // Writer errors mean the dora node's command did NOT reach the
-                    // autopilot. Surface at error level so users debugging missions see
-                    // it in default log filters rather than treating it as routine noise.
-                    tracing::error!("writer error on input '{id}': {e:#}");
-                }
-            }
-            Some(Event::Stop(_)) => break,
-            Some(_) => {}
-            None => {}
+        // Retry the data-stream request until it is actually transmitted. In
+        // UDP server mode the initial attempt is dropped because no client has
+        // connected; once the reader receives a packet the shared connection
+        // learns the peer and this send goes out (dora-rs/dora#2027).
+        if !data_stream_requested {
+            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
         }
+
+        let next = match events.recv_timeout(POLL_INTERVAL) {
+            Some(event) => Some(event),
+            // `recv_timeout` returns `None` for BOTH a timeout and a closed
+            // stream. Disambiguate with `try_recv`: a closed stream means the
+            // daemon went away without a `Stop` event, so exit instead of
+            // looping forever (dora-rs/dora#2027). `try_recv` also returns any
+            // event that raced in after the timeout, so none is lost.
+            None => match events.try_recv() {
+                Ok(event) => Some(event),
+                Err(TryRecvError::Closed) => break,
+                Err(TryRecvError::Empty) => None,
+            },
+        };
+
+        if let Some(event) = next {
+            match event {
+                Event::Input { id, data, .. } => {
+                    let array_ref: ArrayRef = data.into();
+                    if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
+                        // Writer errors mean the dora node's command did NOT reach the
+                        // autopilot. Surface at error level so users debugging missions see
+                        // it in default log filters rather than treating it as routine noise.
+                        tracing::error!("writer error on input '{id}': {e:#}");
+                    }
+                }
+                Event::Stop(_) => break,
+                _ => {}
+            }
+        }
+    }
+
+    // Final drain: forward any telemetry the reader already decoded into `rx`
+    // but the loop exited before emitting (a `Stop` arrives while frames are
+    // queued; the daemon is still alive on that path). Best-effort — on a
+    // closed stream `send_output` errors and is ignored (dora-rs/dora#2027).
+    while let Ok((id, arr)) = rx.try_recv() {
+        let _ = node.send_output(id, MetadataParameters::default(), arr);
     }
 
     // Three-layer shutdown sequence — each layer covers a transport
@@ -776,5 +835,27 @@ mod tests {
             "reader should surface a fatal error on disconnect, got Ok"
         );
         server.join().expect("server thread panicked");
+    }
+
+    /// #2027: in UDP server mode (`udp://` => `udpin:`) the data-stream
+    /// request cannot be transmitted until a client connects — `conn.send`
+    /// reports a 0-byte success. `attempt_data_stream_request` must report
+    /// that as "not yet sent" (false) so the event loop retries, rather than
+    /// logging a false success and giving up.
+    #[test]
+    fn data_stream_request_deferred_without_udp_peer() {
+        let port = pick_free_udp_port();
+        let url = Url::parse(&format!("udp://127.0.0.1:{port}")).unwrap();
+        let conn = transport::connect(&url).expect("transport::connect");
+        let header = MavHeader {
+            system_id: 1,
+            component_id: 1,
+            sequence: 0,
+        };
+
+        assert!(
+            !attempt_data_stream_request(conn.as_ref(), &header),
+            "with no UDP peer connected the request is dropped (0 bytes) and must be retried"
+        );
     }
 }
