@@ -59,20 +59,7 @@ impl From<LogMessageHelper> for LogMessage {
                 .or(fields.and_then(|f| f.get("node_id").cloned()).map(NodeId)),
             daemon_id: helper.daemon_id.or(fields
                 .and_then(|f| f.get("daemon_id").cloned())
-                .and_then(|id| {
-                    let parts: Vec<&str> = id.splitn(2, '-').collect();
-                    if parts.len() == 2 {
-                        Uuid::parse_str(parts[1]).ok().map(|uuid| DaemonId {
-                            machine_id: Some(parts[0].to_string()),
-                            uuid,
-                        })
-                    } else {
-                        Uuid::parse_str(parts[0]).ok().map(|uuid| DaemonId {
-                            machine_id: None,
-                            uuid,
-                        })
-                    }
-                })),
+                .and_then(|id| DaemonId::from_display_str(&id))),
             level: helper.level,
             target: helper
                 .target
@@ -320,6 +307,38 @@ impl DaemonId {
     pub fn machine_id(&self) -> Option<&str> {
         self.machine_id.as_deref()
     }
+
+    /// Reverse of [`Display`]: parse `"{machine_id}-{uuid}"`, or a bare
+    /// `"{uuid}"` when there is no machine id.
+    ///
+    /// Both the machine id (hostnames) and the canonical UUID contain `-`, so
+    /// splitting on a hyphen drops or corrupts a hyphenated machine id. Split
+    /// off the fixed-width 36-char canonical UUID suffix instead
+    /// (dora-rs/dora#2027).
+    ///
+    /// Expects exact `Display` output (no surrounding whitespace). The
+    /// machine-id path requires the canonical 36-char UUID suffix that
+    /// `Display` emits; the bare path accepts any form `Uuid::parse_str`
+    /// recognizes (canonical / simple / urn / braced).
+    pub fn from_display_str(s: &str) -> Option<Self> {
+        // No machine id: the whole string is the UUID.
+        if let Ok(uuid) = Uuid::parse_str(s) {
+            return Some(DaemonId {
+                machine_id: None,
+                uuid,
+            });
+        }
+        // `Display` writes the UUID via `{}` (canonical 36-char hyphenated
+        // form), preceded by `"{machine_id}-"`.
+        const UUID_LEN: usize = 36;
+        let split = s.len().checked_sub(UUID_LEN)?;
+        let uuid = Uuid::parse_str(s.get(split..)?).ok()?;
+        let machine_id = s.get(..split)?.strip_suffix('-')?;
+        Some(DaemonId {
+            machine_id: Some(machine_id.to_string()),
+            uuid,
+        })
+    }
 }
 
 impl std::fmt::Display for DaemonId {
@@ -366,6 +385,38 @@ mod tests {
     fn stdout_passes_stdout_filter() {
         let stdout = LogLevelOrStdout::Stdout;
         assert!(stdout.passes(&LogLevelOrStdout::Stdout));
+    }
+
+    /// #2027: `DaemonId` must survive a `Display` -> `from_display_str` round
+    /// trip even when the machine id contains `-` (hostnames do). The old
+    /// `splitn(2, '-')` parse split on the first hyphen, which corrupted the
+    /// UUID (itself hyphenated) and silently dropped the daemon id.
+    #[test]
+    fn daemon_id_display_roundtrips_through_parse() {
+        let uuid = Uuid::new_v4();
+        for machine in [None, Some("host"), Some("my-host"), Some("a-b-c-d")] {
+            let id = DaemonId {
+                machine_id: machine.map(str::to_string),
+                uuid,
+            };
+            let parsed = DaemonId::from_display_str(&id.to_string())
+                .unwrap_or_else(|| panic!("failed to parse {id}"));
+            assert_eq!(parsed, id, "round-trip failed for machine_id={machine:?}");
+        }
+    }
+
+    /// A bare (machine-id-less) daemon id round-trips, and garbage does not
+    /// parse to a bogus id.
+    #[test]
+    fn daemon_id_parse_edge_cases() {
+        let uuid = Uuid::new_v4();
+        let bare = DaemonId {
+            machine_id: None,
+            uuid,
+        };
+        assert_eq!(DaemonId::from_display_str(&bare.to_string()), Some(bare));
+        assert_eq!(DaemonId::from_display_str("not-a-daemon-id"), None);
+        assert_eq!(DaemonId::from_display_str(""), None);
     }
 
     #[test]
