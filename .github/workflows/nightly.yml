@@ -1351,6 +1351,17 @@ jobs:
           curl -fL --retry 10 --retry-delay 10 --retry-all-errors \
             -o examples/python-operator-dataflow/yolov8n.pt \
             https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt
+          # Pre-warm object_detection's env so the one-time matplotlib font-cache
+          # build and Ultralytics settings creation happen BEFORE the timed run.
+          # On a cold runner those can exceed the 20s --stop-after window, so the
+          # node gets SIGTERM'd mid-init and never connects to dora (#2089). Both
+          # caches live under $HOME, so warming the node's built venv (reusing the
+          # deps `dora build` already installed) warms the subsequent run. Best
+          # effort: non-Windows only (Scripts/ vs bin/), never fail the job.
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            examples/python-operator-dataflow/.dora/python-envs/object_detection/bin/python -c \
+              "import matplotlib.pyplot; from ultralytics import YOLO; YOLO('examples/python-operator-dataflow/yolov8n.pt')" || true
+          fi
           dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
       - name: Test Python Multiple Arrays
