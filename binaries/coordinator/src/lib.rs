@@ -2042,7 +2042,13 @@ async fn start_inner(
                 // that would otherwise hang on the client-side RPC deadline
                 // when a daemon participating in `dora build` disconnects
                 // or otherwise never reports its `build_result`. #1465.
-                check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+                check_build_timeouts(
+                    &mut running_builds,
+                    &mut finished_builds,
+                    &clock,
+                    build_result_timeout(),
+                )
+                .await;
 
                 // Recovery timeout: transition stale Recovering dataflows to Failed.
                 // Dataflows are marked Recovering on coordinator startup and should
@@ -3536,8 +3542,8 @@ async fn check_build_timeouts(
     running_builds: &mut HashMap<BuildId, RunningBuild>,
     finished_builds: &mut IndexMap<BuildId, CachedResult>,
     clock: &HLC,
+    timeout_threshold: Duration,
 ) {
-    let timeout_threshold = build_result_timeout();
     let stuck: Vec<(BuildId, usize)> = running_builds
         .iter()
         .filter_map(|(id, build)| {
@@ -7544,6 +7550,15 @@ mod tests {
     // dataflow_results synthesis — just release waiters and move the entry
     // from `running_builds` to `finished_builds`.
 
+    // Small, cross-platform-safe watchdog timeout for the unit tests. The
+    // tests pass this to `check_build_timeouts` instead of the 20-min
+    // production `build_result_timeout()`, so `test_running_build` only has to
+    // backdate `build_started_at` by ~2s. Backdating by the production timeout
+    // computes `Instant::now() - 20min`, which underflows and panics on
+    // Windows runners whose monotonic-clock epoch is younger than 20 min
+    // (dora-rs/dora#2082).
+    const TEST_BUILD_TIMEOUT: Duration = Duration::from_secs(1);
+
     fn test_running_build(daemon_id: DaemonId, backdate: bool) -> RunningBuild {
         let mut pending = BTreeSet::new();
         pending.insert(daemon_id);
@@ -7554,7 +7569,7 @@ mod tests {
             log_subscribers: Vec::new(),
             pending_build_results: pending,
             build_started_at: if backdate {
-                Instant::now() - build_result_timeout() - Duration::from_secs(1)
+                Instant::now() - TEST_BUILD_TIMEOUT - Duration::from_secs(1)
             } else {
                 Instant::now()
             },
@@ -7577,7 +7592,13 @@ mod tests {
         running_builds.insert(build_id, build);
         let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
-        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+        check_build_timeouts(
+            &mut running_builds,
+            &mut finished_builds,
+            &clock,
+            TEST_BUILD_TIMEOUT,
+        )
+        .await;
 
         // Waiter resolved with an error.
         let reply = timeout(TokioDuration::from_secs(1), rx)
@@ -7617,7 +7638,13 @@ mod tests {
         running_builds.insert(build_id, build);
         let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
-        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+        check_build_timeouts(
+            &mut running_builds,
+            &mut finished_builds,
+            &clock,
+            TEST_BUILD_TIMEOUT,
+        )
+        .await;
 
         // Waiter still pending.
         let polled = tokio::time::timeout(TokioDuration::from_millis(50), rx).await;
@@ -7653,7 +7680,13 @@ mod tests {
         running_builds.insert(build_id, build);
         let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
-        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+        check_build_timeouts(
+            &mut running_builds,
+            &mut finished_builds,
+            &clock,
+            TEST_BUILD_TIMEOUT,
+        )
+        .await;
 
         let build = running_builds.get_mut(&build_id).expect(
             "Cached(Ok) build must stay in running_builds — only is_pending() \
@@ -7695,7 +7728,13 @@ mod tests {
         running_builds.insert(build_id, build);
         let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
 
-        check_build_timeouts(&mut running_builds, &mut finished_builds, &clock).await;
+        check_build_timeouts(
+            &mut running_builds,
+            &mut finished_builds,
+            &clock,
+            TEST_BUILD_TIMEOUT,
+        )
+        .await;
 
         // Build was moved to finished_builds with a Cached Err.
         let cached = finished_builds
