@@ -1339,9 +1339,14 @@ jobs:
           dora destroy
 
       - name: Test Python Operator example
-        timeout-minutes: 20
+        timeout-minutes: 30
         shell: bash
         run: |
+          # Pre-build the operator API outside of maturin to warm the Cargo
+          # cache and avoid build-server deadlocks on macOS where concurrent
+          # `pip install` / maturin invocations fight over the workspace lock
+          # (dora-rs/dora#2082).
+          cargo build -p dora-operator-api 2>/dev/null || true
           dora build examples/python-operator-dataflow/dataflow.yml --uv
           # dora-hub deps pull dora-rs from PyPI; re-install local version.
           uv pip install -e apis/python/node
