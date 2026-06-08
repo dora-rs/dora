@@ -1357,10 +1357,19 @@ jobs:
           # node gets SIGTERM'd mid-init and never connects to dora (#2089). Both
           # caches live under $HOME, so warming the node's built venv (reusing the
           # deps `dora build` already installed) warms the subsequent run. Best
-          # effort: non-Windows only (Scripts/ vs bin/), never fail the job.
+          # effort: non-Windows only (Scripts/ vs bin/), never fail the job. The
+          # explicit markers mean a future change to the managed-venv layout shows
+          # up in the log instead of silently no-op'ing the warm-up.
           if [ "$RUNNER_OS" != "Windows" ]; then
-            examples/python-operator-dataflow/.dora/python-envs/object_detection/bin/python -c \
-              "import matplotlib.pyplot; from ultralytics import YOLO; YOLO('examples/python-operator-dataflow/yolov8n.pt')" || true
+            prewarm_py=examples/python-operator-dataflow/.dora/python-envs/object_detection/bin/python
+            if [ -x "$prewarm_py" ]; then
+              "$prewarm_py" -c \
+                "import matplotlib.pyplot; from ultralytics import YOLO; YOLO('examples/python-operator-dataflow/yolov8n.pt')" \
+                && echo "[prewarm] object_detection env warmed" \
+                || echo "[prewarm] warm command failed — continuing (#2089)"
+            else
+              echo "[prewarm] interpreter not found at $prewarm_py — venv layout may have changed (#2089)"
+            fi
           fi
           dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
 
