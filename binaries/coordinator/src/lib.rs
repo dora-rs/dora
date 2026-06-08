@@ -525,12 +525,18 @@ async fn start_inner(
                                 }
                                 let mut finished_dataflow = entry.remove();
 
-                                // Complete any pending restart on this dataflow BEFORE
-                                // cleaning up the old instance (dora-rs/dora#2082).
+                                // Complete any pending restart on this dataflow.
                                 // The restart was deferred in `initiate_restart` so that
                                 // old nodes' Zenoh subscribers/declarations are fully
                                 // torn down before new nodes spawn, avoiding the race where
-                                // new nodes start before old nodes exit.
+                                // new nodes start before old nodes exit (dora-rs/dora#2082).
+                                //
+                                // This runs *before* close_topic_subscribers_on_finish
+                                // intentionally: the restart block only touches the
+                                // coordinator's `running_dataflows` map and `pending_restarts`
+                                // map, it does not interact with `finished_dataflow` or its
+                                // Zenoh-side state (which has already been cleaned up by the
+                                // daemons — that's why we're in this handler).
                                 if let Some(restart) = pending_restarts.remove(&uuid) {
                                     let name = restart.name.clone();
                                     match start_dataflow(
@@ -4644,6 +4650,21 @@ async fn initiate_restart(
 
     // 3. Register the deferred restart — the event loop will complete it
     //    when all daemons report `DataflowFinishedOnDaemon`.
+    //    Guard against double-restart: if the dataflow is already being
+    //    restarted, reject the duplicate request rather than overwriting
+    //    the pending entry (which would leak the first caller's
+    //    reply_sender).
+    if pending_restarts.contains_key(&dataflow_uuid) {
+        let _ = reply_sender.send(Err(eyre!(
+            "dataflow `{dataflow_uuid}` is already being restarted – wait for it to finish"
+        )));
+        return;
+    }
+    // TODO: If a daemon crashes after receiving StopDataflow but before
+    // sending DataflowFinishedOnDaemon, this entry (and its reply_sender)
+    // will never be cleaned up, causing the restart caller to hang
+    // indefinitely. A timeout or a daemon-disconnect cleanup path should
+    // be added to evict stale PendingRestart entries.
     pending_restarts.insert(
         dataflow_uuid,
         PendingRestart {
@@ -4653,80 +4674,6 @@ async fn initiate_restart(
             reply_sender,
         },
     );
-}
-
-#[allow(dead_code)]
-async fn restart_dataflow(
-    dataflow_uuid: uuid::Uuid,
-    grace_duration: Option<Duration>,
-    force: bool,
-    running_dataflows: &mut HashMap<uuid::Uuid, RunningDataflow>,
-    daemon_connections: &mut DaemonConnections,
-    clock: &HLC,
-    store: &dyn CoordinatorStore,
-) -> eyre::Result<ControlRequestReply> {
-    // 1. Extract descriptor, name, and uv from the running dataflow
-    let (descriptor, name, uv) = {
-        let df = running_dataflows
-            .get(&dataflow_uuid)
-            .ok_or_else(|| eyre!("no running dataflow with UUID `{dataflow_uuid}`"))?;
-        (df.descriptor.clone(), df.name.clone(), df.uv)
-    };
-
-    // 2. Stop the old dataflow (scoped borrow so it drops before start_dataflow)
-    {
-        let dataflow = stop_dataflow(
-            running_dataflows,
-            dataflow_uuid,
-            daemon_connections,
-            clock.new_timestamp(),
-            grace_duration,
-            force,
-        )
-        .await?;
-
-        // Persist: dataflow stopping
-        if let Err(e) = dataflow
-            .make_record(StoreDataflowStatus::Stopping)
-            .and_then(|r| store.put_dataflow(&r))
-        {
-            tracing::warn!("failed to persist dataflow stopping: {e}");
-        }
-    }
-
-    // 3. Start a new dataflow with the stored descriptor
-    let new_dataflow = start_dataflow(
-        None, // no build_id for restart
-        dora_message::SessionId::generate(),
-        descriptor,
-        None, // no local_working_dir for restart
-        name,
-        daemon_connections,
-        clock,
-        uv,
-        None, // no write_events_to
-    )
-    .await?;
-
-    let new_uuid = new_dataflow.uuid;
-
-    // 4. Only now remove old dataflow (after new one started successfully)
-    running_dataflows.remove(&dataflow_uuid);
-
-    // Persist: new dataflow started
-    let mut new_df = new_dataflow;
-    if let Err(e) = new_df
-        .make_record(StoreDataflowStatus::Pending)
-        .and_then(|r| store.put_dataflow(&r))
-    {
-        tracing::warn!("failed to persist restarted dataflow: {e}");
-    }
-    running_dataflows.insert(new_uuid, new_df);
-
-    Ok(ControlRequestReply::DataflowRestarted {
-        old_uuid: dataflow_uuid,
-        new_uuid,
-    })
 }
 
 #[cfg(test)]
