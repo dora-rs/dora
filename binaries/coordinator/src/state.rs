@@ -15,6 +15,17 @@ use std::time::Instant;
 use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
+/// A deferred restart: the coordinator has sent `StopDataflow` and is waiting
+/// for all daemons to confirm the dataflow has actually finished before starting
+/// the replacement. Avoids the race where new nodes spawn before old nodes'
+/// Zenoh subscribers/declarations are torn down (dora-rs/dora#2082).
+pub(crate) struct PendingRestart {
+    pub descriptor: Descriptor,
+    pub name: Option<String>,
+    pub uv: bool,
+    pub reply_sender: oneshot::Sender<eyre::Result<ControlRequestReply>>,
+}
+
 #[derive(Default)]
 pub(crate) struct DaemonConnections {
     daemons: BTreeMap<DaemonId, DaemonConnection>,
