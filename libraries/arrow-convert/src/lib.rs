@@ -44,6 +44,9 @@ impl DerefMut for ArrowData {
 macro_rules! register_array_handlers {
     ($(($variant:path, $array_type:ty, $type_name:expr)),* $(,)?) => {
         /// Tries to convert the given Arrow array into a `Vec` of integers or floats.
+        ///
+        /// Returns an error if the array contains any null values, consistent
+        /// with every other [`TryFrom<&ArrowData>`] impl in this crate.
         pub fn into_vec<T>(data: &ArrowData) -> Result<Vec<T>>
         where
             T: Copy + NumCast + 'static,
@@ -55,6 +58,10 @@ macro_rules! register_array_handlers {
                             .as_any()
                             .downcast_ref()
                             .context(concat!("series is not ", $type_name))?;
+
+                        if buffer.null_count() != 0 {
+                            eyre::bail!("array has nulls");
+                        }
 
                         let mut result = Vec::with_capacity(buffer.len());
                         for &v in buffer.values() {
