@@ -1,5 +1,5 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
-use dora_arrow_convert::{ArrowData, IntoArrow};
+use dora_arrow_convert::{ArrowData, IntoArrow, into_vec};
 use half::f16;
 use std::sync::Arc;
 
@@ -263,6 +263,33 @@ mod tests {
         let data: ArrowData = ArrowData(Arc::new(arrow_array));
         let result_naivetime: NaiveTime = TryFrom::try_from(&data)?;
         assert_eq!(value_naivetime, result_naivetime);
+        Ok(())
+    }
+
+    #[test]
+    fn test_into_vec_rejects_nulls() -> Result<(), Report> {
+        use arrow::array::{Array, Int32Array};
+        // [10, null, 30] — null slots must be rejected, not silently converted to 0
+        let array = Int32Array::from(vec![Some(10), None, Some(30)]);
+        assert_eq!(array.null_count(), 1);
+        let data = ArrowData(Arc::new(array));
+        let result: Result<Vec<i32>, eyre::Report> = into_vec(&data);
+        assert!(
+            result.is_err(),
+            "into_vec must reject arrays with nulls, but got {result:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_into_vec_accepts_no_nulls() -> Result<(), Report> {
+        use arrow::array::{Array, Int32Array};
+        // [10, 20, 30] — no nulls, must succeed
+        let array = Int32Array::from(vec![Some(10), Some(20), Some(30)]);
+        assert_eq!(array.null_count(), 0);
+        let data = ArrowData(Arc::new(array));
+        let v: Vec<i32> = into_vec(&data)?;
+        assert_eq!(v, vec![10, 20, 30]);
         Ok(())
     }
 
