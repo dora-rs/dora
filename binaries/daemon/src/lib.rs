@@ -3999,6 +3999,7 @@ impl Daemon {
                     aligned_vec::AVec::__from_elem(128, 0, total_len);
                 let type_info =
                     dora_node_api::arrow_utils::copy_array_into_sample(&mut sample, &array);
+                let data = Arc::new(DataMessage::Vec(sample));
 
                 let mut closed = Vec::new();
                 for sub in &dataflow.log_subscribers {
@@ -4031,7 +4032,7 @@ impl Daemon {
                         NodeEvent::Input {
                             id: sub.input_id.clone(),
                             metadata: Arc::new(metadata),
-                            data: Some(Arc::new(DataMessage::Vec(sample.clone()))),
+                            data: Some(data.clone()),
                         },
                         &self.clock,
                     );

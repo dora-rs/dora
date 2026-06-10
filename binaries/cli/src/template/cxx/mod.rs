@@ -1,4 +1,4 @@
-use eyre::{Context, ContextCompat, bail};
+use eyre::{Context, bail};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -79,15 +79,7 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
     const CMAKEFILE: &str = include_str!("cmake-template.txt");
 
     let cmake_file = if use_path_deps {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir
-            .parent()
-            .context("Could not get manifest parent folder")?
-            .parent()
-            .context("Could not get manifest grandparent folder")?
-            .to_str()
-            .context("dora workspace path is not valid UTF-8")?;
-        CMAKEFILE.replace("__DORA_PATH__", workspace_dir)
+        CMAKEFILE.replace("__DORA_PATH__", super::workspace_dir()?)
     } else {
         CMAKEFILE.replace("__DORA_PATH__", "")
     };
@@ -138,17 +130,9 @@ fn create_node_cmakefile(
     use_path_deps: bool,
 ) -> Result<(), eyre::ErrReport> {
     let cmake_content = if use_path_deps {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-        let workspace_dir = manifest_dir
-            .parent()
-            .context("Could not get manifest parent folder")?
-            .parent()
-            .context("Could not get manifest grandparent folder")?
-            .to_str()
-            .context("dora workspace path is not valid UTF-8")?;
         NODE_CMAKE
             .replace("___name___", name)
-            .replace("__DORA_PATH__", workspace_dir)
+            .replace("__DORA_PATH__", super::workspace_dir()?)
     } else {
         NODE_CMAKE
             .replace("___name___", name)
