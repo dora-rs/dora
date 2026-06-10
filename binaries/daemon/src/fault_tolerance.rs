@@ -34,11 +34,6 @@ pub struct CascadingErrorCauses {
 }
 
 impl CascadingErrorCauses {
-    #[allow(dead_code)]
-    pub fn experienced_cascading_error(&self, node: &NodeId) -> bool {
-        self.caused_by.contains_key(node)
-    }
-
     /// Return the ID of the node that caused a cascading error for the given node, if any.
     pub fn error_caused_by(&self, node: &NodeId) -> Option<&NodeId> {
         self.caused_by.get(node)
