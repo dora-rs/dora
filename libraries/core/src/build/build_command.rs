@@ -17,16 +17,17 @@ use tokio::{
 };
 use tokio_stream::{StreamExt, wrappers::LinesStream};
 
-static LOCAL_DORA_WHEEL_CACHE: LazyLock<
-    tokio::sync::Mutex<BTreeMap<LocalDoraPythonSource, PathBuf>>,
-> = LazyLock::new(|| tokio::sync::Mutex::new(BTreeMap::new()));
+/// Serializes wheel builds within one process: concurrent env preparations share the
+/// per-PID staging dir, so only one `uv build` may use it at a time.
+static LOCAL_DORA_WHEEL_BUILD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const LOCAL_DORA_RUNTIME_MARKER: &str = ".dora-local-runtime-fingerprint";
 const LOCAL_DORA_WHEEL_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug)]
 struct LocalDoraPythonSource {
     package_dir: PathBuf,
     fingerprint: String,
@@ -402,24 +403,21 @@ async fn dora_runtime_install_args(
 /// The fingerprint does not cover workspace dependency crates outside
 /// `apis/python/node` (same scope the env reinstall marker already accepts), so shared
 /// wheels are age-evicted after [`LOCAL_DORA_WHEEL_CACHE_MAX_AGE`] to bound that drift.
+/// The shared dir is the only cache layer — deliberately no in-memory memoization, so
+/// the eviction also applies inside long-lived processes like the daemon, which serves
+/// many builds without restarting.
 async fn ensure_local_dora_python_wheel(
     source: &LocalDoraPythonSource,
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<PathBuf> {
-    let mut cache = LOCAL_DORA_WHEEL_CACHE.lock().await;
-    if let Some(wheel) = cache.get(source)
-        && wheel.is_file()
-    {
-        return Ok(wheel.clone());
-    }
+    let _build_guard = LOCAL_DORA_WHEEL_BUILD_LOCK.lock().await;
 
     let wheel_root = local_dora_python_wheel_root(&source.package_dir)?;
     cleanup_stale_local_dora_python_wheel_dirs(&wheel_root, LOCAL_DORA_WHEEL_CACHE_MAX_AGE);
 
     let shared_dir = local_dora_python_shared_wheel_dir(&wheel_root, &source.fingerprint);
     if let Ok(wheel) = find_local_dora_python_wheel(&shared_dir) {
-        cache.insert(source.clone(), wheel.clone());
         return Ok(wheel);
     }
 
@@ -489,9 +487,7 @@ async fn ensure_local_dora_python_wheel(
         ));
     }
 
-    let wheel = promote_local_dora_python_wheel(&wheel_dir, &shared_dir)?;
-    cache.insert(source.clone(), wheel.clone());
-    Ok(wheel)
+    promote_local_dora_python_wheel(&wheel_dir, &shared_dir)
 }
 
 fn local_dora_python_wheel_root(package_dir: &Path) -> eyre::Result<PathBuf> {
