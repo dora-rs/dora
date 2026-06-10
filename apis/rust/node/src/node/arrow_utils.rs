@@ -136,6 +136,15 @@ pub fn buffer_into_arrow_array(
     buffer_into_arrow_array_inner(raw_buffer, type_info, 0)
 }
 
+/// A zero-length Arrow buffer that is aligned for any fixed-width type.
+///
+/// `MutableBuffer` allocates with Arrow's 64-byte alignment, so the resulting
+/// (empty) buffer satisfies the alignment checks `ArrayData::try_new` performs
+/// even for length-0 buffers — unlike a buffer sliced out of an empty payload.
+fn aligned_empty_buffer() -> arrow::buffer::Buffer {
+    arrow::buffer::MutableBuffer::new(0).into()
+}
+
 fn buffer_into_arrow_array_inner(
     raw_buffer: &arrow::buffer::Buffer,
     type_info: &ArrowTypeInfo,
@@ -145,9 +154,14 @@ fn buffer_into_arrow_array_inner(
         eyre::bail!("Arrow type nesting depth exceeds maximum ({MAX_TYPE_DEPTH})");
     }
 
-    if raw_buffer.is_empty() {
-        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
-    }
+    // NOTE: do not special-case an empty `raw_buffer` here. A zero-footprint
+    // array (e.g. `NullArray::new(n)`, a struct whose only fields are
+    // `Null`-typed, or a zero-length typed array) serializes to an empty
+    // payload while still carrying a meaningful `type_info.len`. Falling back
+    // to `ArrayData::new_empty` would discard that length (and `offset`,
+    // `validity`, `child_data`), silently truncating the array to length 0
+    // (dora-rs/dora#2083). The general path below honors all of them by
+    // rebuilding through `ArrayData::try_new`, which keeps the declared length.
 
     if type_info.buffer_offsets.len() > MAX_ENTRIES {
         eyre::bail!(
@@ -164,6 +178,16 @@ fn buffer_into_arrow_array_inner(
 
     let mut buffers = Vec::new();
     for BufferOffset { offset, len } in &type_info.buffer_offsets {
+        if *len == 0 {
+            // A zero-length buffer carries no data; slicing it out of the
+            // payload risks producing an under-aligned pointer (the payload
+            // base may be empty/dangling), which `ArrayData::try_new` rejects
+            // for SIMD-aligned types. Substitute a freshly allocated, properly
+            // aligned empty buffer instead. This is what lets a zero-footprint
+            // array round-trip with its true length (dora-rs/dora#2083).
+            buffers.push(aligned_empty_buffer());
+            continue;
+        }
         // Use checked_add to guard against malicious/buggy peers sending
         // `offset` or `len` values that would overflow `usize` on addition
         // and bypass the bounds check below.
@@ -455,6 +479,46 @@ mod tests {
             buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
         assert_eq!(decoded.len(), 0);
         assert_eq!(decoded.data_type(), &DataType::UInt64);
+    }
+
+    #[test]
+    fn raw_roundtrip_preserves_nullarray_length() {
+        // dora-rs/dora#2083: a `NullArray::new(n>0)` has no data buffers and no
+        // validity, so its serialized footprint is empty — but its logical
+        // length must survive the raw round-trip instead of collapsing to 0.
+        use arrow::array::NullArray;
+        let data = NullArray::new(5).into_data();
+        assert_eq!(data.len(), 5);
+        let mut sample = vec![0; required_data_size(&data)];
+        assert!(sample.is_empty(), "precondition: zero-footprint payload");
+        let type_info = copy_array_into_sample(&mut sample, &data);
+        assert_eq!(type_info.len, 5);
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
+        assert_eq!(decoded.len(), 5, "NullArray length must be preserved");
+        assert_eq!(decoded.data_type(), &DataType::Null);
+    }
+
+    #[test]
+    fn raw_roundtrip_preserves_struct_of_nulls_length() {
+        // dora-rs/dora#2083: a struct whose only field is `Null`-typed also has
+        // a zero-byte footprint while carrying a non-zero length.
+        use arrow::array::NullArray;
+        use arrow_schema::Field;
+        let child = Arc::new(NullArray::new(3)) as ArrayRef;
+        let data = StructArray::from(vec![(
+            Arc::new(Field::new("nulls", DataType::Null, true)),
+            child,
+        )])
+        .into_data();
+        assert_eq!(data.len(), 3);
+        let mut sample = vec![0; required_data_size(&data)];
+        assert!(sample.is_empty(), "precondition: zero-footprint payload");
+        let type_info = copy_array_into_sample(&mut sample, &data);
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
+        assert_eq!(decoded.len(), 3, "struct-of-nulls length must be preserved");
+        assert_eq!(decoded.child_data()[0].len(), 3);
     }
 
     #[test]
