@@ -51,12 +51,7 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn check_dataflow(
-    dataflow: &Descriptor,
-    working_dir: &Path,
-    remote_daemon_id: Option<&[&str]>,
-    coordinator_is_remote: bool,
-) -> eyre::Result<()> {
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
     // validate ROS2 bridge configs before resolution
     for node in &dataflow.nodes {
         if let Some(ros2) = &node.ros2 {
@@ -77,14 +72,6 @@ pub fn check_dataflow(
                     source => {
                         if source_is_url(source) {
                             info!("{source} is a URL."); // TODO: Implement url check.
-                        } else if let Some(remote_daemon_id) = remote_daemon_id {
-                            if let Some(deploy) = &node.deploy
-                                && let Some(machine) = &deploy.machine
-                                && (remote_daemon_id.contains(&machine.as_str())
-                                    || coordinator_is_remote)
-                            {
-                                info!("skipping path check for remote node `{}`", node.id);
-                            }
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
                         } else {
