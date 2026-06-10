@@ -39,7 +39,6 @@ pub trait DescriptorExt {
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
-    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()>;
     /// Expand all module references into flat nodes.
     ///
     /// Module nodes are replaced by the inner nodes defined in their module
@@ -234,13 +233,7 @@ impl DescriptorExt for Descriptor {
 
     fn check(&self, working_dir: &Path) -> eyre::Result<()> {
         let expanded = self.expand(working_dir)?;
-        validate::check_dataflow(&expanded, working_dir, None, false)
-            .wrap_err("Dataflow could not be validated.")
-    }
-
-    fn check_in_daemon(&self, working_dir: &Path, coordinator_is_remote: bool) -> eyre::Result<()> {
-        let expanded = self.expand(working_dir)?;
-        validate::check_dataflow(&expanded, working_dir, None, coordinator_is_remote)
+        validate::check_dataflow(&expanded, working_dir)
             .wrap_err("Dataflow could not be validated.")
     }
 

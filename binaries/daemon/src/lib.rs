@@ -790,7 +790,7 @@ impl Daemon {
             )
         }
 
-        validate::check_dataflow(&descriptor, &working_dir, None, false)
+        validate::check_dataflow(&descriptor, &working_dir)
             .wrap_err("Dataflow could not be validated.")?;
         let health_check_interval = descriptor
             .health_check_interval
