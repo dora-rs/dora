@@ -859,7 +859,7 @@ jobs:
             --
             --test-threads=1
             --nocapture
-          no_output_timeout: 30m
+          no_output_timeout: 10m
       # Python variant of the lifecycle test piggybacks on this
       # job because it needs uv (already set up via setup-python-uv
       # above). Rust + C++ variants run in the `e2e` job.
@@ -870,7 +870,7 @@ jobs:
             --
             --test-threads=1
             lifecycle_python
-          no_output_timeout: 15m
+          no_output_timeout: 10m
       - cargo-cache-save
 
   # ===== Benchmark regression check =====

@@ -184,6 +184,104 @@ fn needs_uv(yaml_path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Spawn `cmd` with piped stdout/stderr and wait for it with a hard
+/// wall-clock bound (#2064). A rare daemon shutdown wedge can leave a
+/// `dora` child running forever; an unbounded `.output()` then hangs the
+/// test until CI's `no_output_timeout` kills the whole job ~50 minutes
+/// later with no diagnostics. This helper converts that into a fast,
+/// loud failure: on deadline expiry the child is killed and the panic
+/// message carries the full captured stdout/stderr for triage.
+fn wait_with_deadline(
+    label: &str,
+    cmd: &mut Command,
+    deadline: Duration,
+) -> (std::process::ExitStatus, String, String) {
+    let mut child = cmd
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{label}: failed to spawn: {e}"));
+
+    // Drain both pipes on dedicated threads so a chatty child can't
+    // deadlock on a full pipe buffer while we poll for exit.
+    let mut child_stdout = child.stdout.take().expect("child stdout not piped");
+    let mut child_stderr = child.stderr.take().expect("child stderr not piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut child_stdout, &mut buf);
+        buf
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut child_stderr, &mut buf);
+        buf
+    });
+    let join_readers = |stdout_reader: std::thread::JoinHandle<Vec<u8>>,
+                        stderr_reader: std::thread::JoinHandle<Vec<u8>>| {
+        let stdout = stdout_reader.join().expect("stdout reader panicked");
+        let stderr = stderr_reader.join().expect("stderr reader panicked");
+        (
+            String::from_utf8_lossy(&stdout).into_owned(),
+            String::from_utf8_lossy(&stderr).into_owned(),
+        )
+    };
+
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let (stdout, stderr) = join_readers(stdout_reader, stderr_reader);
+                return (status, stdout, stderr);
+            }
+            Ok(None) => {}
+            Err(e) => panic!("{label}: failed to wait on child: {e}"),
+        }
+        if start.elapsed() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            let (stdout, stderr) = join_readers(stdout_reader, stderr_reader);
+            panic!(
+                "{label}: child timed out after {:.1}s (deadline {deadline:?}); killed.\n\
+                 ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
+                start.elapsed().as_secs_f64()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// Harness self-test (#2064): a child that outlives its deadline must be
+/// killed and reported via panic, not waited on forever.
+#[test]
+#[cfg(unix)]
+#[should_panic(expected = "timed out")]
+fn contract_harness_wait_with_deadline_kills_hung_child() {
+    let mut cmd = Command::new("sleep");
+    cmd.arg("600");
+    wait_with_deadline(
+        "contract-harness-hung-child",
+        &mut cmd,
+        Duration::from_secs(2),
+    );
+}
+
+/// Harness self-test (#2064): a fast child's exit status and captured
+/// stdout pass through unchanged.
+#[test]
+fn contract_harness_wait_with_deadline_returns_fast_child_output() {
+    ensure_cli_built();
+    let dora = dora_bin();
+    let mut cmd = Command::new(&dora);
+    cmd.arg("--help");
+    let (status, stdout, _stderr) = wait_with_deadline(
+        "contract-harness-fast-child",
+        &mut cmd,
+        Duration::from_secs(60),
+    );
+    assert!(status.success(), "dora --help exited non-zero: {status:?}");
+    assert!(!stdout.is_empty(), "dora --help produced no stdout");
+}
+
 /// Run an example dataflow through the full WS control plane lifecycle.
 ///
 /// 1. `dora up` -- start coordinator + daemon
@@ -301,17 +399,21 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
 
     // Build first so local runs also have resolved artifacts (required for
     // Python/git/etc. and examples that don't prebuild their nodes in the test).
+    // Generous deadline: a cold cargo/uv cache can legitimately take minutes.
     let mut build_cmd = Command::new(&dora);
     build_cmd.args(["build", full_yaml.to_str().unwrap()]);
     if uv {
         build_cmd.arg("--uv");
     }
-    let build_status = build_cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
-    assert!(build_status.success(), "{name}: dora build failed");
+    let (build_status, build_stdout, build_stderr) = wait_with_deadline(
+        &format!("{name}: dora build"),
+        &mut build_cmd,
+        Duration::from_secs(600),
+    );
+    assert!(
+        build_status.success(),
+        "{name}: dora build failed\n---- stdout ----\n{build_stdout}\n---- stderr ----\n{build_stderr}"
+    );
 
     let stop_after = format!("{stop_after_secs}s");
     let mut cmd = Command::new(&dora);
@@ -324,16 +426,16 @@ fn run_smoke_test_local(name: &str, yaml_path: &str, stop_after_secs: u64) {
     if uv {
         cmd.arg("--uv");
     }
-    let output = cmd
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("{name}: failed to run dora run: {e}"));
+    let grace_secs = if uv { 180 } else { 120 };
+    let (status, stdout, stderr) = wait_with_deadline(
+        &format!("{name}: dora run"),
+        &mut cmd,
+        Duration::from_secs(stop_after_secs + grace_secs),
+    );
 
     assert!(
-        output.status.success(),
-        "{name}: dora run failed\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
+        status.success(),
+        "{name}: dora run failed\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
     );
 }
 
@@ -946,26 +1048,17 @@ fn smoke_local_validated_pipeline() {
 /// with the full dataflow log attached for triage.
 #[test]
 fn contract_validated_pipeline_produces_exactly_ten_doubled_outputs() {
-    ensure_cli_built();
     ensure_validated_pipeline_nodes_built();
-
-    let dora = dora_bin();
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let yaml = Path::new(manifest_dir).join("examples/validated-pipeline/dataflow.yml");
-    assert!(yaml.exists(), "validated-pipeline YAML missing at {yaml:?}");
 
     // 15s is far above the ~500ms natural runtime (10 outputs × 50ms tick +
     // teardown). `--stop-after` just bounds worst-case; the dataflow should
     // finish and dora run should exit before the timer fires.
-    let output = Command::new(&dora)
-        .args(["run", yaml.to_str().unwrap(), "--stop-after", "15s"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn dora run for validated-pipeline contract test");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (status, stdout, stderr) = run_dora_capture(
+        "contract-validated-pipeline",
+        "examples/validated-pipeline/dataflow.yml",
+        15,
+        false,
+    );
 
     let success_marker = "sink: SUCCESS - validated 10 doubled values";
     let combined_contains_marker =
@@ -979,10 +1072,9 @@ fn contract_validated_pipeline_produces_exactly_ten_doubled_outputs() {
     );
 
     assert!(
-        output.status.success(),
-        "dora run exited non-zero: {:?}\n\
-         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}",
-        output.status
+        status.success(),
+        "dora run exited non-zero: {status:?}\n\
+         ---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
     );
 }
 
@@ -1106,27 +1198,25 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     let _ = std::fs::remove_file(&drec);
 
     // ---- Step 1: record ----
-    let rec = Command::new(&dora)
-        .args([
-            "record",
-            yaml.to_str().unwrap(),
-            "-o",
-            drec.to_str().unwrap(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn dora record");
+    let mut rec_cmd = Command::new(&dora);
+    rec_cmd.args([
+        "record",
+        yaml.to_str().unwrap(),
+        "-o",
+        drec.to_str().unwrap(),
+    ]);
+    let (rec_status, rec_stdout, rec_stderr) = wait_with_deadline(
+        "contract-record-replay: dora record",
+        &mut rec_cmd,
+        Duration::from_secs(180),
+    );
 
-    let rec_stdout = String::from_utf8_lossy(&rec.stdout);
-    let rec_stderr = String::from_utf8_lossy(&rec.stderr);
     // Clean the fixture now; everything record needed is captured in
     // stdout/stderr and the .drec on disk.
     let _ = std::fs::remove_file(&yaml);
     assert!(
-        rec.status.success(),
-        "dora record exited non-zero: {:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}",
-        rec.status
+        rec_status.success(),
+        "dora record exited non-zero: {rec_status:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}"
     );
     assert!(
         rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker),
@@ -1139,21 +1229,19 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     );
 
     // ---- Step 2: replay ----
-    let rep = Command::new(&dora)
-        .args(["replay", drec.to_str().unwrap()])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("failed to spawn dora replay");
+    let mut rep_cmd = Command::new(&dora);
+    rep_cmd.args(["replay", drec.to_str().unwrap()]);
+    let (rep_status, rep_stdout, rep_stderr) = wait_with_deadline(
+        "contract-record-replay: dora replay",
+        &mut rep_cmd,
+        Duration::from_secs(180),
+    );
 
-    let rep_stdout = String::from_utf8_lossy(&rep.stdout);
-    let rep_stderr = String::from_utf8_lossy(&rep.stderr);
     let _ = std::fs::remove_file(&drec);
 
     assert!(
-        rep.status.success(),
-        "dora replay exited non-zero: {:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}",
-        rep.status
+        rep_status.success(),
+        "dora replay exited non-zero: {rep_status:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}"
     );
     // The contract: replay produces the exact same SUCCESS marker as
     // the recorded run. If the replay dropped/reordered/mutated any
@@ -1191,15 +1279,15 @@ fn run_dora_capture(
     if use_uv {
         cmd.arg("--uv");
     }
-    let output = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("{label}: failed to spawn dora run: {e}"));
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-    (output.status, stdout, stderr)
+    // `dora run` builds the dataflow's nodes before starting it; with
+    // --uv that includes venv provisioning, which depends on cache
+    // warmth — give it a longer grace window.
+    let grace_secs = if use_uv { 180 } else { 120 };
+    wait_with_deadline(
+        label,
+        &mut cmd,
+        Duration::from_secs(stop_after_secs + grace_secs),
+    )
 }
 
 /// Semantic contract test for `service-example` (#1630).
@@ -1221,6 +1309,7 @@ fn run_dora_capture(
 /// a reply back to the right client for at least three ticks.
 #[test]
 fn contract_service_example_correlates_requests_and_responses() {
+    ensure_service_nodes_built();
     let (status, stdout, stderr) = run_dora_capture(
         "contract-service-example",
         "examples/service-example/dataflow.yml",
@@ -1269,6 +1358,7 @@ fn contract_service_example_correlates_requests_and_responses() {
 /// same `goal_id`.
 #[test]
 fn contract_action_example_feedback_precedes_success_result() {
+    ensure_action_nodes_built();
     let (status, stdout, stderr) = run_dora_capture(
         "contract-action-example",
         "examples/action-example/dataflow.yml",
