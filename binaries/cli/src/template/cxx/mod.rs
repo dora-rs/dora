@@ -84,8 +84,10 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
             .parent()
             .context("Could not get manifest parent folder")?
             .parent()
-            .context("Could not get manifest grandparent folder")?;
-        CMAKEFILE.replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+            .context("Could not get manifest grandparent folder")?
+            .to_str()
+            .context("dora workspace path is not valid UTF-8")?;
+        CMAKEFILE.replace("__DORA_PATH__", workspace_dir)
     } else {
         CMAKEFILE.replace("__DORA_PATH__", "")
     };
@@ -141,10 +143,12 @@ fn create_node_cmakefile(
             .parent()
             .context("Could not get manifest parent folder")?
             .parent()
-            .context("Could not get manifest grandparent folder")?;
+            .context("Could not get manifest grandparent folder")?
+            .to_str()
+            .context("dora workspace path is not valid UTF-8")?;
         NODE_CMAKE
             .replace("___name___", name)
-            .replace("__DORA_PATH__", workspace_dir.to_str().unwrap())
+            .replace("__DORA_PATH__", workspace_dir)
     } else {
         NODE_CMAKE
             .replace("___name___", name)

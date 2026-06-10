@@ -599,7 +599,7 @@ impl EventStream {
     /// Check if there are any buffered events in the scheduler, the
     /// receiver, or the passthrough buffer used by pattern-aware helpers.
     pub fn is_empty(&self) -> bool {
-        self.pending_passthrough.is_empty() & self.scheduler.is_empty() & self.receiver.is_empty()
+        self.pending_passthrough.is_empty() && self.scheduler.is_empty() && self.receiver.is_empty()
     }
 
     /// Returns and resets the accumulated drop counts per input ID.

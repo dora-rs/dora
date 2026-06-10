@@ -1,4 +1,7 @@
-use std::collections::{HashMap, VecDeque};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::LazyLock,
+};
 
 use dora_message::{
     config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
@@ -84,6 +87,11 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
     );
 }
 pub(crate) const NON_INPUT_EVENT: &str = "dora.non_input_event";
+
+/// Shared [`DataId`] for [`NON_INPUT_EVENT`], so the hot `add_event`/`next`
+/// paths don't have to allocate a fresh `String` on every call.
+static NON_INPUT_EVENT_ID: LazyLock<DataId> =
+    LazyLock::new(|| DataId::from(NON_INPUT_EVENT.to_string()));
 
 /// This scheduler will make sure that there is fairness between inputs.
 ///
@@ -176,7 +184,7 @@ impl Scheduler {
         let topic = VecDeque::from_iter(
             event_queues
                 .keys()
-                .filter(|t| **t != DataId::from(NON_INPUT_EVENT.to_string()))
+                .filter(|t| **t != *NON_INPUT_EVENT_ID)
                 .cloned(),
         );
         Self {
@@ -211,7 +219,7 @@ impl Scheduler {
                 ) == Some(true);
                 (id, flush)
             }
-            _ => (&DataId::from(NON_INPUT_EVENT.to_string()), false),
+            _ => (&*NON_INPUT_EVENT_ID, false),
         };
 
         // Flush older queued messages when flush=true is present.
@@ -290,22 +298,22 @@ impl Scheduler {
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
         // Retrieve message from the non input event first that have priority over input message.
-        if let Some((_size, queue)) = self
-            .event_queues
-            .get_mut(&DataId::from(NON_INPUT_EVENT.to_string()))
+        if let Some((_size, queue)) = self.event_queues.get_mut(&*NON_INPUT_EVENT_ID)
             && let Some(event) = queue.pop_front()
         {
             return Some(event);
         }
 
         // Process the ID with the oldest timestamp using BTreeMap Ordering
-        for (index, id) in self.last_used.clone().iter().enumerate() {
+        for index in 0..self.last_used.len() {
+            let id = &self.last_used[index];
             if let Some((_size, queue)) = self.event_queues.get_mut(id)
                 && let Some(event) = queue.pop_front()
             {
                 // Put last used at last
-                self.last_used.remove(index);
-                self.last_used.push_back(id.clone());
+                if let Some(id) = self.last_used.remove(index) {
+                    self.last_used.push_back(id);
+                }
                 return Some(event);
             }
         }

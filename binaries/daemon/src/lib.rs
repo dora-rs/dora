@@ -3887,6 +3887,7 @@ impl Daemon {
                     return Ok(());
                 };
 
+                let metadata = Arc::new(metadata);
                 let mut closed = Vec::new();
                 for (receiver_id, input_id) in subscribers {
                     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
@@ -3897,7 +3898,7 @@ impl Daemon {
                         channel,
                         NodeEvent::Input {
                             id: input_id.clone(),
-                            metadata: Arc::new(metadata.clone()),
+                            metadata: metadata.clone(),
                             data: None,
                         },
                         &self.clock,
@@ -3936,6 +3937,8 @@ impl Daemon {
                     return Ok(());
                 };
 
+                let metadata = Arc::new(metadata);
+                let message = Arc::new(message);
                 let mut closed = Vec::new();
                 for (receiver_id, input_id) in subscribers {
                     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
@@ -3947,8 +3950,8 @@ impl Daemon {
                         channel,
                         NodeEvent::Input {
                             id: input_id.clone(),
-                            metadata: Arc::new(metadata.clone()),
-                            data: Some(Arc::new(message.clone())),
+                            metadata: metadata.clone(),
+                            data: Some(message.clone()),
                         },
                         &self.clock,
                     );
