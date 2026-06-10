@@ -78,12 +78,20 @@ pub fn check_dataflow(
                         if source_is_url(source) {
                             info!("{source} is a URL."); // TODO: Implement url check.
                         } else if let Some(remote_daemon_id) = remote_daemon_id {
-                            if let Some(deploy) = &node.deploy
-                                && let Some(machine) = &deploy.machine
-                                && (remote_daemon_id.contains(&machine.as_str())
-                                    || coordinator_is_remote)
-                            {
+                            let is_remote = node
+                                .deploy
+                                .as_ref()
+                                .and_then(|d| d.machine.as_ref())
+                                .is_some_and(|m| remote_daemon_id.contains(&m.as_str()))
+                                || coordinator_is_remote;
+                            if is_remote {
                                 info!("skipping path check for remote node `{}`", node.id);
+                            } else if custom.build.is_some() {
+                                info!("skipping path check for node with build command");
+                            } else {
+                                resolve_path(source, working_dir).wrap_err_with(|| {
+                                    format!("Could not find source path `{source}`")
+                                })?;
                             }
                         } else if custom.build.is_some() {
                             info!("skipping path check for node with build command");
@@ -2258,5 +2266,59 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    // regression for #2098: check_dataflow skips path validation for local
+    // nodes whenever remote_daemon_id is Some (missing else)
+
+    #[test]
+    fn test_local_node_validated_with_remote_daemon_id() {
+        let working_dir = std::env::current_dir().expect("cwd");
+        let yaml = r#"
+nodes:
+  - id: test-node
+    path: nonexistent_binary_2098_regression_test
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let result = check_dataflow(&desc, &working_dir, Some(&["remote"]), false);
+        assert!(
+            result.is_err(),
+            "expected Err for local node with missing path, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_remote_node_skipped_with_remote_daemon_id() {
+        let working_dir = std::env::current_dir().expect("cwd");
+        let yaml = r#"
+nodes:
+  - id: test-node
+    path: nonexistent_binary_2098_regression_test
+    _unstable_deploy:
+      machine: remote
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let result = check_dataflow(&desc, &working_dir, Some(&["remote"]), false);
+        assert!(
+            result.is_ok(),
+            "expected Ok for remote node (path check skipped), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_local_node_with_build_skipped_with_remote_daemon_id() {
+        let working_dir = std::env::current_dir().expect("cwd");
+        let yaml = r#"
+nodes:
+  - id: test-node
+    path: nonexistent_binary_2098_regression_test
+    build: cargo build --release
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let result = check_dataflow(&desc, &working_dir, Some(&["remote"]), false);
+        assert!(
+            result.is_ok(),
+            "expected Ok for local node with build (path check skipped), got {result:?}"
+        );
     }
 }
