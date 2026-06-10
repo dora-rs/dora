@@ -206,6 +206,37 @@ pub fn discover_token() -> Option<AuthToken> {
     None
 }
 
+/// Kani proof harnesses (`make qa-kani`). Compiled only under `cargo kani`,
+/// never in normal builds or tests. See `docs/formal-verification.md`.
+#[cfg(kani)]
+mod verification {
+    use super::constant_time_eq;
+
+    /// Maximum slice length explored by the proofs. Token comparison inputs
+    /// are attacker-controlled strings of arbitrary length, but the loop
+    /// body is length-uniform, so a small bound suffices to cover all
+    /// control-flow paths (equal/unequal lengths, differing byte positions).
+    const MAX_LEN: usize = 8;
+
+    /// Functional correctness: `constant_time_eq` agrees with `==` on all
+    /// slice pairs up to `MAX_LEN`, including length mismatches and the
+    /// empty slice. Also proves the function never panics on these inputs.
+    #[kani::proof]
+    #[kani::unwind(9)] // MAX_LEN + 1
+    fn constant_time_eq_matches_slice_equality() {
+        let a: [u8; MAX_LEN] = kani::any();
+        let b: [u8; MAX_LEN] = kani::any();
+        let a_len: usize = kani::any();
+        let b_len: usize = kani::any();
+        kani::assume(a_len <= MAX_LEN);
+        kani::assume(b_len <= MAX_LEN);
+        assert_eq!(
+            constant_time_eq(&a[..a_len], &b[..b_len]),
+            a[..a_len] == b[..b_len]
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

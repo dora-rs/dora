@@ -987,6 +987,30 @@ jobs:
           rm -f examples/rust-dataflow/long-running.yml
 
 
+  kani-proofs:
+    # Formal verification: run the #[kani::proof] harnesses (gated behind
+    # cfg(kani), see docs/formal-verification.md). A passing proof covers
+    # every input in the harness state space, not just sampled values.
+    # This job exists so the proofs cannot silently rot: cfg(kani) code is
+    # not compile-checked by the normal fmt/clippy/test gates, so without
+    # it a refactor could break a harness unnoticed until the next manual
+    # `make qa-kani` run.
+    name: Kani formal-verification proofs
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Kani
+        run: |
+          cargo install kani-verifier --locked
+          cargo kani setup
+      - name: Run proof harnesses
+        run: scripts/qa/kani.sh
+
   # ===== Moved from ci.yml (#1716) =====
   # Cross-platform Test + Examples + CLI Tests + Bench + Cross-check
   # + ROS2 bridge + MSRV. Run once daily; use qa-test locally for
@@ -1658,6 +1682,7 @@ jobs:
       - redb-backend-smoke
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
+      - kani-proofs
       - test-cross-platform
       - examples
       - cli-tests
@@ -1743,6 +1768,10 @@ jobs:
               state-reconstruction-smoke)
                 echo 'scripts/qa/ci-nightly-jobs.sh state-reconstruction-smoke'
                 ;;
+              kani-proofs)
+                # Needs Kani installed: make qa-kani-install
+                echo 'make qa-kani'
+                ;;
               test-cross-platform)
                 echo 'scripts/qa/ci-nightly-jobs.sh test-cross-platform'
                 ;;
@@ -1787,6 +1816,7 @@ jobs:
               redb-backend-smoke) echo '^redb backend end-to-end$' ;;
               daemon-reconnect-smoke) echo '^daemon auto-reconnect end-to-end \(Linux\)$' ;;
               state-reconstruction-smoke) echo '^state reconstruction end-to-end \(partial\)$' ;;
+              kani-proofs) echo '^Kani formal-verification proofs$' ;;
               test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
               examples) echo '^Examples \(.+\)$' ;;
               cli-tests) echo '^CLI Tests \(.+\)$' ;;

@@ -13,17 +13,17 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 20 test jobs: example-smoke
+#                                        nightly.yml has 21 test jobs: example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
-#                                        the 16 remaining with platform-aware dispatch
+#                                        the 17 remaining with platform-aware dispatch
 #                                        (record-replay, cluster-smoke, cluster-e2e [Linux],
 #                                        cluster-record-replay [Linux],
 #                                        topic-and-top, cpu-affinity [Linux], redb-backend,
 #                                        daemon-reconnect [Linux], state-reconstruction,
 #                                        test-cross-platform, examples, cli-tests,
 #                                        bench-example, cross-check, ros2-bridge [Linux+ROS2],
-#                                        msrv). Green local run on platform X predicts
+#                                        msrv, kani-proofs [skipped if Kani absent]). Green local run on platform X predicts
 #                                        green CI nightly for platform X's jobs.
 #   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
 #                                        audit/dogfood are human)
@@ -49,7 +49,7 @@
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
-        qa-adversarial qa-pgo qa-install qa-pgo-install
+        qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
 
 qa: qa-fast
 
@@ -138,6 +138,16 @@ qa-semver:
 qa-adversarial:
 	@scripts/qa/adversarial.sh
 
+# Formal verification: run the #[kani::proof] harnesses (cfg(kani)-gated,
+# zero impact on normal builds). A passing proof covers every input in the
+# harness state space, not just sampled values. Budget ~5-10 min cold,
+# <1 min warm. Run when touching files that contain proofs (see
+# docs/formal-verification.md) and in pre-release gating; not part of the
+# per-commit qa-fast loop. Nightly CI runs the same proofs (kani-proofs
+# job). Install via `make qa-kani-install`.
+qa-kani:
+	@scripts/qa/kani.sh
+
 # Profile-Guided Optimization measurement. Build dora-cli with cargo-pgo
 # (instrument -> train on examples/benchmark -> optimize), then run the
 # benchmark twice (baseline vs PGO) and print a side-by-side comparison.
@@ -157,3 +167,7 @@ qa-install:
 qa-pgo-install:
 	cargo install cargo-pgo
 	rustup component add llvm-tools-preview
+
+qa-kani-install:
+	cargo install kani-verifier --locked
+	cargo kani setup

@@ -148,9 +148,16 @@ futures = { version = "0.3.28", default-features = false, features = ["std", "as
 bincode = "1.3.3"
 flume = "0.10.14"
 tempfile = "3.23.0"
+proptest = "1.5"
 mavlink = { version = "0.13", default-features = false, features = ["std", "serde", "common", "tcp", "udp", "direct-serial"] }
 serialport = "4.6"
 url = "2.5"
+
+# Opt in per crate via `[lints] workspace = true`. `cfg(kani)` gates the
+# formal-verification proof harnesses (`make qa-kani`,
+# docs/formal-verification.md).
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
 
 [package]
 name = "dora-examples"

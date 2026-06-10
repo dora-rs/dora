@@ -11,6 +11,10 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# Registers `cfg(kani)` for the formal-verification harnesses (`make qa-kani`).
+[lints]
+workspace = true
+
 [dependencies]
 arrow-data = { workspace = true }
 serde = { workspace = true }
@@ -37,7 +41,7 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = { version = "0.5", features = ["html_reports"] }
-proptest = "1.5"
+proptest = { workspace = true }
 
 [[bench]]
 name = "message_serde"

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 20 test jobs
-# (post-#1716, plus cluster-record-replay from #2013). `cargo test -p
-# dora-examples --test example-smoke` (run by qa-nightly's example-smoke step)
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 21 test jobs
+# (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
+# `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
+# example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers the other 16, with
+# This script covers the other 17, with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
@@ -39,6 +40,9 @@
 #   - bench-example             All platforms: cargo run --example benchmark --release.
 #   - msrv                      All platforms: cargo-hack check --rust-version.
 #                               Skipped if cargo-hack not installed.
+#   - kani-proofs               All platforms: formal-verification proof
+#                               harnesses (scripts/qa/kani.sh). Skipped if
+#                               Kani not installed (make qa-kani-install).
 #   - cross-check               Native target for the dev's OS. Full cross-matrix
 #                               (mingw/musl/aarch64) is CI-only -- those need
 #                               toolchains not typically present on dev machines.
@@ -121,7 +125,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|kani-proofs)
       return 0
       ;;
     *)
@@ -154,6 +158,7 @@ Supported jobs:
   msrv
   cross-check
   ros2-bridge
+  kani-proofs
 EOF
 }
 
@@ -1899,6 +1904,22 @@ job_msrv() {
 }
 
 # -----------------------------------------------------------------------------
+# Job: kani-proofs (all platforms)
+# Mirrors nightly.yml `kani-proofs`. Runs the formal-verification proof
+# harnesses (docs/formal-verification.md). Skipped when Kani isn't
+# installed/set up (make qa-kani-install).
+# -----------------------------------------------------------------------------
+job_kani_proofs() {
+  if ! cargo kani --version > /dev/null 2>&1 \
+    || ! ls "${KANI_HOME:-$HOME/.kani}"/kani-*/ > /dev/null 2>&1; then
+    echo "SKIP kani-proofs: Kani not installed/set up (make qa-kani-install)"
+    SKIPPED+=("kani-proofs: kani missing")
+    return 0
+  fi
+  scripts/qa/kani.sh
+}
+
+# -----------------------------------------------------------------------------
 # Job 13: cross-check (native target for dev's OS)
 # Mirrors nightly.yml `cross-check`, but ONLY the native target -- the
 # cross-compile matrix (aarch64, musl, mingw) needs `cross` or mingw
@@ -2043,6 +2064,7 @@ run_job "bench-example"             job_bench_example
 run_job "msrv"                      job_msrv
 run_job "cross-check"               job_cross_check
 run_job "ros2-bridge"               job_ros2_bridge
+run_job "kani-proofs"               job_kani_proofs
 
 echo
 echo "============================================================"
