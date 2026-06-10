@@ -15,8 +15,32 @@ mod from_impls;
 mod into_impls;
 
 /// Data that can be converted to an Arrow array.
+///
+/// This is the conversion that dora node APIs use to turn plain Rust values
+/// into the [Apache Arrow](https://arrow.apache.org/) columnar format before
+/// sending them as outputs. Implementations are provided for booleans,
+/// strings, the primitive integer and float types, `Vec`s of those primitive
+/// types, and a few `chrono` date/time types. The unit type `()` converts to
+/// an empty [`NullArray`](arrow::array::NullArray), which is useful for
+/// outputs that carry only metadata.
+///
+/// For the opposite direction (reading received Arrow data back into Rust
+/// types), see the `TryFrom<&ArrowData>` implementations on [`ArrowData`].
+///
+/// # Example
+///
+/// ```
+/// use arrow::array::Array;
+/// use dora_arrow_convert::IntoArrow;
+///
+/// let array = vec![1.0_f32, 2.0, 3.0].into_arrow();
+/// assert_eq!(array.len(), 3);
+///
+/// let single = 42_u8.into_arrow();
+/// assert_eq!(single.len(), 1);
+/// ```
 pub trait IntoArrow {
-    /// The Array type that the data can be converted to.
+    /// The Arrow array type that the data converts to.
     type A: Array;
 
     /// Convert the data into an Arrow array.
