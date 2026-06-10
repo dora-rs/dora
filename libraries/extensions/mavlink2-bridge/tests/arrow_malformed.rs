@@ -81,7 +81,40 @@ fn rejects_zero_row_batch() {
 
     let err = COMMAND_LONG_DATA::from_record_batch(&batch).expect_err("expected decode error");
     let msg = err.to_string();
-    assert!(msg.contains("zero rows"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("has 0 rows") && msg.contains("exactly 1"),
+        "unexpected error: {msg}"
+    );
+}
+
+#[test]
+fn rejects_multi_row_batch() {
+    // Two commands in one batch: row 0 is TAKEOFF, row 1 is LAND. Reading
+    // only row 0 would silently drop the LAND command — safety-relevant
+    // data loss — so the whole batch must be rejected.
+    let schema = COMMAND_LONG_DATA::schema();
+    let cols: Vec<arrow::array::ArrayRef> = vec![
+        Arc::new(Float32Array::from(vec![1.0, 101.0])),
+        Arc::new(Float32Array::from(vec![2.0, 102.0])),
+        Arc::new(Float32Array::from(vec![3.0, 103.0])),
+        Arc::new(Float32Array::from(vec![4.0, 104.0])),
+        Arc::new(Float32Array::from(vec![5.0, 105.0])),
+        Arc::new(Float32Array::from(vec![6.0, 106.0])),
+        Arc::new(Float32Array::from(vec![7.0, 107.0])),
+        // MAV_CMD_NAV_TAKEOFF, MAV_CMD_NAV_LAND
+        Arc::new(UInt32Array::from(vec![22u32, 21u32])),
+        Arc::new(UInt8Array::from(vec![1u8, 1u8])),
+        Arc::new(UInt8Array::from(vec![1u8, 1u8])),
+        Arc::new(UInt8Array::from(vec![0u8, 0u8])),
+    ];
+    let batch = RecordBatch::try_new(Arc::new(schema), cols).expect("build batch");
+
+    let err = COMMAND_LONG_DATA::from_record_batch(&batch).expect_err("expected decode error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("has 2 rows") && msg.contains("exactly 1"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]

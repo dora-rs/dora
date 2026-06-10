@@ -451,7 +451,8 @@ fn set_position_target_local_ned_arrow_roundtrip() {
 /// must emit exactly the `schema()` it advertises (same field names, order,
 /// dtypes, and nullability) and exactly one row. This catches an impl whose
 /// column-builder list drifts in width or dtype from its schema list, and
-/// guards the decode contract that `from_record_batch` reads row 0.
+/// guards the decode contract that `from_record_batch` requires exactly
+/// one row.
 #[test]
 fn encode_matches_declared_schema() {
     fn check<T: MavlinkArrow + Default>() {
