@@ -3,6 +3,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::common::{
+    CoordinatorOptions, connect_to_coordinator, expect_reply, send_control_request,
+};
 use clap::Args;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -17,11 +20,6 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Color, Modifier, Style},
     widgets::{Block, Borders, Cell, Row, Table, TableState},
-};
-use uuid::Uuid;
-
-use crate::common::{
-    CoordinatorOptions, connect_to_coordinator, expect_reply, send_control_request,
 };
 
 use super::super::{Executable, default_tracing};
@@ -103,8 +101,6 @@ struct App {
 
 #[derive(Debug, Clone)]
 struct NodeStats {
-    #[allow(dead_code)]
-    dataflow_id: Uuid,
     dataflow_name: String,
     node_id: NodeId,
     pid: Option<u32>,
@@ -252,7 +248,6 @@ impl App {
                 .unwrap_or((0, 0));
 
             self.node_stats.push(NodeStats {
-                dataflow_id: node_info.dataflow_id,
                 dataflow_name: node_info
                     .dataflow_name
                     .unwrap_or_else(|| "<unnamed>".to_string()),
