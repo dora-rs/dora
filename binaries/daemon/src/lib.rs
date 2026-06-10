@@ -4164,7 +4164,7 @@ impl Daemon {
                                         .map(|queue| {
                                             let mut lines = Vec::new();
                                             if queue.is_full() {
-                                                lines.push("[...]".into());
+                                                lines.push("[...]\n".into());
                                             }
                                             while let Some(line) = queue.pop() {
                                                 lines.push(line);
