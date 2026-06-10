@@ -3,7 +3,7 @@
 //! Arrow-side conventions used by every impl:
 //!
 //! * One row per call. `to_record_batch` returns a 1-row `RecordBatch`;
-//!   `from_record_batch` reads row 0.
+//!   `from_record_batch` requires exactly one row and rejects anything else.
 //! * All MAVLink enums (regardless of wire width) are stored as `UInt32`
 //!   to match the Rust `repr(u32)` of the generated enum types.
 //! * Bitflag fields are stored at their bitflag's natural width
@@ -28,7 +28,8 @@ use std::sync::Arc;
 /// Bidirectional conversion between a MAVLink 2 message struct and a 1-row
 /// Apache Arrow `RecordBatch`. Each impl is symmetric: the schema returned
 /// by [`schema`] is what [`to_record_batch`] emits and what
-/// [`from_record_batch`] expects.
+/// [`from_record_batch`] expects; both sides carry exactly one row, and
+/// [`from_record_batch`] rejects any other row count.
 ///
 /// [`schema`]: MavlinkArrow::schema
 /// [`to_record_batch`]: MavlinkArrow::to_record_batch
@@ -62,6 +63,9 @@ fn build(fields: Vec<Field>, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch
 //   * wrong column dtype  → `as_primitive` would panic; downcast_ref
 //     returns None and we return a `BridgeError::Mavlink` instead.
 //   * zero-row batch      → `value(0)` would panic on out-of-bounds.
+//   * multi-row batch     → `value(0)` would silently drop every row
+//     after the first (e.g. the LAND in a [TAKEOFF, LAND] command
+//     batch); reject the whole batch instead.
 //   * null at row 0       → `value(0)` returns the slot but ignores the
 //     null bit, which silently invents a value; reject it.
 //
@@ -83,9 +87,11 @@ where
                 col.data_type()
             ))
         })?;
-    if arr.is_empty() {
+    let len = arr.len();
+    if len != 1 {
         return Err(BridgeError::Mavlink(format!(
-            "column '{name}' has zero rows; expected ≥1 row"
+            "column '{name}' has {len} rows; expected exactly 1 (one MAVLink message \
+             per batch — multi-row command batches are not supported)"
         )));
     }
     if arr.is_null(0) {
