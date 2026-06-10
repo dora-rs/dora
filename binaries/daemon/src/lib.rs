@@ -4828,9 +4828,15 @@ async fn send_output_to_local_receivers(
         dataflow.subscribe_channels.remove(id);
     }
     let data_bytes = if need_data_bytes {
-        data.as_ref().map(|arc| {
-            let DataMessage::Vec(v) = arc.as_ref();
-            v.clone()
+        // If no local receiver kept a reference (pure remote topology), the
+        // Arc is uniquely owned and the payload can be moved out instead of
+        // copied.
+        data.map(|arc| match Arc::try_unwrap(arc) {
+            Ok(DataMessage::Vec(v)) => v,
+            Err(arc) => {
+                let DataMessage::Vec(v) = arc.as_ref();
+                v.clone()
+            }
         })
     } else {
         None
@@ -5455,6 +5461,77 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 2);
         assert!(matches_event(&events[0], "Input"));
         assert!(matches_event(&events[1], "InputRecovered"));
+    }
+
+    // -- need_data_bytes: payload must be returned for remote forwarding --
+
+    #[tokio::test]
+    async fn data_bytes_returned_with_and_without_local_receivers() {
+        let clock = test_clock();
+        let payload = [1u8, 2, 3, 4];
+        let type_info = ArrowTypeInfo {
+            data_type: DataType::UInt8,
+            len: payload.len(),
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+
+        // Without local receivers the data Arc is uniquely owned; the payload
+        // is moved out (no copy) but must still be returned for the remote
+        // forwarding path.
+        let mut df = test_dataflow();
+        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info.clone());
+        let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let result = send_output_to_local_receivers(
+            sender.clone(),
+            output.clone(),
+            &mut df,
+            &metadata,
+            Some(data),
+            &clock,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.as_deref(), Some(&payload[..]));
+
+        // With a local receiver holding a reference, the bytes are cloned and
+        // must match the payload delivered to the receiver.
+        let mut df = test_dataflow();
+        let receiver: NodeId = "receiver".to_string().into();
+        let input: DataId = "input".to_string().into();
+        df.mappings
+            .entry(OutputId(sender.clone(), output.clone()))
+            .or_default()
+            .insert((receiver.clone(), input.clone()));
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info);
+        let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let result = send_output_to_local_receivers(
+            sender,
+            output,
+            &mut df,
+            &metadata,
+            Some(data),
+            &clock,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.as_deref(), Some(&payload[..]));
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "Input"));
     }
 
     // -- Test 8: Full circuit breaker cycle: open -> break -> recover --
