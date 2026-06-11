@@ -1,8 +1,9 @@
-# cpu发送页锁内存，cuda接收时，显式释放页锁内存。
+# Negative-path test: receiver reads from a freed memory pool.
 env:
-  sender_device: cuda
-  receiver_device: cpu
-  massage_num: 100
+  sender_device: cpu
+  receiver_device: cuda
+  massage_num: 2
+  memory_pool_scenario: read_after_free
 nodes:
   - id: sender_node
     path: sender.py

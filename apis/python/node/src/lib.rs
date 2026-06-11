@@ -336,6 +336,43 @@ def basicConfig(*pargs, **kwargs):
 
     Ok(())
 }
+fn parse_memory_pool_id(memory_pool_id: PyObject, py: Python<'_>) -> eyre::Result<String> {
+    let array_data = arrow::array::ArrayData::from_pyarrow_bound(memory_pool_id.bind(py))?;
+    let array = arrow::array::make_array(array_data);
+
+    if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
+        if string_array.len() != 1 {
+            eyre::bail!(
+                "expected string array with exactly one element, got {}",
+                string_array.len()
+            );
+        }
+        Ok(string_array.value(0).to_string())
+    } else if let Some(binary_array) = array.as_any().downcast_ref::<BinaryArray>() {
+        if binary_array.len() != 1 {
+            eyre::bail!(
+                "expected binary array with exactly one element, got {}",
+                binary_array.len()
+            );
+        }
+        Ok(String::from_utf8(binary_array.value(0).to_vec())?)
+    } else {
+        eyre::bail!(
+            "memory_pool_id must be a string or binary array, got {:?}",
+            array.data_type()
+        )
+    }
+}
+
+fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
+    tracing::warn!(
+        "[{}] Attempt to {} memory pool [{}] failed - reason: pool does not exist. Operation aborted.",
+        node_id,
+        action,
+        buffer_id
+    );
+}
+
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
 ///
@@ -938,42 +975,21 @@ impl Node {
         tensor_info: &Bound<'_, PyDict>,
         py: Python,
     ) -> eyre::Result<()> {
-        // Parse memory_pool_id to get buffer_id string
-        let array_data =
-            arrow::array::ArrayData::from_pyarrow_bound(memory_pool_id.bind(py))?;
-        let array = arrow::array::make_array(array_data);
-
-        let buffer_id =
-            if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
-                if string_array.len() != 1 {
-                    eyre::bail!(
-                        "expected string array with exactly one element, got {}",
-                        string_array.len()
-                    );
-                }
-                string_array.value(0).to_string()
-            } else if let Some(binary_array) =
-                array.as_any().downcast_ref::<BinaryArray>()
-            {
-                if binary_array.len() != 1 {
-                    eyre::bail!(
-                        "expected binary array with exactly one element, got {}",
-                        binary_array.len()
-                    );
-                }
-                String::from_utf8(binary_array.value(0).to_vec())?
-            } else {
-                eyre::bail!(
-                    "memory_pool_id must be a string or binary array, got {:?}",
-                    array.data_type()
-                )
-            };
+        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         let ptr_val: u64 = tensor_info.get_item("ptr")?.unwrap().extract()?;
         let size: usize = tensor_info.get_item("size")?.unwrap().extract()?;
         let tensor_device: String =
             tensor_info.get_item("device")?.unwrap().extract()?;
         let is_cuda = tensor_device.starts_with("cuda");
+
+        {
+            let freed = FREED_POOL_IDS.lock().unwrap();
+            if freed.contains(&buffer_id) {
+                warn_missing_memory_pool(&self.node_id, "write", &buffer_id);
+                return Ok(());
+            }
+        }
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
@@ -1120,11 +1136,7 @@ impl Node {
                 }
             }
             Err(_) => {
-                tracing::warn!(
-                    "[{}]写入不存在的内存池{}",
-                    self.node_id,
-                    buffer_id
-                );
+                warn_missing_memory_pool(&self.node_id, "write", &buffer_id);
             }
         }
 
@@ -1140,35 +1152,7 @@ impl Node {
         memory_pool_id: PyObject,
         py: Python,
     ) -> eyre::Result<PyObject> {
-        let array_data =
-            arrow::array::ArrayData::from_pyarrow_bound(memory_pool_id.bind(py))?;
-        let array = arrow::array::make_array(array_data);
-
-        let buffer_id =
-            if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
-                if string_array.len() != 1 {
-                    eyre::bail!(
-                        "expected string array with exactly one element, got {}",
-                        string_array.len()
-                    );
-                }
-                string_array.value(0).to_string()
-            } else if let Some(binary_array) =
-                array.as_any().downcast_ref::<BinaryArray>()
-            {
-                if binary_array.len() != 1 {
-                    eyre::bail!(
-                        "expected binary array with exactly one element, got {}",
-                        binary_array.len()
-                    );
-                }
-                String::from_utf8(binary_array.value(0).to_vec())?
-            } else {
-                eyre::bail!(
-                    "memory_pool_id must be a string or binary array, got {:?}",
-                    array.data_type()
-                )
-            };
+        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         // Fast path: DORADMA header read
         if buffer_id.starts_with("pool_") {
@@ -1241,11 +1225,7 @@ impl Node {
                 Ok(dict.into())
             }
             Err(e) => {
-                tracing::warn!(
-                    "[{}]读取不存在的内存池{}",
-                    self.node_id,
-                    buffer_id
-                );
+                warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                 tracing::debug!("[{}] read_memory_pool: daemon error: {:?}", self.node_id, e);
                 let dict = PyDict::new(py);
                 dict.set_item("ptr", 0)?;
@@ -1265,44 +1245,12 @@ impl Node {
         memory_pool_id: PyObject,
         py: Python,
     ) -> eyre::Result<()> {
-        let array_data =
-            arrow::array::ArrayData::from_pyarrow_bound(memory_pool_id.bind(py))?;
-        let array = arrow::array::make_array(array_data);
-
-        let buffer_id =
-            if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
-                if string_array.len() != 1 {
-                    eyre::bail!(
-                        "expected string array with exactly one element, got {}",
-                        string_array.len()
-                    );
-                }
-                string_array.value(0).to_string()
-            } else if let Some(binary_array) =
-                array.as_any().downcast_ref::<BinaryArray>()
-            {
-                if binary_array.len() != 1 {
-                    eyre::bail!(
-                        "expected binary array with exactly one element, got {}",
-                        binary_array.len()
-                    );
-                }
-                String::from_utf8(binary_array.value(0).to_vec())?
-            } else {
-                eyre::bail!(
-                    "memory_pool_id must be a string or binary array, got {:?}",
-                    array.data_type()
-                )
-            };
+        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         match self.node.get_mut().free_pinned_memory(buffer_id.clone()) {
             Ok(_) => {}
             Err(_) => {
-                tracing::warn!(
-                    "[{}]释放不存在的内存池{}",
-                    self.node_id,
-                    buffer_id
-                );
+                warn_missing_memory_pool(&self.node_id, "release", &buffer_id);
             }
         }
         {

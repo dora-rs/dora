@@ -1633,6 +1633,7 @@ dependencies = [
  "dora-arrow-convert",
  "dora-core",
  "dora-download",
+ "dora-memory-pool",
  "dora-message",
  "dora-node-api",
  "dora-tracing",
@@ -1692,6 +1693,13 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "dora-memory-pool"
+version = "0.5.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

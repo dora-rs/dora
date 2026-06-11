@@ -1,51 +1,58 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Identifier for memory pool buffer
+/// Identifier for a memory pool buffer.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MemoryPoolId {
-    /// Unique identifier for the memory pool buffer
+    /// Unique identifier for the memory pool buffer.
     pub id: String,
 }
 
-/// Metadata for memory pool tensor
+/// Metadata for a memory pool tensor.
 #[derive(Debug, Clone)]
 pub struct MemoryPoolMetadata {
-    /// Pointer to the memory pool buffer (in registering process)
+    /// Pointer to the memory pool buffer in the registering process.
     pub ptr: u64,
-    /// Size in bytes
+    /// Size in bytes.
     pub size: usize,
-    /// Data type as string (e.g., "int64", "float32")
+    /// Data type as string (for example, "int64" or "float32").
     pub dtype: String,
-    /// Shape of the tensor
+    /// Shape of the tensor.
     pub shape: Vec<usize>,
-    /// Whether the memory is pinned (registered with CUDA)
+    /// Whether the memory is pinned and registered with CUDA.
     pub is_pinned: bool,
-    /// Shared memory name for cross-process access
+    /// Shared memory name for cross-process access.
     pub shared_memory_name: Option<String>,
-    /// Buffer ID for tracking and cleanup
+    /// Buffer ID used for lifecycle tracking and cleanup.
     pub buffer_id: Option<String>,
-    /// Process ID that allocated the memory (if known)
+    /// Process ID that allocated the memory, when known.
     pub allocator_pid: Option<u32>,
-    /// Whether CUDA host memory registration was performed
+    /// Whether CUDA host memory registration was performed.
     pub cuda_registered: bool,
 }
 
-/// Entry in the memory pool table
+/// Entry in the memory pool table.
 #[derive(Debug, Clone)]
 pub struct MemoryPoolEntry {
-    /// Metadata about the tensor
+    /// Metadata about the tensor.
     pub metadata: MemoryPoolMetadata,
-    /// Whether the memory is currently in use
+    /// Whether the memory is currently in use.
     pub in_use: bool,
-    /// Node that registered this memory
+    /// Node that registered this memory.
     pub registered_by: String,
 }
 
-/// Manager for memory pool allocations
+/// Result summary for daemon shutdown cleanup.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CleanupSummary {
+    pub unreleased_count: usize,
+    pub released_count: usize,
+}
+
+/// Manager for memory pool allocations.
 #[derive(Clone)]
 pub struct MemoryPoolManager {
-    /// Table mapping memory pool IDs to their entries
+    /// Table mapping memory pool IDs to their entries.
     memory_pool_table: Arc<Mutex<HashMap<MemoryPoolId, MemoryPoolEntry>>>,
 }
 
@@ -56,7 +63,7 @@ impl MemoryPoolManager {
         }
     }
 
-    /// Register a memory pool with the given ID and metadata
+    /// Register a memory pool with the given ID and metadata.
     pub fn register_memory_pool(
         &self,
         id: MemoryPoolId,
@@ -81,13 +88,13 @@ impl MemoryPoolManager {
         Ok(())
     }
 
-    /// Get the current number of entries in the memory pool table
+    /// Get the current number of entries in the memory pool table.
     pub fn table_size(&self) -> usize {
         let table = self.memory_pool_table.lock().unwrap();
         table.len()
     }
 
-    /// Read memory pool metadata by ID
+    /// Read memory pool metadata by ID.
     pub fn read_memory_pool(&self, id: &MemoryPoolId) -> Option<MemoryPoolMetadata> {
         let table = self.memory_pool_table.lock().unwrap();
         table.get(id).map(|entry| entry.metadata.clone())
@@ -96,38 +103,29 @@ impl MemoryPoolManager {
     /// Free memory pool by ID.
     ///
     /// Removes the entry from the table and attempts to clean up the
-    /// underlying shared memory (pool-mode shmems are skipped here
-    /// and cleaned up at daemon shutdown in `cleanup_all`).
-    ///
-    /// Returns `Ok(metadata)` on success, `Err` if not found.
+    /// underlying shared memory. Pool-mode shmems are skipped here and
+    /// cleaned up during daemon shutdown in `cleanup_all`.
     pub fn free_memory_pool(&self, id: &MemoryPoolId) -> Result<MemoryPoolMetadata, String> {
         let mut table = self.memory_pool_table.lock().unwrap();
 
-        let entry = table.remove(id).ok_or_else(|| "memory pool not found".to_string())?;
+        let entry = table
+            .remove(id)
+            .ok_or_else(|| "memory pool not found".to_string())?;
 
-        // Try to free the shared memory if it exists
         if let Some(shm_name) = &entry.metadata.shared_memory_name {
             if !shm_name.is_empty() {
-                let _ = self.free_shared_memory(shm_name);
+                self.free_shared_memory(shm_name)?;
             }
         }
 
         Ok(entry.metadata)
     }
 
-    /// Attempt to free shared memory.
-    ///
-    /// Pool-mode shmems (`dora_pool_*`) are managed by the ring buffer lifecycle
-    /// and must NOT be unlinked during normal free — the sender reuses them via
-    /// `create()`→`open()` fallback. They are cleaned up at daemon shutdown in
-    /// `cleanup_all` via direct filesystem unlink.
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
-        // Skip unlink for pool-mode shmems — persistent ring buffer
         if shm_name.starts_with("dora_pool_") {
             return Ok(());
         }
 
-        // Try to unlink shared memory file on Linux
         #[cfg(target_os = "linux")]
         {
             let shm_path = format!("/dev/shm/{}", shm_name);
@@ -142,15 +140,19 @@ impl MemoryPoolManager {
                     );
                 }
             }
+            Ok(())
         }
 
         #[cfg(not(target_os = "linux"))]
-        {}
-
-        Ok(())
+        {
+            Err(format!(
+                "memory-pool transport is unavailable on this platform; cannot clean up shared memory `{}`",
+                shm_name
+            ))
+        }
     }
 
-    /// Get all memory pool entries (for cleanup on shutdown)
+    /// Get all memory pool entries for cleanup on shutdown.
     pub fn get_all_entries(&self) -> Vec<(MemoryPoolId, MemoryPoolEntry)> {
         let table = self.memory_pool_table.lock().unwrap();
         table
@@ -160,20 +162,16 @@ impl MemoryPoolManager {
     }
 
     /// Cleanup all memory pools on shutdown.
-    ///
-    /// Counts unfreed entries, logs info about them, frees them, and logs the result.
-    /// This is called automatically when the daemon exits.
-    pub fn cleanup_all(&self) -> Result<(), Vec<String>> {
+    pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
         let mut table = self.memory_pool_table.lock().unwrap();
         let ids: Vec<MemoryPoolId> = table.keys().cloned().collect();
+        let unreleased_count = ids.len();
+        let mut errors = Vec::new();
 
-        // Count entries that were not freed by the node (all remaining entries)
-        let unfreed_count = ids.len();
-
-        if unfreed_count > 0 {
+        if unreleased_count > 0 {
             tracing::info!(
-                "memory manager检测到{}条未释放的页锁内存数据，正在释放......",
-                unfreed_count
+                "Detected {} unreleased memory pool, releasing...",
+                unreleased_count
             );
         }
 
@@ -181,15 +179,14 @@ impl MemoryPoolManager {
             if let Some(entry) = table.remove(id) {
                 if let Some(shm_name) = &entry.metadata.shared_memory_name {
                     if !shm_name.is_empty() {
-                        let _ = self.free_shared_memory(shm_name);
+                        if let Err(err) = self.free_shared_memory(shm_name) {
+                            errors.push(err);
+                        }
                     }
                 }
             }
         }
 
-        // Clean up pool-mode shmems (dora_pool_*) that were skipped by
-        // free_shared_memory during normal operation. These are persistent
-        // buffers and must be unlinked at daemon shutdown.
         #[cfg(target_os = "linux")]
         {
             if let Ok(entries) = std::fs::read_dir("/dev/shm") {
@@ -197,19 +194,39 @@ impl MemoryPoolManager {
                     let file_name = entry.file_name();
                     let name = file_name.to_string_lossy();
                     if name.starts_with("dora_pool_") {
-                        let _ = std::fs::remove_file(entry.path());
+                        if let Err(err) = std::fs::remove_file(entry.path()) {
+                            if err.kind() != std::io::ErrorKind::NotFound {
+                                errors.push(format!(
+                                    "Failed to remove pooled shared memory {}: {}",
+                                    name, err
+                                ));
+                            }
+                        }
                     }
                 }
             }
         }
 
-        if unfreed_count > 0 {
+        if unreleased_count > 0 {
             tracing::info!(
-                "memory manager已成功释放{}条未释放的页锁内存数据",
-                unfreed_count
+                "Successfully released {} unreleased memory pools!",
+                unreleased_count
             );
         }
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(CleanupSummary {
+                unreleased_count,
+                released_count: unreleased_count,
+            })
+        } else {
+            Err(errors)
+        }
+    }
+}
+
+impl Default for MemoryPoolManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

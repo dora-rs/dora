@@ -5,6 +5,7 @@ use dora_core::{
     build::{BuildInfo, GitManager},
     uhlc::HLC,
 };
+use dora_memory_pool::MemoryPoolManager;
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{DaemonId, NodeError},
@@ -48,7 +49,7 @@ pub(crate) struct DaemonState {
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
 
     /// Manager for memory pool allocations
-    pub(crate) memory_pool: crate::memory_manager::MemoryPoolManager,
+    pub(crate) memory_pool: MemoryPoolManager,
 }
 
 impl DaemonState {
@@ -72,7 +73,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session,
             remote_daemon_events_tx,
-            memory_pool: crate::memory_manager::MemoryPoolManager::new(),
+            memory_pool: MemoryPoolManager::new(),
         }
     }
 
@@ -104,7 +105,7 @@ impl DaemonState {
             git_manager: Mutex::new(Default::default()),
             zenoh_session: Some(zenoh_session),
             remote_daemon_events_tx: None,
-            memory_pool: crate::memory_manager::MemoryPoolManager::new(),
+            memory_pool: MemoryPoolManager::new(),
         };
         let _ = state.daemon_id.set(daemon_id);
         state

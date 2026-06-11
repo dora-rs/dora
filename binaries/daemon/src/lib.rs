@@ -13,6 +13,7 @@ use dora_core::{
     },
     uhlc::HLC,
 };
+use dora_memory_pool::{MemoryPoolId, MemoryPoolMetadata};
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
@@ -73,7 +74,6 @@ mod coordinator;
 mod extract_err_from_stderr;
 mod local_listener;
 mod log;
-mod memory_manager;
 mod node_communication;
 mod pending;
 mod socket_stream_utils;
@@ -656,7 +656,11 @@ impl Daemon {
         }
 
         // Clean up any unfreed memory pool entries on daemon exit
-        let _ = self.state.memory_pool.cleanup_all();
+        if let Err(errors) = self.state.memory_pool.cleanup_all() {
+            for error in errors {
+                tracing::warn!("{error}");
+            }
+        }
 
         if let Some(client) = self.state.coordinator_client() {
             let ctx = tarpc::context::current();
@@ -1615,7 +1619,6 @@ impl Daemon {
                 metadata,
                 reply_sender,
             } => {
-                // 从metadata中提取PinnedMemoryMetadata字段
                 let result = (|| -> Result<(), String> {
                     let ptr = metadata
                         .get("ptr")
@@ -1660,10 +1663,7 @@ impl Daemon {
                         .and_then(|p| bool::try_from(p).ok())
                         .unwrap_or(is_pinned);
 
-                    // Debug: print what we extracted
-                    // Removed excessive debug output per user request
-
-                    let pool_metadata = crate::memory_manager::MemoryPoolMetadata {
+                    let pool_metadata = MemoryPoolMetadata {
                         ptr,
                         size,
                         dtype,
@@ -1676,7 +1676,7 @@ impl Daemon {
                     };
 
                     self.state.memory_pool.register_memory_pool(
-                        crate::memory_manager::MemoryPoolId {
+                        MemoryPoolId {
                             id: shared_memory_id,
                         },
                         pool_metadata,
@@ -1696,7 +1696,7 @@ impl Daemon {
                     self.state.memory_pool.table_size(),
                 );
                 let result = (|| -> Result<metadata::Metadata, String> {
-                    let id = memory_manager::MemoryPoolId {
+                    let id = MemoryPoolId {
                         id: shared_memory_id.clone(),
                     };
                     let metadata = self
@@ -1728,7 +1728,6 @@ impl Daemon {
                         }
                     }
 
-                    // 创建参数映射
                     use dora_message::metadata::{MetadataParameters, Parameter};
                     let mut parameters = MetadataParameters::new();
                     parameters.insert("ptr".to_string(), Parameter::Integer(metadata.ptr as i64));
@@ -1737,7 +1736,6 @@ impl Daemon {
                     let shape_i64: Vec<i64> = metadata.shape.iter().map(|&x| x as i64).collect();
                     parameters.insert("shape".to_string(), Parameter::ListInt(shape_i64));
                     parameters.insert("is_pinned".to_string(), Parameter::Bool(metadata.is_pinned));
-                    // Debug output removed per user request
                     if let Some(ref shared_memory_name) = metadata.shared_memory_name {
                         parameters.insert(
                             "shared_memory_name".to_string(),
@@ -1751,7 +1749,6 @@ impl Daemon {
                         );
                     }
 
-                    // 创建时间戳和类型信息（虚拟值）
                     let timestamp = self.state.clock.new_timestamp();
                     let type_info = metadata::ArrowTypeInfo {
                         data_type: dora_node_api::arrow::datatypes::DataType::Null,
@@ -1781,7 +1778,7 @@ impl Daemon {
                 shared_memory_id,
                 reply_sender,
             } => {
-                let id = memory_manager::MemoryPoolId {
+                let id = MemoryPoolId {
                     id: shared_memory_id.clone(),
                 };
                 let table_size_before = self.state.memory_pool.table_size();

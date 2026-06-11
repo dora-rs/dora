@@ -1,8 +1,9 @@
-# cpu发送页锁内存，cuda接收时，显式释放页锁内存。
+# Negative-path test: receiver frees the same memory pool twice.
 env:
   sender_device: cpu
   receiver_device: cuda
-  massage_num: 100
+  massage_num: 2
+  memory_pool_scenario: duplicate_free
 nodes:
   - id: sender_node
     path: sender.py
