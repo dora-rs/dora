@@ -8,7 +8,6 @@ use crate::{
     versions_compatible,
 };
 
-#[repr(u8)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),

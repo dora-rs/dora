@@ -59,7 +59,6 @@ struct PoolSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
     size: usize,
-    gpu_va: u64,
 }
 
 unsafe impl Send for PoolSlot {}
@@ -781,48 +780,29 @@ impl Node {
         let data_offset = HEADER_SIZE + padded_json_len;
         let total_size = data_offset + size;
 
-        // Create/find shared memory
-        let (shmem, shmem_ptr, sender_gpu_va) = 'pool: loop {
-            let mut pool = PINNED_POOL.lock().unwrap();
-            if let Some(old_slot) = pool.remove(&pool_counter) {
-                if old_slot.size >= total_size {
-                    break 'pool (old_slot._shmem, old_slot.base as *mut u8, old_slot.gpu_va);
-                }
-            }
-            drop(pool);
-
-            let mut new_shmem = match ShmemConf::new()
+        // Create shared memory
+        let mut shmem = match ShmemConf::new()
+            .os_id(&shmem_name)
+            .size(total_size)
+            .writable(true)
+            .create()
+        {
+            Ok(s) => s,
+            Err(_) => ShmemConf::new()
                 .os_id(&shmem_name)
-                .size(total_size)
                 .writable(true)
-                .create()
-            {
-                Ok(s) => s,
-                Err(_) => ShmemConf::new()
-                    .os_id(&shmem_name)
-                    .writable(true)
-                    .open()
-                    .wrap_err("failed to open pool shared memory")?,
-            };
-            let new_ptr = unsafe { new_shmem.as_slice_mut().as_mut_ptr() };
-
-            let mut gpu_va = 0u64;
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ =
-                    bound.call_method1("_register_host", (new_ptr as u64, total_size));
-                if !cpu_mode {
-                    if let Ok(va) =
-                        bound.call_method1("_get_device_ptr", (new_ptr as u64,))
-                    {
-                        gpu_va = va.extract::<u64>().unwrap_or(0);
-                    }
-                }
-            }
-
-            new_shmem.set_owner(false);
-            break 'pool (new_shmem, new_ptr, gpu_va);
+                .open()
+                .wrap_err("failed to open pool shared memory")?,
         };
+        let shmem_ptr = unsafe { shmem.as_slice_mut().as_mut_ptr() };
+
+        if let Ok(helpers) = get_cuda_helpers(py) {
+            let bound = helpers.bind(py);
+            let _ =
+                bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
+        }
+
+        shmem.set_owner(false);
 
         // Write DORADMA header
         unsafe {
@@ -895,7 +875,6 @@ impl Node {
                 _shmem: shmem,
                 base: shmem_ptr as u64,
                 size: total_size,
-                gpu_va: sender_gpu_va,
             });
         }
 
@@ -1003,15 +982,19 @@ impl Node {
                     // prevents munmap, and storing it back keeps the mapping alive.
                     let pool_slot = { PINNED_POOL.lock().unwrap().remove(&counter) };
 
-                    let (shmem_ptr, store_back) = if let Some(slot_data) = pool_slot {
+                    let (shmem_ptr, store_back, shmem_capacity) = if let Some(slot_data) = pool_slot {
                         // Cache hit: reuse the persistent mapping (no mmap)
-                        (slot_data.base as *mut u8, Some(slot_data))
+                        let cap = slot_data.size;
+                        (slot_data.base as *mut u8, Some(slot_data), cap)
                     } else {
                         // Cache miss: open via ShmemConf (mmap, slower)
                         let shmem_name = format!("dora_pool_{}", counter);
                         match ShmemConf::new().os_id(&shmem_name).open() {
-                            Ok(shmem) => (shmem.as_ptr(), None),
-                            Err(_) => (std::ptr::null_mut(), None),
+                            Ok(shmem) => {
+                                let cap = shmem.len();
+                                (shmem.as_ptr(), None, cap)
+                            }
+                            Err(_) => (std::ptr::null_mut(), None, 0),
                         }
                     };
 
@@ -1031,6 +1014,19 @@ impl Node {
                             let ipc_present = unsafe {
                                 std::ptr::read(shmem_ptr.add(24) as *const u64)
                             };
+
+                            // Validate write size against pool capacity
+                            if size == 0 || size > shmem_capacity.saturating_sub(data_offset) {
+                                tracing::warn!(
+                                    "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                    self.node_id, size, data_offset, shmem_capacity
+                                );
+                                // Store back to PINNED_POOL to keep shmem alive
+                                if let Some(slot_data) = store_back {
+                                    PINNED_POOL.lock().unwrap().insert(counter, slot_data);
+                                }
+                                return Ok(());
+                            }
 
                             if ipc_present == 1 && !is_cuda {
                                 // DMA: source CPU data -> GPU pool buffer via DMA engine
@@ -1109,6 +1105,16 @@ impl Node {
                                 ) as usize
                             };
 
+                            // Validate write size against pool capacity
+                            let shmem_len = shmem.len();
+                            if size == 0 || size > shmem_len.saturating_sub(data_offset) {
+                                tracing::warn!(
+                                    "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                    self.node_id, size, data_offset, shmem_len
+                                );
+                                return Ok(());
+                            }
+
                             if is_cuda {
                                 if let Ok(helpers) = get_cuda_helpers(py) {
                                     let bound = helpers.bind(py);
@@ -1169,19 +1175,6 @@ impl Node {
             .read_pinned_memory(buffer_id.clone(), false)
         {
             Ok(metadata) => {
-                let dict = PyDict::new(py);
-
-                let ptr = metadata
-                    .parameters
-                    .get("ptr")
-                    .and_then(|p| {
-                        if let Parameter::Integer(v) = p {
-                            Some(*v)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
                 let size = metadata
                     .parameters
                     .get("size")
@@ -1216,7 +1209,55 @@ impl Node {
                     })
                     .unwrap_or_default();
 
-                dict.set_item("ptr", ptr)?;
+                // Resolve the actual data pointer from shared memory.
+                // The `ptr` in the daemon metadata is the registering node's
+                // process-local address — meaningless in a different process.
+                // Open the shmem file and read the DORADMA header to obtain
+                // a valid shmem-relative pointer.
+                let shmem_name = metadata
+                    .parameters
+                    .get("shared_memory_name")
+                    .and_then(|p| {
+                        if let Parameter::String(s) = p {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                let mut read_ptr: i64 = 0;
+                if let Some(ref name) = shmem_name {
+                    if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
+                        let shmem_ptr = shmem.as_ptr();
+                        const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
+                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                        if magic == HEADER_MAGIC {
+                            let data_offset = unsafe {
+                                u64::from_le_bytes(
+                                    std::slice::from_raw_parts(shmem_ptr.add(16), 8)
+                                        .try_into()
+                                        .unwrap(),
+                                ) as usize
+                            };
+                            read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
+                            // Cache shmem to prevent munmap of the returned pointer.
+                            // Extract counter from "dora_pool_{counter}".
+                            if let Some(counter_str) = name.strip_prefix("dora_pool_") {
+                                if let Ok(counter) = counter_str.parse::<u64>() {
+                                    let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap();
+                                    cpu_cache.entry(counter).or_insert(RecvCpuSlot { _shmem: shmem });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if read_ptr == 0 {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                }
+
+                let dict = PyDict::new(py);
+                dict.set_item("ptr", read_ptr)?;
                 dict.set_item("size", size)?;
                 dict.set_item("dtype", dtype)?;
                 dict.set_item("shape", shape)?;
@@ -1247,12 +1288,26 @@ impl Node {
     ) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
+        // Extract counter for cache cleanup
+        let counter = buffer_id
+            .strip_prefix("pool_")
+            .and_then(|s| s.parse::<u64>().ok());
+
         match self.node.get_mut().free_pinned_memory(buffer_id.clone()) {
             Ok(_) => {}
             Err(_) => {
                 warn_missing_memory_pool(&self.node_id, "release", &buffer_id);
             }
         }
+
+        // Clean up receiver-side caches so the shmem mappings are released.
+        // The application must not hold live tensors referencing this pool
+        // after calling free_memory_pool.
+        if let Some(c) = counter {
+            RECV_GPU_VA.lock().unwrap().remove(&c);
+            RECV_CPU_SHMEM.lock().unwrap().remove(&c);
+        }
+
         {
             let mut freed = FREED_POOL_IDS.lock().unwrap();
             tracing::debug!("[{}] free_memory_pool: adding {} to FREED_POOL_IDS (set size={})", self.node_id, buffer_id, freed.len());

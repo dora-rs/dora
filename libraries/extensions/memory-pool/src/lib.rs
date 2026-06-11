@@ -122,10 +122,6 @@ impl MemoryPoolManager {
     }
 
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
-        if shm_name.starts_with("dora_pool_") {
-            return Ok(());
-        }
-
         #[cfg(target_os = "linux")]
         {
             let shm_path = format!("/dev/shm/{}", shm_name);
