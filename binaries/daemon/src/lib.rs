@@ -1240,6 +1240,7 @@ impl Daemon {
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
                     self.check_input_timeouts();
+                    self.check_finish_stragglers();
                     if self.ft_stats.any_nonzero() {
                         tracing::info!(
                             restarts = self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
@@ -2061,6 +2062,8 @@ impl Daemon {
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+                    dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.finish_escalated.remove(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
@@ -2236,6 +2239,53 @@ impl Daemon {
             }
         };
         Ok(status)
+    }
+
+    /// Watchdog for nodes that block an otherwise-finished dataflow
+    /// (dora-rs/dora#2152).
+    ///
+    /// The natural-finish path sends `AllInputsClosed` and waits for nodes
+    /// to exit voluntarily; unlike explicit stops it had no deadline, so a
+    /// stuck node hung `dora run` (and CI) until an external timeout. Once
+    /// every running node of a dataflow has been draining for longer than
+    /// the grace period, escalate through the same Stop → SIGTERM → SIGKILL
+    /// ladder used by explicit stops — after capturing a stack sample of
+    /// the stuck process so the hang itself stays diagnosable.
+    fn check_finish_stragglers(&mut self) {
+        let grace = finish_drain_grace();
+        for (dataflow_id, dataflow) in self.running.iter_mut() {
+            for node_id in dataflow.finish_stragglers(grace) {
+                let drained_for_secs = dataflow
+                    .all_inputs_closed_at
+                    .get(&node_id)
+                    .map(|since| since.elapsed().as_secs())
+                    .unwrap_or_default();
+                let pid = dataflow
+                    .running_nodes
+                    .get(&node_id)
+                    .and_then(|node| node.pid.as_ref())
+                    .map(|pid| pid.load(atomic::Ordering::Relaxed));
+                // Escalate first: if the node exited naturally between
+                // selection and now, this fails benignly and nothing
+                // should be logged or sampled.
+                if dataflow
+                    .stop_single_node(&node_id, &self.clock, None)
+                    .is_err()
+                {
+                    tracing::debug!(
+                        "finish straggler `{node_id}` exited before escalation; skipping"
+                    );
+                    continue;
+                }
+                dataflow.finish_escalated.insert(node_id.clone());
+                tracing::warn!(
+                    "dataflow {dataflow_id} is finished except node `{node_id}` \
+                     (AllInputsClosed sent {drained_for_secs}s ago) — escalating stop \
+                     (set DORA_FINISH_DRAIN_GRACE_SECS to adjust the grace period)"
+                );
+                spawn_stack_sample_capture(node_id, pid);
+            }
+        }
     }
 
     fn check_node_health(&self) {
@@ -3619,6 +3669,9 @@ impl Daemon {
                     == Some(true)
                 {
                     dataflow.inc_pending(&node_id);
+                    dataflow
+                        .all_inputs_closed_at
+                        .insert(node_id.clone(), Instant::now());
                 }
             }
         }
@@ -3705,7 +3758,9 @@ impl Daemon {
     /// the `clean_stop` flag sent to the coordinator: clean_stop = true
     /// → `NodeStatus::Stopped` (auto-expires from `dora node list` after
     /// the 60s grace), clean_stop = false → `NodeStatus::Failed` (stays
-    /// visible so `dora doctor` keeps reporting it).
+    /// visible so `dora doctor` keeps reporting it). A finish-straggler
+    /// escalation (dora-rs/dora#2152) forces clean_stop = false unless
+    /// the node still exited 0.
     async fn handle_node_stop_inner(
         &mut self,
         dataflow_id: Uuid,
@@ -3756,6 +3811,13 @@ impl Daemon {
         //   - crash / panic / restart_policy=Never with non-zero exit:
         //     neither bit is set → clean_stop=false → `Failed`, so the
         //     row sticks around and `dora doctor` keeps reporting it.
+        //   - finish-straggler escalation (dora-rs/dora#2152): the
+        //     watchdog also goes through stop_single_node, so
+        //     restarts_disabled is set — but a force-killed straggler is
+        //     a node FAILURE and must not auto-expire from `dora node
+        //     list` as a clean stop. `finish_escalated` overrides
+        //     restarts_disabled (an escalated node that still exited 0
+        //     keeps exit_clean=true and stays clean).
         let (should_finish, clean_stop) = {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                 format!(
@@ -3767,7 +3829,9 @@ impl Daemon {
                 .get(node_id)
                 .map(|n| n.restarts_disabled())
                 .unwrap_or(false);
-            let clean_stop = exit_clean || restarts_disabled;
+            let finish_escalated = dataflow.finish_escalated.remove(node_id);
+            dataflow.all_inputs_closed_at.remove(node_id);
+            let clean_stop = exit_clean || (restarts_disabled && !finish_escalated);
             dataflow.running_nodes.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
             let should_finish = !dataflow.pending_nodes.local_nodes_pending()
@@ -4086,6 +4150,20 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| d.grace_duration_kills.contains(&node_id))
                             .unwrap_or_default();
+                        // Killed by the finish-straggler watchdog
+                        // (dora-rs/dora#2152): the node blocked an
+                        // otherwise-finished dataflow past the drain grace
+                        // period. Unlike an operator-initiated stop this
+                        // must NOT classify as clean — a node that needed
+                        // force-killing during natural finish is a shutdown
+                        // bug, and reporting success would hide every
+                        // recurrence behind a green run. (A straggler that
+                        // exits 0 on the escalation's Stop event takes the
+                        // `Success` arm above and stays clean: it finished
+                        // its work and responded to stop, just late.)
+                        let finish_escalated = dataflow
+                            .map(|d| d.finish_escalated.contains(&node_id))
+                            .unwrap_or_default();
                         // The daemon explicitly sent SoftKill (SIGTERM)
                         // to this node as part of an operator-initiated
                         // stop (`dora stop`, `dora destroy`, `dora run
@@ -4137,7 +4215,11 @@ impl Daemon {
                                 | NodeExitStatus::ExitCode(143)
                                 | NodeExitStatus::ExitCode(130)
                         );
-                        if caused_by_node.is_none() && grace_duration_kill && is_sigterm_like {
+                        if caused_by_node.is_none()
+                            && grace_duration_kill
+                            && is_sigterm_like
+                            && !finish_escalated
+                        {
                             logger
                                 .log(
                                     LogLevel::Info,
@@ -4161,7 +4243,9 @@ impl Daemon {
 
                                     NodeErrorCause::Cascading { caused_by_node }
                                 }
-                                None if grace_duration_kill => NodeErrorCause::GraceDuration,
+                                None if grace_duration_kill || finish_escalated => {
+                                    NodeErrorCause::GraceDuration
+                                }
                                 None => {
                                     let cause = dataflow
                                         .and_then(|d| d.node_stderr_most_recent.get(&node_id))
@@ -4197,9 +4281,16 @@ impl Daemon {
                 // unrelated 143 exit from the restarted process would
                 // still see `grace_duration_kill=true` and be
                 // misreported as `Ok(())`. The marker has done its job
-                // for this exit — drop it.
-                if let Some(dataflow) = self.running.get(&dataflow_id) {
+                // for this exit — drop it. Same for the drain clock: a
+                // respawned node under the same id must start fresh.
+                // (`finish_escalated` is NOT cleared here — it is read
+                // and consumed by `handle_node_stop_inner` below to keep
+                // the coordinator-facing `clean_stop` flag honest; an
+                // escalated node never restarts, so it cannot leak into
+                // a next incarnation.)
+                if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow.grace_duration_kills.remove(&node_id);
+                    dataflow.all_inputs_closed_at.remove(&node_id);
                 }
 
                 logger
@@ -4896,6 +4987,9 @@ fn close_input(
             }
             if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
+                dataflow
+                    .all_inputs_closed_at
+                    .insert(receiver_id.clone(), Instant::now());
             }
         }
     }
@@ -4938,9 +5032,89 @@ fn break_input(
             }
             if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
+                dataflow
+                    .all_inputs_closed_at
+                    .insert(receiver_id.clone(), Instant::now());
             }
         }
     }
+}
+
+/// Grace period before the finish-straggler watchdog escalates
+/// (dora-rs/dora#2152). Conservative by default: a sink may legitimately
+/// keep working for a while after its inputs close (flushing recordings,
+/// final writes). Override with `DORA_FINISH_DRAIN_GRACE_SECS`.
+const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
+
+fn finish_drain_grace() -> Duration {
+    match std::env::var("DORA_FINISH_DRAIN_GRACE_SECS") {
+        Ok(value) => match value.parse::<u64>() {
+            Ok(secs) => Duration::from_secs(secs),
+            Err(_) => {
+                static WARNED: std::sync::atomic::AtomicBool =
+                    std::sync::atomic::AtomicBool::new(false);
+                if !WARNED.swap(true, atomic::Ordering::Relaxed) {
+                    tracing::warn!(
+                        "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
+                         (expected whole seconds); using the default of {}s",
+                        DEFAULT_FINISH_DRAIN_GRACE.as_secs()
+                    );
+                }
+                DEFAULT_FINISH_DRAIN_GRACE
+            }
+        },
+        Err(_) => DEFAULT_FINISH_DRAIN_GRACE,
+    }
+}
+
+/// Best-effort stack capture of a stuck node before it is killed, so the
+/// "why didn't it exit" half of dora-rs/dora#2152 stays answerable from
+/// logs. macOS ships `sample`; other platforms have no portable
+/// unprivileged stack tool, so only the escalation log is emitted there.
+/// Runs as a background task — the kill ladder's grace period (10 s before
+/// SIGTERM) leaves ample time for the capture to finish first.
+fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
+    let Some(pid) = pid.filter(|pid| *pid != 0) else {
+        tracing::warn!("no pid recorded for stuck node `{node_id}`; skipping stack sample");
+        return;
+    };
+    if !cfg!(target_os = "macos") {
+        tracing::info!(
+            "stack sample capture is not supported on this platform \
+             (stuck node `{node_id}`, pid {pid})"
+        );
+        return;
+    }
+    tokio::spawn(async move {
+        match tokio::process::Command::new("sample")
+            .args([&pid.to_string(), "1"])
+            .output()
+            .await
+        {
+            Ok(output) if output.status.success() => {
+                let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+                const MAX_SAMPLE_BYTES: usize = 64 * 1024;
+                if text.len() > MAX_SAMPLE_BYTES {
+                    let mut cut = MAX_SAMPLE_BYTES;
+                    while !text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    text.truncate(cut);
+                    text.push_str("\n…(truncated)");
+                }
+                tracing::warn!("stack sample of stuck node `{node_id}` (pid {pid}):\n{text}");
+            }
+            Ok(output) => {
+                tracing::warn!(
+                    "`sample {pid}` failed for stuck node `{node_id}`: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            Err(err) => {
+                tracing::warn!("failed to run `sample` for stuck node `{node_id}`: {err}");
+            }
+        }
+    });
 }
 
 // RunningDataflow and related types are in running_dataflow.rs
