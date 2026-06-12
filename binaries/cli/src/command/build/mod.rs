@@ -79,7 +79,7 @@ mod distributed;
 mod git;
 pub mod hub;
 mod local;
-mod lockfile;
+pub(crate) mod lockfile;
 
 #[derive(Debug, clap::Args)]
 /// Run build commands provided in the given dataflow.

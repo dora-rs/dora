@@ -1,0 +1,19 @@
+# A perception pipeline using a node published to the Dora Hub.
+# See README.md. `hub:` is unstable and requires `dora build` before running.
+nodes:
+  - id: camera
+    # a normal node you write yourself
+    path: camera.py
+    outputs:
+      - image
+    output_types:
+      image: std/media/v1/Image
+
+  - id: detector
+    # resolved from the hub index — contracts, entrypoint, and build all come
+    # from the package manifest; `^0.5` pins to a commit in the lockfile
+    hub: dora-yolo@^0.5
+    inputs:
+      image: camera/image
+    outputs:
+      - bbox

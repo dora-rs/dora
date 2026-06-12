@@ -1097,10 +1097,16 @@ See the [Type Annotations Guide](types.md) for the full type library and usage d
 #### `dora hub` (unstable)
 
 Package, discover, and use dora nodes (see
-[the Dora Hub plan](plan-node-hub.md)). Phase 1 surface:
+[the Dora Hub plan](plan-node-hub.md)):
 
 ```
-dora hub init [PATH]      # scaffold a dora-node.yml manifest
+dora hub init [PATH]                       # scaffold a dora-node.yml manifest
+dora hub search <query> [--category C]     # find nodes by name/keyword/category
+                        [--platform P]
+dora hub info <pkg>[@<ver>]                # contracts + example for a package
+dora hub list <dataflow.yml>               # hub packages pinned in the lockfile
+dora hub fetch <dataflow.yml | pkg@ver>    # warm the index cache + mirror sources
+               [--target-dir DIR]
 ```
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
@@ -1108,8 +1114,11 @@ dora hub init [PATH]      # scaffold a dora-node.yml manifest
 typed inputs/outputs are left as commented examples. Check the result with
 `dora validate --node-manifest dora-node.yml`.
 
-There is deliberately no `dora hub install`: hub packages are resolved
-per-dataflow by `dora build`, cargo-style.
+`search`/`info`/`fetch` accept `--offline` to use only the cached index.
+Indexes are configured in `~/.config/dora/hub.toml`; a namespace resolves
+against exactly one index (see the plan §7.3). `hub:` nodes in a dataflow are
+resolved by `dora build` — there is deliberately no `dora hub install` (hub
+packages are resolved per-dataflow, cargo-style).
 
 ---
 

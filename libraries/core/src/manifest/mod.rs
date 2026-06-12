@@ -140,6 +140,34 @@ pub enum Category {
     Debug,
 }
 
+impl Category {
+    /// The kebab-case name as written in manifests and accepted by
+    /// `--category` (matches the serde representation).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Category::Sensor => "sensor",
+            Category::Actuator => "actuator",
+            Category::Robot => "robot",
+            Category::Transform => "transform",
+            Category::Filter => "filter",
+            Category::MlInference => "ml-inference",
+            Category::Llm => "llm",
+            Category::Speech => "speech",
+            Category::Communication => "communication",
+            Category::Recorder => "recorder",
+            Category::Visualization => "visualization",
+            Category::Simulator => "simulator",
+            Category::Debug => "debug",
+        }
+    }
+}
+
+impl std::fmt::Display for Category {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A typed input or output port.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

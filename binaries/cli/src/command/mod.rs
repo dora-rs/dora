@@ -434,7 +434,13 @@ mod tests {
         parse_ok(&["dora", "hub", "init"]);
         parse_ok(&["dora", "hub", "init", "path/to/node"]);
         parse_ok(&["dora", "hub", "install", "dora-yolo"]);
+        parse_ok(&["dora", "hub", "search", "camera", "--category", "sensor"]);
+        parse_ok(&["dora", "hub", "search", "--offline"]);
+        parse_ok(&["dora", "hub", "info", "dora-yolo@^0.5"]);
+        parse_ok(&["dora", "hub", "list", "dataflow.yml"]);
+        parse_ok(&["dora", "hub", "fetch", "dataflow.yml", "--target-dir", "c"]);
         parse_err(&["dora", "hub"]);
+        parse_err(&["dora", "hub", "info"]);
     }
 
     #[test]
