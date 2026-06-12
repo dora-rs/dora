@@ -1,6 +1,6 @@
-use dora_cli::{BuildConfig, build, run};
+use dora_cli::{BuildConfig, Executable, RunCommand, build};
 use eyre::Context;
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -20,7 +20,12 @@ fn main() -> eyre::Result<()> {
         ..Default::default()
     })?;
 
-    run(dataflow, false)?;
+    // Bound the run so a wedged node fails fast via the daemon's stop
+    // escalation instead of hanging until the CI step timeout (#2152).
+    // A healthy run self-terminates quickly.
+    let mut run = RunCommand::new(dataflow);
+    run.stop_after = Some(Duration::from_secs(120));
+    run.execute()?;
 
     Ok(())
 }

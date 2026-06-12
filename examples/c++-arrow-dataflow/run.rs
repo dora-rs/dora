@@ -1,5 +1,6 @@
+use dora_cli::{Executable, RunCommand};
 use eyre::{Context, bail};
-use std::{env::consts::EXE_SUFFIX, path::Path, process::Command};
+use std::{env::consts::EXE_SUFFIX, path::Path, process::Command, time::Duration};
 
 struct ArrowConfig {
     cflags: String,
@@ -51,7 +52,12 @@ fn main() -> eyre::Result<()> {
         ],
     )?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    // Bound the run so a wedged node fails fast via the daemon's stop
+    // escalation instead of hanging until the CI step timeout (#2152).
+    // A healthy run self-terminates quickly.
+    let mut run = RunCommand::new("dataflow.yml".to_string());
+    run.stop_after = Some(Duration::from_secs(120));
+    run.execute()?;
 
     Ok(())
 }
