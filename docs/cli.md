@@ -1094,6 +1094,23 @@ dora validate --node-manifest dora-node.yml
 
 See the [Type Annotations Guide](types.md) for the full type library and usage details.
 
+#### `dora hub` (unstable)
+
+Package, discover, and use dora nodes (see
+[the Dora Hub plan](plan-node-hub.md)). Phase 1 surface:
+
+```
+dora hub init [PATH]      # scaffold a dora-node.yml manifest
+```
+
+`init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
+`Cargo.toml` when present and the namespace from the `origin` git remote;
+typed inputs/outputs are left as commented examples. Check the result with
+`dora validate --node-manifest dora-node.yml`.
+
+There is deliberately no `dora hub install`: hub packages are resolved
+per-dataflow by `dora build`, cargo-style.
+
 ---
 
 ### Utility Commands
