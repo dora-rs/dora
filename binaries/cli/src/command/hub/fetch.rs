@@ -1,18 +1,21 @@
-//! `dora hub fetch` — warm the index cache and mirror pinned node sources
-//! (UC7). Resolving every reference populates the on-disk index cache, so a
-//! later `dora build --offline` can resolve `hub:` references without the
-//! network; the sources are additionally cloned into a portable directory.
+//! `dora hub fetch` — mirror pinned node sources into a portable directory
+//! (UC7) for an air-gapped or CI rebuild.
+//!
+//! A *dataflow* target mirrors exactly what `dora build --locked` would clone:
+//! the pins are read straight from the dataflow's lockfile, so the mirror can
+//! never drift from the locked build (resolving the index live could pick a
+//! newer version than the lockfile pins). A bare `name@version` target has no
+//! lockfile, so it resolves live against the index.
 //!
 //! Note: `dora build` clones git sources through its own (libgit2) build
 //! cache, so it does not yet re-use this mirror for the *source* fetch — full
 //! air-gapped source reuse is a follow-up (tracked under #2097). What this
-//! command guarantees today is offline *resolution* plus a verifiable local
-//! copy of each pinned source.
+//! command guarantees today is a verifiable local copy of each pinned source.
 
 use std::path::PathBuf;
 
 use super::common::HubContext;
-use crate::command::Executable;
+use crate::command::{Executable, build::lockfile::BuildLockfile};
 use dora_hub_client::reference::PackageRef;
 use dora_message::common::GitSource;
 use eyre::Context;
@@ -30,13 +33,17 @@ pub struct Fetch {
 
 impl Executable for Fetch {
     fn execute(self) -> eyre::Result<()> {
-        let mut ctx = HubContext::load(false)?;
         let sources = if self.target.ends_with(".yml") || self.target.ends_with(".yaml") {
-            resolve_dataflow_pins(&self.target, &mut ctx)?
+            // a dataflow mirrors exactly what `--locked` builds — read the
+            // lockfile, no index needed
+            resolve_dataflow_pins(&self.target)?
         } else {
-            vec![resolve_single(&self.target, &mut ctx)?]
+            // a bare reference resolves live against the index
+            let mut ctx = HubContext::load(false)?;
+            let source = resolve_single(&self.target, &mut ctx)?;
+            ctx.drain_warnings();
+            vec![source]
         };
-        ctx.drain_warnings();
 
         if sources.is_empty() {
             println!("Nothing to fetch (no hub packages found).");
@@ -56,35 +63,26 @@ impl Executable for Fetch {
     }
 }
 
-/// Resolve every `hub:` node of a dataflow to its pinned git source.
-fn resolve_dataflow_pins(dataflow: &str, ctx: &mut HubContext) -> eyre::Result<Vec<GitSource>> {
-    use dora_core::descriptor::{Descriptor, DescriptorExt};
-    let path = std::path::Path::new(dataflow);
-    let working_dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| std::path::Path::new("."));
-    let descriptor = Descriptor::blocking_read(path)?
-        .expand(working_dir)
-        .context("failed to expand modules")?;
-
-    let mut sources = Vec::new();
-    for node in &descriptor.nodes {
-        let Some(raw) = &node.hub else { continue };
-        let reference = PackageRef::parse(raw)
-            .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
-        let catalog = ctx.catalog_for_namespace(&reference.namespace)?;
-        let resolved = catalog
-            .resolve(&reference)
-            .with_context(|| format!("node `{}`: failed to resolve `{raw}`", node.id))?;
-        let (git, rev) = resolved.entry.source.git_pin()?;
-        sources.push(GitSource {
-            repo: git.to_string(),
-            commit_hash: rev.to_string(),
-            subdir: resolved.entry.source.subdir.clone(),
-            hub: None,
-        });
+/// The pinned git sources of a dataflow's `hub:` nodes, read from its lockfile.
+///
+/// The lockfile is authoritative: `dora build --locked` rebuilds from these
+/// exact commits, so the mirror must match them rather than re-resolving the
+/// index (which could pick a newer version). Requires a lockfile — the same
+/// contract as `dora hub list`.
+fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
+    let lockfile_path = BuildLockfile::path_for_dataflow(std::path::Path::new(dataflow), None);
+    if !lockfile_path.exists() {
+        eyre::bail!(
+            "no lockfile at `{}` — run `dora build --write-lockfile {dataflow}` first",
+            lockfile_path.display()
+        );
     }
+    let lockfile = BuildLockfile::read_from(&lockfile_path)?;
+    let sources = lockfile
+        .git_sources
+        .into_values()
+        .filter(|source| source.hub.is_some())
+        .collect();
     Ok(sources)
 }
 
