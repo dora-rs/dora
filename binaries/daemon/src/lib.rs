@@ -748,7 +748,6 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub async fn run_dataflow(
         dataflow_path: &Path,
         build_id: Option<BuildId>,
