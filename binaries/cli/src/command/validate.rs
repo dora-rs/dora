@@ -27,6 +27,9 @@ pub struct Validate {
     /// Validate a node manifest (dora-node.yml) instead of a dataflow
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     node_manifest: Option<PathBuf>,
+    /// Do not access the network for hub index refreshes (cache only)
+    #[clap(long, action, conflicts_with = "node_manifest")]
+    offline: bool,
 }
 
 impl Executable for Validate {
@@ -37,7 +40,7 @@ impl Executable for Validate {
         let dataflow = self
             .dataflow
             .expect("clap guarantees dataflow when --node-manifest is absent");
-        validate_dataflow(&dataflow, self.strict_types)
+        validate_dataflow(&dataflow, self.strict_types, self.offline)
     }
 }
 
@@ -54,7 +57,7 @@ fn validate_node_manifest(path: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
-fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
+fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre::Result<()> {
     let working_dir = dataflow
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -74,10 +77,6 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
         .expand(working_dir)
         .context("failed to expand modules in dataflow descriptor")?;
 
-    // Check input/output wiring (no build required)
-    check_wiring(&descriptor).context("wiring check failed")?;
-    println!("Input/output wiring OK.");
-
     let strict = strict_types || descriptor.strict_types.unwrap_or(false);
 
     // Load user types if a types/ directory exists
@@ -95,6 +94,18 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
         }
     }
 
+    // Resolve hub: references against the (cached) index so their contracts
+    // take part in validation (spec §6.2 ordering note)
+    let hub_resolution =
+        super::build::hub::resolve_hub_nodes(&mut descriptor, &mut registry, offline, None)?;
+    for note in &hub_resolution.notes {
+        println!("  {note}");
+    }
+
+    // Check input/output wiring (no build required)
+    check_wiring(&descriptor).context("wiring check failed")?;
+    println!("Input/output wiring OK.");
+
     // Inject contracts from node manifests adjacent to path: nodes (§6.2)
     let injection = inject_adjacent_manifests(&mut descriptor, working_dir, &mut registry);
     for note in &injection.notes {
@@ -109,11 +120,14 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
         println!("  {inf}");
     }
 
-    let count = injection.warnings.len() + result.warnings.len();
+    let count = hub_resolution.warnings.len() + injection.warnings.len() + result.warnings.len();
     if count == 0 {
         println!("All type annotations OK.");
     } else {
         println!("Type warnings:");
+        for w in &hub_resolution.warnings {
+            println!("  - {w}");
+        }
         for w in &injection.warnings {
             println!("  - {w}");
         }

@@ -10,6 +10,13 @@
       "format": "uint64",
       "minimum": 0
     },
+    "build": {
+      "description": "Build command run in the node's working dir when the package is\ninstalled (e.g. `pip install .`, `cargo build --release`). Arbitrary\ncode by design, like any `build:` — `--locked` binds it to the\nreviewed, commit-pinned source (spec §11).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "categories": {
       "description": "Categories from the fixed list (spec §7.6); drive search facets.",
       "type": "array",

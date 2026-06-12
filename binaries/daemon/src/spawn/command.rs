@@ -2,7 +2,9 @@ use crate::log::NodeLogger;
 use clonable_command::Command;
 use dora_core::{
     build::managed_python_interpreter,
-    descriptor::{DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, source_is_url},
+    descriptor::{
+        DYNAMIC_SOURCE, SHELL_SOURCE, resolve_path, resolve_path_confined, source_is_url,
+    },
     get_python_path,
 };
 use dora_download::download_file;
@@ -10,10 +12,12 @@ use dora_message::common::LogLevel;
 use eyre::WrapErr;
 use std::path::Path;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn path_spawn_command(
     working_dir: &Path,
     uv: bool,
     python_env_dir: Option<&Path>,
+    confined: bool,
     logger: &mut NodeLogger<'_>,
     node: &dora_core::descriptor::CustomNode,
     permit_url: bool,
@@ -44,7 +48,17 @@ pub(super) async fn path_spawn_command(
             }
         }
         source => {
-            let resolved_path = if source_is_url(source) {
+            let resolved_path = if confined {
+                // hub-sourced node (spec §11): the entrypoint resolves only
+                // within the node's own working dir or managed env — no env
+                // expansion, no URL download, no ambient-$PATH fallback.
+                // (The *interpreter* for a script-only `.py` entrypoint still
+                // comes from `uv run` like any non-hub script node — hub
+                // Python nodes are expected to ship a `build:` so they get a
+                // managed env, spec §15 Q4.)
+                resolve_path_confined(source, working_dir, python_env_dir)
+                    .wrap_err_with(|| format!("failed to resolve hub entrypoint `{source}`"))?
+            } else if source_is_url(source) {
                 if !permit_url {
                     eyre::bail!("URL paths are not supported in this case");
                 }

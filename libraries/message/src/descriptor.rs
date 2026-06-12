@@ -648,6 +648,32 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
 
+    /// Hub package reference (unstable).
+    ///
+    /// References a node published in the Dora Hub index:
+    /// `[<namespace>/]<name>@<semver-requirement>`. A bare name is shorthand
+    /// for the official `dora-rs/` namespace.
+    ///
+    /// `dora build` resolves the reference against the index to a pinned
+    /// commit and the node is fetched/built through the same machinery as a
+    /// [`git`](Self::git) node; the package manifest supplies the
+    /// entrypoint, build command, and typed contracts. Mutually exclusive
+    /// with `path`, `git`, and `build`.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// nodes:
+    ///   - id: detector
+    ///     hub: dora-yolo@^0.5
+    ///     inputs:
+    ///       image: camera/image
+    ///     outputs:
+    ///       - bbox
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<String>,
+
     /// Git branch to checkout after cloning.
     ///
     /// The `branch` field is only allowed in combination with the [`git`](#git) field.

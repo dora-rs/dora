@@ -224,6 +224,9 @@ impl Executable for Run {
                 stop_after,
                 debug,
                 working_dir_override,
+                // hub: dataflows run from the desugared descriptor stored at
+                // build time (the on-disk YAML has unresolved references)
+                dataflow_session.resolved_dataflow,
             )
             .await
         });

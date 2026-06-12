@@ -65,6 +65,13 @@ pub struct NodeManifest {
     /// Must be a relative path without `..` components.
     pub entrypoint: String,
 
+    /// Build command run in the node's working dir when the package is
+    /// installed (e.g. `pip install .`, `cargo build --release`). Arbitrary
+    /// code by design, like any `build:` — `--locked` binds it to the
+    /// reviewed, commit-pinned source (spec §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<String>,
+
     /// Optional platform allowlist, e.g. `[linux-x86_64, macos-aarch64]`.
     /// Empty means all platforms.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

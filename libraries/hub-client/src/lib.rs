@@ -16,6 +16,9 @@ pub mod index;
 pub mod reference;
 pub mod transport;
 
+// re-exported so consumers can name version types without a separate dep
+pub use semver;
+
 /// The namespace bare package names resolve to (spec §7.2).
 pub const OFFICIAL_NAMESPACE: &str = "dora-rs";
 

@@ -77,6 +77,7 @@ use lockfile::BuildLockfile;
 
 mod distributed;
 mod git;
+pub mod hub;
 mod local;
 mod lockfile;
 
@@ -113,6 +114,10 @@ pub struct Build {
     /// Build nodes concurrently (faster on multi-core machines).
     #[clap(long, action)]
     parallel: bool,
+    /// Do not access the network for hub index refreshes; fail loudly on
+    /// cache misses.
+    #[clap(long, action)]
+    offline: bool,
 }
 
 impl Executable for Build {
@@ -129,6 +134,7 @@ impl Executable for Build {
             write_lockfile: self.write_lockfile,
             lockfile_override: self.lockfile,
             parallel: self.parallel,
+            offline: self.offline,
             ..Default::default()
         })
     }
@@ -157,6 +163,8 @@ pub struct BuildConfig {
     pub write_lockfile: bool,
     pub lockfile_override: Option<PathBuf>,
     pub parallel: bool,
+    /// Skip network access for hub index refreshes (cache only).
+    pub offline: bool,
     /// Overrides the working directory for cargo invocations and
     /// module expansion. Needed when the dataflow path points at a
     /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
@@ -205,6 +213,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         write_lockfile,
         lockfile_override,
         parallel,
+        offline,
         working_dir_override,
     } = cfg;
     // `BuildConfig` derives `Default` so `..Default::default()` works at
@@ -247,6 +256,36 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             _ => {}
         }
     }
+    // The lockfile is read before hub resolution: under `--locked`, hub
+    // references use the pinned commits verbatim, no index resolution.
+    let lockfile_path = BuildLockfile::path_for_dataflow(&dataflow_path, lockfile_override);
+    let build_lockfile = if locked {
+        Some(BuildLockfile::read_from(&lockfile_path).with_context(|| {
+            format!(
+                "failed to read build lockfile at `{}`",
+                lockfile_path.display()
+            )
+        })?)
+    } else {
+        None
+    };
+    // Desugar hub: nodes into concrete git nodes (spec §10.1) — after module
+    // expansion, before type-checking
+    let hub_pins = build_lockfile.as_ref().map(|l| l.git_sources.clone());
+    let hub_resolution = hub::resolve_hub_nodes(
+        &mut dataflow_descriptor,
+        &mut registry,
+        offline,
+        hub_pins.as_ref(),
+    )?;
+    for note in &hub_resolution.notes {
+        println!("  {note}");
+    }
+    for warning in &hub_resolution.warnings {
+        eprintln!("  warning: {warning}");
+    }
+    let resolved_dataflow_for_session =
+        (!hub_resolution.is_empty()).then(|| dataflow_descriptor.clone());
     // Inject contracts from node manifests adjacent to path: nodes (§6.2)
     let injection = dora_core::manifest::inject::inject_adjacent_manifests(
         &mut dataflow_descriptor,
@@ -284,18 +323,6 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
 
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
-
-    let lockfile_path = BuildLockfile::path_for_dataflow(&dataflow_path, lockfile_override);
-    let build_lockfile = if locked {
-        Some(BuildLockfile::read_from(&lockfile_path).with_context(|| {
-            format!(
-                "failed to read build lockfile at `{}`",
-                lockfile_path.display()
-            )
-        })?)
-    } else {
-        None
-    };
 
     let mut git_sources = BTreeMap::new();
     let mut descriptor_git_sources = BTreeMap::new();
@@ -345,12 +372,17 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             ..
         }) = node.kind
         {
-            let source = match &build_lockfile {
-                Some(lockfile) => lockfile
-                    .get_source(&node_id, &repo)
-                    .with_context(|| format!("failed to resolve locked git source `{node_id}`"))?,
-                None => git::fetch_commit_hash(repo, rev)
-                    .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
+            // hub-desugared nodes are already pinned to a commit (and carry
+            // subdir + provenance) — no ref resolution needed
+            let source = match hub_resolution.sources.get(&node_id) {
+                Some(source) => source.clone(),
+                None => match &build_lockfile {
+                    Some(lockfile) => lockfile.get_source(&node_id, &repo).with_context(|| {
+                        format!("failed to resolve locked git source `{node_id}`")
+                    })?,
+                    None => git::fetch_commit_hash(repo, rev)
+                        .with_context(|| format!("failed to find commit hash for `{node_id}`"))?,
+                },
             };
             git_sources.insert(node_id, source);
         }
@@ -426,6 +458,9 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             // detect descriptor drift and invalidate cached build metadata
             // (#1444).
             dataflow_session.build_fingerprint = Some(session_build_fingerprint.clone());
+            // hub: nodes were desugared in memory — `dora start`/`dora run`
+            // re-read the YAML from disk and need the resolved form
+            dataflow_session.resolved_dataflow = resolved_dataflow_for_session.clone();
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
@@ -453,6 +488,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             let build_result =
                 wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info);
 
+            dataflow_session.resolved_dataflow = resolved_dataflow_for_session.clone();
             finalize_distributed_build_session(
                 &mut dataflow_session,
                 &dataflow_path,
@@ -629,6 +665,8 @@ mod tests {
         GitSource {
             repo: repo.to_owned(),
             commit_hash: commit_hash.to_owned(),
+            subdir: None,
+            hub: None,
         }
     }
 

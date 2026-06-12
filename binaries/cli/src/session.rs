@@ -38,6 +38,12 @@ pub struct DataflowSession {
     /// as "unknown" — `invalidate_if_build_inputs_changed` clears and rewrites).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_fingerprint: Option<String>,
+    /// The dataflow descriptor with `hub:` references desugared into concrete
+    /// git nodes, as built. `dora start` / `dora run` re-read the YAML from
+    /// disk, which still contains unresolved `hub:` fields — they use this
+    /// resolved form instead. `None` when the dataflow has no hub nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_dataflow: Option<dora_message::descriptor::Descriptor>,
 }
 
 impl Default for DataflowSession {
@@ -48,6 +54,7 @@ impl Default for DataflowSession {
             git_sources: Default::default(),
             local_build: Default::default(),
             build_fingerprint: None,
+            resolved_dataflow: None,
         }
     }
 }
@@ -283,6 +290,8 @@ impl DataflowSession {
         self.build_id = None;
         self.local_build = None;
         self.git_sources.clear();
+        // the desugared hub descriptor was produced by the invalidated build
+        self.resolved_dataflow = None;
         self.build_fingerprint = Some(current);
         if had_build_id {
             tracing::info!(
@@ -502,6 +511,8 @@ nodes:
             git_sources: BTreeMap::from([(
                 NodeId::from("a".to_string()),
                 GitSource {
+                    subdir: None,
+                    hub: None,
                     repo: "x".to_string(),
                     commit_hash: "y".to_string(),
                 },

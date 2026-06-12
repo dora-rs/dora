@@ -354,6 +354,25 @@ impl std::fmt::Display for DaemonId {
 pub struct GitSource {
     pub repo: String,
     pub commit_hash: String,
+    /// Subdirectory of the repository the node lives in (monorepo support).
+    /// Build, env preparation, and spawn are rooted at `<clone>/<subdir>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<String>,
+    /// Hub provenance marker. Set when this git source was desugared from a
+    /// `hub:` reference — it tells the daemon to use confined path
+    /// resolution (no ambient `$PATH` fallback) for the node, and feeds the
+    /// lockfile and `dora hub` commands.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubProvenance>,
+}
+
+/// Identity of the hub package a git source was resolved from.
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
+pub struct HubProvenance {
+    /// Index key (`namespace/name`).
+    pub name: String,
+    /// Resolved version.
+    pub version: String,
 }
 
 // Test roundtrip serialization of LogMessage

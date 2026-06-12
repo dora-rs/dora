@@ -1708,6 +1708,7 @@ dependencies = [
  "dora-core",
  "dora-daemon",
  "dora-download",
+ "dora-hub-client",
  "dora-message",
  "dora-node-api-c",
  "dora-operator-api-c",

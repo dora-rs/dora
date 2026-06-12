@@ -125,11 +125,13 @@ impl Spawner {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn_node(
         self,
         node: ResolvedNode,
         node_working_dir: PathBuf,
         python_env_dir: Option<PathBuf>,
+        confined: bool,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         write_events_to: Option<PathBuf>,
         logger: &mut NodeLogger<'_>,
@@ -177,6 +179,7 @@ impl Spawner {
                 node,
                 node_working_dir,
                 python_env_dir,
+                confined,
                 &mut logger,
                 dataflow_id,
                 node_config,
@@ -194,6 +197,7 @@ impl Spawner {
         node: ResolvedNode,
         node_working_dir: PathBuf,
         python_env_dir: Option<PathBuf>,
+        confined: bool,
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
         node_config: NodeConfig,
@@ -208,6 +212,7 @@ impl Spawner {
                     &node_working_dir,
                     self.uv,
                     python_env_dir.as_deref(),
+                    confined,
                     logger,
                     n,
                     true,

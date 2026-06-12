@@ -10,8 +10,17 @@ use dora_message::{
 };
 use eyre::{Context, ContextCompat};
 
-const LOCKFILE_VERSION: u32 = 2;
+const LOCKFILE_VERSION: u32 = 3;
 const MIN_SUPPORTED_LOCKFILE_VERSION: u32 = 1;
+/// Version written when no entry carries hub provenance or a subdir. Writing
+/// the lower version keeps plain-git lockfiles byte-compatible with older
+/// dora; hub-carrying lockfiles get v3 so an older dora fails loudly instead
+/// of silently ignoring the extra fields (and rooting the build in the wrong directory).
+const BASE_LOCKFILE_VERSION: u32 = 2;
+/// Schema tag hashed into the descriptor fingerprint. Deliberately decoupled
+/// from `LOCKFILE_VERSION`: bumping the file version for hub support must not
+/// invalidate every existing v2 lockfile.
+const FINGERPRINT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(serde::Serialize)]
 struct BuildLockfileView<'a> {
@@ -58,9 +67,9 @@ impl BuildLockfile {
         descriptor_git_sources: &BTreeMap<NodeId, NodeSource>,
     ) -> String {
         let mut canonical = String::new();
-        // Intentional: include schema version in canonical content so lockfile format
-        // bumps force regeneration even if descriptor sources are unchanged.
-        canonical.push_str(&format!("dora-lockfile-v{LOCKFILE_VERSION}\n"));
+        // Intentional: include schema version in canonical content so fingerprint
+        // schema bumps force regeneration even if descriptor sources are unchanged.
+        canonical.push_str(&format!("dora-lockfile-v{FINGERPRINT_SCHEMA_VERSION}\n"));
 
         for (node_id, source) in descriptor_git_sources {
             let NodeSource::GitBranch { repo, rev } = source else {
@@ -119,8 +128,15 @@ impl BuildLockfile {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("failed to create lockfile directory")?;
         }
+        let has_hub_entries = git_sources
+            .values()
+            .any(|s| s.hub.is_some() || s.subdir.is_some());
         let view = BuildLockfileView {
-            version: LOCKFILE_VERSION,
+            version: if has_hub_entries {
+                LOCKFILE_VERSION
+            } else {
+                BASE_LOCKFILE_VERSION
+            },
             descriptor_fingerprint,
             git_sources,
         };
@@ -153,6 +169,8 @@ mod tests {
         GitSource {
             repo: repo.to_owned(),
             commit_hash: commit_hash.to_owned(),
+            subdir: None,
+            hub: None,
         }
     }
 
@@ -185,11 +203,43 @@ mod tests {
         BuildLockfile::write_git_sources(&lockfile_path, &git_sources, &fingerprint).unwrap();
         let loaded = BuildLockfile::read_from(&lockfile_path).unwrap();
 
-        assert_eq!(loaded.version, LOCKFILE_VERSION);
+        assert_eq!(loaded.version, BASE_LOCKFILE_VERSION);
         assert_eq!(loaded.git_sources, git_sources);
         loaded
             .ensure_descriptor_fingerprint_matches(&fingerprint)
             .unwrap();
+    }
+
+    #[test]
+    fn hub_entries_bump_lockfile_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lockfile_path = tmp.path().join("hub.dora-lock.yaml");
+        let mut git_sources = BTreeMap::new();
+        git_sources.insert("detector".parse().unwrap(), {
+            let mut s = source("https://example.com/hub", "abc1234");
+            s.subdir = Some("node-hub/dora-yolo".into());
+            s.hub = Some(dora_message::common::HubProvenance {
+                name: "dora-rs/dora-yolo".into(),
+                version: "0.5.2".into(),
+            });
+            s
+        });
+        BuildLockfile::write_git_sources(&lockfile_path, &git_sources, "fp").unwrap();
+        let loaded = BuildLockfile::read_from(&lockfile_path).unwrap();
+        assert_eq!(loaded.version, LOCKFILE_VERSION);
+        let node_id: NodeId = "detector".parse().unwrap();
+        assert_eq!(
+            loaded.git_sources[&node_id].hub.as_ref().unwrap().version,
+            "0.5.2"
+        );
+        // plain-git lockfiles keep the old version for compatibility
+        let plain: BTreeMap<NodeId, GitSource> = BTreeMap::from([(
+            "node-a".parse().unwrap(),
+            source("https://example.com/repo", "abc123"),
+        )]);
+        BuildLockfile::write_git_sources(&lockfile_path, &plain, "fp").unwrap();
+        let loaded = BuildLockfile::read_from(&lockfile_path).unwrap();
+        assert_eq!(loaded.version, BASE_LOCKFILE_VERSION);
     }
 
     #[test]

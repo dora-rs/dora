@@ -39,6 +39,8 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
         Some(commit_hash) => Ok(GitSource {
             repo: repo_url,
             commit_hash,
+            subdir: None,
+            hub: None,
         }),
         None => eyre::bail!("no matching commit for `{rev:?}`"),
     }

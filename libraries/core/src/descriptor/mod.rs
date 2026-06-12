@@ -366,6 +366,70 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     }
 }
 
+/// Resolve a hub node's entrypoint under **confined** rules (spec §11): the
+/// executable may only come from the node's own working directory
+/// (`<clone>/<subdir>`) or its managed Python environment. There is no
+/// ambient-`$PATH` fallback — a typo or missing console script fails loudly
+/// instead of silently running a host binary — and the resolved path is
+/// canonicalized and checked to stay inside those roots, so a symlink
+/// escaping the working dir is rejected rather than followed.
+pub fn resolve_path_confined(
+    source: &str,
+    working_dir: &Path,
+    python_env_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    let path = Path::new(&source);
+    let path = if path.extension().is_none() {
+        path.with_extension(EXE_EXTENSION)
+    } else {
+        path.to_owned()
+    };
+
+    // a console script installed into the node's managed env
+    if let Some(env_dir) = python_env_dir {
+        let bin_dir = env_dir.join(if cfg!(windows) { "Scripts" } else { "bin" });
+        let candidate = bin_dir.join(&path);
+        if candidate.is_file() {
+            return confine(&candidate, &bin_dir);
+        }
+    }
+
+    // a file within the node's working dir (e.g. target/release/<bin>)
+    let candidate = working_dir.join(&path);
+    if candidate.exists() {
+        return confine(&candidate, working_dir);
+    }
+
+    bail!(
+        "could not find `{}` in the node's working directory `{}`{} — \
+         hub nodes resolve only within their own package (no $PATH fallback)",
+        path.display(),
+        working_dir.display(),
+        python_env_dir
+            .map(|env| format!(" or its managed environment `{}`", env.display()))
+            .unwrap_or_default(),
+    )
+}
+
+/// Canonicalize `candidate` and require it to stay under `root`.
+fn confine(candidate: &Path, root: &Path) -> Result<PathBuf> {
+    let resolved = candidate
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `{}`", candidate.display()))?;
+    let root = root
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize `{}`", root.display()))?;
+    if !resolved.starts_with(&root) {
+        bail!(
+            "entrypoint `{}` resolves outside the node's directory `{}` \
+             (symlink escape?) — refusing to run it",
+            resolved.display(),
+            root.display()
+        );
+    }
+    Ok(resolved)
+}
+
 /// Resolve `path` against the `uv`-managed environment by running
 /// `uv run which <path>`, returning an absolute path.
 ///
@@ -403,6 +467,17 @@ pub trait NodeExt {
 
 impl NodeExt for Node {
     fn kind(&self) -> eyre::Result<NodeKind<'_>> {
+        if self.hub.is_some() && self.path.is_none() {
+            // `hub:` is desugared into a concrete git node by `dora build` /
+            // `dora run` / `dora validate` before any kind dispatch — an
+            // unresolved reference reaching this point means a flow that
+            // skipped resolution
+            eyre::bail!(
+                "node `{}` uses an unresolved `hub:` reference — run `dora build` \
+                 first (`dora start` requires a prior build for hub nodes)",
+                self.id
+            );
+        }
         match (
             &self.path,
             &self.operators,
@@ -558,6 +633,60 @@ nodes:
             result.is_err(),
             "expected Err for a binary that exists nowhere, got {result:?}"
         );
+    }
+
+    #[test]
+    fn resolve_path_confined_has_no_path_fallback() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // `sh` exists on $PATH everywhere on unix — confined resolution must
+        // NOT find it (spec §11: a typo or missing console script fails, it
+        // never silently runs a host binary)
+        let result = resolve_path_confined("sh", tmp.path(), None);
+        assert!(result.is_err(), "expected Err, got {result:?}");
+
+        // a real file in the working dir resolves
+        let exe = if cfg!(windows) {
+            "node.exe"
+        } else {
+            "node.bin"
+        };
+        std::fs::write(tmp.path().join(exe), b"x").unwrap();
+        let resolved = resolve_path_confined(exe, tmp.path(), None).unwrap();
+        assert!(resolved.is_absolute());
+
+        // a managed-env console script resolves through the env's bin dir
+        let env_dir = tmp.path().join("env");
+        let bin_dir = env_dir.join(if cfg!(windows) { "Scripts" } else { "bin" });
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        std::fs::write(bin_dir.join(exe), b"x").unwrap();
+        let resolved =
+            resolve_path_confined(exe, tmp.path().join("empty").as_path(), Some(&env_dir));
+        assert!(resolved.is_ok(), "{resolved:?}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_path_confined_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let working_dir = tmp.path().join("work");
+        std::fs::create_dir_all(&working_dir).unwrap();
+        let outside = tmp.path().join("outside.bin");
+        std::fs::write(&outside, b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, working_dir.join("escape.bin")).unwrap();
+        let result = resolve_path_confined("escape.bin", &working_dir, None);
+        assert!(
+            result.is_err(),
+            "a symlink pointing outside the working dir must be rejected, got {result:?}"
+        );
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("outside"), "{msg}");
+    }
+
+    #[test]
+    fn unresolved_hub_node_has_clear_kind_error() {
+        let node: Node = serde_yaml::from_str("id: x\nhub: dora-yolo@^0.5\n").unwrap();
+        let err = node.kind().unwrap_err();
+        assert!(format!("{err}").contains("dora build"), "{err}");
     }
 
     #[test]

@@ -56,7 +56,11 @@ async fn build_dataflow(
         let git_source = git_sources.get(&node_id).cloned();
         let prev_git_source = prev_git_sources.get(&node_id).cloned();
         let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
-            still_needed_for_this_build: git_sources.values().any(|s| s == &prev_source),
+            // compare clone identity (repo + commit) only: hub provenance and
+            // subdir don't change which directory the clone occupies
+            still_needed_for_this_build: git_sources
+                .values()
+                .any(|s| s.repo == prev_source.repo && s.commit_hash == prev_source.commit_hash),
             git_source: prev_source,
         });
 
@@ -79,6 +83,12 @@ async fn build_dataflow(
     let mut info = BuildInfo {
         node_working_dirs: Default::default(),
         python_env_dirs: Default::default(),
+        // hub-sourced nodes are spawned with confined path resolution
+        confined_nodes: git_sources
+            .iter()
+            .filter(|(_, source)| source.hub.is_some())
+            .map(|(node_id, _)| node_id.clone())
+            .collect(),
     };
 
     if parallel && tasks.len() > 1 {

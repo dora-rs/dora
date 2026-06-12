@@ -215,6 +215,7 @@ impl Executable for Daemon {
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
                             LogDestination::Tracing, None, None, false, None,
+                            dataflow_session.resolved_dataflow,
                         ).await?;
                         handle_dataflow_result(result, None)
                     }

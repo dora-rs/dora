@@ -422,6 +422,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_offline() {
+        parse_ok(&["dora", "build", "dataflow.yml", "--offline"]);
+        parse_ok(&["dora", "validate", "dataflow.yml", "--offline"]);
+        // --offline is meaningless for standalone manifest validation
+        parse_err(&["dora", "validate", "--node-manifest", "x.yml", "--offline"]);
+    }
+
+    #[test]
     fn parse_hub() {
         parse_ok(&["dora", "hub", "init"]);
         parse_ok(&["dora", "hub", "init", "path/to/node"]);
