@@ -130,35 +130,20 @@ fn start_dataflow(
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
     // `hub:` references are desugared by `dora build`, which stores the
     // resolved descriptor in the session — `dora start` requires that prior
-    // build, exactly like git sources require a prior clone. Verify the
-    // on-disk references still match what was built before substituting.
+    // build, exactly like git sources require a prior clone. Compare the
+    // expanded descriptor against the digest taken at build time so *any*
+    // on-disk edit (hub or not) since the build is caught, then substitute
+    // the resolved form.
     if dataflow_descriptor.nodes.iter().any(|n| n.hub.is_some()) {
         let resolved = dataflow_session.resolved_dataflow.clone().ok_or_else(|| {
             eyre::eyre!("this dataflow uses `hub:` nodes — run `dora build` first")
         })?;
-        for node in &dataflow_descriptor.nodes {
-            let Some(raw_reference) = &node.hub else {
-                continue;
-            };
-            let reference = dora_hub_client::reference::PackageRef::parse(raw_reference)
-                .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
-            let built = dataflow_session
-                .git_sources
-                .get(&node.id)
-                .and_then(|s| s.hub.as_ref());
-            let matches_build = built.is_some_and(|p| {
-                p.name == reference.key()
-                    && p.version
-                        .parse()
-                        .is_ok_and(|v| reference.requirement.matches(&v))
-            });
-            if !matches_build {
-                eyre::bail!(
-                    "node `{}`: the `hub:` reference changed since the last build \
-                     (or the cached build is stale) — run `dora build` again",
-                    node.id
-                );
-            }
+        let current = DataflowSession::fingerprint_source(&dataflow_descriptor);
+        if current.is_none() || current != dataflow_session.source_fingerprint {
+            eyre::bail!(
+                "this dataflow changed since the last `dora build` — run `dora build` again \
+                 (`dora start` cannot re-resolve `hub:` references)"
+            );
         }
         dataflow_descriptor = resolved;
     }

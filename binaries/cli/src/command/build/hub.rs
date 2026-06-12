@@ -96,9 +96,26 @@ pub fn resolve_hub_nodes(
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
         let pin = pins.and_then(|p| p.get(&node.id));
+        // under `--locked` (pins present), a node with no lockfile entry must
+        // fail fast rather than silently resolving from the network
+        if pins.is_some() && pin.is_none() {
+            eyre::bail!(
+                "node `{}`: `hub:` reference is not in the lockfile — \
+                 regenerate with `dora build --write-lockfile`",
+                node.id
+            );
+        }
         let (version, entry, source) = match pin {
             Some(pin) => {
                 // --locked: the pinned commit is used verbatim, no resolution
+                let valid_hash = (7..=64).contains(&pin.commit_hash.len())
+                    && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
+                if !valid_hash {
+                    eyre::bail!(
+                        "node `{}`: lockfile commit hash is not a valid hex hash",
+                        node.id
+                    );
+                }
                 let provenance = pin.hub.as_ref().with_context(|| {
                     format!(
                         "node `{}`: lockfile entry has no hub provenance — \
@@ -148,9 +165,28 @@ pub fn resolve_hub_nodes(
                             .as_deref()
                             .map(|r| format!(
                                 " ({})",
-                                r.chars().filter(|c| !c.is_control()).collect::<String>()
+                                r.chars()
+                                    .filter(|c| !c.is_control())
+                                    .take(200)
+                                    .collect::<String>()
                             ))
                             .unwrap_or_default()
+                    ));
+                }
+                // the lockfile is authoritative for the pin, but the index
+                // entry of the pinned version should still agree — a mismatch
+                // means the append-only index was tampered with or rewritten
+                if let Ok((git, rev)) = entry.source.git_pin()
+                    && (git != pin.repo
+                        || rev != pin.commit_hash
+                        || entry.source.subdir != pin.subdir)
+                {
+                    resolution.warnings.push(format!(
+                        "node `{}`: the index entry for `{}@{version}` no longer matches \
+                         the lockfile pin — the index may have been rewritten; \
+                         the lockfile pin is used",
+                        node.id,
+                        reference.key()
                     ));
                 }
                 (version, entry, pin.clone())
@@ -214,10 +250,10 @@ pub fn resolve_hub_nodes(
         node.git = Some(source.repo.clone());
         node.rev = Some(source.commit_hash.clone());
         node.hub = None;
+        let short_hash: String = source.commit_hash.chars().take(12).collect();
         resolution.notes.push(format!(
-            "node `{}`: resolved hub package {label} -> {}",
-            node.id,
-            &source.commit_hash[..source.commit_hash.len().min(12)]
+            "node `{}`: resolved hub package {label} -> {short_hash}",
+            node.id
         ));
         resolution.sources.insert(node.id.clone(), source);
     }

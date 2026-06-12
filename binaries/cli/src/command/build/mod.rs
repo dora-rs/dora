@@ -241,6 +241,14 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
 
+    // Digest the expanded descriptor before hub desugaring so `dora start` /
+    // `dora daemon --run-dataflow` can detect on-disk edits to a hub dataflow
+    // (whose unresolved `hub:` references can't be re-fingerprinted directly).
+    let has_hub_nodes = dataflow_descriptor.nodes.iter().any(|n| n.hub.is_some());
+    let source_fingerprint = has_hub_nodes
+        .then(|| DataflowSession::fingerprint_source(&dataflow_descriptor))
+        .flatten();
+
     // --- Type checking (Phase 1) ---
     let strict = strict_types || dataflow_descriptor.strict_types.unwrap_or(false);
     let mut registry = TypeRegistry::new();
@@ -461,6 +469,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             // hub: nodes were desugared in memory — `dora start`/`dora run`
             // re-read the YAML from disk and need the resolved form
             dataflow_session.resolved_dataflow = resolved_dataflow_for_session.clone();
+            dataflow_session.source_fingerprint = source_fingerprint.clone();
             dataflow_session
                 .write_out_for_dataflow(&dataflow_path)
                 .context("failed to write out dataflow session file")?;
@@ -489,6 +498,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 wait_until_dataflow_built(build_id, &coordinator_session, log::LevelFilter::Info);
 
             dataflow_session.resolved_dataflow = resolved_dataflow_for_session.clone();
+            dataflow_session.source_fingerprint = source_fingerprint.clone();
             finalize_distributed_build_session(
                 &mut dataflow_session,
                 &dataflow_path,
