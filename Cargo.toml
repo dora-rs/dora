@@ -56,6 +56,7 @@ members = [
     "libraries/log-utils",
     "libraries/coordinator-store",
     "libraries/core",
+    "libraries/hub-client",
     "libraries/message",
     "libraries/recording",
     "binaries/replay-node",
@@ -102,6 +103,7 @@ dora-operator-api-python = { version = "1.0.0-rc1", path = "apis/python/operator
 dora-operator-api-c = { version = "1.0.0-rc1", path = "apis/c/operator" }
 dora-node-api-c = { version = "1.0.0-rc1", path = "apis/c/node" }
 dora-core = { version = "1.0.0-rc1", path = "libraries/core" }
+dora-hub-client = { version = "1.0.0-rc1", path = "libraries/hub-client" }
 dora-recording = { version = "1.0.0-rc1", path = "libraries/recording" }
 dora-arrow-convert = { version = "1.0.0-rc1", path = "libraries/arrow-convert" }
 dora-tracing = { version = "1.0.0-rc1", path = "libraries/extensions/telemetry/tracing" }
