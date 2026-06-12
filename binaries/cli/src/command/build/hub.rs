@@ -42,6 +42,27 @@ impl HubResolution {
     }
 }
 
+/// Normalize an index `source.git` into a form the build's `GitManager` can
+/// consume. `validate_git_url` accepts two scheme-less forms — scp-style
+/// `git@host:path` and absolute local paths — but `GitManager::choose_clone_dir`
+/// parses the URL with `url::Url`, which rejects both. Rewrite them into the
+/// equivalent `ssh://` / `file://` URLs git treats identically, so a source
+/// that resolves also clones instead of failing late during the build.
+fn normalize_git_source_url(url: &str) -> String {
+    if url.contains("://") {
+        return url.to_string();
+    }
+    if let Some(rest) = url.strip_prefix("git@")
+        && let Some((host, path)) = rest.split_once(':')
+    {
+        return format!("ssh://git@{host}/{}", path.trim_start_matches('/'));
+    }
+    if url.starts_with('/') {
+        return format!("file://{url}");
+    }
+    url.to_string()
+}
+
 /// Resolve and desugar every `hub:` node in `dataflow`.
 ///
 /// With `pins` (from a lockfile, `--locked`), no index resolution happens:
@@ -177,7 +198,7 @@ pub fn resolve_hub_nodes(
                 // entry of the pinned version should still agree — a mismatch
                 // means the append-only index was tampered with or rewritten
                 if let Ok((git, rev)) = entry.source.git_pin()
-                    && (git != pin.repo
+                    && (normalize_git_source_url(git) != pin.repo
                         || rev != pin.commit_hash
                         || entry.source.subdir != pin.subdir)
                 {
@@ -204,7 +225,7 @@ pub fn resolve_hub_nodes(
                     )
                 })?;
                 let source = GitSource {
-                    repo: git_url.to_string(),
+                    repo: normalize_git_source_url(git_url),
                     commit_hash: rev.to_string(),
                     subdir: resolved.entry.source.subdir.clone(),
                     hub: Some(HubProvenance {
@@ -260,4 +281,33 @@ pub fn resolve_hub_nodes(
 
     resolution.warnings.append(&mut fetcher.warnings);
     Ok(resolution)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_git_source_url;
+
+    #[test]
+    fn normalizes_scp_and_path_sources_to_parseable_urls() {
+        // every `expected` is a scheme-prefixed URL `url::Url::parse` accepts,
+        // which is exactly what GitManager::choose_clone_dir needs.
+        let cases = [
+            // scp-style → ssh://
+            (
+                "git@github.com:org/repo.git",
+                "ssh://git@github.com/org/repo.git",
+            ),
+            ("/srv/mirrors/repo", "file:///srv/mirrors/repo"),
+            // already-parseable forms are left untouched
+            (
+                "https://github.com/org/repo.git",
+                "https://github.com/org/repo.git",
+            ),
+            ("ssh://git@host/org/repo", "ssh://git@host/org/repo"),
+            ("file:///local/repo", "file:///local/repo"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(normalize_git_source_url(input), expected, "input `{input}`");
+        }
+    }
 }
