@@ -25,7 +25,6 @@ macro_rules! impl_into_arrow {
                 }
             }
         )*
-
         $(
             impl IntoArrow for Vec<$t> {
                 type A = PrimitiveArray<$arrow_type>;
@@ -60,7 +59,6 @@ impl IntoArrow for &str {
 
 impl IntoArrow for () {
     type A = arrow::array::NullArray;
-
     fn into_arrow(self) -> Self::A {
         arrow::array::NullArray::new(0)
     }
@@ -97,8 +95,9 @@ impl IntoArrow for Vec<String> {
 }
 
 /// The nanosecond-resolution `i64` timestamp can only represent dates in roughly
-/// representable boundary and a warning is emitted, rather than silently mapping
-/// to the Unix epoch (the previous behaviour).
+/// 1677-09-21..2262-04-11. Dates outside that range are saturated to `i64::MIN`
+/// (far-past) or `i64::MAX` (far-future) and a `tracing::warn!` is emitted,
+/// rather than silently mapping to the Unix epoch (the previous behaviour).
 impl IntoArrow for NaiveDateTime {
     type A = arrow::array::TimestampNanosecondArray;
     fn into_arrow(self) -> Self::A {
@@ -119,5 +118,30 @@ impl IntoArrow for NaiveDateTime {
                 }
             };
         TimestampNanosecondArray::from(vec![timestamp])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn naive_datetime_out_of_range_saturates() {
+        // Far-future date (year 3000) should saturate to i64::MAX
+        let far_future = NaiveDate::from_ymd_opt(3000, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let arr = far_future.into_arrow();
+        assert_eq!(arr.value(0), i64::MAX);
+
+        // Far-past date (year 1000) should saturate to i64::MIN
+        let far_past = NaiveDate::from_ymd_opt(1000, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let arr = far_past.into_arrow();
+        assert_eq!(arr.value(0), i64::MIN);
     }
 }
