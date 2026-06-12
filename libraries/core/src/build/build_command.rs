@@ -17,16 +17,17 @@ use tokio::{
 };
 use tokio_stream::{StreamExt, wrappers::LinesStream};
 
-static LOCAL_DORA_WHEEL_CACHE: LazyLock<
-    tokio::sync::Mutex<BTreeMap<LocalDoraPythonSource, PathBuf>>,
-> = LazyLock::new(|| tokio::sync::Mutex::new(BTreeMap::new()));
+/// Serializes wheel builds within one process: concurrent env preparations share the
+/// per-PID staging dir, so only one `uv build` may use it at a time.
+static LOCAL_DORA_WHEEL_BUILD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const LOCAL_DORA_RUNTIME_MARKER: &str = ".dora-local-runtime-fingerprint";
 const LOCAL_DORA_WHEEL_CACHE_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Debug)]
 struct LocalDoraPythonSource {
     package_dir: PathBuf,
     fingerprint: String,
@@ -391,27 +392,39 @@ async fn dora_runtime_install_args(
     }
 }
 
-/// Builds the in-tree Python API once per Dora process and returns its wheel path.
+/// Builds the in-tree Python API at most once per source fingerprint and returns its wheel path.
 ///
 /// Installing the local source tree directly asks maturin to build once per managed
-/// node env. A wheel install keeps local checkout behavior while sharing that build
-/// across all node envs created by the current CLI invocation.
+/// node env. The wheel is built into a per-process staging dir and then promoted to a
+/// fingerprint-and-platform-keyed shared dir under `target/dora-python-wheels/`, so
+/// subsequent Dora processes (separate `dora build`/`dora run` invocations, each smoke
+/// test) reuse one build instead of recompiling per process (#2143).
+///
+/// The fingerprint does not cover workspace dependency crates outside
+/// `apis/python/node` (same scope the env reinstall marker already accepts), so shared
+/// wheels are age-evicted after [`LOCAL_DORA_WHEEL_CACHE_MAX_AGE`] to bound that drift.
+/// The shared dir is the only cache layer — deliberately no in-memory memoization, so
+/// the eviction also applies inside long-lived processes like the daemon, which serves
+/// many builds without restarting.
 async fn ensure_local_dora_python_wheel(
     source: &LocalDoraPythonSource,
     envs: &Option<BTreeMap<String, EnvValue>>,
     stdout_tx: tokio::sync::mpsc::Sender<std::io::Result<String>>,
 ) -> eyre::Result<PathBuf> {
-    let mut cache = LOCAL_DORA_WHEEL_CACHE.lock().await;
-    if let Some(wheel) = cache.get(source)
-        && wheel.is_file()
-    {
-        return Ok(wheel.clone());
+    let _build_guard = LOCAL_DORA_WHEEL_BUILD_LOCK.lock().await;
+
+    let wheel_root = local_dora_python_wheel_root(&source.package_dir)?;
+    cleanup_stale_local_dora_python_wheel_dirs(&wheel_root, LOCAL_DORA_WHEEL_CACHE_MAX_AGE);
+
+    let shared_dir = local_dora_python_shared_wheel_dir(&wheel_root, &source.fingerprint);
+    if let Ok(wheel) = find_local_dora_python_wheel(&shared_dir) {
+        return Ok(wheel);
     }
 
-    let wheel_dir = local_dora_python_wheel_dir(&source.package_dir)?;
+    let wheel_dir = wheel_root.join(format!("build-{}", std::process::id()));
     std::fs::create_dir_all(&wheel_dir).wrap_err_with(|| {
         format!(
-            "failed to create local Dora Python wheel cache `{}`",
+            "failed to create local Dora Python wheel staging dir `{}`",
             wheel_dir.display()
         )
     })?;
@@ -474,20 +487,58 @@ async fn ensure_local_dora_python_wheel(
         ));
     }
 
-    let wheel = find_local_dora_python_wheel(&wheel_dir)?;
-    cache.insert(source.clone(), wheel.clone());
-    Ok(wheel)
+    promote_local_dora_python_wheel(&wheel_dir, &shared_dir)
 }
 
-fn local_dora_python_wheel_dir(package_dir: &Path) -> eyre::Result<PathBuf> {
-    let workspace_root = local_dora_workspace_root(package_dir)?;
-    let wheel_root = workspace_root.join("target").join("dora-python-wheels");
-    cleanup_stale_local_dora_python_wheel_dirs(
-        &wheel_root,
-        LOCAL_DORA_WHEEL_CACHE_MAX_AGE,
-        std::process::id(),
-    );
-    Ok(wheel_root.join(format!("process-{}", std::process::id())))
+fn local_dora_python_wheel_root(package_dir: &Path) -> eyre::Result<PathBuf> {
+    Ok(local_dora_workspace_root(package_dir)?
+        .join("target")
+        .join("dora-python-wheels"))
+}
+
+/// The key includes OS and architecture so checkouts visible to several platforms
+/// (e.g. WSL + native Windows, NFS-shared workspaces) don't serve each other
+/// incompatible wheels.
+fn local_dora_python_shared_wheel_dir(wheel_root: &Path, fingerprint: &str) -> PathBuf {
+    wheel_root.join(format!(
+        "fp-{fingerprint}-{}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ))
+}
+
+/// Moves a freshly built wheel from the per-process staging dir into the shared
+/// fingerprint-keyed dir. If another process promoted the same fingerprint first,
+/// its wheel wins and the staging dir is discarded. A wheel-less shared dir (e.g.
+/// left by an interrupted cleanup) is replaced so the cache self-heals.
+fn promote_local_dora_python_wheel(staging_dir: &Path, shared_dir: &Path) -> eyre::Result<PathBuf> {
+    let staged_wheel = find_local_dora_python_wheel(staging_dir)?;
+    let wheel_name = staged_wheel
+        .file_name()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| eyre!("staged wheel `{}` has no file name", staged_wheel.display()))?;
+
+    if let Err(rename_error) = fs::rename(staging_dir, shared_dir) {
+        if let Ok(wheel) = find_local_dora_python_wheel(shared_dir) {
+            let _ = fs::remove_dir_all(staging_dir);
+            return Ok(wheel);
+        }
+        let _ = fs::remove_dir_all(shared_dir);
+        if fs::rename(staging_dir, shared_dir).is_err() {
+            if let Ok(wheel) = find_local_dora_python_wheel(shared_dir) {
+                let _ = fs::remove_dir_all(staging_dir);
+                return Ok(wheel);
+            }
+            return Err(rename_error).wrap_err_with(|| {
+                format!(
+                    "failed to promote local Dora Python wheel from `{}` to `{}`",
+                    staging_dir.display(),
+                    shared_dir.display()
+                )
+            });
+        }
+    }
+    Ok(shared_dir.join(wheel_name))
 }
 
 fn find_local_dora_python_wheel(wheel_dir: &Path) -> eyre::Result<PathBuf> {
@@ -511,11 +562,13 @@ fn find_local_dora_python_wheel(wheel_dir: &Path) -> eyre::Result<PathBuf> {
     })
 }
 
-fn cleanup_stale_local_dora_python_wheel_dirs(
-    wheel_root: &Path,
-    max_age: Duration,
-    current_pid: u32,
-) {
+/// Age-evicts Dora-managed wheel dirs under `wheel_root`.
+///
+/// Evicting stale `fp-` dirs uniformly (including the current fingerprint's, which is
+/// rebuilt right afterwards) bounds how long a cached wheel can drift from sources the
+/// fingerprint doesn't cover. In-flight `build-` staging dirs are protected by their
+/// fresh mtime, not by name: `uv build --clear` rewrites the dir when a build starts.
+fn cleanup_stale_local_dora_python_wheel_dirs(wheel_root: &Path, max_age: Duration) {
     let Ok(entries) = fs::read_dir(wheel_root) else {
         return;
     };
@@ -526,15 +579,13 @@ fn cleanup_stale_local_dora_python_wheel_dirs(
             continue;
         }
 
-        let Some(pid) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_prefix("process-"))
-            .and_then(|pid| pid.parse::<u32>().ok())
-        else {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        if pid == current_pid {
+        // `process-` covers wheel dirs written by older Dora versions.
+        let managed =
+            name.starts_with("fp-") || name.starts_with("build-") || name.starts_with("process-");
+        if !managed {
             continue;
         }
 
@@ -696,8 +747,9 @@ mod tests {
     use super::{
         cleanup_stale_local_dora_python_wheel_dirs, dora_runtime_install_args,
         find_local_dora_python_wheel, forward_build_output, local_dora_python_package_dir,
-        local_dora_python_source_fingerprint, local_dora_python_wheel_dir,
-        local_runtime_marker_matches, write_local_runtime_marker,
+        local_dora_python_shared_wheel_dir, local_dora_python_source_fingerprint,
+        local_dora_python_wheel_root, local_runtime_marker_matches,
+        promote_local_dora_python_wheel, write_local_runtime_marker,
     };
     use std::{ffi::OsString, fs, time::Duration};
     use tokio::io::{AsyncWriteExt, BufReader};
@@ -738,18 +790,89 @@ mod tests {
     }
 
     #[test]
-    fn local_runtime_wheel_cache_is_under_workspace_target() {
+    fn local_runtime_wheel_cache_is_keyed_by_fingerprint_and_platform() {
         let temp = tempfile::tempdir().unwrap();
         let package_dir = temp.path().join("apis").join("python").join("node");
         fs::create_dir_all(&package_dir).unwrap();
 
+        let wheel_root = local_dora_python_wheel_root(&package_dir).unwrap();
         assert_eq!(
-            local_dora_python_wheel_dir(&package_dir).unwrap(),
-            temp.path()
-                .join("target")
-                .join("dora-python-wheels")
-                .join(format!("process-{}", std::process::id()))
+            wheel_root,
+            temp.path().join("target").join("dora-python-wheels")
         );
+        assert_eq!(
+            local_dora_python_shared_wheel_dir(&wheel_root, "abc123"),
+            wheel_root.join(format!(
+                "fp-abc123-{}-{}",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            ))
+        );
+    }
+
+    #[test]
+    fn promotes_staged_wheel_to_shared_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging_dir = temp.path().join("build-1");
+        let shared_dir = temp.path().join("fp-abc");
+        let wheel_name = "dora_rs-0.4.0-cp37-abi3-manylinux_2_34_x86_64.whl";
+        fs::create_dir_all(&staging_dir).unwrap();
+        fs::write(staging_dir.join(wheel_name), "").unwrap();
+
+        let wheel = promote_local_dora_python_wheel(&staging_dir, &shared_dir).unwrap();
+
+        assert_eq!(wheel, shared_dir.join(wheel_name));
+        assert!(!staging_dir.exists());
+    }
+
+    #[test]
+    fn promote_uses_existing_shared_wheel_when_losing_the_race() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging_dir = temp.path().join("build-1");
+        let shared_dir = temp.path().join("fp-abc");
+        let winner_wheel = "dora_rs-0.4.0-cp37-abi3-manylinux_2_34_aarch64.whl";
+        fs::create_dir_all(&staging_dir).unwrap();
+        fs::write(
+            staging_dir.join("dora_rs-0.4.0-cp37-abi3-manylinux_2_34_x86_64.whl"),
+            "",
+        )
+        .unwrap();
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::write(shared_dir.join(winner_wheel), "").unwrap();
+
+        let wheel = promote_local_dora_python_wheel(&staging_dir, &shared_dir).unwrap();
+
+        assert_eq!(wheel, shared_dir.join(winner_wheel));
+        assert!(!staging_dir.exists());
+    }
+
+    #[test]
+    fn promote_fails_when_staging_has_no_wheel() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging_dir = temp.path().join("build-1");
+        let shared_dir = temp.path().join("fp-abc");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        assert!(promote_local_dora_python_wheel(&staging_dir, &shared_dir).is_err());
+    }
+
+    #[test]
+    fn promote_replaces_shared_dir_that_lost_its_wheel() {
+        let temp = tempfile::tempdir().unwrap();
+        let staging_dir = temp.path().join("build-1");
+        let shared_dir = temp.path().join("fp-abc");
+        let wheel_name = "dora_rs-0.4.0-cp37-abi3-manylinux_2_34_x86_64.whl";
+        fs::create_dir_all(&staging_dir).unwrap();
+        fs::write(staging_dir.join(wheel_name), "").unwrap();
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::write(shared_dir.join("stray.txt"), "").unwrap();
+
+        let wheel = promote_local_dora_python_wheel(&staging_dir, &shared_dir).unwrap();
+
+        assert_eq!(wheel, shared_dir.join(wheel_name));
+        assert!(wheel.is_file());
+        assert!(!shared_dir.join("stray.txt").exists());
+        assert!(!staging_dir.exists());
     }
 
     #[test]
@@ -802,20 +925,41 @@ mod tests {
     }
 
     #[test]
-    fn stale_process_wheel_dirs_are_removed_without_touching_current_process() {
+    fn stale_wheel_dirs_are_removed_without_touching_unmanaged_entries() {
         let temp = tempfile::tempdir().unwrap();
-        let old_dir = temp.path().join("process-1");
-        let current_dir = temp.path().join("process-2");
-        let unrelated_dir = temp.path().join("not-a-process");
-        fs::create_dir_all(&old_dir).unwrap();
-        fs::create_dir_all(&current_dir).unwrap();
-        fs::create_dir_all(&unrelated_dir).unwrap();
+        let shared_dir = temp.path().join("fp-old");
+        let staging_dir = temp.path().join("build-1");
+        let legacy_process_dir = temp.path().join("process-7");
+        let unrelated_dir = temp.path().join("not-a-wheel-dir");
+        for dir in [
+            &shared_dir,
+            &staging_dir,
+            &legacy_process_dir,
+            &unrelated_dir,
+        ] {
+            fs::create_dir_all(dir).unwrap();
+        }
 
-        cleanup_stale_local_dora_python_wheel_dirs(temp.path(), Duration::ZERO, 2);
+        cleanup_stale_local_dora_python_wheel_dirs(temp.path(), Duration::ZERO);
 
-        assert!(!old_dir.exists());
-        assert!(current_dir.exists());
+        assert!(!shared_dir.exists());
+        assert!(!staging_dir.exists());
+        assert!(!legacy_process_dir.exists());
         assert!(unrelated_dir.exists());
+    }
+
+    #[test]
+    fn fresh_wheel_dirs_survive_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared_dir = temp.path().join("fp-current");
+        let staging_dir = temp.path().join("build-1");
+        fs::create_dir_all(&shared_dir).unwrap();
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        cleanup_stale_local_dora_python_wheel_dirs(temp.path(), Duration::from_secs(3600));
+
+        assert!(shared_dir.exists());
+        assert!(staging_dir.exists());
     }
 
     #[test]
