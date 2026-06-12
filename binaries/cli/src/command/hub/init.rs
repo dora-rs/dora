@@ -185,12 +185,29 @@ fn detect_rust(dir: &Path) -> Option<DetectedNode> {
     let raw = std::fs::read_to_string(dir.join("Cargo.toml")).ok()?;
     let parsed: toml::Table = raw.parse().ok()?;
     let package = parsed.get("package")?;
-    let name = normalize_name(package.get("name")?.as_str()?);
+    let pkg_name = package.get("name")?.as_str()?;
+    let name = normalize_name(pkg_name);
     if name.is_empty() {
         return None;
     }
+    // The built artifact is named after the *binary target*, which Cargo keeps
+    // verbatim (underscores and all) — normalizing it would point the
+    // entrypoint at a file Cargo never produces. Prefer `default-run` / the
+    // first explicit `[[bin]]`, else the package name verbatim.
+    let bin = package
+        .get("default-run")
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            parsed
+                .get("bin")
+                .and_then(|b| b.as_array())
+                .and_then(|a| a.first())
+                .and_then(|b| b.get("name"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or(pkg_name);
     Some(DetectedNode {
-        entrypoint: format!("target/release/{name}"),
+        entrypoint: format!("target/release/{bin}"),
         name,
         runtime: "rust",
         description: package
@@ -430,9 +447,25 @@ dora-yolo = "dora_yolo.main:main"
         )
         .unwrap();
         let node = detect_node(tmp.path());
+        // the manifest name is hyphen-normalized…
         assert_eq!(node.name, "lidar-driver");
         assert_eq!(node.runtime, "rust");
-        assert_eq!(node.entrypoint, "target/release/lidar-driver");
+        // …but the entrypoint must match the binary Cargo actually builds,
+        // which keeps the package name verbatim (underscores included).
+        assert_eq!(node.entrypoint, "target/release/lidar_driver");
+    }
+
+    #[test]
+    fn rust_entrypoint_prefers_explicit_bin_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("Cargo.toml"),
+            "[package]\nname = \"my_pkg\"\n\n[[bin]]\nname = \"custom_node\"\n",
+        )
+        .unwrap();
+        let node = detect_node(tmp.path());
+        assert_eq!(node.name, "my-pkg");
+        assert_eq!(node.entrypoint, "target/release/custom_node");
     }
 
     #[test]
