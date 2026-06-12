@@ -452,6 +452,7 @@ pub fn pattern_metadata_keys(pattern: &str) -> Option<&'static [&'static str]> {
 /// Registry of known type URNs, loaded from embedded YAML files.
 ///
 /// URN format: `std/<category>/v<version>/<TypeName>`
+#[derive(Clone)]
 pub struct TypeRegistry {
     types: BTreeMap<String, TypeDef>,
 }
@@ -492,6 +493,27 @@ impl TypeRegistry {
             }
         }
         Self { types }
+    }
+
+    /// Register a single type definition at the given URN, overwriting any
+    /// existing entry. Used to load manifest-shipped types for validation.
+    pub fn insert_type(&mut self, urn: impl Into<String>, def: TypeDef) {
+        self.types.insert(urn.into(), def);
+    }
+
+    /// Whether a struct field's type string is known: a primitive Arrow type,
+    /// `List<T>` of a known type, or any type (URN or short name) registered
+    /// here. Lenient by design — it accepts primitive-backed std types (e.g.
+    /// `std/core/v1/Bytes`) and only rejects genuinely-unknown names.
+    pub fn field_type_resolves(&self, type_str: &str) -> bool {
+        let t = type_str.trim();
+        if arrow_type_from_name(t).is_some() {
+            return true;
+        }
+        if let Some(inner) = t.strip_prefix("List<").and_then(|s| s.strip_suffix('>')) {
+            return self.field_type_resolves(inner);
+        }
+        self.resolve(t).is_some() || self.resolve_short_name(t).is_some()
     }
 
     /// Resolve a type URN to its definition.

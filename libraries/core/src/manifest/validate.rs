@@ -108,9 +108,26 @@ impl NodeManifest {
             issue("dora", format!("`{req}` is not a valid semver requirement"));
         }
 
-        for urn in self.types.keys() {
+        // Validate shipped type bodies against a registry that includes the
+        // manifest's own types, so that a port referencing a shipped type is
+        // backed by a type that can actually be materialized (the P1.3 gate
+        // must reject unresolvable field types, not just unknown URN keys).
+        let mut local_registry = registry.clone();
+        for (urn, def) in &self.types {
+            local_registry.insert_type(urn.clone(), def.clone());
+        }
+        for (urn, def) in &self.types {
             if let Some(problem) = check_shipped_type_urn(urn, &self.namespace) {
                 issue(&format!("types.{urn}"), problem);
+                continue;
+            }
+            for field in &def.fields {
+                if !local_registry.field_type_resolves(&field.r#type) {
+                    issue(
+                        &format!("types.{urn}.fields.{}", field.name),
+                        format!("unknown field type `{}`", field.r#type),
+                    );
+                }
             }
         }
 
@@ -324,7 +341,11 @@ fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
 /// default satisfies a `float` declaration (YAML `0` parses as an integer).
 fn env_default_matches(declared: EnvVarType, default: &EnvDefault) -> bool {
     match declared {
-        EnvVarType::String => matches!(default, EnvDefault::String(_)),
+        // any scalar is a valid string default: a `type: string` var with an
+        // unquoted YAML scalar (`default: true`, `default: 8080`) deserializes
+        // to Bool/Integer, but the publisher means the literal string — don't
+        // force them to quote it
+        EnvVarType::String => true,
         EnvVarType::Int => matches!(default, EnvDefault::Integer(_)),
         EnvVarType::Float => matches!(default, EnvDefault::Float(_) | EnvDefault::Integer(_)),
         EnvVarType::Bool => matches!(default, EnvDefault::Bool(_)),
@@ -580,6 +601,69 @@ outputs:
 
         // integer default satisfies a float declaration
         let issues = validate("env:\n  CONFIDENCE:\n    type: float\n    default: 1\n");
+        assert_eq!(issues, vec![]);
+
+        // any scalar is a valid `type: string` default — `true`/`8080` are
+        // unquoted YAML scalars the publisher means as strings
+        for default in ["true", "8080", "1.5", "\"hello\""] {
+            let issues = validate(&format!(
+                "env:\n  V:\n    type: string\n    default: {default}\n"
+            ));
+            assert_eq!(
+                issues,
+                vec![],
+                "string default `{default}` should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn shipped_type_bodies_are_validated() {
+        // a shipped type referencing an unresolvable field type is rejected
+        let issues = validate(
+            r#"
+types:
+  dora-rs/lidar/v1/Bad:
+    arrow: Struct
+    fields:
+      - name: x
+        type: DefinitelyNotAType
+outputs:
+  cloud:
+    type: dora-rs/lidar/v1/Bad
+"#,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "types.dora-rs/lidar/v1/Bad.fields.x"),
+            "{issues:?}"
+        );
+
+        // fields referencing primitives, std types, and sibling shipped types
+        // all resolve
+        let issues = validate(
+            r#"
+types:
+  dora-rs/lidar/v1/Point:
+    arrow: Struct
+    fields:
+      - name: x
+        type: Float32
+  dora-rs/lidar/v1/Cloud:
+    arrow: Struct
+    fields:
+      - name: first
+        type: dora-rs/lidar/v1/Point
+      - name: raw
+        type: std/core/v1/Bytes
+      - name: points
+        type: List<dora-rs/lidar/v1/Point>
+outputs:
+  cloud:
+    type: dora-rs/lidar/v1/Cloud
+"#,
+        );
         assert_eq!(issues, vec![]);
     }
 
