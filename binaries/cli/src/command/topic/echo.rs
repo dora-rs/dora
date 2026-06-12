@@ -272,12 +272,32 @@ fn buffer_into_arrow_array(
     raw_buffer: &arrow::buffer::Buffer,
     type_info: &ArrowTypeInfo,
 ) -> eyre::Result<arrow::array::ArrayData> {
-    if raw_buffer.is_empty() {
-        return Ok(arrow::array::ArrayData::new_empty(&type_info.data_type));
-    }
-
+    // A zero-footprint array (e.g. `NullArray::new(n)`) serializes to an empty
+    // payload but still carries a meaningful `type_info.len`. Reconstructing via
+    // `ArrayData::new_empty` would discard that length and silently truncate the
+    // array to 0; the general path below honors it (dora-rs/dora#2083).
     let mut buffers = Vec::new();
     for BufferOffset { offset, len } in &type_info.buffer_offsets {
+        if *len == 0 {
+            // Slicing a zero-length buffer out of an empty payload can yield an
+            // under-aligned pointer that `try_new` rejects; use a freshly
+            // aligned empty buffer instead (dora-rs/dora#2083).
+            buffers.push(arrow::buffer::MutableBuffer::new(0).into());
+            continue;
+        }
+        // `type_info` is peer-controlled, so validate the offset before slicing.
+        // `checked_add` guards against an `offset`/`len` that would overflow
+        // `usize` and bypass the bounds check; both prevent a panic inside
+        // `slice_with_length` on a malformed event (dora-rs/dora#2083).
+        let end = offset
+            .checked_add(*len)
+            .ok_or_else(|| eyre!("buffer offset overflow: offset={offset}, len={len}"))?;
+        if end > raw_buffer.len() {
+            return Err(eyre!(
+                "buffer offset out of bounds: offset={offset}, len={len}, buffer_len={}",
+                raw_buffer.len()
+            ));
+        }
         buffers.push(raw_buffer.slice_with_length(*offset, *len));
     }
 
@@ -298,4 +318,71 @@ fn buffer_into_arrow_array(
         child_data,
     )
     .map_err(|e| eyre!("Error creating Arrow array: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{Array, NullArray};
+
+    fn type_info(
+        data_type: arrow::datatypes::DataType,
+        buffer_offsets: Vec<BufferOffset>,
+    ) -> ArrowTypeInfo {
+        ArrowTypeInfo {
+            data_type,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets,
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        }
+    }
+
+    #[test]
+    fn empty_payload_preserves_nullarray_length() {
+        // dora-rs/dora#2083: a `NullArray::new(n)` has an empty footprint but a
+        // non-zero length that must survive `dora topic echo`'s decode.
+        let mut info = type_info(arrow::datatypes::DataType::Null, vec![]);
+        info.len = 5;
+        let decoded =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(Vec::<u8>::new()), &info).unwrap();
+        assert_eq!(decoded.len(), 5);
+        assert_eq!(decoded.data_type(), &arrow::datatypes::DataType::Null);
+        assert_eq!(NullArray::from(decoded).len(), 5);
+    }
+
+    #[test]
+    fn malformed_offset_is_rejected_not_panicked() {
+        // dora-rs/dora#2083: `type_info` is peer-controlled. An empty payload
+        // with `offset = usize::MAX` would overflow `offset + len` and bypass the
+        // bounds check, panicking inside `slice_with_length`. It must surface as
+        // an error instead.
+        let info = type_info(
+            arrow::datatypes::DataType::UInt8,
+            vec![BufferOffset {
+                offset: usize::MAX,
+                len: 1,
+            }],
+        );
+        let err = buffer_into_arrow_array(&arrow::buffer::Buffer::from(Vec::<u8>::new()), &info)
+            .unwrap_err();
+        assert!(err.to_string().contains("overflow"), "got: {err}");
+    }
+
+    #[test]
+    fn out_of_bounds_offset_is_rejected() {
+        // A non-overflowing but out-of-range offset must also be reported, not
+        // panic in `slice_with_length`.
+        let info = type_info(
+            arrow::datatypes::DataType::UInt8,
+            vec![BufferOffset { offset: 0, len: 8 }],
+        );
+        let err =
+            buffer_into_arrow_array(&arrow::buffer::Buffer::from(vec![0u8; 4]), &info).unwrap_err();
+        assert!(err.to_string().contains("out of bounds"), "got: {err}");
+    }
 }
