@@ -6,7 +6,7 @@ use std::{
 use super::{Connection, Listener};
 use crate::{
     Event,
-    socket_stream_utils::{socket_stream_receive, socket_stream_send},
+    socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send},
 };
 use dora_core::uhlc::HLC;
 use dora_message::{
@@ -67,7 +67,9 @@ struct TcpConnection(TcpStream);
 
 impl Connection for TcpConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-        let raw = match socket_stream_receive(&mut self.0).await {
+        // No header timeout: a node connection may legitimately stay idle
+        // between requests, so only mid-frame (body) stalls are faults.
+        let raw = match socket_stream_receive_with_header_timeout(&mut self.0, None).await {
             Ok(raw) => raw,
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof
