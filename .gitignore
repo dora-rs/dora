@@ -3,6 +3,9 @@
 .cargo/*
 # Project-wide cargo-mutants config must be tracked.
 !.cargo/mutants.toml
+# Project-wide cargo-audit ignore policy must be tracked (kept in sync
+# with deny.toml).
+!.cargo/audit.toml
 
 # Generated coverage artifacts (make qa-coverage)
 /lcov.info
