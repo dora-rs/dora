@@ -9,9 +9,18 @@ pub struct MemoryPoolId {
 }
 
 /// Metadata for a memory pool tensor.
+///
+/// # Cross-process safety
+///
+/// `ptr` is the virtual address of the tensor data **in the registering
+/// process**. It is meaningless in any other process — consumers **must**
+/// retrieve the data pointer via `shared_memory_name` (opening the shmem
+/// file and reading the DORADMA header for `data_offset`), not via `ptr`.
 #[derive(Debug, Clone)]
 pub struct MemoryPoolMetadata {
-    /// Pointer to the memory pool buffer in the registering process.
+    /// Raw pointer to tensor data in the registering process's address space.
+    /// Only valid in the registering process; cross-process consumers must
+    /// use `shared_memory_name` instead.
     pub ptr: u64,
     /// Size in bytes.
     pub size: usize,
@@ -38,8 +47,6 @@ pub struct MemoryPoolMetadata {
 pub struct MemoryPoolEntry {
     /// Metadata about the tensor.
     pub metadata: MemoryPoolMetadata,
-    /// Whether the memory is currently in use.
-    pub in_use: bool,
     /// Node that registered this memory.
     pub registered_by: String,
 }
@@ -65,6 +72,17 @@ impl MemoryPoolManager {
         }
     }
 
+    /// Lock the pool table, recovering from poison.
+    ///
+    /// Poisoning should never happen in practice (no panics inside lock
+    /// guards), but degrading gracefully is preferable to crashing the
+    /// daemon on an edge case.
+    fn lock_table(&self) -> std::sync::MutexGuard<'_, HashMap<MemoryPoolId, MemoryPoolEntry>> {
+        self.memory_pool_table
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     /// Register a memory pool with the given ID and metadata.
     pub fn register_memory_pool(
         &self,
@@ -72,7 +90,7 @@ impl MemoryPoolManager {
         metadata: MemoryPoolMetadata,
         registered_by: String,
     ) -> Result<(), String> {
-        let mut table = self.memory_pool_table.lock().unwrap();
+        let mut table = self.lock_table();
 
         if table.contains_key(&id) {
             return Err(format!("Memory pool with ID {} already registered", id.id));
@@ -82,7 +100,6 @@ impl MemoryPoolManager {
             id,
             MemoryPoolEntry {
                 metadata,
-                in_use: true,
                 registered_by,
             },
         );
@@ -92,7 +109,7 @@ impl MemoryPoolManager {
 
     /// Get the current number of entries in the memory pool table.
     pub fn table_size(&self) -> usize {
-        let table = self.memory_pool_table.lock().unwrap();
+        let table = self.lock_table();
         table.len()
     }
 
@@ -106,7 +123,7 @@ impl MemoryPoolManager {
         id: &MemoryPoolId,
         requested_by: &str,
     ) -> Option<MemoryPoolMetadata> {
-        let table = self.memory_pool_table.lock().unwrap();
+        let table = self.lock_table();
         table.get(id).map(|entry| {
             if entry.registered_by != requested_by {
                 tracing::debug!(
@@ -133,7 +150,7 @@ impl MemoryPoolManager {
         id: &MemoryPoolId,
         requested_by: &str,
     ) -> Result<MemoryPoolMetadata, String> {
-        let mut table = self.memory_pool_table.lock().unwrap();
+        let mut table = self.lock_table();
 
         let entry = table
             .remove(id)
@@ -187,7 +204,7 @@ impl MemoryPoolManager {
 
     /// Get all memory pool entries for cleanup on shutdown.
     pub fn get_all_entries(&self) -> Vec<(MemoryPoolId, MemoryPoolEntry)> {
-        let table = self.memory_pool_table.lock().unwrap();
+        let table = self.lock_table();
         table
             .iter()
             .map(|(id, entry)| (id.clone(), entry.clone()))
@@ -196,7 +213,7 @@ impl MemoryPoolManager {
 
     /// Cleanup all memory pools on shutdown.
     pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
-        let mut table = self.memory_pool_table.lock().unwrap();
+        let mut table = self.lock_table();
         let ids: Vec<MemoryPoolId> = table.keys().cloned().collect();
         let unreleased_count = ids.len();
         let mut errors = Vec::new();
@@ -214,26 +231,6 @@ impl MemoryPoolManager {
                     if !shm_name.is_empty() {
                         if let Err(err) = self.free_shared_memory(shm_name) {
                             errors.push(err);
-                        }
-                    }
-                }
-            }
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            if let Ok(entries) = std::fs::read_dir("/dev/shm") {
-                for entry in entries.flatten() {
-                    let file_name = entry.file_name();
-                    let name = file_name.to_string_lossy();
-                    if name.starts_with("dora_pool_") {
-                        if let Err(err) = std::fs::remove_file(entry.path()) {
-                            if err.kind() != std::io::ErrorKind::NotFound {
-                                errors.push(format!(
-                                    "Failed to remove pooled shared memory {}: {}",
-                                    name, err
-                                ));
-                            }
                         }
                     }
                 }
