@@ -18,7 +18,7 @@ impl Executable for Install {
              hint: reference the package in your dataflow YAML:\n\n    \
              - id: my-node\n      hub: <name>@<version-req>\n\n  \
              then `dora build dataflow.yml` fetches and builds it.\n  \
-             To pre-populate caches for offline use, see `dora hub fetch`."
+             To pre-populate caches for offline use, see `dora hub fetch` (planned)."
         )
     }
 }

@@ -161,11 +161,14 @@ fn detect_namespace(dir: &Path) -> String {
         } else {
             url.split_once(':').map(|(_, p)| p)
         };
-        let org = path
+        let org: String = path
             .and_then(|p| p.split('/').next())
             .unwrap_or("")
             .trim()
-            .to_ascii_lowercase();
+            .to_ascii_lowercase()
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .collect();
         if !org.is_empty() {
             return org;
         }
@@ -199,16 +202,21 @@ fn render_manifest(node: &DetectedNode, namespace: &str) -> String {
         Some(source) => format!(" # detected from {source}"),
         None => " # TODO: verify".into(),
     };
-    // double-quote: native-manifest descriptions can contain `:` and quotes
-    let description = format!(
-        "\"{}\"",
+    // double-quote: native-manifest values can contain `:`, quotes, etc.
+    let yaml_quote = |s: &str| {
+        format!(
+            "\"{}\"",
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', " ")
+        )
+    };
+    let description = yaml_quote(
         description
             .as_deref()
-            .unwrap_or("TODO: one-line description of what this node does")
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', " ")
+            .unwrap_or("TODO: one-line description of what this node does"),
     );
+    let entrypoint = yaml_quote(entrypoint);
     // keep this template in sync with the NodeManifest schema; execute()
     // parse-checks it before writing
     format!(
@@ -224,11 +232,12 @@ description: {description}
 # keywords: []
 
 runtime: {runtime}
-entrypoint: "{entrypoint}"{detected_note}
+entrypoint: {entrypoint}{detected_note}
 
 # Typed contracts: declare your ports so dataflows are checked at compose
 # time. Type URNs come from the standard library (types/std/) or your own
 # `types:` definitions. Sources may have zero inputs; sinks zero outputs.
+# (When uncommenting the examples, also remove the `{{}}` placeholder.)
 inputs: {{}}
 #  image:
 #    type: std/media/v1/Image
