@@ -283,9 +283,14 @@ categories: [ml-inference]    # from the fixed category list, §7.6
 keywords: [vision, detection, yolo]
 
 runtime: python               # python | rust | c | cpp
-entrypoint: dora-yolo         # bare command name — no path separators (§11);
-                              # resolved only inside the node's managed env /
-                              # hub cache, then spawned like `path:` today
+entrypoint: dora-yolo         # what to run, relative to the node's working
+                              # dir (= <clone>/<subdir>). Python: a console
+                              # script on the managed-env PATH (`dora-yolo`).
+                              # Rust/C/C++: the build output, e.g.
+                              # `target/release/dora-yolo` or `build/lidar`.
+                              # Validated relative (no absolute, no `..`); maps
+                              # to the synthesized git node's `path:` (§10.1),
+                              # resolved exactly as a `git:` node's path today.
 platforms: []                 # optional allowlist, e.g. [linux-x86_64,
                               # linux-aarch64, macos-aarch64]; empty = all.
                               # Surfaced in search/info; checked pre-dispatch.
@@ -333,7 +338,7 @@ Field rules:
 |---|---|---|
 | `apiVersion` | yes | manifest schema version, starts at 1 |
 | `name`, `namespace` | yes (name defaultable) | index key is `namespace/name`; pypi names PEP 503-normalized |
-| `runtime`, `entrypoint` | yes | entrypoint is a bare command name (validated) |
+| `runtime`, `entrypoint` | yes | entrypoint is a validated relative path within the working dir — a console script (Python) or build output `target/release/<bin>` (Rust/C/C++); no absolute, no `..` |
 | `inputs`, `outputs` | yes, **may be empty** | sinks have no outputs; sources no inputs (fixes the original proposal's ≥1 requirement) |
 | `inputs.*.type` etc. | recommended | type URNs; omitted = untyped (validation skips) |
 | `platforms`, `dora` | recommended | platform facet for search + pre-dispatch check; dora compat range |
@@ -747,7 +752,7 @@ nodes:
   |---|---|
   | `source.git` + resolved `commit` | `git:` + pinned rev (→ `GitManager` clone) |
   | `source.subdir` | the node's working dir = **`<clone-root>/<subdir>`** (see below) |
-  | manifest `entrypoint` | `path:` (relative to that working dir) |
+  | manifest `entrypoint` | `path:` (relative to that working dir) — a build output like `target/release/<bin>` (Rust/C/C++) resolves via `resolve_path`'s `working_dir.join(path)` branch, a console script via its uv-env/PATH branch, exactly as a `git:` node's `path:` does today |
   | manifest `build` | `build:` (runs in that working dir) |
   | manifest `inputs/outputs` types | `input_types`/`output_types` (§6.2) |
 
@@ -847,7 +852,7 @@ hub_sources:                         # provenance layer over git_sources
 | Version immutability | **machine-enforced** append-only index CI (§7.5): existing version files accept only `yanked` flips and artifact *additions*; anything else needs an index admin. Git history audits everything |
 | Source/artifact integrity | the source is pinned to a **commit hash** in the index entry + lockfile (git's own content-addressing); the opt-in binary form pins `sha256`, re-verified on every run (§8.4). Only the pinned commit/binary is used |
 | Build-time code execution | installing a node runs its `build:` (cargo build scripts, pip install) — arbitrary code at build time, identical to a `git:` node today. `--locked` binds it to the reviewed, commit-pinned source. Heavy binary deps (torch) come as wheels from PyPI, the language ecosystem's trust boundary, unchanged |
-| Malicious manifest fields | `entrypoint` restricted to bare command names resolved inside the managed env/cache (no absolute paths, no traversal — the executed binary cannot escape the pinned artifact); `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
+| Malicious manifest fields | `entrypoint` is a validated **relative path resolved within the node's working dir / managed env** — no absolute paths, no `..` traversal, so the executed binary cannot escape the cloned source or downloaded artifact (a bare console-script name resolves in the managed env; a relative build-output path like `target/release/<bin>` resolves under the clone+subdir). `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
 | Index integrity | git over HTTPS/SSH; protected branch; bot merge only on rule-conformant diffs; fast-forward-only refresh with rollback warning (§7.3) |
 | Namespace integrity | CI-verified GitHub identity match, reserved list, confusable-name screening, human review for new namespaces (§7.4) |
 | Publisher auth | delegated to git: the source lives in a git repo the author controls (or `dora-hub`), index PRs are GitHub-authenticated — dora stores no credentials. The dora-rs org **requires 2FA** for `dora-hub` write access (= index/source committers) |
@@ -922,10 +927,10 @@ its own issue when its phase opens. Items are unowned until claimed —
 - **P1.1** `dora-node-manifest` parsing + JSON Schema in `dora-core`
   (serde types, schema generation alongside `dora-schema.json`).
 - **P1.2** `dora hub init` scaffolding + `dora new` integration. *Depends: P1.1.*
-- **P1.3** Manifest validation: entrypoint bare-name rule, env deny-list,
-  type-URN resolution against `TypeRegistry`, port sanity. Core of
-  `dora hub publish --dry-run` and `dora validate --node-manifest <file>`.
-  *Depends: P1.1.*
+- **P1.3** Manifest validation: entrypoint is a relative path within the
+  working dir (no absolute, no `..`), env deny-list, type-URN resolution
+  against `TypeRegistry`, port sanity. Core of `dora hub publish --dry-run`
+  and `dora validate --node-manifest <file>`. *Depends: P1.1.*
 - **P1.4** Manifest→descriptor contract injection, including for `path:`
   nodes with an adjacent `dora-node.yml` (§6.2; testable without any index).
   *Depends: P1.1.*
