@@ -1,0 +1,13 @@
+# cargo-audit configuration. Keep ignore entries in sync with deny.toml
+# (cargo-deny enforces the same policy; both run in `make qa-audit`).
+[advisories]
+ignore = [
+    # pyo3 0.28 OOB read in PyList/PyTuple iterator nth/nth_back. The
+    # affected APIs are not used in this workspace; the pyo3 0.29 upgrade
+    # is tracked in https://github.com/dora-rs/dora/issues/2157.
+    # Review: 2026-07.
+    "RUSTSEC-2026-0176",
+    # pyo3 0.28 missing Sync bound on PyCFunction::new_closure — unused
+    # in this workspace; same upgrade tracked in #2157.
+    "RUSTSEC-2026-0177",
+]

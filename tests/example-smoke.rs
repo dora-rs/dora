@@ -557,7 +557,15 @@ fn contract_local_python_dataflow_sender_receives_stop_event() {
     let (status, stdout, stderr) = run_dora_capture(
         "local-python-dataflow-stop-contract",
         "examples/python-dataflow/dataflow.yml",
-        1,
+        // 5s, not 1s: the `--stop-after` timer is wall-clock from dataflow
+        // start and does not wait for nodes to become ready. On a loaded CI
+        // runner, `uv` + Python startup can consume the whole 1s budget before
+        // the sender's `try_recv()` loop runs, so it gets torn down without
+        // ever observing STOP and the contract assertion below flakes. 5s
+        // leaves the sender ample loop time after startup while staying well
+        // under its ~10s self-completion bound, so STOP is still `--stop-after`
+        // driven.
+        5,
         true,
     );
     let combined = format!("{stdout}\n{stderr}");
