@@ -102,6 +102,10 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 const ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT: Duration = Duration::from_millis(200);
 const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// Must exceed zenoh's internal 10s session close timeout, which is not
+/// enforceable when zenoh's net runtime is wedged.
+const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -1478,14 +1482,78 @@ impl DoraNodeBuilder {
     }
 }
 
+/// Runs `teardown` on a dedicated thread, waiting at most `timeout` for it to
+/// complete. Returns `true` if the teardown finished in time. Panics in
+/// `teardown` are contained and count as completion. If spawning the thread
+/// fails, the teardown runs inline without a deadline.
+///
+/// On timeout the thread keeps running detached: everything moved into the
+/// closure (zenoh sockets, SHM segments, the owned tokio runtime) is leaked
+/// until process exit. That is acceptable for nodes dropped right before
+/// exit; long-lived hosts (e.g. a Python interpreter dropping a node during
+/// GC) inherit only the bounded delay instead of a permanent hang.
+fn teardown_with_timeout(
+    label: &str,
+    timeout: Duration,
+    teardown: impl FnOnce() + Send + 'static,
+) -> bool {
+    // The closure is handed over via a channel (instead of being captured by
+    // the spawned closure) so that it stays available for the inline
+    // fallback when spawning fails.
+    let (work_tx, work_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::Builder::new()
+        .name(format!("dora-teardown-{label}"))
+        .spawn(move || {
+            if let Ok(work) = work_rx.recv() {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(work));
+            }
+            let _ = done_tx.send(());
+        });
+    match thread {
+        Ok(_) => {
+            let _ = work_tx.send(teardown);
+            done_rx.recv_timeout(timeout).is_ok()
+        }
+        Err(err) => {
+            warn!("failed to spawn {label} teardown thread ({err}); running it inline");
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(teardown));
+            true
+        }
+    }
+}
+
 impl Drop for DoraNode {
     fn drop(&mut self) {
-        // Undeclare zenoh publishers to clean up network resources
-        // before closing daemon channels.
-        self.zenoh_publishers.clear();
-        // Drop the session explicitly (releases SHM pool + network resources)
-        self.zenoh_shm_provider.take();
-        self.zenoh_session.take();
+        // Tear down zenoh before notifying the daemon below, so that
+        // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
+        let publishers = std::mem::take(&mut self.zenoh_publishers);
+        let shm_provider = self.zenoh_shm_provider.take();
+        let session = self.zenoh_session.take();
+        let runtime = self._owned_runtime.take();
+        if session.is_none() && shm_provider.is_none() && publishers.is_empty() {
+            // no zenoh state (interactive/testing mode): drop inline
+            drop(runtime);
+        } else {
+            // A wedged zenoh net runtime stalls `Session` close beyond its
+            // 10s timeout and `Publisher` undeclare indefinitely, which would
+            // hang node shutdown (and with it the daemon, which waits for
+            // `InputClosed`). Bound the teardown with a deadline instead.
+            let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
+                // documented drop order: publishers before the session,
+                // owned runtime last so async cleanup can still run
+                drop(publishers);
+                drop(shm_provider);
+                drop(session);
+                drop(runtime);
+            });
+            if !completed {
+                warn!(
+                    "zenoh teardown timed out after {}s; continuing node shutdown",
+                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
+                );
+            }
+        }
 
         // close all outputs first to notify subscribers as early as possible
         if let Err(err) = self
@@ -1993,5 +2061,42 @@ mod tests {
         let outputs: Vec<_> = rx.try_iter().collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "audio");
+    }
+
+    #[test]
+    fn teardown_with_timeout_completes_fast_closure() {
+        let start = Instant::now();
+        let completed = teardown_with_timeout("fast", Duration::from_secs(5), || {});
+        assert!(completed, "fast teardown should report completion");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "fast teardown should not wait for the full timeout"
+        );
+    }
+
+    #[test]
+    fn teardown_with_timeout_gives_up_on_wedged_closure() {
+        let start = Instant::now();
+        let completed = teardown_with_timeout("wedged", Duration::from_millis(300), || {
+            std::thread::sleep(Duration::from_secs(60))
+        });
+        let elapsed = start.elapsed();
+        assert!(!completed, "wedged teardown should report a timeout");
+        assert!(
+            elapsed >= Duration::from_millis(300),
+            "should wait the full deadline, returned after {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "should give up shortly after the deadline, took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn teardown_with_timeout_contains_panics() {
+        let completed = teardown_with_timeout("panicking", Duration::from_secs(5), || {
+            panic!("teardown panicked")
+        });
+        assert!(completed, "panicking teardown still counts as completed");
     }
 }
