@@ -513,6 +513,11 @@ impl RunningDataflow {
         // promise that `dora node restart` "re-spawns it".
         node.force_restart_next
             .store(true, atomic::Ordering::Release);
+        // A fresh incarnation starts with a clean drain state: a stale
+        // AllInputsClosed timestamp from the previous incarnation must not
+        // trip the finish-straggler watchdog on the restarted node.
+        self.all_inputs_closed_at.remove(node_id);
+        self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,
             process,
@@ -582,9 +587,12 @@ impl RunningDataflow {
     /// node of the dataflow is draining — a running source (which never
     /// receives `AllInputsClosed`) means the dataflow is still producing
     /// and nothing is escalated. Explicitly stopped dataflows are excluded:
-    /// `stop_all` runs its own kill escalation.
+    /// `stop_all` runs its own kill escalation. Dataflows with open
+    /// cross-daemon output mappings are also excluded — a local node that
+    /// looks like a straggler may still be flushing outputs to consumers
+    /// on other daemons, which this daemon cannot see.
     pub(crate) fn finish_stragglers(&self, grace: Duration) -> Vec<NodeId> {
-        if self.stop_sent {
+        if self.stop_sent || !self.open_external_mappings.is_empty() {
             return Vec::new();
         }
         select_finish_stragglers(
@@ -605,21 +613,27 @@ fn select_finish_stragglers<'a>(
     already_escalated: &BTreeSet<NodeId>,
     grace: Duration,
 ) -> Vec<NodeId> {
-    let mut stragglers = Vec::new();
+    // Gate first: every running non-dynamic node must be draining,
+    // otherwise the dataflow is not "otherwise finished" (e.g. a running
+    // source) and nothing may be escalated.
+    let mut draining = Vec::new();
     for (node_id, dynamic) in running_nodes {
         if dynamic {
             continue;
         }
-        let Some(drain_started) = all_inputs_closed_at.get(node_id) else {
-            // A running node that is not draining (e.g. a source) means the
-            // dataflow is not "otherwise finished".
-            return Vec::new();
-        };
-        if drain_started.elapsed() >= grace && !already_escalated.contains(node_id) {
-            stragglers.push(node_id.clone());
+        match all_inputs_closed_at.get(node_id) {
+            Some(drain_started) => draining.push((node_id, drain_started)),
+            None => return Vec::new(),
         }
     }
-    stragglers
+
+    draining
+        .into_iter()
+        .filter(|(node_id, drain_started)| {
+            drain_started.elapsed() >= grace && !already_escalated.contains(*node_id)
+        })
+        .map(|(node_id, _)| node_id.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -632,6 +646,9 @@ mod tests {
         NodeId::from(name.to_string())
     }
 
+    /// Backdates are kept tiny (≤2s): on Windows, `Instant` is anchored at
+    /// boot and larger subtractions underflow on fresh CI runners — the
+    /// exact panic class fixed in dora-rs/dora#2088.
     fn drained_since(entries: &[(&str, Duration)]) -> HashMap<NodeId, Instant> {
         entries
             .iter()
@@ -639,15 +656,18 @@ mod tests {
             .collect()
     }
 
+    const TEST_GRACE: Duration = Duration::from_millis(100);
+    const PAST_GRACE: Duration = Duration::from_secs(2);
+
     #[test]
     fn straggler_past_grace_is_selected() {
         let running = [(node_id("sink"), false)];
-        let drained = drained_since(&[("sink", Duration::from_secs(100))]);
+        let drained = drained_since(&[("sink", PAST_GRACE)]);
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &BTreeSet::new(),
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert_eq!(selected, vec![node_id("sink")]);
     }
@@ -655,12 +675,12 @@ mod tests {
     #[test]
     fn straggler_within_grace_is_not_selected() {
         let running = [(node_id("sink"), false)];
-        let drained = drained_since(&[("sink", Duration::from_secs(5))]);
+        let drained = drained_since(&[("sink", Duration::ZERO)]);
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &BTreeSet::new(),
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert!(selected.is_empty());
     }
@@ -670,12 +690,12 @@ mod tests {
         // `source` never receives AllInputsClosed; while it runs, the
         // dataflow is not "otherwise finished" and nothing escalates.
         let running = [(node_id("source"), false), (node_id("sink"), false)];
-        let drained = drained_since(&[("sink", Duration::from_secs(100))]);
+        let drained = drained_since(&[("sink", PAST_GRACE)]);
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &BTreeSet::new(),
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert!(selected.is_empty());
     }
@@ -683,12 +703,12 @@ mod tests {
     #[test]
     fn dynamic_nodes_neither_block_nor_escalate() {
         let running = [(node_id("dynamic"), true), (node_id("sink"), false)];
-        let drained = drained_since(&[("sink", Duration::from_secs(100))]);
+        let drained = drained_since(&[("sink", PAST_GRACE)]);
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &BTreeSet::new(),
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert_eq!(selected, vec![node_id("sink")]);
     }
@@ -696,13 +716,13 @@ mod tests {
     #[test]
     fn already_escalated_nodes_are_not_reselected() {
         let running = [(node_id("sink"), false)];
-        let drained = drained_since(&[("sink", Duration::from_secs(100))]);
+        let drained = drained_since(&[("sink", PAST_GRACE)]);
         let escalated: BTreeSet<_> = [node_id("sink")].into();
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &escalated,
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert!(selected.is_empty());
     }
@@ -710,15 +730,12 @@ mod tests {
     #[test]
     fn multiple_drained_stragglers_are_all_selected() {
         let running = [(node_id("a"), false), (node_id("b"), false)];
-        let drained = drained_since(&[
-            ("a", Duration::from_secs(100)),
-            ("b", Duration::from_secs(90)),
-        ]);
+        let drained = drained_since(&[("a", PAST_GRACE), ("b", PAST_GRACE)]);
         let selected = select_finish_stragglers(
             running.iter().map(|(id, d)| (id, *d)),
             &drained,
             &BTreeSet::new(),
-            Duration::from_secs(60),
+            TEST_GRACE,
         );
         assert_eq!(selected, vec![node_id("a"), node_id("b")]);
     }
