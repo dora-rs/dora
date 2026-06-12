@@ -3758,7 +3758,9 @@ impl Daemon {
     /// the `clean_stop` flag sent to the coordinator: clean_stop = true
     /// → `NodeStatus::Stopped` (auto-expires from `dora node list` after
     /// the 60s grace), clean_stop = false → `NodeStatus::Failed` (stays
-    /// visible so `dora doctor` keeps reporting it).
+    /// visible so `dora doctor` keeps reporting it). A finish-straggler
+    /// escalation (dora-rs/dora#2152) forces clean_stop = false unless
+    /// the node still exited 0.
     async fn handle_node_stop_inner(
         &mut self,
         dataflow_id: Uuid,
@@ -3809,6 +3811,13 @@ impl Daemon {
         //   - crash / panic / restart_policy=Never with non-zero exit:
         //     neither bit is set → clean_stop=false → `Failed`, so the
         //     row sticks around and `dora doctor` keeps reporting it.
+        //   - finish-straggler escalation (dora-rs/dora#2152): the
+        //     watchdog also goes through stop_single_node, so
+        //     restarts_disabled is set — but a force-killed straggler is
+        //     a node FAILURE and must not auto-expire from `dora node
+        //     list` as a clean stop. `finish_escalated` overrides
+        //     restarts_disabled (an escalated node that still exited 0
+        //     keeps exit_clean=true and stays clean).
         let (should_finish, clean_stop) = {
             let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                 format!(
@@ -3820,7 +3829,9 @@ impl Daemon {
                 .get(node_id)
                 .map(|n| n.restarts_disabled())
                 .unwrap_or(false);
-            let clean_stop = exit_clean || restarts_disabled;
+            let finish_escalated = dataflow.finish_escalated.remove(node_id);
+            dataflow.all_inputs_closed_at.remove(node_id);
+            let clean_stop = exit_clean || (restarts_disabled && !finish_escalated);
             dataflow.running_nodes.remove(node_id);
             // Check if all remaining nodes are dynamic (won't send SpawnedNodeResult)
             let should_finish = !dataflow.pending_nodes.local_nodes_pending()
@@ -4266,13 +4277,16 @@ impl Daemon {
                 // unrelated 143 exit from the restarted process would
                 // still see `grace_duration_kill=true` and be
                 // misreported as `Ok(())`. The marker has done its job
-                // for this exit — drop it. Same for the finish-straggler
-                // drain state: a respawned or re-added node under the
-                // same id must start with a fresh drain clock.
+                // for this exit — drop it. Same for the drain clock: a
+                // respawned node under the same id must start fresh.
+                // (`finish_escalated` is NOT cleared here — it is read
+                // and consumed by `handle_node_stop_inner` below to keep
+                // the coordinator-facing `clean_stop` flag honest; an
+                // escalated node never restarts, so it cannot leak into
+                // a next incarnation.)
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow.grace_duration_kills.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
-                    dataflow.finish_escalated.remove(&node_id);
                 }
 
                 logger
