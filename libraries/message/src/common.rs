@@ -308,7 +308,7 @@ impl DaemonId {
         self.machine_id.as_deref()
     }
 
-    /// Reverse of [`Display`]: parse `"{machine_id}-{uuid}"`, or a bare
+    /// Reverse of [`Display`](std::fmt::Display): parse `"{machine_id}-{uuid}"`, or a bare
     /// `"{uuid}"` when there is no machine id.
     ///
     /// Both the machine id (hostnames) and the canonical UUID contain `-`, so

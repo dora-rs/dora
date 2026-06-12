@@ -106,7 +106,7 @@ pub enum ControlRequest {
     /// otherwise sit in redb forever and never become reachable for
     /// `dora clean`. If the persisted-store enumeration itself
     /// errors, the entire request fails with
-    /// [`ControlRequestReply::Error`] and no in-memory state is
+    /// [`ControlRequestReply::Error`](crate::coordinator_to_cli::ControlRequestReply::Error) and no in-memory state is
     /// mutated — degrading silently to in-memory-only would let the
     /// CLI claim "nothing to clean" while historical rows are still
     /// sitting on disk.
@@ -114,7 +114,7 @@ pub enum ControlRequest {
     /// For each cleaned dataflow the coordinator removes its persisted
     /// record first and only then mutates in-memory state, so the reply
     /// reflects what was actually persisted. The response is
-    /// [`ControlRequestReply::CleanResult`] carrying two separate
+    /// [`ControlRequestReply::CleanResult`](crate::coordinator_to_cli::ControlRequestReply::CleanResult) carrying two separate
     /// lists: `cleaned` for dataflows whose redb row (and every
     /// `dora param` row owned by it — the persisted-store delete
     /// cascades) is gone, and `failed` for dataflows whose
@@ -235,8 +235,8 @@ pub enum ControlRequest {
     /// (dora-rs/adora#151).
     ///
     /// The coordinator replies with either
-    /// [`ControlRequestReply::HelloOk`] carrying its own crate version,
-    /// or [`ControlRequestReply::Error`] with a human-readable mismatch
+    /// [`ControlRequestReply::HelloOk`](crate::coordinator_to_cli::ControlRequestReply::HelloOk) carrying its own crate version,
+    /// or [`ControlRequestReply::Error`](crate::coordinator_to_cli::ControlRequestReply::Error) with a human-readable mismatch
     /// message.
     Hello {
         dora_version: semver::Version,

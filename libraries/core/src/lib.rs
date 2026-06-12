@@ -20,7 +20,7 @@ pub mod types;
 ///
 /// Takes a base path (without platform-specific prefix and extension) and returns
 /// a path with the appropriate shared library naming conventions using
-/// [`DLL_PREFIX`](std::env::consts::DLL_PREFIX) and [`DLL_SUFFIX`](std::env::consts::DLL_SUFFIX).
+/// [`DLL_PREFIX`] and [`DLL_SUFFIX`].
 ///
 /// # Errors
 ///
