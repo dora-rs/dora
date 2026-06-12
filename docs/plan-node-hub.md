@@ -752,7 +752,7 @@ nodes:
   |---|---|
   | `source.git` + resolved `commit` | `git:` + pinned rev (→ `GitManager` clone) |
   | `source.subdir` | the node's working dir = **`<clone-root>/<subdir>`** (see below) |
-  | manifest `entrypoint` | `path:` (relative to that working dir) — a build output like `target/release/<bin>` (Rust/C/C++) resolves via `resolve_path`'s `working_dir.join(path)` branch, a console script via its uv-env/PATH branch, exactly as a `git:` node's `path:` does today |
+  | manifest `entrypoint` | `path:` (relative to that working dir) — a build output like `target/release/<bin>` (Rust/C/C++) resolves via `resolve_path`'s `working_dir.join(path)` branch; a Python console script via the **managed uv env** (`--uv`). Hub spawn resolution **disables the ambient-`$PATH` fallback** that plain `git:` nodes have (§11), so a bare entrypoint can only come from the node's own env, never host state |
   | manifest `build` | `build:` (runs in that working dir) |
   | manifest `inputs/outputs` types | `input_types`/`output_types` (§6.2) |
 
@@ -806,7 +806,8 @@ Because the CLI rewrites `hub:` into a concrete git node before dispatch
    `<clone>/<subdir>`, runs the node's `build:` *there* for its own platform,
    records working dir + env in `BuildInfo`, and spawns via `resolve_path`
    against the manifest `entrypoint` — the existing git-node path plus the
-   `subdir` join (§10.1). The binary form instead downloads +
+   `subdir` join (§10.1), and **with the ambient-`$PATH` fallback disabled**
+   for the confinement guarantee (§11). The binary form instead downloads +
    `sha256`-verifies the per-platform URL via `dora-download` (the new
    checksum-threading from §10.1); everything downstream is identical.
 
@@ -852,7 +853,7 @@ hub_sources:                         # provenance layer over git_sources
 | Version immutability | **machine-enforced** append-only index CI (§7.5): existing version files accept only `yanked` flips and artifact *additions*; anything else needs an index admin. Git history audits everything |
 | Source/artifact integrity | the source is pinned to a **commit hash** in the index entry + lockfile (git's own content-addressing); the opt-in binary form pins `sha256`, re-verified on every run (§8.4). Only the pinned commit/binary is used |
 | Build-time code execution | installing a node runs its `build:` (cargo build scripts, pip install) — arbitrary code at build time, identical to a `git:` node today. `--locked` binds it to the reviewed, commit-pinned source. Heavy binary deps (torch) come as wheels from PyPI, the language ecosystem's trust boundary, unchanged |
-| Malicious manifest fields | `entrypoint` is a validated **relative path resolved within the node's working dir / managed env** — no absolute paths, no `..` traversal, so the executed binary cannot escape the cloned source or downloaded artifact (a bare console-script name resolves in the managed env; a relative build-output path like `target/release/<bin>` resolves under the clone+subdir). `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
+| Malicious manifest fields | `entrypoint` is a validated **relative path** — no absolute, no `..` — resolved **only** within the node's working dir (`<clone>/<subdir>`) or its managed uv env. Hub spawn **disables the ambient-`$PATH` fallback** that `resolve_path` gives plain `git:` nodes (`descriptor/mod.rs:347-365`), so a bare entrypoint can only come from the node's own env — a typo or a missing console-script *fails*, it never silently runs a host binary. A relative build-output path (`target/release/<bin>`) resolves under the clone+subdir. `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
 | Index integrity | git over HTTPS/SSH; protected branch; bot merge only on rule-conformant diffs; fast-forward-only refresh with rollback warning (§7.3) |
 | Namespace integrity | CI-verified GitHub identity match, reserved list, confusable-name screening, human review for new namespaces (§7.4) |
 | Publisher auth | delegated to git: the source lives in a git repo the author controls (or `dora-hub`), index PRs are GitHub-authenticated — dora stores no credentials. The dora-rs org **requires 2FA** for `dora-hub` write access (= index/source committers) |
@@ -962,10 +963,14 @@ its own issue when its phase opens. Items are unowned until claimed —
   as `git:` nodes today (§10.3). *Depends: P2.1, P2.5.*
 - **P2.7** Source fetch+build wiring: a resolved `hub:` git source flows
   through the existing `GitManager` clone + `build:` + `resolve_path` spawn
-  (the bulk is *reuse*). **Includes the one real addition**: a `subdir` on the
-  git source so build/env-prep/spawn root at `<clone>/<subdir>`
+  (the bulk is *reuse*). **Two real additions**: (a) a `subdir` on the git
+  source so build/env-prep/spawn root at `<clone>/<subdir>`
   (`build/mod.rs` `node_working_dir = clone_dir.join(subdir)`), independently
-  useful for plain `git:` monorepo nodes. *Depends: P2.2, P2.5, P2.6.*
+  useful for plain `git:` monorepo nodes; (b) a **confined** path-resolution
+  mode for hub spawn that drops `resolve_path`'s ambient-`$PATH` fallback
+  (`descriptor/mod.rs:347-365`), so a bare entrypoint resolves only in the
+  working dir / managed env and fails loudly otherwise (§11). *Depends: P2.2,
+  P2.5, P2.6.*
 - **P2.8** Binary form (§8.1/§8.2): per-platform `url`+`sha256` via the
   existing `path: <url>` + `dora-download` path, with `fallback-git`
   degrade-to-source. *Depends: P2.7. (Deferred unless a heavy node needs it
