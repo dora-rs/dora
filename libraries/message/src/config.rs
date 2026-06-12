@@ -470,6 +470,17 @@ pub enum RemoteCommunicationConfig {
 /// string with a unit suffix (`KB`, `MB`, `GB`, case-insensitive).
 ///
 /// Examples: `67108864`, `"64MB"`, `"1 GB"`, `"512kb"`.
+///
+/// Negative, non-finite, and overflowing values are rejected:
+///
+/// ```
+/// use dora_message::config::ByteSize;
+///
+/// assert_eq!("64MB".parse::<ByteSize>().unwrap().as_bytes(), 64 * 1024 * 1024);
+/// assert_eq!("1.5 KB".parse::<ByteSize>().unwrap().as_bytes(), 1536);
+/// assert!("-1KB".parse::<ByteSize>().is_err());
+/// assert!("1TB".parse::<ByteSize>().is_err());
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ByteSize(pub usize);
 
@@ -493,10 +504,6 @@ impl FromStr for ByteSize {
             }
         };
 
-        let num: f64 = num_part
-            .parse()
-            .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
-
         let multiplier: usize = match unit_part.to_uppercase().as_str() {
             "B" => 1,
             "KB" | "K" => 1024,
@@ -505,7 +512,34 @@ impl FromStr for ByteSize {
             other => return Err(format!("unknown byte size unit: `{other}`")),
         };
 
-        Ok(ByteSize((num * multiplier as f64) as usize))
+        // Use integer parse when possible to avoid f64 rounding above 2^53.
+        if let Ok(num) = num_part.parse::<usize>() {
+            return num
+                .checked_mul(multiplier)
+                .map(ByteSize)
+                .ok_or_else(|| format!("byte size `{s}` is too large"));
+        }
+
+        let num: f64 = num_part
+            .parse()
+            .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
+
+        // Casting a negative or non-finite f64 to usize saturates (negatives
+        // and NaN to 0, +inf to usize::MAX) instead of erroring, so reject
+        // them up front.
+        if !num.is_finite() || num < 0.0 {
+            return Err(format!(
+                "byte size must be a non-negative, finite number: `{s}`"
+            ));
+        }
+        let bytes = num * multiplier as f64;
+        // `usize::MAX as f64` rounds up to 2^64, and no f64 values exist
+        // between usize::MAX and 2^64, so `>=` rejects exactly the results
+        // that exceed usize::MAX.
+        if bytes >= usize::MAX as f64 {
+            return Err(format!("byte size `{s}` is too large"));
+        }
+        Ok(ByteSize(bytes as usize))
     }
 }
 
@@ -552,14 +586,18 @@ impl<'de> Deserialize<'de> for ByteSize {
             }
 
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<ByteSize, E> {
-                Ok(ByteSize(v as usize))
+                usize::try_from(v)
+                    .map(ByteSize)
+                    .map_err(|_| E::custom(format!("byte size `{v}` is too large")))
             }
 
             fn visit_i64<E: de::Error>(self, v: i64) -> Result<ByteSize, E> {
                 if v < 0 {
                     return Err(E::custom("byte size cannot be negative"));
                 }
-                Ok(ByteSize(v as usize))
+                usize::try_from(v)
+                    .map(ByteSize)
+                    .map_err(|_| E::custom(format!("byte size `{v}` is too large")))
             }
 
             fn visit_str<E: de::Error>(self, v: &str) -> Result<ByteSize, E> {
@@ -940,6 +978,49 @@ mod tests {
     fn byte_size_rejects_unknown_unit() {
         assert!("1TB".parse::<ByteSize>().is_err());
         assert!("abc".parse::<ByteSize>().is_err());
+    }
+
+    #[test]
+    fn byte_size_rejects_negative() {
+        // Negative f64 → usize casts saturate to 0, so without an explicit
+        // check `-1KB` silently parsed as a zero-byte pool size.
+        assert!("-1KB".parse::<ByteSize>().is_err());
+        assert!("-0.5MB".parse::<ByteSize>().is_err());
+        assert!("-1".parse::<ByteSize>().is_err());
+        // The integer deserialize path already rejected negatives; the string
+        // path must agree.
+        assert!(serde_yaml::from_str::<ByteSize>("-1").is_err());
+        assert!(serde_yaml::from_str::<ByteSize>(r#""-1KB""#).is_err());
+    }
+
+    #[test]
+    fn byte_size_rejects_overflow() {
+        // f64 path: finite but larger than usize::MAX must error, not
+        // saturate silently.
+        assert!("99999999999999999999999GB".parse::<ByteSize>().is_err());
+        // Integer path: checked_mul must catch the overflow.
+        assert!(format!("{}KB", usize::MAX).parse::<ByteSize>().is_err());
+        // Exactly 2^64 (= 2^54 * 1024) on the float path: `usize::MAX as f64`
+        // rounds up to 2^64, so a `>` comparison would let this saturate to
+        // usize::MAX silently.
+        assert!("18014398509481984.0KB".parse::<ByteSize>().is_err());
+    }
+
+    #[test]
+    fn byte_size_integer_values_parse_exactly() {
+        // 2^53 + 1 is not representable as f64; the integer fast path must
+        // preserve it exactly (mirrors dora-core's parse_byte_size).
+        assert_eq!(
+            "9007199254740993B".parse::<ByteSize>().unwrap(),
+            ByteSize(9007199254740993)
+        );
+    }
+
+    #[test]
+    fn byte_size_float_path_still_works() {
+        assert_eq!("1.5KB".parse::<ByteSize>().unwrap(), ByteSize(1536));
+        assert_eq!("0.5MB".parse::<ByteSize>().unwrap(), ByteSize(512 * 1024));
+        assert!("x.5KB".parse::<ByteSize>().is_err());
     }
 
     #[test]
