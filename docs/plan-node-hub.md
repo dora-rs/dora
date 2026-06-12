@@ -63,8 +63,8 @@ parallel machinery:
 ### Goals
 
 1. **Publish**: a node author can publish a typed, versioned node with one
-   command, reusing their language's native packaging (wheel / crate / OCI
-   artifact / release asset).
+   command — an index entry pinning their source to a git commit (no upload;
+   the source already lives in a git repo).
 2. **Discover**: `dora hub search camera` works offline-cheap and needs no
    hosted service.
 3. **Use**: `hub: dora-yolo@^0.5` in `dataflow.yml` fetches, builds, and
@@ -72,9 +72,11 @@ parallel machinery:
 4. **Validate**: input/output contracts are declared in the manifest and
    checked when a dataflow is composed (`dora validate` / `dora build`),
    before anything runs.
-5. **Reproduce**: the lockfile pins exact artifacts — the node artifact *and
-   its resolved dependency closure* (§10.3) — so `--locked` builds consume
-   byte-identical inputs.
+5. **Reproduce**: the lockfile pins the **source commit** (or, for the binary
+   form, the artifact `sha256`), so `--locked` rebuilds from byte-identical
+   source. The transitive dependency closure is pinned only as tightly as the
+   node's own `build:` pins it — the same reproducibility model `git:` nodes
+   have today (§10.3), not a Hub-specific closure lock.
 6. **Enterprise & offline**: a private index is just a private git repo; an
    offline robot runs from a pre-populated, hash-verified cache.
 7. **Migrate**: the existing ~60 PyPI nodes become hub packages by adding
@@ -103,8 +105,8 @@ Each use case is an acceptance test for a roadmap phase (noted in brackets).
 
 **UC1 — Find and use a node** *(Phase 2)*
 Ana builds a perception pipeline. `dora hub search detection` lists
-`dora-yolo 0.5.2 — object detection (ml-inference)` with its license,
-platforms, and backend. `dora hub info dora-yolo` prints the typed
+`dora-yolo 0.5.2 — object detection (ml-inference)` with its license and
+platforms. `dora hub info dora-yolo` prints the typed
 inputs/outputs and an example snippet. She adds to her `dataflow.yml`:
 
 ```yaml
@@ -116,9 +118,11 @@ inputs/outputs and an example snippet. She adds to her `dataflow.yml`:
     - bbox
 ```
 
-`dora build dataflow.yml --uv` resolves `^0.5` against the index, installs the
-pinned wheels into the node's managed env, and writes the pins to
-`dataflow.dora-lock.yaml`. No `pip install` line, no PATH knowledge.
+`dora build dataflow.yml --uv` resolves `^0.5` against the index to a pinned
+commit, clones that commit, runs the node's `build:` (for a Python node,
+`pip install .` into the managed env — its wheel deps come from PyPI as
+always), and writes the pin to `dataflow.dora-lock.yaml`. No `pip install`
+line in the dataflow, no PATH knowledge.
 
 **UC2 — Contract mismatch caught at compose time** *(Phase 1+2)*
 Ana wires `detector/bbox` (declared `std/vision/v1/BBox2D` in the manifest)
@@ -128,14 +132,15 @@ process starts. This works because manifest contracts surface as the existing
 `input_types`/`output_types` annotations.
 
 **UC3 — Publish a Python node** *(Phase 3)*
-Ben has a LiDAR driver as a Python package. `dora hub init` scaffolds
-`dora-node.yml` next to his `pyproject.toml`; he fills in outputs and types.
-`dora hub publish --dry-run` validates the manifest, checks the entry point,
-and verifies contracts. His release CI publishes the wheel to PyPI as today;
-`dora hub publish --skip-native` then opens a PR against the index adding
-`ben-robotics/dora-lidar@1.0.0` with the wheel hashes. Index CI validates the
-entry and the bot auto-merges (§7.5) — the node is discoverable minutes after
-the wheels land, with no human in the loop for routine version adds.
+Ben has a LiDAR driver in his own git repo. `dora hub init` scaffolds
+`dora-node.yml` next to his `pyproject.toml`; he fills in outputs and types
+(`build: pip install .`). `dora hub publish --dry-run` validates the manifest,
+checks the entry point, and verifies contracts. `dora hub publish` then
+resolves his tag to a commit and opens a PR adding
+`ben-robotics/dora-lidar@1.0.0` to the index, with `source` pointing at his
+repo + that commit. Index CI validates the entry and the bot auto-merges
+(§7.5) — discoverable minutes later, no human in the loop for routine version
+adds, and no PyPI publish required (his repo *is* the source-of-record).
 
 **UC4 — Publish a Rust node** *(Phase 2/3)*
 Same flow; the `source` stanza points at the node's git repo + commit (its
@@ -145,34 +150,41 @@ robot, the publisher may additionally attach prebuilt per-platform binaries
 
 **UC5 — Reproducible team builds** *(Phase 2)*
 Carol commits `dataflow.yml` + `dataflow.dora-lock.yaml`. CI runs
-`dora build --locked`: resolution is skipped, every pinned artifact —
-including transitive Python dependencies — is hash-verified, and a changed
-upstream release cannot alter the build. This extends the existing v2
-lockfile that already does this for git sources.
+`dora build --locked`: resolution is skipped, each node is rebuilt from its
+**pinned commit** (binary form: the pinned `sha256` is verified), and a moved
+tag or a new release cannot alter what source is built. This is the same
+guarantee the existing v2 lockfile already gives `git:` sources — extended to
+carry the hub provenance. (Transitive-dep pinning is as tight as each node's
+`build:` makes it, §10.3 — Hub doesn't add or subtract from that.)
 
 **UC6 — Multi-machine deployment** *(Phase 2)*
 Dataflow nodes deploy to three daemons on mixed architectures. The CLI
 resolves `hub:` ranges to pins once (centrally, like git rev→commit today);
-the coordinator routes per-daemon node sets; **each daemon fetches and
-installs its own nodes** for its own platform from self-sufficient pins
-(§10.2 — daemons need no hub configuration). Platform-specific artifacts
-(wheels, binaries) select per-daemon at fetch time.
+the coordinator routes per-daemon node sets; **each daemon clones the pinned
+commit and builds its own nodes** for its own platform (§10.2 — exactly the
+existing `git:` multi-daemon flow). For the opt-in binary form, the
+per-platform artifact selects at fetch time.
 
 **UC7 — Offline robot** *(Phase 2)*
 A field robot has no internet. `dora hub fetch dataflow.yml --target-dir
-./hub-cache` (run where there is connectivity) downloads the full pinned
-closure — node artifacts and transitive dependencies — from the lockfile;
-on the robot, `dora build --locked --offline` re-verifies every archive
-against its lockfile hash and fails loudly on any miss.
+./hub-cache` (run where there is connectivity) pre-clones each pinned commit
+(and downloads any binary artifacts) named in the lockfile; on the robot,
+`dora build --locked --offline` builds from the cached source (binary form:
+re-verifies the `sha256`) and fails loudly on any miss. (The transitive
+Python dep closure is *not* pre-fetched unless the node's `build:` /
+`uv.lock` makes it so — same offline caveat `git:` + `pip install` nodes have
+today; tightening that is the general build-reproducibility workstream, not
+Hub.)
 
 **UC8 — Enterprise private index** *(Phase 2)*
-A company keeps proprietary nodes in `git@github.com:acme/dora-index.git` and
-artifacts in their Artifactory (PyPI-compatible) and Harbor (OCI) instances.
+A company keeps proprietary nodes in `git@github.com:acme/dora-nodes.git`
+(source) and a private index repo `git@github.com:acme/dora-index.git`.
 `~/.config/dora/hub.toml` adds the index **bound to the `acme/` namespace**
 (§7.3) — namespace↔index binding makes dependency-confusion attacks
 structurally impossible. Descriptor entries written `hub: acme/lidar-fusion@2.1`
-resolve only against the acme index. No dora-side server, SSO, or token
-system — git and registry auth are the company's existing credentials.
+resolve only against the acme index, whose `source` points at the private
+source repo. No dora-side server, SSO, or token system — git auth (the
+company's existing credentials) gates both repos.
 
 **UC9 — Migrating the existing node-hub** *(Phase 3)*
 A script generates draft `dora-node.yml` manifests for the ~60 active nodes
@@ -554,7 +566,7 @@ machinery:
 | Form | Points at | Pin | Fetch + build | Reuses |
 |---|---|---|---|---|
 | **git** (default) | a git repo + commit + subdir — the node's source-of-record (in `dora-rs/dora-hub` itself for official nodes, or the author's own repo) | repo URL + **commit hash** | clone at the pinned commit, run the manifest's `build:`, resolve the entrypoint | `NodeSource::GitBranch` → `ResolvedNodeSource::GitCommit`, `GitManager`, the v2 lockfile's commit pinning |
-| **binary** (opt-in, heavy nodes) | a prebuilt artifact URL (GitHub Release asset, etc.) per platform | `url` + `sha256` | HTTP download, hash-verify, run | the existing `path: <url>` + `dora-download` (reqwest + sha2) path |
+| **binary** (opt-in, heavy nodes) | a prebuilt artifact URL (GitHub Release asset, etc.) per platform | `url` + `sha256` | HTTP download, hash-verify, run | the existing `path: <url>` + `dora-download` path — plus one small addition: threading the pinned `sha256` into `download_file`'s already-present `expected_sha256` (today the URL `path:` carries no checksum; §10.1) |
 
 ```yaml
 # index/dora-rs/dora-yolo/0.5.2.yml — git source (the normal case)
@@ -634,10 +646,13 @@ constrained daemons* — belongs in the guide chapter (P1.5).
 `<base_working_dir>/hub/<ns>/<name>/<commit-or-version>/` (per-workspace) and
 `~/.cache/dora/hub/` (user-level, shared), keyed by the pinned commit (git
 form) or `version` (binary form). git sources reuse `GitManager`'s existing
-commit-addressed clone cache. Binary artifacts are content-addressed and
-**re-verified against the lockfile `sha256` before every run**, including
-cache hits. Offline transfer (UC7) ships the cloned source / downloaded
-binaries + the lockfile, re-verified on the target.
+commit-addressed clone cache (the commit hash *is* the integrity guarantee).
+Binary artifacts are content-addressed and **re-verified against the lockfile
+`sha256` on download and cache reuse** — which is exactly the checksum-
+threading addition from §10.1 (`download_file`'s `expected_sha256`), without
+which a `path: <url>` desugar would silently drop the hash. Offline transfer
+(UC7) ships the cloned source / downloaded binaries + the lockfile, re-verified
+on the target.
 
 ## 9. CLI surface
 
@@ -649,7 +664,7 @@ dora hub search <query> [--category C] [--platform P]   # search index manifests
 dora hub info <pkg>[@<ver>]                             # manifest, contracts, example
 dora hub list [--dataflow F]                            # hub packages in lockfile/cache
 dora hub init [--manifest-only]                         # scaffold dora-node.yml
-dora hub publish [--dry-run] [--skip-native] [--index A]  # §9.1
+dora hub publish [--dry-run] [--index A]                # §9.1 (open index PR)
 dora hub yank <pkg>@<ver> [--undo]                      # automates the flag-flip PR
 dora hub fetch <dataflow.yml | pkg@ver> [--target-dir D]  # pre-populate cache (UC7)
 dora hub outdated [--dataflow F]                        # lockfile pins vs index
@@ -715,22 +730,36 @@ nodes:
 ```
 
 - New `hub: Option<String>` on the raw `Node`
-  (`libraries/message/src/descriptor.rs`, sibling of `git:`/`path:`) and a
-  new `NodeSource::Hub` variant.
-- **`hub:` desugars to the existing source machinery.** A resolved `hub:`
-  entry is, mechanically, a git source: index lookup yields the `source`
-  stanza (§8.1) — for the git form that is exactly a
-  `ResolvedNodeSource::GitCommit { repo, commit_hash }` plus a subdir and
-  the manifest's `build:`/`entrypoint`. So `hub:` reuses the path dora
-  already walks for `git:` nodes — `GitManager` clone, `build:` execution,
-  `resolve_path` spawn — rather than a parallel `HubSource` fetch stack. The
-  only new state the descriptor pipeline carries is "this GitCommit came
-  from a hub entry named X@V" (for the lockfile and `dora hub` commands).
-- Because `hub:` resolves to a git source, `Node::kind()`/`node_kind_mut()`
-  treat a resolved hub node like a git-sourced node (which already carries
-  no `path:` in the descriptor — the entrypoint comes from the manifest).
-  The binary form (§8.1) desugars instead to the existing `path: <url>` +
-  `dora-download` path. Neither needs a bespoke spawn synthesizer.
+  (`libraries/message/src/descriptor.rs`, sibling of `git:`/`path:`).
+- **The CLI desugars `hub:` to a concrete git node *before dispatch*.** This
+  is the load-bearing mechanism, and it matters because the existing
+  `git_sources` wire state is only `{ repo, commit_hash }` — it carries no
+  subdir and no entrypoint, and the builder uses the clone root as the git
+  node's working dir. So the index entry's `subdir` and the manifest's
+  `entrypoint`/`build` cannot ride the existing protocol as-is. Instead, at
+  resolve time the CLI rewrites a `hub:` node into an ordinary git-sourced
+  `Node`:
+
+  | hub entry → | synthesized git node field |
+  |---|---|
+  | `source.git` + resolved `commit` | `git:` + pinned rev (→ `GitManager` clone) |
+  | `source.subdir` + manifest `entrypoint` | `path: <subdir>/<entrypoint>` (relative to the clone root — `resolve_path` already joins working_dir + path, so a subdir path resolves with no new field) |
+  | manifest `build` | `build:` |
+  | manifest `inputs/outputs` types | `input_types`/`output_types` (§6.2) |
+
+  After this rewrite the coordinator and daemon see a **normal git node** —
+  the `{repo, commit_hash}` wire state and `resolve_path` are unchanged. The
+  new code is one CLI-side desugaring step (the CLI already resolves git
+  rev→commit and expands modules centrally; this is the same stage), not a
+  protocol change or a bespoke daemon spawner. The lockfile additionally
+  records the hub provenance (name@version) over the pinned commit so
+  `dora hub` commands and `--locked` drift detection work (§10.3).
+- The binary form (§8.1) desugars to a `path: <url>` node — but the existing
+  URL `path:` carries no checksum, so this needs **one small addition**: the
+  pinned `sha256` must travel to the spawn site and be passed to
+  `download_file`'s already-present `expected_sha256` parameter (today the
+  call sites pass `None`). That is the only new plumbing the binary form
+  requires; it is deferred with the binary form itself (P2.8).
 - `path:`/`git:`/`build:` are forbidden together with `hub:` (the index
   entry supplies the source and build); `inputs`/`outputs` in the dataflow
   must be a subset of the manifest's declared ports (validated).
@@ -742,23 +771,26 @@ nodes:
 
 ### 10.2 Multi-daemon flow (it *is* the git-source flow)
 
-Because `hub:` desugars to a git source (§10.1), the multi-daemon path is the
-one dora already runs for `git:` nodes — no new protocol:
+Because the CLI rewrites `hub:` into a concrete git node before dispatch
+(§10.1), the multi-daemon path is the one dora already runs for `git:` nodes:
 
 1. **CLI (central):** resolve each `hub:` range against the index → a pinned
-   `GitCommit` (+ subdir, + manifest), exactly as `git:` branch/tag/rev is
-   resolved to a commit today. Write/verify the lockfile.
-2. **Coordinator:** the resolved commit travels in the existing
-   `git_sources` map of `BuildDataflowNodes` (a hub node is a git node by
-   the time the coordinator sees it). One additive change: a daemon
-   capability flag so the coordinator can give a clear "upgrade this daemon"
-   error if a daemon is too old to know the manifest/contract fields —
-   never silent field-dropping. No per-backend wire types.
+   commit, then **synthesize the git node** (git/rev/path/build, §10.1).
+   Write/verify the lockfile.
+2. **Coordinator:** the synthesized node travels in the existing
+   `git_sources` map of `BuildDataflowNodes` — it *is* a git node by the time
+   the coordinator sees it, so no new wire type. One additive change: a
+   daemon capability flag so the coordinator can give a clear "upgrade this
+   daemon" error if a daemon predates `hub:` support (it would otherwise
+   never receive a `hub:` node, since desugaring is central — the flag is
+   belt-and-suspenders for mixed-version clusters).
 3. **Daemon:** clones the pinned commit, runs the node's `build:` for its own
    platform, records working dir + env in `BuildInfo`, and spawns via
-   `resolve_path` — *byte-for-byte the existing git-node path*. The binary
-   form downloads + hash-verifies the per-platform URL via `dora-download`
-   instead of cloning; everything downstream is identical.
+   `resolve_path` against the synthesized `path` (`<subdir>/<entrypoint>`) —
+   *byte-for-byte the existing git-node path*. The binary form instead
+   downloads + `sha256`-verifies the per-platform URL via `dora-download`
+   (the new checksum-threading from §10.1); everything downstream is
+   identical.
 
 A daemon whose platform has no prebuilt binary and no `fallback-git` (§8.2)
 fails with a clear per-node, per-daemon error. With `fallback-git` it compiles
@@ -834,16 +866,21 @@ Scope: the **62 active** nodes in `dora-rs/dora-hub/node-hub/`; the 8
    most-downloaded nodes fully typed; the rest may publish untyped (their
    manifests still carry entrypoint/description/category, so search and
    install work; `hub info` marks contracts as not yet declared).
-3. Bulk index PR pins the **already-published** wheels (versions, URLs +
-   sha256 from PyPI's JSON API). No re-publishing, no version bumps.
-4. `dora-hub` repo CI gains a `dora hub publish --skip-native` step keyed to
-   its existing release process (per-node version detection from the release
-   diff — specced in the P3.3 issue, since dora-hub is a monorepo with a
-   single release event today).
+3. Bulk index PR adds a `node-index/` entry per node, `source` pointing at the
+   **`dora-hub` repo itself** (`subdir: node-hub/<name>`) at the commit of
+   each node's current release tag. The source already lives in the repo, so
+   the entry and (for future versions) the source can co-evolve in one place.
+   No re-publishing, no version bumps — just a pin.
+4. `dora-hub` repo CI gains a `dora hub publish` step keyed to its existing
+   release process (per-node version detection from the release diff —
+   specced in the P3.3 issue, since dora-hub is a monorepo with a single
+   release event today).
 5. The README package table becomes generated output from the index (badge
    links unchanged).
 6. `build: pip install dora-X` keeps working indefinitely — `hub:` is sugar
-   plus contracts plus pins, not a breaking change.
+   plus contracts plus a commit pin, not a breaking change. (PyPI publishing
+   of these packages can continue independently; Hub doesn't require or
+   replace it — it pins the source.)
 
 ## 13. Web & hosted layer (Phase 4, optional)
 
