@@ -171,32 +171,12 @@ fn inspect(
                     .as_millis();
 
                 let data_str = if let Some(data) = data {
-                    let array = match NonNull::new(data.as_ptr() as *mut u8)
-                        .ok_or_else(|| eyre!("payload pointer is null"))
-                        .and_then(|ptr| {
-                            let len = data.len();
-                            let buffer = unsafe {
-                                arrow::buffer::Buffer::from_custom_allocation(
-                                    ptr,
-                                    len,
-                                    Arc::new(data),
-                                )
-                            };
-                            buffer_into_arrow_array(&buffer, &metadata.type_info)
-                        }) {
-                        Ok(array) => array,
-                        Err(e) => {
-                            eprintln!("invalid data on {output_name}: {e}");
-                            continue;
-                        }
-                    };
-
-                    match render_array_json(array, &mut buf) {
+                    match decode_and_render(data, &metadata.type_info, &mut buf) {
                         // `render_array_json` guarantees the `{"":` prefix and
                         // `}\n` suffix, so this slice cannot go out of bounds.
                         Ok(()) => std::str::from_utf8(&buf[4..buf.len() - 2]).ok(),
                         Err(e) => {
-                            eprintln!("cannot render data on {output_name}: {e}");
+                            eprintln!("invalid data on {output_name}: {e}");
                             continue;
                         }
                     }
@@ -266,6 +246,20 @@ fn inspect(
     }
 
     Ok(())
+}
+
+/// Reconstruct the Arrow array from a raw payload and render it into `buf`.
+fn decode_and_render(
+    data: dora_message::aligned_vec::AVec<u8, dora_message::aligned_vec::ConstAlign<128>>,
+    type_info: &ArrowTypeInfo,
+    buf: &mut Vec<u8>,
+) -> eyre::Result<()> {
+    let ptr =
+        NonNull::new(data.as_ptr() as *mut u8).ok_or_else(|| eyre!("payload pointer is null"))?;
+    let len = data.len();
+    let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) };
+    let array = buffer_into_arrow_array(&buffer, type_info)?;
+    render_array_json(array, buf)
 }
 
 /// Render a decoded Arrow array into `buf` as `{"":[...]}\n`.
