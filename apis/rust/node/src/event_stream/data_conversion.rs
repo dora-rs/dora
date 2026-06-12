@@ -22,7 +22,14 @@ impl RawData {
         }
 
         let raw_buffer = match self {
-            RawData::Empty => return Ok(().into_arrow().into()),
+            // An empty payload still carries a meaningful `type_info`. Rebuild
+            // from it with an empty backing buffer so the declared length is
+            // preserved (e.g. `NullArray::new(n)` keeps length `n` instead of
+            // collapsing to a `NullArray(0)`, dora-rs/dora#2083).
+            RawData::Empty => {
+                let empty = arrow::buffer::Buffer::from_vec(Vec::<u8>::new());
+                return buffer_into_arrow_array(&empty, type_info);
+            }
             RawData::Vec(data) => {
                 let ptr = NonNull::new(data.as_ptr() as *mut _).unwrap();
                 let len = data.len();
