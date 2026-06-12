@@ -6,9 +6,71 @@
 use std::path::{Path, PathBuf};
 
 use dora_core::manifest::{MANIFEST_FILENAME, NodeManifest};
+use dora_core::types::TypeRegistry;
 use eyre::{Context, bail};
 
 use crate::command::Executable;
+
+/// Placeholders used when a detected value can't be made to satisfy the
+/// manifest validator (both are valid per the validator's rules).
+const FALLBACK_NAME: &str = "my-node";
+const FALLBACK_NAMESPACE: &str = "your-namespace";
+
+/// A valid entrypoint derived from the (already-valid) node name.
+fn fallback_entrypoint(node: &DetectedNode) -> String {
+    match node.runtime {
+        "rust" | "c" | "cpp" => format!("target/release/{}", node.name),
+        _ => node.name.clone(),
+    }
+}
+
+/// Render a scaffold and guarantee it satisfies the manifest validator.
+///
+/// Detected values come from native manifests / the git remote and may violate
+/// the stricter manifest rules (a `std` org, `foo--bar`, an odd console-script
+/// name, …). Any field the validator rejects is replaced with a safe
+/// placeholder, then the result is self-checked with `validate()` (not just
+/// `parse()`), so `dora validate --node-manifest` passes on it immediately.
+fn render_valid_manifest(mut node: DetectedNode, mut namespace: String) -> eyre::Result<String> {
+    let registry = TypeRegistry::new();
+    loop {
+        let content = render_manifest(&node, &namespace);
+        let manifest =
+            NodeManifest::parse(&content).context("internal error: scaffold is not valid YAML")?;
+        let issues = manifest.validate(&registry);
+        let mut changed = false;
+        for issue in &issues {
+            match issue.field.as_str() {
+                "name" if node.name != FALLBACK_NAME => {
+                    node.name = FALLBACK_NAME.into();
+                    changed = true;
+                }
+                "namespace" if namespace != FALLBACK_NAMESPACE => {
+                    namespace = FALLBACK_NAMESPACE.into();
+                    changed = true;
+                }
+                "entrypoint" if node.entrypoint != fallback_entrypoint(&node) => {
+                    node.entrypoint = fallback_entrypoint(&node);
+                    changed = true;
+                }
+                _ => {}
+            }
+        }
+        if !changed {
+            if !issues.is_empty() {
+                bail!(
+                    "internal error: generated manifest is invalid: {}",
+                    issues
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+            }
+            return Ok(content);
+        }
+    }
+}
 
 /// Scaffold a dora-node.yml manifest for a node
 #[derive(Debug, clap::Args)]
@@ -33,11 +95,7 @@ impl Executable for Init {
 
         let detected = detect_node(&self.path);
         let namespace = detect_namespace(&self.path);
-        let content = render_manifest(&detected, &namespace);
-
-        // self-check: the scaffold must parse as a valid manifest so the
-        // template can never drift from the schema
-        NodeManifest::parse(&content).context("internal error: generated manifest is invalid")?;
+        let content = render_valid_manifest(detected, namespace)?;
 
         std::fs::write(&manifest_path, &content)
             .with_context(|| format!("failed to write `{}`", manifest_path.display()))?;
@@ -76,7 +134,7 @@ fn detect_node(dir: &Path) -> DetectedNode {
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .map(|n| normalize_name(&n))
         .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "my-node".into());
+        .unwrap_or_else(|| FALLBACK_NAME.into());
     DetectedNode {
         entrypoint: name.clone(),
         name,
@@ -173,7 +231,7 @@ fn detect_namespace(dir: &Path) -> String {
             return org;
         }
     }
-    "your-namespace".into()
+    FALLBACK_NAMESPACE.into()
 }
 
 /// Lowercase and replace `_` so the name passes manifest validation
@@ -291,6 +349,54 @@ mod tests {
             assert_eq!(manifest.name.as_deref(), Some(node.name.as_str()));
             assert_eq!(manifest.namespace, "acme");
         }
+    }
+
+    fn node(name: &str, runtime: &'static str, entrypoint: &str) -> DetectedNode {
+        DetectedNode {
+            name: name.into(),
+            runtime,
+            entrypoint: entrypoint.into(),
+            description: None,
+            source: None,
+        }
+    }
+
+    #[test]
+    fn scaffold_is_always_valid_not_just_well_formed() {
+        use dora_core::types::TypeRegistry;
+        let registry = TypeRegistry::new();
+        // detected values that violate the validator's rules (reserved/invalid
+        // namespace, odd entrypoint) must be replaced with valid placeholders
+        let cases = [
+            (
+                "good",
+                node("dora-yolo", "rust", "target/release/dora-yolo"),
+            ),
+            ("reserved-ns", node("lidar", "rust", "target/release/lidar")),
+            ("bad-entrypoint", node("lidar", "python", "weird name!")),
+        ];
+        for (label, n) in cases {
+            // force a bad namespace for the reserved-ns case via the renderer
+            let ns = match label {
+                "reserved-ns" => "std".to_string(),
+                _ => "acme".to_string(),
+            };
+            let content = render_valid_manifest(n, ns).expect(label);
+            let manifest = NodeManifest::parse(&content).expect(label);
+            assert_eq!(
+                manifest.validate(&registry),
+                vec![],
+                "{label}: scaffold must validate clean:\n{content}"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_namespace_falls_back() {
+        let content =
+            render_valid_manifest(node("n", "rust", "target/release/n"), "std".into()).unwrap();
+        let manifest = NodeManifest::parse(&content).unwrap();
+        assert_eq!(manifest.namespace, FALLBACK_NAMESPACE);
     }
 
     #[test]
