@@ -1,5 +1,6 @@
+use dora_cli::{Executable, RunCommand};
 use eyre::{Context, bail};
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 fn main() -> eyre::Result<()> {
     if cfg!(windows) {
@@ -36,7 +37,12 @@ fn main() -> eyre::Result<()> {
 
     build_package("dora-runtime")?;
 
-    dora_cli::run("dataflow.yml".to_string(), false)?;
+    // Bound the run so a wedged node fails fast via the daemon's stop
+    // escalation instead of hanging until the CI step timeout (#2152).
+    // A healthy run self-terminates quickly.
+    let mut run = RunCommand::new("dataflow.yml".to_string());
+    run.stop_after = Some(Duration::from_secs(120));
+    run.execute()?;
 
     Ok(())
 }
