@@ -1085,26 +1085,32 @@ fn zenoh_payload_to_arrow_array(
     ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
 
     if payload.is_empty() {
-        // Mirror the daemon raw path (`arrow_utils::buffer_into_arrow_array`,
-        // which returns `ArrayData::new_empty(&type_info.data_type)` for an
-        // empty buffer): an empty payload becomes a length-0 array of the
-        // declared type, NOT a `NullArray`. A genuine unit/timer output has
-        // `type_info.data_type == Null`, so it still yields a `NullArray`; a
-        // zero-length *typed* array stays typed — matching the daemon path and
-        // avoiding a downstream `as_primitive` panic on the zenoh transport
-        // (cross-transport non-determinism, dora-rs/dora#2027).
+        // Mirror the daemon raw path (`arrow_utils::buffer_into_arrow_array`):
+        // an empty payload still carries a meaningful `type_info`, so rebuild
+        // the array from it with an empty backing buffer. This preserves both
+        // the declared type (a zero-length *typed* array stays typed, avoiding
+        // a downstream `as_primitive` panic — cross-transport non-determinism,
+        // dora-rs/dora#2027) AND the declared length (a `NullArray::new(n)` or
+        // struct-of-nulls keeps its length `n` instead of collapsing to 0 —
+        // dora-rs/dora#2083).
         //
         // `data_type` is peer-controlled (bincode-decoded from the zenoh
-        // attachment). `new_empty` (-> `new_null`) panics on a few malformed
-        // types (empty `Union` fields, `Dictionary` with a non-integer key), so
-        // catch the unwind and surface a clean error instead of letting a buggy
-        // or malicious peer crash the node (#2027 anti-panic).
-        let data_type = &metadata.type_info.data_type;
-        let data = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            arrow::array::ArrayData::new_empty(data_type)
+        // attachment). `ArrayData::try_new` is meant to validate and return an
+        // error rather than panic, but some malformed types (e.g. empty `Union`
+        // fields, a `Dictionary` with a non-integer key) can still abort inside
+        // Arrow. Keep the unwind guard so a buggy or malicious peer can't crash
+        // the node with an empty payload (#2027 anti-panic, dora-rs/dora#2083).
+        let empty = arrow::buffer::Buffer::from_vec(Vec::<u8>::new());
+        let array = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            buffer_into_arrow_array(&empty, &metadata.type_info)
         }))
-        .map_err(|_| eyre!("cannot build an empty array for declared type {data_type:?}"))?;
-        return Ok(arrow::array::make_array(data));
+        .map_err(|_| {
+            eyre!(
+                "cannot build an empty array for declared type {:?}",
+                metadata.type_info.data_type
+            )
+        })??;
+        return Ok(arrow::array::make_array(array));
     }
 
     if is_ipc {
@@ -2109,61 +2115,76 @@ mod tests {
         assert!(events.recv().is_none(), "stream must close after the input");
     }
 
-    /// #2027: an empty payload over the zenoh transport must become a length-0
-    /// array of the DECLARED type, matching the daemon path
-    /// (`buffer_into_arrow_array` -> `new_empty(type_info.data_type)`). A
-    /// zero-length typed array previously degraded to `NullArray` only on the
-    /// zenoh path, so a downstream `as_primitive` would panic on one transport
-    /// but not the other. A genuine unit/timer output (Null type) still yields
-    /// a `NullArray`.
+    /// #2027 + #2083: an empty payload over the zenoh transport must round-trip
+    /// through the array's real `type_info` (as produced by the send side),
+    /// preserving both the DECLARED type and the DECLARED length.
+    ///
+    /// #2027: a zero-length typed array stays typed (it previously degraded to
+    /// `NullArray` only on the zenoh path, so a downstream `as_primitive` would
+    /// panic on one transport but not the other).
+    ///
+    /// #2083: a zero-footprint array with a non-zero length (e.g.
+    /// `NullArray::new(n)`) keeps its length instead of collapsing to 0.
     #[test]
-    fn zenoh_empty_payload_preserves_declared_type() {
-        use dora_message::metadata::{ArrowTypeInfo, Metadata};
+    fn zenoh_empty_payload_preserves_declared_type_and_length() {
+        use crate::arrow_utils::{copy_array_into_sample, required_data_size};
+        use arrow::array::{Array, Int32Array, NullArray};
+        use dora_message::metadata::Metadata;
 
-        fn type_info(dt: arrow_schema::DataType) -> ArrowTypeInfo {
-            ArrowTypeInfo {
-                data_type: dt,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            }
-        }
-        fn meta(dt: arrow_schema::DataType) -> Metadata {
-            Metadata::new(
-                dora_core::uhlc::HLC::default().new_timestamp(),
-                type_info(dt),
-            )
+        // Build the real `type_info` the send side would record for `array`.
+        // (Hand-built `type_info` would not match the serialized layout — e.g. a
+        // typed array always records a zero-length data-buffer offset.)
+        fn meta_for(array: &dyn Array) -> Metadata {
+            let data = array.to_data();
+            let mut sample = vec![0; required_data_size(&data)];
+            assert!(sample.is_empty(), "expected a zero-footprint array");
+            let type_info = copy_array_into_sample(&mut sample, &data);
+            Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
         }
 
         let empty = zenoh::bytes::ZBytes::new();
 
-        // Zero-length typed array stays typed.
-        let typed =
-            zenoh_payload_to_arrow_array(empty.clone(), &meta(arrow_schema::DataType::Int32))
-                .unwrap();
+        // #2027: zero-length typed array stays typed.
+        let typed = zenoh_payload_to_arrow_array(
+            empty.clone(),
+            &meta_for(&Int32Array::from(Vec::<i32>::new())),
+        )
+        .unwrap();
         assert_eq!(typed.data_type(), &arrow_schema::DataType::Int32);
         assert_eq!(typed.len(), 0);
 
-        // Genuine unit/timer output stays a NullArray.
-        let null =
-            zenoh_payload_to_arrow_array(empty, &meta(arrow_schema::DataType::Null)).unwrap();
+        // #2083: a NullArray with a non-zero length keeps its length.
+        let null = zenoh_payload_to_arrow_array(empty, &meta_for(&NullArray::new(5))).unwrap();
         assert_eq!(null.data_type(), &arrow_schema::DataType::Null);
-
-        // #2027 review (P2): `data_type` is peer-controlled, and `new_empty`
-        // panics on a few malformed types. A `Dictionary` with a non-integer
-        // key reaches `k.primitive_width().unwrap()` -> panic; the empty-payload
-        // path must surface that as `Err`, not crash the node. (A panic trace
-        // printed during this test is expected — it is the caught unwind.)
-        let malformed = arrow_schema::DataType::Dictionary(
-            Box::new(arrow_schema::DataType::Utf8),
-            Box::new(arrow_schema::DataType::Int32),
+        assert_eq!(
+            null.len(),
+            5,
+            "NullArray length must survive the zenoh path"
         );
-        let result = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::new(), &meta(malformed));
+
+        // #2027 review (P2): `data_type` is peer-controlled. A malformed type
+        // (`Dictionary` with a non-integer key) must surface as `Err`, not crash
+        // the node — the `catch_unwind` guard on the empty-payload path turns any
+        // panic inside Arrow into a clean error. (A panic trace printed during
+        // this test is expected — it is the caught unwind.)
+        let malformed = dora_message::metadata::ArrowTypeInfo {
+            data_type: arrow_schema::DataType::Dictionary(
+                Box::new(arrow_schema::DataType::Utf8),
+                Box::new(arrow_schema::DataType::Int32),
+            ),
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        let result = zenoh_payload_to_arrow_array(
+            zenoh::bytes::ZBytes::new(),
+            &Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), malformed),
+        );
         assert!(
             result.is_err(),
             "malformed peer type must produce Err, not panic"

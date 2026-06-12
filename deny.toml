@@ -22,6 +22,9 @@ ignore = [
     "RUSTSEC-2025-0057",  # fxhash: transitive, waiting for upstream. Review: 2026-07.
     "RUSTSEC-2025-0119",  # number_prefix: transitive, low risk. Review: 2026-07.
     "RUSTSEC-2024-0436",  # paste: transitive (safer_ffi / macro_rules_attribute). Low risk. Review: 2026-07.
+    # --- Temporary vulnerability waivers ---
+    "RUSTSEC-2026-0176",  # pyo3 0.28 OOB read in PyList/PyTuple iterator nth/nth_back. Affected APIs unused in this workspace; upgrade to 0.29 tracked in #2157. Review: 2026-07.
+    "RUSTSEC-2026-0177",  # pyo3 0.28 missing Sync bound on PyCFunction::new_closure. API unused in this workspace; upgrade to 0.29 tracked in #2157. Review: 2026-07.
 ]
 
 # ----- Licenses -----
