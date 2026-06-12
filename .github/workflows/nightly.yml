@@ -1230,7 +1230,13 @@ jobs:
       fail-fast: false
     # Windows builds + Python Dynamic Node tests are slower than other
     # platforms; 60 min is not enough when the runner is under load.
-    timeout-minutes: 90
+    # 100 min: on 2026-06-11 (first run with the #2145 wheel cache) Windows
+    # finished all test steps at ~88 min but was killed at 90 during the
+    # post-job rust-cache save. The structural per-step rebuild creep is
+    # fixed (#2143); this covers the remaining fixed cost (23 min CLI build
+    # + 19 min venv setup) plus the cache save. Do not raise further —
+    # investigate per-step times instead (see #2143).
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
