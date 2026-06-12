@@ -84,13 +84,17 @@ impl SourceSpec {
         match (&self.git, &self.rev) {
             (Some(git), Some(rev)) => {
                 crate::validate_git_url(git)?;
-                // a real commit hash only: a branch or tag name here would
-                // make the "pin" mutable, defeating the audit trail and yanks
+                // a full, immutable object id only: a branch/tag name would
+                // make the "pin" mutable (defeating the audit trail and
+                // yanks), and an *abbreviated* hash can grow ambiguous as the
+                // source repo gains commits. Require a full SHA-1 (40) or
+                // SHA-256 (64) hex digest.
                 let valid_rev =
-                    (7..=64).contains(&rev.len()) && rev.chars().all(|c| c.is_ascii_hexdigit());
+                    matches!(rev.len(), 40 | 64) && rev.chars().all(|c| c.is_ascii_hexdigit());
                 if !valid_rev {
                     eyre::bail!(
-                        "index entry has an invalid commit hash (`rev` must be a hex hash)"
+                        "index entry has an invalid commit hash \
+                         (`rev` must be a full 40- or 64-char hex object id)"
                     );
                 }
                 Ok((git, rev))
@@ -241,9 +245,11 @@ impl IndexCatalog {
             .collect();
         // versions() returns ascending order; walk highest-first, skipping
         // yanked versions
+        let mut had_yanked_match = false;
         for version in matching.iter().rev() {
             let entry = self.entry(&reference.namespace, &reference.name, version)?;
             if entry.yanked {
+                had_yanked_match = true;
                 continue;
             }
             return Ok(ResolvedVersion {
@@ -251,15 +257,34 @@ impl IndexCatalog {
                 entry,
             });
         }
+        // distinguish "your range matched only yanked versions" from "no
+        // version matches your range"
+        if had_yanked_match {
+            eyre::bail!(
+                "every version of `{}` matching `{}` has been yanked",
+                reference.key(),
+                reference.requirement
+            );
+        }
+        // list only installable (non-yanked) versions as "available"
+        let available: Vec<String> = versions
+            .iter()
+            .filter(|v| {
+                self.entry(&reference.namespace, &reference.name, v)
+                    .map(|e| !e.yanked)
+                    .unwrap_or(false)
+            })
+            .map(ToString::to_string)
+            .collect();
         eyre::bail!(
             "no version of `{}` satisfies `{}` (available: {})",
             reference.key(),
             reference.requirement,
-            versions
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
+            if available.is_empty() {
+                "none".to_string()
+            } else {
+                available.join(", ")
+            }
         )
     }
 
@@ -363,9 +388,21 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("dora-rs/dora-yolo");
         std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa1111", false)).unwrap();
-        std::fs::write(pkg.join("0.5.2.yml"), entry_yaml("bbb2222", false)).unwrap();
-        std::fs::write(pkg.join("0.6.0.yml"), entry_yaml("ccc3333", true)).unwrap();
+        std::fs::write(
+            pkg.join("0.5.1.yml"),
+            entry_yaml("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("0.5.2.yml"),
+            entry_yaml("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", false),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("0.6.0.yml"),
+            entry_yaml("cccccccccccccccccccccccccccccccccccccccc", true),
+        )
+        .unwrap();
         std::fs::write(
             pkg.join("package.yml"),
             "description: object detection\nowners: [haixuanTao]\n",
@@ -386,7 +423,7 @@ mod tests {
         assert_eq!(resolved.version, Version::parse("0.5.2").unwrap());
         let (git, rev) = resolved.entry.source.git_pin().unwrap();
         assert_eq!(git, "https://github.com/dora-rs/dora-hub");
-        assert_eq!(rev, "bbb2222");
+        assert_eq!(rev, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     }
 
     #[test]
@@ -394,8 +431,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("dora-rs/dora-yolo");
         std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa1111", false)).unwrap();
-        std::fs::write(pkg.join("0.6.0-alpha.1.yml"), entry_yaml("ddd4444", false)).unwrap();
+        std::fs::write(
+            pkg.join("0.5.1.yml"),
+            entry_yaml("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false),
+        )
+        .unwrap();
+        std::fs::write(
+            pkg.join("0.6.0-alpha.1.yml"),
+            entry_yaml("dddddddddddddddddddddddddddddddddddddddd", false),
+        )
+        .unwrap();
         let catalog = IndexCatalog::open(tmp.path()).unwrap();
         // a plain requirement never matches a prerelease
         let resolved = catalog.resolve(&parse_ref("dora-yolo@>=0.5")).unwrap();
@@ -424,6 +469,24 @@ mod tests {
     }
 
     #[test]
+    fn git_pin_requires_a_full_object_id() {
+        let full = "a".repeat(40);
+        for (rev, ok) in [
+            (full.as_str(), true),
+            (&"b".repeat(64), true),
+            ("abc1234", false),       // abbreviated — rejected
+            (&"a".repeat(39), false), // not a full SHA-1
+            ("main", false),          // branch name
+        ] {
+            let entry: IndexEntry = serde_yaml::from_str(&format!(
+                "manifest:{MANIFEST}source:\n  git: https://example.com/r\n  rev: \"{rev}\"\n"
+            ))
+            .unwrap();
+            assert_eq!(entry.source.git_pin().is_ok(), ok, "rev `{rev}`");
+        }
+    }
+
+    #[test]
     fn yanked_versions_are_skipped() {
         let (_tmp, catalog) = fixture();
         // 0.6.0 is yanked — `*` resolves to 0.5.2 instead
@@ -432,11 +495,25 @@ mod tests {
     }
 
     #[test]
-    fn unsatisfiable_requirement_lists_available() {
+    fn unsatisfiable_requirement_lists_only_unyanked() {
         let (_tmp, catalog) = fixture();
+        // 0.6.0 is yanked — it must not appear in the "available" list
         let err = catalog.resolve(&parse_ref("dora-yolo@^2")).unwrap_err();
         let msg = format!("{err:#}");
         assert!(msg.contains("0.5.2"), "{msg}");
+        assert!(
+            !msg.contains("0.6.0"),
+            "yanked version listed as available: {msg}"
+        );
+    }
+
+    #[test]
+    fn requirement_matching_only_yanked_says_so() {
+        let (_tmp, catalog) = fixture();
+        // 0.6.0 is the only version matching ^0.6, and it is yanked
+        let err = catalog.resolve(&parse_ref("dora-yolo@^0.6")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("has been yanked"), "{msg}");
     }
 
     #[test]

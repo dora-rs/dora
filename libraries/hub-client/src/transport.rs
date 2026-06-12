@@ -235,13 +235,22 @@ impl IndexFetcher {
 }
 
 /// The commit the remote's default branch points at after a fetch.
+///
+/// Resolves strictly through `refs/remotes/origin/HEAD` (populated by clone
+/// and refreshed by `git remote set-head origin --auto` in `refresh_index`).
+/// Guessing `origin/main`/`origin/master` was removed deliberately: for an
+/// index whose default branch is e.g. `develop`, a stale or coincidental
+/// `origin/main` ref would resolve against the wrong branch and produce
+/// spurious "history was rolled back" warnings or a stale tip. Better to fail
+/// loudly and have the caller re-clone than to silently track the wrong head.
 fn remote_tip(clone_dir: &Path) -> eyre::Result<String> {
-    for reference in ["refs/remotes/origin/HEAD", "origin/main", "origin/master"] {
-        if let Ok(commit) = git(Some(clone_dir), &["rev-parse", reference]) {
-            return Ok(commit);
-        }
-    }
-    eyre::bail!("could not determine the index's default branch")
+    git(Some(clone_dir), &["rev-parse", "refs/remotes/origin/HEAD"]).map_err(|_| {
+        eyre::eyre!(
+            "could not determine the index's default branch \
+             (refs/remotes/origin/HEAD is unset) — the cache may be corrupt; \
+             remove it and re-fetch"
+        )
+    })
 }
 
 fn short(commit: &str) -> &str {
