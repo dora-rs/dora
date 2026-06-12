@@ -1688,6 +1688,7 @@ dependencies = [
  "eyre",
  "half",
  "num",
+ "tracing",
 ]
 
 [[package]]

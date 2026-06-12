@@ -1,7 +1,8 @@
 use crate::IntoArrow;
+use tracing::warn;
 use arrow::array::{PrimitiveArray, StringArray, TimestampNanosecondArray};
 use arrow::datatypes::{
-    ArrowPrimitiveType, ArrowTimestampType, Float16Type, Float32Type, Float64Type, Int8Type,
+    ArrowTimestampType, Float16Type, Float32Type, Float64Type, Int8Type,
     Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
@@ -95,13 +96,27 @@ impl IntoArrow for Vec<String> {
     }
 }
 
+/// The nanosecond-resolution `i64` timestamp can only represent dates in roughly
+/// representable boundary and a warning is emitted, rather than silently mapping
+/// to the Unix epoch (the previous behaviour).
 impl IntoArrow for NaiveDateTime {
     type A = arrow::array::TimestampNanosecondArray;
     fn into_arrow(self) -> Self::A {
         let timestamp =
             match arrow::datatypes::TimestampNanosecondType::from_naive_datetime(self, None) {
-                Some(timestamp) => timestamp,
-                None => arrow::datatypes::TimestampNanosecondType::default_value(),
+                Some(ts) => ts,
+                None => {
+                    let epoch = chrono::DateTime::UNIX_EPOCH.naive_utc();
+                    let saturated = if self >= epoch { i64::MAX } else { i64::MIN };
+                    warn!(
+                        datetime = %self,
+                        saturated_ns = saturated,
+                        "NaiveDateTime is outside the nanosecond-representable range \
+                         (~1677-09-21..2262-04-11); saturating to boundary value. \
+                         Consider using a timestamp type with a wider or lower-resolution range."
+                    );
+                    saturated
+                }
             };
         TimestampNanosecondArray::from(vec![timestamp])
     }
