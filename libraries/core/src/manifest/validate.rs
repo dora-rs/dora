@@ -329,8 +329,9 @@ fn check_platform(platform: &str) -> Option<String> {
 }
 
 /// Shipped custom types must live under the package's namespace (spec §6.3),
-/// be declared without parameters, and use the URN character set.
-fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
+/// be declared without parameters, and use the URN character set. Returns the
+/// problem, or `None` if the manifest is entitled to ship this URN.
+pub(crate) fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
     let valid_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
     if !urn.chars().all(valid_char) {
         return Some(format!(

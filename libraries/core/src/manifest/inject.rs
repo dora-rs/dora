@@ -16,7 +16,10 @@ use std::path::{Component, Path, PathBuf};
 
 use dora_message::{descriptor::Descriptor, id::NodeId};
 
-use super::{MANIFEST_FILENAME, NodeManifest, validate::sanitize};
+use super::{
+    MANIFEST_FILENAME, NodeManifest,
+    validate::{check_shipped_type_urn, sanitize},
+};
 use crate::{descriptor::source_is_url, types::TypeRegistry};
 
 /// Outcome of scanning a dataflow for adjacent node manifests.
@@ -63,15 +66,22 @@ pub fn inject_adjacent_manifests(
         }
     }
 
-    // Register every shipped type before validating any manifest, so that a
-    // manifest referencing a type shipped by another node resolves regardless
-    // of node order. URN policy violations (namespace, charset) are reported
-    // by each manifest's validation in pass 2; only the `std/` override guard
-    // is load-bearing here. Already-registered URNs are left untouched: types
-    // the dataflow author defined in `types/` win over manifest-shipped ones,
-    // and two nodes sharing one manifest re-ship identical definitions.
+    // Register shipped types before validating ports, so a manifest can
+    // reference a type shipped by another node regardless of node order.
+    //
+    // Registration is what makes a type visible to *sibling* manifests' port
+    // checks, so the namespace-ownership gate must run *before* registration —
+    // otherwise an invalid manifest (e.g. an `acme` node shipping a `beta/…`
+    // URN) could grant a definition a different node then relies on. Ownership
+    // is intrinsic (no sibling types needed), so checking it here is safe;
+    // other per-manifest errors are reported in pass 2 and merely suppress
+    // that manifest's own injection. Already-registered URNs are left
+    // untouched: `types/` definitions and same-manifest re-ships win.
     for (_, (_, manifest)) in &matched {
         for (urn, def) in &manifest.types {
+            if check_shipped_type_urn(urn, &manifest.namespace).is_some() {
+                continue;
+            }
             if registry.resolve(urn).is_none() {
                 let _ = registry.add_user_type(urn, def.clone());
             }
@@ -586,6 +596,66 @@ nodes:
         let result = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
         assert_eq!(result.warnings, Vec::<String>::new());
         assert_eq!(result.notes.len(), 2, "{result:?}");
+    }
+
+    #[test]
+    fn invalid_sibling_cannot_contaminate_the_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `bad` (namespace acme) ships a type under the *beta* namespace —
+        // a violation. It must not be registered, so the unrelated `victim`
+        // node referencing it must NOT validate against a definition `bad`
+        // was never entitled to ship.
+        write_manifest(
+            &tmp.path().join("bad"),
+            r#"
+apiVersion: 1
+name: bad
+namespace: acme
+runtime: rust
+entrypoint: target/release/bad
+types:
+  beta/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: x
+        type: Float32
+"#,
+        );
+        write_manifest(
+            &tmp.path().join("victim"),
+            r#"
+apiVersion: 1
+name: victim
+namespace: gamma
+runtime: rust
+entrypoint: target/release/victim
+outputs:
+  out:
+    type: beta/foo/v1/X
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: bad
+    path: bad/target/release/bad
+  - id: victim
+    path: victim/target/release/victim
+    outputs: [out]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let result = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        // the out-of-namespace type was never registered
+        assert!(registry.resolve("beta/foo/v1/X").is_none());
+        // victim's port type does not resolve → its manifest fails validation
+        // and contributes no injection
+        let all = result.warnings.join("\n");
+        assert!(
+            all.contains("victim") && all.contains("contracts not injected"),
+            "{result:?}"
+        );
+        assert!(df.nodes[1].output_types.is_empty());
     }
 
     #[test]
