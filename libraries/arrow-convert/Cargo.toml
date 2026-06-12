@@ -14,6 +14,7 @@ repository.workspace = true
 [dependencies]
 arrow = { workspace = true }
 eyre = { workspace = true }
+tracing = { workspace = true }
 half = "2.5.0"
 num = "0.4.3"
 chrono = "0.4.39"
