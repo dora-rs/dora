@@ -766,11 +766,21 @@ nodes:
   (`clone_dir.join(subdir)`), and build, env-prep, and spawn all root there.
   This is a few lines in `build/mod.rs` and is independently useful — it lets
   any `git:` node target a subdir of a monorepo, which it cannot today. After
-  it, the coordinator/daemon still see a **normal git node**: the
-  `{repo, commit_hash}` wire state grows one optional `subdir` field, and
-  `resolve_path` is unchanged. The lockfile additionally records the hub
-  provenance (name@version) over the pinned commit so `dora hub` commands and
-  `--locked` drift detection work (§10.3).
+  it, the coordinator/daemon see a git node carrying **two new optional
+  bits**: the `subdir`, and a **hub-origin marker** (the resolved source's
+  optional `hub: { name, version }` provenance). The marker is load-bearing,
+  not cosmetic: it is what tells the daemon to use **confined** path
+  resolution (no ambient `$PATH` fallback, §11) for this node, since a
+  desugared hub node is otherwise wire-indistinguishable from a plain `git:`
+  node — and plain `git:` nodes keep the fallback for back-compat. So the
+  honest wire delta is `{repo, commit_hash}` → `{repo, commit_hash, subdir?,
+  hub?}`; `resolve_path` gains a confined mode gated on `hub?`. The same
+  marker feeds the lockfile and `dora hub` commands (§10.3). *(Alternative an
+  implementer may prefer: make confined resolution the default for all git
+  nodes and drop the marker — simpler and arguably safer, but a behavior
+  change for any existing `git:` node that resolves a bare `path:` off the
+  host `$PATH`; the examples don't, but it would need to be called out. This
+  spec takes the marker route to keep the blast radius to hub nodes.)*
 - The binary form (§8.1) desugars to a `path: <url>` node — but the existing
   URL `path:` carries no checksum, so this needs **one small addition**: the
   pinned `sha256` must travel to the spawn site and be passed to
@@ -795,19 +805,21 @@ Because the CLI rewrites `hub:` into a concrete git node before dispatch
    commit, then **synthesize the git node** (git/rev/path/build, §10.1).
    Write/verify the lockfile.
 2. **Coordinator:** the synthesized node travels in the existing
-   `git_sources` map of `BuildDataflowNodes` — it *is* a git node by the time
-   the coordinator sees it. The only wire change is the one optional `subdir`
-   field the git source gains (§10.1); no per-backend types. Plus a daemon
-   capability flag so the coordinator can give a clear "upgrade this daemon"
-   error if a daemon predates `hub:`/`subdir` support (it would otherwise
-   never receive such a node, since desugaring is central — the flag is
-   belt-and-suspenders for mixed-version clusters).
+   `git_sources` map of `BuildDataflowNodes`, with the git source carrying
+   the two new optional bits (`subdir?`, `hub?` marker — §10.1); no
+   per-backend types. Plus a daemon capability flag so the coordinator can
+   give a clear "upgrade this daemon" error if a daemon predates
+   `hub:`/`subdir` support (it would otherwise never receive such a node,
+   since desugaring is central — the flag is belt-and-suspenders for
+   mixed-version clusters).
 3. **Daemon:** clones the pinned commit, roots the node at
    `<clone>/<subdir>`, runs the node's `build:` *there* for its own platform,
    records working dir + env in `BuildInfo`, and spawns via `resolve_path`
    against the manifest `entrypoint` — the existing git-node path plus the
-   `subdir` join (§10.1), and **with the ambient-`$PATH` fallback disabled**
-   for the confinement guarantee (§11). The binary form instead downloads +
+   `subdir` join, and, **when the `hub?` marker is set, with the
+   ambient-`$PATH` fallback disabled** (§11) so the confinement guarantee is
+   actually derivable from the wire state, not just asserted. The binary form
+   instead downloads +
    `sha256`-verifies the per-platform URL via `dora-download` (the new
    checksum-threading from §10.1); everything downstream is identical.
 
@@ -853,7 +865,7 @@ hub_sources:                         # provenance layer over git_sources
 | Version immutability | **machine-enforced** append-only index CI (§7.5): existing version files accept only `yanked` flips and artifact *additions*; anything else needs an index admin. Git history audits everything |
 | Source/artifact integrity | the source is pinned to a **commit hash** in the index entry + lockfile (git's own content-addressing); the opt-in binary form pins `sha256`, re-verified on every run (§8.4). Only the pinned commit/binary is used |
 | Build-time code execution | installing a node runs its `build:` (cargo build scripts, pip install) — arbitrary code at build time, identical to a `git:` node today. `--locked` binds it to the reviewed, commit-pinned source. Heavy binary deps (torch) come as wheels from PyPI, the language ecosystem's trust boundary, unchanged |
-| Malicious manifest fields | `entrypoint` is a validated **relative path** — no absolute, no `..` — resolved **only** within the node's working dir (`<clone>/<subdir>`) or its managed uv env. Hub spawn **disables the ambient-`$PATH` fallback** that `resolve_path` gives plain `git:` nodes (`descriptor/mod.rs:347-365`), so a bare entrypoint can only come from the node's own env — a typo or a missing console-script *fails*, it never silently runs a host binary. A relative build-output path (`target/release/<bin>`) resolves under the clone+subdir. `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
+| Malicious manifest fields | `entrypoint` is a validated **relative path** — no absolute, no `..` — resolved **only** within the node's working dir (`<clone>/<subdir>`) or its managed uv env. The daemon recognizes a hub node by the `hub?` wire marker (§10.2) and applies **confined** resolution: it **disables the ambient-`$PATH` fallback** that `resolve_path` gives plain `git:` nodes (`descriptor/mod.rs:347-365`), so a bare entrypoint can only come from the node's own env — a typo or a missing console-script *fails*, it never silently runs a host binary. A relative build-output path (`target/release/<bin>`) resolves under the clone+subdir. `env:` deny-list for loader-hijack variables (LD_PRELOAD, DYLD_*, PYTHONPATH, PATH) |
 | Index integrity | git over HTTPS/SSH; protected branch; bot merge only on rule-conformant diffs; fast-forward-only refresh with rollback warning (§7.3) |
 | Namespace integrity | CI-verified GitHub identity match, reserved list, confusable-name screening, human review for new namespaces (§7.4) |
 | Publisher auth | delegated to git: the source lives in a git repo the author controls (or `dora-hub`), index PRs are GitHub-authenticated — dora stores no credentials. The dora-rs org **requires 2FA** for `dora-hub` write access (= index/source committers) |
@@ -953,10 +965,11 @@ its own issue when its phase opens. Items are unowned until claimed —
   tracked as 2–3 PRs in its issue.*
 - **P2.4** `dora hub search` / `info` / `list`. *Depends: P2.2, P2.3.*
 - **P2.5** Descriptor: `hub:` field (unstable-warning gate), `NodeSource::Hub`
-  that **desugars to `ResolvedNodeSource::GitCommit`** (§10.1), hub arm in
+  that **desugars to `ResolvedNodeSource::GitCommit`** (§10.1) carrying the
+  optional `subdir` + `hub: {name, version}` provenance marker, hub arm in
   `Node::kind()`/`node_kind_mut()`, port-subset validation. Smaller than the
-  prior `HubSource` design — it threads a git commit, not a new fetch type.
-  *Depends: P1.4.*
+  prior `HubSource` design — it threads a git commit + two optional bits, not
+  a new fetch type. *Depends: P1.4.*
 - **P2.6** Lockfile: extend `git_sources` with hub provenance (name/version
   over the pinned commit), fingerprint extension, `--locked`/`--offline`
   semantics. No new closure-capture machinery — same reproducibility model
@@ -967,10 +980,13 @@ its own issue when its phase opens. Items are unowned until claimed —
   source so build/env-prep/spawn root at `<clone>/<subdir>`
   (`build/mod.rs` `node_working_dir = clone_dir.join(subdir)`), independently
   useful for plain `git:` monorepo nodes; (b) a **confined** path-resolution
-  mode for hub spawn that drops `resolve_path`'s ambient-`$PATH` fallback
-  (`descriptor/mod.rs:347-365`), so a bare entrypoint resolves only in the
-  working dir / managed env and fails loudly otherwise (§11). *Depends: P2.2,
-  P2.5, P2.6.*
+  mode (`resolve_path` without the ambient-`$PATH` fallback,
+  `descriptor/mod.rs:347-365`) that the daemon applies **when the git
+  source's `hub?` marker is set** — so a bare entrypoint resolves only in the
+  working dir / managed env and fails loudly otherwise (§11). This requires
+  the marker to ride the `BuildDataflowNodes` git source (§10.2), so confined
+  resolution is derivable from the wire state rather than asserted.
+  *Depends: P2.2, P2.5, P2.6.*
 - **P2.8** Binary form (§8.1/§8.2): per-platform `url`+`sha256` via the
   existing `path: <url>` + `dora-download` path, with `fallback-git`
   degrade-to-source. *Depends: P2.7. (Deferred unless a heavy node needs it
