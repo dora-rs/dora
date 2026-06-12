@@ -1857,6 +1857,7 @@ dependencies = [
  "dora-arrow-convert",
  "dora-core",
  "dora-download",
+ "dora-memory-pool",
  "dora-message",
  "dora-node-api",
  "dora-tracing",
@@ -1988,6 +1989,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-memory-pool"
+version = "1.0.0-rc1"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
 name = "dora-message"
 version = "1.0.0-rc1"
 dependencies = [
@@ -2096,6 +2104,7 @@ dependencies = [
  "arrow",
  "chrono",
  "dora-cli",
+ "dora-download",
  "dora-message",
  "dora-node-api",
  "dora-operator-api-python",
@@ -2109,6 +2118,7 @@ dependencies = [
  "pythonize",
  "serde_json",
  "serde_yaml",
+ "shared_memory_extended",
  "tokio",
  "tracing",
 ]

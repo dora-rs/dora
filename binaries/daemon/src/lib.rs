@@ -14,6 +14,7 @@ use dora_core::{
     },
     uhlc::{self, HLC},
 };
+use dora_memory_pool::{MemoryPoolId, MemoryPoolManager, MemoryPoolMetadata};
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
@@ -300,6 +301,7 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    pub(crate) memory_pool: MemoryPoolManager,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -1077,6 +1079,7 @@ impl Daemon {
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
+            memory_pool: MemoryPoolManager::new(),
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
@@ -1403,6 +1406,13 @@ impl Daemon {
             // a Destroy command), so a closed channel is not an error.
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::debug!("could not send Exit to coordinator (already gone?): {e}");
+            }
+        }
+
+        // Clean up any unfreed memory pool entries on daemon exit
+        if let Err(errors) = self.memory_pool.cleanup_all() {
+            for error in errors {
+                tracing::warn!("{error}");
             }
         }
 
@@ -3378,6 +3388,235 @@ impl Daemon {
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            DaemonNodeEvent::RegisterPinnedMemory {
+                shared_memory_id,
+                metadata,
+                reply_sender,
+            } => {
+                let result = (|| -> Result<(), String> {
+                    let ptr = metadata
+                        .parameters
+                        .get("ptr")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::Integer(v) = p {
+                                Some(*v as u64)
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| "missing or invalid ptr".to_string())?;
+                    let size = metadata
+                        .parameters
+                        .get("size")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::Integer(v) = p {
+                                Some(*v as usize)
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| "missing or invalid size".to_string())?;
+                    let dtype = metadata
+                        .parameters
+                        .get("dtype")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::String(s) = p {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .ok_or_else(|| "missing or invalid dtype".to_string())?;
+                    let shape_param = metadata
+                        .parameters
+                        .get("shape")
+                        .ok_or_else(|| "missing shape".to_string())?;
+                    let shape = if let dora_message::metadata::Parameter::ListInt(v) = shape_param {
+                        v.iter().map(|&x| x as usize).collect()
+                    } else {
+                        return Err("invalid shape format".to_string());
+                    };
+
+                    let is_pinned = metadata
+                        .parameters
+                        .get("is_pinned")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::Bool(v) = p {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false);
+                    let shared_memory_name = metadata
+                        .parameters
+                        .get("shared_memory_name")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::String(s) = p {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    let buffer_id = metadata
+                        .parameters
+                        .get("buffer_id")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::String(s) = p {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    let allocator_pid = metadata
+                        .parameters
+                        .get("allocator_pid")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::Integer(v) = p {
+                                Some(*v as u32)
+                            } else {
+                                None
+                            }
+                        });
+                    let cuda_registered = metadata
+                        .parameters
+                        .get("cuda_registered")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::Bool(v) = p {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(is_pinned);
+                    let pinned_type = metadata
+                        .parameters
+                        .get("pinned_type")
+                        .and_then(|p| {
+                            if let dora_message::metadata::Parameter::String(s) = p {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        });
+
+                    let pool_metadata = MemoryPoolMetadata {
+                        ptr,
+                        size,
+                        dtype,
+                        shape,
+                        is_pinned,
+                        shared_memory_name,
+                        buffer_id,
+                        allocator_pid,
+                        cuda_registered,
+                        pinned_type,
+                    };
+
+                    self.memory_pool.register_memory_pool(
+                        MemoryPoolId {
+                            id: shared_memory_id,
+                        },
+                        pool_metadata,
+                        node_id.to_string(),
+                    )
+                })();
+                let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::ReadPinnedMemory {
+                shared_memory_id,
+                free,
+                reply_sender,
+            } => {
+                let result = (|| -> Result<dora_message::metadata::Metadata, String> {
+                    let id = MemoryPoolId {
+                        id: shared_memory_id.clone(),
+                    };
+                    let metadata = self
+                        .memory_pool
+                        .read_memory_pool(&id, &node_id.to_string())
+                        .ok_or_else(|| {
+                            format!("memory pool with ID {} not found", shared_memory_id)
+                        })?;
+
+                    if free {
+                        if let Err(err) = self.memory_pool.free_memory_pool(&id, &node_id.to_string()) {
+                            tracing::debug!(
+                                "Failed to free memory pool {} after reading: {}",
+                                shared_memory_id,
+                                err
+                            );
+                        }
+                    }
+
+                    use dora_message::metadata::{MetadataParameters, Parameter};
+                    let mut parameters = MetadataParameters::new();
+                    parameters.insert("ptr".to_string(), Parameter::Integer(metadata.ptr as i64));
+                    parameters.insert("size".to_string(), Parameter::Integer(metadata.size as i64));
+                    parameters.insert("dtype".to_string(), Parameter::String(metadata.dtype));
+                    let shape_i64: Vec<i64> = metadata.shape.iter().map(|&x| x as i64).collect();
+                    parameters.insert("shape".to_string(), Parameter::ListInt(shape_i64));
+                    parameters.insert("is_pinned".to_string(), Parameter::Bool(metadata.is_pinned));
+                    if let Some(ref pinned_type) = metadata.pinned_type {
+                        parameters.insert(
+                            "pinned_type".to_string(),
+                            Parameter::String(pinned_type.clone()),
+                        );
+                    }
+                    if let Some(ref shared_memory_name) = metadata.shared_memory_name {
+                        parameters.insert(
+                            "shared_memory_name".to_string(),
+                            Parameter::String(shared_memory_name.clone()),
+                        );
+                    }
+                    if let Some(ref buffer_id) = metadata.buffer_id {
+                        parameters.insert(
+                            "buffer_id".to_string(),
+                            Parameter::String(buffer_id.clone()),
+                        );
+                    }
+
+                    let timestamp = self.clock.new_timestamp();
+                    let type_info = dora_message::metadata::ArrowTypeInfo {
+                        data_type: DataType::Null,
+                        len: 0,
+                        null_count: 0,
+                        validity: None,
+                        offset: 0,
+                        buffer_offsets: vec![],
+                        child_data: vec![],
+                        field_names: None,
+                        schema_hash: None,
+                    };
+
+                    Ok(dora_message::metadata::Metadata::from_parameters(
+                        timestamp, type_info, parameters,
+                    ))
+                })();
+
+                match result {
+                    Ok(metadata) => {
+                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
+                    }
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                }
+            }
+            DaemonNodeEvent::FreePinnedMemory {
+                shared_memory_id,
+                reply_sender,
+            } => {
+                let id = MemoryPoolId {
+                    id: shared_memory_id.clone(),
+                };
+                let result: Result<(), String> =
+                    match self.memory_pool.free_memory_pool(&id, &node_id.to_string()) {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    };
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
         Ok(())

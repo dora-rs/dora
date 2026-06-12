@@ -46,6 +46,7 @@ pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
+    PinnedMemoryMetadata { metadata: Metadata },
     Empty,
 }
 

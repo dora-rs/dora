@@ -1,0 +1,19 @@
+# Negative-path test: daemon releases an unreleased memory pool on shutdown.
+env:
+  sender_device: cpu
+  receiver_device: cuda
+  massage_num: 2
+  memory_pool_scenario: auto_cleanup
+nodes:
+  - id: sender_node
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require

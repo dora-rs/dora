@@ -80,6 +80,11 @@ impl InteractiveEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
+            DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. } => {
+                DaemonReply::Result(Ok(()))
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

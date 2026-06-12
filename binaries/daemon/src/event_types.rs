@@ -139,6 +139,20 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    RegisterPinnedMemory {
+        shared_memory_id: String,
+        metadata: metadata::Metadata,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    ReadPinnedMemory {
+        shared_memory_id: String,
+        free: bool,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    FreePinnedMemory {
+        shared_memory_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
 }
 
 #[derive(Debug)]

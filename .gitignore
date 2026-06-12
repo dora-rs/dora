@@ -227,3 +227,4 @@ yolo.yml
 # Session-local working notes (per-session handoff docs, run findings,
 # upstream PR drafts). Not part of the source.
 .project_notes/
+.idea/

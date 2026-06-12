@@ -1,0 +1,19 @@
+# Positive throughput test: CPU sender, CUDA receiver, explicit pool release.
+env:
+  sender_device: cpu
+  receiver_device: cuda
+  massage_num: 100
+  memory_pool_scenario: throughput
+nodes:
+  - id: sender_node
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require
