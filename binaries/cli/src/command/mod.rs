@@ -388,6 +388,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_validate_node_manifest() {
+        parse_ok(&["dora", "validate", "--node-manifest", "dora-node.yml"]);
+        // a dataflow and --node-manifest are mutually exclusive
+        parse_err(&[
+            "dora",
+            "validate",
+            "dataflow.yml",
+            "--node-manifest",
+            "dora-node.yml",
+        ]);
+        // one of the two is required
+        parse_err(&["dora", "validate"]);
+    }
+
+    #[test]
     fn parse_new() {
         parse_ok(&["dora", "new", "test"]);
     }

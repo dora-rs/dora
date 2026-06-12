@@ -1,11 +1,12 @@
 use arrow_schema::{DataType, Field, Fields, Schema};
-use serde::Deserialize;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
 /// A field definition within a struct type.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FieldDef {
     /// Field name
     pub name: String,
@@ -21,7 +22,7 @@ fn default_true() -> bool {
 }
 
 /// A type parameter declaration (e.g. `sample_type` on AudioFrame).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TypeParam {
     /// Parameter name
     pub name: String,
@@ -31,7 +32,7 @@ pub struct TypeParam {
 }
 
 /// Metadata key required on outputs of a given type.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct MetadataDef {
     /// Key name that must be present in message metadata
     pub key: String,
@@ -41,7 +42,7 @@ pub struct MetadataDef {
 }
 
 /// A single type definition from the standard type library.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct TypeDef {
     /// Arrow data type name (e.g. "Float32", "Struct", "LargeBinary")
     pub arrow: String,
