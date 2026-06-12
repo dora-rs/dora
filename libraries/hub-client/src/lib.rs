@@ -26,14 +26,17 @@ pub const OFFICIAL_NAMESPACE: &str = "dora-rs";
 /// argument injection (`--upload-pack=…` parsed as a flag) and command-running
 /// transports (`ext::sh -c …`).
 pub fn validate_git_url(url: &str) -> eyre::Result<()> {
-    const SCHEMES: &[&str] = &["https://", "http://", "ssh://", "git://", "file://", "git@"];
+    // cleartext transports (http://, git://) are deliberately absent: the
+    // index is a supply-chain trust root and its fast-forward protection is
+    // meaningless against a MITM-controlled remote
+    const SCHEMES: &[&str] = &["https://", "ssh://", "file://", "git@"];
     // absolute paths are accepted for local repositories (tests, mirrors)
     let valid = SCHEMES.iter().any(|s| url.starts_with(s)) || url.starts_with('/');
     if valid && !url.contains(|c: char| c.is_control()) {
         return Ok(());
     }
     eyre::bail!(
-        "invalid git URL `{}`: expected a https/ssh/git/file URL or absolute path",
+        "invalid git URL `{}`: expected a https/ssh/file URL or absolute path",
         url.chars().filter(|c| !c.is_control()).collect::<String>()
     )
 }

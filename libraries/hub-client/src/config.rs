@@ -100,7 +100,9 @@ impl ResolvedConfig {
         let mut seen_aliases = BTreeMap::new();
         for (idx, index) in indexes.iter().enumerate() {
             validate_index_entry(index)?;
-            if let Some(previous) = seen_aliases.insert(index.alias.clone(), idx) {
+            // case-insensitive: aliases become cache directory names, and
+            // `acme`/`ACME` would silently share one clone on macOS/Windows
+            if let Some(previous) = seen_aliases.insert(index.alias.to_ascii_lowercase(), idx) {
                 eyre::bail!(
                     "duplicate index alias `{}` (entries {} and {idx})",
                     index.alias,
@@ -166,7 +168,7 @@ impl ResolvedConfig {
 /// Validate one `[[index]]` entry. The alias becomes a cache directory name
 /// and the git URL/path become `git` subprocess arguments — all of it is
 /// user- or repo-supplied, so each field is constrained before use.
-fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
+pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
     let alias_valid = index.alias.len() <= 64
         && index
             .alias

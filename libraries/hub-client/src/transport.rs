@@ -72,10 +72,11 @@ impl IndexFetcher {
             return Ok(dir);
         }
 
-        let git_url = index.git.as_deref().expect("checked by is_local");
         // belt-and-suspenders: configs loaded via ResolvedConfig are already
-        // validated, but IndexConfig can be constructed directly
-        validate_git_url(git_url)?;
+        // validated, but IndexConfig can be constructed directly — every
+        // field below feeds a path join or a git argument
+        crate::config::validate_index_entry(index)?;
+        let git_url = index.git.as_deref().expect("checked by is_local");
         let clone_dir = self.cache_root.join(&index.alias);
         let catalog_subpath = index.path.as_deref().unwrap_or(OFFICIAL_INDEX_PATH);
 
@@ -91,18 +92,60 @@ impl IndexFetcher {
                 .with_context(|| format!("failed to clone index `{}`", index.alias))?;
             self.refreshed.insert(index.alias.clone());
         } else if !self.offline && self.refreshed.insert(index.alias.clone()) {
-            self.refresh_index(&index.alias, &clone_dir)
-                .with_context(|| format!("failed to refresh index `{}`", index.alias))?;
+            if let Err(refresh_err) = self.refresh_index(&index.alias, &clone_dir) {
+                // self-heal a corrupt cache (e.g. a SIGKILL mid-clone left a
+                // broken .git); genuine network errors propagate so a flaky
+                // connection cannot wipe a cache that offline runs rely on
+                if git(Some(&clone_dir), &["rev-parse", "HEAD"]).is_err() {
+                    self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+                } else {
+                    return Err(refresh_err)
+                        .with_context(|| format!("failed to refresh index `{}`", index.alias));
+                }
+            }
         }
 
         let catalog = clone_dir.join(catalog_subpath);
         if !catalog.is_dir() {
-            eyre::bail!(
-                "index `{}` has no catalog directory `{catalog_subpath}`",
-                index.alias
-            );
+            // a clone whose checkout was interrupted has a valid .git but no
+            // worktree — self-heal instead of failing on every invocation
+            if self.offline {
+                eyre::bail!(
+                    "cached index `{}` is incomplete (no `{catalog_subpath}` directory) \
+                     and `--offline` is set\n  \
+                     hint: run once with network access to repair the cache",
+                    index.alias
+                );
+            }
+            self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+            if !catalog.is_dir() {
+                eyre::bail!(
+                    "index `{}` has no catalog directory `{catalog_subpath}`",
+                    index.alias
+                );
+            }
         }
         Ok(catalog)
+    }
+
+    /// Replace a corrupt or incomplete cached clone with a fresh one.
+    fn reclone(
+        &mut self,
+        index: &IndexConfig,
+        git_url: &str,
+        clone_dir: &Path,
+        catalog_subpath: &str,
+    ) -> eyre::Result<()> {
+        self.warnings.push(format!(
+            "cached index `{}` was incomplete — re-cloning",
+            index.alias
+        ));
+        std::fs::remove_dir_all(clone_dir)
+            .with_context(|| format!("failed to remove corrupt cache `{}`", clone_dir.display()))?;
+        self.clone_index(git_url, clone_dir, catalog_subpath)
+            .with_context(|| format!("failed to re-clone index `{}`", index.alias))?;
+        self.refreshed.insert(index.alias.clone());
+        Ok(())
     }
 
     fn clone_index(
@@ -162,6 +205,10 @@ impl IndexFetcher {
     fn refresh_index(&mut self, alias: &str, clone_dir: &Path) -> eyre::Result<()> {
         let local = git(Some(clone_dir), &["rev-parse", "HEAD"])?;
         git(Some(clone_dir), &["fetch", "--quiet", "origin"]).context("git fetch failed")?;
+        // `git fetch` never updates an existing refs/remotes/origin/HEAD —
+        // without this, an index repo renaming its default branch would
+        // freeze every cache on the old branch tip silently
+        let _ = git(Some(clone_dir), &["remote", "set-head", "origin", "--auto"]);
         let remote = remote_tip(clone_dir)?;
         if remote == local {
             return Ok(());
@@ -206,6 +253,8 @@ fn git(dir: Option<&Path>, args: &[&str]) -> eyre::Result<String> {
     if let Some(dir) = dir {
         command.current_dir(dir);
     }
+    // never hang on a credential prompt (e.g. a private index URL)
+    command.env("GIT_TERMINAL_PROMPT", "0");
     let output = command
         .args(args)
         .output()
@@ -376,6 +425,36 @@ source:
         second.catalog_dir(&index, Path::new(".")).unwrap();
         assert_eq!(second.warnings.len(), 1, "{:?}", second.warnings);
         assert!(second.warnings[0].contains("rewritten or rolled back"));
+    }
+
+    #[test]
+    fn wedged_cache_self_heals() {
+        let remote_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        make_remote(remote_dir.path());
+        let index = remote_index(remote_dir.path());
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        fetcher.catalog_dir(&index, Path::new(".")).unwrap();
+
+        // simulate an interrupted checkout: valid .git, missing worktree
+        let clone_dir = cache_dir.path().join("test");
+        std::fs::remove_dir_all(clone_dir.join("node-index")).unwrap();
+
+        // offline cannot repair — fails with a repair hint
+        let mut offline = IndexFetcher::with_cache_root(cache_dir.path().into(), true);
+        let err = offline.catalog_dir(&index, Path::new(".")).unwrap_err();
+        assert!(format!("{err:#}").contains("incomplete"), "{err:#}");
+
+        // online self-heals instead of failing forever
+        let mut second = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        let catalog = second.catalog_dir(&index, Path::new(".")).unwrap();
+        assert!(catalog.join("dora-rs/dora-yolo/0.5.1.yml").is_file());
+        assert!(
+            second.warnings.iter().any(|w| w.contains("re-cloning")),
+            "{:?}",
+            second.warnings
+        );
     }
 
     #[test]

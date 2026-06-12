@@ -84,9 +84,14 @@ impl SourceSpec {
         match (&self.git, &self.rev) {
             (Some(git), Some(rev)) => {
                 crate::validate_git_url(git)?;
-                let valid_rev = !rev.is_empty() && rev.chars().all(|c| c.is_ascii_alphanumeric());
+                // a real commit hash only: a branch or tag name here would
+                // make the "pin" mutable, defeating the audit trail and yanks
+                let valid_rev =
+                    (7..=64).contains(&rev.len()) && rev.chars().all(|c| c.is_ascii_hexdigit());
                 if !valid_rev {
-                    eyre::bail!("index entry has an invalid commit hash");
+                    eyre::bail!(
+                        "index entry has an invalid commit hash (`rev` must be a hex hash)"
+                    );
                 }
                 Ok((git, rev))
             }
@@ -139,7 +144,13 @@ impl IndexCatalog {
     fn package_dir(&self, namespace: &str, name: &str) -> eyre::Result<PathBuf> {
         for part in [namespace, name] {
             if !is_valid_key_part(part) {
-                eyre::bail!("invalid package key `{namespace}/{name}`");
+                // the key is untrusted — strip control chars before echoing
+                let shown: String = format!("{namespace}/{name}")
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .take(128)
+                    .collect();
+                eyre::bail!("invalid package key `{shown}`");
             }
         }
         Ok(self.root.join(namespace).join(name))
@@ -151,7 +162,13 @@ impl IndexCatalog {
         let mut versions = Vec::new();
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(_) => return Ok(versions), // unknown package = no versions
+            // unknown package = no versions; other IO errors (permissions,
+            // …) must not masquerade as package-not-found
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(versions),
+            Err(err) => {
+                return Err(err)
+                    .with_context(|| format!("failed to list versions in `{}`", dir.display()));
+            }
         };
         for entry in entries.flatten() {
             let path = entry.path();
@@ -346,9 +363,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("dora-rs/dora-yolo");
         std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa", false)).unwrap();
-        std::fs::write(pkg.join("0.5.2.yml"), entry_yaml("bbb", false)).unwrap();
-        std::fs::write(pkg.join("0.6.0.yml"), entry_yaml("ccc", true)).unwrap();
+        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa1111", false)).unwrap();
+        std::fs::write(pkg.join("0.5.2.yml"), entry_yaml("bbb2222", false)).unwrap();
+        std::fs::write(pkg.join("0.6.0.yml"), entry_yaml("ccc3333", true)).unwrap();
         std::fs::write(
             pkg.join("package.yml"),
             "description: object detection\nowners: [haixuanTao]\n",
@@ -369,7 +386,7 @@ mod tests {
         assert_eq!(resolved.version, Version::parse("0.5.2").unwrap());
         let (git, rev) = resolved.entry.source.git_pin().unwrap();
         assert_eq!(git, "https://github.com/dora-rs/dora-hub");
-        assert_eq!(rev, "bbb");
+        assert_eq!(rev, "bbb2222");
     }
 
     #[test]
@@ -377,8 +394,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let pkg = tmp.path().join("dora-rs/dora-yolo");
         std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa", false)).unwrap();
-        std::fs::write(pkg.join("0.6.0-alpha.1.yml"), entry_yaml("pre", false)).unwrap();
+        std::fs::write(pkg.join("0.5.1.yml"), entry_yaml("aaa1111", false)).unwrap();
+        std::fs::write(pkg.join("0.6.0-alpha.1.yml"), entry_yaml("ddd4444", false)).unwrap();
         let catalog = IndexCatalog::open(tmp.path()).unwrap();
         // a plain requirement never matches a prerelease
         let resolved = catalog.resolve(&parse_ref("dora-yolo@>=0.5")).unwrap();
