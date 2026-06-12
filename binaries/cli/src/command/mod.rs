@@ -400,6 +400,14 @@ mod tests {
         ]);
         // one of the two is required
         parse_err(&["dora", "validate"]);
+        // --strict-types is dataflow-only
+        parse_err(&[
+            "dora",
+            "validate",
+            "--node-manifest",
+            "dora-node.yml",
+            "--strict-types",
+        ]);
     }
 
     #[test]

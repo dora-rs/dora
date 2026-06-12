@@ -11,7 +11,7 @@ use eyre::{Context, bail};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, clap::Args)]
-/// Validate a dataflow YAML file and check type annotations
+/// Validate a dataflow YAML file (or a node manifest) and check type annotations
 pub struct Validate {
     /// Path to the dataflow descriptor file
     #[clap(
@@ -22,7 +22,7 @@ pub struct Validate {
     )]
     dataflow: Option<PathBuf>,
     /// Treat type warnings as errors (non-zero exit code)
-    #[clap(long, action)]
+    #[clap(long, action, conflicts_with = "node_manifest")]
     strict_types: bool,
     /// Validate a node manifest (dora-node.yml) instead of a dataflow
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]

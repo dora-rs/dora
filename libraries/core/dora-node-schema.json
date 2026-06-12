@@ -131,7 +131,8 @@
         "debug"
       ]
     },
-    "EnvValue": {
+    "EnvDefault": {
+      "description": "A literal env default value.\n\nDeliberately *not* the descriptor's `EnvValue`: that type expands `$VAR`\nreferences against the local environment at deserialization time, which is\nright for a dataflow being deployed but wrong for a manifest — manifests\nare published verbatim into an index, so defaults must stay literal and\nparse identically on every machine.",
       "anyOf": [
         {
           "type": "boolean"
@@ -157,7 +158,7 @@
           "description": "Default value used when the variable is not set in the dataflow.",
           "anyOf": [
             {
-              "$ref": "#/$defs/EnvValue"
+              "$ref": "#/$defs/EnvDefault"
             },
             {
               "type": "null"
@@ -311,13 +312,11 @@
           "type": [
             "string",
             "null"
-          ],
-          "default": null
+          ]
         },
         "fields": {
           "description": "Struct field definitions (only for Struct arrow types)",
           "type": "array",
-          "default": [],
           "items": {
             "$ref": "#/$defs/FieldDef"
           }
@@ -325,7 +324,6 @@
         "metadata": {
           "description": "Required metadata keys",
           "type": "array",
-          "default": [],
           "items": {
             "$ref": "#/$defs/MetadataDef"
           }
@@ -333,7 +331,6 @@
         "params": {
           "description": "Type parameters (e.g. sample_type for AudioFrame)",
           "type": "array",
-          "default": [],
           "items": {
             "$ref": "#/$defs/TypeParam"
           }

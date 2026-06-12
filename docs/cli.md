@@ -1055,16 +1055,19 @@ dora graph dataflow.yml --mermaid
 
 #### `dora validate`
 
-Validate a dataflow YAML file and check type annotations.
+Validate a dataflow YAML file and check type annotations, or validate a node
+manifest (`dora-node.yml`).
 
 ```
 dora validate <PATH> [OPTIONS]
+dora validate --node-manifest <PATH>
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `<PATH>` | required | Dataflow descriptor path |
+| `<PATH>` | required unless `--node-manifest` | Dataflow descriptor path |
 | `--strict-types` | false | Treat warnings as errors (non-zero exit code for CI) |
+| `--node-manifest <PATH>` | — | Validate a node manifest instead of a dataflow (schema, entrypoint confinement, env deny-list, type URNs) |
 
 Checks:
 1. **Key existence**: `output_types`/`input_types` keys exist in the corresponding `outputs`/`inputs` lists
@@ -1084,6 +1087,9 @@ dora validate dataflow.yml
 
 # Strict mode for CI (exit 1 on warnings)
 dora validate --strict-types dataflow.yml
+
+# Validate a node manifest (always strict)
+dora validate --node-manifest dora-node.yml
 ```
 
 See the [Type Annotations Guide](types.md) for the full type library and usage details.

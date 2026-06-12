@@ -6,7 +6,7 @@
 
 use semver::VersionReq;
 
-use super::NodeManifest;
+use super::{EnvDefault, EnvVarType, NodeManifest};
 use crate::types::{TypeRegistry, parse_urn};
 
 /// A single validation problem, referencing the manifest field it concerns.
@@ -29,7 +29,9 @@ impl std::fmt::Display for ManifestIssue {
 }
 
 fn write_sanitized(f: &mut std::fmt::Formatter<'_>, s: &str) -> std::fmt::Result {
-    for c in s.chars().filter(|c| !c.is_control() || *c == '\n') {
+    // newlines are stripped too: no issue message is legitimately multi-line,
+    // and an embedded `\n` would let a manifest spoof additional output lines
+    for c in s.chars().filter(|c| !c.is_control()) {
         std::fmt::Write::write_char(f, c)?;
     }
     Ok(())
@@ -131,9 +133,20 @@ impl NodeManifest {
             }
         }
 
-        for name in self.env.keys() {
+        for (name, def) in &self.env {
             if let Some(problem) = check_env_name(name) {
                 issue(&format!("env.{name}"), problem);
+            }
+            if let (Some(declared), Some(default)) = (def.r#type, &def.default)
+                && !env_default_matches(declared, default)
+            {
+                issue(
+                    &format!("env.{name}.default"),
+                    format!(
+                        "default value does not match declared type `{}`",
+                        declared.as_str()
+                    ),
+                );
             }
         }
 
@@ -287,8 +300,15 @@ fn check_platform(platform: &str) -> Option<String> {
     None
 }
 
-/// Shipped custom types must live under the package's namespace (spec §6.3).
+/// Shipped custom types must live under the package's namespace (spec §6.3),
+/// be declared without parameters, and use the URN character set.
 fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
+    let valid_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
+    if !urn.chars().all(valid_char) {
+        return Some(format!(
+            "type URN `{urn}` may only contain alphanumerics and `_ - . /`"
+        ));
+    }
     if urn.starts_with("std/") || urn == "std" {
         return Some("shipped types cannot use the `std/` prefix".into());
     }
@@ -298,6 +318,17 @@ fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
         ));
     }
     None
+}
+
+/// Whether a declared env default value is of the declared type. An integer
+/// default satisfies a `float` declaration (YAML `0` parses as an integer).
+fn env_default_matches(declared: EnvVarType, default: &EnvDefault) -> bool {
+    match declared {
+        EnvVarType::String => matches!(default, EnvDefault::String(_)),
+        EnvVarType::Int => matches!(default, EnvDefault::Integer(_)),
+        EnvVarType::Float => matches!(default, EnvDefault::Float(_) | EnvDefault::Integer(_)),
+        EnvVarType::Bool => matches!(default, EnvDefault::Bool(_)),
+    }
 }
 
 /// Whether `urn` starts with `<namespace>/`.
@@ -536,6 +567,39 @@ types:
 outputs:
   cloud:
     type: dora-rs/lidar/v1/PointCloud
+"#,
+        );
+        assert_eq!(issues, vec![]);
+    }
+
+    #[test]
+    fn env_default_must_match_declared_type() {
+        let issues = validate("env:\n  CONFIDENCE:\n    type: float\n    default: not-a-number\n");
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].field, "env.CONFIDENCE.default");
+
+        // integer default satisfies a float declaration
+        let issues = validate("env:\n  CONFIDENCE:\n    type: float\n    default: 1\n");
+        assert_eq!(issues, vec![]);
+    }
+
+    #[test]
+    fn shipped_type_keys_are_format_checked() {
+        // parameterized keys can never be referenced (the port checker strips
+        // params before lookup) — reject them at declaration
+        let issues = validate("types:\n  \"dora-rs/lidar/v1/PC[res=high]\":\n    arrow: Struct\n");
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].field.starts_with("types."), "{issues:?}");
+
+        // parameterized *references* to a declared base type resolve fine
+        let issues = validate(
+            r#"
+types:
+  dora-rs/lidar/v1/PC:
+    arrow: Struct
+outputs:
+  cloud:
+    type: "dora-rs/lidar/v1/PC[res=high]"
 "#,
         );
         assert_eq!(issues, vec![]);

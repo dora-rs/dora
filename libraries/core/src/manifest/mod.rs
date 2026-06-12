@@ -15,7 +15,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::types::TypeDef;
-use dora_message::descriptor::EnvValue;
 
 /// Conventional file name of a node manifest.
 pub const MANIFEST_FILENAME: &str = "dora-node.yml";
@@ -169,11 +168,27 @@ pub struct EnvVarDef {
 
     /// Default value used when the variable is not set in the dataflow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<EnvValue>,
+    pub default: Option<EnvDefault>,
 
     /// Human-readable description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// A literal env default value.
+///
+/// Deliberately *not* the descriptor's `EnvValue`: that type expands `$VAR`
+/// references against the local environment at deserialization time, which is
+/// right for a dataflow being deployed but wrong for a manifest — manifests
+/// are published verbatim into an index, so defaults must stay literal and
+/// parse identically on every machine.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EnvDefault {
+    Bool(bool),
+    Integer(i64),
+    Float(f64),
+    String(String),
 }
 
 /// Declared value type of an environment variable.
@@ -184,6 +199,18 @@ pub enum EnvVarType {
     Int,
     Float,
     Bool,
+}
+
+impl EnvVarType {
+    /// The lowercase name as written in manifests.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EnvVarType::String => "string",
+            EnvVarType::Int => "int",
+            EnvVarType::Float => "float",
+            EnvVarType::Bool => "bool",
+        }
+    }
 }
 
 /// Informational hardware/system requirements (spec §5): documentation
@@ -224,17 +251,14 @@ impl NodeManifest {
 
     /// Read and parse a manifest file.
     pub fn read(path: &Path) -> eyre::Result<Self> {
-        // check the size before reading so the cap also bounds the read
-        let len = std::fs::metadata(path)
-            .with_context(|| format!("failed to read node manifest at `{}`", path.display()))?
-            .len();
-        if len > MAX_MANIFEST_SIZE as u64 {
-            eyre::bail!(
-                "node manifest at `{}` too large ({len} bytes, max {MAX_MANIFEST_SIZE})",
-                path.display()
-            );
-        }
-        let content = std::fs::read_to_string(path)
+        use std::io::Read as _;
+        // bound the read itself (not just the parse) — a size check on
+        // metadata alone would miss FIFOs/devices and growing files
+        let file = std::fs::File::open(path)
+            .with_context(|| format!("failed to read node manifest at `{}`", path.display()))?;
+        let mut content = String::new();
+        file.take(MAX_MANIFEST_SIZE as u64 + 1)
+            .read_to_string(&mut content)
             .with_context(|| format!("failed to read node manifest at `{}`", path.display()))?;
         Self::parse(&content)
             .with_context(|| format!("invalid node manifest at `{}`", path.display()))
@@ -346,6 +370,30 @@ no_such_field: true
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("no_such_field"), "{err:#}");
+    }
+
+    #[test]
+    fn env_defaults_stay_literal() {
+        // EnvDefault must NOT expand `$VAR` against the local environment —
+        // manifests are published verbatim and must parse identically on
+        // every machine (the descriptor's EnvValue would expand here)
+        let m = NodeManifest::parse(
+            r#"
+apiVersion: 1
+name: x
+namespace: y
+runtime: python
+entrypoint: x
+env:
+  MODEL_PATH:
+    default: $HOME/weights.pt
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m.env["MODEL_PATH"].default,
+            Some(EnvDefault::String("$HOME/weights.pt".into()))
+        );
     }
 
     #[test]

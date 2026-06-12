@@ -47,16 +47,16 @@ pub struct TypeDef {
     /// Arrow data type name (e.g. "Float32", "Struct", "LargeBinary")
     pub arrow: String,
     /// Human-readable description
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Type parameters (e.g. sample_type for AudioFrame)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<TypeParam>,
     /// Struct field definitions (only for Struct arrow types)
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<FieldDef>,
     /// Required metadata keys
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metadata: Vec<MetadataDef>,
 }
 
