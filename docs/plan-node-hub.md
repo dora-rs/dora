@@ -257,8 +257,9 @@ Four layers:
    `dora-download` path for the opt-in binary form. No new fetch stack.
 4. **CLI + runtime** (`dora hub` + `hub:` in `dora build`/`run`/`validate`):
    the single user surface. A resolved `hub:` node *is* a git-sourced node,
-   so it flows through the existing build/spawn/multi-daemon pipeline
-   unchanged (§10).
+   so it **mostly reuses** the existing build/spawn/multi-daemon pipeline —
+   with the two optional wire bits (`subdir?`, `hub?`) and the confined path
+   resolver described in §10.
 
 ## 5. The node manifest — `dora-node.yml`
 
@@ -290,7 +291,9 @@ entrypoint: dora-yolo         # what to run, relative to the node's working
                               # `target/release/dora-yolo` or `build/lidar`.
                               # Validated relative (no absolute, no `..`); maps
                               # to the synthesized git node's `path:` (§10.1),
-                              # resolved exactly as a `git:` node's path today.
+                              # resolved like a `git:` node's path but under
+                              # confined resolution (no ambient-$PATH fallback,
+                              # §10/§11).
 platforms: []                 # optional allowlist, e.g. [linux-x86_64,
                               # linux-aarch64, macos-aarch64]; empty = all.
                               # Surfaced in search/info; checked pre-dispatch.
