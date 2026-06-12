@@ -370,7 +370,18 @@ fn check_input(
                     }
                 }
                 CoreNodeKind::Runtime(runtime) => {
-                    let (operator_id, output) = output.split_once('/').unwrap_or_default();
+                    // Outputs of runtime nodes are referenced as
+                    // `<node>/<operator>/<output>`. Without the operator
+                    // segment, falling back to an empty operator id would
+                    // produce a misleading "operator `` does not exist" error.
+                    let Some((operator_id, output)) = output.split_once('/') else {
+                        bail!(
+                            "input `{input_id_str}` references output `{output}` of node \
+                            `{source}`, which is a runtime node; runtime node outputs \
+                            must include the operator id \
+                            (expected format: `{source}/<operator_id>/<output_id>`)"
+                        );
+                    };
                     let operator_id = OperatorId::from(operator_id.to_owned());
                     let output = DataId::from(output.to_owned());
 
@@ -1191,6 +1202,55 @@ mod tests {
             role: Some(role),
             ..Default::default()
         }
+    }
+
+    fn runtime_node() -> ResolvedNode {
+        serde_yaml::from_str(
+            r#"
+id: runtime-node
+operators:
+  - id: op1
+    python: op.py
+    outputs:
+      - out
+"#,
+        )
+        .unwrap()
+    }
+
+    fn user_input(source: &str, output: &str) -> Input {
+        Input {
+            mapping: InputMapping::User(UserInputMapping {
+                source: NodeId::from(source.to_owned()),
+                output: DataId::from(output.to_owned()),
+            }),
+            queue_size: None,
+            input_timeout: None,
+            queue_policy: None,
+        }
+    }
+
+    #[test]
+    fn runtime_input_with_operator_segment_is_accepted() {
+        let node = runtime_node();
+        let nodes = BTreeMap::from([(node.id.clone(), node)]);
+        check_input(&user_input("runtime-node", "op1/out"), &nodes, "sink/in").unwrap();
+    }
+
+    #[test]
+    fn runtime_input_without_operator_segment_reports_expected_format() {
+        // Mapping `runtime-node/out` (instead of `runtime-node/op1/out`) used
+        // to fall back to an empty operator id and report that operator ``
+        // does not exist, hiding the actual mistake.
+        let node = runtime_node();
+        let nodes = BTreeMap::from([(node.id.clone(), node)]);
+        let err = check_input(&user_input("runtime-node", "out"), &nodes, "sink/in")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("runtime-node/<operator_id>/<output_id>"),
+            "error should explain the expected format, got: {err}"
+        );
     }
 
     #[test]
