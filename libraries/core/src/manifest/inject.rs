@@ -6,6 +6,11 @@
 //! own annotations win), its custom types are registered, and the dataflow's
 //! wiring is checked against the declared ports. Local development thereby
 //! gets the same contract validation as hub consumption (UC11).
+//!
+//! Scope (P1.4): injection runs in `dora build` and `dora validate` only —
+//! compose-time checking. The injected annotations do not reach the runtime
+//! first-message type check or `dora graph`, which read the descriptor
+//! through paths that don't inject (deliberate for now; see plan §6.2).
 
 use std::path::{Component, Path, PathBuf};
 
@@ -62,10 +67,14 @@ pub fn inject_adjacent_manifests(
     // manifest referencing a type shipped by another node resolves regardless
     // of node order. URN policy violations (namespace, charset) are reported
     // by each manifest's validation in pass 2; only the `std/` override guard
-    // is load-bearing here.
+    // is load-bearing here. Already-registered URNs are left untouched: types
+    // the dataflow author defined in `types/` win over manifest-shipped ones,
+    // and two nodes sharing one manifest re-ship identical definitions.
     for (_, (_, manifest)) in &matched {
         for (urn, def) in &manifest.types {
-            let _ = registry.add_user_type(urn, def.clone());
+            if registry.resolve(urn).is_none() {
+                let _ = registry.add_user_type(urn, def.clone());
+            }
         }
     }
 
@@ -98,13 +107,13 @@ fn find_manifest_for(
         // on-disk node directory to search
         return None;
     }
-    let working_dir = normalize(working_dir);
-    let full = normalize(&working_dir.join(path));
-    if !full.starts_with(&working_dir) {
+    let Some((full, working_dir)) = containment_roots(path, working_dir) else {
         // absolute or `..`-escaping paths point outside the dataflow tree —
-        // never walk unrelated directories looking for a manifest
+        // never walk unrelated directories looking for a manifest. (Env-var
+        // paths like `$HOME/bin/node` also land here or miss below: the
+        // daemon expands them at spawn time, injection does not.)
         return None;
-    }
+    };
     for dir in full.parent()?.ancestors() {
         if !dir.starts_with(&working_dir) {
             break;
@@ -137,6 +146,29 @@ fn find_manifest_for(
         }
     }
     None
+}
+
+/// Compute the normalized executable path and working-dir root used for the
+/// manifest walk, or `None` if the node path escapes the working directory.
+///
+/// The working dir is absolutized first: a relative working dir like `.`
+/// (the default when the dataflow sits in the invocation directory) would
+/// otherwise normalize to an empty prefix, which trivially "contains" every
+/// path — including absolute ones — and lets leading `..` components be
+/// silently dropped instead of detected as escapes.
+fn containment_roots(path: &str, working_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let working_dir = if working_dir.is_absolute() {
+        normalize(working_dir)
+    } else {
+        let cwd = std::env::current_dir().ok()?;
+        normalize(&cwd.join(working_dir))
+    };
+    let full = normalize(&working_dir.join(path));
+    if full.starts_with(&working_dir) {
+        Some((full, working_dir))
+    } else {
+        None
+    }
 }
 
 /// Lexically normalize a path (collapse `.` and resolve `..`) without
@@ -480,6 +512,24 @@ nodes:
         assert_eq!(result.notes, Vec::<String>::new());
         assert_eq!(result.warnings, Vec::<String>::new());
         assert!(df.nodes.iter().all(|n| n.input_types.is_empty()));
+    }
+
+    #[test]
+    fn relative_working_dir_does_not_collapse_containment() {
+        // `dora build dataflow.yml` run inside the dataflow's directory uses
+        // working_dir = "." — which must NOT normalize to an empty prefix
+        // that trivially contains absolute paths or eats leading `..`
+        assert!(
+            containment_roots("/opt/builds/some-node", Path::new(".")).is_none(),
+            "absolute path must not be contained by a relative working dir"
+        );
+        assert!(
+            containment_roots("../outside/target/release/bin", Path::new(".")).is_none(),
+            "`..`-escaping path must be detected, not remapped"
+        );
+        let (full, wd) = containment_roots("yolo/target/release/bin", Path::new(".")).unwrap();
+        assert!(wd.is_absolute());
+        assert!(full.starts_with(&wd));
     }
 
     #[test]
