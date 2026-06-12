@@ -208,12 +208,6 @@ impl TracingBuilder {
         Ok(self)
     }
 
-    /// Legacy method name for backward compatibility.
-    #[deprecated(since = "0.1.0", note = "Use `with_otlp_tracing` instead")]
-    pub fn with_jaeger_tracing(self) -> eyre::Result<Self> {
-        self.with_otlp_tracing()
-    }
-
     /// Add a layer that captures completed spans into the given store.
     ///
     /// Only captures spans from `dora_*` crates at info level to avoid noise
