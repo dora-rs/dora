@@ -88,9 +88,10 @@ parallel machinery:
   index is a git repo; everything a hosted service would add (search API,
   download stats, web UI) is Phase 4 and optional — built *on top of* the
   same index data, never replacing it.
-- **A dora-specific archive format.** Wheels, crates, OCI artifacts, and
-  checksummed release assets already exist; dora pins them, it does not host
-  them.
+- **A dora-specific archive format, or hosting node bytes.** The source
+  already lives in git; dora pins a commit and clones it (or, for the opt-in
+  binary form, downloads a checksummed artifact). The index never hosts the
+  bytes.
 - **Runtime QoS / shape enforcement.** The manifest reuses the existing type
   system; deepening *enforcement* (per-message validation, tensor shapes,
   metadata contracts at runtime) is a parallel type-system workstream
@@ -189,8 +190,9 @@ company's existing credentials) gates both repos.
 **UC9 — Migrating the existing node-hub** *(Phase 3)*
 A script generates draft `dora-node.yml` manifests for the ~60 active nodes
 in `dora-rs/dora-hub`; typing the contracts is farmed out as one
-good-first-issue per node (§12). Index entries pin the wheels already on
-PyPI. Nothing is re-published; `build: pip install dora-yolo` keeps working
+good-first-issue per node (§12). Each index entry's `source` points at the
+`dora-hub` repo + the node's release commit + `subdir: node-hub/<name>`.
+Nothing is re-published; `build: pip install dora-yolo` keeps working
 forever, `hub: dora-yolo@^0.5` becomes the better way.
 
 **UC10 — Yank a broken release** *(Phase 3)*
@@ -528,8 +530,9 @@ Publish-via-PR only scales with automation. Index CI enforces, structurally
 
 1. **Append-only**: a PR may *add* new version files. The only permitted
    modifications to an existing version file are (a) flipping `yanked` (plus
-   a reason), and (b) *adding* entries to `dist.artifacts` (late platform
-   wheels). Any other diff to an existing version file fails CI and requires
+   a reason), and (b) for the binary form, *adding* late per-platform entries
+   to `source.binary` (never changing an existing `url`/`sha256`). Any other
+   diff to an existing version file fails CI and requires
    an index admin.
 2. **Owner check**: the PR author must be in the target namespace's
    `package.yml` OWNERS list.
@@ -743,17 +746,26 @@ nodes:
   | hub entry → | synthesized git node field |
   |---|---|
   | `source.git` + resolved `commit` | `git:` + pinned rev (→ `GitManager` clone) |
-  | `source.subdir` + manifest `entrypoint` | `path: <subdir>/<entrypoint>` (relative to the clone root — `resolve_path` already joins working_dir + path, so a subdir path resolves with no new field) |
-  | manifest `build` | `build:` |
+  | `source.subdir` | the node's working dir = **`<clone-root>/<subdir>`** (see below) |
+  | manifest `entrypoint` | `path:` (relative to that working dir) |
+  | manifest `build` | `build:` (runs in that working dir) |
   | manifest `inputs/outputs` types | `input_types`/`output_types` (§6.2) |
 
-  After this rewrite the coordinator and daemon see a **normal git node** —
-  the `{repo, commit_hash}` wire state and `resolve_path` are unchanged. The
-  new code is one CLI-side desugaring step (the CLI already resolves git
-  rev→commit and expands modules centrally; this is the same stage), not a
-  protocol change or a bespoke daemon spawner. The lockfile additionally
-  records the hub provenance (name@version) over the pinned commit so
-  `dora hub` commands and `--locked` drift detection work (§10.3).
+  **One small build-path addition is required** — this is where the rewrite
+  is *not* pure reuse, and the prior draft glossed it. Today the git build
+  path roots a node at the clone root: `build_node_inner`
+  (`libraries/core/src/build/mod.rs`) sets `node_working_dir = clone_dir` and
+  runs `build:` there. For a monorepo node under `node-hub/dora-yolo`, a
+  manifest `build: pip install .` must run *in that subdir*, not the repo
+  root. So the git source gains a `subdir` that joins onto the clone dir
+  (`clone_dir.join(subdir)`), and build, env-prep, and spawn all root there.
+  This is a few lines in `build/mod.rs` and is independently useful — it lets
+  any `git:` node target a subdir of a monorepo, which it cannot today. After
+  it, the coordinator/daemon still see a **normal git node**: the
+  `{repo, commit_hash}` wire state grows one optional `subdir` field, and
+  `resolve_path` is unchanged. The lockfile additionally records the hub
+  provenance (name@version) over the pinned commit so `dora hub` commands and
+  `--locked` drift detection work (§10.3).
 - The binary form (§8.1) desugars to a `path: <url>` node — but the existing
   URL `path:` carries no checksum, so this needs **one small addition**: the
   pinned `sha256` must travel to the spawn site and be passed to
@@ -779,18 +791,19 @@ Because the CLI rewrites `hub:` into a concrete git node before dispatch
    Write/verify the lockfile.
 2. **Coordinator:** the synthesized node travels in the existing
    `git_sources` map of `BuildDataflowNodes` — it *is* a git node by the time
-   the coordinator sees it, so no new wire type. One additive change: a
-   daemon capability flag so the coordinator can give a clear "upgrade this
-   daemon" error if a daemon predates `hub:` support (it would otherwise
-   never receive a `hub:` node, since desugaring is central — the flag is
+   the coordinator sees it. The only wire change is the one optional `subdir`
+   field the git source gains (§10.1); no per-backend types. Plus a daemon
+   capability flag so the coordinator can give a clear "upgrade this daemon"
+   error if a daemon predates `hub:`/`subdir` support (it would otherwise
+   never receive such a node, since desugaring is central — the flag is
    belt-and-suspenders for mixed-version clusters).
-3. **Daemon:** clones the pinned commit, runs the node's `build:` for its own
-   platform, records working dir + env in `BuildInfo`, and spawns via
-   `resolve_path` against the synthesized `path` (`<subdir>/<entrypoint>`) —
-   *byte-for-byte the existing git-node path*. The binary form instead
-   downloads + `sha256`-verifies the per-platform URL via `dora-download`
-   (the new checksum-threading from §10.1); everything downstream is
-   identical.
+3. **Daemon:** clones the pinned commit, roots the node at
+   `<clone>/<subdir>`, runs the node's `build:` *there* for its own platform,
+   records working dir + env in `BuildInfo`, and spawns via `resolve_path`
+   against the manifest `entrypoint` — the existing git-node path plus the
+   `subdir` join (§10.1). The binary form instead downloads +
+   `sha256`-verifies the per-platform URL via `dora-download` (the new
+   checksum-threading from §10.1); everything downstream is identical.
 
 A daemon whose platform has no prebuilt binary and no `fallback-git` (§8.2)
 fails with a clear per-node, per-daemon error. With `fallback-git` it compiles
@@ -944,7 +957,10 @@ its own issue when its phase opens. Items are unowned until claimed —
   as `git:` nodes today (§10.3). *Depends: P2.1, P2.5.*
 - **P2.7** Source fetch+build wiring: a resolved `hub:` git source flows
   through the existing `GitManager` clone + `build:` + `resolve_path` spawn
-  (the bulk is *reuse*, not new code). *Depends: P2.2, P2.5, P2.6.*
+  (the bulk is *reuse*). **Includes the one real addition**: a `subdir` on the
+  git source so build/env-prep/spawn root at `<clone>/<subdir>`
+  (`build/mod.rs` `node_working_dir = clone_dir.join(subdir)`), independently
+  useful for plain `git:` monorepo nodes. *Depends: P2.2, P2.5, P2.6.*
 - **P2.8** Binary form (§8.1/§8.2): per-platform `url`+`sha256` via the
   existing `path: <url>` + `dora-download` path, with `fallback-git`
   degrade-to-source. *Depends: P2.7. (Deferred unless a heavy node needs it
