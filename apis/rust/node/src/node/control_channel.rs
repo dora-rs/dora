@@ -185,9 +185,7 @@ impl ControlChannel {
     }
 
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> eyre::Result<()> {
-        let request = DaemonRequest::FreePinnedMemory {
-            shared_memory_id,
-        };
+        let request = DaemonRequest::FreePinnedMemory { shared_memory_id };
         let reply = self
             .channel
             .request(&Timestamped {

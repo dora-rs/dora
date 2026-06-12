@@ -3449,36 +3449,28 @@ impl Daemon {
                             }
                         })
                         .unwrap_or(false);
-                    let shared_memory_name = metadata
-                        .parameters
-                        .get("shared_memory_name")
-                        .and_then(|p| {
+                    let shared_memory_name =
+                        metadata.parameters.get("shared_memory_name").and_then(|p| {
                             if let dora_message::metadata::Parameter::String(s) = p {
                                 Some(s.clone())
                             } else {
                                 None
                             }
                         });
-                    let buffer_id = metadata
-                        .parameters
-                        .get("buffer_id")
-                        .and_then(|p| {
-                            if let dora_message::metadata::Parameter::String(s) = p {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        });
-                    let allocator_pid = metadata
-                        .parameters
-                        .get("allocator_pid")
-                        .and_then(|p| {
-                            if let dora_message::metadata::Parameter::Integer(v) = p {
-                                Some(*v as u32)
-                            } else {
-                                None
-                            }
-                        });
+                    let buffer_id = metadata.parameters.get("buffer_id").and_then(|p| {
+                        if let dora_message::metadata::Parameter::String(s) = p {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let allocator_pid = metadata.parameters.get("allocator_pid").and_then(|p| {
+                        if let dora_message::metadata::Parameter::Integer(v) = p {
+                            Some(*v as u32)
+                        } else {
+                            None
+                        }
+                    });
                     let cuda_registered = metadata
                         .parameters
                         .get("cuda_registered")
@@ -3490,16 +3482,13 @@ impl Daemon {
                             }
                         })
                         .unwrap_or(is_pinned);
-                    let pinned_type = metadata
-                        .parameters
-                        .get("pinned_type")
-                        .and_then(|p| {
-                            if let dora_message::metadata::Parameter::String(s) = p {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        });
+                    let pinned_type = metadata.parameters.get("pinned_type").and_then(|p| {
+                        if let dora_message::metadata::Parameter::String(s) = p {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    });
 
                     let pool_metadata = MemoryPoolMetadata {
                         ptr,
@@ -3535,19 +3524,19 @@ impl Daemon {
                     };
                     let metadata = self
                         .memory_pool
-                        .read_memory_pool(&id, &node_id.to_string())
+                        .read_memory_pool(&id, node_id.as_ref())
                         .ok_or_else(|| {
                             format!("memory pool with ID {} not found", shared_memory_id)
                         })?;
 
-                    if free {
-                        if let Err(err) = self.memory_pool.free_memory_pool(&id, &node_id.to_string()) {
-                            tracing::debug!(
-                                "Failed to free memory pool {} after reading: {}",
-                                shared_memory_id,
-                                err
-                            );
-                        }
+                    if free
+                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                    {
+                        tracing::debug!(
+                            "Failed to free memory pool {} after reading: {}",
+                            shared_memory_id,
+                            err
+                        );
                     }
 
                     use dora_message::metadata::{MetadataParameters, Parameter};
@@ -3612,7 +3601,7 @@ impl Daemon {
                     id: shared_memory_id.clone(),
                 };
                 let result: Result<(), String> =
-                    match self.memory_pool.free_memory_pool(&id, &node_id.to_string()) {
+                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
                         Ok(_) => Ok(()),
                         Err(e) => Err(e),
                     };

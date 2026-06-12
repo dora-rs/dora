@@ -1424,8 +1424,7 @@ impl DoraNode {
 
     /// Free a pinned memory pool via the daemon.
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
-        self.control_channel
-            .free_pinned_memory(shared_memory_id)
+        self.control_channel.free_pinned_memory(shared_memory_id)
     }
 }
 

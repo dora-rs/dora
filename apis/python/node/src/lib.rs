@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 
 use arrow::array::{Array, BinaryArray, StringArray};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_message::metadata::{ArrowTypeInfo, Parameter};
+use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
 use dora_operator_api_python::{
@@ -126,8 +126,7 @@ static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Counter to make pinned memory buffer IDs unique across registrations.
-static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> =
-    LazyLock::new(|| std::sync::Mutex::new(0));
+static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
 
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Entries are inserted on free_memory_pool and naturally
@@ -163,7 +162,7 @@ static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
 struct RecvGpuSlot {
     _shmem: shared_memory_extended::Shmem,
     gpu_va: u64,
-    gpu_buf: u64,  // IPC-opened GPU DRAM pointer, 0 if using GPU VA path
+    gpu_buf: u64, // IPC-opened GPU DRAM pointer, 0 if using GPU VA path
 }
 unsafe impl Send for RecvGpuSlot {}
 unsafe impl Sync for RecvGpuSlot {}
@@ -328,10 +327,14 @@ def dma_copy(ptr, size, slot):
 
 "#;
 
-    let code_cstr = std::ffi::CString::new(code)
-        .map_err(|e| format!("CString: {}", e))?;
-    let bound_module = PyModule::from_code(py, code_cstr.as_c_str(), c"_cuda_helpers.py", c"_cuda_helpers")
-        .map_err(|e| format!("CUDA helper compile failed: {}", e))?;
+    let code_cstr = std::ffi::CString::new(code).map_err(|e| format!("CString: {}", e))?;
+    let bound_module = PyModule::from_code(
+        py,
+        code_cstr.as_c_str(),
+        c"_cuda_helpers.py",
+        c"_cuda_helpers",
+    )
+    .map_err(|e| format!("CUDA helper compile failed: {}", e))?;
     let module_ref: Py<PyModule> = bound_module.unbind();
     *guard = Some(module_ref.clone_ref(py));
     Ok(module_ref)
@@ -1051,8 +1054,7 @@ impl Node {
         let size: usize = tensor_info.get_item("size")?.unwrap().extract()?;
         let dtype: String = tensor_info.get_item("dtype")?.unwrap().extract()?;
         let shape_list: Vec<i64> = tensor_info.get_item("shape")?.unwrap().extract()?;
-        let tensor_device: String =
-            tensor_info.get_item("device")?.unwrap().extract()?;
+        let tensor_device: String = tensor_info.get_item("device")?.unwrap().extract()?;
 
         let is_cuda = tensor_device.starts_with("cuda");
         let receiver_is_cuda = device.starts_with("cuda");
@@ -1082,10 +1084,7 @@ impl Node {
         header_meta.set_item("size", size)?;
         header_meta.set_item("dtype", &dtype)?;
         header_meta.set_item("shape", shape_list.clone())?;
-        header_meta.set_item(
-            "pinned_type",
-            if cpu_mode { "cpu" } else { "cuda" },
-        )?;
+        header_meta.set_item("pinned_type", if cpu_mode { "cpu" } else { "cuda" })?;
 
         let json_bytes = py
             .import("json")
@@ -1096,8 +1095,7 @@ impl Node {
             .wrap_err("failed to extract JSON string")?
             .into_bytes();
         let json_len = json_bytes.len();
-        let padded_json_len =
-            ((json_len + METADATA_ALIGN - 1) / METADATA_ALIGN) * METADATA_ALIGN;
+        let padded_json_len = ((json_len + METADATA_ALIGN - 1) / METADATA_ALIGN) * METADATA_ALIGN;
         let data_offset = HEADER_SIZE + padded_json_len;
         let total_size = data_offset + size;
 
@@ -1119,8 +1117,7 @@ impl Node {
 
         if let Ok(helpers) = get_cuda_helpers(py) {
             let bound = helpers.bind(py);
-            let _ =
-                bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
+            let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
         }
 
         shmem.set_owner(false);
@@ -1192,11 +1189,14 @@ impl Node {
         // Store shmem in pool (keep alive)
         {
             let mut pool = PINNED_POOL.lock().unwrap();
-            pool.insert(pool_counter, PoolSlot {
-                _shmem: shmem,
-                base: shmem_ptr as u64,
-                size: total_size,
-            });
+            pool.insert(
+                pool_counter,
+                PoolSlot {
+                    _shmem: shmem,
+                    base: shmem_ptr as u64,
+                    size: total_size,
+                },
+            );
         }
 
         let buffer_id = format!("pool_{}", pool_counter);
@@ -1215,10 +1215,7 @@ impl Node {
                 "size".to_string(),
                 dora_node_api::Parameter::Integer(size as i64),
             );
-            params.insert(
-                "dtype".to_string(),
-                dora_node_api::Parameter::String(dtype),
-            );
+            params.insert("dtype".to_string(), dora_node_api::Parameter::String(dtype));
             params.insert(
                 "shape".to_string(),
                 dora_node_api::Parameter::ListInt(shape_list),
@@ -1233,9 +1230,11 @@ impl Node {
             );
             params.insert(
                 "pinned_type".to_string(),
-                dora_node_api::Parameter::String(
-                    if cpu_mode { "cpu".to_string() } else { "cuda".to_string() },
-                ),
+                dora_node_api::Parameter::String(if cpu_mode {
+                    "cpu".to_string()
+                } else {
+                    "cuda".to_string()
+                }),
             );
             params.insert(
                 "buffer_id".to_string(),
@@ -1253,18 +1252,13 @@ impl Node {
                 field_names: None,
                 schema_hash: None,
             };
-            let meta =
-                dora_node_api::Metadata::from_parameters(ts, type_info, params);
-            if let Err(e) =
-                self.node
-                    .get_mut()
-                    .register_pinned_memory(buffer_id.clone(), meta)
+            let meta = dora_node_api::Metadata::from_parameters(ts, type_info, params);
+            if let Err(e) = self
+                .node
+                .get_mut()
+                .register_pinned_memory(buffer_id.clone(), meta)
             {
-                tracing::warn!(
-                    "[{}] failed to register memory pool: {:#}",
-                    self.node_id,
-                    e
-                );
+                tracing::warn!("[{}] failed to register memory pool: {:#}", self.node_id, e);
             }
         }
 
@@ -1285,8 +1279,7 @@ impl Node {
 
         let ptr_val: u64 = tensor_info.get_item("ptr")?.unwrap().extract()?;
         let size: usize = tensor_info.get_item("size")?.unwrap().extract()?;
-        let tensor_device: String =
-            tensor_info.get_item("device")?.unwrap().extract()?;
+        let tensor_device: String = tensor_info.get_item("device")?.unwrap().extract()?;
         let is_cuda = tensor_device.starts_with("cuda");
 
         {
@@ -1309,7 +1302,8 @@ impl Node {
                     // prevents munmap, and storing it back keeps the mapping alive.
                     let pool_slot = { PINNED_POOL.lock().unwrap().remove(&counter) };
 
-                    let (shmem_ptr, store_back, shmem_capacity) = if let Some(slot_data) = pool_slot {
+                    let (shmem_ptr, store_back, shmem_capacity) = if let Some(slot_data) = pool_slot
+                    {
                         // Cache hit: reuse the persistent mapping (no mmap)
                         let cap = slot_data.size;
                         (slot_data.base as *mut u8, Some(slot_data), cap)
@@ -1326,8 +1320,7 @@ impl Node {
                     };
 
                     if !shmem_ptr.is_null() {
-                        let magic =
-                            unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == HEADER_MAGIC {
                             let data_offset = unsafe {
                                 u64::from_le_bytes(
@@ -1338,15 +1331,17 @@ impl Node {
                             };
 
                             // Check if this pool has GPU DMA path enabled
-                            let ipc_present = unsafe {
-                                std::ptr::read(shmem_ptr.add(24) as *const u64)
-                            };
+                            let ipc_present =
+                                unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
                             // Validate write size against pool capacity
                             if size == 0 || size > shmem_capacity.saturating_sub(data_offset) {
                                 tracing::warn!(
                                     "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
-                                    self.node_id, size, data_offset, shmem_capacity
+                                    self.node_id,
+                                    size,
+                                    data_offset,
+                                    shmem_capacity
                                 );
                                 // Store back to PINNED_POOL to keep shmem alive
                                 if let Some(slot_data) = store_back {
@@ -1359,9 +1354,8 @@ impl Node {
                                 // DMA: source CPU data -> GPU pool buffer via DMA engine
                                 if let Ok(helpers) = get_cuda_helpers(py) {
                                     let bound = helpers.bind(py);
-                                    let _ = bound.call_method1(
-                                        "dma_copy", (ptr_val, size, counter),
-                                    );
+                                    let _ =
+                                        bound.call_method1("dma_copy", (ptr_val, size, counter));
                                 }
                             } else if is_cuda {
                                 if let Ok(helpers) = get_cuda_helpers(py) {
@@ -1405,24 +1399,20 @@ impl Node {
             .read_pinned_memory(buffer_id.clone(), false)
         {
             Ok(metadata) => {
-                let shmem_name = metadata
-                    .parameters
-                    .get("shared_memory_name")
-                    .and_then(|p| {
-                        if let Parameter::String(s) = p {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    });
+                let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
+                    if let Parameter::String(s) = p {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
 
                 if let Some(ref name) = shmem_name {
                     if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
                         let shmem_ptr = shmem.as_ptr();
 
                         const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
-                        let magic =
-                            unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == HEADER_MAGIC {
                             let data_offset = unsafe {
                                 u64::from_le_bytes(
@@ -1437,7 +1427,10 @@ impl Node {
                             if size == 0 || size > shmem_len.saturating_sub(data_offset) {
                                 tracing::warn!(
                                     "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
-                                    self.node_id, size, data_offset, shmem_len
+                                    self.node_id,
+                                    size,
+                                    data_offset,
+                                    shmem_len
                                 );
                                 return Ok(());
                             }
@@ -1492,7 +1485,10 @@ impl Node {
             if let Some(result) = self.try_doradma_read(&buffer_id, py)? {
                 return Ok(result);
             }
-            tracing::debug!("[{}] read_memory_pool: fast path returned None, falling back to daemon", self.node_id);
+            tracing::debug!(
+                "[{}] read_memory_pool: fast path returned None, falling back to daemon",
+                self.node_id
+            );
         }
 
         // Slow path: query daemon
@@ -1553,16 +1549,13 @@ impl Node {
                 // process-local address — meaningless in a different process.
                 // Open the shmem file and read the DORADMA header to obtain
                 // a valid shmem-relative pointer.
-                let shmem_name = metadata
-                    .parameters
-                    .get("shared_memory_name")
-                    .and_then(|p| {
-                        if let Parameter::String(s) = p {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    });
+                let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
+                    if let Parameter::String(s) = p {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
 
                 let mut read_ptr: i64 = 0;
                 if let Some(ref name) = shmem_name {
@@ -1584,7 +1577,9 @@ impl Node {
                             if let Some(counter_str) = name.strip_prefix("dora_pool_") {
                                 if let Ok(counter) = counter_str.parse::<u64>() {
                                     let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap();
-                                    cpu_cache.entry(counter).or_insert(RecvCpuSlot { _shmem: shmem });
+                                    cpu_cache
+                                        .entry(counter)
+                                        .or_insert(RecvCpuSlot { _shmem: shmem });
                                 }
                             }
                         }
@@ -1620,11 +1615,7 @@ impl Node {
 
     /// Free a memory pool.
     #[pyo3(signature = (memory_pool_id))]
-    pub fn free_memory_pool(
-        &self,
-        memory_pool_id: Py<PyAny>,
-        py: Python,
-    ) -> eyre::Result<()> {
+    pub fn free_memory_pool(&self, memory_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         // Extract counter for cache cleanup
@@ -1665,13 +1656,17 @@ impl Node {
 
         {
             let mut freed = FREED_POOL_IDS.lock().unwrap();
-            tracing::debug!("[{}] free_memory_pool: adding {} to FREED_POOL_IDS (set size={})", self.node_id, buffer_id, freed.len());
+            tracing::debug!(
+                "[{}] free_memory_pool: adding {} to FREED_POOL_IDS (set size={})",
+                self.node_id,
+                buffer_id,
+                freed.len()
+            );
             freed.insert(buffer_id);
         }
 
         Ok(())
     }
-
 }
 
 /// Stub for `send_output_raw` on Python < 3.11.
@@ -1819,11 +1814,7 @@ impl Node {
     /// Buffer ID format: "pool_{counter}" -> shmem name: "dora_pool_{counter}"
     ///
     /// Returns `Ok(Some(tensor_info_dict))` on success, `Ok(None)` to fall back to daemon.
-    fn try_doradma_read(
-        &self,
-        buffer_id: &str,
-        py: Python<'_>,
-    ) -> eyre::Result<Option<Py<PyAny>>> {
+    fn try_doradma_read(&self, buffer_id: &str, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
         // Extract counter from "pool_{counter}"
         let parts: Vec<&str> = buffer_id.split('_').collect();
         if parts.len() < 2 {
@@ -1838,7 +1829,11 @@ impl Node {
         {
             let freed = FREED_POOL_IDS.lock().unwrap();
             if freed.contains(buffer_id) {
-                tracing::debug!("[{}] try_doradma_read: buffer {} is freed, fallback to daemon", self.node_id, buffer_id);
+                tracing::debug!(
+                    "[{}] try_doradma_read: buffer {} is freed, fallback to daemon",
+                    self.node_id,
+                    buffer_id
+                );
                 return Ok(None);
             }
         }
@@ -1882,7 +1877,8 @@ impl Node {
         };
 
         // Read JSON metadata from header
-        let json_slice = unsafe { std::slice::from_raw_parts(shmem_ptr.add(HEADER_SIZE), json_len) };
+        let json_slice =
+            unsafe { std::slice::from_raw_parts(shmem_ptr.add(HEADER_SIZE), json_len) };
         let json_str = match std::str::from_utf8(json_slice) {
             Ok(s) => s,
             Err(_) => return Ok(None),
@@ -1910,14 +1906,15 @@ impl Node {
 
         // Auto-detect read path from pinned_type
         let pinned_type: Option<String> = metadata_dict
-            .get_item("pinned_type").ok().flatten()
+            .get_item("pinned_type")
+            .ok()
+            .flatten()
             .and_then(|v| v.extract::<String>().ok());
         // Check if this pool uses GPU DMA (IPC handle in header)
         let ipc_present = unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
         let host_ptr = shmem_ptr as u64 + data_offset as u64;
-        let effective_as_cuda = ipc_present == 1
-            || pinned_type.as_deref() != Some("cpu");
+        let effective_as_cuda = ipc_present == 1 || pinned_type.as_deref() != Some("cpu");
 
         let read_ptr: u64;
 
@@ -1941,11 +1938,14 @@ impl Node {
                             .extract()
                             .map_err(|e| eyre::eyre!("extract gpu_ptr: {}", e))?;
                         let mut cache = RECV_GPU_VA.lock().unwrap();
-                        cache.insert(counter, RecvGpuSlot {
-                            _shmem: shmem,
-                            gpu_va: 0,
-                            gpu_buf: gpu_ptr,
-                        });
+                        cache.insert(
+                            counter,
+                            RecvGpuSlot {
+                                _shmem: shmem,
+                                gpu_va: 0,
+                                gpu_buf: gpu_ptr,
+                            },
+                        );
                         gpu_ptr
                     }
                 }
@@ -1969,11 +1969,14 @@ impl Node {
                             .extract()
                             .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
                         let mut cache = RECV_GPU_VA.lock().unwrap();
-                        cache.insert(counter, RecvGpuSlot {
-                            _shmem: shmem,
-                            gpu_va: va,
-                            gpu_buf: 0,
-                        });
+                        cache.insert(
+                            counter,
+                            RecvGpuSlot {
+                                _shmem: shmem,
+                                gpu_va: va,
+                                gpu_buf: 0,
+                            },
+                        );
                         va + data_offset as u64
                     }
                 }
@@ -1989,12 +1992,14 @@ impl Node {
         // Build tensor_info dict
         let dtype: String = metadata_dict
             .get_item("dtype")
-            .ok().flatten()
+            .ok()
+            .flatten()
             .and_then(|v| v.extract::<String>().ok())
             .unwrap_or_default();
         let shape: Vec<i64> = metadata_dict
             .get_item("shape")
-            .ok().flatten()
+            .ok()
+            .flatten()
             .and_then(|v| v.extract::<Vec<i64>>().ok())
             .unwrap_or_default();
         let device = if effective_as_cuda { "cuda" } else { "cpu" };

@@ -371,9 +371,7 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::FreePinnedMemory {
-                shared_memory_id,
-            } => {
+            DaemonRequest::FreePinnedMemory { shared_memory_id } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::FreePinnedMemory {

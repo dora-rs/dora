@@ -166,10 +166,10 @@ impl MemoryPoolManager {
             return Err(msg);
         }
 
-        if let Some(shm_name) = &entry.metadata.shared_memory_name {
-            if !shm_name.is_empty() {
-                self.free_shared_memory(shm_name)?;
-            }
+        if let Some(shm_name) = &entry.metadata.shared_memory_name
+            && !shm_name.is_empty()
+        {
+            self.free_shared_memory(shm_name)?;
         }
 
         Ok(entry.metadata)
@@ -226,14 +226,12 @@ impl MemoryPoolManager {
         }
 
         for id in &ids {
-            if let Some(entry) = table.remove(id) {
-                if let Some(shm_name) = &entry.metadata.shared_memory_name {
-                    if !shm_name.is_empty() {
-                        if let Err(err) = self.free_shared_memory(shm_name) {
-                            errors.push(err);
-                        }
-                    }
-                }
+            if let Some(entry) = table.remove(id)
+                && let Some(shm_name) = &entry.metadata.shared_memory_name
+                && !shm_name.is_empty()
+                && let Err(err) = self.free_shared_memory(shm_name)
+            {
+                errors.push(err);
             }
         }
 
