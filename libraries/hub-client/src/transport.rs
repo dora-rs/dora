@@ -23,7 +23,7 @@ use std::{
 
 use eyre::{Context, eyre};
 
-use crate::{OFFICIAL_INDEX_PATH, config::IndexConfig, validate_git_url};
+use crate::{OFFICIAL_INDEX_PATH, config::IndexConfig};
 
 /// Fetches and caches index catalogs for one CLI invocation.
 #[derive(Debug)]
@@ -91,17 +91,18 @@ impl IndexFetcher {
             self.clone_index(git_url, &clone_dir, catalog_subpath)
                 .with_context(|| format!("failed to clone index `{}`", index.alias))?;
             self.refreshed.insert(index.alias.clone());
-        } else if !self.offline && self.refreshed.insert(index.alias.clone()) {
-            if let Err(refresh_err) = self.refresh_index(&index.alias, &clone_dir) {
-                // self-heal a corrupt cache (e.g. a SIGKILL mid-clone left a
-                // broken .git); genuine network errors propagate so a flaky
-                // connection cannot wipe a cache that offline runs rely on
-                if git(Some(&clone_dir), &["rev-parse", "HEAD"]).is_err() {
-                    self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
-                } else {
-                    return Err(refresh_err)
-                        .with_context(|| format!("failed to refresh index `{}`", index.alias));
-                }
+        } else if !self.offline
+            && self.refreshed.insert(index.alias.clone())
+            && let Err(refresh_err) = self.refresh_index(&index.alias, &clone_dir)
+        {
+            // self-heal a corrupt cache (e.g. a SIGKILL mid-clone left a
+            // broken .git); genuine network errors propagate so a flaky
+            // connection cannot wipe a cache that offline runs rely on
+            if git(Some(&clone_dir), &["rev-parse", "HEAD"]).is_err() {
+                self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+            } else {
+                return Err(refresh_err)
+                    .with_context(|| format!("failed to refresh index `{}`", index.alias));
             }
         }
 
