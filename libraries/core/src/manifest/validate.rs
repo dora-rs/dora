@@ -29,12 +29,14 @@ impl std::fmt::Display for ManifestIssue {
 }
 
 fn write_sanitized(f: &mut std::fmt::Formatter<'_>, s: &str) -> std::fmt::Result {
-    // newlines are stripped too: no issue message is legitimately multi-line,
-    // and an embedded `\n` would let a manifest spoof additional output lines
-    for c in s.chars().filter(|c| !c.is_control()) {
-        std::fmt::Write::write_char(f, c)?;
-    }
-    Ok(())
+    f.write_str(&sanitize(s))
+}
+
+/// Strip control characters from untrusted content destined for terminal
+/// output. Newlines are stripped too: no message is legitimately multi-line,
+/// and an embedded `\n` would let a manifest spoof additional output lines.
+pub(crate) fn sanitize(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Environment variable names that could hijack the loader, the interpreter,

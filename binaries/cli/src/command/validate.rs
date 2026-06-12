@@ -4,7 +4,7 @@ use dora_core::{
         Descriptor, DescriptorExt,
         validate::{check_type_annotations_full, check_wiring},
     },
-    manifest::NodeManifest,
+    manifest::{NodeManifest, inject::inject_adjacent_manifests},
     types::TypeRegistry,
 };
 use eyre::{Context, bail};
@@ -63,7 +63,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
     println!("Validating {}...", dataflow.display());
 
     // Parse and expand modules (no runtime needed)
-    let descriptor = Descriptor::blocking_read(dataflow)
+    let mut descriptor = Descriptor::blocking_read(dataflow)
         .with_context(|| {
             format!(
                 "failed to read dataflow at `{}`\n\n  \
@@ -95,6 +95,12 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
         }
     }
 
+    // Inject contracts from node manifests adjacent to path: nodes (§6.2)
+    let injection = inject_adjacent_manifests(&mut descriptor, working_dir, &mut registry);
+    for note in &injection.notes {
+        println!("  {note}");
+    }
+
     // Run type annotation checks
     let result = check_type_annotations_full(&descriptor, &registry, strict);
 
@@ -103,14 +109,17 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool) -> eyre::Result<()> {
         println!("  {inf}");
     }
 
-    if result.warnings.is_empty() {
+    let count = injection.warnings.len() + result.warnings.len();
+    if count == 0 {
         println!("All type annotations OK.");
     } else {
         println!("Type warnings:");
+        for w in &injection.warnings {
+            println!("  - {w}");
+        }
         for w in &result.warnings {
             println!("  - {w}");
         }
-        let count = result.warnings.len();
         println!("{count} type warning(s) found.");
         if strict {
             bail!("{count} type warning(s) found (--strict mode)");

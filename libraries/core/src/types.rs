@@ -613,6 +613,16 @@ impl TypeRegistry {
         Ok(count)
     }
 
+    /// Register a single user-defined type at the given URN (e.g. one shipped
+    /// in a node manifest, spec §6.3). The `std/` prefix is reserved.
+    pub fn add_user_type(&mut self, urn: &str, def: TypeDef) -> Result<(), String> {
+        if urn.starts_with("std/") || urn == "std" {
+            return Err(format!("user types cannot use the \"std/\" prefix: {urn}"));
+        }
+        self.types.insert(urn.to_string(), def);
+        Ok(())
+    }
+
     /// Suggest the closest URN for a typo. Returns `None` if no close match.
     /// Prefers matches in the same package prefix (e.g. `std/media/v1`).
     pub fn suggest(&self, urn: &str) -> Option<&str> {
