@@ -28,14 +28,36 @@ pub async fn socket_stream_send(
 pub async fn socket_stream_receive(
     connection: &mut (impl AsyncRead + Unpin),
 ) -> std::io::Result<Vec<u8>> {
-    let timeout = dora_message::TCP_READ_TIMEOUT;
+    socket_stream_receive_with_header_timeout(connection, Some(dora_message::TCP_READ_TIMEOUT))
+        .await
+}
+
+/// Like [`socket_stream_receive`], but with a configurable timeout for the
+/// header read. Pass `None` for connections that may legitimately stay idle
+/// between requests; the body read always uses
+/// [`dora_message::TCP_READ_TIMEOUT`] because a mid-frame stall is a fault.
+pub async fn socket_stream_receive_with_header_timeout(
+    connection: &mut (impl AsyncRead + Unpin),
+    header_timeout: Option<std::time::Duration>,
+) -> std::io::Result<Vec<u8>> {
     let reply_len = {
         let mut raw = [0; 8];
-        tokio::time::timeout(timeout, connection.read_exact(&mut raw))
-            .await
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP read header timed out")
-            })??;
+        let read_header = connection.read_exact(&mut raw);
+        match header_timeout {
+            Some(timeout) => {
+                tokio::time::timeout(timeout, read_header)
+                    .await
+                    .map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "TCP read header timed out",
+                        )
+                    })??;
+            }
+            None => {
+                read_header.await?;
+            }
+        }
         usize::try_from(u64::from_le_bytes(raw)).map_err(|_| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -53,17 +75,20 @@ pub async fn socket_stream_receive(
         ));
     }
     let mut reply = vec![0; reply_len];
-    tokio::time::timeout(timeout, connection.read_exact(&mut reply))
-        .await
-        .map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP read body timed out")
-        })??;
+    tokio::time::timeout(
+        dora_message::TCP_READ_TIMEOUT,
+        connection.read_exact(&mut reply),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "TCP read body timed out"))??;
     Ok(reply)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{socket_stream_receive, socket_stream_send};
+    use super::{
+        socket_stream_receive, socket_stream_receive_with_header_timeout, socket_stream_send,
+    };
     use tokio::io::{AsyncWriteExt, duplex};
 
     // Length-prefixed framing guards on the daemon side of the daemon<->node TCP
@@ -113,6 +138,43 @@ mod tests {
             .expect_err("must reject oversized frame");
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
         assert!(err.to_string().contains("exceeds maximum"), "{err}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_header_timeout_stays_pending_while_idle() {
+        // Without a header timeout, an idle peer is not a fault (dora-rs/dora#2089):
+        // the receive future must stay pending well past TCP_READ_TIMEOUT and still
+        // deliver a frame that arrives after the long idle period.
+        let (mut writer, mut reader) = duplex(64);
+        let receive = socket_stream_receive_with_header_timeout(&mut reader, None);
+        tokio::pin!(receive);
+        let idle = tokio::time::timeout(dora_message::TCP_READ_TIMEOUT * 4, receive.as_mut()).await;
+        assert!(
+            idle.is_err(),
+            "receive must stay pending while the peer is idle"
+        );
+        let payload = b"after long idle".to_vec();
+        socket_stream_send(&mut writer, &payload)
+            .await
+            .expect("send");
+        let got = receive.await.expect("receive after idle");
+        assert_eq!(got, payload);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_header_timeout_still_times_out_on_stalled_body() {
+        // A peer that sends a header but stalls mid-frame is a genuine fault:
+        // the body read keeps TCP_READ_TIMEOUT even without a header timeout.
+        let (mut writer, mut reader) = duplex(64);
+        writer
+            .write_all(&16u64.to_le_bytes())
+            .await
+            .expect("write header");
+        let err = socket_stream_receive_with_header_timeout(&mut reader, None)
+            .await
+            .expect_err("must time out on a stalled body");
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert!(err.to_string().contains("body"), "{err}");
     }
 
     #[tokio::test(start_paused = true)]
