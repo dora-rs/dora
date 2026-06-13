@@ -506,12 +506,23 @@ impl TypeRegistry {
     /// here. Lenient by design — it accepts primitive-backed std types (e.g.
     /// `std/core/v1/Bytes`) and only rejects genuinely-unknown names.
     pub fn field_type_resolves(&self, type_str: &str) -> bool {
+        self.field_type_resolves_depth(type_str, 0)
+    }
+
+    fn field_type_resolves_depth(&self, type_str: &str, depth: u8) -> bool {
+        // bound the `List<…>` recursion: this runs on untrusted shipped-type
+        // field bodies (only the URN key is charset-checked), and a 1 MiB
+        // manifest can nest `List<` deep enough to overflow the stack. Match
+        // the cap `resolve_field_type` uses — anything deeper doesn't resolve.
+        if depth > MAX_TYPE_DEPTH {
+            return false;
+        }
         let t = type_str.trim();
         if arrow_type_from_name(t).is_some() {
             return true;
         }
         if let Some(inner) = t.strip_prefix("List<").and_then(|s| s.strip_suffix('>')) {
-            return self.field_type_resolves(inner);
+            return self.field_type_resolves_depth(inner, depth + 1);
         }
         self.resolve(t).is_some() || self.resolve_short_name(t).is_some()
     }
@@ -1335,5 +1346,16 @@ mod tests {
             .unwrap();
         let schema = def.to_arrow_schema_with_registry(&reg).unwrap();
         assert_eq!(schema.fields().len(), 3); // sample_rate, channels, data
+    }
+
+    #[test]
+    fn field_type_resolves_bounds_list_nesting() {
+        let reg = TypeRegistry::new();
+        // shallow nesting still resolves
+        assert!(reg.field_type_resolves("List<List<Float32>>"));
+        // a pathologically deep `List<…>` from an untrusted manifest must be
+        // rejected (return false), not overflow the stack
+        let deep = format!("{}Float32{}", "List<".repeat(100_000), ">".repeat(100_000));
+        assert!(!reg.field_type_resolves(&deep));
     }
 }
