@@ -7,6 +7,7 @@
 //! Feature-gated behind `type-inference`.
 
 use std::path::Path;
+
 use syn::{Expr, ExprMethodCall, visit::Visit};
 
 /// A suggested type annotation inferred from source code.
@@ -60,7 +61,6 @@ pub fn infer_types_from_source(
 ) -> Result<Vec<TypeSuggestion>, String> {
     let syntax =
         syn::parse_file(source).map_err(|e| format!("failed to parse {file_name}: {e}"))?;
-
     let mut visitor = TypeInferenceVisitor {
         suggestions: Vec::new(),
         node_id: node_id.to_string(),
@@ -79,11 +79,14 @@ struct TypeInferenceVisitor {
 impl<'ast> Visit<'ast> for TypeInferenceVisitor {
     fn visit_expr_method_call(&mut self, node: &'ast ExprMethodCall) {
         let method_name = node.method.to_string();
-        if method_name == "send_output" && node.args.len() >= 2 {
+        // The real Rust node API signature is:
+        //   send_output(output_id, parameters: MetadataParameters, data: impl Array)
+        // so the data (Arrow array) is at argument index 2, not 1.
+        if method_name == "send_output" && node.args.len() >= 3 {
             // Try to extract output_id from first argument (string literal)
             if let Some(output_id) = extract_string_lit(&node.args[0]) {
-                // Try to infer type from second argument
-                if let Some(urn) = infer_type_from_expr(&node.args[1]) {
+                // Try to infer type from third argument (the Arrow data array)
+                if let Some(urn) = infer_type_from_expr(&node.args[2]) {
                     self.suggestions.push(TypeSuggestion {
                         node_id: self.node_id.clone(),
                         output_id,
@@ -94,6 +97,7 @@ impl<'ast> Visit<'ast> for TypeInferenceVisitor {
                 }
             }
         }
+
         // Continue visiting nested expressions
         syn::visit::visit_expr_method_call(self, node);
     }
@@ -111,7 +115,8 @@ fn extract_string_lit(expr: &Expr) -> Option<String> {
     }
 }
 
-/// Try to infer a type URN from an expression (e.g. `Float64Array::from(...)`).
+/// Try to infer a type URN from an expression (e.g. `Float64Array::from(...)`
+/// or `value.into_arrow()`).
 fn infer_type_from_expr(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Call(call) => {
@@ -129,10 +134,16 @@ fn infer_type_from_expr(expr: &Expr) -> Option<String> {
             None
         }
         Expr::MethodCall(mc) => {
-            // Look for .into() on typed values, or ArrowArray constructors
             let method = mc.method.to_string();
             if method == "into" || method == "from" {
                 // Try to get type from receiver
+                return infer_type_from_expr(&mc.receiver);
+            }
+            // Recognise the idiomatic `.into_arrow()` call: the type information
+            // lives in the receiver (e.g. `Float64Array::from(...).into_arrow()`
+            // or a named variable — the latter we cannot resolve statically, but
+            // we can still handle the constructor chain form).
+            if method == "into_arrow" {
                 return infer_type_from_expr(&mc.receiver);
             }
             None
@@ -156,9 +167,12 @@ fn map_constructor_to_urn(name: &str) -> Option<String> {
     match name {
         "Float32Array" | "Float32Array::from" => Some("std/core/v1/Float32".into()),
         "Float64Array" | "Float64Array::from" => Some("std/core/v1/Float64".into()),
+        "Int8Array" | "Int8Array::from" => Some("std/core/v1/Int8".into()),
+        "Int16Array" | "Int16Array::from" => Some("std/core/v1/Int16".into()),
         "Int32Array" | "Int32Array::from" => Some("std/core/v1/Int32".into()),
         "Int64Array" | "Int64Array::from" => Some("std/core/v1/Int64".into()),
         "UInt8Array" | "UInt8Array::from" => Some("std/core/v1/UInt8".into()),
+        "UInt16Array" | "UInt16Array::from" => Some("std/core/v1/UInt16".into()),
         "UInt32Array" | "UInt32Array::from" => Some("std/core/v1/UInt32".into()),
         "UInt64Array" | "UInt64Array::from" => Some("std/core/v1/UInt64".into()),
         "StringArray" | "StringArray::from" => Some("std/core/v1/String".into()),
@@ -171,13 +185,21 @@ fn map_constructor_to_urn(name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    // ── primary fix: 3-argument real API ────────────────────────────────────
+
     #[test]
-    fn infer_float64_from_send_output() {
+    fn infer_float64_from_send_output_real_api() {
+        // Uses the actual 3-arg dora Rust API signature:
+        //   send_output(output_id, MetadataParameters::default(), data)
         let source = r#"
-            fn main() {
-                node.send_output("reading", Float64Array::from(vec![42.0]));
-            }
-        "#;
+fn main() {
+    node.send_output(
+        "reading",
+        MetadataParameters::default(),
+        Float64Array::from(vec![42.0]),
+    );
+}
+"#;
         let suggestions = infer_types_from_source(source, "test.rs", "sensor").unwrap();
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].output_id, "reading");
@@ -186,12 +208,84 @@ mod tests {
     }
 
     #[test]
+    fn infer_from_metadata_variable() {
+        // As seen in examples/multiple-daemons/node/src/main.rs
+        let source = r#"
+fn main() {
+    node.send_output(output.clone(), metadata.parameters, random.into_arrow())?;
+}
+"#;
+        // `random.into_arrow()` has an opaque receiver — no static type info available.
+        // Expectation: no suggestion (graceful no-op, not a panic).
+        let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
+        assert!(suggestions.is_empty());
+    }
+
+    // ── into_arrow() chain: type visible in the constructor ─────────────────
+
+    #[test]
+    fn infer_via_into_arrow_chain() {
+        let source = r#"
+fn main() {
+    node.send_output(
+        "sensor",
+        MetadataParameters::default(),
+        Float32Array::from(vec![1.0_f32]).into_arrow(),
+    );
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].suggested_urn, "std/core/v1/Float32");
+    }
+
+    // ── new type mappings ───────────────────────────────────────────────────
+
+    #[test]
+    fn infer_int8_array() {
+        let source = r#"
+fn main() {
+    node.send_output("out", MetadataParameters::default(), Int8Array::from(vec![1_i8]));
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].suggested_urn, "std/core/v1/Int8");
+    }
+
+    #[test]
+    fn infer_int16_array() {
+        let source = r#"
+fn main() {
+    node.send_output("out", MetadataParameters::default(), Int16Array::from(vec![1_i16]));
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].suggested_urn, "std/core/v1/Int16");
+    }
+
+    #[test]
+    fn infer_uint16_array() {
+        let source = r#"
+fn main() {
+    node.send_output("out", MetadataParameters::default(), UInt16Array::from(vec![1_u16]));
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].suggested_urn, "std/core/v1/UInt16");
+    }
+
+    // ── unchanged behaviour ─────────────────────────────────────────────────
+
+    #[test]
     fn infer_unrecognizable_no_suggestion() {
         let source = r#"
-            fn main() {
-                node.send_output("data", some_complex_expression());
-            }
-        "#;
+fn main() {
+    node.send_output("data", MetadataParameters::default(), some_complex_expression());
+}
+"#;
         let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
         assert!(suggestions.is_empty());
     }
@@ -199,10 +293,10 @@ mod tests {
     #[test]
     fn infer_no_send_output() {
         let source = r#"
-            fn main() {
-                let x = 42;
-            }
-        "#;
+fn main() {
+    let x = 42;
+}
+"#;
         let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
         assert!(suggestions.is_empty());
     }
@@ -210,12 +304,30 @@ mod tests {
     #[test]
     fn infer_string_array() {
         let source = r#"
-            fn main() {
-                node.send_output("text", StringArray::from(vec!["hello"]));
-            }
-        "#;
+fn main() {
+    node.send_output("text", MetadataParameters::default(), StringArray::from(vec!["hello"]));
+}
+"#;
         let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0].suggested_urn, "std/core/v1/String");
+    }
+
+    // ── two-arg call (old fictional form) should NOT fire ───────────────────
+
+    #[test]
+    fn two_arg_send_output_does_not_fire() {
+        // The old tests used this fictional 2-arg form; ensure it no longer
+        // produces a false positive now that we require >= 3 args.
+        let source = r#"
+fn main() {
+    node.send_output("reading", Float64Array::from(vec![42.0]));
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "sensor").unwrap();
+        assert!(
+            suggestions.is_empty(),
+            "2-arg form should not match the real 3-arg API"
+        );
     }
 }
