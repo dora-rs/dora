@@ -1314,6 +1314,12 @@ impl Node {
     }
 
     /// Write tensor data to an existing memory pool.
+    ///
+    /// # Synchronization
+    ///
+    /// The writer must not call this while a receiver is consuming the
+    /// previous tensor — use turn-based signaling (the example dataflow
+    /// enforces this via `next_require` round-trips).
     #[pyo3(signature = (memory_pool_id, tensor_info))]
     pub fn write_memory_pool(
         &self,
@@ -1705,15 +1711,19 @@ impl Node {
                             }
                             read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
                             // Cache shmem to prevent munmap of the returned pointer.
-                            // Extract counter from "dora_pool_{counter}".
+                            // Name format: "dora_pool_{node_id}_{counter}".
                             if let Some(counter_str) = name.strip_prefix("dora_pool_") {
-                                if let Ok(counter) = counter_str.parse::<u64>() {
-                                    let mut cpu_cache =
-                                        RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-                                    cpu_cache.entry(counter).or_insert(RecvCpuSlot {
-                                        _shmem: shmem,
-                                        generation: 0,
-                                    });
+                                // Extract counter from the last '_'-separated token.
+                                if let Some((_, c)) = counter_str.rsplit_once('_') {
+                                    if let Ok(counter) = c.parse::<u64>() {
+                                        let mut cpu_cache = RECV_CPU_SHMEM
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner());
+                                        cpu_cache.entry(counter).or_insert(RecvCpuSlot {
+                                            _shmem: shmem,
+                                            generation: 0,
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -1955,7 +1965,20 @@ impl Node {
     /// DORADMA fast path for read_memory_pool: reads metadata directly from
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
-    /// Buffer ID format: "pool_{counter}" -> shmem name: "dora_pool_{counter}"
+    /// Buffer ID format: `"pool_{node_id}_{counter}"` →
+    /// shmem name: `"dora_pool_{node_id}_{counter}"`.
+    ///
+    /// # Synchronization model
+    ///
+    /// The seqlock (write_gen at header offset 96) protects **metadata**
+    /// integrity (ptr/size/dtype) during concurrent access. It does NOT
+    /// protect the tensor data bytes from torn reads — a writer can start
+    /// overwriting data while a consumer is iterating the zero-copy tensor.
+    ///
+    /// Callers must enforce a **turn-based** discipline: the writer must
+    /// not begin a new `write_memory_pool` until the receiver has finished
+    /// consuming the previous tensor. The example dataflow enforces this
+    /// via `next_require` round-trip signaling.
     ///
     /// Returns `Ok(Some(tensor_info_dict))` on success, `Ok(None)` to fall back to daemon.
     fn try_doradma_read(&self, buffer_id: &str, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
@@ -2100,12 +2123,9 @@ impl Node {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(&counter) {
                     Some(slot_data) if slot_data.gpu_buf != 0 => {
-                        // Re-check gen for staleness
-                        let current_gen =
-                            unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
-                        if current_gen != slot_data.generation {
-                            return Ok(None);
-                        }
+                        // GPU IPC handle is stable across data overwrites;
+                        // pool ID uniqueness (node_id namespacing) prevents
+                        // cross-pool confusion. No generation check needed.
                         slot_data.gpu_buf
                     }
                     _ => {
@@ -2140,11 +2160,8 @@ impl Node {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(&counter) {
                     Some(slot_data) => {
-                        let current_gen =
-                            unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
-                        if current_gen != slot_data.generation {
-                            return Ok(None);
-                        }
+                        // GPU VA is stable across data overwrites;
+                        // pool ID uniqueness prevents cross-pool confusion.
                         slot_data.gpu_va + data_offset as u64
                     }
                     None => {
