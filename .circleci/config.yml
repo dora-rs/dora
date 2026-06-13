@@ -115,11 +115,16 @@ commands:
           command: |
             uv venv --seed -p 3.12
             echo "export VIRTUAL_ENV=$PWD/.venv" >> "$BASH_ENV"
+            # Dora's example nodes spawn `uv run python` from nested
+            # directories; pin uv to the CI venv that contains the editable
+            # dora package instead of relying on cwd-based discovery.
+            echo "export UV_PYTHON=$PWD/.venv/bin/python" >> "$BASH_ENV"
             echo "export PATH=$PWD/.venv/bin:\$PATH" >> "$BASH_ENV"
             source "$BASH_ENV"
             uv pip install pyarrow
             uv pip install -e apis/python/node
             uv pip install ruff pytest
+            uv run python -c "import dora; print(dora.__file__)"
 
 # ────────────────────────────────────────────────────────────────────
 # Executors
