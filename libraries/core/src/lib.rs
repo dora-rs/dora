@@ -113,18 +113,6 @@ fn is_python2(python_path: &std::path::Path) -> bool {
     }
 }
 
-// Search for pip binary.
-// First search for `pip3` as for ubuntu <20, `pip` can resolves to `python2,7 -m pip`
-// Then search for `pip`, this will resolve for windows to python3 -m pip.
-pub fn get_pip_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
-    let python = match which::which("pip3") {
-        Ok(python) => python,
-        Err(_) => which::which("pip")
-            .context("failed to find `pip3` or `pip`. Make sure that python is available.")?,
-    };
-    Ok(python)
-}
-
 // Search for uv binary.
 pub fn get_uv_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
     which::which("uv")
