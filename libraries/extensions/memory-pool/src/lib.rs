@@ -135,9 +135,9 @@ impl MemoryPoolManager {
 
     /// Free memory pool by ID.
     ///
-    /// Only the node that registered the pool may free it. Cross-node
-    /// free attempts are rejected with an error to prevent accidental
-    /// disruption of another node's data path.
+    /// Any node may free a pool — the normal lifecycle is that the
+    /// registering (sender) node creates the pool and a reading
+    /// (receiver) node releases it after use.
     ///
     /// Removes the entry from the table and attempts to clean up the
     /// underlying shared memory.
@@ -153,13 +153,12 @@ impl MemoryPoolManager {
             .ok_or_else(|| "memory pool not found".to_string())?;
 
         if entry.registered_by != requested_by {
-            // Re-insert before returning error — don't orphan the entry
-            let msg = format!(
-                "memory pool {} is owned by {}, not {}",
-                id.id, entry.registered_by, requested_by,
+            tracing::debug!(
+                "memory pool {} (registered by {}) freed by {}",
+                id.id,
+                entry.registered_by,
+                requested_by,
             );
-            table.insert(id.clone(), entry);
-            return Err(msg);
         }
 
         if let Some(shm_name) = &entry.metadata.shared_memory_name
@@ -336,19 +335,20 @@ mod tests {
     }
 
     #[test]
-    fn cross_owner_free_rejected() {
+    fn cross_owner_free_succeeds() {
+        // Cross-node free is the normal lifecycle: sender registers,
+        // receiver frees. Both operations must succeed.
         let mgr = MemoryPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
         mgr.register_memory_pool(id.clone(), meta, "node_a".into())
             .unwrap();
-        let err = mgr.free_memory_pool(&id, "node_b").unwrap_err();
+        // A different node frees the pool — this must succeed.
+        mgr.free_memory_pool(&id, "node_b").unwrap();
 
-        assert!(err.contains("owned by node_a, not node_b"));
-
-        // Pool must still exist after rejected free.
-        assert!(mgr.read_memory_pool(&id, "node_a").is_some());
+        // Pool should be gone after successful free.
+        assert!(mgr.read_memory_pool(&id, "node_b").is_none());
     }
 
     #[test]
