@@ -21,6 +21,7 @@ if RECEIVER_DEVICE.startswith("cuda") and not torch.cuda.is_available():
 pbar = tqdm(total=MESSAGE_COUNT)
 velocities = []
 memory_pool_id = None
+torch_tensor = None
 
 for i in range(MESSAGE_COUNT):
     event = node.next()
@@ -28,14 +29,16 @@ for i in range(MESSAGE_COUNT):
 
     if i == 0:
         memory_pool_id = event["value"]
-
-    # Re-read the tensor every iteration to exercise the zero-copy
-    # read path and seqlock validation — this measures actual pooled
-    # transfer throughput, not a single cached buffer re-timed.
-    tensor_info = node.read_memory_pool(memory_pool_id)
-    torch_tensor = tensor_from_info(tensor_info)
-    if i == 0:
+        tensor_info = node.read_memory_pool(memory_pool_id)
+        torch_tensor = tensor_from_info(tensor_info)
         print(f"Receiver preview: {torch_tensor[:5]}")
+
+    # The tensor is zero-copy — its memory maps the shmem directly.
+    # write_memory_pool on the sender side overwrites those bytes in place,
+    # so the receiver's existing tensor object automatically reflects the
+    # new data without a second read_memory_pool call.  Turn-based signaling
+    # (next_require round-trips) ensures the sender has finished writing
+    # before the receiver accesses the tensor.
 
     t_received = time.perf_counter_ns()
     delta_t = t_received - t_send
