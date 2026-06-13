@@ -44,7 +44,16 @@ impl Executable for Info {
             println!("  categories: {cats}");
         }
         if !m.platforms.is_empty() {
-            println!("  platforms: {}", m.platforms.join(", "));
+            // platforms are free-text manifest content from an untrusted index
+            // entry (the discovery path only parses, never validates) — sanitize
+            // like every other index-supplied field printed here
+            let platforms = m
+                .platforms
+                .iter()
+                .map(|p| sanitize(p))
+                .collect::<Vec<_>>()
+                .join(", ");
+            println!("  platforms: {platforms}");
         }
         println!("  runtime: {:?}", m.runtime);
 
