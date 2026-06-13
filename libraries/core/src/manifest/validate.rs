@@ -51,7 +51,7 @@ const ENV_DENY_EXACT: &[&str] = &[
     "ENV",
     "IFS",
 ];
-const ENV_DENY_PREFIX: &[&str] = &["LD_", "DYLD_"];
+const ENV_DENY_PREFIX: &[&str] = &["LD_", "DYLD_", "DORA_"];
 
 /// Platform identifiers accepted in `platforms:` (spec §5).
 const KNOWN_OS: &[&str] = &["linux", "macos", "windows"];
@@ -326,6 +326,17 @@ fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
             "type URN `{urn}` may only contain alphanumerics and `_ - . /`"
         ));
     }
+    // reject path-traversal / empty segments: shipped types are materialized
+    // into cache paths (spec §6.3, P2.12), so a URN like `acme/../../std/x`
+    // must not pass even though it carries the namespace prefix.
+    if urn
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return Some(format!(
+            "type URN `{urn}` must not contain empty or `.`/`..` path segments"
+        ));
+    }
     if urn.starts_with("std/") || urn == "std" {
         return Some("shipped types cannot use the `std/` prefix".into());
     }
@@ -538,6 +549,12 @@ outputs:
             "IFS",
             "LD_PRELOAD",
             "DYLD_INSERT_LIBRARIES",
+            // reserved framework control vars (the daemon sets these; a
+            // manifest must not advertise them as its config surface)
+            "DORA_NODE_CONFIG",
+            "DORA_RUNTIME_CONFIG",
+            "DORA_AUTH_TOKEN",
+            "dora_node_config",
         ] {
             let issues = validate(&format!("env:\n  {bad}:\n    default: x\n"));
             assert_eq!(issues.len(), 1, "{bad} should be rejected: {issues:?}");
@@ -591,6 +608,29 @@ outputs:
 "#,
         );
         assert_eq!(issues, vec![]);
+    }
+
+    #[test]
+    fn shipped_type_urn_rejects_path_traversal() {
+        // a `..` segment escapes the namespace even though the URN still
+        // carries the `acme/` prefix — must be rejected before P2.12 ever
+        // turns the URN into a cache path
+        // `minimal` ships namespace `dora-rs`, so traversal URNs keep that
+        // prefix (passing the namespace check) yet must still be rejected.
+        for bad in [
+            "dora-rs/../../std/core/v1/Float32",
+            "dora-rs/lidar/v1/../../../etc/passwd",
+            "dora-rs//lidar/v1/Foo",
+            "dora-rs/./lidar/v1/Foo",
+        ] {
+            let issues = validate(&format!(
+                "types:\n  {bad}:\n    arrow: Struct\n    fields:\n      - name: x\n        type: Float32\n"
+            ));
+            assert!(
+                issues.iter().any(|i| i.message.contains("path segments")),
+                "`{bad}` should be rejected for traversal: {issues:?}"
+            );
+        }
     }
 
     #[test]
