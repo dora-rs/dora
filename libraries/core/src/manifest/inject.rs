@@ -69,20 +69,39 @@ pub fn inject_adjacent_manifests(
     // Register shipped types before validating ports, so a manifest can
     // reference a type shipped by another node regardless of node order.
     //
-    // Registration is what makes a type visible to *sibling* manifests' port
-    // checks, so the namespace-ownership gate must run *before* registration —
-    // otherwise an invalid manifest (e.g. an `acme` node shipping a `beta/…`
-    // URN) could grant a definition a different node then relies on. Ownership
-    // is intrinsic (no sibling types needed), so checking it here is safe;
-    // other per-manifest errors are reported in pass 2 and merely suppress
-    // that manifest's own injection. Already-registered URNs are left
-    // untouched: `types/` definitions and same-manifest re-ships win.
+    // Two gates must pass before a type reaches the *shared* registry, where a
+    // sibling node's port check can rely on it:
+    //  - namespace ownership — an invalid manifest (e.g. an `acme` node
+    //    shipping a `beta/…` URN) must not grant a definition another node
+    //    relies on; ownership is intrinsic, so it is safe to check up front.
+    //  - body-resolvability — every field type must resolve, so a sibling that
+    //    ships `acme/foo/v1/X` with an unresolvable field can't make a
+    //    *referencing* node's port check pass against a type that can never be
+    //    materialized into an Arrow schema.
+    // Field bodies may reference *other* shipped types, so resolvability is
+    // checked against a scratch registry holding all namespace-owned
+    // candidates. Already-registered URNs are left untouched: `types/`
+    // definitions and same-manifest re-ships win.
+    let mut scratch = registry.clone();
+    for (_, (_, manifest)) in &matched {
+        for (urn, def) in &manifest.types {
+            if check_shipped_type_urn(urn, &manifest.namespace).is_none()
+                && scratch.resolve(urn).is_none()
+            {
+                scratch.insert_type(urn.clone(), def.clone());
+            }
+        }
+    }
     for (_, (_, manifest)) in &matched {
         for (urn, def) in &manifest.types {
             if check_shipped_type_urn(urn, &manifest.namespace).is_some() {
                 continue;
             }
-            if registry.resolve(urn).is_none() {
+            let body_resolves = def
+                .fields
+                .iter()
+                .all(|f| scratch.field_type_resolves(&f.r#type));
+            if body_resolves && registry.resolve(urn).is_none() {
                 let _ = registry.add_user_type(urn, def.clone());
             }
         }
@@ -655,6 +674,59 @@ nodes:
             all.contains("victim") && all.contains("contracts not injected"),
             "{result:?}"
         );
+        assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn unresolvable_sibling_body_cannot_contaminate_the_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `bad` owns its namespace but ships a type whose field type does not
+        // resolve — it must not register, or a referencing node's port check
+        // would pass against a type that can never be materialized.
+        write_manifest(
+            &tmp.path().join("bad"),
+            r#"
+apiVersion: 1
+name: bad
+namespace: acme
+runtime: rust
+entrypoint: target/release/bad
+types:
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: x
+        type: NotARealType
+"#,
+        );
+        write_manifest(
+            &tmp.path().join("victim"),
+            r#"
+apiVersion: 1
+name: victim
+namespace: gamma
+runtime: rust
+entrypoint: target/release/victim
+outputs:
+  out:
+    type: acme/foo/v1/X
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: bad
+    path: bad/target/release/bad
+  - id: victim
+    path: victim/target/release/victim
+    outputs: [out]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        // the type with an unresolvable body was never registered, so victim's
+        // port check correctly fails to resolve it
+        assert!(registry.resolve("acme/foo/v1/X").is_none());
         assert!(df.nodes[1].output_types.is_empty());
     }
 
