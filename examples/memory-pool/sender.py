@@ -11,7 +11,7 @@ from dora import Node
 from dora.cuda import get_tensor_info
 
 SIZE = 15000 * 512
-MESSAGE_COUNT = int(os.getenv("massage_num", "100"))
+MESSAGE_COUNT = int(os.getenv("message_num", "100"))
 SENDER_DEVICE = os.getenv("sender_device", "cpu")
 RECEIVER_DEVICE = os.getenv("receiver_device", "cpu")
 SCENARIO = os.getenv("memory_pool_scenario", "throughput")

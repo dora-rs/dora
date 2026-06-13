@@ -2,7 +2,7 @@
 env:
   sender_device: cpu
   receiver_device: cuda
-  massage_num: 2
+  message_num: 2
   memory_pool_scenario: auto_cleanup
 nodes:
   - id: sender_node

@@ -378,7 +378,9 @@ def tensor_from_info(tensor_info: dict) -> torch.Tensor:
     tensor that produced the ``tensor_info``.  Used by consumers that read
     a memory pool via ``read_memory_pool``.
     """
-    ptr = tensor_info["ptr"]
+    ptr = tensor_info.get('ptr', 0)
+    if ptr == 0:
+        raise ValueError("tensor_info has null pointer (ptr=0); pool may not exist or has been freed")
     dtype_str = tensor_info["dtype"]
     shape = tensor_info["shape"]
     device = tensor_info.get("device", "cpu")

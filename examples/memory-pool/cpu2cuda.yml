@@ -2,7 +2,7 @@
 env:
   sender_device: cpu
   receiver_device: cuda
-  massage_num: 100
+  message_num: 100
   memory_pool_scenario: throughput
 nodes:
   - id: sender_node

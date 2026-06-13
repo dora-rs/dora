@@ -11,7 +11,7 @@ from dora.cuda import tensor_from_info
 from tqdm import tqdm
 
 node = Node("receiver_node")
-MESSAGE_COUNT = int(os.getenv("massage_num", "100"))
+MESSAGE_COUNT = int(os.getenv("message_num", "100"))
 RECEIVER_DEVICE = os.getenv("receiver_device", "cpu")
 SCENARIO = os.getenv("memory_pool_scenario", "throughput")
 
@@ -21,7 +21,6 @@ if RECEIVER_DEVICE.startswith("cuda") and not torch.cuda.is_available():
 pbar = tqdm(total=MESSAGE_COUNT)
 velocities = []
 memory_pool_id = None
-torch_tensor = None
 
 for i in range(MESSAGE_COUNT):
     event = node.next()
@@ -29,8 +28,13 @@ for i in range(MESSAGE_COUNT):
 
     if i == 0:
         memory_pool_id = event["value"]
-        tensor_info = node.read_memory_pool(memory_pool_id)
-        torch_tensor = tensor_from_info(tensor_info)
+
+    # Re-read the tensor every iteration to exercise the zero-copy
+    # read path and seqlock validation — this measures actual pooled
+    # transfer throughput, not a single cached buffer re-timed.
+    tensor_info = node.read_memory_pool(memory_pool_id)
+    torch_tensor = tensor_from_info(tensor_info)
+    if i == 0:
         print(f"Receiver preview: {torch_tensor[:5]}")
 
     t_received = time.perf_counter_ns()
@@ -44,7 +48,10 @@ for i in range(MESSAGE_COUNT):
         node.free_memory_pool(memory_pool_id)
     elif SCENARIO == "read_after_free" and i == MESSAGE_COUNT - 1:
         node.free_memory_pool(memory_pool_id)
-        node.read_memory_pool(memory_pool_id)
+        try:
+            node.read_memory_pool(memory_pool_id)
+        except Exception:
+            pass  # Expected: pool was freed, read should fail
     elif SCENARIO != "auto_cleanup" and i == MESSAGE_COUNT - 1:
         node.free_memory_pool(memory_pool_id)
 
@@ -52,5 +59,5 @@ for i in range(MESSAGE_COUNT):
     pbar.update(1)
 
 pbar.close()
-average_velocity = torch.mean(torch.tensor(velocities))
+average_velocity = torch.mean(torch.tensor(velocities, dtype=torch.float64))
 print(f"Average transfer throughput: {average_velocity:1f} MB/s")

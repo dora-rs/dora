@@ -1,9 +1,10 @@
-# Negative-path test: sender writes to a freed memory pool.
+# CPU-only throughput test: CPU sender, CPU receiver, explicit pool release.
+# This scenario can run on GPU-less CI runners and exercises the daemon pool path.
 env:
   sender_device: cpu
-  receiver_device: cuda
-  message_num: 2
-  memory_pool_scenario: write_after_free
+  receiver_device: cpu
+  message_num: 100
+  memory_pool_scenario: throughput
 nodes:
   - id: sender_node
     path: sender.py

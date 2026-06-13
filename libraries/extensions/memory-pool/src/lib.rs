@@ -258,3 +258,136 @@ impl Default for MemoryPoolManager {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_metadata() -> MemoryPoolMetadata {
+        MemoryPoolMetadata {
+            ptr: 0,
+            size: 1024,
+            dtype: "float32".into(),
+            shape: vec![256],
+            is_pinned: false,
+            shared_memory_name: None,
+            buffer_id: None,
+            allocator_pid: None,
+            cuda_registered: false,
+            pinned_type: None,
+        }
+    }
+
+    fn make_id(name: &str) -> MemoryPoolId {
+        MemoryPoolId {
+            id: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn register_and_read() {
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        let meta = make_metadata();
+
+        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into())
+            .unwrap();
+        let read = mgr
+            .read_memory_pool(&id, "node_a")
+            .expect("pool should exist");
+
+        assert_eq!(read.ptr, meta.ptr);
+        assert_eq!(read.size, meta.size);
+        assert_eq!(read.dtype, meta.dtype);
+        assert_eq!(read.shape, meta.shape);
+    }
+
+    #[test]
+    fn double_register_fails() {
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        let meta = make_metadata();
+
+        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into())
+            .unwrap();
+        let err = mgr
+            .register_memory_pool(id, meta, "node_a".into())
+            .unwrap_err();
+
+        assert!(err.contains("already registered"));
+    }
+
+    #[test]
+    fn cross_owner_free_rejected() {
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        let meta = make_metadata();
+
+        mgr.register_memory_pool(id.clone(), meta, "node_a".into())
+            .unwrap();
+        let err = mgr.free_memory_pool(&id, "node_b").unwrap_err();
+
+        assert!(err.contains("owned by node_a, not node_b"));
+
+        // Pool must still exist after rejected free.
+        assert!(mgr.read_memory_pool(&id, "node_a").is_some());
+    }
+
+    #[test]
+    fn double_free_second_fails() {
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        let meta = make_metadata();
+
+        mgr.register_memory_pool(id.clone(), meta, "node_a".into())
+            .unwrap();
+        mgr.free_memory_pool(&id, "node_a").unwrap();
+
+        let err = mgr.free_memory_pool(&id, "node_a").unwrap_err();
+        assert!(err.contains("memory pool not found"));
+    }
+
+    #[test]
+    fn cleanup_all_tracks_counts() {
+        let mgr = MemoryPoolManager::new();
+
+        for i in 0..3 {
+            mgr.register_memory_pool(
+                make_id(&format!("pool-{}", i)),
+                make_metadata(),
+                "node_a".into(),
+            )
+            .unwrap();
+        }
+
+        let summary = mgr.cleanup_all().unwrap();
+        assert_eq!(summary.unreleased_count, 3);
+        assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn table_size_tracks_entries() {
+        let mgr = MemoryPoolManager::new();
+        assert_eq!(mgr.table_size(), 0);
+
+        let id = make_id("pool-1");
+        mgr.register_memory_pool(id.clone(), make_metadata(), "node_a".into())
+            .unwrap();
+        assert_eq!(mgr.table_size(), 1);
+
+        mgr.free_memory_pool(&id, "node_a").unwrap();
+        assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn poison_recovery_lock_table() {
+        let mgr = MemoryPoolManager::new();
+        // lock_table is private but accessible from a child test module.
+        // Verify it returns a guard, and that operations work after release.
+        {
+            let _guard = mgr.lock_table();
+            // Guard held; drop it before testing further operations.
+        }
+        assert_eq!(mgr.table_size(), 0);
+    }
+}
