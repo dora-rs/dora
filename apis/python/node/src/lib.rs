@@ -172,7 +172,7 @@ unsafe impl Sync for RecvGpuSlot {}
 /// Receiver-side per-pool cache keeping Shmem alive + GPU VA for zero-copy reads.
 /// Set up lazily in try_doradma_read: open shmem, cudaHostRegister,
 /// cudaHostGetDevicePointer, then cache both Shmem and GPU VA.
-static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<u64, RecvGpuSlot>>> =
+static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Receiver-side per-pool Shmem cache for CPU receivers.
@@ -188,7 +188,7 @@ unsafe impl Sync for RecvCpuSlot {}
 /// Receiver-side per-pool cache keeping Shmem alive for CPU zero-copy reads.
 /// Without this cache, the Shmem handle drops at the end of try_doradma_read,
 /// triggering munmap and making the returned CPU pointer a dangling pointer.
-static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<u64, RecvCpuSlot>>> =
+static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<String, RecvCpuSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Get (or compile) the persistent CUDA DMA helper module.
@@ -1711,21 +1711,14 @@ impl Node {
                             }
                             read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
                             // Cache shmem to prevent munmap of the returned pointer.
-                            // Name format: "dora_pool_{node_id}_{counter}".
-                            if let Some(counter_str) = name.strip_prefix("dora_pool_") {
-                                // Extract counter from the last '_'-separated token.
-                                if let Some((_, c)) = counter_str.rsplit_once('_') {
-                                    if let Ok(counter) = c.parse::<u64>() {
-                                        let mut cpu_cache = RECV_CPU_SHMEM
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner());
-                                        cpu_cache.entry(counter).or_insert(RecvCpuSlot {
-                                            _shmem: shmem,
-                                            generation: 0,
-                                        });
-                                    }
-                                }
-                            }
+                            // Keyed by full buffer_id (namespaced) to prevent
+                            // cross-pool aliasing when multiple senders exist.
+                            let mut cpu_cache =
+                                RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
+                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
+                                _shmem: shmem,
+                                generation: 0,
+                            });
                         }
                     }
                 }
@@ -1756,17 +1749,6 @@ impl Node {
     pub fn free_memory_pool(&self, memory_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
-        // Extract counter for cache cleanup
-        // Format: "pool_{node_id}_{counter}"
-        let counter = buffer_id.strip_prefix("pool_").and_then(|s| {
-            let parts: Vec<&str> = s.splitn(2, '_').collect();
-            if parts.len() >= 2 {
-                parts[1].parse::<u64>().ok()
-            } else {
-                None
-            }
-        });
-
         match self.node.get_mut().free_pinned_memory(buffer_id.clone()) {
             Ok(_) => {}
             Err(_) => {
@@ -1777,36 +1759,38 @@ impl Node {
         // Clean up sender-side pinned pool mapping (Shmem + CUDA host register).
         // Without this, each register->write->free cycle leaks one Shmem mapping
         // and one cudaHostRegister pinned region for the process lifetime.
-        if let Some(c) = counter {
-            if let Some(slot) = PINNED_POOL
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&c)
-            {
-                // Unregister CUDA host memory if it was pinned during registration.
-                // _unregister_host is safe to call even if the pointer was never
-                // registered (error code 713 is handled inside the helper).
-                if let Ok(helpers) = get_cuda_helpers(py) {
-                    let bound = helpers.bind(py);
-                    let _ = bound.call_method1("_unregister_host", (slot.base,));
+        // PINNED_POOL is sender-side (per-process), so bare counter is sufficient.
+        {
+            let counter = buffer_id
+                .strip_prefix("pool_")
+                .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
+                .and_then(|c| c.parse::<u64>().ok());
+            if let Some(c) = counter {
+                if let Some(slot) = PINNED_POOL
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&c)
+                {
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (slot.base,));
+                    }
+                    // PoolSlot dropped here -> Shmem unmapped
                 }
-                // PoolSlot dropped here -> Shmem unmapped
             }
         }
 
         // Clean up receiver-side caches so the shmem mappings are released.
-        // The application must not hold live tensors referencing this pool
-        // after calling free_memory_pool.
-        if let Some(c) = counter {
-            RECV_GPU_VA
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&c);
-            RECV_CPU_SHMEM
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&c);
-        }
+        // Keyed by full buffer_id (namespaced) to correctly handle
+        // multiple sender nodes with the same per-process counter.
+        RECV_GPU_VA
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer_id);
+        RECV_CPU_SHMEM
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer_id);
 
         {
             let mut freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
@@ -2121,11 +2105,11 @@ impl Node {
             // GPU DMA pool: import IPC handle once, cache GPU buffer ptr
             read_ptr = {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
-                match cache.get(&counter) {
+                match cache.get(buffer_id) {
                     Some(slot_data) if slot_data.gpu_buf != 0 => {
                         // GPU IPC handle is stable across data overwrites;
-                        // pool ID uniqueness (node_id namespacing) prevents
-                        // cross-pool confusion. No generation check needed.
+                        // cache is keyed by full buffer_id (namespaced),
+                        // so cross-pool aliasing is impossible.
                         slot_data.gpu_buf
                     }
                     _ => {
@@ -2143,7 +2127,7 @@ impl Node {
                             .map_err(|e| eyre::eyre!("extract gpu_ptr: {}", e))?;
                         let mut cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(
-                            counter,
+                            buffer_id.to_string(),
                             RecvGpuSlot {
                                 _shmem: shmem,
                                 gpu_va: 0,
@@ -2158,10 +2142,10 @@ impl Node {
         } else if effective_as_cuda {
             read_ptr = {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
-                match cache.get(&counter) {
+                match cache.get(buffer_id) {
                     Some(slot_data) => {
                         // GPU VA is stable across data overwrites;
-                        // pool ID uniqueness prevents cross-pool confusion.
+                        // cache is keyed by full buffer_id (namespaced).
                         slot_data.gpu_va + data_offset as u64
                     }
                     None => {
@@ -2179,7 +2163,7 @@ impl Node {
                             .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
                         let mut cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(
-                            counter,
+                            buffer_id.to_string(),
                             RecvGpuSlot {
                                 _shmem: shmem,
                                 gpu_va: va,
@@ -2194,9 +2178,9 @@ impl Node {
         } else {
             read_ptr = shmem_ptr as u64 + data_offset as u64;
             let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-            if !cpu_cache.contains_key(&counter) {
+            if !cpu_cache.contains_key(buffer_id) {
                 cpu_cache.insert(
-                    counter,
+                    buffer_id.to_string(),
                     RecvCpuSlot {
                         _shmem: shmem,
                         generation: read_gen,
