@@ -3553,7 +3553,10 @@ impl Daemon {
                             Parameter::String(pinned_type.clone()),
                         );
                     }
-                    if let Some(ref shared_memory_name) = metadata.shared_memory_name {
+                    // Only return shared_memory_name when NOT freeing —
+                    // after free_memory_pool unlinks the segment the name
+                    // is a dangling reference.
+                    if !free && let Some(ref shared_memory_name) = metadata.shared_memory_name {
                         parameters.insert(
                             "shared_memory_name".to_string(),
                             Parameter::String(shared_memory_name.clone()),

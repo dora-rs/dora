@@ -1966,16 +1966,20 @@ impl Node {
     ///
     /// Returns `Ok(Some(tensor_info_dict))` on success, `Ok(None)` to fall back to daemon.
     fn try_doradma_read(&self, buffer_id: &str, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
-        // Format: "pool_{node_id}_{counter}" (3 parts)
-        let parts: Vec<&str> = buffer_id.splitn(3, '_').collect();
-        if parts.len() < 3 {
-            return Ok(None);
-        }
-        let counter: u64 = match parts[2].parse() {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        // Format: "pool_{node_id}_{counter}".
+        // Use rsplit to extract the counter from the end — the node_id
+        // portion may itself contain underscores (legal in dora node ids).
+        let counter: u64 = match buffer_id.rsplit_once('_') {
+            Some((_, c)) => match c.parse() {
+                Ok(c) => c,
+                Err(_) => return Ok(None),
+            },
+            None => return Ok(None),
         };
-        let pool_node_id = parts[1];
+        let pool_node_id = buffer_id
+            .strip_prefix("pool_")
+            .and_then(|s| s.strip_suffix(&format!("_{counter}")))
+            .unwrap_or("");
 
         // Check freed tracking -> if this buffer was freed, fall back to daemon
         {
