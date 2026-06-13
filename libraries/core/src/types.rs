@@ -68,14 +68,6 @@ impl TypeDef {
         arrow_type_from_name(&self.arrow)
     }
 
-    /// Build an Arrow `Schema` from the field definitions (primitive types only).
-    ///
-    /// Returns `None` if the type has no field definitions.
-    /// For nested struct and list type resolution, use `to_arrow_schema_with_registry`.
-    pub fn to_arrow_schema(&self) -> Option<Schema> {
-        self.build_schema(arrow_type_from_name)
-    }
-
     /// Build an Arrow `Schema` resolving nested struct refs and `List<T>` via the registry.
     ///
     /// Returns `None` if the type has no field definitions or none could be resolved.
@@ -530,11 +522,6 @@ impl TypeRegistry {
             }
         }
         found
-    }
-
-    /// Return all known URNs (sorted).
-    pub fn all_urns(&self) -> impl Iterator<Item = &str> {
-        self.types.keys().map(String::as_str)
     }
 
     /// Load user-defined types from a directory tree.
