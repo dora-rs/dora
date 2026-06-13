@@ -34,10 +34,6 @@ pub struct MemoryPoolMetadata {
     pub shared_memory_name: Option<String>,
     /// Buffer ID used for lifecycle tracking and cleanup.
     pub buffer_id: Option<String>,
-    /// Process ID that allocated the memory, when known.
-    pub allocator_pid: Option<u32>,
-    /// Whether CUDA host memory registration was performed.
-    pub cuda_registered: bool,
     /// Pool type: "cpu" or "cuda", indicating whether the receiver is a CUDA device.
     pub pinned_type: Option<String>,
 }
@@ -211,6 +207,30 @@ impl MemoryPoolManager {
             .collect()
     }
 
+    /// Best-effort sweep of orphaned [`dora_pool_*`][/dev/shm] segments from
+    /// a previous daemon crash or SIGKILL.
+    ///
+    /// This runs once at daemon startup, before any pool is registered.
+    /// On Linux, unlinking a file that another process still has mapped
+    /// is harmless — the mapping stays valid until the last `munmap`.
+    pub fn cleanup_orphans() {
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(entries) = std::fs::read_dir("/dev/shm") {
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.starts_with("dora_pool_")
+                        && let Err(err) = std::fs::remove_file(entry.path())
+                        && err.kind() != std::io::ErrorKind::NotFound
+                    {
+                        tracing::debug!("Startup orphan sweep: could not unlink {}: {}", name, err);
+                    }
+                }
+            }
+        }
+    }
+
     /// Cleanup all memory pools on shutdown.
     pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
         let mut table = self.lock_table();
@@ -272,8 +292,6 @@ mod tests {
             is_pinned: false,
             shared_memory_name: None,
             buffer_id: None,
-            allocator_pid: None,
-            cuda_registered: false,
             pinned_type: None,
         }
     }

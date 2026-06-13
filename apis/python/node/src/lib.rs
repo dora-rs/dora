@@ -191,6 +191,29 @@ unsafe impl Sync for RecvCpuSlot {}
 static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<String, RecvCpuSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// DORADMA shared-memory header layout:
+///
+/// Offset  Size   Field
+/// 0       8      magic      — b"DORADMA\x00"
+/// 8       8      json_len   — u64 LE, metadata JSON byte length
+/// 16      8      data_off   — u64 LE, byte offset of tensor data from shmem base
+/// 24      8      ipc_flag   — u64 LE, 1 when ipc_handle is valid
+/// 32      64     ipc_handle — CUDA IPC mem handle (only valid if ipc_flag == 1)
+/// 96      8      write_gen  — u64 LE, seqlock: even = complete, odd = writing
+/// 104     152    reserved
+/// 256     N      json       — padded-to-256-byte-alignment metadata JSON
+/// 256+N   M      data       — tensor payload
+const DORADMA_HEADER_SIZE: usize = 256;
+const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
+const DORADMA_METADATA_ALIGN: usize = 256;
+// Header field offsets
+const OFF_MAGIC: usize = 0;
+const OFF_JSON_LEN: usize = 8;
+const OFF_DATA_OFF: usize = 16;
+const OFF_IPC_FLAG: usize = 24;
+const OFF_IPC_HANDLE: usize = 32;
+const OFF_WRITE_GEN: usize = 96;
+
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -238,6 +261,9 @@ _lib.cudaIpcGetMemHandle.argtypes = [ctypes.POINTER(_CudaIpcMemHandle), ctypes.c
 
 _lib.cudaIpcOpenMemHandle.restype = ctypes.c_int
 _lib.cudaIpcOpenMemHandle.argtypes = [ctypes.POINTER(ctypes.c_void_p), _CudaIpcMemHandle, ctypes.c_uint]
+
+_lib.cudaIpcCloseMemHandle.restype = ctypes.c_int
+_lib.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
 
 # Persistent state: per-slot GPU buffer cache
 _gpu_bufs = {}    # slot -> (d_ptr, size)
@@ -305,6 +331,13 @@ def _ipc_import(handle_bytes):
         raise RuntimeError(f'cudaIpcOpenMemHandle failed: {err}')
     _lib.cudaDeviceSynchronize()
     return d_ptr.value
+
+def _ipc_close(d_ptr):
+    """Close an IPC memory handle opened by _ipc_import.
+    Frees the GPU-side mapping without freeing the underlying allocation."""
+    err = _lib.cudaIpcCloseMemHandle(ctypes.c_void_p(d_ptr))
+    if err != 0:
+        raise RuntimeError(f'cudaIpcCloseMemHandle(0x{d_ptr:x}) failed: {err}')
 
 def dma_copy(ptr, size, slot):
     """DMA transfer from host to pre-allocated GPU buffer.
@@ -1102,11 +1135,6 @@ impl Node {
         };
         let shmem_name = format!("dora_pool_{}_{}", self.node_id, pool_counter);
 
-        // DORADMA header setup
-        const HEADER_SIZE: usize = 256;
-        const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
-        const METADATA_ALIGN: usize = 256;
-
         let header_meta = PyDict::new(py);
         header_meta.set_item("size", size)?;
         header_meta.set_item("dtype", &dtype)?;
@@ -1122,8 +1150,9 @@ impl Node {
             .wrap_err("failed to extract JSON string")?
             .into_bytes();
         let json_len = json_bytes.len();
-        let padded_json_len = ((json_len + METADATA_ALIGN - 1) / METADATA_ALIGN) * METADATA_ALIGN;
-        let data_offset = HEADER_SIZE + padded_json_len;
+        let padded_json_len = ((json_len + DORADMA_METADATA_ALIGN - 1) / DORADMA_METADATA_ALIGN)
+            * DORADMA_METADATA_ALIGN;
+        let data_offset = DORADMA_HEADER_SIZE + padded_json_len;
         let total_size = data_offset + size;
 
         // Create shared memory
@@ -1149,14 +1178,14 @@ impl Node {
 
         // Write DORADMA header
         unsafe {
-            std::ptr::copy_nonoverlapping(HEADER_MAGIC.as_ptr(), shmem_ptr, 8);
+            std::ptr::copy_nonoverlapping(DORADMA_MAGIC.as_ptr(), shmem_ptr, 8);
             let json_len_le = (json_len as u64).to_le_bytes();
             std::ptr::copy_nonoverlapping(json_len_le.as_ptr(), shmem_ptr.add(8), 8);
             let data_off_le = (data_offset as u64).to_le_bytes();
             std::ptr::copy_nonoverlapping(data_off_le.as_ptr(), shmem_ptr.add(16), 8);
             std::ptr::copy_nonoverlapping(
                 json_bytes.as_ptr(),
-                shmem_ptr.add(HEADER_SIZE),
+                shmem_ptr.add(DORADMA_HEADER_SIZE),
                 json_len,
             );
         }
@@ -1357,8 +1386,6 @@ impl Node {
             let parts: Vec<&str> = buffer_id.splitn(3, '_').collect();
             if parts.len() >= 3 {
                 if let Ok(counter) = parts[2].parse::<u64>() {
-                    const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
-
                     // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
                     // register_memory_pool already stored the Shmem here; taking it
                     // prevents munmap, and storing it back keeps the mapping alive.
@@ -1388,7 +1415,7 @@ impl Node {
 
                     if !shmem_ptr.is_null() {
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == HEADER_MAGIC {
+                        if magic == DORADMA_MAGIC {
                             let data_offset =
                                 unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
@@ -1521,9 +1548,8 @@ impl Node {
                     if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
                         let shmem_ptr = shmem.as_ptr();
 
-                        const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == HEADER_MAGIC {
+                        if magic == DORADMA_MAGIC {
                             let data_offset =
                                 unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
@@ -1694,9 +1720,8 @@ impl Node {
                 if let Some(ref name) = shmem_name {
                     if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
                         let shmem_ptr = shmem.as_ptr();
-                        const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == HEADER_MAGIC {
+                        if magic == DORADMA_MAGIC {
                             let data_offset =
                                 unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
                             if data_offset + (size as usize) > shmem.len() {
@@ -1783,10 +1808,22 @@ impl Node {
         // Clean up receiver-side caches so the shmem mappings are released.
         // Keyed by full buffer_id (namespaced) to correctly handle
         // multiple sender nodes with the same per-process counter.
-        RECV_GPU_VA
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&buffer_id);
+        {
+            // Close GPU IPC handle before dropping the cache entry.
+            if let Some(slot) = RECV_GPU_VA
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&buffer_id)
+            {
+                if slot.gpu_buf != 0 {
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
+                    }
+                }
+                // slot._shmem drops here -> munmap
+            }
+        }
         RECV_CPU_SHMEM
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2005,16 +2042,13 @@ impl Node {
         let shmem_ptr = shmem.as_ptr();
         let shmem_size = shmem.len();
 
-        const HEADER_SIZE: usize = 256;
-        const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
-
-        // Reject truncated segments: need at least HEADER_SIZE bytes for the header
-        if shmem_size < HEADER_SIZE {
+        // Reject truncated segments: need at least DORADMA_HEADER_SIZE bytes for the header
+        if shmem_size < DORADMA_HEADER_SIZE {
             tracing::warn!(
-                "[{}] try_doradma_read: shmem size {} < HEADER_SIZE {}, rejecting",
+                "[{}] try_doradma_read: shmem size {} < DORADMA_HEADER_SIZE {}, rejecting",
                 self.node_id,
                 shmem_size,
-                HEADER_SIZE,
+                DORADMA_HEADER_SIZE,
             );
             return Ok(None);
         }
@@ -2023,7 +2057,7 @@ impl Node {
 
         unsafe {
             let magic = std::slice::from_raw_parts(shmem_ptr, 8);
-            if magic != HEADER_MAGIC {
+            if magic != DORADMA_MAGIC {
                 return Ok(None);
             }
         }
@@ -2033,20 +2067,20 @@ impl Node {
         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
         // Validate JSON length fits within the segment
-        if json_len > shmem_size.saturating_sub(HEADER_SIZE) {
+        if json_len > shmem_size.saturating_sub(DORADMA_HEADER_SIZE) {
             tracing::warn!(
                 "[{}] try_doradma_read: json_len {} exceeds shmem bounds (size={}, header={})",
                 self.node_id,
                 json_len,
                 shmem_size,
-                HEADER_SIZE,
+                DORADMA_HEADER_SIZE,
             );
             return Ok(None);
         }
 
         // Read JSON metadata from header
         let json_slice =
-            unsafe { std::slice::from_raw_parts(shmem_ptr.add(HEADER_SIZE), json_len) };
+            unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
         let json_str = match std::str::from_utf8(json_slice) {
             Ok(s) => s,
             Err(_) => return Ok(None),
