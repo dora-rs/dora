@@ -111,13 +111,6 @@ impl GitManager {
         Ok(GitFolder { reuse })
     }
 
-    pub fn in_use(&self, dir: &Path) -> bool {
-        self.clones_in_use
-            .get(dir)
-            .map(|ids| !ids.is_empty())
-            .unwrap_or(false)
-    }
-
     pub fn clone_dir_ready(&self, session_id: SessionId, dir: &Path) -> bool {
         self.prepared_builds
             .get(&session_id)
