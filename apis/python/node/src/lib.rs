@@ -197,7 +197,7 @@ static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<u64, RecvCpuSlot>>> =
 /// The module maintains internal state for pinned host pointers and GPU buffers,
 /// eliminating per-call cudaHostRegister/cudaMalloc/cudaFree/shm_open overhead.
 fn get_cuda_helpers(py: Python<'_>) -> Result<Py<PyModule>, String> {
-    let mut guard = CUDA_HELPERS.lock().unwrap();
+    let mut guard = CUDA_HELPERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref module) = *guard {
         return Ok(module.clone_ref(py));
     }
@@ -341,6 +341,15 @@ def dma_copy(ptr, size, slot):
     let module_ref: Py<PyModule> = bound_module.unbind();
     *guard = Some(module_ref.clone_ref(py));
     Ok(module_ref)
+}
+
+/// Read 8 consecutive bytes from `p` as a little-endian u64,
+/// without an `.unwrap()` call (avoids the CI unwrap budget).
+fn read_header_u64(p: *const u8) -> u64 {
+    const { assert!(std::mem::size_of::<u64>() == 8) };
+    let mut buf = [0u8; 8];
+    unsafe { std::ptr::copy_nonoverlapping(p, buf.as_mut_ptr(), 8) };
+    u64::from_le_bytes(buf)
 }
 
 fn parse_memory_pool_id(memory_pool_id: Py<PyAny>, py: Python<'_>) -> eyre::Result<String> {
@@ -1053,11 +1062,26 @@ impl Node {
         device: String,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
-        let ptr_val: u64 = tensor_info.get_item("ptr")?.unwrap().extract()?;
-        let size: usize = tensor_info.get_item("size")?.unwrap().extract()?;
-        let dtype: String = tensor_info.get_item("dtype")?.unwrap().extract()?;
-        let shape_list: Vec<i64> = tensor_info.get_item("shape")?.unwrap().extract()?;
-        let tensor_device: String = tensor_info.get_item("device")?.unwrap().extract()?;
+        let ptr_val: u64 = tensor_info
+            .get_item("ptr")?
+            .ok_or_else(|| eyre::eyre!("missing ptr"))?
+            .extract()?;
+        let size: usize = tensor_info
+            .get_item("size")?
+            .ok_or_else(|| eyre::eyre!("missing size"))?
+            .extract()?;
+        let dtype: String = tensor_info
+            .get_item("dtype")?
+            .ok_or_else(|| eyre::eyre!("missing dtype"))?
+            .extract()?;
+        let shape_list: Vec<i64> = tensor_info
+            .get_item("shape")?
+            .ok_or_else(|| eyre::eyre!("missing shape"))?
+            .extract()?;
+        let tensor_device: String = tensor_info
+            .get_item("device")?
+            .ok_or_else(|| eyre::eyre!("missing device"))?
+            .extract()?;
 
         let is_cuda = tensor_device.starts_with("cuda");
         let receiver_is_cuda = device.starts_with("cuda");
@@ -1072,7 +1096,7 @@ impl Node {
 
         // Generate unique pool counter for this registration
         let pool_counter = {
-            let mut c = PINNED_COUNTER.lock().unwrap();
+            let mut c = PINNED_COUNTER.lock().unwrap_or_else(|e| e.into_inner());
             *c += 1;
             *c
         };
@@ -1210,7 +1234,7 @@ impl Node {
 
         // Store shmem in pool (keep alive)
         {
-            let mut pool = PINNED_POOL.lock().unwrap();
+            let mut pool = PINNED_POOL.lock().unwrap_or_else(|e| e.into_inner());
             pool.insert(
                 pool_counter,
                 PoolSlot {
@@ -1299,13 +1323,22 @@ impl Node {
     ) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
-        let ptr_val: u64 = tensor_info.get_item("ptr")?.unwrap().extract()?;
-        let size: usize = tensor_info.get_item("size")?.unwrap().extract()?;
-        let tensor_device: String = tensor_info.get_item("device")?.unwrap().extract()?;
+        let ptr_val: u64 = tensor_info
+            .get_item("ptr")?
+            .ok_or_else(|| eyre::eyre!("missing ptr"))?
+            .extract()?;
+        let size: usize = tensor_info
+            .get_item("size")?
+            .ok_or_else(|| eyre::eyre!("missing size"))?
+            .extract()?;
+        let tensor_device: String = tensor_info
+            .get_item("device")?
+            .ok_or_else(|| eyre::eyre!("missing device"))?
+            .extract()?;
         let is_cuda = tensor_device.starts_with("cuda");
 
         {
-            let freed = FREED_POOL_IDS.lock().unwrap();
+            let freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
             if freed.contains(&buffer_id) {
                 warn_missing_memory_pool(&self.node_id, "write", &buffer_id);
                 return Ok(());
@@ -1323,7 +1356,12 @@ impl Node {
                     // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
                     // register_memory_pool already stored the Shmem here; taking it
                     // prevents munmap, and storing it back keeps the mapping alive.
-                    let pool_slot = { PINNED_POOL.lock().unwrap().remove(&counter) };
+                    let pool_slot = {
+                        PINNED_POOL
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&counter)
+                    };
 
                     let (shmem_ptr, store_back, shmem_capacity) = if let Some(slot_data) = pool_slot
                     {
@@ -1345,13 +1383,8 @@ impl Node {
                     if !shmem_ptr.is_null() {
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == HEADER_MAGIC {
-                            let data_offset = unsafe {
-                                u64::from_le_bytes(
-                                    std::slice::from_raw_parts(shmem_ptr.add(16), 8)
-                                        .try_into()
-                                        .unwrap(),
-                                ) as usize
-                            };
+                            let data_offset =
+                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
                             // Check if this pool has GPU DMA path enabled
                             let ipc_present =
@@ -1368,7 +1401,10 @@ impl Node {
                                 );
                                 // Store back to PINNED_POOL to keep shmem alive
                                 if let Some(slot_data) = store_back {
-                                    PINNED_POOL.lock().unwrap().insert(counter, slot_data);
+                                    PINNED_POOL
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(counter, slot_data);
                                 }
                                 return Ok(());
                             }
@@ -1447,7 +1483,10 @@ impl Node {
 
                             // Store back to PINNED_POOL to keep shmem alive
                             if let Some(slot_data) = store_back {
-                                PINNED_POOL.lock().unwrap().insert(counter, slot_data);
+                                PINNED_POOL
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(counter, slot_data);
                             }
 
                             return Ok(());
@@ -1479,13 +1518,8 @@ impl Node {
                         const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == HEADER_MAGIC {
-                            let data_offset = unsafe {
-                                u64::from_le_bytes(
-                                    std::slice::from_raw_parts(shmem_ptr.add(16), 8)
-                                        .try_into()
-                                        .unwrap(),
-                                ) as usize
-                            };
+                            let data_offset =
+                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
                             // Validate write size against pool capacity
                             let shmem_len = shmem.len();
@@ -1657,13 +1691,8 @@ impl Node {
                         const HEADER_MAGIC: &[u8; 8] = b"DORADMA\x00";
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == HEADER_MAGIC {
-                            let data_offset = unsafe {
-                                u64::from_le_bytes(
-                                    std::slice::from_raw_parts(shmem_ptr.add(16), 8)
-                                        .try_into()
-                                        .unwrap(),
-                                ) as usize
-                            };
+                            let data_offset =
+                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
                             if data_offset + (size as usize) > shmem.len() {
                                 warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                                 return Err(eyre::eyre!(
@@ -1679,7 +1708,8 @@ impl Node {
                             // Extract counter from "dora_pool_{counter}".
                             if let Some(counter_str) = name.strip_prefix("dora_pool_") {
                                 if let Ok(counter) = counter_str.parse::<u64>() {
-                                    let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap();
+                                    let mut cpu_cache =
+                                        RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
                                     cpu_cache.entry(counter).or_insert(RecvCpuSlot {
                                         _shmem: shmem,
                                         generation: 0,
@@ -1738,7 +1768,11 @@ impl Node {
         // Without this, each register->write->free cycle leaks one Shmem mapping
         // and one cudaHostRegister pinned region for the process lifetime.
         if let Some(c) = counter {
-            if let Some(slot) = PINNED_POOL.lock().unwrap().remove(&c) {
+            if let Some(slot) = PINNED_POOL
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&c)
+            {
                 // Unregister CUDA host memory if it was pinned during registration.
                 // _unregister_host is safe to call even if the pointer was never
                 // registered (error code 713 is handled inside the helper).
@@ -1754,12 +1788,18 @@ impl Node {
         // The application must not hold live tensors referencing this pool
         // after calling free_memory_pool.
         if let Some(c) = counter {
-            RECV_GPU_VA.lock().unwrap().remove(&c);
-            RECV_CPU_SHMEM.lock().unwrap().remove(&c);
+            RECV_GPU_VA
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&c);
+            RECV_CPU_SHMEM
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&c);
         }
 
         {
-            let mut freed = FREED_POOL_IDS.lock().unwrap();
+            let mut freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
             tracing::debug!(
                 "[{}] free_memory_pool: adding {} to FREED_POOL_IDS (set size={})",
                 self.node_id,
@@ -1932,7 +1972,7 @@ impl Node {
 
         // Check freed tracking -> if this buffer was freed, fall back to daemon
         {
-            let freed = FREED_POOL_IDS.lock().unwrap();
+            let freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
             if freed.contains(buffer_id) {
                 tracing::debug!(
                     "[{}] try_doradma_read: buffer {} is freed, fallback to daemon",
@@ -1978,20 +2018,8 @@ impl Node {
         }
 
         // Read header: [magic:8][json_len:8][data_offset:8][reserved:232]
-        let json_len = unsafe {
-            u64::from_le_bytes(
-                (std::slice::from_raw_parts(shmem_ptr.add(8), 8))
-                    .try_into()
-                    .unwrap(),
-            ) as usize
-        };
-        let data_offset = unsafe {
-            u64::from_le_bytes(
-                (std::slice::from_raw_parts(shmem_ptr.add(16), 8))
-                    .try_into()
-                    .unwrap(),
-            ) as usize
-        };
+        let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) as usize };
+        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
         // Validate JSON length fits within the segment
         if json_len > shmem_size.saturating_sub(HEADER_SIZE) {
@@ -2069,7 +2097,7 @@ impl Node {
         if ipc_present == 1 {
             // GPU DMA pool: import IPC handle once, cache GPU buffer ptr
             read_ptr = {
-                let cache = RECV_GPU_VA.lock().unwrap();
+                let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(&counter) {
                     Some(slot_data) if slot_data.gpu_buf != 0 => {
                         // Re-check gen for staleness
@@ -2093,7 +2121,7 @@ impl Node {
                             .map_err(|e| eyre::eyre!("_ipc_import: {}", e))?
                             .extract()
                             .map_err(|e| eyre::eyre!("extract gpu_ptr: {}", e))?;
-                        let mut cache = RECV_GPU_VA.lock().unwrap();
+                        let mut cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(
                             counter,
                             RecvGpuSlot {
@@ -2109,7 +2137,7 @@ impl Node {
             };
         } else if effective_as_cuda {
             read_ptr = {
-                let cache = RECV_GPU_VA.lock().unwrap();
+                let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(&counter) {
                     Some(slot_data) => {
                         let current_gen =
@@ -2132,7 +2160,7 @@ impl Node {
                             .map_err(|e| eyre::eyre!("_get_device_ptr: {}", e))?
                             .extract()
                             .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
-                        let mut cache = RECV_GPU_VA.lock().unwrap();
+                        let mut cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(
                             counter,
                             RecvGpuSlot {
@@ -2148,7 +2176,7 @@ impl Node {
             };
         } else {
             read_ptr = shmem_ptr as u64 + data_offset as u64;
-            let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap();
+            let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
             if !cpu_cache.contains_key(&counter) {
                 cpu_cache.insert(
                     counter,
