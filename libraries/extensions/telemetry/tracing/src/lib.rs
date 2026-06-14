@@ -221,25 +221,6 @@ impl TracingBuilder {
         self
     }
 
-    pub fn add_layer<L>(mut self, layer: L) -> Self
-    where
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        self.layers.push(layer.boxed());
-        self
-    }
-
-    pub fn with_layers<I, L>(mut self, layers: I) -> Self
-    where
-        I: IntoIterator<Item = L>,
-        L: Layer<Registry> + Send + Sync + 'static,
-    {
-        for layer in layers {
-            self.layers.push(layer.boxed());
-        }
-        self
-    }
-
     pub fn build(self) -> eyre::Result<()> {
         let registry = Registry::default().with(self.layers);
 
