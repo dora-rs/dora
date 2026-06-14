@@ -98,9 +98,12 @@ fn arrow_type_from_name(name: &str) -> Option<DataType> {
     match name {
         "Float32" => Some(DataType::Float32),
         "Float64" => Some(DataType::Float64),
+        "Int8" => Some(DataType::Int8),
+        "Int16" => Some(DataType::Int16),
         "Int32" => Some(DataType::Int32),
         "Int64" => Some(DataType::Int64),
         "UInt8" => Some(DataType::UInt8),
+        "UInt16" => Some(DataType::UInt16),
         "UInt32" => Some(DataType::UInt32),
         "UInt64" => Some(DataType::UInt64),
         "Utf8" => Some(DataType::Utf8),
