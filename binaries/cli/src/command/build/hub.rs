@@ -284,6 +284,24 @@ pub fn resolve_hub_nodes(
         let manifest = &entry.manifest;
         let label = format!("{}@{version}", reference.key());
 
+        // The index entry is an untrusted input: validate its shipped types
+        // (namespace ownership, materializable bodies) before loading them, so
+        // a rewritten entry can't register a `std/` override or a
+        // cross-namespace type that a consumer's port check would resolve
+        // (spec §6.3, P2.12).
+        let type_issues = manifest.shipped_type_issues(registry);
+        if !type_issues.is_empty() {
+            eyre::bail!(
+                "node `{}`: the `{label}` package ships invalid custom types — \
+                 the index entry may be malformed or rewritten:\n  - {}",
+                node.id,
+                type_issues
+                    .iter()
+                    .map(|i| format!("{}: {}", i.field, i.message))
+                    .collect::<Vec<_>>()
+                    .join("\n  - ")
+            );
+        }
         // register the package's shipped types, then inject contracts and
         // check the dataflow's wiring against the declared ports
         for (urn, def) in &manifest.types {

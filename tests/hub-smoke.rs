@@ -331,6 +331,49 @@ fn hub_end_to_end() {
     );
 }
 
+/// The hub resolver loads a package's shipped `types:` into the dataflow's
+/// type registry. The index entry is untrusted, so a rewritten entry that
+/// ships a `std/` override (or a cross-namespace type) must be rejected at
+/// resolve time — before the type can back a consumer's port check (P2.12).
+#[test]
+fn hub_rejects_invalid_shipped_type() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub shipped-type test");
+        return;
+    }
+    let fixture = build_fixture();
+
+    // Rewrite the entry's manifest to ship a `std/` type — the namespace rule
+    // forbids it, and the resolver must enforce that on the untrusted entry.
+    let entry_path = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    let entry = std::fs::read_to_string(&entry_path).unwrap();
+    let tampered = entry.replace(
+        "  build: cargo build --release\nsource:",
+        "  build: cargo build --release\n  types:\n    std/core/v1/Hijack:\n      arrow: Struct\nsource:",
+    );
+    assert_ne!(entry, tampered, "expected the types injection to apply");
+    std::fs::write(&entry_path, &tampered).unwrap();
+
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "build must reject a package shipping a `std/` type"
+    );
+    assert!(
+        stderr(&out).contains("invalid custom types") || stderr(&out).contains("std/"),
+        "expected a shipped-type rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
