@@ -221,7 +221,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         eyre::bail!("`--lockfile` requires either `--locked` or `--write-lockfile`");
     }
     let working_dir = working_dir_or_parent(working_dir_override.as_deref(), &dataflow_path);
-    let dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
+    let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow_path)
         .wrap_err_with(|| {
             format!(
                 "failed to read dataflow at `{}`\n\n  \
@@ -247,6 +247,15 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
             _ => {}
         }
     }
+    // Inject contracts from node manifests adjacent to path: nodes (§6.2)
+    let injection = dora_core::manifest::inject::inject_adjacent_manifests(
+        &mut dataflow_descriptor,
+        working_dir,
+        &mut registry,
+    );
+    for note in &injection.notes {
+        println!("  {note}");
+    }
     let type_result = dora_core::descriptor::validate::check_type_annotations_full(
         &dataflow_descriptor,
         &registry,
@@ -255,16 +264,19 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     for inf in &type_result.inferences {
         println!("  {inf}");
     }
-    if !type_result.warnings.is_empty() {
+    let warning_count = injection.warnings.len() + type_result.warnings.len();
+    if warning_count > 0 {
+        for w in &injection.warnings {
+            eprintln!("  warning: {w}");
+        }
         for w in &type_result.warnings {
             eprintln!("  warning: {w}");
         }
-        let count = type_result.warnings.len();
         if strict {
-            eyre::bail!("{count} type error(s) found (strict mode)");
+            eyre::bail!("{warning_count} type error(s) found (strict mode)");
         } else {
             eprintln!(
-                "{count} type warning(s) found.\n  \
+                "{warning_count} type warning(s) found.\n  \
                  hint: use --strict-types to fail on type warnings"
             );
         }

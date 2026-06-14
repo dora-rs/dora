@@ -6,6 +6,7 @@
 //! `Cargo.toml`) and is copied verbatim into a hub index entry at publish
 //! time, so discovery never needs to fetch source.
 
+pub mod inject;
 pub mod validate;
 
 use std::{collections::BTreeMap, path::Path};

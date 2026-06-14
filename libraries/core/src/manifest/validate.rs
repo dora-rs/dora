@@ -29,12 +29,14 @@ impl std::fmt::Display for ManifestIssue {
 }
 
 fn write_sanitized(f: &mut std::fmt::Formatter<'_>, s: &str) -> std::fmt::Result {
-    // newlines are stripped too: no issue message is legitimately multi-line,
-    // and an embedded `\n` would let a manifest spoof additional output lines
-    for c in s.chars().filter(|c| !c.is_control()) {
-        std::fmt::Write::write_char(f, c)?;
-    }
-    Ok(())
+    f.write_str(&sanitize(s))
+}
+
+/// Strip control characters from untrusted content destined for terminal
+/// output. Newlines are stripped too: no message is legitimately multi-line,
+/// and an embedded `\n` would let a manifest spoof additional output lines.
+pub(crate) fn sanitize(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).collect()
 }
 
 /// Environment variable names that could hijack the loader, the interpreter,
@@ -327,8 +329,9 @@ fn check_platform(platform: &str) -> Option<String> {
 }
 
 /// Shipped custom types must live under the package's namespace (spec §6.3),
-/// be declared without parameters, and use the URN character set.
-fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
+/// be declared without parameters, and use the URN character set. Returns the
+/// problem, or `None` if the manifest is entitled to ship this URN.
+pub(crate) fn check_shipped_type_urn(urn: &str, namespace: &str) -> Option<String> {
     let valid_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
     if !urn.chars().all(valid_char) {
         return Some(format!(
