@@ -136,6 +136,9 @@ fn build_fixture() -> Fixture {
 fn dora(fixture: &Fixture) -> Command {
     let mut cmd = Command::new(dora_bin());
     cmd.env("DORA_HUB_CONFIG", &fixture.hub_config);
+    // the fixture index entries point at a `file://` source repo; opt in to
+    // local sources, which a public index would otherwise reject
+    cmd.env("DORA_HUB_ALLOW_LOCAL_SOURCES", "1");
     cmd.current_dir(&fixture.root);
     cmd
 }
