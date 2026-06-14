@@ -181,8 +181,15 @@ impl From<DataId> for String {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Prefer `id.parse::<DataId>()`
-/// or `DataId::try_from(s)` when handling untrusted input.
+/// Panics if `id` contains invalid characters (not in `[a-zA-Z0-9_./-]`).
+///
+/// **For untrusted input, use `id.parse::<DataId>()`** which calls
+/// `FromStr::from_str` and returns `Result<Self, InvalidId>`.
+///
+/// Do NOT use `DataId::try_from(s)`: `TryFrom<String>` is the
+/// auto-derived blanket impl that delegates to this `From` impl, so it
+/// panics exactly like `.into()`. Only `parse::<DataId>()` / `from_str`
+/// is fallible.
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_data_id(&id) {
