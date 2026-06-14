@@ -1382,10 +1382,10 @@ impl Node {
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
-            // Format: "pool_{node_id}_{counter}" (3 parts)
-            let parts: Vec<&str> = buffer_id.splitn(3, '_').collect();
-            if parts.len() >= 3 {
-                if let Ok(counter) = parts[2].parse::<u64>() {
+            // Extract counter from the last underscore segment — node_id
+            // may legitimately contain underscores.
+            if let Some((_, counter_str)) = buffer_id.rsplit_once('_') {
+                if let Ok(counter) = counter_str.parse::<u64>() {
                     // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
                     // register_memory_pool already stored the Shmem here; taking it
                     // prevents munmap, and storing it back keeps the mapping alive.
