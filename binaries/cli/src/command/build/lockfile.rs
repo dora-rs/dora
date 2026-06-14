@@ -221,8 +221,7 @@ mod tests {
             s.hub = Some(dora_message::common::HubProvenance {
                 name: "dora-rs/dora-yolo".into(),
                 version: "0.5.2".into(),
-                entrypoint: Some("target/release/dora-yolo".into()),
-                build: Some("cargo build --release".into()),
+                manifest_digest: Some("deadbeef".into()),
             });
             s
         });

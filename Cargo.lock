@@ -1733,6 +1733,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "sysinfo 0.36.1",
  "tabwriter",
  "tempfile",

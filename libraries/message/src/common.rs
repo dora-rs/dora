@@ -373,16 +373,14 @@ pub struct HubProvenance {
     pub name: String,
     /// Resolved version.
     pub version: String,
-    /// The pinned entrypoint at lock time. The commit hash pins the *source
-    /// tree*, but the entrypoint + build command live in the (mutable) index
-    /// entry, so they are recorded here too — `--locked` hard-errors if the
-    /// index entry no longer matches. `Option` for back-compat with lockfiles
-    /// written before this field existed.
+    /// Digest of the index entry's manifest at lock time. The commit hash pins
+    /// the *source tree*, but the entrypoint, build command, and typed contract
+    /// (inputs/outputs/types) all live in the (mutable) index entry — so a
+    /// rewritten entry could change any of them for an already-pinned version.
+    /// `--locked` hard-errors if this digest no longer matches. `Option` for
+    /// back-compat with lockfiles written before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entrypoint: Option<String>,
-    /// The pinned build command at lock time (see `entrypoint`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub build: Option<String>,
+    pub manifest_digest: Option<String>,
 }
 
 // Test roundtrip serialization of LogMessage

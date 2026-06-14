@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 
 use dora_core::{
     build::validate_subdir,
-    manifest::inject::{InjectionResult, apply_manifest_contracts},
+    manifest::{
+        NodeManifest,
+        inject::{InjectionResult, apply_manifest_contracts},
+    },
     types::TypeRegistry,
 };
 use dora_hub_client::{
@@ -63,6 +66,19 @@ fn normalize_git_source_url(url: &str) -> String {
     url.to_string()
 }
 
+/// A stable SHA-256 digest of an index entry's manifest, recorded in the
+/// lockfile so `--locked` can detect a rewritten index entry (entrypoint,
+/// build command, or typed contract). `serde_json` sorts the manifest's
+/// `BTreeMap` fields, so the serialization — and the digest — is canonical.
+fn manifest_digest(manifest: &NodeManifest) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(manifest).unwrap_or_default();
+    Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
 /// Resolve and desugar every `hub:` node in `dataflow`.
 ///
 /// With `pins` (from a lockfile, `--locked`), no index resolution happens:
@@ -110,15 +126,11 @@ pub fn resolve_hub_nodes(
 
         let reference = PackageRef::parse(&raw_reference)
             .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
-        let index_config = config.index_for_namespace(&reference.namespace);
-        let catalog_dir = fetcher
-            .catalog_dir(index_config, &config.config_dir)
-            .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
-        let catalog = IndexCatalog::open(&catalog_dir)?;
 
-        let pin = pins.and_then(|p| p.get(&node.id));
         // under `--locked` (pins present), a node with no lockfile entry must
-        // fail fast rather than silently resolving from the network
+        // fail fast — *before* any index fetch — rather than hitting the
+        // network (or an offline cache miss) only to bail afterwards.
+        let pin = pins.and_then(|p| p.get(&node.id));
         if pins.is_some() && pin.is_none() {
             eyre::bail!(
                 "node `{}`: `hub:` reference is not in the lockfile — \
@@ -126,6 +138,13 @@ pub fn resolve_hub_nodes(
                 node.id
             );
         }
+
+        let index_config = config.index_for_namespace(&reference.namespace);
+        let catalog_dir = fetcher
+            .catalog_dir(index_config, &config.config_dir)
+            .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
+        let catalog = IndexCatalog::open(&catalog_dir)?;
+
         let (version, entry, source) = match pin {
             Some(pin) => {
                 // --locked: the pinned commit is used verbatim, no resolution
@@ -210,35 +229,24 @@ pub fn resolve_hub_nodes(
                         reference.key()
                     ));
                 }
-                // the commit hash pins the source *tree*, but the entrypoint and
-                // build command come from the (mutable) index entry — so a
-                // rewritten index could inject an arbitrary build command at a
-                // pinned version. `--locked` hard-errors if they changed. The
-                // `entrypoint` field doubles as the new-lockfile-format sentinel:
-                // when absent (lockfile predates this field) the check is skipped.
+                // the commit hash pins the source *tree*, but the manifest
+                // (entrypoint, build command, and the typed contract) comes from
+                // the *mutable* index entry — so a rewritten entry could change
+                // any of it at a pinned version. `--locked` hard-errors if the
+                // manifest digest no longer matches what was locked. The digest
+                // doubles as the new-lockfile-format sentinel: when absent
+                // (lockfile predates this field) the check is skipped.
                 if let Some(provenance) = &pin.hub
-                    && let Some(locked_entrypoint) = &provenance.entrypoint
+                    && let Some(locked_digest) = &provenance.manifest_digest
+                    && *locked_digest != manifest_digest(&entry.manifest)
                 {
-                    if *locked_entrypoint != entry.manifest.entrypoint {
-                        eyre::bail!(
-                            "node `{}`: the locked index entry for `{}@{version}` changed \
-                             its entrypoint since the lockfile was written \
-                             (`{locked_entrypoint}` -> `{}`) — regenerate with \
-                             `dora build --write-lockfile`",
-                            node.id,
-                            entry.manifest.entrypoint,
-                            reference.key()
-                        );
-                    }
-                    if provenance.build != entry.manifest.build {
-                        eyre::bail!(
-                            "node `{}`: the locked index entry for `{}@{version}` changed \
-                             its build command since the lockfile was written — \
-                             regenerate with `dora build --write-lockfile`",
-                            node.id,
-                            reference.key()
-                        );
-                    }
+                    eyre::bail!(
+                        "node `{}`: the locked index entry for `{}@{version}` changed its \
+                         manifest (entrypoint, build, or contract) since the lockfile was \
+                         written — regenerate with `dora build --write-lockfile`",
+                        node.id,
+                        reference.key()
+                    );
                 }
                 (version, entry, pin.clone())
             }
@@ -261,8 +269,7 @@ pub fn resolve_hub_nodes(
                     hub: Some(HubProvenance {
                         name: reference.key(),
                         version: resolved.version.to_string(),
-                        entrypoint: Some(resolved.entry.manifest.entrypoint.clone()),
-                        build: resolved.entry.manifest.build.clone(),
+                        manifest_digest: Some(manifest_digest(&resolved.entry.manifest)),
                     }),
                 };
                 (resolved.version, resolved.entry, source)
