@@ -180,6 +180,7 @@ static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuSlot>>> =
 /// by the as_cuda=False path in try_doradma_read.
 struct RecvCpuSlot {
     _shmem: shared_memory_extended::Shmem,
+    base: u64,
     generation: u64,
 }
 unsafe impl Send for RecvCpuSlot {}
@@ -1396,20 +1397,30 @@ impl Node {
                             .remove(&counter)
                     };
 
-                    let (shmem_ptr, store_back, shmem_capacity) = if let Some(slot_data) = pool_slot
+                    // Both cache-hit and cache-miss produce a PoolSlot that is
+                    // stored back into PINNED_POOL after the write — this keeps
+                    // the shmem mapping alive for the duration of the data copy.
+                    let (shmem_ptr, shmem_capacity, store_back) = if let Some(slot_data) = pool_slot
                     {
                         // Cache hit: reuse the persistent mapping (no mmap)
                         let cap = slot_data.size;
-                        (slot_data.base as *mut u8, Some(slot_data), cap)
+                        (slot_data.base as *mut u8, cap, Some(slot_data))
                     } else {
-                        // Cache miss: open via ShmemConf (mmap, slower)
+                        // Cache miss: open via ShmemConf, wrap immediately
+                        // so the mapping stays alive until post-write re-insert.
                         let shmem_name = format!("dora_pool_{}_{}", self.node_id, counter);
                         match ShmemConf::new().os_id(&shmem_name).open() {
                             Ok(shmem) => {
                                 let cap = shmem.len();
-                                (shmem.as_ptr(), None, cap)
+                                let base = shmem.as_ptr() as u64;
+                                let slot = PoolSlot {
+                                    _shmem: shmem,
+                                    base,
+                                    size: cap,
+                                };
+                                (base as *mut u8, cap, Some(slot))
                             }
-                            Err(_) => (std::ptr::null_mut(), None, 0),
+                            Err(_) => (std::ptr::null_mut(), 0, None),
                         }
                     };
 
@@ -1724,7 +1735,9 @@ impl Node {
                         if magic == DORADMA_MAGIC {
                             let data_offset =
                                 unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                            if data_offset + (size as usize) > shmem.len() {
+                            if data_offset > shmem.len()
+                                || (size as usize) > shmem.len().saturating_sub(data_offset)
+                            {
                                 warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                                 return Err(eyre::eyre!(
                                     "memory pool {} header bounds exceeded: data_offset {} + size {} > shmem_len {}",
@@ -1742,6 +1755,7 @@ impl Node {
                                 RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
                             cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
                                 _shmem: shmem,
+                                base: shmem_ptr as u64,
                                 generation: 0,
                             });
                         }
@@ -2106,8 +2120,11 @@ impl Node {
             return Ok(None);
         }
 
-        // Verify data_offset + size fits within shared memory segment
-        if data_offset + size > shmem_size {
+        // Verify data_offset + size fits within shared memory segment.
+        // Use saturating operations to guard against corrupted/hostile
+        // headers with a near-usize::MAX data_offset (overflow-safe,
+        // matching the write-path checks).
+        if data_offset > shmem_size || size > shmem_size.saturating_sub(data_offset) {
             tracing::warn!(
                 "[{}] try_doradma_read: data_offset {} + size {} exceeds shmem_size {}",
                 self.node_id,
@@ -2214,17 +2231,25 @@ impl Node {
                 }
             };
         } else {
-            read_ptr = shmem_ptr as u64 + data_offset as u64;
+            // On the first read the fresh mapping is cached; on subsequent
+            // reads the fresh mapping is dropped and the returned pointer
+            // must use the cached mapping's base (a different mmap address).
             let mut cpu_cache = RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-            if !cpu_cache.contains_key(buffer_id) {
-                cpu_cache.insert(
-                    buffer_id.to_string(),
-                    RecvCpuSlot {
-                        _shmem: shmem,
-                        generation: read_gen,
-                    },
-                );
-            }
+            read_ptr = match cpu_cache.get(buffer_id) {
+                Some(cached) => cached.base + data_offset as u64,
+                None => {
+                    let base = shmem_ptr as u64;
+                    cpu_cache.insert(
+                        buffer_id.to_string(),
+                        RecvCpuSlot {
+                            _shmem: shmem,
+                            base,
+                            generation: read_gen,
+                        },
+                    );
+                    base + data_offset as u64
+                }
+            };
         }
 
         // Seqlock: re-read generation — mismatch means data changed during read

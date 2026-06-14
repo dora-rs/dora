@@ -22,6 +22,7 @@ pbar = tqdm(total=MESSAGE_COUNT)
 velocities = []
 memory_pool_id = None
 torch_tensor = None
+prev_sum = None
 
 for i in range(MESSAGE_COUNT):
     event = node.next()
@@ -33,12 +34,18 @@ for i in range(MESSAGE_COUNT):
         torch_tensor = tensor_from_info(tensor_info)
         print(f"Receiver preview: {torch_tensor[:5]}")
 
-    # The tensor is zero-copy — its memory maps the shmem directly.
-    # write_memory_pool on the sender side overwrites those bytes in place,
-    # so the receiver's existing tensor object automatically reflects the
-    # new data without a second read_memory_pool call.  Turn-based signaling
-    # (next_require round-trips) ensures the sender has finished writing
-    # before the receiver accesses the tensor.
+    # The tensor is zero-copy — write_memory_pool on the sender overwrites
+    # the shmem bytes in place, so the receiver's existing tensor object
+    # automatically reflects new data.  Turn-based signaling ensures the
+    # sender has finished writing before the receiver accesses the tensor.
+    # Compute a cheap checksum to validate that the tensor data changed
+    # (and therefore the pooled transfer actually delivered new bytes).
+    curr_sum = int(torch_tensor[:8].sum().item())
+    if prev_sum is not None and SCENARIO != "write_after_free":
+        assert curr_sum != prev_sum, (
+            f"iteration {i}: tensor data did not change — pool write may not have propagated"
+        )
+    prev_sum = curr_sum
 
     t_received = time.perf_counter_ns()
     delta_t = t_received - t_send

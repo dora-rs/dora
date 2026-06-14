@@ -171,6 +171,16 @@ impl MemoryPoolManager {
     }
 
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
+        // Sanity-checks to avoid path traversal: an attacker-supplied
+        // shared_memory_name must stay within the expected /dev/shm name space.
+        if !shm_name.starts_with("dora_pool_") || shm_name.contains('/') || shm_name.contains("..")
+        {
+            return Err(format!(
+                "shared_memory_name `{}` does not match expected dora_pool_ prefix",
+                shm_name,
+            ));
+        }
+
         #[cfg(target_os = "linux")]
         {
             let shm_path = format!("/dev/shm/{}", shm_name);
