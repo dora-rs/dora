@@ -97,11 +97,16 @@ pub fn inject_adjacent_manifests(
             if check_shipped_type_urn(urn, &manifest.namespace).is_some() {
                 continue;
             }
-            let body_resolves = def
-                .fields
-                .iter()
-                .all(|f| scratch.field_type_resolves(&f.r#type));
-            if body_resolves && registry.resolve(urn).is_none() {
+            // body-valid = a known `arrow:` discriminant AND every field type
+            // resolves; matches `NodeManifest::validate` so an invalid sibling
+            // can't slip a type into the shared registry that a referencing
+            // node then resolves but can never materialize.
+            let body_valid = crate::types::is_known_arrow_type(&def.arrow)
+                && def
+                    .fields
+                    .iter()
+                    .all(|f| scratch.field_type_resolves(&f.r#type));
+            if body_valid && registry.resolve(urn).is_none() {
                 let _ = registry.add_user_type(urn, def.clone());
             }
         }
@@ -131,11 +136,11 @@ fn find_manifest_for(
     node_id: &NodeId,
     result: &mut InjectionResult,
 ) -> Option<(PathBuf, NodeManifest)> {
-    if !path.contains('/') && !path.contains('\\') {
-        // bare command name (e.g. an installed console script) — there is no
-        // on-disk node directory to search
-        return None;
-    }
+    // A bare `path:` (no separator) is still a local file the daemon resolves
+    // as `working_dir/<path>` (a console script or a local executable next to
+    // `dora-node.yml`), so it is not skipped: `containment_roots` roots it at
+    // the working dir and the walk below matches an adjacent manifest whose
+    // entrypoint names it. A path that escapes the working dir returns `None`.
     let Some((full, working_dir)) = containment_roots(path, working_dir) else {
         // absolute or `..`-escaping paths point outside the dataflow tree —
         // never walk unrelated directories looking for a manifest. (Env-var
@@ -165,12 +170,18 @@ fn find_manifest_for(
             if normalize(&dir.join(entrypoint)) == full {
                 return Some((candidate, manifest));
             }
-            result.warnings.push(sanitize(&format!(
-                "node \"{node_id}\": {} has entrypoint `{}`, which does not name \
-                 the node's path `{path}` — contracts not injected",
-                candidate.display(),
-                manifest.entrypoint,
-            )));
+            // A bare `path:` (console script) commonly shares its working dir
+            // with an unrelated node's manifest, so a mismatch there is not a
+            // mistake — warn only when the path has a directory component that
+            // strongly associates it with the manifest it sits under.
+            if path.contains('/') || path.contains('\\') {
+                result.warnings.push(sanitize(&format!(
+                    "node \"{node_id}\": {} has entrypoint `{}`, which does not name \
+                     the node's path `{path}` — contracts not injected",
+                    candidate.display(),
+                    manifest.entrypoint,
+                )));
+            }
             return None;
         }
     }
@@ -728,6 +739,53 @@ nodes:
         // port check correctly fails to resolve it
         assert!(registry.resolve("acme/foo/v1/X").is_none());
         assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn unknown_arrow_sibling_cannot_contaminate_the_registry() {
+        let tmp = tempfile::tempdir().unwrap();
+        // valid fields but a bogus `arrow:` — still unmaterializable, so it
+        // must not register where a sibling could resolve it
+        write_manifest(
+            &tmp.path().join("bad"),
+            "apiVersion: 1\nname: bad\nnamespace: acme\nruntime: rust\n\
+             entrypoint: target/release/bad\ntypes:\n  acme/foo/v1/X:\n    arrow: NotAnArrowType\n",
+        );
+        write_manifest(
+            &tmp.path().join("victim"),
+            "apiVersion: 1\nname: victim\nnamespace: gamma\nruntime: rust\n\
+             entrypoint: target/release/victim\noutputs:\n  out:\n    type: acme/foo/v1/X\n",
+        );
+        let mut df = dataflow(
+            "nodes:\n  - id: bad\n    path: bad/target/release/bad\n  \
+             - id: victim\n    path: victim/target/release/victim\n    outputs: [out]\n",
+        );
+        let mut registry = TypeRegistry::new();
+        let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert!(registry.resolve("acme/foo/v1/X").is_none());
+        assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn bare_path_with_adjacent_manifest_is_injected() {
+        // a console-script / bare local-exe `path:` next to its manifest must
+        // still get its contracts injected (the entrypoint names the bare path)
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(
+            tmp.path(),
+            "apiVersion: 1\nname: dora-yolo\nnamespace: acme\nruntime: python\n\
+             entrypoint: dora-yolo\noutputs:\n  bbox:\n    type: std/vision/v1/BoundingBox\n",
+        );
+        let mut df =
+            dataflow("nodes:\n  - id: detector\n    path: dora-yolo\n    outputs: [bbox]\n");
+        let mut registry = TypeRegistry::new();
+        inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert_eq!(
+            df.nodes[0]
+                .output_types
+                .get(&"bbox".parse::<dora_message::id::DataId>().unwrap()),
+            Some(&"std/vision/v1/BoundingBox".to_string())
+        );
     }
 
     #[test]
