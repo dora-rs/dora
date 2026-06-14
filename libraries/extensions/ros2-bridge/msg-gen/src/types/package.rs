@@ -32,27 +32,6 @@ impl Package {
         self.messages.is_empty() && self.services.is_empty() && self.actions.is_empty()
     }
 
-    pub fn message_structs(&self, gen_cxx_bridge: bool) -> (impl ToTokens, impl ToTokens) {
-        if self.messages.is_empty() {
-            // empty msg
-            (quote! {}, quote! {})
-        } else {
-            let items = self
-                .messages
-                .iter()
-                .map(|v| v.struct_token_stream(&self.name, gen_cxx_bridge));
-            let defs = items.clone().map(|(def, _)| def);
-            let impls = items.clone().map(|(_, im)| im);
-            let def_tokens = quote! {
-                #(#defs)*
-            };
-            let impl_tokens = quote! {
-                #(#impls)*
-            };
-            (def_tokens, impl_tokens)
-        }
-    }
-
     fn message_aliases(&self, package_name: &Ident) -> impl ToTokens {
         if self.messages.is_empty() {
             quote! {
