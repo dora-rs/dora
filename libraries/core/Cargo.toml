@@ -29,6 +29,7 @@ serde-with-expand-env = "1.1.0"
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "sync", "rt"] }
 tokio-stream = { workspace = true, features = ["io-util"] }
 schemars = "1.0.4"
+semver = { workspace = true }
 serde_json = { workspace = true }
 log = { version = "0.4.21", features = ["serde"] }
 dunce = "1.0.5"

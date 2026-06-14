@@ -68,7 +68,9 @@ share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
+# (the distutils `MANIFEST` pattern was removed here: nothing in this repo
+# produces one, and on case-insensitive filesystems it silently hides Rust
+# `manifest/` module directories from git)
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

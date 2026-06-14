@@ -20,7 +20,7 @@ tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
 log = { version = "0.4.21", features = ["serde"] }
 aligned-vec = { version = "0.5.0", features = ["serde"] }
-semver = { version = "1.0.23", features = ["serde"] }
+semver = { workspace = true }
 schemars = "1.0.4"
 uhlc = "0.5.1"
 serde_yaml = { workspace = true }

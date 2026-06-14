@@ -1,5 +1,6 @@
 use std::{env, path::Path};
 
+use dora_core::manifest::NodeManifest;
 use dora_message::descriptor::Descriptor;
 use schemars::schema_for;
 
@@ -39,4 +40,12 @@ fn main() {
 
     // write to file
     std::fs::write(new_file_path, raw_schema).expect("Could not write schema to file");
+
+    // Node manifest schema (dora-node.yml, see docs/plan-node-hub.md §5)
+    let node_schema = schema_for!(NodeManifest);
+    let raw_node_schema = serde_json::to_string_pretty(&node_schema)
+        .expect("Could not serialize node manifest schema to json");
+    let node_schema_path = Path::new(&manifest_dir).join("dora-node-schema.json");
+    std::fs::write(node_schema_path, raw_node_schema)
+        .expect("Could not write node manifest schema to file");
 }

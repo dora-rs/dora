@@ -1822,6 +1822,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "schemars 1.2.1",
+ "semver",
  "serde",
  "serde-with-expand-env",
  "serde_json",

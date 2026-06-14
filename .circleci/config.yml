@@ -120,6 +120,7 @@ commands:
             uv pip install pyarrow
             uv pip install -e apis/python/node
             uv pip install ruff pytest
+            uv run python -c "import dora; print(dora.__file__)"
 
 # ────────────────────────────────────────────────────────────────────
 # Executors
@@ -852,6 +853,16 @@ jobs:
             cp target/debug/dora ~/.cargo/bin/dora
             chmod +x ~/.cargo/bin/dora
       - setup-python-uv
+      - run:
+          name: Pin uv to the CI venv for the contract examples
+          # The contract examples spawn `uv run python` from nested example
+          # dirs; pin uv to the venv that holds the editable dora package
+          # rather than cwd-based discovery. Scoped to this job on purpose —
+          # cli-python's template-project nodes need their own per-project env
+          # resolution and break under a global UV_PYTHON pin.
+          command: |
+            echo "export UV_PYTHON=$PWD/.venv/bin/python" >> "$BASH_ENV"
+            source "$BASH_ENV"
       - run:
           name: Run semantic contract tests
           command: >

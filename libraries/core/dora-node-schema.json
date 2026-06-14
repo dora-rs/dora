@@ -1,0 +1,365 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NodeManifest",
+  "description": "A node manifest (`dora-node.yml`).\n\nHolds only what native package manifests *cannot*: dora contracts and dora\nwiring. Name, version, license, and dependencies are read from\n`pyproject.toml`/`Cargo.toml` at publish time where possible.",
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "description": "Manifest schema version. Currently always `1`.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "categories": {
+      "description": "Categories from the fixed list (spec §7.6); drive search facets.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Category"
+      }
+    },
+    "description": {
+      "description": "One-line description, shown by `dora hub search`/`info`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "dora": {
+      "description": "Supported dora version range (semver requirement, e.g. `>=0.4`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "entrypoint": {
+      "description": "What to run, relative to the node's working dir.\n\nPython: a console script on the managed-env PATH (e.g. `dora-yolo`).\nRust/C/C++: the build output, e.g. `target/release/dora-yolo`.\nMust be a relative path without `..` components.",
+      "type": "string"
+    },
+    "env": {
+      "description": "Documented + typed configuration surface (environment variables).\nSecurity-sensitive names (`PATH`, `PYTHONPATH`, `LD_*`, `DYLD_*`) are\nrejected at validation.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/EnvVarDef"
+      }
+    },
+    "example": {
+      "description": "Example dataflow snippet shown by `dora hub info` (YAML node list).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inputs": {
+      "description": "Typed input ports. May be empty (source nodes).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/PortDef"
+      }
+    },
+    "keywords": {
+      "description": "Free-form search keywords.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "name": {
+      "description": "Package name. Defaults to `[project].name` / `[package].name` of the\nnative manifest at publish time; required for standalone validation.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "namespace": {
+      "description": "Index namespace the package publishes under (a GitHub org or user).",
+      "type": "string"
+    },
+    "outputs": {
+      "description": "Typed output ports. May be empty (sink nodes).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/PortDef"
+      }
+    },
+    "platforms": {
+      "description": "Optional platform allowlist, e.g. `[linux-x86_64, macos-aarch64]`.\nEmpty means all platforms.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "requirements": {
+      "description": "Informational hardware/system requirements; surfaced by `dora hub\ninfo` and at build start, never auto-installed.",
+      "$ref": "#/$defs/Requirements"
+    },
+    "runtime": {
+      "description": "Language runtime of the node.",
+      "$ref": "#/$defs/Runtime"
+    },
+    "types": {
+      "description": "Custom type definitions shipped with the node, keyed by full URN\n(e.g. `acme/lidar/v1/PointCloud`). Must live under the package's\nnamespace; `std/` is rejected.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/TypeDef"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "apiVersion",
+    "namespace",
+    "runtime",
+    "entrypoint"
+  ],
+  "$defs": {
+    "Category": {
+      "description": "Fixed category list (spec §7.6). Extended by index PR + discussion.",
+      "type": "string",
+      "enum": [
+        "sensor",
+        "actuator",
+        "robot",
+        "transform",
+        "filter",
+        "ml-inference",
+        "llm",
+        "speech",
+        "communication",
+        "recorder",
+        "visualization",
+        "simulator",
+        "debug"
+      ]
+    },
+    "EnvDefault": {
+      "description": "A literal env default value.\n\nDeliberately *not* the descriptor's `EnvValue`: that type expands `$VAR`\nreferences against the local environment at deserialization time, which is\nright for a dataflow being deployed but wrong for a manifest — manifests\nare published verbatim into an index, so defaults must stay literal and\nparse identically on every machine.",
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "type": "number",
+          "format": "double"
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "EnvVarDef": {
+      "description": "A documented environment variable.",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Default value used when the variable is not set in the dataflow.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnvDefault"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "description": {
+          "description": "Human-readable description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Value type: `string` (default), `int`, `float`, or `bool`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EnvVarType"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "EnvVarType": {
+      "description": "Declared value type of an environment variable.",
+      "type": "string",
+      "enum": [
+        "string",
+        "int",
+        "float",
+        "bool"
+      ]
+    },
+    "FieldDef": {
+      "description": "A field definition within a struct type.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Field name",
+          "type": "string"
+        },
+        "nullable": {
+          "description": "Whether the field is nullable (default: true)",
+          "type": "boolean",
+          "default": true
+        },
+        "type": {
+          "description": "Arrow type name or URN reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ]
+    },
+    "MetadataDef": {
+      "description": "Metadata key required on outputs of a given type.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "Description of the metadata key",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "key": {
+          "description": "Key name that must be present in message metadata",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    },
+    "PortDef": {
+      "description": "A typed input or output port.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "description": "Human-readable description of the port.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "Whether a dataflow must wire this input (defaults to `true`; only\nmeaningful on inputs — validation rejects it on outputs).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "type": {
+          "description": "Type URN (e.g. `std/media/v1/Image`). Omitted = untyped; validation\nskips the port.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Requirements": {
+      "description": "Informational hardware/system requirements (spec §5): documentation\nsurfaced by `dora hub info`, never auto-installed.",
+      "type": "object",
+      "properties": {
+        "hardware": {
+          "description": "Hardware requirements, e.g. `[cuda]`. v1 actively probes only `cuda`.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "system": {
+          "description": "System package requirements, keyed by package manager or platform.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Runtime": {
+      "description": "Language runtime of a node.",
+      "type": "string",
+      "enum": [
+        "python",
+        "rust",
+        "c",
+        "cpp"
+      ]
+    },
+    "TypeDef": {
+      "description": "A single type definition from the standard type library.",
+      "type": "object",
+      "properties": {
+        "arrow": {
+          "description": "Arrow data type name (e.g. \"Float32\", \"Struct\", \"LargeBinary\")",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fields": {
+          "description": "Struct field definitions (only for Struct arrow types)",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FieldDef"
+          }
+        },
+        "metadata": {
+          "description": "Required metadata keys",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MetadataDef"
+          }
+        },
+        "params": {
+          "description": "Type parameters (e.g. sample_type for AudioFrame)",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TypeParam"
+          }
+        }
+      },
+      "required": [
+        "arrow"
+      ]
+    },
+    "TypeParam": {
+      "description": "A type parameter declaration (e.g. `sample_type` on AudioFrame).",
+      "type": "object",
+      "properties": {
+        "default": {
+          "description": "Default value (used when parameter is not specified)",
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "name": {
+          "description": "Parameter name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ]
+    }
+  }
+}
