@@ -25,6 +25,12 @@ use eyre::{Context, eyre};
 
 use crate::{OFFICIAL_INDEX_PATH, config::IndexConfig};
 
+/// Marker written into a clone once `clone_index` completes. Its absence means
+/// the clone was interrupted (e.g. a SIGKILL mid-checkout) and should be
+/// re-cloned; its presence means the clone is sound even if it happens not to
+/// contain the catalog subpath.
+const CLONE_COMPLETE_MARKER: &str = ".dora-clone-complete";
+
 /// Fetches and caches index catalogs for one CLI invocation.
 #[derive(Debug)]
 pub struct IndexFetcher {
@@ -122,20 +128,25 @@ impl IndexFetcher {
 
         let catalog = clone_dir.join(catalog_subpath);
         if !catalog.is_dir() {
-            // a clone whose checkout was interrupted has a valid .git but no
-            // worktree — self-heal instead of failing on every invocation
-            if self.offline {
-                eyre::bail!(
-                    "cached index `{}` is incomplete (no `{catalog_subpath}` directory) \
-                     and `--offline` is set\n  \
-                     hint: run once with network access to repair the cache",
-                    index.alias
-                );
+            // Distinguish an interrupted clone (no completion marker → re-clone
+            // to self-heal) from a sound clone whose repository simply does not
+            // contain the catalog subpath (a real configuration/bootstrap error
+            // — must NOT be re-cloned on every invocation).
+            let incomplete = !clone_dir.join(CLONE_COMPLETE_MARKER).exists();
+            if incomplete && !self.offline {
+                self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
             }
-            self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
             if !catalog.is_dir() {
+                if incomplete {
+                    eyre::bail!(
+                        "cached index `{}` is incomplete (interrupted clone) and \
+                         `--offline` is set — re-run once with network access to repair it",
+                        index.alias
+                    );
+                }
                 eyre::bail!(
-                    "index `{}` has no catalog directory `{catalog_subpath}`",
+                    "index `{}` has no `{catalog_subpath}` directory — \
+                     check the index's `path` setting",
                     index.alias
                 );
             }
@@ -235,6 +246,9 @@ impl IndexFetcher {
             clone_dir.join(SOURCE_MARKER),
             format!("{git_url}\n{catalog_subpath}"),
         );
+        // mark the clone sound so a later missing catalog subpath is treated
+        // as a config error, not an interrupted clone to re-fetch
+        let _ = std::fs::write(clone_dir.join(CLONE_COMPLETE_MARKER), b"");
         Ok(())
     }
 
@@ -496,11 +510,13 @@ source:
         let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
         fetcher.catalog_dir(&index, Path::new(".")).unwrap();
 
-        // simulate an interrupted checkout: valid .git, missing worktree
+        // simulate an interrupted clone: worktree gone, completion marker
+        // never written
         let clone_dir = cache_dir.path().join("test");
         std::fs::remove_dir_all(clone_dir.join("node-index")).unwrap();
+        let _ = std::fs::remove_file(clone_dir.join(".dora-clone-complete"));
 
-        // offline cannot repair — fails with a repair hint
+        // offline cannot repair — fails with a clear "incomplete cache" error
         let mut offline = IndexFetcher::with_cache_root(cache_dir.path().into(), true);
         let err = offline.catalog_dir(&index, Path::new(".")).unwrap_err();
         assert!(format!("{err:#}").contains("incomplete"), "{err:#}");
@@ -513,6 +529,33 @@ source:
             second.warnings.iter().any(|w| w.contains("re-cloning")),
             "{:?}",
             second.warnings
+        );
+    }
+
+    #[test]
+    fn valid_clone_missing_catalog_subpath_is_not_recloned() {
+        // a healthy clone whose repo simply lacks the catalog subpath must
+        // error clearly, NOT re-clone on every invocation
+        let remote_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        // remote has content, but under a different dir than the index `path`
+        std::fs::create_dir_all(remote_dir.path().join("node-hub")).unwrap();
+        std::fs::write(remote_dir.path().join("node-hub/readme"), "x").unwrap();
+        run_git(remote_dir.path(), &["init", "--quiet", "-b", "main"]);
+        commit_all(remote_dir.path(), "init");
+        run_git(
+            remote_dir.path(),
+            &["config", "uploadpack.allowFilter", "true"],
+        );
+        let index = remote_index(remote_dir.path()); // path = node-index (absent)
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        let err = fetcher.catalog_dir(&index, Path::new(".")).unwrap_err();
+        assert!(format!("{err:#}").contains("node-index"), "{err:#}");
+        assert!(
+            !fetcher.warnings.iter().any(|w| w.contains("re-cloning")),
+            "a valid clone must not be re-cloned: {:?}",
+            fetcher.warnings
         );
     }
 

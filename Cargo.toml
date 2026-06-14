@@ -250,6 +250,10 @@ path = "tests/ws-cli-e2e.rs"
 name = "example-smoke"
 path = "tests/example-smoke.rs"
 
+[[test]]
+name = "hub-smoke"
+path = "tests/hub-smoke.rs"
+
 [profile.release]
 lto = "thin"
 
