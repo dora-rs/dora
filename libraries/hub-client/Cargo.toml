@@ -1,0 +1,21 @@
+[package]
+name = "dora-hub-client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+description = "Dora Hub index client: package references, index resolution, and transport"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dora-core = { workspace = true }
+eyre = { workspace = true }
+semver = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+toml = "0.9"
+dirs = "6"
+
+[dev-dependencies]
+tempfile = { workspace = true }

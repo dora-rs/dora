@@ -692,7 +692,7 @@ impl Default for TypeRegistry {
 
 /// Simple edit distance (Levenshtein) for typo suggestions.
 /// Returns `usize::MAX` for inputs longer than 256 characters to prevent DoS.
-fn edit_distance(a: &str, b: &str) -> usize {
+pub fn edit_distance(a: &str, b: &str) -> usize {
     if a.len() > 256 || b.len() > 256 {
         return usize::MAX;
     }

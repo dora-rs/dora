@@ -1928,6 +1928,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dora-hub-client"
+version = "1.0.0-rc1"
+dependencies = [
+ "dirs 6.0.0",
+ "dora-core",
+ "eyre",
+ "semver",
+ "serde",
+ "serde_yaml",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "dora-log-utils"
 version = "1.0.0-rc1"
 dependencies = [
