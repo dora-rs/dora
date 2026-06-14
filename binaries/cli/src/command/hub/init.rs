@@ -3,6 +3,7 @@
 //! pre-filled from `pyproject.toml` / `Cargo.toml` where possible; contracts
 //! are left as commented examples for the author to fill in.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use dora_core::manifest::{MANIFEST_FILENAME, NodeManifest};
@@ -97,7 +98,22 @@ impl Executable for Init {
         let namespace = detect_namespace(&self.path);
         let content = render_valid_manifest(detected, namespace)?;
 
-        std::fs::write(&manifest_path, &content)
+        // Create atomically with O_EXCL: the early `exists()` check above is a
+        // friendly fast-fail, but only `create_new` actually guarantees we
+        // don't clobber a file that appeared since (TOCTOU) or follow a planted
+        // `dora-node.yml` symlink out of the target directory.
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&manifest_path)
+            .map_err(|err| match err.kind() {
+                std::io::ErrorKind::AlreadyExists => eyre::eyre!(
+                    "`{}` already exists — refusing to overwrite",
+                    manifest_path.display()
+                ),
+                _ => eyre::eyre!("failed to write `{}`: {err}", manifest_path.display()),
+            })?;
+        file.write_all(content.as_bytes())
             .with_context(|| format!("failed to write `{}`", manifest_path.display()))?;
 
         println!("Wrote {}.", manifest_path.display());
@@ -279,12 +295,18 @@ fn render_manifest(node: &DetectedNode, namespace: &str) -> String {
     };
     // double-quote: native-manifest values can contain `:`, quotes, etc.
     let yaml_quote = |s: &str| {
-        format!(
-            "\"{}\"",
-            s.replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', " ")
-        )
+        // Detected values come from native manifests (TOML strings can carry
+        // `\u`-escaped control chars). `\n` becomes a space; strip any other
+        // control char too — serde_yaml rejects them, which would abort the
+        // scaffold at `parse()` before the validate-fixpoint can recover.
+        let cleaned: String = s
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', " ")
+            .chars()
+            .filter(|c| !c.is_control())
+            .collect();
+        format!("\"{cleaned}\"")
     };
     let description = yaml_quote(
         description
@@ -366,6 +388,25 @@ mod tests {
             assert_eq!(manifest.name.as_deref(), Some(node.name.as_str()));
             assert_eq!(manifest.namespace, "acme");
         }
+    }
+
+    #[test]
+    fn control_chars_in_description_dont_break_the_scaffold() {
+        // a valid `pyproject.toml`/`Cargo.toml` can carry `\u`-escaped control
+        // chars in its description; the scaffold must stay parseable rather
+        // than abort `init` with an "internal error" before the fixpoint runs
+        let node = DetectedNode {
+            name: "dora-yolo".into(),
+            runtime: "python",
+            entrypoint: "dora-yolo".into(),
+            description: Some("detect\u{1b}[2Jobjects\r\u{0}".into()),
+            source: Some("pyproject.toml"),
+        };
+        let content = render_valid_manifest(node, "acme".into())
+            .unwrap_or_else(|e| panic!("scaffold must render: {e:#}"));
+        let manifest = NodeManifest::parse(&content)
+            .unwrap_or_else(|e| panic!("scaffold must parse: {e:#}\n{content}"));
+        assert_eq!(manifest.validate(&TypeRegistry::new()), vec![]);
     }
 
     fn node(name: &str, runtime: &'static str, entrypoint: &str) -> DetectedNode {
