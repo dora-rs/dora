@@ -101,6 +101,13 @@ pub fn resolve_hub_nodes(
 ) -> eyre::Result<HubResolution> {
     let mut resolution = HubResolution::default();
     if !dataflow.nodes.iter().any(|n| n.hub.is_some()) {
+        // No hub nodes — but if `--hub-override`s were given they match nothing,
+        // so surface that rather than silently ignoring the flags.
+        for key in overrides.keys() {
+            resolution.warnings.push(format!(
+                "--hub-override `{key}` did not match any hub node in the dataflow"
+            ));
+        }
         return Ok(resolution);
     }
     let mut used_overrides = BTreeSet::new();
@@ -187,7 +194,8 @@ pub fn resolve_hub_nodes(
             node.build = manifest.build.clone();
             node.hub = None;
             resolution.notes.push(format!(
-                "node `{}`: overriding hub package {} with local checkout `{}`",
+                "node `{}`: overriding hub package {} with local checkout `{}` \
+                 (local source is trusted: spawned without hub `$PATH` confinement)",
                 node.id,
                 reference.key(),
                 local_dir.display()

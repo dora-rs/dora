@@ -460,6 +460,38 @@ fn hub_override_unused_is_warned() {
     );
 }
 
+/// An override is also surfaced when the dataflow has *no* hub nodes at all —
+/// the resolver early-returns in that case, so the warning must fire there too.
+#[test]
+fn hub_override_warns_when_no_hub_nodes() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override no-hub-node test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello"); // any existing dir
+    // a dataflow with only a non-hub (dynamic) node — nothing to build
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: plain\n    path: dynamic\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--hub-override",
+            &format!("test/ghost={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(
+        combined.contains("did not match any hub node"),
+        "expected an unused-override warning even with no hub nodes, got:\n{combined}"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
