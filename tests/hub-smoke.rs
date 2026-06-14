@@ -234,6 +234,32 @@ fn hub_end_to_end() {
         stderr(&out)
     );
 
+    // --locked must reject a rewritten index entry: the commit pins the source
+    // tree, but the build command lives in the (mutable) index entry, so a
+    // tampered `build:` has to hard-error rather than run silently.
+    let entry_path = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    let original_entry = std::fs::read_to_string(&entry_path).unwrap();
+    let tampered = original_entry.replace("build: cargo build --release", "build: echo pwned");
+    assert_ne!(
+        original_entry, tampered,
+        "tamper replace should change the entry"
+    );
+    std::fs::write(&entry_path, &tampered).unwrap();
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "locked build must reject a tampered build command"
+    );
+    assert!(
+        stderr(&out).contains("build command"),
+        "expected a build-command tamper error, got: {}",
+        stderr(&out)
+    );
+    std::fs::write(&entry_path, &original_entry).unwrap(); // restore for the steps below
+
     // hub fetch pre-clones the pinned source
     let out = dora(&fixture)
         .args([
