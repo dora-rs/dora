@@ -91,6 +91,20 @@ impl IndexFetcher {
             self.clone_index(git_url, &clone_dir, catalog_subpath)
                 .with_context(|| format!("failed to clone index `{}`", index.alias))?;
             self.refreshed.insert(index.alias.clone());
+        } else if cached_source_differs(&clone_dir, git_url, catalog_subpath) {
+            // the cache is keyed by alias, but `hub.toml` may have re-pointed
+            // this alias at a different URL/subpath (including an `official`
+            // mirror override) — fetching the old clone's `origin` would
+            // silently keep serving the previous source, so re-clone instead
+            if self.offline {
+                eyre::bail!(
+                    "cached index `{}` is for a different source than configured \
+                     and `--offline` is set\n  \
+                     hint: run once with network access to refresh the cache",
+                    index.alias
+                );
+            }
+            self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
         } else if !self.offline
             && self.refreshed.insert(index.alias.clone())
             && let Err(refresh_err) = self.refresh_index(&index.alias, &clone_dir)
@@ -125,6 +139,20 @@ impl IndexFetcher {
                     index.alias
                 );
             }
+        }
+        // the catalog subpath comes from the index repo, which could ship it
+        // (or a parent) as a symlink pointing outside the clone — confine it
+        let real_catalog = catalog
+            .canonicalize()
+            .with_context(|| format!("failed to resolve catalog `{}`", catalog.display()))?;
+        let real_clone = clone_dir
+            .canonicalize()
+            .with_context(|| format!("failed to resolve clone `{}`", clone_dir.display()))?;
+        if !real_catalog.starts_with(&real_clone) {
+            eyre::bail!(
+                "index `{}` catalog `{catalog_subpath}` escapes the clone (symlink?)",
+                index.alias
+            );
         }
         Ok(catalog)
     }
@@ -200,6 +228,13 @@ impl IndexFetcher {
             &["sparse-checkout", "set", catalog_subpath],
         );
         git(Some(clone_dir), &["checkout", "--quiet"]).context("git checkout failed")?;
+        // record what this cache is a clone of, so a later config change that
+        // re-points the alias forces a re-clone instead of fetching the stale
+        // origin (see `cached_source_differs`)
+        let _ = std::fs::write(
+            clone_dir.join(SOURCE_MARKER),
+            format!("{git_url}\n{catalog_subpath}"),
+        );
         Ok(())
     }
 
@@ -255,6 +290,20 @@ fn remote_tip(clone_dir: &Path) -> eyre::Result<String> {
 
 fn short(commit: &str) -> &str {
     &commit[..commit.len().min(12)]
+}
+
+/// Marker file recording the `git_url` + catalog subpath a cached clone was
+/// made from, so a config change that re-points the alias is detected.
+const SOURCE_MARKER: &str = ".dora-index-source";
+
+/// Whether the cached clone was made from a different source than now
+/// configured. A missing/unreadable marker counts as "differs" so an old
+/// cache (or a tampered one) is re-cloned rather than trusted.
+fn cached_source_differs(clone_dir: &Path, git_url: &str, catalog_subpath: &str) -> bool {
+    match std::fs::read_to_string(clone_dir.join(SOURCE_MARKER)) {
+        Ok(recorded) => recorded != format!("{git_url}\n{catalog_subpath}"),
+        Err(_) => true,
+    }
 }
 
 /// Run a git command, returning trimmed stdout.

@@ -83,7 +83,7 @@ impl SourceSpec {
     pub fn git_pin(&self) -> eyre::Result<(&str, &str)> {
         match (&self.git, &self.rev) {
             (Some(git), Some(rev)) => {
-                crate::validate_git_url(git)?;
+                crate::validate_git_url_untrusted(git)?;
                 // a full, immutable object id only: a branch/tag name would
                 // make the "pin" mutable (defeating the audit trail and
                 // yanks), and an *abbreviated* hash can grow ambiguous as the
@@ -126,6 +126,10 @@ pub struct PackageMeta {
 #[derive(Debug, Clone)]
 pub struct IndexCatalog {
     root: PathBuf,
+    /// `root` with symlinks resolved — every read is confined under this so a
+    /// malicious index repo can't ship a symlinked namespace/package/version
+    /// entry that escapes the catalog.
+    canonical_root: PathBuf,
 }
 
 /// A resolved package version.
@@ -142,7 +146,27 @@ impl IndexCatalog {
         if !root.is_dir() {
             eyre::bail!("index catalog `{}` is not a directory", root.display());
         }
-        Ok(Self { root })
+        let canonical_root = root
+            .canonicalize()
+            .with_context(|| format!("failed to resolve index catalog `{}`", root.display()))?;
+        Ok(Self {
+            root,
+            canonical_root,
+        })
+    }
+
+    /// Reject a path that, after following symlinks, resolves outside the
+    /// catalog root. A non-existent path is fine — nothing is read, and the
+    /// caller handles `NotFound`.
+    fn confine(&self, path: &Path) -> eyre::Result<()> {
+        match path.canonicalize() {
+            Ok(real) if real.starts_with(&self.canonical_root) => Ok(()),
+            Ok(_) => eyre::bail!(
+                "index path `{}` escapes the catalog root (symlink?)",
+                path.display()
+            ),
+            Err(_) => Ok(()),
+        }
     }
 
     fn package_dir(&self, namespace: &str, name: &str) -> eyre::Result<PathBuf> {
@@ -163,6 +187,7 @@ impl IndexCatalog {
     /// All published versions of a package, including yanked ones.
     pub fn versions(&self, namespace: &str, name: &str) -> eyre::Result<Vec<Version>> {
         let dir = self.package_dir(namespace, name)?;
+        self.confine(&dir)?;
         let mut versions = Vec::new();
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
@@ -207,6 +232,7 @@ impl IndexCatalog {
         let path = self
             .package_dir(namespace, name)?
             .join(format!("{version}.yml"));
+        self.confine(&path)?;
         let raw = read_capped(&path)?;
         serde_yaml::from_str(&raw)
             .with_context(|| format!("invalid index entry `{}`", path.display()))
@@ -297,7 +323,7 @@ impl IndexCatalog {
             return packages;
         };
         for ns in namespaces.flatten() {
-            if !ns.path().is_dir() {
+            if !ns.path().is_dir() || self.confine(&ns.path()).is_err() {
                 continue;
             }
             let Some(ns_name) = ns.file_name().to_str().map(String::from) else {
@@ -310,7 +336,7 @@ impl IndexCatalog {
                 continue;
             };
             for name in names.flatten() {
-                if !name.path().is_dir() {
+                if !name.path().is_dir() || self.confine(&name.path()).is_err() {
                     continue;
                 }
                 if let Some(name) = name.file_name().to_str()
@@ -424,6 +450,30 @@ mod tests {
         let (git, rev) = resolved.entry.source.git_pin().unwrap();
         assert_eq!(git, "https://github.com/dora-rs/dora-hub");
         assert_eq!(rev, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reads_reject_symlinked_package_dir_escaping_the_catalog() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // a real package living OUTSIDE the catalog root
+        let real = outside.path().join("evil");
+        std::fs::create_dir_all(&real).unwrap();
+        let rev = "a".repeat(40);
+        std::fs::write(real.join("9.9.9.yml"), entry_yaml(&rev, false)).unwrap();
+        // inside the catalog, a package dir that is a symlink pointing there
+        let ns = tmp.path().join("acme");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::os::unix::fs::symlink(&real, ns.join("escape")).unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        // both the dir listing and the entry read must refuse to follow it
+        assert!(catalog.versions("acme", "escape").is_err());
+        assert!(
+            catalog
+                .entry("acme", "escape", &Version::parse("9.9.9").unwrap())
+                .is_err()
+        );
     }
 
     #[test]

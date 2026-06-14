@@ -41,9 +41,50 @@ pub fn validate_git_url(url: &str) -> eyre::Result<()> {
     )
 }
 
+/// Validate the `source.git` of an *untrusted* index entry — stricter than
+/// [`validate_git_url`].
+///
+/// `file://` URLs and absolute paths are a supply-chain risk in a public index
+/// (a hostile entry would clone victim-local content into the build), so they
+/// are rejected for index entries unless `DORA_HUB_ALLOW_LOCAL_SOURCES` opts in
+/// (hermetic tests, air-gapped mirrors). `hub.toml` index *locations* stay on
+/// the permissive [`validate_git_url`] — that is the user's own trusted config.
+pub fn validate_git_url_untrusted(url: &str) -> eyre::Result<()> {
+    validate_git_url(url)?;
+    let is_local = url.starts_with("file://") || url.starts_with('/');
+    if is_local && std::env::var_os("DORA_HUB_ALLOW_LOCAL_SOURCES").is_none() {
+        eyre::bail!(
+            "index entry source `{}` is a local path; a public index must use an \
+             https/ssh remote (set DORA_HUB_ALLOW_LOCAL_SOURCES=1 to allow local \
+             sources for testing or mirrors)",
+            url.chars().filter(|c| !c.is_control()).collect::<String>()
+        );
+    }
+    Ok(())
+}
+
 /// The official index location (spec §7.3).
 pub const OFFICIAL_INDEX_GIT: &str = "https://github.com/dora-rs/dora-hub";
 /// Catalog directory inside the official index repository.
 pub const OFFICIAL_INDEX_PATH: &str = "node-index";
 /// Alias of the implicit official index entry.
 pub const OFFICIAL_INDEX_ALIAS: &str = "official";
+
+#[cfg(test)]
+mod tests {
+    use super::validate_git_url_untrusted;
+
+    #[test]
+    fn untrusted_index_sources_reject_local_paths() {
+        // remote transports are fine
+        assert!(validate_git_url_untrusted("https://github.com/o/r.git").is_ok());
+        assert!(validate_git_url_untrusted("ssh://git@host/o/r").is_ok());
+        assert!(validate_git_url_untrusted("git@github.com:o/r.git").is_ok());
+        // local sources would clone victim-local content into the build —
+        // rejected for untrusted index entries (no opt-in env in this test)
+        assert!(validate_git_url_untrusted("file:///tmp/repo").is_err());
+        assert!(validate_git_url_untrusted("/srv/repo").is_err());
+        // cleartext still rejected by the underlying validator
+        assert!(validate_git_url_untrusted("http://github.com/o/r").is_err());
+    }
+}

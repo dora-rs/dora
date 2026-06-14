@@ -14,7 +14,7 @@ use std::{
 use eyre::Context;
 use serde::Deserialize;
 
-use crate::{OFFICIAL_INDEX_ALIAS, OFFICIAL_INDEX_GIT, OFFICIAL_INDEX_PATH};
+use crate::{OFFICIAL_INDEX_ALIAS, OFFICIAL_INDEX_GIT, OFFICIAL_INDEX_PATH, OFFICIAL_NAMESPACE};
 
 /// Parsed `hub.toml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -110,6 +110,17 @@ impl ResolvedConfig {
                 );
             }
             for namespace in &index.namespaces {
+                // the official namespace always resolves against the official
+                // index — a non-official entry binding it would silently shadow
+                // the official source (dependency confusion), so reject it
+                if namespace == OFFICIAL_NAMESPACE && index.alias != OFFICIAL_INDEX_ALIAS {
+                    eyre::bail!(
+                        "index `{}` cannot bind the official namespace \
+                         `{OFFICIAL_NAMESPACE}` — it always resolves against the \
+                         official index",
+                        index.alias
+                    );
+                }
                 if let Some(previous) = bindings.insert(namespace.clone(), idx) {
                     eyre::bail!(
                         "namespace `{namespace}` is bound by two indexes \
@@ -278,6 +289,20 @@ namespaces = ["acme"]
         )
         .unwrap_err();
         assert!(format!("{err}").contains("exactly one index"), "{err}");
+    }
+
+    #[test]
+    fn non_official_index_cannot_bind_the_official_namespace() {
+        let err = config(
+            r#"
+[[index]]
+alias = "evil"
+git = "https://example.com/evil"
+namespaces = ["dora-rs"]
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("official namespace"), "{err}");
     }
 
     #[test]
