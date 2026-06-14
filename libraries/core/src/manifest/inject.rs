@@ -79,36 +79,51 @@ pub fn inject_adjacent_manifests(
     //    *referencing* node's port check pass against a type that can never be
     //    materialized into an Arrow schema.
     // Field bodies may reference *other* shipped types, so resolvability is
-    // checked against a scratch registry holding all namespace-owned
-    // candidates. Already-registered URNs are left untouched: `types/`
-    // definitions and same-manifest re-ships win.
+    // checked against a scratch registry. Admission is a *fixpoint*: a
+    // candidate enters `scratch` only once its `arrow:` discriminant is known
+    // and every field type resolves against what is already admitted. A type
+    // referencing a body-invalid sibling is therefore never admitted, and a
+    // third type referencing *it* can't be admitted either — the gate is
+    // transitively tight (a plain "insert every candidate first" pass would
+    // let `field_type_resolves` see a body-invalid sibling by key presence and
+    // wrongly admit its referent). Already-present URNs are left untouched:
+    // `types/` definitions and same-manifest re-ships win.
     let mut scratch = registry.clone();
+    let mut candidates = Vec::new();
     for (_, (_, manifest)) in &matched {
         for (urn, def) in &manifest.types {
-            if check_shipped_type_urn(urn, &manifest.namespace).is_none()
-                && scratch.resolve(urn).is_none()
-            {
-                scratch.insert_type(urn.clone(), def.clone());
+            if check_shipped_type_urn(urn, &manifest.namespace).is_none() {
+                candidates.push((urn, def));
             }
         }
     }
-    for (_, (_, manifest)) in &matched {
-        for (urn, def) in &manifest.types {
-            if check_shipped_type_urn(urn, &manifest.namespace).is_some() {
+    loop {
+        let mut admitted = false;
+        for &(urn, def) in &candidates {
+            if scratch.resolve(urn).is_some() {
                 continue;
             }
             // body-valid = a known `arrow:` discriminant AND every field type
-            // resolves; matches `NodeManifest::validate` so an invalid sibling
-            // can't slip a type into the shared registry that a referencing
-            // node then resolves but can never materialize.
+            // resolves; matches `NodeManifest::validate`.
             let body_valid = crate::types::is_known_arrow_type(&def.arrow)
                 && def
                     .fields
                     .iter()
                     .all(|f| scratch.field_type_resolves(&f.r#type));
-            if body_valid && registry.resolve(urn).is_none() {
-                let _ = registry.add_user_type(urn, def.clone());
+            if body_valid {
+                scratch.insert_type(urn.clone(), def.clone());
+                admitted = true;
             }
+        }
+        if !admitted {
+            break;
+        }
+    }
+    // Register the survivors into the shared registry, skipping URNs already
+    // present so preserved definitions win.
+    for &(urn, def) in &candidates {
+        if scratch.resolve(urn).is_some() && registry.resolve(urn).is_none() {
+            let _ = registry.add_user_type(urn, def.clone());
         }
     }
 
@@ -762,6 +777,65 @@ nodes:
         );
         let mut registry = TypeRegistry::new();
         let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert!(registry.resolve("acme/foo/v1/X").is_none());
+        assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn type_referencing_a_body_invalid_sibling_is_not_registered() {
+        let tmp = tempfile::tempdir().unwrap();
+        // `bad` ships two own-namespace types: `Y` is body-invalid (its field
+        // type doesn't resolve), and `X` references `Y`. `X`'s body is only
+        // "resolvable" if `Y` is treated as present — but `Y` can never
+        // materialize, so neither may reach the shared registry. The fixpoint
+        // admission must reject `X` transitively, not just `Y`.
+        write_manifest(
+            &tmp.path().join("bad"),
+            r#"
+apiVersion: 1
+name: bad
+namespace: acme
+runtime: rust
+entrypoint: target/release/bad
+types:
+  acme/foo/v1/Y:
+    arrow: Struct
+    fields:
+      - name: y
+        type: NotARealType
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: inner
+        type: acme/foo/v1/Y
+"#,
+        );
+        write_manifest(
+            &tmp.path().join("victim"),
+            r#"
+apiVersion: 1
+name: victim
+namespace: gamma
+runtime: rust
+entrypoint: target/release/victim
+outputs:
+  out:
+    type: acme/foo/v1/X
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: bad
+    path: bad/target/release/bad
+  - id: victim
+    path: victim/target/release/victim
+    outputs: [out]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert!(registry.resolve("acme/foo/v1/Y").is_none());
         assert!(registry.resolve("acme/foo/v1/X").is_none());
         assert!(df.nodes[1].output_types.is_empty());
     }
