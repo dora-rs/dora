@@ -174,13 +174,15 @@ fn detect_python(dir: &Path) -> Option<DetectedNode> {
     if name.is_empty() {
         return None;
     }
-    // prefer the console script named like the package; else the first one
+    // prefer the console script named like the package; else the first one.
+    // script keys are raw (`my_pkg`) while `name` is normalized (`my-pkg`), so
+    // compare normalized forms but keep the raw key as the entrypoint.
     let entrypoint = project
         .get("scripts")
         .and_then(|s| s.as_table())
         .and_then(|t| {
             t.keys()
-                .find(|k| **k == name)
+                .find(|k| normalize_name(k) == name)
                 .or_else(|| t.keys().next())
                 .cloned()
         })
@@ -267,18 +269,27 @@ fn detect_namespace(dir: &Path) -> String {
     FALLBACK_NAMESPACE.into()
 }
 
-/// Lowercase and replace `_` so the name passes manifest validation
-/// (PEP 503-style normalization). May return an empty string when nothing
-/// usable remains — callers fall back to another source.
+/// PEP 503-style normalization: lowercase, drop non-`[a-z0-9-_.]` characters,
+/// and collapse every run of separators (`-`, `_`, `.`) to a single `-`, so
+/// confusable spellings (`My.Package__Name`) map to one canonical index key
+/// (`my-package-name`). May return an empty string when nothing usable
+/// remains — callers fall back to another source.
 fn normalize_name(name: &str) -> String {
-    name.trim()
-        .to_ascii_lowercase()
-        .replace('_', "-")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || "-.".contains(*c))
-        .collect::<String>()
-        .trim_matches(['-', '.'])
-        .to_string()
+    let mut out = String::with_capacity(name.len());
+    let mut pending_sep = false;
+    for c in name.trim().to_ascii_lowercase().chars() {
+        if c.is_ascii_alphanumeric() {
+            if pending_sep && !out.is_empty() {
+                out.push('-');
+            }
+            out.push(c);
+            pending_sep = false;
+        } else if matches!(c, '-' | '_' | '.') {
+            pending_sep = true;
+        }
+        // any other character is dropped without acting as a separator
+    }
+    out
 }
 
 fn render_manifest(node: &DetectedNode, namespace: &str) -> String {
@@ -516,6 +527,10 @@ dora-yolo = "dora_yolo.main:main"
         assert_eq!(normalize_name("_foo_"), "foo");
         assert_eq!(normalize_name("(c++)"), "c");
         assert_eq!(normalize_name("(++)"), "");
+        // PEP 503: runs of `-`/`_`/`.` collapse to a single `-` (no `--`, no `.`)
+        assert_eq!(normalize_name("My.Package__Name"), "my-package-name");
+        assert_eq!(normalize_name("a--b__c..d"), "a-b-c-d");
+        assert_eq!(normalize_name("node.v2"), "node-v2");
     }
 
     #[test]
@@ -547,5 +562,27 @@ my-node = "x:main"
         )
         .unwrap();
         assert_eq!(detect_node(tmp.path()).entrypoint, "my-node");
+    }
+
+    #[test]
+    fn matches_script_by_raw_underscored_name() {
+        // package `my_pkg` (normalizes to `my-pkg`) with a `my_pkg` console
+        // script: the script must be matched (not the first one) and kept raw
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("pyproject.toml"),
+            r#"
+[project]
+name = "my_pkg"
+
+[project.scripts]
+alpha = "x:a"
+my_pkg = "x:main"
+"#,
+        )
+        .unwrap();
+        let node = detect_node(tmp.path());
+        assert_eq!(node.name, "my-pkg");
+        assert_eq!(node.entrypoint, "my_pkg");
     }
 }
