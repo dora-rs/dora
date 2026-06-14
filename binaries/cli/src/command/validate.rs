@@ -96,8 +96,13 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
 
     // Resolve hub: references against the (cached) index so their contracts
     // take part in validation (spec §6.2 ordering note)
-    let hub_resolution =
-        super::build::hub::resolve_hub_nodes(&mut descriptor, &mut registry, offline, None)?;
+    let hub_resolution = super::build::hub::resolve_hub_nodes(
+        &mut descriptor,
+        &mut registry,
+        offline,
+        None,
+        &std::collections::BTreeMap::<String, std::path::PathBuf>::new(),
+    )?;
     for note in &hub_resolution.notes {
         println!("  {note}");
     }

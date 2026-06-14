@@ -118,6 +118,13 @@ pub struct Build {
     /// cache misses.
     #[clap(long, action)]
     offline: bool,
+    /// Substitute a local checkout for a hub package (UC11 inner loop):
+    /// `--hub-override <namespace>/<name>=<path>`. The manifest is read from
+    /// the checkout, contracts are still validated, and the node builds + runs
+    /// from local source — no index resolution for that package. Repeatable;
+    /// local builds only.
+    #[clap(long = "hub-override", value_name = "PKG=PATH")]
+    hub_override: Vec<String>,
 }
 
 impl Executable for Build {
@@ -135,6 +142,7 @@ impl Executable for Build {
             lockfile_override: self.lockfile,
             parallel: self.parallel,
             offline: self.offline,
+            hub_overrides: self.hub_override,
             ..Default::default()
         })
     }
@@ -165,6 +173,9 @@ pub struct BuildConfig {
     pub parallel: bool,
     /// Skip network access for hub index refreshes (cache only).
     pub offline: bool,
+    /// `--hub-override <namespace>/<name>=<path>` entries (UC11): substitute a
+    /// local checkout for a hub package. Parsed and validated in [`build`].
+    pub hub_overrides: Vec<String>,
     /// Overrides the working directory for cargo invocations and
     /// module expansion. Needed when the dataflow path points at a
     /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
@@ -214,8 +225,24 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         lockfile_override,
         parallel,
         offline,
+        hub_overrides,
         working_dir_override,
     } = cfg;
+    // Parse `--hub-override <namespace>/<name>=<path>` into key -> canonical
+    // local dir. The key matches a node's resolved `hub:` reference key.
+    let mut hub_override_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for spec in &hub_overrides {
+        let (pkg, path) = spec.split_once('=').ok_or_else(|| {
+            eyre::eyre!("invalid --hub-override `{spec}`: expected `<namespace>/<name>=<path>`")
+        })?;
+        let key = dora_hub_client::reference::PackageRef::parse(pkg.trim())
+            .with_context(|| format!("invalid --hub-override package `{pkg}`"))?
+            .key();
+        let dir = std::fs::canonicalize(path.trim()).with_context(|| {
+            format!("invalid --hub-override path `{}` for `{pkg}`", path.trim())
+        })?;
+        hub_override_dirs.insert(key, dir);
+    }
     // `BuildConfig` derives `Default` so `..Default::default()` works at
     // call sites, but that gives `dataflow: String::new()` which would
     // fail late with a confusing "failed to read ``" error. Catch it up
@@ -285,7 +312,9 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         &mut registry,
         offline,
         hub_pins.as_ref(),
+        &hub_override_dirs,
     )?;
+    let hub_override_node_dirs = hub_resolution.override_dirs.clone();
     for note in &hub_resolution.notes {
         println!("  {note}");
     }
@@ -408,7 +437,21 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
-    let build_kind = if force_local {
+    // `--hub-override` substitutes a checkout that only exists on this machine,
+    // so it is a local-only feature. Reject mixing it with an explicit remote
+    // coordinator rather than silently ignoring the override.
+    if !hub_override_node_dirs.is_empty()
+        && (coordinator_addr.is_some() || coordinator_port.is_some())
+    {
+        eyre::bail!(
+            "`--hub-override` is a local build feature and cannot be combined with a remote \
+             coordinator (`--coordinator-addr`/`--coordinator-port`)"
+        );
+    }
+    let build_kind = if !hub_override_node_dirs.is_empty() {
+        log::info!("Building locally because `--hub-override` was given");
+        BuildKind::Local
+    } else if force_local {
         log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
@@ -449,6 +492,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 local_working_dir,
                 uv,
                 parallel,
+                &hub_override_node_dirs,
             )?;
 
             dataflow_session.git_sources = git_sources;

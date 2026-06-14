@@ -374,6 +374,92 @@ fn hub_rejects_invalid_shipped_type() {
     );
 }
 
+/// `dora build --hub-override <pkg>=<path>` substitutes a local checkout for a
+/// hub package (UC11): the manifest is read from the checkout, contracts are
+/// validated, and the node builds from local source — no index resolution, no
+/// clone. We assert the build roots at the checkout (its `target/` appears) and
+/// that the override is reported.
+#[test]
+fn hub_override_builds_from_local_checkout() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override test");
+        return;
+    }
+    let fixture = build_fixture();
+
+    // the local checkout is the node's source dir inside the fixture repo
+    let checkout = fixture.root.join("source/node-hub/hello");
+    assert!(checkout.join("dora-node.yml").is_file(), "fixture checkout");
+
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    let out = dora(&fixture)
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--hub-override",
+            &format!("test/hub-smoke-hello={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "override build failed: {}",
+        stderr(&out)
+    );
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(
+        combined.contains("overriding hub package test/hub-smoke-hello"),
+        "expected an override note, got:\n{combined}"
+    );
+    // the node built from local source: the binary lands in the checkout's
+    // own target dir, not a clone under the hub cache
+    let built = checkout.join("target/release/hub-smoke-hello");
+    assert!(
+        built.exists(),
+        "override did not build in the local checkout (missing {})",
+        built.display()
+    );
+}
+
+/// An override that names no node in the dataflow is reported, not silently
+/// ignored.
+#[test]
+fn hub_override_unused_is_warned() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override-warn test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--hub-override",
+            &format!("test/not-a-node={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    // resolution still proceeds against the index for the real node; the unused
+    // override is surfaced as a warning
+    assert!(
+        stderr(&out).contains("did not match any hub node")
+            || String::from_utf8_lossy(&out.stdout).contains("did not match any hub node"),
+        "expected an unused-override warning, got:\n{}",
+        stderr(&out)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }

@@ -17,6 +17,7 @@ pub fn build_dataflow_locally(
     working_dir: PathBuf,
     uv: bool,
     parallel: bool,
+    node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
     let runtime = tokio::runtime::Runtime::new()?;
 
@@ -27,6 +28,7 @@ pub fn build_dataflow_locally(
         working_dir,
         uv,
         parallel,
+        node_working_dir_overrides,
     ))
 }
 
@@ -37,6 +39,7 @@ async fn build_dataflow(
     base_working_dir: PathBuf,
     uv: bool,
     parallel: bool,
+    node_working_dir_overrides: &BTreeMap<NodeId, PathBuf>,
 ) -> eyre::Result<BuildInfo> {
     let builder = Builder {
         session_id: dataflow_session.session_id,
@@ -64,8 +67,15 @@ async fn build_dataflow(
             git_source: prev_source,
         });
 
-        let task = builder
-            .clone()
+        // `--hub-override` roots this node's build (and, via the recorded
+        // working dir, its spawn) at a local checkout instead of the dataflow
+        // dir or a git clone.
+        let mut node_builder = builder.clone();
+        if let Some(override_dir) = node_working_dir_overrides.get(&node_id) {
+            node_builder.base_working_dir = override_dir.clone();
+        }
+
+        let task = node_builder
             .build_node(
                 node,
                 git_source,

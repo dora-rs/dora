@@ -7,12 +7,15 @@
 //! lockfile — sees an ordinary git node carrying the optional `subdir` and
 //! hub provenance marker on its [`GitSource`].
 
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use dora_core::{
     build::validate_subdir,
     manifest::{
-        NodeManifest,
+        MANIFEST_FILENAME, NodeManifest,
         inject::{InjectionResult, apply_manifest_contracts},
     },
     types::TypeRegistry,
@@ -37,11 +40,15 @@ pub struct HubResolution {
     /// Per-node resolved git source (with subdir + hub provenance) — merged
     /// into the build's `git_sources` map and the lockfile.
     pub sources: BTreeMap<NodeId, GitSource>,
+    /// Per-node local working dir for `--hub-override` substitutions (UC11):
+    /// the node builds and runs from this checkout instead of a cloned commit.
+    /// Threaded into the local builder so build + spawn root there.
+    pub override_dirs: BTreeMap<NodeId, PathBuf>,
 }
 
 impl HubResolution {
     pub fn is_empty(&self) -> bool {
-        self.sources.is_empty()
+        self.sources.is_empty() && self.override_dirs.is_empty()
     }
 }
 
@@ -90,11 +97,13 @@ pub fn resolve_hub_nodes(
     registry: &mut TypeRegistry,
     offline: bool,
     pins: Option<&BTreeMap<NodeId, GitSource>>,
+    overrides: &BTreeMap<String, PathBuf>,
 ) -> eyre::Result<HubResolution> {
     let mut resolution = HubResolution::default();
     if !dataflow.nodes.iter().any(|n| n.hub.is_some()) {
         return Ok(resolution);
     }
+    let mut used_overrides = BTreeSet::new();
     resolution
         .notes
         .push("`hub:` is an unstable feature — its behavior may change in future releases".into());
@@ -126,6 +135,68 @@ pub fn resolve_hub_nodes(
 
         let reference = PackageRef::parse(&raw_reference)
             .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
+
+        // `--hub-override`: substitute a local checkout for this package (UC11
+        // inner loop). The manifest is read from the checkout, contracts are
+        // still validated, and the node builds + runs from local source — no
+        // index resolution, no lockfile pin (it's an ephemeral dev override).
+        if let Some(local_dir) = overrides.get(&reference.key()) {
+            used_overrides.insert(reference.key());
+            let manifest_path = local_dir.join(MANIFEST_FILENAME);
+            let manifest = NodeManifest::read(&manifest_path).with_context(|| {
+                format!(
+                    "node `{}`: --hub-override for `{}` has no readable {MANIFEST_FILENAME} at `{}`",
+                    node.id,
+                    reference.key(),
+                    manifest_path.display()
+                )
+            })?;
+            // the local manifest is the developer's own input — validate it in
+            // full (this includes the shipped-type namespace rule, §6.3)
+            let issues = manifest.validate(registry);
+            if !issues.is_empty() {
+                eyre::bail!(
+                    "node `{}`: overridden manifest `{}` is invalid:\n  - {}",
+                    node.id,
+                    manifest_path.display(),
+                    issues
+                        .iter()
+                        .map(|i| format!("{}: {}", i.field, i.message))
+                        .collect::<Vec<_>>()
+                        .join("\n  - ")
+                );
+            }
+            for (urn, def) in &manifest.types {
+                if registry.resolve(urn).is_none() {
+                    let _ = registry.add_user_type(urn, def.clone());
+                }
+            }
+            let label = format!("{} (local override)", reference.key());
+            let mut contracts = InjectionResult::default();
+            apply_manifest_contracts(node, &manifest, &label, registry, &mut contracts);
+            if !contracts.warnings.is_empty() {
+                eyre::bail!(
+                    "node `{}`: does not match the `{label}` package contract:\n  - {}",
+                    node.id,
+                    contracts.warnings.join("\n  - ")
+                );
+            }
+            resolution.notes.extend(contracts.notes);
+            // desugar to a local path node; the checkout is the build/run dir
+            node.path = Some(manifest.entrypoint.replace('\\', "/"));
+            node.build = manifest.build.clone();
+            node.hub = None;
+            resolution.notes.push(format!(
+                "node `{}`: overriding hub package {} with local checkout `{}`",
+                node.id,
+                reference.key(),
+                local_dir.display()
+            ));
+            resolution
+                .override_dirs
+                .insert(node.id.clone(), local_dir.clone());
+            continue;
+        }
 
         // under `--locked` (pins present), a node with no lockfile entry must
         // fail fast — *before* any index fetch — rather than hitting the
@@ -337,6 +408,14 @@ pub fn resolve_hub_nodes(
             node.id
         ));
         resolution.sources.insert(node.id.clone(), source);
+    }
+
+    for key in overrides.keys() {
+        if !used_overrides.contains(key) {
+            resolution.warnings.push(format!(
+                "--hub-override `{key}` did not match any hub node in the dataflow"
+            ));
+        }
     }
 
     resolution.warnings.append(&mut fetcher.warnings);
