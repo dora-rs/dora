@@ -47,7 +47,7 @@ mod thread;
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
 ///
 /// This struct [implements](#impl-Stream-for-EventStream) the [`Stream`] trait,
-/// so you can use methods of the [`StreamExt`] trait
+/// so you can use methods of the [`StreamExt`](futures::StreamExt) trait
 /// on this struct. A common pattern is `while let Some(event) = event_stream.next().await`.
 ///
 /// Nodes should iterate over this event stream and react to events that they are interested in.
@@ -448,7 +448,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
+    /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
@@ -470,7 +470,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// asynchronous [`StreamExt::next`] method instead ([`EventStream`] implements the
+    /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
@@ -487,7 +487,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
         // Drain any events that were stashed by pattern-aware helpers
@@ -737,7 +737,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
         match self.recv_async().now_or_never() {
@@ -787,7 +787,7 @@ impl EventStream {
     /// documentation of the [`EventScheduler`] struct.
     ///
     /// If you want to receive the events in their original chronological order, use the
-    /// [`StreamExt::next`] method with a custom timeout future instead
+    /// [`StreamExt::next`](futures::StreamExt::next) method with a custom timeout future instead
     /// ([`EventStream`] implements the [`Stream`] trait).
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
         match select(Delay::new(dur), pin!(self.recv_async())).await {
