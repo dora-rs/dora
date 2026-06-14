@@ -318,8 +318,9 @@ env:                          # configuration surface, documented + typed.
     type: float
     default: 0.4
 
-types: []                     # optional: custom type defs shipped with the
-                              # node, loaded into the TypeRegistry (§6.3)
+types: {}                     # optional: custom type defs shipped with the
+                              # node (a map of URN -> def), loaded into the
+                              # TypeRegistry (§6.3)
 
 requirements:                 # informational: surfaced by `hub info` and at
   hardware: []                # build start. v1 actively probes only `cuda`;

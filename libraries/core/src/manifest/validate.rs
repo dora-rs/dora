@@ -121,6 +121,15 @@ impl NodeManifest {
                 issue(&format!("types.{urn}"), problem);
                 continue;
             }
+            // the `arrow:` discriminant must be a type dora can materialize —
+            // otherwise a port referencing this shipped type resolves (the URN
+            // exists) yet fails to build into an Arrow schema later
+            if !crate::types::is_known_arrow_type(&def.arrow) {
+                issue(
+                    &format!("types.{urn}.arrow"),
+                    format!("unknown arrow type `{}`", def.arrow),
+                );
+            }
             for field in &def.fields {
                 if !local_registry.field_type_resolves(&field.r#type) {
                     issue(
@@ -705,6 +714,38 @@ outputs:
 "#,
         );
         assert_eq!(issues, vec![]);
+    }
+
+    #[test]
+    fn shipped_type_arrow_discriminant_is_validated() {
+        // an unknown `arrow:` value resolves (the URN exists) but can never be
+        // materialized — reject it at validation
+        let issues = validate(
+            r#"
+types:
+  dora-rs/lidar/v1/Bad:
+    arrow: NotAnArrowType
+outputs:
+  cloud:
+    type: dora-rs/lidar/v1/Bad
+"#,
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.field == "types.dora-rs/lidar/v1/Bad.arrow"),
+            "{issues:?}"
+        );
+        // primitives and `Struct` are accepted
+        for arrow in ["Float32", "Utf8", "Boolean", "Struct"] {
+            let issues = validate(&format!("types:\n  dora-rs/x/v1/T:\n    arrow: {arrow}\n"));
+            assert!(
+                !issues
+                    .iter()
+                    .any(|i| i.field == "types.dora-rs/x/v1/T.arrow"),
+                "`{arrow}` should be accepted: {issues:?}"
+            );
+        }
     }
 
     #[test]

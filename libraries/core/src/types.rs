@@ -119,6 +119,14 @@ fn arrow_type_from_name(name: &str) -> Option<DataType> {
     }
 }
 
+/// Whether `name` is an arrow discriminant dora recognizes for a shipped type's
+/// `arrow:` field: a known primitive, or `Struct` (whose shape is its fields).
+/// Anything else cannot be materialized into a schema, so it must be rejected
+/// at manifest validation rather than silently failing later at build time.
+pub fn is_known_arrow_type(name: &str) -> bool {
+    arrow_type_from_name(name).is_some() || name == "Struct"
+}
+
 const MAX_TYPE_DEPTH: u8 = 8;
 
 /// Resolve a field type string to an Arrow `DataType`, supporting:
