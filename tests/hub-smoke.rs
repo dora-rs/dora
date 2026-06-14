@@ -235,8 +235,9 @@ fn hub_end_to_end() {
     );
 
     // --locked must reject a rewritten index entry: the commit pins the source
-    // tree, but the build command lives in the (mutable) index entry, so a
-    // tampered `build:` has to hard-error rather than run silently.
+    // tree, but the manifest (entrypoint, build, contract) lives in the
+    // (mutable) index entry, so a tampered `build:` must hard-error via the
+    // pinned manifest digest rather than run silently.
     let entry_path = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
     let original_entry = std::fs::read_to_string(&entry_path).unwrap();
     let tampered = original_entry.replace("build: cargo build --release", "build: echo pwned");
@@ -251,11 +252,11 @@ fn hub_end_to_end() {
         .unwrap();
     assert!(
         !out.status.success(),
-        "locked build must reject a tampered build command"
+        "locked build must reject a tampered manifest"
     );
     assert!(
-        stderr(&out).contains("build command"),
-        "expected a build-command tamper error, got: {}",
+        stderr(&out).contains("changed its manifest"),
+        "expected a manifest-tamper error, got: {}",
         stderr(&out)
     );
     std::fs::write(&entry_path, &original_entry).unwrap(); // restore for the steps below
