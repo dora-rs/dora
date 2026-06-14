@@ -82,8 +82,8 @@ pub struct IntegrationTestInput {
     /// Environment variables for node builds and execution.
     ///
     /// Key-value map of environment variables that should be set for both the
-    /// [`build`](Self::build) operation and the node execution (i.e. when the node is spawned
-    /// through [`path`](Self::path)).
+    /// [`build`](crate::descriptor::Node::build) operation and the node execution (i.e. when the node is spawned
+    /// through [`path`](crate::descriptor::Node::path)).
     ///
     /// Supports strings, numbers, and booleans.
     ///

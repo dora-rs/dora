@@ -1376,7 +1376,7 @@ impl DoraNode {
     /// Allocates a [`DataSample`] of the specified size.
     ///
     /// Zero-copy transport for large messages is handled by the zenoh SHM
-    /// provider inside [`send_output`]; this allocation itself is a heap
+    /// provider inside [`send_output`](Self::send_output); this allocation itself is a heap
     /// buffer.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
         let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
