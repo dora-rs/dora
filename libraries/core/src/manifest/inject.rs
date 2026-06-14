@@ -129,10 +129,10 @@ pub fn inject_adjacent_manifests(
 
     // Pass 2: validate each manifest against the full registry and inject.
     for (idx, (manifest_path, manifest)) in matched {
-        apply_manifest(
+        apply_manifest_contracts(
             &mut dataflow.nodes[idx],
             &manifest,
-            &manifest_path,
+            &manifest_path.display().to_string(),
             registry,
             &mut result,
         );
@@ -242,10 +242,15 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
-fn apply_manifest(
+/// Apply a manifest's contracts to a descriptor node: validate the
+/// manifest, check the dataflow's wiring against the declared ports, and
+/// inject port types (the dataflow author's own annotations win).
+/// `source_label` names where the manifest came from in messages (a file
+/// path for adjacent manifests, a `namespace/name@version` for hub packages).
+pub fn apply_manifest_contracts(
     node: &mut dora_message::descriptor::Node,
     manifest: &NodeManifest,
-    manifest_path: &Path,
+    source_label: &str,
     registry: &TypeRegistry,
     result: &mut InjectionResult,
 ) {
@@ -254,7 +259,7 @@ fn apply_manifest(
         result.warnings.push(sanitize(&format!(
             "node \"{}\": {} has {} problem(s) — contracts not injected (first: {})",
             node.id,
-            manifest_path.display(),
+            source_label,
             issues.len(),
             issues[0]
         )));
@@ -266,8 +271,7 @@ fn apply_manifest(
         if !manifest.inputs.contains_key(input.as_str()) {
             result.warnings.push(sanitize(&format!(
                 "node \"{}\": input `{input}` is not declared in {}",
-                node.id,
-                manifest_path.display()
+                node.id, source_label
             )));
         }
     }
@@ -275,8 +279,7 @@ fn apply_manifest(
         if !manifest.outputs.contains_key(output.as_str()) {
             result.warnings.push(sanitize(&format!(
                 "node \"{}\": output `{output}` is not declared in {}",
-                node.id,
-                manifest_path.display()
+                node.id, source_label
             )));
         }
     }
@@ -313,8 +316,7 @@ fn apply_manifest(
     if injected > 0 {
         result.notes.push(sanitize(&format!(
             "node \"{}\": injected {injected} contract type(s) from {}",
-            node.id,
-            manifest_path.display()
+            node.id, source_label
         )));
     }
 }

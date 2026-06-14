@@ -507,6 +507,13 @@
           ],
           "format": "double"
         },
+        "hub": {
+          "description": "Hub package reference (unstable).\n\nReferences a node published in the Dora Hub index:\n`[<namespace>/]<name>@<semver-requirement>`. A bare name is shorthand\nfor the official `dora-rs/` namespace.\n\n`dora build` resolves the reference against the index to a pinned\ncommit and the node is fetched/built through the same machinery as a\n[`git`](Self::git) node; the package manifest supplies the\nentrypoint, build command, and typed contracts. Mutually exclusive\nwith `path`, `git`, and `build`.\n\n## Example\n\n```yaml\nnodes:\n  - id: detector\n    hub: dora-yolo@^0.5\n    inputs:\n      image: camera/image\n    outputs:\n      - bbox\n```",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "description": "Unique node identifier. Must not contain `/` characters.\n\nNode IDs can be arbitrary strings with the following limitations:\n\n- They must not contain any `/` characters (slashes).\n- We do not recommend using whitespace characters (e.g. spaces) in IDs\n\nEach node must have an ID field.\n\n## Example\n\n```yaml\nnodes:\n  - id: camera_node\n  - id: some_other_node\n```",
           "$ref": "#/$defs/NodeId"

@@ -42,7 +42,16 @@ impl Builder {
     where
         L: BuildLogger,
     {
-        let prepared_git = if let Some(GitSource { repo, commit_hash }) = git {
+        let prepared_git = if let Some(GitSource {
+            repo,
+            commit_hash,
+            subdir,
+            hub: _,
+        }) = git
+        {
+            if let Some(subdir) = &subdir {
+                validate_subdir(subdir)?;
+            }
             let target_dir = self.base_working_dir.join("git");
             let git_folder = git_manager.choose_clone_dir(
                 self.session_id,
@@ -51,7 +60,7 @@ impl Builder {
                 prev_git,
                 &target_dir,
             )?;
-            Some(git_folder)
+            Some((git_folder, subdir))
         } else {
             None
         };
@@ -64,20 +73,25 @@ impl Builder {
         self,
         node: ResolvedNode,
         logger: &mut impl BuildLogger,
-        git_folder: Option<GitFolder>,
+        git_folder: Option<(GitFolder, Option<String>)>,
     ) -> eyre::Result<BuiltNode> {
         logger.log_message(LogLevel::Debug, "building node").await;
         let python_env_dir;
         let node_working_dir = match &node.kind {
             CoreNodeKind::Custom(n) => {
                 let node_working_dir = match git_folder {
-                    Some(git_folder) => {
+                    Some((git_folder, subdir)) => {
                         let clone_dir = git_folder.prepare(logger).await?;
                         tracing::warn!(
                             "using git clone directory as working dir: \
                             this behavior is unstable and might change"
                         );
-                        clone_dir
+                        match subdir {
+                            // monorepo node: build, env prep, and spawn root
+                            // at `<clone>/<subdir>` (validated above)
+                            Some(subdir) => confine_subdir(&clone_dir, &subdir)?,
+                            None => clone_dir,
+                        }
                     }
                     None => self.base_working_dir,
                 };
@@ -242,6 +256,60 @@ pub struct BuildInfo {
     pub node_working_dirs: BTreeMap<NodeId, PathBuf>,
     #[serde(default)]
     pub python_env_dirs: BTreeMap<NodeId, PathBuf>,
+    /// Nodes that must be spawned with confined path resolution (no ambient
+    /// `$PATH` fallback) — set for hub-sourced nodes (spec §11).
+    #[serde(default)]
+    pub confined_nodes: std::collections::BTreeSet<NodeId>,
+}
+
+/// Validate a git source `subdir`: a relative path confined to the clone
+/// (no absolute, no `..`, no leading `-`, printable characters only). The
+/// value can come from an untrusted hub index entry.
+pub fn validate_subdir(subdir: &str) -> eyre::Result<()> {
+    let confined = !subdir.is_empty()
+        && !subdir.starts_with(['/', '\\', '-', '~'])
+        && !subdir.split(['/', '\\']).any(|c| c == "..")
+        && !subdir.contains(|c: char| c.is_control())
+        && (subdir.len() < 2 || subdir.as_bytes()[1] != b':');
+    if confined {
+        Ok(())
+    } else {
+        eyre::bail!(
+            "invalid git source subdir `{}`: must be a relative path inside \
+             the repository",
+            subdir
+                .chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+        )
+    }
+}
+
+/// Resolve `<clone_dir>/<subdir>` and confine it to the clone, returning the
+/// real (canonical) directory.
+///
+/// [`validate_subdir`] is lexical only; `is_dir()` follows in-repo symlinks, so
+/// a package shipping `node-hub/x -> /etc` could otherwise root the build (and
+/// the entrypoint `confine` check) outside the clone. Requiring the canonical
+/// path to stay under the canonical clone closes that escape.
+fn confine_subdir(clone_dir: &Path, subdir: &str) -> eyre::Result<PathBuf> {
+    let dir = clone_dir.join(subdir);
+    if !dir.is_dir() {
+        eyre::bail!(
+            "git source has no `{subdir}` directory in `{}`",
+            clone_dir.display()
+        );
+    }
+    let real = dir
+        .canonicalize()
+        .with_context(|| format!("failed to resolve git source subdir `{subdir}`"))?;
+    let real_clone = clone_dir
+        .canonicalize()
+        .context("failed to resolve git clone directory")?;
+    if !real.starts_with(&real_clone) {
+        eyre::bail!("git source subdir `{subdir}` escapes the repository (symlink?)");
+    }
+    Ok(real)
 }
 
 /// Computes the managed Python env directory for `node`, if it needs one.
@@ -331,7 +399,9 @@ pub struct PrevGitSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{managed_python_bin_dir, managed_python_env_dir, managed_python_interpreter};
+    use super::{
+        managed_python_bin_dir, managed_python_env_dir, managed_python_interpreter, validate_subdir,
+    };
     use crate::descriptor::ResolvedNode;
     use std::path::PathBuf;
 
@@ -466,5 +536,43 @@ mod tests {
 
         assert_eq!(managed_python_bin_dir(&env_dir), expected_bin_dir);
         assert_eq!(managed_python_interpreter(&env_dir), expected_interpreter);
+    }
+
+    #[test]
+    fn subdir_validation_confines_to_the_clone() {
+        for good in ["node-hub/dora-yolo", "src", "a/b/c", "a.b"] {
+            assert!(validate_subdir(good).is_ok(), "{good} should be valid");
+        }
+        for bad in [
+            "",
+            "/abs",
+            "\\abs",
+            "../outside",
+            "a/../../b",
+            "a\\..\\b",
+            "-flag",
+            "~home",
+            "C:\\windows",
+            "a\x07b",
+        ] {
+            assert!(validate_subdir(bad).is_err(), "{bad:?} should be invalid");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn confine_subdir_rejects_symlink_escape() {
+        let clone = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // a real in-repo subdir resolves to itself
+        std::fs::create_dir(clone.path().join("src")).unwrap();
+        assert!(super::confine_subdir(clone.path(), "src").is_ok());
+        // an in-repo symlink pointing outside the clone (`escape -> <outside>`)
+        // passes `validate_subdir` (no `..`/absolute) and `is_dir()`, but must
+        // be rejected by the canonical-containment check
+        std::os::unix::fs::symlink(outside.path(), clone.path().join("escape")).unwrap();
+        assert!(validate_subdir("escape").is_ok());
+        let err = super::confine_subdir(clone.path(), "escape").unwrap_err();
+        assert!(err.to_string().contains("escapes the repository"), "{err}");
     }
 }

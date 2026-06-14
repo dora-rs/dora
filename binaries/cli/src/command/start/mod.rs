@@ -128,6 +128,25 @@ fn start_dataflow(
         .wrap_err("failed to expand modules in dataflow descriptor")?;
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+    // `hub:` references are desugared by `dora build`, which stores the
+    // resolved descriptor in the session — `dora start` requires that prior
+    // build, exactly like git sources require a prior clone. Compare the
+    // expanded descriptor against the digest taken at build time so *any*
+    // on-disk edit (hub or not) since the build is caught, then substitute
+    // the resolved form.
+    if dataflow_descriptor.nodes.iter().any(|n| n.hub.is_some()) {
+        let resolved = dataflow_session.resolved_dataflow.clone().ok_or_else(|| {
+            eyre::eyre!("this dataflow uses `hub:` nodes — run `dora build` first")
+        })?;
+        let current = DataflowSession::fingerprint_source(&dataflow_descriptor);
+        if current.is_none() || current != dataflow_session.source_fingerprint {
+            eyre::bail!(
+                "this dataflow changed since the last `dora build` — run `dora build` again \
+                 (`dora start` cannot re-resolve `hub:` references)"
+            );
+        }
+        dataflow_descriptor = resolved;
+    }
     // Invalidate cached `build_id`/`local_build`/`git_sources` if the
     // descriptor's build-inputs (build command, source, env, cwd) changed
     // since the last `dora build`. Without this, `dora start` would send a

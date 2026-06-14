@@ -145,8 +145,13 @@ impl ResolvedConfig {
     }
 
     /// Load from the conventional location (`<config_dir>/dora/hub.toml`),
-    /// falling back to official-only when the file does not exist.
+    /// falling back to official-only when the file does not exist. The
+    /// `DORA_HUB_CONFIG` environment variable overrides the location
+    /// (integration tests, hermetic CI).
     pub fn load_default() -> eyre::Result<Self> {
+        if let Ok(path) = std::env::var("DORA_HUB_CONFIG") {
+            return Self::load_from(Path::new(&path));
+        }
         let Some(config_dir) = dirs::config_dir() else {
             return Self::new(Vec::new(), PathBuf::from("."));
         };

@@ -202,6 +202,25 @@ impl Executable for Daemon {
                         let expanded = dataflow_descriptor
                             .expand(working_dir)
                             .wrap_err("failed to expand modules in dataflow descriptor")?;
+                        // `hub:` references are unresolved on disk; fingerprinting
+                        // resolves nodes, which rejects unresolved hub refs. Verify
+                        // the build is current and use its desugared descriptor.
+                        // Only a hub dataflow uses the desugared descriptor override,
+                        // and only then is the source-fingerprint staleness gate
+                        // meaningful — keep the two conditions aligned so a non-hub
+                        // file can never be run against a stale resolved descriptor.
+                        let (expanded, descriptor_override) = if expanded.nodes.iter().any(|n| n.hub.is_some()) {
+                            let resolved = dataflow_session.resolved_dataflow.clone().ok_or_else(|| {
+                                eyre::eyre!("this dataflow uses `hub:` nodes — run `dora build` first")
+                            })?;
+                            let current = DataflowSession::fingerprint_source(&expanded);
+                            if current.is_none() || current != dataflow_session.source_fingerprint {
+                                eyre::bail!("this dataflow changed since the last `dora build` — run `dora build` again");
+                            }
+                            (resolved.clone(), Some(resolved))
+                        } else {
+                            (expanded, None)
+                        };
                         let resolved_for_fingerprint = expanded
                             .resolve_aliases_and_set_defaults()
                             .context("failed to resolve nodes for session fingerprint")?;
@@ -215,6 +234,7 @@ impl Executable for Daemon {
                         let result = dora_daemon::Daemon::run_dataflow(&dataflow_path,
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
                             LogDestination::Tracing, None, None, false, None,
+                            descriptor_override,
                         ).await?;
                         handle_dataflow_result(result, None)
                     }

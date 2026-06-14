@@ -288,6 +288,11 @@ fn check_entrypoint(entrypoint: &str) -> Option<String> {
     if entrypoint.is_empty() {
         return Some("must not be empty".into());
     }
+    // these resolve to the dynamic-node and shell-node sentinels at spawn,
+    // which bypass confined resolution — a hub package must not become one
+    if entrypoint == "dynamic" || entrypoint == "shell" {
+        return Some(format!("`{entrypoint}` is a reserved node source name"));
+    }
     let valid_char =
         |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/' | '\\');
     if !entrypoint.chars().all(valid_char) {
@@ -520,6 +525,10 @@ outputs:
         // shell metacharacters, whitespace, control chars are out of charset
         for bad in ["foo; rm -rf x", "foo bar", "a|b", "a$(b)", "a\x1b[2Jb"] {
             assert!(check_entrypoint(bad).is_some(), "{bad:?} should be invalid");
+        }
+        // the dynamic/shell spawn sentinels would bypass confined resolution
+        for bad in ["dynamic", "shell"] {
+            assert!(check_entrypoint(bad).is_some(), "{bad} should be reserved");
         }
     }
 

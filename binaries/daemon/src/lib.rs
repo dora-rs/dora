@@ -759,6 +759,7 @@ impl Daemon {
         stop_after: Option<Duration>,
         debug: bool,
         working_dir_override: Option<PathBuf>,
+        descriptor_override: Option<Descriptor>,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = match working_dir_override {
             Some(p) => p
@@ -772,7 +773,13 @@ impl Daemon {
                 .to_owned(),
         };
 
-        let raw_descriptor = read_as_descriptor(dataflow_path).await?;
+        // `hub:` dataflows are desugared in memory by `dora build` — the
+        // on-disk YAML still contains unresolved references, so the caller
+        // passes the resolved descriptor from the dataflow session instead
+        let raw_descriptor = match descriptor_override {
+            Some(descriptor) => descriptor,
+            None => read_as_descriptor(dataflow_path).await?,
+        };
         // Expand module composition (must run before resolution; module
         // nodes cause `resolve_aliases_and_set_defaults` to fail otherwise).
         let mut descriptor = raw_descriptor
@@ -1880,6 +1887,7 @@ impl Daemon {
                             node.clone(),
                             base_working_dir,
                             python_env_dir,
+                            false,
                             node_stderr,
                             None,
                             &mut logger,
@@ -1986,6 +1994,7 @@ impl Daemon {
                             max_rotated_files: None,
                             build: None,
                             git: None,
+                            hub: None,
                             branch: None,
                             tag: None,
                             rev: None,
@@ -2573,7 +2582,11 @@ impl Daemon {
             let git_source = git_sources.get(&node_id).cloned();
             let prev_git_source = prev_git_sources.get(&node_id).cloned();
             let prev_git = prev_git_source.map(|prev_source| PrevGitSource {
-                still_needed_for_this_build: git_sources.values().any(|s| s == &prev_source),
+                // compare clone identity (repo + commit) only: hub provenance
+                // and subdir don't change which directory the clone occupies
+                still_needed_for_this_build: git_sources.values().any(|s| {
+                    s.repo == prev_source.repo && s.commit_hash == prev_source.commit_hash
+                }),
                 git_source: prev_source,
             });
 
@@ -2614,10 +2627,18 @@ impl Daemon {
             }
         }
 
+        // hub-sourced nodes (recognized by the provenance marker on their
+        // git source) are spawned with confined path resolution (spec §11)
+        let confined_nodes: BTreeSet<NodeId> = git_sources
+            .iter()
+            .filter(|(_, source)| source.hub.is_some())
+            .map(|(node_id, _)| node_id.clone())
+            .collect();
         let task = async move {
             let mut info = BuildInfo {
                 node_working_dirs: Default::default(),
                 python_env_dirs: Default::default(),
+                confined_nodes,
             };
             for task in tasks {
                 let NodeBuildTask {
@@ -2694,8 +2715,14 @@ impl Daemon {
         }
         // Reuse build-time metadata so runtime spawn can follow the same
         // working-directory and managed-env decisions.
-        let (node_working_dirs, python_env_dirs) = build_info
-            .map(|info| (info.node_working_dirs.clone(), info.python_env_dirs.clone()))
+        let (node_working_dirs, python_env_dirs, confined_nodes) = build_info
+            .map(|info| {
+                (
+                    info.node_working_dirs.clone(),
+                    info.python_env_dirs.clone(),
+                    info.confined_nodes.clone(),
+                )
+            })
             .unwrap_or_default();
 
         // calculate info about mappings
@@ -2910,6 +2937,7 @@ impl Daemon {
                         node,
                         node_working_dir,
                         configured_python_env_dir,
+                        confined_nodes.contains(&node_id),
                         node_stderr_most_recent,
                         node_write_events_to,
                         &mut logger,

@@ -65,6 +65,7 @@ async fn restart_recovers_from_failure() {
         Some(Duration::from_secs(30)),
         false,
         None,
+        None,
     )
     .await;
 
@@ -115,6 +116,7 @@ async fn max_restarts_limit_reached() {
         None,
         Some(Duration::from_secs(30)),
         false,
+        None,
         None,
     )
     .await;
@@ -183,6 +185,7 @@ async fn max_restarts_exhaustion_marks_node_failed() {
         None,
         Some(Duration::from_secs(10)),
         false,
+        None,
         None,
     )
     .await;
@@ -254,6 +257,7 @@ async fn restart_policy_always_restarts_on_clean_exit() {
         None,
         Some(Duration::from_secs(10)),
         false,
+        None,
         None,
     )
     .await;
@@ -336,6 +340,7 @@ async fn restart_window_resets_restart_counter() {
         None,
         Some(Duration::from_secs(10)),
         false,
+        None,
         None,
     )
     .await;
@@ -422,6 +427,7 @@ async fn input_timeout_delivers_input_closed_to_downstream() {
         // InputClosed at ~550 ms (input_timeout = 0.5 s), then exit.
         Some(Duration::from_secs(5)),
         false,
+        None,
         None,
     )
     .await;
@@ -511,6 +517,7 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
         // the marker write races the kill).
         Some(Duration::from_secs(10)),
         false,
+        None,
         None,
     )
     .await;
@@ -608,6 +615,7 @@ async fn node_restarted_is_delivered_to_downstream() {
         Some(Duration::from_secs(5)),
         false,
         None,
+        None,
     )
     .await;
 
@@ -685,6 +693,7 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
         None,
         Some(Duration::from_secs(5)),
         false,
+        None,
         None,
     )
     .await;
@@ -780,6 +789,7 @@ async fn health_check_timeout_exhausts_restart_budget() {
         Some(Duration::from_secs(10)),
         false,
         None,
+        None,
     )
     .await;
 
@@ -851,6 +861,7 @@ async fn planned_stop_sigterm_reports_clean() {
         // fire, short enough that the test stays fast.
         Some(Duration::from_secs(3)),
         false,
+        None,
         None,
     )
     .await;

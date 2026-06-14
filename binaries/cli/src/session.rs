@@ -38,6 +38,19 @@ pub struct DataflowSession {
     /// as "unknown" — `invalidate_if_build_inputs_changed` clears and rewrites).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_fingerprint: Option<String>,
+    /// The dataflow descriptor with `hub:` references desugared into concrete
+    /// git nodes, as built. `dora start` / `dora run` re-read the YAML from
+    /// disk, which still contains unresolved `hub:` fields — they use this
+    /// resolved form instead. `None` when the dataflow has no hub nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_dataflow: Option<dora_message::descriptor::Descriptor>,
+    /// FNV-1a digest of the expanded (pre-desugar) descriptor as built. For a
+    /// hub dataflow the on-disk YAML can't be re-fingerprinted directly (its
+    /// `hub:` references are unresolved, so `kind()` rejects them), so
+    /// `dora start` / `dora daemon --run-dataflow` compare this instead to
+    /// detect any on-disk edit since the build. `None` for non-hub dataflows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_fingerprint: Option<String>,
 }
 
 impl Default for DataflowSession {
@@ -48,6 +61,8 @@ impl Default for DataflowSession {
             git_sources: Default::default(),
             local_build: Default::default(),
             build_fingerprint: None,
+            resolved_dataflow: None,
+            source_fingerprint: None,
         }
     }
 }
@@ -102,6 +117,15 @@ impl DataflowSession {
 
     fn serialize(&self) -> eyre::Result<String> {
         serde_yaml::to_string(&self).context("failed to serialize dataflow session file")
+    }
+
+    /// Digest of the expanded (pre-desugar) descriptor. Used to detect any
+    /// on-disk edit to a hub dataflow since its build, since the on-disk YAML
+    /// can't be re-fingerprinted via `fingerprint_build_inputs` (its `hub:`
+    /// references are unresolved). Returns `None` if serialization fails.
+    pub fn fingerprint_source(descriptor: &dora_message::descriptor::Descriptor) -> Option<String> {
+        let yaml = serde_yaml::to_string(descriptor).ok()?;
+        Some(format!("src-v1-{}", fnv1a_64_hex(yaml.as_bytes())))
     }
 
     /// Compute the build-inputs fingerprint over the resolved descriptor.
@@ -283,6 +307,8 @@ impl DataflowSession {
         self.build_id = None;
         self.local_build = None;
         self.git_sources.clear();
+        // the desugared hub descriptor was produced by the invalidated build
+        self.resolved_dataflow = None;
         self.build_fingerprint = Some(current);
         if had_build_id {
             tracing::info!(
@@ -371,6 +397,25 @@ nodes:
     path: ./a
     build: cargo build
 ";
+
+    #[test]
+    fn source_fingerprint_changes_with_any_edit() {
+        // the hub staleness check relies on this catching ANY descriptor
+        // edit, not just build-inputs (unlike fingerprint_build_inputs)
+        let base: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: a\n    hub: test/x@^0.1\n").unwrap();
+        let fp = DataflowSession::fingerprint_source(&base);
+        assert!(fp.is_some());
+        let edited: Descriptor = serde_yaml::from_str(
+            "nodes:\n  - id: a\n    hub: test/x@^0.1\n  - id: b\n    path: ./b\n",
+        )
+        .unwrap();
+        assert_ne!(fp, DataflowSession::fingerprint_source(&edited));
+        // identical descriptors hash identically
+        let same: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: a\n    hub: test/x@^0.1\n").unwrap();
+        assert_eq!(fp, DataflowSession::fingerprint_source(&same));
+    }
 
     #[test]
     fn fingerprint_is_stable_for_same_inputs() {
@@ -502,6 +547,8 @@ nodes:
             git_sources: BTreeMap::from([(
                 NodeId::from("a".to_string()),
                 GitSource {
+                    subdir: None,
+                    hub: None,
                     repo: "x".to_string(),
                     commit_hash: "y".to_string(),
                 },

@@ -132,7 +132,10 @@ impl GitManager {
         repo_url: &Url,
         commit_hash: &String,
     ) -> eyre::Result<PathBuf> {
-        let mut path = base_dir.join(repo_url.host_str().context("git URL has no hostname")?);
+        // file:// URLs (local mirrors, air-gapped setups, tests) have no
+        // hostname — group their clones under a "localhost" directory
+        let host = repo_url.host_str().unwrap_or("localhost");
+        let mut path = base_dir.join(host);
         path.extend(repo_url.path_segments().context("no path in git URL")?);
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
