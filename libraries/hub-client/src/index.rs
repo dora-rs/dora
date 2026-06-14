@@ -244,6 +244,7 @@ impl IndexCatalog {
         if !path.is_file() {
             return Ok(None);
         }
+        self.confine(&path)?;
         let raw = read_capped(&path)?;
         let meta = serde_yaml::from_str(&raw)
             .with_context(|| format!("invalid package metadata `{}`", path.display()))?;
@@ -462,18 +463,20 @@ mod tests {
         std::fs::create_dir_all(&real).unwrap();
         let rev = "a".repeat(40);
         std::fs::write(real.join("9.9.9.yml"), entry_yaml(&rev, false)).unwrap();
+        std::fs::write(real.join("package.yml"), "description: evil\n").unwrap();
         // inside the catalog, a package dir that is a symlink pointing there
         let ns = tmp.path().join("acme");
         std::fs::create_dir_all(&ns).unwrap();
         std::os::unix::fs::symlink(&real, ns.join("escape")).unwrap();
         let catalog = IndexCatalog::open(tmp.path()).unwrap();
-        // both the dir listing and the entry read must refuse to follow it
+        // dir listing, entry read, AND package metadata read must all refuse it
         assert!(catalog.versions("acme", "escape").is_err());
         assert!(
             catalog
                 .entry("acme", "escape", &Version::parse("9.9.9").unwrap())
                 .is_err()
         );
+        assert!(catalog.package_meta("acme", "escape").is_err());
     }
 
     #[test]
