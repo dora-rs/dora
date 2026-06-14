@@ -40,6 +40,7 @@ dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
+toml = "0.9"
 webbrowser = "0.8.3"
 serde_json = { workspace = true }
 termcolor = "1.1.3"

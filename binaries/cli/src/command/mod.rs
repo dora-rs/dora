@@ -8,6 +8,7 @@ mod doctor;
 mod down;
 mod expand;
 mod graph;
+mod hub;
 pub mod inspect;
 mod list;
 mod logs;
@@ -43,6 +44,7 @@ use down::Down;
 use expand::Expand;
 use eyre::Context;
 use graph::Graph;
+use hub::Hub;
 use inspect::Inspect;
 use list::ListArgs;
 use logs::LogsArgs;
@@ -145,6 +147,9 @@ pub enum Command {
     /// System management commands
     #[clap(subcommand, display_order = 25)]
     System(System),
+    /// Package, discover, and use dora nodes (unstable)
+    #[clap(subcommand, display_order = 26)]
+    Hub(Hub),
 
     // -- Utility --
     /// Generate shell completions
@@ -214,6 +219,7 @@ impl Executable for Command {
             Command::Expand(args) => args.execute(),
             Command::Validate(args) => args.execute(),
             Command::System(args) => args.execute(),
+            Command::Hub(args) => args.execute(),
             Command::Completion(args) => args.execute(),
             Command::Self_ { command } => command.execute(),
             Command::Daemon(args) => args.execute(),
@@ -413,6 +419,14 @@ mod tests {
     #[test]
     fn parse_new() {
         parse_ok(&["dora", "new", "test"]);
+    }
+
+    #[test]
+    fn parse_hub() {
+        parse_ok(&["dora", "hub", "init"]);
+        parse_ok(&["dora", "hub", "init", "path/to/node"]);
+        parse_ok(&["dora", "hub", "install", "dora-yolo"]);
+        parse_err(&["dora", "hub"]);
     }
 
     #[test]
