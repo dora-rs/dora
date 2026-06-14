@@ -1097,6 +1097,68 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     );
 
     let dora = dora_bin();
+
+    // The daemon<->node TCP transport aborts a first-message read after
+    // `TCP_READ_TIMEOUT` (30s, daemon `socket_stream_utils`). On a loaded CI
+    // runner the record- or replay-node spawn occasionally overshoots that on
+    // startup, surfacing as "TCP read header timed out" — an infrastructure
+    // stall, not a semantic break in the recording. Retry the whole
+    // record+replay cycle a bounded number of times on *that signature only*;
+    // a missing SUCCESS marker on an otherwise-clean run fails immediately, so
+    // a real record/replay regression is never masked by a retry.
+    const MAX_ATTEMPTS: u32 = 3;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match record_replay_once(&dora) {
+            Ok(()) => return,
+            Err(RecordReplayFailure::InfraTimeout(detail)) if attempt < MAX_ATTEMPTS => {
+                eprintln!(
+                    "record/replay attempt {attempt}/{MAX_ATTEMPTS} hit a TCP read timeout \
+                     (infra stall, not a semantic break); retrying.\n{detail}"
+                );
+            }
+            Err(failure) => panic!("{failure}"),
+        }
+    }
+}
+
+/// Why a single record+replay cycle failed.
+enum RecordReplayFailure {
+    /// The daemon's `TCP_READ_TIMEOUT` fired on a node's first-message read —
+    /// an infrastructure stall under CI load. Safe to retry.
+    InfraTimeout(String),
+    /// A real break: non-zero exit without the timeout signature, a missing
+    /// SUCCESS marker, or a missing/empty recording. Never retried.
+    Semantic(String),
+}
+
+impl std::fmt::Display for RecordReplayFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordReplayFailure::InfraTimeout(d) | RecordReplayFailure::Semantic(d) => {
+                f.write_str(d)
+            }
+        }
+    }
+}
+
+/// Classify a failed record/replay step: the daemon TCP-timeout signature is
+/// retryable infra noise; anything else is a real semantic failure.
+fn classify_record_replay(combined: &str, detail: String) -> RecordReplayFailure {
+    if combined.contains("TCP read header timed out")
+        || combined.contains("TCP read body timed out")
+    {
+        RecordReplayFailure::InfraTimeout(detail)
+    } else {
+        RecordReplayFailure::Semantic(detail)
+    }
+}
+
+/// One record+replay cycle: record the validated pipeline, then replay the
+/// recording, asserting both reach the SUCCESS marker. Returns `Err` (rather
+/// than panicking) so the caller can retry on an infra timeout.
+fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
+    let success_marker = "sink: SUCCESS - validated 10 doubled values";
+
     // Use the absolute-path fixture instead of examples/validated-pipeline/dataflow.yml:
     // `dora record` writes its modified descriptor into a tempfile in
     // /tmp, so any `build: cargo build -p …` directive carried over
@@ -1105,8 +1167,6 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     // using absolute `path:`) sidesteps that.
     let yaml = write_absolute_path_validated_pipeline_fixture();
 
-    let success_marker = "sink: SUCCESS - validated 10 doubled values";
-
     // Stable per-test filename; --test-threads=1 means no cross-test
     // contention. Use std::env::temp_dir so macOS `/var/folders/...`
     // works alongside `/tmp` on Linux.
@@ -1114,7 +1174,7 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     let _ = std::fs::remove_file(&drec);
 
     // ---- Step 1: record ----
-    let rec = Command::new(&dora)
+    let rec = Command::new(dora)
         .args([
             "record",
             yaml.to_str().unwrap(),
@@ -1131,23 +1191,38 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     // Clean the fixture now; everything record needed is captured in
     // stdout/stderr and the .drec on disk.
     let _ = std::fs::remove_file(&yaml);
-    assert!(
-        rec.status.success(),
-        "dora record exited non-zero: {:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}",
-        rec.status
-    );
-    assert!(
-        rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker),
-        "recorded run did not reach the SUCCESS marker — the baseline run is broken.\n\
-         ---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}"
-    );
-    assert!(
-        drec.exists() && std::fs::metadata(&drec).unwrap().len() > 0,
-        "dora record did not produce a non-empty .drec at {drec:?}"
-    );
+    if !rec.status.success() {
+        let _ = std::fs::remove_file(&drec);
+        return Err(classify_record_replay(
+            &format!("{rec_stdout}{rec_stderr}"),
+            format!(
+                "dora record exited non-zero: {:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}",
+                rec.status
+            ),
+        ));
+    }
+    if !(rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker)) {
+        let _ = std::fs::remove_file(&drec);
+        return Err(classify_record_replay(
+            &format!("{rec_stdout}{rec_stderr}"),
+            format!(
+                "recorded run did not reach the SUCCESS marker — the baseline run is broken.\n\
+                 ---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}"
+            ),
+        ));
+    }
+    if !(drec.exists()
+        && std::fs::metadata(&drec)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false))
+    {
+        return Err(RecordReplayFailure::Semantic(format!(
+            "dora record did not produce a non-empty .drec at {drec:?}"
+        )));
+    }
 
     // ---- Step 2: replay ----
-    let rep = Command::new(&dora)
+    let rep = Command::new(dora)
         .args(["replay", drec.to_str().unwrap()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1158,20 +1233,29 @@ fn contract_record_replay_reproduces_validated_pipeline() {
     let rep_stderr = String::from_utf8_lossy(&rep.stderr);
     let _ = std::fs::remove_file(&drec);
 
-    assert!(
-        rep.status.success(),
-        "dora replay exited non-zero: {:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}",
-        rep.status
-    );
+    if !rep.status.success() {
+        return Err(classify_record_replay(
+            &format!("{rep_stdout}{rep_stderr}"),
+            format!(
+                "dora replay exited non-zero: {:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}",
+                rep.status
+            ),
+        ));
+    }
     // The contract: replay produces the exact same SUCCESS marker as
     // the recorded run. If the replay dropped/reordered/mutated any
     // value in the recording, sink's `expected = received * 2` check
     // would bail and this marker would never appear.
-    assert!(
-        rep_stdout.contains(success_marker) || rep_stderr.contains(success_marker),
-        "replay did not reproduce the SUCCESS marker — semantic equivalence broken.\n\
-         ---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}"
-    );
+    if !(rep_stdout.contains(success_marker) || rep_stderr.contains(success_marker)) {
+        return Err(classify_record_replay(
+            &format!("{rep_stdout}{rep_stderr}"),
+            format!(
+                "replay did not reproduce the SUCCESS marker — semantic equivalence broken.\n\
+                 ---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}"
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// Run `dora run --stop-after <secs>s` against `yaml_path`, capture combined
