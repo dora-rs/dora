@@ -159,7 +159,7 @@ or `Cargo.toml`, pre-filling what it can read from there (name, entrypoint from
 ```bash
 cd my-node
 dora hub init               # writes ./dora-node.yml
-dora hub init --manifest-only
+dora hub init path/to/node  # or target a specific directory
 ```
 
 Fill in your `inputs`/`outputs` types and `env`, then validate the manifest on
