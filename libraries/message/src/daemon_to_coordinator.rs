@@ -49,11 +49,45 @@ impl DaemonRegisterRequest {
             Ok(())
         } else {
             Err(format!(
-                "version mismatch: message format v{} is not compatible \
-                with expected message format v{crate_version}",
+                "version mismatch: this daemon runs dora v{} but the coordinator expects \
+                v{crate_version}. Upgrade the daemon to match the coordinator (e.g. \
+                `cargo install dora-cli --version {crate_version}`) — an older daemon also \
+                lacks support for newer wire features such as hub `subdir`/`hub:` node sources.",
                 self.dora_version
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod register_version_tests {
+    use super::*;
+
+    #[test]
+    fn current_version_is_compatible() {
+        assert!(
+            DaemonRegisterRequest::new(None, Default::default())
+                .check_version()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn incompatible_daemon_gets_an_actionable_upgrade_error() {
+        // A daemon from a different major line is rejected at registration (the
+        // mechanism that already keeps a pre-hub `0.x` daemon out of a hub-aware
+        // `1.x` cluster). The error must tell the operator to upgrade.
+        let current = current_crate_version();
+        let req = DaemonRegisterRequest {
+            dora_version: semver::Version::new(current.major + 1, 0, 0),
+            machine_id: None,
+            labels: Default::default(),
+        };
+        let err = req
+            .check_version()
+            .expect_err("major-bump must be rejected");
+        assert!(err.contains("version mismatch"), "{err}");
+        assert!(err.contains("Upgrade the daemon"), "{err}");
     }
 }
 
