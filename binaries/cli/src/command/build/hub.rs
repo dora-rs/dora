@@ -210,6 +210,36 @@ pub fn resolve_hub_nodes(
                         reference.key()
                     ));
                 }
+                // the commit hash pins the source *tree*, but the entrypoint and
+                // build command come from the (mutable) index entry — so a
+                // rewritten index could inject an arbitrary build command at a
+                // pinned version. `--locked` hard-errors if they changed. The
+                // `entrypoint` field doubles as the new-lockfile-format sentinel:
+                // when absent (lockfile predates this field) the check is skipped.
+                if let Some(provenance) = &pin.hub
+                    && let Some(locked_entrypoint) = &provenance.entrypoint
+                {
+                    if *locked_entrypoint != entry.manifest.entrypoint {
+                        eyre::bail!(
+                            "node `{}`: the locked index entry for `{}@{version}` changed \
+                             its entrypoint since the lockfile was written \
+                             (`{locked_entrypoint}` -> `{}`) — regenerate with \
+                             `dora build --write-lockfile`",
+                            node.id,
+                            entry.manifest.entrypoint,
+                            reference.key()
+                        );
+                    }
+                    if provenance.build != entry.manifest.build {
+                        eyre::bail!(
+                            "node `{}`: the locked index entry for `{}@{version}` changed \
+                             its build command since the lockfile was written — \
+                             regenerate with `dora build --write-lockfile`",
+                            node.id,
+                            reference.key()
+                        );
+                    }
+                }
                 (version, entry, pin.clone())
             }
             None => {
@@ -231,6 +261,8 @@ pub fn resolve_hub_nodes(
                     hub: Some(HubProvenance {
                         name: reference.key(),
                         version: resolved.version.to_string(),
+                        entrypoint: Some(resolved.entry.manifest.entrypoint.clone()),
+                        build: resolved.entry.manifest.build.clone(),
                     }),
                 };
                 (resolved.version, resolved.entry, source)
