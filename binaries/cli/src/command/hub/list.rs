@@ -30,11 +30,14 @@ impl Executable for List {
                 continue;
             };
             found = true;
+            // commit_hash comes from the lockfile, which `read_from` does not
+            // charset-validate — sanitize before it reaches the terminal
             let short: String = source.commit_hash.chars().take(12).collect();
             println!(
-                "{node_id}: {} {} ({short})",
+                "{node_id}: {} {} ({})",
                 sanitize(&hub.name),
-                sanitize(&hub.version)
+                sanitize(&hub.version),
+                sanitize(&short)
             );
         }
         if !found {

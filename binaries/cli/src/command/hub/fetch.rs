@@ -100,7 +100,8 @@ fn resolve_single(reference: &str, ctx: &mut HubContext) -> eyre::Result<GitSour
 }
 
 /// Blobless-clone the pinned commit into `<target_dir>/<commit>` (the commit
-/// hash is the integrity guarantee). A `.dora-clone-complete` marker lets a
+/// hash is the integrity guarantee). A `<target_dir>/.<commit>.complete`
+/// marker — kept outside the clone so the source repo can't forge it — lets a
 /// re-run skip a finished clone while re-doing an interrupted one.
 fn clone_pinned(source: &GitSource, target_dir: &std::path::Path) -> eyre::Result<()> {
     // re-validate the hash at the API boundary — `GitSource.commit_hash` is a
@@ -110,8 +111,16 @@ fn clone_pinned(source: &GitSource, target_dir: &std::path::Path) -> eyre::Resul
     if !valid_hash {
         eyre::bail!("invalid commit hash for `{}`", source.repo);
     }
+    // re-validate the URL here too: the dataflow path reads `repo` straight
+    // from the lockfile, which is otherwise passed to `git clone` without the
+    // scheme/transport allowlist the single-package path gets via `git_pin`.
+    dora_hub_client::validate_git_url_untrusted(&source.repo)
+        .with_context(|| format!("refusing to clone `{}`", source.repo))?;
     let dest = target_dir.join(&source.commit_hash);
-    let marker = dest.join(".dora-clone-complete");
+    // the completion marker lives *outside* the clone working tree — a source
+    // repo could otherwise ship a file literally named `.dora-clone-complete`
+    // and make an interrupted checkout look finished
+    let marker = target_dir.join(format!(".{}.complete", source.commit_hash));
     if marker.exists() {
         return Ok(());
     }
