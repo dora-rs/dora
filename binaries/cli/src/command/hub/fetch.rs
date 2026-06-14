@@ -66,11 +66,15 @@ impl Executable for Fetch {
 /// The pinned git sources of a dataflow's `hub:` nodes, read from its lockfile.
 ///
 /// The lockfile is authoritative: `dora build --locked` rebuilds from these
-/// exact commits, so the mirror must match them rather than re-resolving the
-/// index (which could pick a newer version). Requires a lockfile — the same
-/// contract as `dora hub list`.
+/// exact commits, so the mirror must match them. To honor that contract, the
+/// *current* dataflow is validated against the lockfile first (like `--locked`)
+/// — a stale lockfile must not mirror sources the YAML no longer references, or
+/// at a version it no longer requests. Requires a lockfile.
 fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
-    let lockfile_path = BuildLockfile::path_for_dataflow(std::path::Path::new(dataflow), None);
+    use dora_core::descriptor::{Descriptor, DescriptorExt};
+
+    let path = std::path::Path::new(dataflow);
+    let lockfile_path = BuildLockfile::path_for_dataflow(path, None);
     if !lockfile_path.exists() {
         eyre::bail!(
             "no lockfile at `{}` — run `dora build --write-lockfile {dataflow}` first",
@@ -78,12 +82,55 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
         );
     }
     let lockfile = BuildLockfile::read_from(&lockfile_path)?;
-    let sources = lockfile
+
+    // pinned hub sources from the lockfile, keyed by node id
+    let pinned: std::collections::BTreeMap<_, _> = lockfile
         .git_sources
-        .into_values()
-        .filter(|source| source.hub.is_some())
+        .into_iter()
+        .filter(|(_, s)| s.hub.is_some())
         .collect();
-    Ok(sources)
+
+    // the current dataflow's `hub:` nodes
+    let working_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let descriptor = Descriptor::blocking_read(path)?
+        .expand(working_dir)
+        .context("failed to expand modules")?;
+
+    let regen = format!("regenerate with `dora build --write-lockfile {dataflow}`");
+    let mut yaml_hub_nodes = std::collections::BTreeSet::new();
+    for node in &descriptor.nodes {
+        let Some(raw) = &node.hub else { continue };
+        yaml_hub_nodes.insert(node.id.clone());
+        let reference = PackageRef::parse(raw)
+            .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
+        let source = pinned.get(&node.id).ok_or_else(|| {
+            eyre::eyre!(
+                "node `{}`: `hub:` reference is not in the lockfile — {regen}",
+                node.id
+            )
+        })?;
+        let prov = source.hub.as_ref().expect("filtered to hub sources");
+        let version = dora_hub_client::semver::Version::parse(&prov.version)
+            .map_err(|_| eyre::eyre!("node `{}`: invalid version in lockfile", node.id))?;
+        if prov.name != reference.key() || !reference.requirement.matches(&version) {
+            eyre::bail!(
+                "node `{}`: the dataflow's `hub:` reference changed since the lockfile \
+                 was written — {regen}",
+                node.id
+            );
+        }
+    }
+    // the lockfile must not pin a hub node the dataflow no longer has
+    if let Some(id) = pinned.keys().find(|id| !yaml_hub_nodes.contains(*id)) {
+        eyre::bail!(
+            "node `{id}`: the lockfile pins a `hub:` node the dataflow no longer has — {regen}"
+        );
+    }
+
+    Ok(pinned.into_values().collect())
 }
 
 fn resolve_single(reference: &str, ctx: &mut HubContext) -> eyre::Result<GitSource> {
@@ -122,7 +169,24 @@ fn clone_pinned(source: &GitSource, target_dir: &std::path::Path) -> eyre::Resul
     // and make an interrupted checkout look finished
     let marker = target_dir.join(format!(".{}.complete", source.commit_hash));
     if marker.exists() {
-        return Ok(());
+        // trust the marker only if the checkout is actually present at the pin
+        // — a deleted or corrupted clone dir with a leftover marker must not
+        // report success without a source. Otherwise drop the stale marker and
+        // fall through to a clean re-clone.
+        if dest.is_dir()
+            && run_git_in(
+                &dest,
+                &[
+                    "cat-file",
+                    "-e",
+                    &format!("{}^{{commit}}", source.commit_hash),
+                ],
+            )
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(&marker);
     }
     if dest.exists() {
         // a prior interrupted clone — start clean

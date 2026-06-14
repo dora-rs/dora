@@ -283,6 +283,52 @@ fn hub_end_to_end() {
             .is_some(),
         "fetch populated nothing"
     );
+
+    // a stale clone (dir deleted, completion marker left behind) must re-clone
+    // rather than report success with no source
+    let cache = fixture.root.join("cache");
+    let clone_dir = std::fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.is_dir())
+        .expect("a clone dir");
+    std::fs::remove_dir_all(&clone_dir).unwrap(); // marker `.<commit>.complete` stays
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "fetch",
+            flow.to_str().unwrap(),
+            "--target-dir",
+            "cache",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "re-fetch failed: {}", stderr(&out));
+    assert!(
+        clone_dir.is_dir(),
+        "stale marker was trusted; clone not restored"
+    );
+
+    // fetch must validate the dataflow against the lockfile: a flow that no
+    // longer references the locked hub node is a stale mirror and must error
+    std::fs::write(&flow, "nodes:\n  - id: plain\n    path: dynamic\n").unwrap();
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "fetch",
+            flow.to_str().unwrap(),
+            "--target-dir",
+            "cache",
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "fetch of a stale lockfile must fail");
+    assert!(
+        stderr(&out).contains("no longer has") || stderr(&out).contains("regenerate"),
+        "expected a stale-lockfile error, got: {}",
+        stderr(&out)
+    );
 }
 
 fn stderr(out: &std::process::Output) -> String {
