@@ -141,7 +141,14 @@ impl BuildLockfile {
             git_sources,
         };
         let serialized = serde_yaml::to_string(&view).context("failed to serialize lockfile")?;
-        std::fs::write(path, serialized).context("failed to write lockfile")?;
+        // Write atomically (temp + rename in the same dir) so an interrupted
+        // write can't truncate or corrupt an existing valid lockfile — matters
+        // most for `dora hub update`, which rewrites it often without a build.
+        let mut tmp = path.to_path_buf().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
+        std::fs::write(&tmp, serialized).context("failed to write lockfile")?;
+        std::fs::rename(&tmp, path).context("failed to replace lockfile")?;
         Ok(())
     }
 

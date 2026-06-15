@@ -1095,6 +1095,159 @@ fn hub_outdated_errors_when_pin_unresolvable() {
     );
 }
 
+/// `dora hub update` re-resolves hub pins to the latest in-range version and
+/// rewrites the lockfile without building; a later `dora build --locked` then
+/// accepts the refreshed lockfile, and re-running update is a no-op (P3.2).
+#[test]
+fn hub_update_bumps_pin_and_stays_locked_compatible() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub update test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let lockfile = fixture.root.join("flow/dataflow.dora-lock.yaml");
+
+    // pin 0.1.0
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "initial build --write-lockfile should succeed"
+    );
+    assert!(
+        std::fs::read_to_string(&lockfile)
+            .unwrap()
+            .contains("version: 0.1.0"),
+        "lockfile should pin 0.1.0"
+    );
+
+    // a newer in-range version appears in the index (^0.1 admits 0.1.1)
+    std::fs::copy(
+        fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml"),
+        fixture.root.join("index/test/hub-smoke-hello/0.1.1.yml"),
+    )
+    .unwrap();
+
+    // update bumps the pin (no build)
+    let out = dora(&fixture)
+        .args(["hub", "update", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "update failed: {}", stderr(&out));
+    let after_update = std::fs::read_to_string(&lockfile).unwrap();
+    assert!(
+        after_update.contains("version: 0.1.1"),
+        "update should bump the pin to 0.1.1"
+    );
+
+    // the real invariant: `update`'s lockfile is byte-identical to what
+    // `dora build --write-lockfile` writes for the same descriptor + index
+    // state (build re-resolves hub nodes fresh when not `--locked`). A wrong
+    // commit/subdir/fingerprint would diverge here even though `--locked`
+    // treats those as warn-only.
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "reference build failed: {}",
+        stderr(&out)
+    );
+    let after_build = std::fs::read_to_string(&lockfile).unwrap();
+    assert_eq!(
+        after_update, after_build,
+        "update must write the same lockfile bytes as `dora build --write-lockfile`"
+    );
+
+    // and the refreshed lockfile is consumable under `--locked`
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "build --locked after update failed: {}",
+        stderr(&out)
+    );
+
+    // re-running update is idempotent: still resolves to 0.1.1, same lockfile
+    let before = std::fs::read_to_string(&lockfile).unwrap();
+    let out = dora(&fixture)
+        .args(["hub", "update", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "second update failed: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        before,
+        std::fs::read_to_string(&lockfile).unwrap(),
+        "re-running update on an up-to-date lockfile must not change it"
+    );
+}
+
+/// `dora hub update --dry-run` is read-only: it neither rewrites the lockfile
+/// nor creates the build session file (the resolve stops before the session
+/// read that would write `out/<name>.dora-session.yaml`) (P3.2).
+#[test]
+fn hub_update_dry_run_is_read_only() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub update dry-run test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let lockfile = fixture.root.join("flow/dataflow.dora-lock.yaml");
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build --write-lockfile should succeed"
+    );
+
+    // clean slate: drop the build's `out/` so we can prove dry-run won't recreate it
+    std::fs::remove_dir_all(fixture.root.join("flow/out")).ok();
+    let session = fixture.root.join("flow/out/dataflow.dora-session.yaml");
+    let before = std::fs::read_to_string(&lockfile).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "update", flow.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "update --dry-run failed: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        before,
+        std::fs::read_to_string(&lockfile).unwrap(),
+        "--dry-run must not rewrite the lockfile"
+    );
+    assert!(
+        !session.exists(),
+        "--dry-run must not create the build session file"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
