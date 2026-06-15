@@ -169,6 +169,12 @@ pub struct BuildConfig {
     pub strict_types: bool,
     pub locked: bool,
     pub write_lockfile: bool,
+    /// Resolve + write the lockfile, then return WITHOUT building any node.
+    /// Backs `dora hub update`: the full resolve/inject/type-check/lockfile
+    /// pipeline (so the lockfile is identical to a real build's), minus the
+    /// build. Pair with `write_lockfile` to persist, or without it for a
+    /// resolve-only dry run.
+    pub lockfile_only: bool,
     pub lockfile_override: Option<PathBuf>,
     pub parallel: bool,
     /// Skip network access for hub index refreshes (cache only).
@@ -222,6 +228,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         strict_types,
         locked,
         write_lockfile,
+        lockfile_only,
         lockfile_override,
         parallel,
         offline,
@@ -463,6 +470,12 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 )
             })?;
         log::info!("wrote build lockfile to {}", lockfile_path.display());
+    }
+
+    // `dora hub update`: the lockfile (and all its validation) is the whole
+    // point — stop before touching the coordinator or building any node.
+    if lockfile_only {
+        return Ok(());
     }
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);

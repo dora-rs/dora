@@ -1179,7 +1179,8 @@ fn hub_update_bumps_pin_and_stays_locked_compatible() {
         stderr(&out)
     );
 
-    // re-running update is a no-op
+    // re-running update is idempotent: still resolves to 0.1.1, same lockfile
+    let before = std::fs::read_to_string(&lockfile).unwrap();
     let out = dora(&fixture)
         .args(["hub", "update", flow.to_str().unwrap()])
         .output()
@@ -1189,10 +1190,10 @@ fn hub_update_bumps_pin_and_stays_locked_compatible() {
         "second update failed: {}",
         stderr(&out)
     );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).contains("up to date"),
-        "second update should be a no-op:\n{}",
-        String::from_utf8_lossy(&out.stdout)
+    assert_eq!(
+        before,
+        std::fs::read_to_string(&lockfile).unwrap(),
+        "re-running update on an up-to-date lockfile must not change it"
     );
 }
 

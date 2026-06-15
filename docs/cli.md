@@ -1135,15 +1135,16 @@ compares the pin against the latest non-yanked **stable** version in the index
 pre-releases are not reported, matching resolution). Update the `hub:` range and
 rebuild to upgrade. Exits non-zero if any package could not be checked.
 
-`update` re-resolves every hub node to the latest version satisfying the
-descriptor's `hub:` range and rewrites the lockfile — the resolve-and-lock half
-of `dora build --write-lockfile`, without building. Non-hub git pins are left
-as they are; `--dry-run` reports the moves without writing. The refreshed
-lockfile is byte-compatible with `dora build --locked`. Like `dora build`, it
-re-checks each package's contract against the dataflow, so it fails if a newer
+`update` runs the same resolve / contract / type-check / lockfile pipeline as
+`dora build --write-lockfile` — re-resolving every hub node to the latest
+version satisfying the descriptor's `hub:` range (and any plain `git:` nodes to
+their current ref) — then stops *before* building. The lockfile it writes is
+therefore identical to a real build's, and consumable under `dora build
+--locked`. Because it re-checks each package's contract, it fails if a newer
 version's manifest no longer matches the wiring (rather than locking a version
-that won't build). (Per-package filtering — `update <pkg>` — is not yet
-implemented; it re-resolves all hub nodes.)
+that won't build). `--dry-run` resolves and reports without writing.
+(Per-package filtering — `update <pkg>` — is not yet implemented; it re-resolves
+all hub nodes.)
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;
