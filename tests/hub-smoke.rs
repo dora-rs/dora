@@ -1056,6 +1056,45 @@ fn hub_outdated_reports_newer_version() {
     );
 }
 
+/// A check that can't complete (the pinned package is gone from the index) must
+/// exit non-zero and must NOT be summarized as "up to date" (P3.2).
+#[test]
+fn hub_outdated_errors_when_pin_unresolvable() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub outdated error test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build --write-lockfile should succeed"
+    );
+
+    // remove the index entry so the pin can no longer be resolved
+    std::fs::remove_file(fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml")).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "outdated", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "a failed check must exit non-zero");
+    assert!(
+        !String::from_utf8_lossy(&out.stdout).contains("up to date"),
+        "a failed check must not be summarized as up to date:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }

@@ -34,6 +34,7 @@ impl Executable for Outdated {
 
         let mut checked = 0usize;
         let mut outdated = 0usize;
+        let mut errored = 0usize;
         for (node_id, source) in &lockfile.git_sources {
             let Some(hub) = &source.hub else {
                 continue;
@@ -44,6 +45,7 @@ impl Executable for Outdated {
             // before echoing, and treat a malformed pin as "can't check".
             let Some((namespace, name)) = hub.name.split_once('/') else {
                 println!("{node_id}: malformed hub name `{}`", sanitize(&hub.name));
+                errored += 1;
                 continue;
             };
             let pinned = match hub.version.parse::<dora_hub_client::semver::Version>() {
@@ -53,6 +55,7 @@ impl Executable for Outdated {
                         "{node_id}: malformed pinned version `{}`",
                         sanitize(&hub.version)
                     );
+                    errored += 1;
                     continue;
                 }
             };
@@ -65,6 +68,7 @@ impl Executable for Outdated {
                         sanitize(namespace),
                         sanitize(name)
                     );
+                    errored += 1;
                     continue;
                 }
             };
@@ -86,24 +90,32 @@ impl Executable for Outdated {
                     );
                 }
                 Ok(_) => {} // up to date
-                Err(err) => println!(
-                    "{node_id}: {}/{} {pinned} — {err:#}",
-                    sanitize(namespace),
-                    sanitize(name)
-                ),
+                Err(err) => {
+                    println!(
+                        "{node_id}: {}/{} {pinned} — {err:#}",
+                        sanitize(namespace),
+                        sanitize(name)
+                    );
+                    errored += 1;
+                }
             }
         }
         ctx.drain_warnings();
 
         if checked == 0 {
             println!("No hub packages pinned in {}.", lockfile_path.display());
-        } else if outdated == 0 {
-            println!("All {checked} hub package(s) are up to date.");
-        } else {
+        } else if outdated > 0 {
             println!(
                 "{outdated} of {checked} hub package(s) are outdated — \
                  update the `hub:` range and rebuild to upgrade."
             );
+        } else if errored == 0 {
+            println!("All {checked} hub package(s) are up to date.");
+        }
+        // A check that couldn't complete must not read as "up to date": report
+        // it and exit non-zero so a human or CI can tell the report is partial.
+        if errored > 0 {
+            eyre::bail!("{errored} of {checked} hub package(s) could not be checked (see above)");
         }
         Ok(())
     }

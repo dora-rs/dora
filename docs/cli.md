@@ -1128,9 +1128,10 @@ restores it (the one mutation an index entry allows, §7.5). For a local
 the flag-flip change to open as a PR.
 
 `outdated` reads a dataflow's lockfile and, for each pinned hub package,
-compares the pin against the latest non-yanked version in the index (ignoring
-the dataflow's range, so a major/minor bump still shows up). Update the `hub:`
-range and rebuild to upgrade.
+compares the pin against the latest non-yanked **stable** version in the index
+(ignoring the dataflow's range, so a major/minor bump still shows up;
+pre-releases are not reported, matching resolution). Update the `hub:` range and
+rebuild to upgrade. Exits non-zero if any package could not be checked.
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;
