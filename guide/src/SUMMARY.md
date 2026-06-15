@@ -39,6 +39,10 @@
 - [WebSocket Control Plane](advanced/ws-control.md)
 - [WebSocket Topic Data](advanced/ws-topic.md)
 
+# Node Packaging (Dora Hub)
+
+- [Writing a Node Manifest](hub/node-manifest.md)
+
 # Development
 
 - [Testing Guide](development/testing.md)
