@@ -426,6 +426,53 @@ fn hub_override_builds_from_local_checkout() {
     );
 }
 
+/// `dora run --hub-override` must build AND run the LOCAL checkout, not the
+/// published/committed source. We modify the checkout's source (uncommitted)
+/// to print a unique marker; if the override truly uses local source, that
+/// marker — not the index-pinned version — appears at run time (UC11).
+#[test]
+fn hub_run_override_executes_local_source() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub run-override test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+
+    // edit the checkout's source WITHOUT committing — the index pin still
+    // points at the original commit, so only a local override sees this.
+    let marker = "LOCAL-OVERRIDE-MARKER-9173";
+    write(
+        &checkout.join("src/main.rs"),
+        &format!("fn main() {{ println!(\"{marker}\"); }}\n"),
+    );
+
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args([
+            "run",
+            flow.to_str().unwrap(),
+            "--hub-override",
+            &format!("test/hub-smoke-hello={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "run --hub-override failed: {}",
+        stderr(&out)
+    );
+    let combined = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert!(
+        combined.contains(marker),
+        "run did not execute the local checkout (marker absent):\n{combined}"
+    );
+}
+
 /// An override that names no node in the dataflow is reported, not silently
 /// ignored.
 #[test]

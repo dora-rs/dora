@@ -438,15 +438,24 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
     // `--hub-override` substitutes a checkout that only exists on this machine,
-    // so it is a local-only feature. Reject mixing it with an explicit remote
-    // coordinator rather than silently ignoring the override.
-    if !hub_override_node_dirs.is_empty()
-        && (coordinator_addr.is_some() || coordinator_port.is_some())
-    {
-        eyre::bail!(
-            "`--hub-override` is a local build feature and cannot be combined with a remote \
-             coordinator (`--coordinator-addr`/`--coordinator-port`)"
-        );
+    // so it is a local-only feature. Reject combining it with a distributed
+    // build rather than silently forcing everything local: an explicit remote
+    // coordinator, or a `deploy:`-driven distributed build (unless the caller
+    // already forced local, e.g. `dora run`, where local is the only mode).
+    if !hub_override_node_dirs.is_empty() {
+        if coordinator_addr.is_some() || coordinator_port.is_some() {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be combined with a remote \
+                 coordinator (`--coordinator-addr`/`--coordinator-port`)"
+            );
+        }
+        if !force_local && dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some()) {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be used with a distributed \
+                 (`deploy:`) dataflow — the local checkout only exists on this machine. Use \
+                 `--local` to force a fully local build if that is what you want."
+            );
+        }
     }
     let build_kind = if !hub_override_node_dirs.is_empty() {
         log::info!("Building locally because `--hub-override` was given");
