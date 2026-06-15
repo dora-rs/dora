@@ -106,8 +106,10 @@ impl Executable for Publish {
         let rev_arg = self.rev.as_deref().unwrap_or("HEAD");
         let commit = git_in(dir, &["rev-parse", &format!("{rev_arg}^{{commit}}")])
             .with_context(|| format!("failed to resolve git ref `{rev_arg}` to a commit"))?;
-        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
-            bail!("resolved commit `{commit}` is not a full 40-char hash");
+        // Accept SHA-1 (40) or SHA-256 (64) hashes — the index resolver
+        // (`git_pin`) takes both, so publish must not be stricter.
+        if !matches!(commit.len(), 40 | 64) || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+            bail!("resolved commit `{commit}` is not a full git hash (40 or 64 hex chars)");
         }
         // subdir = the node directory's path within the repo (empty at root).
         let subdir = git_in(dir, &["rev-parse", "--show-prefix"])
@@ -133,19 +135,10 @@ impl Executable for Publish {
             serde_yaml::to_string(&entry).context("failed to serialize index entry")?;
         let rel_path = format!("{namespace}/{name}/{version}.yml");
 
-        // 5a. Dry run: validate + preview only.
-        if self.dry_run {
-            println!("# {rel_path}");
-            print!("{entry_yaml}");
-            println!(
-                "\nvalidated `{namespace}/{name}` v{version} @ {} (subdir: {})",
-                &commit[..12],
-                subdir.as_deref().unwrap_or(".")
-            );
-            return Ok(());
-        }
-
-        // 5b. Resolve the target index and publish.
+        // 5. Resolve the target index up-front so `--dry-run` validates the same
+        // `--index`/namespace binding a real publish would, and previews where
+        // the entry lands. `load_default` falls back to the official index when
+        // no hub.toml is present, so dry-run still works without a config.
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let index = match &self.index {
             Some(alias) => {
@@ -174,6 +167,19 @@ impl Executable for Publish {
             None => config.index_for_namespace(&namespace),
         };
 
+        // 5a. Dry run: validate + preview only.
+        if self.dry_run {
+            println!("# {rel_path} (index: {})", index.alias);
+            print!("{entry_yaml}");
+            println!(
+                "\nvalidated `{namespace}/{name}` v{version} @ {} (subdir: {})",
+                &commit[..12],
+                subdir.as_deref().unwrap_or(".")
+            );
+            return Ok(());
+        }
+
+        // 5b. Publish into the resolved index.
         if index.is_local() {
             let catalog = index.local_catalog_dir(&config.config_dir)?;
             let dest = catalog.join(&rel_path);
