@@ -268,6 +268,36 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
 
+    // `--hub-override` is a local-only inner-loop feature (the checkout exists
+    // only on this machine). If it was *requested* at all, reject combining it
+    // with a distributed build or with lockfile generation here — before any
+    // index resolution or lockfile write. Keyed on the requested overrides, not
+    // the ones that matched a node, so a typo'd package name can't silently
+    // fall through to a distributed build or clobber the lockfile.
+    if !hub_override_dirs.is_empty() {
+        if coordinator_addr.is_some() || coordinator_port.is_some() {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be combined with a remote \
+                 coordinator (`--coordinator-addr`/`--coordinator-port`)"
+            );
+        }
+        if !force_local && dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some()) {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be used with a distributed \
+                 (`deploy:`) dataflow — the local checkout only exists on this machine. Use \
+                 `--local` to force a fully local build if that is what you want."
+            );
+        }
+        if write_lockfile {
+            eyre::bail!(
+                "`--hub-override` cannot be combined with `--write-lockfile`: the override \
+                 substitutes local source for a hub node, so the regenerated lockfile would drop \
+                 that node's hub pin. Drop `--write-lockfile` (or the override) when refreshing \
+                 the lockfile."
+            );
+        }
+    }
+
     // Digest the expanded descriptor before hub desugaring so `dora start` /
     // `dora daemon --run-dataflow` can detect on-disk edits to a hub dataflow
     // (whose unresolved `hub:` references can't be re-fingerprinted directly).
@@ -437,27 +467,10 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
-    // `--hub-override` substitutes a checkout that only exists on this machine,
-    // so it is a local-only feature. Reject combining it with a distributed
-    // build rather than silently forcing everything local: an explicit remote
-    // coordinator, or a `deploy:`-driven distributed build (unless the caller
-    // already forced local, e.g. `dora run`, where local is the only mode).
-    if !hub_override_node_dirs.is_empty() {
-        if coordinator_addr.is_some() || coordinator_port.is_some() {
-            eyre::bail!(
-                "`--hub-override` is a local build feature and cannot be combined with a remote \
-                 coordinator (`--coordinator-addr`/`--coordinator-port`)"
-            );
-        }
-        if !force_local && dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some()) {
-            eyre::bail!(
-                "`--hub-override` is a local build feature and cannot be used with a distributed \
-                 (`deploy:`) dataflow — the local checkout only exists on this machine. Use \
-                 `--local` to force a fully local build if that is what you want."
-            );
-        }
-    }
-    let build_kind = if !hub_override_node_dirs.is_empty() {
+    // `--hub-override` implies a local build (validated above). Force it even
+    // when the override matched no node: the override-vs-distributed conflict
+    // was already rejected, so the remaining cases are safe to build locally.
+    let build_kind = if !hub_override_dirs.is_empty() {
         log::info!("Building locally because `--hub-override` was given");
         BuildKind::Local
     } else if force_local {

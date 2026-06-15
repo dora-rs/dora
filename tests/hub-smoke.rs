@@ -539,6 +539,81 @@ fn hub_override_warns_when_no_hub_nodes() {
     );
 }
 
+/// `--hub-override` + `--write-lockfile` is rejected: the override substitutes
+/// local source, so a regenerated lockfile would silently drop the hub pin.
+#[test]
+fn hub_override_rejects_write_lockfile() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override write-lockfile test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--write-lockfile",
+            "--hub-override",
+            &format!("test/hub-smoke-hello={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "must reject --hub-override + --write-lockfile"
+    );
+    assert!(
+        stderr(&out).contains("write-lockfile"),
+        "expected a write-lockfile rejection, got: {}",
+        stderr(&out)
+    );
+}
+
+/// `--hub-override` is rejected with a remote coordinator even when the
+/// override package matches NO node (a typo must not silently fall through to
+/// a distributed build).
+#[test]
+fn hub_override_rejects_remote_coordinator_even_if_unmatched() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub override coordinator test");
+        return;
+    }
+    let fixture = build_fixture();
+    let checkout = fixture.root.join("source/node-hub/hello");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args([
+            "build",
+            flow.to_str().unwrap(),
+            "--coordinator-addr",
+            "127.0.0.1",
+            // a package that matches no node in the dataflow
+            "--hub-override",
+            &format!("test/not-a-node={}", checkout.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "must reject --hub-override + remote coordinator regardless of match"
+    );
+    assert!(
+        stderr(&out).contains("remote") && stderr(&out).contains("coordinator"),
+        "expected a remote-coordinator rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
