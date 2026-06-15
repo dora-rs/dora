@@ -67,12 +67,25 @@ impl DaemonRegisterRequest {
         if versions_compatible(&crate_version, specified_version)? {
             Ok(())
         } else {
+            // Direction-aware remediation: `versions_compatible` rejects both
+            // older and newer daemons, so the fix differs. Upgrade whichever
+            // side is older.
+            let remedy = if *specified_version < crate_version {
+                format!(
+                    "upgrade the daemon to match the coordinator (e.g. \
+                     `cargo install dora-cli --version {crate_version}`) — an older daemon \
+                     also lacks newer wire features such as hub `subdir`/`hub:` node sources"
+                )
+            } else {
+                format!(
+                    "upgrade the coordinator to dora v{specified_version} (or run an older \
+                     daemon) so both sides match"
+                )
+            };
             Err(format!(
-                "version mismatch: this daemon runs dora v{} but the coordinator expects \
-                v{crate_version}. Upgrade the daemon to match the coordinator (e.g. \
-                `cargo install dora-cli --version {crate_version}`) — an older daemon also \
-                lacks support for newer wire features such as hub `subdir`/`hub:` node sources.",
-                self.dora_version
+                "version mismatch: this daemon runs dora v{specified_version} but the \
+                 coordinator expects v{crate_version} — these dora versions are incompatible. \
+                 {remedy}.",
             ))
         }
     }
@@ -91,25 +104,41 @@ mod register_version_tests {
         );
     }
 
-    #[test]
-    fn incompatible_daemon_gets_an_actionable_upgrade_error() {
-        // A daemon from an incompatible version line is rejected at
-        // registration; the error must tell the operator to upgrade. (This
-        // covers cross-version mismatches only — a *same-version* pre-hub
-        // daemon passes this gate, which is why hub capability is signalled
-        // explicitly via `supports_hub_sources`.)
-        let current = current_crate_version();
-        let req = DaemonRegisterRequest {
-            dora_version: semver::Version::new(current.major + 1, 0, 0),
+    fn request_with_version(dora_version: semver::Version) -> DaemonRegisterRequest {
+        DaemonRegisterRequest {
+            dora_version,
             machine_id: None,
             labels: Default::default(),
             supports_hub_sources: true,
-        };
-        let err = req
+        }
+    }
+
+    #[test]
+    fn incompatible_daemon_gets_direction_aware_upgrade_advice() {
+        // `versions_compatible` rejects both older and newer daemons, so the
+        // remediation must name the right side. (Cross-version only — a
+        // *same-version* pre-hub daemon passes this gate, which is why hub
+        // capability is signalled explicitly via `supports_hub_sources`.)
+        let current = current_crate_version();
+
+        // A NEWER daemon than the coordinator → upgrade the *coordinator*.
+        let err = request_with_version(semver::Version::new(current.major + 1, 0, 0))
             .check_version()
-            .expect_err("major-bump must be rejected");
+            .expect_err("newer-major daemon must be rejected");
         assert!(err.contains("version mismatch"), "{err}");
-        assert!(err.contains("Upgrade the daemon"), "{err}");
+        assert!(
+            err.contains("upgrade the coordinator"),
+            "newer daemon should advise upgrading the coordinator: {err}"
+        );
+
+        // An OLDER daemon than the coordinator → upgrade the *daemon*.
+        let err = request_with_version(semver::Version::new(0, 1, 0))
+            .check_version()
+            .expect_err("older daemon must be rejected");
+        assert!(
+            err.contains("upgrade the daemon"),
+            "older daemon should advise upgrading the daemon: {err}"
+        );
     }
 
     #[test]
