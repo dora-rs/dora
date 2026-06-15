@@ -297,7 +297,10 @@ pub fn resolve_hub_nodes(
                 node.id,
                 type_issues
                     .iter()
-                    .map(|i| format!("{}: {}", i.field, i.message))
+                    // route through `ManifestIssue`'s Display, which strips
+                    // control chars — `i.message` can embed an unvalidated
+                    // field `type:` string from a hostile manifest
+                    .map(|i| i.to_string())
                     .collect::<Vec<_>>()
                     .join("\n  - ")
             );
