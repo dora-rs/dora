@@ -40,11 +40,14 @@ impl Executable for Outdated {
                 continue;
             };
             checked += 1;
-            // `hub.name` is `namespace/name`; `hub.version` the pinned version.
-            // Both come from the lockfile (not charset-validated) — sanitize
-            // before echoing, and treat a malformed pin as "can't check".
+            // The node id, hub name, and version all come from the lockfile,
+            // and resolve errors embed the lockfile-derived package key — none
+            // are charset-validated, so sanitize every one before echoing (a
+            // hostile entry could otherwise inject terminal escapes). Treat a
+            // malformed pin as "can't check".
+            let node = sanitize(node_id.as_ref());
             let Some((namespace, name)) = hub.name.split_once('/') else {
-                println!("{node_id}: malformed hub name `{}`", sanitize(&hub.name));
+                println!("{node}: malformed hub name `{}`", sanitize(&hub.name));
                 errored += 1;
                 continue;
             };
@@ -52,7 +55,7 @@ impl Executable for Outdated {
                 Ok(v) => v,
                 Err(_) => {
                     println!(
-                        "{node_id}: malformed pinned version `{}`",
+                        "{node}: malformed pinned version `{}`",
                         sanitize(&hub.version)
                     );
                     errored += 1;
@@ -64,9 +67,10 @@ impl Executable for Outdated {
                 Ok(catalog) => catalog,
                 Err(err) => {
                     println!(
-                        "{node_id}: {}/{} — could not read index ({err:#})",
+                        "{node}: {}/{} — could not read index ({})",
                         sanitize(namespace),
-                        sanitize(name)
+                        sanitize(name),
+                        sanitize(&format!("{err:#}"))
                     );
                     errored += 1;
                     continue;
@@ -83,7 +87,7 @@ impl Executable for Outdated {
                 Ok(latest) if latest.version > pinned => {
                     outdated += 1;
                     println!(
-                        "{node_id}: {}/{} {pinned} -> {} (newer available)",
+                        "{node}: {}/{} {pinned} -> {} (newer available)",
                         sanitize(namespace),
                         sanitize(name),
                         latest.version
@@ -92,9 +96,10 @@ impl Executable for Outdated {
                 Ok(_) => {} // up to date
                 Err(err) => {
                     println!(
-                        "{node_id}: {}/{} {pinned} — {err:#}",
+                        "{node}: {}/{} {pinned} — {}",
                         sanitize(namespace),
-                        sanitize(name)
+                        sanitize(name),
+                        sanitize(&format!("{err:#}"))
                     );
                     errored += 1;
                 }
