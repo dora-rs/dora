@@ -1338,6 +1338,14 @@ impl Node {
             }
         }
 
+        // Remove the buffer_id from the freed tombstone so that if a
+        // sender restarts and reuses the same counter, the fast path
+        // re-engages (FREED_POOL_IDS is a per-process permanent set).
+        {
+            let mut freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
+            freed.remove(&buffer_id);
+        }
+
         let buffer_id_array = arrow::array::StringArray::from(vec![buffer_id]);
         let buf_py: Py<PyAny> = buffer_id_array.to_data().to_pyarrow(py)?.unbind();
         Ok(buf_py)
