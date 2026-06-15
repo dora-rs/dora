@@ -1197,6 +1197,57 @@ fn hub_update_bumps_pin_and_stays_locked_compatible() {
     );
 }
 
+/// `dora hub update --dry-run` is read-only: it neither rewrites the lockfile
+/// nor creates the build session file (the resolve stops before the session
+/// read that would write `out/<name>.dora-session.yaml`) (P3.2).
+#[test]
+fn hub_update_dry_run_is_read_only() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub update dry-run test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let lockfile = fixture.root.join("flow/dataflow.dora-lock.yaml");
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build --write-lockfile should succeed"
+    );
+
+    // clean slate: drop the build's `out/` so we can prove dry-run won't recreate it
+    std::fs::remove_dir_all(fixture.root.join("flow/out")).ok();
+    let session = fixture.root.join("flow/out/dataflow.dora-session.yaml");
+    let before = std::fs::read_to_string(&lockfile).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "update", flow.to_str().unwrap(), "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "update --dry-run failed: {}",
+        stderr(&out)
+    );
+    assert_eq!(
+        before,
+        std::fs::read_to_string(&lockfile).unwrap(),
+        "--dry-run must not rewrite the lockfile"
+    );
+    assert!(
+        !session.exists(),
+        "--dry-run must not create the build session file"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }

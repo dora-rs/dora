@@ -395,9 +395,6 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         }
     }
 
-    let mut dataflow_session =
-        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
-
     let mut git_sources = BTreeMap::new();
     let mut descriptor_git_sources = BTreeMap::new();
     let resolved_nodes = dataflow_descriptor
@@ -477,6 +474,12 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
     if lockfile_only {
         return Ok(());
     }
+
+    // Read (creating if absent) the session file only once we know we'll build —
+    // `read_session` writes `out/<name>.dora-session.yaml` + `.gitignore`, which
+    // an `--dry-run`/`lockfile_only` resolve must not do.
+    let mut dataflow_session =
+        DataflowSession::read_session(&dataflow_path).context("failed to read DataflowSession")?;
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
