@@ -901,6 +901,24 @@ fn hub_yank_skips_version_then_undo_restores() {
     );
 }
 
+/// A yank reference with `..` path segments must be rejected before any file
+/// is touched — the write path can't be allowed to escape the catalog root.
+#[test]
+fn hub_yank_rejects_path_traversal() {
+    let fixture = build_fixture();
+    for bad in ["../..@0.1.0", "../x@0.1.0", "..@0.1.0"] {
+        let out = dora(&fixture).args(["hub", "yank", bad]).output().unwrap();
+        assert!(!out.status.success(), "`{bad}` must be rejected");
+        // it must be rejected by the key-part guard (not merely a missing file),
+        // proving the traversal never reached a filesystem path
+        assert!(
+            stderr(&out).contains("invalid package"),
+            "`{bad}` should be rejected by the key-part guard, got: {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// Yanking against a git-backed index (the official one) can't flip a file in
 /// place — it prints the flag-flip PR instructions instead.
 #[test]

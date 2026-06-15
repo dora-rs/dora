@@ -43,6 +43,16 @@ impl Executable for Yank {
         let reference =
             PackageRef::parse(pkg).with_context(|| format!("invalid package reference `{pkg}`"))?;
         let (namespace, name) = (&reference.namespace, &reference.name);
+        // We build a catalog path from these and *write* to it, so apply the
+        // same key-part guard the read paths use — `PackageRef::parse` does not
+        // reject `..`, and a write must never escape the catalog root.
+        if !dora_hub_client::index::is_valid_key_part(namespace)
+            || !dora_hub_client::index::is_valid_key_part(name)
+        {
+            bail!(
+                "invalid package `{namespace}/{name}`: namespace and name must be `[A-Za-z0-9._-]` and not start with `.`"
+            );
+        }
 
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let index = config.index_for_namespace(namespace);

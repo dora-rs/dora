@@ -368,7 +368,12 @@ impl IndexCatalog {
 
 /// A valid namespace/name path segment of a package key. Keys feed into
 /// filesystem paths and terminal output, so the charset is strict.
-fn is_valid_key_part(part: &str) -> bool {
+/// Whether `part` is a safe catalog path segment (a namespace or name): a
+/// bounded `[A-Za-z0-9._-]` token that is not empty and does not start with `.`
+/// (so `..` and dotfiles can never become a directory traversal). Used by every
+/// catalog read, and by writers like `dora hub yank` that build an entry path
+/// from a CLI-supplied reference.
+pub fn is_valid_key_part(part: &str) -> bool {
     !part.is_empty()
         && part.len() <= 64
         && part
