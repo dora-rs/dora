@@ -1119,6 +1119,8 @@ dora hub yank <pkg>@<version>              # yank/restore a published version
               [--reason R] [--undo]
 dora hub outdated <dataflow.yml>           # locked hub pins behind the index
                   [--offline]
+dora hub update <dataflow.yml>             # re-resolve hub pins + rewrite lockfile
+                [--offline] [--dry-run]
 ```
 
 `yank` flips the `yanked` flag on a published version: new resolutions skip it,
@@ -1132,6 +1134,13 @@ compares the pin against the latest non-yanked **stable** version in the index
 (ignoring the dataflow's range, so a major/minor bump still shows up;
 pre-releases are not reported, matching resolution). Update the `hub:` range and
 rebuild to upgrade. Exits non-zero if any package could not be checked.
+
+`update` re-resolves every hub node to the latest version satisfying the
+descriptor's `hub:` range and rewrites the lockfile — the resolve-and-lock half
+of `dora build --write-lockfile`, without building. Non-hub git pins are left
+as they are; `--dry-run` reports the moves without writing. The refreshed
+lockfile is byte-compatible with `dora build --locked`. (Per-package filtering
+— `update <pkg>` — is not yet implemented; it re-resolves all hub nodes.)
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;

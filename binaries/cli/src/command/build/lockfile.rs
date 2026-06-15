@@ -145,6 +145,13 @@ impl BuildLockfile {
         Ok(())
     }
 
+    /// The recorded descriptor/source fingerprint, if the lockfile carries one
+    /// (absent in the v1 format). Used by `dora hub update` to tell whether a
+    /// re-resolve actually changed anything.
+    pub fn descriptor_fingerprint(&self) -> Option<&str> {
+        self.descriptor_fingerprint.as_deref()
+    }
+
     pub fn get_source(&self, node_id: &NodeId, repo: &str) -> eyre::Result<GitSource> {
         let source = self
             .git_sources
