@@ -238,6 +238,22 @@ impl IndexCatalog {
             .with_context(|| format!("invalid index entry `{}`", path.display()))
     }
 
+    /// The confined on-disk path of a version entry file, for callers that
+    /// read or rewrite it in place (e.g. `dora hub yank`). Errors if the path
+    /// escapes the catalog root via a symlink, so a write can't land outside it.
+    pub fn version_entry_path(
+        &self,
+        namespace: &str,
+        name: &str,
+        version: &Version,
+    ) -> eyre::Result<PathBuf> {
+        let path = self
+            .package_dir(namespace, name)?
+            .join(format!("{version}.yml"));
+        self.confine(&path)?;
+        Ok(path)
+    }
+
     /// Read a package's namespace-level metadata, if present.
     pub fn package_meta(&self, namespace: &str, name: &str) -> eyre::Result<Option<PackageMeta>> {
         let path = self.package_dir(namespace, name)?.join("package.yml");
@@ -368,7 +384,12 @@ impl IndexCatalog {
 
 /// A valid namespace/name path segment of a package key. Keys feed into
 /// filesystem paths and terminal output, so the charset is strict.
-fn is_valid_key_part(part: &str) -> bool {
+/// Whether `part` is a safe catalog path segment (a namespace or name): a
+/// bounded `[A-Za-z0-9._-]` token that is not empty and does not start with `.`
+/// (so `..` and dotfiles can never become a directory traversal). Used by every
+/// catalog read, and by writers like `dora hub yank` that build an entry path
+/// from a CLI-supplied reference.
+pub fn is_valid_key_part(part: &str) -> bool {
     !part.is_empty()
         && part.len() <= 64
         && part

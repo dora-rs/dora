@@ -824,6 +824,184 @@ fn hub_publish_rejects_index_not_bound_to_namespace() {
     );
 }
 
+/// `dora hub yank` flips the `yanked` flag on a local index entry: a fresh
+/// resolve then skips the version (build fails when nothing else satisfies the
+/// range), and `--undo` restores it (UC10).
+#[test]
+fn hub_yank_skips_version_then_undo_restores() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub yank test");
+        return;
+    }
+    let fixture = build_fixture();
+    let entry = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    // baseline: builds before the yank
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "baseline build should succeed"
+    );
+
+    // yank it
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "yank",
+            "test/hub-smoke-hello@0.1.0",
+            "--reason",
+            "broken",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "yank failed: {}", stderr(&out));
+    let written = std::fs::read_to_string(&entry).unwrap();
+    assert!(written.contains("yanked: true"), "entry: {written}");
+    assert!(written.contains("broken"), "yank reason missing: {written}");
+
+    // a fresh resolve now finds no non-yanked version satisfying `^0.1`
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "build must fail when the only matching version is yanked"
+    );
+
+    // undo restores it
+    let out = dora(&fixture)
+        .args(["hub", "yank", "test/hub-smoke-hello@0.1.0", "--undo"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "undo failed: {}", stderr(&out));
+    assert!(
+        std::fs::read_to_string(&entry)
+            .unwrap()
+            .contains("yanked: false"),
+        "undo did not clear the flag"
+    );
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build should succeed again after undo"
+    );
+}
+
+/// Re-yanking an already-yanked version with a *different* `--reason` updates
+/// the recorded reason instead of silently discarding it.
+#[test]
+fn hub_yank_updates_reason_when_already_yanked() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub yank reason-update test");
+        return;
+    }
+    let fixture = build_fixture();
+    let entry = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+
+    let yank = |reason: &str| {
+        dora(&fixture)
+            .args([
+                "hub",
+                "yank",
+                "test/hub-smoke-hello@0.1.0",
+                "--reason",
+                reason,
+            ])
+            .output()
+            .unwrap()
+    };
+
+    assert!(yank("first").status.success(), "initial yank failed");
+    // re-yank with a corrected reason — must take effect, not no-op
+    let out = yank("corrected");
+    assert!(out.status.success(), "re-yank failed: {}", stderr(&out));
+    let written = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        written.contains("corrected") && !written.contains("first"),
+        "re-yank must update the reason, got: {written}"
+    );
+}
+
+/// A yank reference with `..` path segments must be rejected before any file
+/// is touched — the write path can't be allowed to escape the catalog root.
+#[test]
+fn hub_yank_rejects_path_traversal() {
+    let fixture = build_fixture();
+    for bad in ["../..@0.1.0", "../x@0.1.0", "..@0.1.0"] {
+        let out = dora(&fixture).args(["hub", "yank", bad]).output().unwrap();
+        assert!(!out.status.success(), "`{bad}` must be rejected");
+        // it must be rejected by the key-part guard (not merely a missing file),
+        // proving the traversal never reached a filesystem path
+        assert!(
+            stderr(&out).contains("invalid package"),
+            "`{bad}` should be rejected by the key-part guard, got: {}",
+            stderr(&out)
+        );
+    }
+}
+
+/// A symlinked package directory resolving outside the catalog root must be
+/// rejected — the `..` guard blocks lexical traversal; this blocks symlink
+/// escape, matching the read-path confinement.
+#[cfg(unix)]
+#[test]
+fn hub_yank_rejects_symlink_escape() {
+    let fixture = build_fixture();
+    // a target entry that lives OUTSIDE the catalog root
+    let outside = fixture.root.join("outside/test/hub-smoke-hello");
+    write(&outside.join("0.1.0.yml"), "manifest: {}\nsource: {}\n");
+    // replace the in-catalog package dir with a symlink to that outside dir
+    let pkg_dir = fixture.root.join("index/test/hub-smoke-hello");
+    std::fs::remove_dir_all(&pkg_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, &pkg_dir).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "yank", "test/hub-smoke-hello@0.1.0"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "symlink escape must be rejected");
+    assert!(
+        stderr(&out).contains("escapes the catalog root"),
+        "expected catalog-confinement rejection, got: {}",
+        stderr(&out)
+    );
+}
+
+/// Yanking against a git-backed index (the official one) can't flip a file in
+/// place — it prints the flag-flip PR instructions instead.
+#[test]
+fn hub_yank_git_index_prints_pr_instructions() {
+    let fixture = build_fixture();
+    let out = dora(&fixture)
+        .args(["hub", "yank", "dora-rs/some-node@1.0.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "yank git-index failed: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("git-backed") && stdout.contains("yanked: true"),
+        "expected flag-flip PR instructions, got:\n{stdout}"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
