@@ -110,36 +110,11 @@ impl NodeManifest {
             issue("dora", format!("`{req}` is not a valid semver requirement"));
         }
 
-        // Validate shipped type bodies against a registry that includes the
-        // manifest's own types, so that a port referencing a shipped type is
-        // backed by a type that can actually be materialized (the P1.3 gate
-        // must reject unresolvable field types, not just unknown URN keys).
-        let mut local_registry = registry.clone();
-        for (urn, def) in &self.types {
-            local_registry.insert_type(urn.clone(), def.clone());
-        }
-        for (urn, def) in &self.types {
-            if let Some(problem) = check_shipped_type_urn(urn, &self.namespace) {
-                issue(&format!("types.{urn}"), problem);
-                continue;
-            }
-            // the `arrow:` discriminant must be a type dora can materialize —
-            // otherwise a port referencing this shipped type resolves (the URN
-            // exists) yet fails to build into an Arrow schema later
-            if !crate::types::is_known_arrow_type(&def.arrow) {
-                issue(
-                    &format!("types.{urn}.arrow"),
-                    format!("unknown arrow type `{}`", def.arrow),
-                );
-            }
-            for field in &def.fields {
-                if !local_registry.field_type_resolves(&field.r#type) {
-                    issue(
-                        &format!("types.{urn}.fields.{}", field.name),
-                        format!("unknown field type `{}`", field.r#type),
-                    );
-                }
-            }
+        // Validate shipped type bodies (namespace ownership + materializable
+        // bodies). Factored out because the hub resolver runs the same gate on
+        // an *untrusted* index entry before loading its types (spec §6.3, P2.12).
+        for problem in self.shipped_type_issues(registry) {
+            issue(&problem.field, problem.message);
         }
 
         for (direction, ports) in [("inputs", &self.inputs), ("outputs", &self.outputs)] {
@@ -184,6 +159,53 @@ impl NodeManifest {
             issue("example", "is not valid YAML".into());
         }
 
+        issues
+    }
+
+    /// Validate only the manifest's shipped `types:` — namespace ownership
+    /// (no `std/`, no cross-namespace, no `.`/`..` segments), a materializable
+    /// `arrow:` discriminant, and field types that resolve.
+    ///
+    /// Used both by full [`validate`](Self::validate) and by the hub resolver,
+    /// which loads an *untrusted* index entry's shipped types into the
+    /// dataflow's `TypeRegistry`. A rewritten or malformed entry must not be
+    /// able to register a `std/` override or a cross-namespace type that a
+    /// consumer's port check would then resolve (spec §6.3, P2.12).
+    pub fn shipped_type_issues(&self, registry: &TypeRegistry) -> Vec<ManifestIssue> {
+        let mut issues = Vec::new();
+        // Resolve field types against a registry that includes the manifest's
+        // own sibling types, so a type referencing another type it ships
+        // resolves, but an unresolvable field is still rejected.
+        let mut local_registry = registry.clone();
+        for (urn, def) in &self.types {
+            local_registry.insert_type(urn.clone(), def.clone());
+        }
+        for (urn, def) in &self.types {
+            if let Some(problem) = check_shipped_type_urn(urn, &self.namespace) {
+                issues.push(ManifestIssue {
+                    field: format!("types.{urn}"),
+                    message: problem,
+                });
+                continue;
+            }
+            // the `arrow:` discriminant must be a type dora can materialize —
+            // otherwise a port referencing this shipped type resolves (the URN
+            // exists) yet fails to build into an Arrow schema later
+            if !crate::types::is_known_arrow_type(&def.arrow) {
+                issues.push(ManifestIssue {
+                    field: format!("types.{urn}.arrow"),
+                    message: format!("unknown arrow type `{}`", def.arrow),
+                });
+            }
+            for field in &def.fields {
+                if !local_registry.field_type_resolves(&field.r#type) {
+                    issues.push(ManifestIssue {
+                        field: format!("types.{urn}.fields.{}", field.name),
+                        message: format!("unknown field type `{}`", field.r#type),
+                    });
+                }
+            }
+        }
         issues
     }
 
@@ -652,6 +674,42 @@ outputs:
                 "`{bad}` should be rejected for traversal: {issues:?}"
             );
         }
+    }
+
+    #[test]
+    fn shipped_type_issues_gates_untrusted_entries() {
+        // This is the gate the hub resolver runs on an untrusted index entry
+        // (P2.12). A `std/` override and a cross-namespace type must both be
+        // rejected; a well-formed own-namespace type passes.
+        let reg = TypeRegistry::new();
+
+        let std_override = minimal(
+            "types:\n  std/core/v1/Float32:\n    arrow: Struct\n    \
+             fields:\n      - name: x\n        type: Float32\n",
+        );
+        let issues = std_override.shipped_type_issues(&reg);
+        assert!(
+            issues.iter().any(|i| i.message.contains("std/")),
+            "a `std/` shipped type must be rejected: {issues:?}"
+        );
+
+        let cross_ns = minimal(
+            "types:\n  acme/lidar/v1/PointCloud:\n    arrow: Struct\n    \
+             fields:\n      - name: x\n        type: Float32\n",
+        );
+        assert!(
+            cross_ns
+                .shipped_type_issues(&reg)
+                .iter()
+                .any(|i| i.message.contains("namespace")),
+            "a cross-namespace shipped type must be rejected"
+        );
+
+        let ok = minimal(
+            "types:\n  dora-rs/lidar/v1/PointCloud:\n    arrow: Struct\n    \
+             fields:\n      - name: x\n        type: Float32\n",
+        );
+        assert_eq!(ok.shipped_type_issues(&reg), vec![]);
     }
 
     #[test]
