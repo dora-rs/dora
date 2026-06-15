@@ -118,6 +118,13 @@ pub struct Build {
     /// cache misses.
     #[clap(long, action)]
     offline: bool,
+    /// Substitute a local checkout for a hub package (UC11 inner loop):
+    /// `--hub-override <namespace>/<name>=<path>`. The manifest is read from
+    /// the checkout, contracts are still validated, and the node builds + runs
+    /// from local source — no index resolution for that package. Repeatable;
+    /// local builds only.
+    #[clap(long = "hub-override", value_name = "PKG=PATH")]
+    hub_override: Vec<String>,
 }
 
 impl Executable for Build {
@@ -135,6 +142,7 @@ impl Executable for Build {
             lockfile_override: self.lockfile,
             parallel: self.parallel,
             offline: self.offline,
+            hub_overrides: self.hub_override,
             ..Default::default()
         })
     }
@@ -165,6 +173,9 @@ pub struct BuildConfig {
     pub parallel: bool,
     /// Skip network access for hub index refreshes (cache only).
     pub offline: bool,
+    /// `--hub-override <namespace>/<name>=<path>` entries (UC11): substitute a
+    /// local checkout for a hub package. Parsed and validated in [`build`].
+    pub hub_overrides: Vec<String>,
     /// Overrides the working directory for cargo invocations and
     /// module expansion. Needed when the dataflow path points at a
     /// rewritten copy (e.g. a tempfile) whose parent can't resolve the
@@ -214,8 +225,24 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         lockfile_override,
         parallel,
         offline,
+        hub_overrides,
         working_dir_override,
     } = cfg;
+    // Parse `--hub-override <namespace>/<name>=<path>` into key -> canonical
+    // local dir. The key matches a node's resolved `hub:` reference key.
+    let mut hub_override_dirs: BTreeMap<String, PathBuf> = BTreeMap::new();
+    for spec in &hub_overrides {
+        let (pkg, path) = spec.split_once('=').ok_or_else(|| {
+            eyre::eyre!("invalid --hub-override `{spec}`: expected `<namespace>/<name>=<path>`")
+        })?;
+        let key = dora_hub_client::reference::PackageRef::parse(pkg.trim())
+            .with_context(|| format!("invalid --hub-override package `{pkg}`"))?
+            .key();
+        let dir = std::fs::canonicalize(path.trim()).with_context(|| {
+            format!("invalid --hub-override path `{}` for `{pkg}`", path.trim())
+        })?;
+        hub_override_dirs.insert(key, dir);
+    }
     // `BuildConfig` derives `Default` so `..Default::default()` works at
     // call sites, but that gives `dataflow: String::new()` which would
     // fail late with a confusing "failed to read ``" error. Catch it up
@@ -240,6 +267,36 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         })?
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
+
+    // `--hub-override` is a local-only inner-loop feature (the checkout exists
+    // only on this machine). If it was *requested* at all, reject combining it
+    // with a distributed build or with lockfile generation here — before any
+    // index resolution or lockfile write. Keyed on the requested overrides, not
+    // the ones that matched a node, so a typo'd package name can't silently
+    // fall through to a distributed build or clobber the lockfile.
+    if !hub_override_dirs.is_empty() {
+        if coordinator_addr.is_some() || coordinator_port.is_some() {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be combined with a remote \
+                 coordinator (`--coordinator-addr`/`--coordinator-port`)"
+            );
+        }
+        if !force_local && dataflow_descriptor.nodes.iter().any(|n| n.deploy.is_some()) {
+            eyre::bail!(
+                "`--hub-override` is a local build feature and cannot be used with a distributed \
+                 (`deploy:`) dataflow — the local checkout only exists on this machine. Use \
+                 `--local` to force a fully local build if that is what you want."
+            );
+        }
+        if write_lockfile {
+            eyre::bail!(
+                "`--hub-override` cannot be combined with `--write-lockfile`: the override \
+                 substitutes local source for a hub node, so the regenerated lockfile would drop \
+                 that node's hub pin. Drop `--write-lockfile` (or the override) when refreshing \
+                 the lockfile."
+            );
+        }
+    }
 
     // Digest the expanded descriptor before hub desugaring so `dora start` /
     // `dora daemon --run-dataflow` can detect on-disk edits to a hub dataflow
@@ -285,7 +342,9 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         &mut registry,
         offline,
         hub_pins.as_ref(),
+        &hub_override_dirs,
     )?;
+    let hub_override_node_dirs = hub_resolution.override_dirs.clone();
     for note in &hub_resolution.notes {
         println!("  {note}");
     }
@@ -408,7 +467,13 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
 
     let session = || connect_to_coordinator_with_defaults(coordinator_addr, coordinator_port);
 
-    let build_kind = if force_local {
+    // `--hub-override` implies a local build (validated above). Force it even
+    // when the override matched no node: the override-vs-distributed conflict
+    // was already rejected, so the remaining cases are safe to build locally.
+    let build_kind = if !hub_override_dirs.is_empty() {
+        log::info!("Building locally because `--hub-override` was given");
+        BuildKind::Local
+    } else if force_local {
         log::info!("Building locally, as requested through `--force-local`");
         BuildKind::Local
     } else if dataflow_descriptor.nodes.iter().all(|n| n.deploy.is_none()) {
@@ -449,6 +514,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
                 local_working_dir,
                 uv,
                 parallel,
+                &hub_override_node_dirs,
             )?;
 
             dataflow_session.git_sources = git_sources;

@@ -346,6 +346,11 @@ dora build <PATH> [OPTIONS]
 | `--uv` | false | Use `uv` for Python builds |
 | `--local` | false | Force local build (skip coordinator) |
 | `--strict-types` | false | Treat type warnings as errors (non-zero exit code) |
+| `--locked` | false | Use pinned hub/git commits from the lockfile (no resolution) |
+| `--offline` | false | Do not refresh the hub index over the network; cache only |
+| `--hub-override <PKG=PATH>` | — | Substitute a local checkout for a hub package (repeatable; local builds only) |
+
+**`--hub-override`:** for the node author's inner loop (UC11) — test a local checkout against a consumer dataflow without publishing. `--hub-override <namespace>/<name>=<path>` reads the manifest from `<path>`, still validates contracts, and builds + runs the node from local source instead of resolving and cloning the index pin. The same flag is accepted by `dora run`. It implies a local build (the checkout only exists on this machine), so it is rejected when combined with a remote coordinator or a distributed (`deploy:`) dataflow. Pair `dora build --hub-override …` with `dora start`, or use `dora run --hub-override …` directly.
 
 **Type checking:** After expanding modules, `build` runs the same type checks as `validate`. Warnings are printed by default; use `--strict-types` (or set `strict_types: true` in the YAML) to fail the build on type mismatches. User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 

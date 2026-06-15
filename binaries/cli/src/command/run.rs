@@ -100,6 +100,11 @@ pub struct Run {
     /// can't resolve the original `build:` / relative-path references.
     #[clap(skip)]
     pub working_dir: Option<PathBuf>,
+    /// Substitute a local checkout for a hub package (UC11 inner loop):
+    /// `--hub-override <namespace>/<name>=<path>`. Same as `dora build
+    /// --hub-override`; `dora run` is always local, so it applies directly.
+    #[clap(long = "hub-override", value_name = "PKG=PATH")]
+    pub hub_override: Vec<String>,
 }
 
 impl Run {
@@ -117,6 +122,7 @@ impl Run {
             write_lockfile: false,
             lockfile: None,
             working_dir: None,
+            hub_override: Vec::new(),
         }
     }
 
@@ -168,6 +174,7 @@ impl Executable for Run {
             write_lockfile: self.write_lockfile,
             lockfile_override: self.lockfile.clone(),
             working_dir_override: self.working_dir.clone(),
+            hub_overrides: self.hub_override.clone(),
             ..Default::default()
         })
         .context("failed to build dataflow before run")?;
