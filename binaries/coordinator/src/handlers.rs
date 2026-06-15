@@ -495,6 +495,22 @@ pub(crate) async fn build_dataflow(
 
     for (node_id, node) in &nodes {
         let daemon_id = resolve_daemon(daemon_connections, node.deploy.as_ref())?;
+        // A hub-sourced node carries `subdir` / `hub` provenance on its git
+        // source. A daemon too old to understand those fields can't build it,
+        // and the central desugar means it would otherwise fail with an opaque
+        // error on the daemon. Refuse up front with a clear, per-node message
+        // (P2.10) — the version gate alone can't catch this within an rc line
+        // where a pre-hub daemon and a hub-aware coordinator share a version.
+        if let Some(gs) = git_sources.get(node_id)
+            && (gs.subdir.is_some() || gs.hub.is_some())
+            && !daemon_connections.supports_hub_sources(&daemon_id)
+        {
+            eyre::bail!(
+                "node `{node_id}` is a hub package (or a monorepo `subdir` git node), but \
+                 daemon `{daemon_id}` is too old to build it — it does not support hub \
+                 `subdir`/`hub:` git sources. Upgrade that daemon to a dora build with hub support."
+            );
+        }
         nodes_by_daemon
             .entry(daemon_id.clone())
             .or_default()
