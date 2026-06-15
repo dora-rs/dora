@@ -86,7 +86,7 @@ example: |                    # snippet shown by `dora hub info`
 | `build` | recommended | the build command, run in the working dir (`pip install .`, `cargo build --release`, a cmake invocation) |
 | `inputs`, `outputs` | yes, **may be empty** | sinks have no outputs; sources no inputs |
 | `inputs.*.type` etc. | recommended | type URNs; omit to leave a port untyped (validation skips it) |
-| `platforms`, `dora` | recommended | platform allowlist (checked before dispatch) + dora compat range |
+| `platforms`, `dora` | recommended | platform allowlist (validated for `<os>-<arch>` shape; drives `dora hub search --platform` filtering) + dora compat range |
 | `description`, `categories`, `keywords` | recommended | drive `dora hub search` |
 | `env`, `types`, `requirements`, `example` | optional | configuration, shipped types, declared needs, doc snippet |
 
