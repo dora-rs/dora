@@ -901,6 +901,41 @@ fn hub_yank_skips_version_then_undo_restores() {
     );
 }
 
+/// Re-yanking an already-yanked version with a *different* `--reason` updates
+/// the recorded reason instead of silently discarding it.
+#[test]
+fn hub_yank_updates_reason_when_already_yanked() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub yank reason-update test");
+        return;
+    }
+    let fixture = build_fixture();
+    let entry = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+
+    let yank = |reason: &str| {
+        dora(&fixture)
+            .args([
+                "hub",
+                "yank",
+                "test/hub-smoke-hello@0.1.0",
+                "--reason",
+                reason,
+            ])
+            .output()
+            .unwrap()
+    };
+
+    assert!(yank("first").status.success(), "initial yank failed");
+    // re-yank with a corrected reason — must take effect, not no-op
+    let out = yank("corrected");
+    assert!(out.status.success(), "re-yank failed: {}", stderr(&out));
+    let written = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        written.contains("corrected") && !written.contains("first"),
+        "re-yank must update the reason, got: {written}"
+    );
+}
+
 /// A yank reference with `..` path segments must be rejected before any file
 /// is touched — the write path can't be allowed to escape the catalog root.
 #[test]

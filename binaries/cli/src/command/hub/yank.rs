@@ -88,7 +88,10 @@ impl Executable for Yank {
             .with_context(|| format!("`{}` is not a valid index entry", entry_path.display()))?;
 
         let target = !self.undo;
-        if entry.yanked == target {
+        let new_reason = target.then(|| self.reason.clone()).flatten();
+        // No-op only when nothing would change — re-yanking with a *different*
+        // reason must update it, not silently discard the new one.
+        if entry.yanked == target && entry.yank_reason == new_reason {
             println!(
                 "`{namespace}/{name}@{version}` is already {}",
                 if target { "yanked" } else { "not yanked" }
@@ -96,7 +99,7 @@ impl Executable for Yank {
             return Ok(());
         }
         entry.yanked = target;
-        entry.yank_reason = target.then(|| self.reason.clone()).flatten();
+        entry.yank_reason = new_reason;
 
         let updated = serde_yaml::to_string(&entry).context("failed to serialize index entry")?;
         write_atomic(&entry_path, &updated)?;
