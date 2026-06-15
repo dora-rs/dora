@@ -59,36 +59,12 @@ impl Executable for Publish {
     fn execute(self) -> eyre::Result<()> {
         let dir = self.path.as_path();
 
-        // 1. Read and validate the manifest (spec §9.1 step 1).
-        let manifest_path = dir.join(MANIFEST_FILENAME);
-        let manifest = NodeManifest::read(&manifest_path).with_context(|| {
-            format!(
-                "failed to read {MANIFEST_FILENAME} at `{}`",
-                manifest_path.display()
-            )
-        })?;
-        manifest
-            .validate_strict(&TypeRegistry::new())
-            .context("the node manifest is invalid — fix it before publishing")?;
-        // `validate_strict` guarantees `name`/`namespace` are present and valid.
-        let name = manifest
-            .name
-            .clone()
-            .context("manifest is missing `name`")?;
-        let namespace = manifest.namespace.clone();
-
-        // 2. Version (read from the native manifest unless overridden).
-        let version_str = match &self.version {
-            Some(v) => v.clone(),
-            None => read_native_version(dir).context(
-                "could not determine the package version — pass `--version`, or set \
-                 `[package].version` (Cargo) / `[project].version` (pyproject)",
-            )?,
-        };
-        let version = semver::Version::parse(version_str.trim())
-            .with_context(|| format!("version `{version_str}` is not valid semver"))?;
-
-        // 3. Resolve the source pin (spec §9.1 step 2): repo + commit + subdir.
+        // 1. Resolve the source pin (spec §9.1 step 2): repo + commit + subdir.
+        // The manifest and version are then read from that *commit*, not the
+        // working tree — a published entry is immutable, so it must never
+        // describe files that aren't committed at `source.rev` (a dirty tree
+        // would otherwise append an entry whose manifest/version don't exist at
+        // the pin, and consumers would clone the old commit while trusting it).
         let repo = match &self.repo {
             Some(r) => r.trim().to_string(),
             None => git_in(dir, &["remote", "get-url", "origin"]).context(
@@ -111,11 +87,48 @@ impl Executable for Publish {
         if !matches!(commit.len(), 40 | 64) || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
             bail!("resolved commit `{commit}` is not a full git hash (40 or 64 hex chars)");
         }
-        // subdir = the node directory's path within the repo (empty at root).
-        let subdir = git_in(dir, &["rev-parse", "--show-prefix"])
-            .ok()
-            .map(|p| p.trim_end_matches('/').to_string())
-            .filter(|p| !p.is_empty());
+        // `--show-prefix` is the node directory's repo-relative path (forward
+        // slashes, trailing slash, empty at the repo root). It both locates the
+        // committed files (`<commit>:<prefix><file>`) and becomes `source.subdir`.
+        let prefix = git_in(dir, &["rev-parse", "--show-prefix"])
+            .context("`dora hub publish` must be run inside the node's git repository")?;
+        let subdir = Some(prefix.trim_end_matches('/').to_string()).filter(|p| !p.is_empty());
+
+        // 2. Read + validate the manifest as committed at `commit`.
+        let manifest_yaml = git_in(
+            dir,
+            &["show", &format!("{commit}:{prefix}{MANIFEST_FILENAME}")],
+        )
+        .with_context(|| {
+            format!(
+                "{MANIFEST_FILENAME} is not committed at {} — commit it (and any \
+                     version bump) before publishing, or pass `--rev <commit>` that \
+                     contains it",
+                &commit[..12]
+            )
+        })?;
+        let manifest = NodeManifest::parse(&manifest_yaml)
+            .with_context(|| format!("invalid {MANIFEST_FILENAME} at commit {}", &commit[..12]))?;
+        manifest
+            .validate_strict(&TypeRegistry::new())
+            .context("the node manifest is invalid — fix it before publishing")?;
+        // `validate_strict` guarantees `name`/`namespace` are present and valid.
+        let name = manifest
+            .name
+            .clone()
+            .context("manifest is missing `name`")?;
+        let namespace = manifest.namespace.clone();
+
+        // 3. Version: `--version`, else read from the native manifest at `commit`.
+        let version_str = match &self.version {
+            Some(v) => v.clone(),
+            None => read_committed_version(dir, &commit, &prefix).context(
+                "could not determine the package version — pass `--version`, or commit \
+                 `[package].version` (Cargo) / `[project].version` (pyproject)",
+            )?,
+        };
+        let version = semver::Version::parse(version_str.trim())
+            .with_context(|| format!("version `{version_str}` is not valid semver"))?;
 
         // 4. Construct the index entry.
         let entry = IndexEntry {
@@ -245,9 +258,12 @@ fn git_in(dir: &Path, args: &[&str]) -> eyre::Result<String> {
 }
 
 /// Read the package version from `Cargo.toml` (`[package].version`) or
-/// `pyproject.toml` (`[project].version`), returning the first one found.
-fn read_native_version(dir: &Path) -> Option<String> {
-    if let Ok(raw) = std::fs::read_to_string(dir.join("Cargo.toml"))
+/// `pyproject.toml` (`[project].version`) **as committed at `commit`**,
+/// returning the first one found. `prefix` is the node directory's
+/// repo-relative path (forward slashes, trailing slash, empty at the root).
+fn read_committed_version(dir: &Path, commit: &str, prefix: &str) -> Option<String> {
+    let read = |file: &str| git_in(dir, &["show", &format!("{commit}:{prefix}{file}")]).ok();
+    if let Some(raw) = read("Cargo.toml")
         && let Ok(t) = raw.parse::<toml::Table>()
         && let Some(v) = t
             .get("package")
@@ -256,7 +272,7 @@ fn read_native_version(dir: &Path) -> Option<String> {
     {
         return Some(v.to_string());
     }
-    if let Ok(raw) = std::fs::read_to_string(dir.join("pyproject.toml"))
+    if let Some(raw) = read("pyproject.toml")
         && let Ok(t) = raw.parse::<toml::Table>()
         && let Some(v) = t
             .get("project")

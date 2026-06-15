@@ -738,6 +738,57 @@ fn hub_publish_then_build_resolves() {
     );
 }
 
+/// `dora hub publish` reads the manifest and version from the *committed*
+/// source at `source.rev`, not the working tree. A dirty version bump must not
+/// produce an immutable entry whose version doesn't exist at the pinned commit.
+#[test]
+fn hub_publish_reads_committed_source_not_worktree() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish dirty-tree test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+
+    // free the committed version's slot so publish can write it fresh
+    std::fs::remove_file(fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml")).unwrap();
+
+    // bump the version in the working tree WITHOUT committing it
+    write(
+        &checkout.join("Cargo.toml"),
+        "[package]\nname = \"hub-smoke-hello\"\nversion = \"0.9.9\"\nedition = \"2021\"\n\
+         \n[[bin]]\nname = \"hub-smoke-hello\"\npath = \"src/main.rs\"\n\n[workspace]\n",
+    );
+
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "publish failed: {}", stderr(&out));
+    // the committed 0.1.0 is published; the uncommitted 0.9.9 is ignored
+    assert!(
+        fixture
+            .root
+            .join("index/test/hub-smoke-hello/0.1.0.yml")
+            .exists(),
+        "publish must use the committed version (0.1.0)"
+    );
+    assert!(
+        !fixture
+            .root
+            .join("index/test/hub-smoke-hello/0.9.9.yml")
+            .exists(),
+        "publish must not embed the uncommitted working-tree version (0.9.9)"
+    );
+}
+
 /// `--index` must not let a namespace be seeded into an index it isn't bound to
 /// (spec §7.3). The `test` namespace is bound to the local `smoke` index, so
 /// publishing it into the `official` index is rejected.
