@@ -1117,6 +1117,8 @@ dora hub publish [PATH] [--dry-run]        # validate + add a pinned index entry
                  [--version SEMVER] [--index ALIAS]
 dora hub yank <pkg>@<version>              # yank/restore a published version
               [--reason R] [--undo]
+dora hub outdated <dataflow.yml>           # locked hub pins behind the index
+                  [--offline]
 ```
 
 `yank` flips the `yanked` flag on a published version: new resolutions skip it,
@@ -1124,6 +1126,11 @@ an existing `--locked` pin keeps working but `dora build` warns; `--undo`
 restores it (the one mutation an index entry allows, §7.5). For a local
 (`path =`) index the flag is flipped in place; for a git-backed index it prints
 the flag-flip change to open as a PR.
+
+`outdated` reads a dataflow's lockfile and, for each pinned hub package,
+compares the pin against the latest non-yanked version in the index (ignoring
+the dataflow's range, so a major/minor bump still shows up). Update the `hub:`
+range and rebuild to upgrade.
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;

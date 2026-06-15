@@ -11,6 +11,7 @@ mod info;
 mod init;
 mod install;
 mod list;
+mod outdated;
 mod publish;
 mod search;
 mod yank;
@@ -26,6 +27,7 @@ pub enum Hub {
     Install(install::Install),
     Publish(publish::Publish),
     Yank(yank::Yank),
+    Outdated(outdated::Outdated),
 }
 
 impl Executable for Hub {
@@ -39,6 +41,7 @@ impl Executable for Hub {
             Hub::Install(cmd) => cmd.execute(),
             Hub::Publish(cmd) => cmd.execute(),
             Hub::Yank(cmd) => cmd.execute(),
+            Hub::Outdated(cmd) => cmd.execute(),
         }
     }
 }

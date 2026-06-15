@@ -1,0 +1,110 @@
+//! `dora hub outdated` (spec §9): compare a dataflow's locked hub pins against
+//! the latest non-yanked version available in the index.
+
+use std::path::PathBuf;
+
+use dora_hub_client::{reference::PackageRef, semver::VersionReq};
+
+use super::common::{HubContext, sanitize};
+use crate::command::{Executable, build::lockfile::BuildLockfile};
+
+/// Show hub packages whose lockfile pin is behind the index.
+#[derive(Debug, clap::Args)]
+pub struct Outdated {
+    /// Dataflow whose lockfile to check.
+    #[clap(value_name = "DATAFLOW")]
+    dataflow: PathBuf,
+    /// Do not refresh the index over the network; use only the cached copy.
+    #[clap(long, action)]
+    offline: bool,
+}
+
+impl Executable for Outdated {
+    fn execute(self) -> eyre::Result<()> {
+        let lockfile_path = BuildLockfile::path_for_dataflow(&self.dataflow, None);
+        if !lockfile_path.exists() {
+            eyre::bail!(
+                "no lockfile at `{}` — run `dora build --write-lockfile {}` first",
+                lockfile_path.display(),
+                self.dataflow.display()
+            );
+        }
+        let lockfile = BuildLockfile::read_from(&lockfile_path)?;
+        let mut ctx = HubContext::load(self.offline)?;
+
+        let mut checked = 0usize;
+        let mut outdated = 0usize;
+        for (node_id, source) in &lockfile.git_sources {
+            let Some(hub) = &source.hub else {
+                continue;
+            };
+            checked += 1;
+            // `hub.name` is `namespace/name`; `hub.version` the pinned version.
+            // Both come from the lockfile (not charset-validated) — sanitize
+            // before echoing, and treat a malformed pin as "can't check".
+            let Some((namespace, name)) = hub.name.split_once('/') else {
+                println!("{node_id}: malformed hub name `{}`", sanitize(&hub.name));
+                continue;
+            };
+            let pinned = match hub.version.parse::<dora_hub_client::semver::Version>() {
+                Ok(v) => v,
+                Err(_) => {
+                    println!(
+                        "{node_id}: malformed pinned version `{}`",
+                        sanitize(&hub.version)
+                    );
+                    continue;
+                }
+            };
+
+            let catalog = match ctx.catalog_for_namespace(namespace) {
+                Ok(catalog) => catalog,
+                Err(err) => {
+                    println!(
+                        "{node_id}: {}/{} — could not read index ({err:#})",
+                        sanitize(namespace),
+                        sanitize(name)
+                    );
+                    continue;
+                }
+            };
+            // the highest *non-yanked* version (ignoring the dataflow's range,
+            // so a major bump still shows as available to upgrade to).
+            let reference = PackageRef {
+                namespace: namespace.to_string(),
+                name: name.to_string(),
+                requirement: VersionReq::STAR,
+            };
+            match catalog.resolve(&reference) {
+                Ok(latest) if latest.version > pinned => {
+                    outdated += 1;
+                    println!(
+                        "{node_id}: {}/{} {pinned} -> {} (newer available)",
+                        sanitize(namespace),
+                        sanitize(name),
+                        latest.version
+                    );
+                }
+                Ok(_) => {} // up to date
+                Err(err) => println!(
+                    "{node_id}: {}/{} {pinned} — {err:#}",
+                    sanitize(namespace),
+                    sanitize(name)
+                ),
+            }
+        }
+        ctx.drain_warnings();
+
+        if checked == 0 {
+            println!("No hub packages pinned in {}.", lockfile_path.display());
+        } else if outdated == 0 {
+            println!("All {checked} hub package(s) are up to date.");
+        } else {
+            println!(
+                "{outdated} of {checked} hub package(s) are outdated — \
+                 update the `hub:` range and rebuild to upgrade."
+            );
+        }
+        Ok(())
+    }
+}

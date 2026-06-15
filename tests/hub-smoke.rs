@@ -1002,6 +1002,60 @@ fn hub_yank_git_index_prints_pr_instructions() {
     );
 }
 
+/// `dora hub outdated` reports a hub pin that is behind the index's latest
+/// non-yanked version, and says nothing when up to date (P3.2).
+#[test]
+fn hub_outdated_reports_newer_version() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub outdated test");
+        return;
+    }
+    let fixture = build_fixture();
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    // pin 0.1.0 in the lockfile
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build --write-lockfile should succeed"
+    );
+
+    // only 0.1.0 exists -> up to date
+    let out = dora(&fixture)
+        .args(["hub", "outdated", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "outdated failed: {}", stderr(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("up to date"),
+        "expected up-to-date, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    // add a newer version into the index (copy the 0.1.0 entry to 0.2.0)
+    let entry_010 = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    let entry_020 = fixture.root.join("index/test/hub-smoke-hello/0.2.0.yml");
+    std::fs::copy(&entry_010, &entry_020).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "outdated", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "outdated failed: {}", stderr(&out));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("0.1.0 -> 0.2.0") && stdout.contains("newer available"),
+        "expected an outdated report, got:\n{stdout}"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
