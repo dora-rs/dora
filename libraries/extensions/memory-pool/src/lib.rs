@@ -219,9 +219,11 @@ impl MemoryPoolManager {
     /// Best-effort sweep of orphaned [`dora_pool_*`][/dev/shm] segments from
     /// a previous daemon crash or SIGKILL.
     ///
-    /// This runs once at daemon startup, before any pool is registered.
-    /// On Linux, unlinking a file that another process still has mapped
-    /// is harmless — the mapping stays valid until the last `munmap`.
+    /// **Not called automatically**.  Unlinking every `dora_pool_*` file on
+    /// startup is unsafe in multi-daemon setups (it would unlink live pools
+    /// belonging to another daemon on the same host).  Call only when you are
+    /// certain no other daemon is running.
+    #[allow(dead_code)]
     pub fn cleanup_orphans() {
         #[cfg(target_os = "linux")]
         {

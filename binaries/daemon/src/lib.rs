@@ -1152,10 +1152,7 @@ impl Daemon {
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
-            memory_pool: {
-                MemoryPoolManager::cleanup_orphans();
-                MemoryPoolManager::new()
-            },
+            memory_pool: MemoryPoolManager::new(),
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),

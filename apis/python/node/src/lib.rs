@@ -1747,17 +1747,22 @@ impl Node {
                                     shmem.len()
                                 ));
                             }
-                            read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
-                            // Cache shmem to prevent munmap of the returned pointer.
-                            // Keyed by full buffer_id (namespaced) to prevent
-                            // cross-pool aliasing when multiple senders exist.
+                            // Mirroring try_doradma_read: check cache first,
+                            // so on a cache hit we return the cached mapping's
+                            // pointer (not the fresh mmap, which will be dropped).
                             let mut cpu_cache =
                                 RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
-                                _shmem: shmem,
-                                base: shmem_ptr as u64,
-                                generation: 0,
-                            });
+                            if let Some(cached) = cpu_cache.get(&buffer_id) {
+                                read_ptr = (cached.base + data_offset as u64) as i64;
+                            } else {
+                                let base = shmem_ptr as u64;
+                                read_ptr = (base + data_offset as u64) as i64;
+                                cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
+                                    _shmem: shmem,
+                                    base,
+                                    generation: 0,
+                                });
+                            }
                         }
                     }
                 }
@@ -1767,12 +1772,30 @@ impl Node {
                     eyre::bail!("memory pool {} not found or has invalid pointer", buffer_id);
                 }
 
+                // The daemon fallback always derives read_ptr from a host
+                // mmap address (shmem_ptr + data_offset).  For a CUDA pool
+                // this is not a valid device pointer — the fast path
+                // (try_doradma_read) must be used instead.  Reject to
+                // prevent tensor_from_info from receiving a host pointer
+                // labelled as device=cuda.
+                let device = if pinned_type.starts_with("cuda") {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!(
+                        "memory pool {}: daemon fallback cannot provide a CUDA pointer \
+                         (fast path returned None); check that the pool was registered \
+                         with the correct receiver device",
+                        buffer_id,
+                    );
+                } else {
+                    "cpu"
+                };
+
                 let dict = PyDict::new(py);
                 dict.set_item("ptr", read_ptr)?;
                 dict.set_item("size", size)?;
                 dict.set_item("dtype", dtype)?;
                 dict.set_item("shape", shape)?;
-                dict.set_item("device", pinned_type)?;
+                dict.set_item("device", device)?;
 
                 Ok(dict.into())
             }
