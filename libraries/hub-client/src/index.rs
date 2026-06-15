@@ -238,6 +238,22 @@ impl IndexCatalog {
             .with_context(|| format!("invalid index entry `{}`", path.display()))
     }
 
+    /// The confined on-disk path of a version entry file, for callers that
+    /// read or rewrite it in place (e.g. `dora hub yank`). Errors if the path
+    /// escapes the catalog root via a symlink, so a write can't land outside it.
+    pub fn version_entry_path(
+        &self,
+        namespace: &str,
+        name: &str,
+        version: &Version,
+    ) -> eyre::Result<PathBuf> {
+        let path = self
+            .package_dir(namespace, name)?
+            .join(format!("{version}.yml"));
+        self.confine(&path)?;
+        Ok(path)
+    }
+
     /// Read a package's namespace-level metadata, if present.
     pub fn package_meta(&self, namespace: &str, name: &str) -> eyre::Result<Option<PackageMeta>> {
         let path = self.package_dir(namespace, name)?.join("package.yml");

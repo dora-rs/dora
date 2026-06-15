@@ -60,22 +60,34 @@ impl Executable for Yank {
         let action = if self.undo { "restore" } else { "yank" };
 
         if !index.is_local() {
-            println!(
-                "the `{}` index is git-backed ({}). {action} is a flag-flip PR: in `{rel_path}` set \
-                 `yanked: {}`{} and open a PR against the index repo.",
-                index.alias,
-                index.git.as_deref().unwrap_or("?"),
-                !self.undo,
+            // Mirror the local path: yanking records the reason, restoring
+            // clears it. Don't tell a `--undo` author to keep a stale reason.
+            let reason_hint = if self.undo {
+                " and remove any `yank_reason`".to_string()
+            } else {
                 self.reason
                     .as_deref()
                     .map(|r| format!(" with `yank_reason: {r}`"))
-                    .unwrap_or_default(),
+                    .unwrap_or_default()
+            };
+            println!(
+                "the `{}` index is git-backed ({}). {action} is a flag-flip PR: in `{rel_path}` set \
+                 `yanked: {}`{reason_hint} and open a PR against the index repo.",
+                index.alias,
+                index.git.as_deref().unwrap_or("?"),
+                !self.undo,
             );
             return Ok(());
         }
 
-        let catalog = index.local_catalog_dir(&config.config_dir)?;
-        let entry_path = catalog.join(&rel_path);
+        // Open the catalog so the write path is confined under the canonical
+        // root — the same symlink-escape guard the read paths use. The `..`
+        // key-part check above blocks lexical traversal; this blocks a
+        // symlinked namespace/package dir that resolves outside the root.
+        let catalog_dir = index.local_catalog_dir(&config.config_dir)?;
+        let catalog = dora_hub_client::index::IndexCatalog::open(&catalog_dir)
+            .with_context(|| format!("failed to open index catalog `{}`", catalog_dir.display()))?;
+        let entry_path = catalog.version_entry_path(namespace, name, &version)?;
         if !entry_path.is_file() {
             bail!(
                 "no published version {version} of `{namespace}/{name}` at `{}`",

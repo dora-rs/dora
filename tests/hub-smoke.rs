@@ -954,6 +954,33 @@ fn hub_yank_rejects_path_traversal() {
     }
 }
 
+/// A symlinked package directory resolving outside the catalog root must be
+/// rejected — the `..` guard blocks lexical traversal; this blocks symlink
+/// escape, matching the read-path confinement.
+#[cfg(unix)]
+#[test]
+fn hub_yank_rejects_symlink_escape() {
+    let fixture = build_fixture();
+    // a target entry that lives OUTSIDE the catalog root
+    let outside = fixture.root.join("outside/test/hub-smoke-hello");
+    write(&outside.join("0.1.0.yml"), "manifest: {}\nsource: {}\n");
+    // replace the in-catalog package dir with a symlink to that outside dir
+    let pkg_dir = fixture.root.join("index/test/hub-smoke-hello");
+    std::fs::remove_dir_all(&pkg_dir).unwrap();
+    std::os::unix::fs::symlink(&outside, &pkg_dir).unwrap();
+
+    let out = dora(&fixture)
+        .args(["hub", "yank", "test/hub-smoke-hello@0.1.0"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "symlink escape must be rejected");
+    assert!(
+        stderr(&out).contains("escapes the catalog root"),
+        "expected catalog-confinement rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 /// Yanking against a git-backed index (the official one) can't flip a file in
 /// place — it prints the flag-flip PR instructions instead.
 #[test]
