@@ -738,6 +738,41 @@ fn hub_publish_then_build_resolves() {
     );
 }
 
+/// `--index` must not let a namespace be seeded into an index it isn't bound to
+/// (spec §7.3). The `test` namespace is bound to the local `smoke` index, so
+/// publishing it into the `official` index is rejected.
+#[test]
+fn hub_publish_rejects_index_not_bound_to_namespace() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish wrong-index test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+            "--index",
+            "official",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "publishing into an unbound index must fail"
+    );
+    assert!(
+        stderr(&out).contains("is bound to index"),
+        "expected a namespace-binding rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }

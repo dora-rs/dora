@@ -96,6 +96,13 @@ impl Executable for Publish {
                  pass `--repo <url>`",
             )?,
         };
+        // The repo URL is consumed by others as an untrusted index source, and
+        // the resolver only accepts https/ssh/file/scp-style/abs-path forms.
+        // Validate it now so a cleartext-http or otherwise-unresolvable `origin`
+        // fails on the publisher, not silently on every later consumer.
+        dora_hub_client::validate_git_url_untrusted(&repo).with_context(|| {
+            format!("source repo `{repo}` is not a usable index source — pass a valid `--repo`")
+        })?;
         let rev_arg = self.rev.as_deref().unwrap_or("HEAD");
         let commit = git_in(dir, &["rev-parse", &format!("{rev_arg}^{{commit}}")])
             .with_context(|| format!("failed to resolve git ref `{rev_arg}` to a commit"))?;
@@ -141,30 +148,57 @@ impl Executable for Publish {
         // 5b. Resolve the target index and publish.
         let config = ResolvedConfig::load_default().context("failed to load hub configuration")?;
         let index = match &self.index {
-            Some(alias) => config
-                .indexes
-                .iter()
-                .find(|i| i.alias.eq_ignore_ascii_case(alias))
-                .with_context(|| format!("no index with alias `{alias}` in hub.toml"))?,
+            Some(alias) => {
+                let target = config
+                    .indexes
+                    .iter()
+                    .find(|i| i.alias.eq_ignore_ascii_case(alias))
+                    .with_context(|| format!("no index with alias `{alias}` in hub.toml"))?;
+                // A namespace resolves against exactly one index (spec §7.3).
+                // Refuse to seed a namespace into an index it isn't bound to —
+                // otherwise `--index` would let a `dora-rs/*` entry be written
+                // into any local index, defeating namespace binding.
+                let bound = config.index_for_namespace(&namespace);
+                if !bound.alias.eq_ignore_ascii_case(&target.alias) {
+                    bail!(
+                        "namespace `{namespace}` is bound to index `{}`, not `{}` — publish \
+                         into `{}`, or bind the namespace to `{}` in hub.toml",
+                        bound.alias,
+                        target.alias,
+                        bound.alias,
+                        target.alias
+                    );
+                }
+                target
+            }
             None => config.index_for_namespace(&namespace),
         };
 
         if index.is_local() {
             let catalog = index.local_catalog_dir(&config.config_dir)?;
             let dest = catalog.join(&rel_path);
-            // append-only: never overwrite a published version (spec §7.5).
-            if dest.exists() {
-                bail!(
-                    "version {version} of `{namespace}/{name}` already exists at `{}` — \
-                     the index is append-only; bump the version to publish a new one",
-                    dest.display()
-                );
-            }
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create `{}`", parent.display()))?;
             }
-            std::fs::write(&dest, &entry_yaml)
+            // append-only: create exclusively (O_EXCL) so a published version is
+            // never overwritten, even under a concurrent publish (spec §7.5).
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&dest)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(
+                    "version {version} of `{namespace}/{name}` already exists at `{}` — \
+                     the index is append-only; bump the version to publish a new one",
+                    dest.display()
+                ),
+                Err(e) => {
+                    return Err(e).with_context(|| format!("failed to write `{}`", dest.display()));
+                }
+            };
+            std::io::Write::write_all(&mut file, entry_yaml.as_bytes())
                 .with_context(|| format!("failed to write `{}`", dest.display()))?;
             println!(
                 "published `{namespace}/{name}` v{version} -> {}",
