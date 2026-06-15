@@ -63,7 +63,8 @@ env:                          # configuration surface, documented + typed
     type: float
     default: 0.4
 
-types: []                     # optional custom type definitions (see below)
+types: {}                     # optional custom type definitions, keyed by
+                              # type URN (see below); omit when there are none
 
 example: |                    # snippet shown by `dora hub info`
   - id: detector
