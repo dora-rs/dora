@@ -1112,12 +1112,26 @@ dora hub info <pkg>[@<ver>]                # contracts + example for a package
 dora hub list <dataflow.yml>               # hub packages pinned in the lockfile
 dora hub fetch <dataflow.yml | pkg@ver>    # warm the index cache + mirror sources
                [--target-dir DIR]
+dora hub publish [PATH] [--dry-run]        # validate + add a pinned index entry
+                 [--rev REF] [--repo URL]
+                 [--version SEMVER] [--index ALIAS]
 ```
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;
 typed inputs/outputs are left as commented examples. Check the result with
 `dora validate --node-manifest dora-node.yml`.
+
+`publish` validates the manifest, reads the version from `[package].version`
+(Cargo) / `[project].version` (pyproject), resolves the source pin (the
+`origin` remote or `--repo`, the `--rev`/`HEAD` commit, and the directory's
+subdir within the repo), and produces the index entry
+`<namespace>/<name>/<version>.yml`. `--dry-run` prints the entry without
+writing it. Otherwise it writes into a **local** (`path =`) index — the
+enterprise/private and fixture form — and refuses to overwrite an existing
+version (the index is append-only). For a git-backed index it prints the entry
+and where to add it; automated PR-opening against the official `node-index`
+lands with the index bootstrap.
 
 `search`/`info`/`fetch` accept `--offline` to use only the cached index.
 Indexes are configured in `~/.config/dora/hub.toml`; a namespace resolves

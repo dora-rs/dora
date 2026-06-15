@@ -614,6 +614,216 @@ fn hub_override_rejects_remote_coordinator_even_if_unmatched() {
     );
 }
 
+/// `dora hub publish --dry-run` validates the manifest and previews the index
+/// entry (the version from Cargo.toml, the resolved git pin + subdir) without
+/// writing anything (P3.1).
+#[test]
+fn hub_publish_dry_run_previews_entry() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish dry-run test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--dry-run",
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "publish --dry-run failed: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // version 0.1.0 from Cargo.toml; subdir from the repo layout; name/namespace
+    assert!(
+        stdout.contains("test/hub-smoke-hello/0.1.0.yml"),
+        "expected the entry path in the preview:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("subdir: node-hub/hello"),
+        "expected the resolved subdir in the preview:\n{stdout}"
+    );
+    // dry run must not have written anything into the index
+    assert!(
+        !fixture
+            .root
+            .join("index/test/hub-smoke-hello/0.2.0.yml")
+            .exists(),
+        "dry-run must not write entries"
+    );
+}
+
+/// End-to-end: `dora hub publish` writes a pinned index entry that `dora build`
+/// then resolves and builds — the publish→consume loop, fully local (P3.1).
+#[test]
+fn hub_publish_then_build_resolves() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish→build test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+
+    // remove the fixture's pre-written entry so `publish` creates it fresh
+    let entry = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    std::fs::remove_file(&entry).unwrap();
+
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "publish failed: {}", stderr(&out));
+    assert!(entry.exists(), "publish did not write the index entry");
+    let written = std::fs::read_to_string(&entry).unwrap();
+    assert!(
+        written.contains("subdir: node-hub/hello"),
+        "entry: {written}"
+    );
+    assert!(
+        written.contains("name: hub-smoke-hello"),
+        "entry must hold the manifest: {written}"
+    );
+
+    // append-only: re-publishing the same version is refused
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "re-publishing same version must fail"
+    );
+    assert!(
+        stderr(&out).contains("already exists"),
+        "expected append-only rejection, got: {}",
+        stderr(&out)
+    );
+
+    // the published entry resolves end-to-end through `dora build`
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "build of a freshly-published package failed: {}",
+        stderr(&out)
+    );
+}
+
+/// `dora hub publish` reads the manifest and version from the *committed*
+/// source at `source.rev`, not the working tree. A dirty version bump must not
+/// produce an immutable entry whose version doesn't exist at the pinned commit.
+#[test]
+fn hub_publish_reads_committed_source_not_worktree() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish dirty-tree test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+
+    // free the committed version's slot so publish can write it fresh
+    std::fs::remove_file(fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml")).unwrap();
+
+    // bump the version in the working tree WITHOUT committing it
+    write(
+        &checkout.join("Cargo.toml"),
+        "[package]\nname = \"hub-smoke-hello\"\nversion = \"0.9.9\"\nedition = \"2021\"\n\
+         \n[[bin]]\nname = \"hub-smoke-hello\"\npath = \"src/main.rs\"\n\n[workspace]\n",
+    );
+
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "publish failed: {}", stderr(&out));
+    // the committed 0.1.0 is published; the uncommitted 0.9.9 is ignored
+    assert!(
+        fixture
+            .root
+            .join("index/test/hub-smoke-hello/0.1.0.yml")
+            .exists(),
+        "publish must use the committed version (0.1.0)"
+    );
+    assert!(
+        !fixture
+            .root
+            .join("index/test/hub-smoke-hello/0.9.9.yml")
+            .exists(),
+        "publish must not embed the uncommitted working-tree version (0.9.9)"
+    );
+}
+
+/// `--index` must not let a namespace be seeded into an index it isn't bound to
+/// (spec §7.3). The `test` namespace is bound to the local `smoke` index, so
+/// publishing it into the `official` index is rejected.
+#[test]
+fn hub_publish_rejects_index_not_bound_to_namespace() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub publish wrong-index test");
+        return;
+    }
+    let fixture = build_fixture();
+    let src = fixture.root.join("source");
+    let checkout = src.join("node-hub/hello");
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "publish",
+            checkout.to_str().unwrap(),
+            "--repo",
+            &format!("file://{}", src.display()),
+            "--index",
+            "official",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "publishing into an unbound index must fail"
+    );
+    assert!(
+        stderr(&out).contains("is bound to index"),
+        "expected a namespace-binding rejection, got: {}",
+        stderr(&out)
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
