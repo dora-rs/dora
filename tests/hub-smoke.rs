@@ -1142,14 +1142,33 @@ fn hub_update_bumps_pin_and_stays_locked_compatible() {
         .output()
         .unwrap();
     assert!(out.status.success(), "update failed: {}", stderr(&out));
+    let after_update = std::fs::read_to_string(&lockfile).unwrap();
     assert!(
-        std::fs::read_to_string(&lockfile)
-            .unwrap()
-            .contains("version: 0.1.1"),
+        after_update.contains("version: 0.1.1"),
         "update should bump the pin to 0.1.1"
     );
 
-    // the refreshed lockfile is still locked-compatible
+    // the real invariant: `update`'s lockfile is byte-identical to what
+    // `dora build --write-lockfile` writes for the same descriptor + index
+    // state (build re-resolves hub nodes fresh when not `--locked`). A wrong
+    // commit/subdir/fingerprint would diverge here even though `--locked`
+    // treats those as warn-only.
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "reference build failed: {}",
+        stderr(&out)
+    );
+    let after_build = std::fs::read_to_string(&lockfile).unwrap();
+    assert_eq!(
+        after_update, after_build,
+        "update must write the same lockfile bytes as `dora build --write-lockfile`"
+    );
+
+    // and the refreshed lockfile is consumable under `--locked`
     let out = dora(&fixture)
         .args(["build", flow.to_str().unwrap(), "--locked"])
         .output()
