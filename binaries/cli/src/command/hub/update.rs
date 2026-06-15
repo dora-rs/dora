@@ -31,7 +31,8 @@ pub struct Update {
     /// Do not refresh the index over the network; use only the cached copy.
     #[clap(long, action)]
     offline: bool,
-    /// Show what would change without writing the lockfile.
+    /// Resolve and report what would change, without writing the lockfile.
+    /// (Resolution may still refresh the index cache unless `--offline`.)
     #[clap(long, action)]
     dry_run: bool,
 }
@@ -58,6 +59,15 @@ impl Executable for Update {
             .expand(working_dir)
             .context("failed to expand modules in dataflow descriptor")?;
         let mut registry = TypeRegistry::new();
+        // Load the dataflow's own `types/` before resolving, exactly as `dora
+        // build` does — a hub package contract may reference a user-defined type
+        // URN, so without these the contract check could spuriously fail.
+        let types_dir = working_dir.join("types");
+        if types_dir.is_dir() {
+            registry
+                .load_from_dir(&types_dir)
+                .map_err(|e| eyre::eyre!("failed to load user types from `types/`: {e}"))?;
+        }
         let resolution = resolve_hub_nodes(
             &mut descriptor,
             &mut registry,

@@ -1139,8 +1139,11 @@ rebuild to upgrade. Exits non-zero if any package could not be checked.
 descriptor's `hub:` range and rewrites the lockfile — the resolve-and-lock half
 of `dora build --write-lockfile`, without building. Non-hub git pins are left
 as they are; `--dry-run` reports the moves without writing. The refreshed
-lockfile is byte-compatible with `dora build --locked`. (Per-package filtering
-— `update <pkg>` — is not yet implemented; it re-resolves all hub nodes.)
+lockfile is byte-compatible with `dora build --locked`. Like `dora build`, it
+re-checks each package's contract against the dataflow, so it fails if a newer
+version's manifest no longer matches the wiring (rather than locking a version
+that won't build). (Per-package filtering — `update <pkg>` — is not yet
+implemented; it re-resolves all hub nodes.)
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;
