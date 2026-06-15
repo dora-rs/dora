@@ -146,10 +146,13 @@ async fn handle_daemon_request(
                 return false;
             }
             let version_check_result = register_request.check_version();
+            // capture before the partial moves below consume `register_request`
+            let supports_hub_sources = register_request.supports_hub_sources();
             let labels = register_request.labels;
             let machine_id = register_request.machine_id;
-            let connection =
+            let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
+            connection.supports_hub_sources = supports_hub_sources;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
             let event = DaemonRequest::Register {
                 connection,

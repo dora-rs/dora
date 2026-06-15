@@ -49,6 +49,12 @@ impl DaemonConnections {
             .find(|id| id.matches_machine_id(machine_id))
     }
 
+    /// Whether the given daemon advertised support for hub-sourced git nodes
+    /// (`subdir` / `hub` provenance, P2.10). Unknown daemon → `false`.
+    pub(crate) fn supports_hub_sources(&self, id: &DaemonId) -> bool {
+        self.daemons.get(id).is_some_and(|c| c.supports_hub_sources)
+    }
+
     pub(crate) fn drain(&mut self) -> impl Iterator<Item = (DaemonId, DaemonConnection)> {
         std::mem::take(&mut self.daemons).into_iter()
     }
@@ -90,6 +96,11 @@ pub(crate) struct DaemonConnection {
     pub(crate) labels: BTreeMap<String, String>,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
     pub(crate) ft_stats: Option<FaultToleranceSnapshot>,
+    /// Whether this daemon can build/spawn hub-sourced git nodes (`subdir` /
+    /// `hub` provenance, P2.10). Reported at registration; defaults `false`
+    /// for a daemon too old to advertise it, so the coordinator can refuse to
+    /// route a hub node to it with a clear error.
+    pub(crate) supports_hub_sources: bool,
 }
 
 impl DaemonConnection {
@@ -104,6 +115,9 @@ impl DaemonConnection {
             last_heartbeat: Instant::now(),
             labels,
             ft_stats: None,
+            // set from the register request at the real registration site;
+            // conservative default keeps non-registration constructors safe
+            supports_hub_sources: false,
         }
     }
 
@@ -565,3 +579,30 @@ impl PartialEq for RunningDataflow {
 }
 
 impl Eq for RunningDataflow {}
+
+#[cfg(test)]
+mod hub_capability_tests {
+    use super::*;
+
+    fn conn(supports_hub: bool) -> DaemonConnection {
+        let (tx, _rx) = mpsc::channel(1);
+        let mut c =
+            DaemonConnection::new(tx, Arc::new(Mutex::new(HashMap::new())), BTreeMap::new());
+        c.supports_hub_sources = supports_hub;
+        c
+    }
+
+    #[test]
+    fn supports_hub_sources_reflects_registration_and_unknown_is_false() {
+        let mut conns = DaemonConnections::default();
+        let hub_aware = DaemonId::new(Some("new".into()));
+        let legacy = DaemonId::new(Some("old".into()));
+        conns.add(hub_aware.clone(), conn(true));
+        conns.add(legacy.clone(), conn(false));
+
+        assert!(conns.supports_hub_sources(&hub_aware));
+        assert!(!conns.supports_hub_sources(&legacy));
+        // unknown daemon → false (fail-closed: refuse to route a hub node)
+        assert!(!conns.supports_hub_sources(&DaemonId::new(Some("ghost".into()))));
+    }
+}

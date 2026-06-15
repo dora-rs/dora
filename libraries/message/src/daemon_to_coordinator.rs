@@ -30,6 +30,17 @@ pub struct DaemonRegisterRequest {
     pub machine_id: Option<String>,
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Whether this daemon understands hub-sourced git nodes — the `subdir`
+    /// and `hub` provenance fields on a `GitSource` (spec §10.2, P2.10).
+    ///
+    /// `#[serde(default)]` makes this `false` for a daemon built before the
+    /// field existed, so the coordinator can refuse to route a hub node to it
+    /// with a clear error. This is the capability signal the `dora_version`
+    /// gate cannot provide: during the `1.0.0-rc` window a pre-hub daemon and a
+    /// hub-aware coordinator report the *same* version, so version alone can't
+    /// distinguish them — an explicit flag can.
+    #[serde(default)]
+    supports_hub_sources: bool,
 }
 
 impl DaemonRegisterRequest {
@@ -38,7 +49,15 @@ impl DaemonRegisterRequest {
             dora_version: current_crate_version(),
             machine_id,
             labels,
+            // a daemon built from this crate understands hub git sources
+            supports_hub_sources: true,
         }
+    }
+
+    /// Whether the registering daemon can build/spawn hub-sourced git nodes
+    /// (carrying `subdir` / `hub` provenance).
+    pub fn supports_hub_sources(&self) -> bool {
+        self.supports_hub_sources
     }
 
     pub fn check_version(&self) -> Result<(), String> {
@@ -48,12 +67,92 @@ impl DaemonRegisterRequest {
         if versions_compatible(&crate_version, specified_version)? {
             Ok(())
         } else {
+            // Direction-aware remediation: `versions_compatible` rejects both
+            // older and newer daemons, so the fix differs. Upgrade whichever
+            // side is older.
+            let remedy = if *specified_version < crate_version {
+                format!(
+                    "upgrade the daemon to match the coordinator (e.g. \
+                     `cargo install dora-cli --version {crate_version}`) — an older daemon \
+                     also lacks newer wire features such as hub `subdir`/`hub:` node sources"
+                )
+            } else {
+                format!(
+                    "upgrade the coordinator to dora v{specified_version} (or run an older \
+                     daemon) so both sides match"
+                )
+            };
             Err(format!(
-                "version mismatch: message format v{} is not compatible \
-                with expected message format v{crate_version}",
-                self.dora_version
+                "version mismatch: this daemon runs dora v{specified_version} but the \
+                 coordinator expects v{crate_version} — these dora versions are incompatible. \
+                 {remedy}.",
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod register_version_tests {
+    use super::*;
+
+    #[test]
+    fn current_version_is_compatible() {
+        assert!(
+            DaemonRegisterRequest::new(None, Default::default())
+                .check_version()
+                .is_ok()
+        );
+    }
+
+    fn request_with_version(dora_version: semver::Version) -> DaemonRegisterRequest {
+        DaemonRegisterRequest {
+            dora_version,
+            machine_id: None,
+            labels: Default::default(),
+            supports_hub_sources: true,
+        }
+    }
+
+    #[test]
+    fn incompatible_daemon_gets_direction_aware_upgrade_advice() {
+        // `versions_compatible` rejects both older and newer daemons, so the
+        // remediation must name the right side. (Cross-version only — a
+        // *same-version* pre-hub daemon passes this gate, which is why hub
+        // capability is signalled explicitly via `supports_hub_sources`.)
+        let current = current_crate_version();
+
+        // A NEWER daemon than the coordinator → upgrade the *coordinator*.
+        let err = request_with_version(semver::Version::new(current.major + 1, 0, 0))
+            .check_version()
+            .expect_err("newer-major daemon must be rejected");
+        assert!(err.contains("version mismatch"), "{err}");
+        assert!(
+            err.contains("upgrade the coordinator"),
+            "newer daemon should advise upgrading the coordinator: {err}"
+        );
+
+        // An OLDER daemon than the coordinator → upgrade the *daemon*.
+        let err = request_with_version(semver::Version::new(0, 1, 0))
+            .check_version()
+            .expect_err("older daemon must be rejected");
+        assert!(
+            err.contains("upgrade the daemon"),
+            "older daemon should advise upgrading the daemon: {err}"
+        );
+    }
+
+    #[test]
+    fn hub_capability_is_advertised_by_current_daemons_and_defaults_off() {
+        // A daemon built from this crate advertises hub support.
+        assert!(DaemonRegisterRequest::new(None, Default::default()).supports_hub_sources());
+
+        // A daemon built before the field existed sends a request without it;
+        // `#[serde(default)]` must decode that as "no hub support" so the
+        // coordinator refuses to route hub nodes to it. This is the same-version
+        // gap the version check cannot catch.
+        let legacy = r#"{"dora_version":"1.0.0-rc1","machine_id":null,"labels":{}}"#;
+        let decoded: DaemonRegisterRequest = serde_json::from_str(legacy).unwrap();
+        assert!(!decoded.supports_hub_sources());
     }
 }
 
