@@ -1115,7 +1115,15 @@ dora hub fetch <dataflow.yml | pkg@ver>    # warm the index cache + mirror sourc
 dora hub publish [PATH] [--dry-run]        # validate + add a pinned index entry
                  [--rev REF] [--repo URL]
                  [--version SEMVER] [--index ALIAS]
+dora hub yank <pkg>@<version>              # yank/restore a published version
+              [--reason R] [--undo]
 ```
+
+`yank` flips the `yanked` flag on a published version: new resolutions skip it,
+an existing `--locked` pin keeps working but `dora build` warns; `--undo`
+restores it (the one mutation an index entry allows, §7.5). For a local
+(`path =`) index the flag is flipped in place; for a git-backed index it prints
+the flag-flip change to open as a PR.
 
 `init` pre-fills the name, runtime, and entrypoint from `pyproject.toml` /
 `Cargo.toml` when present and the namespace from the `origin` git remote;

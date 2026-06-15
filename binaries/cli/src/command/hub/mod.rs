@@ -13,6 +13,7 @@ mod install;
 mod list;
 mod publish;
 mod search;
+mod yank;
 
 /// Package, discover, and use dora nodes (unstable)
 #[derive(Debug, clap::Subcommand)]
@@ -24,6 +25,7 @@ pub enum Hub {
     Fetch(fetch::Fetch),
     Install(install::Install),
     Publish(publish::Publish),
+    Yank(yank::Yank),
 }
 
 impl Executable for Hub {
@@ -36,6 +38,7 @@ impl Executable for Hub {
             Hub::Fetch(cmd) => cmd.execute(),
             Hub::Install(cmd) => cmd.execute(),
             Hub::Publish(cmd) => cmd.execute(),
+            Hub::Yank(cmd) => cmd.execute(),
         }
     }
 }

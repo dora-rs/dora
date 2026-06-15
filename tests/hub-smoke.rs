@@ -824,6 +824,104 @@ fn hub_publish_rejects_index_not_bound_to_namespace() {
     );
 }
 
+/// `dora hub yank` flips the `yanked` flag on a local index entry: a fresh
+/// resolve then skips the version (build fails when nothing else satisfies the
+/// range), and `--undo` restores it (UC10).
+#[test]
+fn hub_yank_skips_version_then_undo_restores() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub yank test");
+        return;
+    }
+    let fixture = build_fixture();
+    let entry = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    write(
+        &fixture.root.join("flow/dataflow.yml"),
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    // baseline: builds before the yank
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "baseline build should succeed"
+    );
+
+    // yank it
+    let out = dora(&fixture)
+        .args([
+            "hub",
+            "yank",
+            "test/hub-smoke-hello@0.1.0",
+            "--reason",
+            "broken",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "yank failed: {}", stderr(&out));
+    let written = std::fs::read_to_string(&entry).unwrap();
+    assert!(written.contains("yanked: true"), "entry: {written}");
+    assert!(written.contains("broken"), "yank reason missing: {written}");
+
+    // a fresh resolve now finds no non-yanked version satisfying `^0.1`
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "build must fail when the only matching version is yanked"
+    );
+
+    // undo restores it
+    let out = dora(&fixture)
+        .args(["hub", "yank", "test/hub-smoke-hello@0.1.0", "--undo"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "undo failed: {}", stderr(&out));
+    assert!(
+        std::fs::read_to_string(&entry)
+            .unwrap()
+            .contains("yanked: false"),
+        "undo did not clear the flag"
+    );
+    assert!(
+        dora(&fixture)
+            .args(["build", flow.to_str().unwrap()])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "build should succeed again after undo"
+    );
+}
+
+/// Yanking against a git-backed index (the official one) can't flip a file in
+/// place — it prints the flag-flip PR instructions instead.
+#[test]
+fn hub_yank_git_index_prints_pr_instructions() {
+    let fixture = build_fixture();
+    let out = dora(&fixture)
+        .args(["hub", "yank", "dora-rs/some-node@1.0.0"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "yank git-index failed: {}",
+        stderr(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("git-backed") && stdout.contains("yanked: true"),
+        "expected flag-flip PR instructions, got:\n{stdout}"
+    );
+}
+
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
