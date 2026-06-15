@@ -111,6 +111,10 @@ fn extract_string_lit(expr: &Expr) -> Option<String> {
             _ => None,
         },
         Expr::Reference(r) => extract_string_lit(&r.expr),
+        // Recognize the idiomatic `"output_id".into()` form used by every
+        // real send_output call site, where the first argument is a DataId
+        // constructed via `Into<DataId>` from a string literal.
+        Expr::MethodCall(mc) if mc.method == "into" => extract_string_lit(&mc.receiver),
         _ => None,
     }
 }
@@ -219,6 +223,28 @@ fn main() {
         // Expectation: no suggestion (graceful no-op, not a panic).
         let suggestions = infer_types_from_source(source, "test.rs", "node").unwrap();
         assert!(suggestions.is_empty());
+    }
+
+    #[test]
+    fn infer_from_real_call_site_idiom() {
+        // Mirrors the real idiom used throughout examples/, e.g.
+        // examples/error-propagation/producer/src/main.rs:
+        //   node.send_output("data".into(), MetadataParameters::default(), i.into_arrow())?;
+        // The output_id is `"data".into()` (a DataId via Into<DataId>), not a
+        // bare string literal.
+        let source = r#"
+fn main() {
+    node.send_output(
+        "data".into(),
+        MetadataParameters::default(),
+        Int64Array::from(vec![i]).into_arrow(),
+    )?;
+}
+"#;
+        let suggestions = infer_types_from_source(source, "test.rs", "producer").unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].output_id, "data");
+        assert_eq!(suggestions[0].suggested_urn, "std/core/v1/Int64");
     }
 
     // ── into_arrow() chain: type visible in the constructor ─────────────────
