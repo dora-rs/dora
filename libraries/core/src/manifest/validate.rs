@@ -710,6 +710,28 @@ outputs:
              fields:\n      - name: x\n        type: Float32\n",
         );
         assert_eq!(ok.shipped_type_issues(&reg), vec![]);
+
+        // Document the gap that the namespace-consistency check in hub.rs closes:
+        // an entry can self-declare `namespace: victim` and ship `victim/…` types
+        // that pass `shipped_type_issues` (which validates URNs against self.namespace).
+        // The hub resolver must compare manifest.namespace against the *requested*
+        // reference.namespace *before* calling this function, so this circular
+        // self-attestation cannot be exploited.
+        let attacker_namespace = "victim";
+        let attacker = NodeManifest {
+            namespace: attacker_namespace.to_string(),
+            ..minimal(
+                "types:\n  victim/sensor/v1/Image:\n    arrow: Struct\n    \
+                 fields:\n      - name: x\n        type: Float32\n",
+            )
+        };
+        // shipped_type_issues alone is NOT sufficient to catch this; it passes:
+        assert_eq!(
+            attacker.shipped_type_issues(&reg),
+            vec![],
+            "shipped_type_issues alone cannot reject a self-consistent attacker manifest \
+             (namespace binding in hub.rs is the guard)"
+        );
     }
 
     #[test]

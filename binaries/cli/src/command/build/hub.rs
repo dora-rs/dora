@@ -363,11 +363,29 @@ pub fn resolve_hub_nodes(
         let manifest = &entry.manifest;
         let label = format!("{}@{version}", reference.key());
 
-        // The index entry is an untrusted input: validate its shipped types
-        // (namespace ownership, materializable bodies) before loading them, so
-        // a rewritten entry can't register a `std/` override or a
-        // cross-namespace type that a consumer's port check would resolve
-        // (spec §6.3, P2.12).
+        // The index entry is untrusted. Its self-declared `namespace` must
+        // match the namespace the entry was actually fetched under
+        // (`reference.namespace`): `shipped_type_issues` gates URNs against
+        // `manifest.namespace`, so an entry that sets `namespace: victim` and
+        // ships `victim/...` types would bypass the cross-namespace guard if we
+        // didn't bind it to the requested namespace first (spec §6.3, P2.12).
+        if manifest.namespace != reference.namespace {
+            eyre::bail!(
+                "node `{}`: the index entry for `{}` declares namespace `{}` \
+                 but was fetched under namespace `{}` — the index may have been tampered with",
+                node.id,
+                reference.key(),
+                manifest
+                    .namespace
+                    .chars()
+                    .filter(|c| !c.is_control())
+                    .collect::<String>(),
+                reference.namespace
+            );
+        }
+
+        // With the namespace now verified, validate shipped types
+        // (materializable bodies, no `std/` override, no cross-namespace URN).
         let type_issues = manifest.shipped_type_issues(registry);
         if !type_issues.is_empty() {
             eyre::bail!(
