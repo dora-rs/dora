@@ -77,13 +77,13 @@ fn normalize_git_source_url(url: &str) -> String {
 /// lockfile so `--locked` can detect a rewritten index entry (entrypoint,
 /// build command, or typed contract). `serde_json` sorts the manifest's
 /// `BTreeMap` fields, so the serialization — and the digest — is canonical.
-fn manifest_digest(manifest: &NodeManifest) -> String {
+fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(manifest).unwrap_or_default();
-    Sha256::digest(&bytes)
+    let bytes = serde_json::to_vec(manifest).context("failed to serialize node manifest")?;
+    Ok(Sha256::digest(&bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
-        .collect()
+        .collect())
 }
 
 /// Resolve and desugar every `hub:` node in `dataflow`.
@@ -295,18 +295,30 @@ pub fn resolve_hub_nodes(
                 // the lockfile is authoritative for the pin, but the index
                 // entry of the pinned version should still agree — a mismatch
                 // means the append-only index was tampered with or rewritten
-                if let Ok((git, rev)) = entry.source.git_pin()
-                    && (normalize_git_source_url(git) != pin.repo
-                        || rev != pin.commit_hash
-                        || entry.source.subdir != pin.subdir)
-                {
-                    resolution.warnings.push(format!(
-                        "node `{}`: the index entry for `{}@{version}` no longer matches \
-                         the lockfile pin — the index may have been rewritten; \
-                         the lockfile pin is used",
-                        node.id,
-                        reference.key()
-                    ));
+                match entry.source.git_pin() {
+                    Ok((git, rev))
+                        if normalize_git_source_url(git) != pin.repo
+                            || rev != pin.commit_hash
+                            || entry.source.subdir != pin.subdir =>
+                    {
+                        resolution.warnings.push(format!(
+                            "node `{}`: the index entry for `{}@{version}` no longer matches \
+                             the lockfile pin — the index may have been rewritten; \
+                             the lockfile pin is used",
+                            node.id,
+                            reference.key()
+                        ));
+                    }
+                    Err(_) => {
+                        resolution.warnings.push(format!(
+                            "node `{}`: the index entry for `{}@{version}` has a malformed \
+                             source — the index may have been rewritten; \
+                             the lockfile pin is used",
+                            node.id,
+                            reference.key()
+                        ));
+                    }
+                    _ => {}
                 }
                 // the commit hash pins the source *tree*, but the manifest
                 // (entrypoint, build command, and the typed contract) comes from
@@ -317,7 +329,7 @@ pub fn resolve_hub_nodes(
                 // (lockfile predates this field) the check is skipped.
                 if let Some(provenance) = &pin.hub
                     && let Some(locked_digest) = &provenance.manifest_digest
-                    && *locked_digest != manifest_digest(&entry.manifest)
+                    && *locked_digest != manifest_digest(&entry.manifest)?
                 {
                     eyre::bail!(
                         "node `{}`: the locked index entry for `{}@{version}` changed its \
@@ -348,7 +360,7 @@ pub fn resolve_hub_nodes(
                     hub: Some(HubProvenance {
                         name: reference.key(),
                         version: resolved.version.to_string(),
-                        manifest_digest: Some(manifest_digest(&resolved.entry.manifest)),
+                        manifest_digest: Some(manifest_digest(&resolved.entry.manifest)?),
                     }),
                 };
                 (resolved.version, resolved.entry, source)
