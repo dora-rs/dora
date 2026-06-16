@@ -1564,6 +1564,11 @@ impl Node {
 
                 if let Some(ref name) = shmem_name {
                     if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
+                        // Mirror fast-path guard: reject segments smaller
+                        // than the header before any pointer arithmetic.
+                        if shmem.len() < DORADMA_HEADER_SIZE {
+                            return Ok(());
+                        }
                         let shmem_ptr = shmem.as_ptr();
 
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
@@ -1765,6 +1770,16 @@ impl Node {
                 let mut read_ptr: i64 = 0;
                 if let Some(ref name) = shmem_name {
                     if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
+                        // Mirror fast-path guard: reject segments smaller
+                        // than the header before any pointer arithmetic.
+                        if shmem.len() < DORADMA_HEADER_SIZE {
+                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                            return Err(eyre::eyre!(
+                                "memory pool {} segment too small ({})",
+                                buffer_id,
+                                shmem.len()
+                            ));
+                        }
                         let shmem_ptr = shmem.as_ptr();
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == DORADMA_MAGIC {
