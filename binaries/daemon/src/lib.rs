@@ -2756,6 +2756,11 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Sweep orphaned /dev/shm segments from a previous crash of the
+        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
+        // daemon setups).
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)

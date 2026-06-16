@@ -1134,7 +1134,10 @@ impl Node {
             *c += 1;
             *c
         };
-        let shmem_name = format!("dora_pool_{}_{}", self.node_id, pool_counter);
+        let shmem_name = format!(
+            "dora_pool_{}_{}_{}",
+            self.dataflow_id, self.node_id, pool_counter
+        );
 
         let header_meta = PyDict::new(py);
         header_meta.set_item("size", size)?;
@@ -1408,7 +1411,10 @@ impl Node {
                     } else {
                         // Cache miss: open via ShmemConf, wrap immediately
                         // so the mapping stays alive until post-write re-insert.
-                        let shmem_name = format!("dora_pool_{}_{}", self.node_id, counter);
+                        let shmem_name = format!(
+                            "dora_pool_{}_{}_{}",
+                            self.dataflow_id, self.node_id, counter
+                        );
                         match ShmemConf::new().os_id(&shmem_name).open() {
                             Ok(shmem) => {
                                 let cap = shmem.len();
@@ -2033,7 +2039,7 @@ impl Node {
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
     /// Buffer ID format: `"pool_{node_id}_{counter}"` →
-    /// shmem name: `"dora_pool_{node_id}_{counter}"`.
+    /// shmem name: `"dora_pool_{dataflow_id}_{node_id}_{counter}"`.
     ///
     /// # Synchronization model
     ///
@@ -2077,7 +2083,10 @@ impl Node {
             }
         }
 
-        let shmem_name = format!("dora_pool_{}_{}", pool_node_id, counter);
+        let shmem_name = format!(
+            "dora_pool_{}_{}_{}",
+            self.dataflow_id, pool_node_id, counter
+        );
 
         // Open shared memory
         let shmem = match ShmemConf::new().os_id(&shmem_name).open() {

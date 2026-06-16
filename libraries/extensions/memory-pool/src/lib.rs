@@ -216,29 +216,33 @@ impl MemoryPoolManager {
             .collect()
     }
 
-    /// Best-effort sweep of orphaned [`dora_pool_*`][/dev/shm] segments from
-    /// a previous daemon crash or SIGKILL.
+    /// Sweep orphaned shared-memory segments from a previous crash or
+    /// SIGKILL of the same dataflow.
     ///
-    /// **Not called automatically**.  Unlinking every `dora_pool_*` file on
-    /// startup is unsafe in multi-daemon setups (it would unlink live pools
-    /// belonging to another daemon on the same host).  Call only when you are
-    /// certain no other daemon is running.
-    #[allow(dead_code)]
-    pub fn cleanup_orphans() {
+    /// `dataflow_id` scopes the sweep — only files matching
+    /// `dora_pool_{dataflow_id}_*` are removed.  This is safe even when
+    /// other daemons are running on the same host, because dataflow IDs
+    /// are UUIDs and no two daemons run the same one concurrently.
+    pub fn cleanup_orphans(dataflow_id: &str) {
         #[cfg(target_os = "linux")]
         {
+            let prefix = format!("dora_pool_{}_", dataflow_id);
             if let Ok(entries) = std::fs::read_dir("/dev/shm") {
                 for entry in entries.flatten() {
                     let name = entry.file_name();
                     let name = name.to_string_lossy();
-                    if name.starts_with("dora_pool_")
+                    if name.starts_with(&prefix)
                         && let Err(err) = std::fs::remove_file(entry.path())
                         && err.kind() != std::io::ErrorKind::NotFound
                     {
-                        tracing::debug!("Startup orphan sweep: could not unlink {}: {}", name, err);
+                        tracing::debug!("Orphan sweep: could not unlink {}: {}", name, err);
                     }
                 }
             }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = dataflow_id;
         }
     }
 
