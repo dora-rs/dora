@@ -65,10 +65,16 @@ pub(super) async fn path_spawn_command(
                 // The checksum is the integrity guarantee, so this is allowed
                 // regardless of confinement / `permit_url`. `download_file`
                 // re-fetches and re-verifies on every spawn (§8.4).
-                let target_dir = Path::new("build");
-                download_file(source, target_dir, Some(expected_sha256))
+                //
+                // Download under the node's own working dir and return an
+                // absolute path: the spawned child's cwd is set to `working_dir`,
+                // so a relative download path (resolved against the daemon's cwd)
+                // would exec the wrong file or fail to find it.
+                let target_dir = working_dir.join("build");
+                let downloaded = download_file(source, &target_dir, Some(expected_sha256))
                     .await
-                    .wrap_err("failed to download hub binary artifact")?
+                    .wrap_err("failed to download hub binary artifact")?;
+                downloaded.canonicalize().unwrap_or(downloaded)
             } else if confined {
                 // hub-sourced node (spec §11): the entrypoint resolves only
                 // within the node's own working dir or managed env — no env

@@ -182,6 +182,16 @@ fn resolve_locked_binary(
             reference.key()
         );
     }
+    // the lockfile holds one binary pin per node, for the platform it was
+    // generated on — a Linux pin must not download its artifact on macOS.
+    let host = current_platform();
+    if bpin.platform != host {
+        eyre::bail!(
+            "node `{node_id}`: the lockfile pins the binary artifact for `{}`, but this host is \
+             `{host}` — regenerate the lockfile on this platform (`dora build --write-lockfile`)",
+            bpin.platform
+        );
+    }
     let version: dora_hub_client::semver::Version = bpin
         .hub
         .version
@@ -755,5 +765,39 @@ mod tests {
             resolve_node_bytes(&git, &manifest, &reference, &version).unwrap(),
             NodeBytes::Git(_)
         ));
+    }
+
+    #[test]
+    fn locked_binary_rejects_platform_mismatch() {
+        use dora_hub_client::index::IndexCatalog;
+        use dora_message::common::{BinaryPin, HubProvenance};
+
+        use super::{HubResolution, PackageRef, resolve_locked_binary};
+
+        // an empty catalog is fine: the platform check fails before any lookup
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let reference = PackageRef::parse("dora-rs/lidar@^2").unwrap();
+        let bpin = BinaryPin {
+            platform: "some-other-platform-not-this-host".into(),
+            url: "https://example.com/x".into(),
+            sha256: "a".repeat(64),
+            hub: HubProvenance {
+                name: reference.key(),
+                version: "2.1.0".into(),
+                manifest_digest: None,
+            },
+        };
+        let mut resolution = HubResolution::default();
+        let Err(err) = resolve_locked_binary(
+            &bpin,
+            &catalog,
+            &reference,
+            &"lidar".parse().unwrap(),
+            &mut resolution,
+        ) else {
+            panic!("expected a platform-mismatch error");
+        };
+        assert!(err.to_string().contains("this host"), "{err}");
     }
 }
