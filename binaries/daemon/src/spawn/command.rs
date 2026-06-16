@@ -48,6 +48,14 @@ pub(super) async fn path_spawn_command(
             }
         }
         source => {
+            // a checksum only means anything for a URL download — reject a
+            // `path_sha256` on a local/PATH source rather than silently ignoring it.
+            if node.path_sha256.is_some() && !source_is_url(source) {
+                eyre::bail!(
+                    "node has `path_sha256` set but its path `{source}` is not a URL — \
+                     a download checksum only applies to URL paths"
+                );
+            }
             let resolved_path = if let Some(expected_sha256) = node
                 .path_sha256
                 .as_deref()
@@ -55,8 +63,8 @@ pub(super) async fn path_spawn_command(
             {
                 // hub binary artifact (spec §8.2): a sha256-pinned URL download.
                 // The checksum is the integrity guarantee, so this is allowed
-                // regardless of confinement / `permit_url`, and re-verified
-                // after download and on cache reuse (§8.4).
+                // regardless of confinement / `permit_url`. `download_file`
+                // re-fetches and re-verifies on every spawn (§8.4).
                 let target_dir = Path::new("build");
                 download_file(source, target_dir, Some(expected_sha256))
                     .await

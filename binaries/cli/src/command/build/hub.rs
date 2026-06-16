@@ -233,6 +233,22 @@ fn resolve_locked_binary(
             reference.key()
         );
     }
+    // re-validate the pin's artifact shape, mirroring the git path's commit-hash
+    // re-check: a tampered lockfile must not smuggle a non-https url (which would
+    // slip past the daemon's `source_is_url` gate and skip sha256 verification)
+    // or a malformed digest.
+    if !bpin.url.starts_with("https://") {
+        eyre::bail!(
+            "node `{node_id}`: lockfile binary url for `{}` is not https",
+            bpin.platform
+        );
+    }
+    if bpin.sha256.len() != 64 || !bpin.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        eyre::bail!(
+            "node `{node_id}`: lockfile binary sha256 for `{}` is malformed (need 64 hex chars)",
+            bpin.platform
+        );
+    }
     let bytes = NodeBytes::Binary {
         url: bpin.url.clone(),
         sha256: bpin.sha256.clone(),
@@ -493,8 +509,8 @@ pub fn resolve_hub_nodes(
                             reference.key()
                         );
                     }
-                    // Binary pins are not yet recorded in the lockfile, so a `--locked`
-                    // binary node arrives here with no pin and resolves live below.
+                    // a git pin only — binary pins take the `resolve_locked_binary`
+                    // path above, so this arm is always a git source.
                     (version, entry, NodeBytes::Git(pin.clone()))
                 }
                 None => {
