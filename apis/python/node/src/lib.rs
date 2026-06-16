@@ -162,8 +162,9 @@ static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
 /// and valid GPU VAs for zero-copy reads across iterations.
 struct RecvGpuSlot {
     _shmem: shared_memory_extended::Shmem,
-    gpu_va: u64,
-    gpu_buf: u64, // IPC-opened GPU DRAM pointer, 0 if using GPU VA path
+    gpu_va: u64,    // device VA from cudaHostGetDevicePointer, 0 if IPC path
+    gpu_buf: u64,   // IPC-opened GPU DRAM pointer, 0 if GPU VA path
+    host_base: u64, // original host ptr passed to cudaHostRegister
     generation: u64,
 }
 unsafe impl Send for RecvGpuSlot {}
@@ -1865,12 +1866,12 @@ impl Node {
                     }
                 } else if slot.gpu_va != 0 {
                     // Host-registered mapping (effective_as_cuda branch):
-                    // must cudaHostUnregister before munmap, or the pinned
-                    // registration leaks and the GPU may still reference
-                    // the region (UB).
+                    // must cudaHostUnregister before munmap.  _unregister_host
+                    // requires the original host pointer (shmem base), not the
+                    // device VA returned by cudaHostGetDevicePointer.
                     if let Ok(helpers) = get_cuda_helpers(py) {
                         let bound = helpers.bind(py);
-                        let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
+                        let _ = bound.call_method1("_unregister_host", (slot.host_base,));
                     }
                 }
                 // slot._shmem drops here -> munmap
@@ -2228,6 +2229,7 @@ impl Node {
                                 _shmem: shmem,
                                 gpu_va: 0,
                                 gpu_buf: gpu_ptr,
+                                host_base: shmem_ptr as u64,
                                 generation: read_gen,
                             },
                         );
@@ -2264,6 +2266,7 @@ impl Node {
                                 _shmem: shmem,
                                 gpu_va: va,
                                 gpu_buf: 0,
+                                host_base: shmem_ptr as u64,
                                 generation: read_gen,
                             },
                         );
