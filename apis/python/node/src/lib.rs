@@ -1584,7 +1584,35 @@ impl Node {
                                 return Ok(());
                             }
 
-                            if is_cuda {
+                            // Check if this pool has GPU DMA path enabled
+                            let ipc_present =
+                                unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
+
+                            if ipc_present == 1 && !is_cuda {
+                                // Extract counter for the DMA slot from buffer_id.
+                                let slow_counter = buffer_id
+                                    .rsplit_once('_')
+                                    .and_then(|(_, c)| c.parse::<u64>().ok());
+                                // Seqlock: begin write
+                                unsafe {
+                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                    let old_gen = std::ptr::read_volatile(gen_ptr);
+                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
+                                if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter)
+                                {
+                                    let bound = helpers.bind(py);
+                                    let _ = bound.call_method1("dma_copy", (ptr_val, size, c));
+                                }
+                                // Seqlock: end write
+                                unsafe {
+                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                    let old_gen = std::ptr::read_volatile(gen_ptr);
+                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
+                            } else if is_cuda {
                                 // Seqlock: begin write
                                 unsafe {
                                     let gen_ptr = shmem_ptr.add(96) as *mut u64;
