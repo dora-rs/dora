@@ -1,4 +1,4 @@
-use crate::socket_stream_utils::{socket_stream_receive, socket_stream_send};
+use crate::socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send};
 use dora_message::{
     daemon_to_node::DaemonReply,
     node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
@@ -152,7 +152,7 @@ async fn handle_connection_loop(
 async fn receive_message(
     connection: &mut TcpStream,
 ) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
-    let raw = match socket_stream_receive(connection).await {
+    let raw = match socket_stream_receive_with_header_timeout(connection, None).await {
         Ok(raw) => raw,
         Err(err) => match err.kind() {
             ErrorKind::UnexpectedEof
