@@ -94,13 +94,39 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
         }
     }
 
-    // Resolve hub: references against the (cached) index so their contracts
-    // take part in validation (spec §6.2 ordering note)
+    // If a lockfile exists, use its pins for hub: resolution so validate
+    // reflects the same versions a --locked build would use and works offline
+    // against the index cache. Without a lockfile, fall through to live
+    // resolution (same as before).
+    let lockfile_path = super::build::lockfile::BuildLockfile::path_for_dataflow(dataflow, None);
+    let hub_pins = if lockfile_path.exists() {
+        match super::build::lockfile::BuildLockfile::read_from(&lockfile_path) {
+            Ok(lf) => {
+                println!(
+                    "  Using hub pins from lockfile `{}`",
+                    lockfile_path.display()
+                );
+                Some(lf.git_sources)
+            }
+            Err(e) => {
+                eprintln!(
+                    "  warning: could not read lockfile `{}`: {e} — resolving hub: nodes live",
+                    lockfile_path.display()
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    // Resolve hub: references so their contracts take part in validation
+    // (spec §6.2 ordering note).
     let hub_resolution = super::build::hub::resolve_hub_nodes(
         &mut descriptor,
         &mut registry,
         offline,
-        None,
+        hub_pins.as_ref(),
         &std::collections::BTreeMap::<String, std::path::PathBuf>::new(),
     )?;
     for note in &hub_resolution.notes {
