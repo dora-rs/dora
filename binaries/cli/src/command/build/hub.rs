@@ -27,7 +27,7 @@ use dora_hub_client::{
     transport::IndexFetcher,
 };
 use dora_message::{
-    common::{GitSource, HubProvenance},
+    common::{BinaryPin, GitSource, HubProvenance},
     descriptor::Descriptor,
     id::NodeId,
 };
@@ -43,6 +43,10 @@ pub struct HubResolution {
     /// Per-node resolved git source (with subdir + hub provenance) — merged
     /// into the build's `git_sources` map and the lockfile.
     pub sources: BTreeMap<NodeId, GitSource>,
+    /// Per-node resolved prebuilt-binary pin (url + sha256 + provenance) for
+    /// nodes that resolved to a `binary` artifact — written to the lockfile so
+    /// `--locked` reproduces the exact artifact (spec §8.2).
+    pub binary_sources: BTreeMap<NodeId, BinaryPin>,
     /// Per-node local working dir for `--hub-override` substitutions (UC11):
     /// the node builds and runs from this checkout instead of a cloned commit.
     /// Threaded into the local builder so build + spawn root there.
@@ -51,7 +55,7 @@ pub struct HubResolution {
 
 impl HubResolution {
     pub fn is_empty(&self) -> bool {
-        self.sources.is_empty() && self.override_dirs.is_empty()
+        self.sources.is_empty() && self.binary_sources.is_empty() && self.override_dirs.is_empty()
     }
 }
 
@@ -99,7 +103,11 @@ fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
 /// source, the default) or a prebuilt per-platform binary artifact (spec §8.2).
 enum NodeBytes {
     Git(GitSource),
-    Binary { url: String, sha256: String },
+    Binary {
+        url: String,
+        sha256: String,
+        platform: String,
+    },
 }
 
 /// Decide where a freshly-resolved entry's bytes come from (spec §8.1/§8.2):
@@ -133,6 +141,7 @@ fn resolve_node_bytes(
             return Ok(NodeBytes::Binary {
                 url: art.url.clone(),
                 sha256: art.sha256.clone(),
+                platform,
             });
         }
         // no artifact for this platform: degrade to a source build if the
@@ -149,11 +158,95 @@ fn resolve_node_bytes(
     git_bytes(git, rev, source.subdir.clone())
 }
 
+/// Resolve a node whose lockfile entry is a binary pin (`--locked`): the
+/// pinned `url`+`sha256` are used verbatim, but the manifest (entrypoint,
+/// build, contract) still comes from the mutable index entry — so the entry's
+/// artifact is cross-checked (warn on rewrite) and its manifest digest is
+/// hard-checked, mirroring the git locked path.
+fn resolve_locked_binary(
+    bpin: &BinaryPin,
+    catalog: &IndexCatalog,
+    reference: &PackageRef,
+    node_id: &NodeId,
+    resolution: &mut HubResolution,
+) -> eyre::Result<(
+    dora_hub_client::semver::Version,
+    dora_hub_client::index::IndexEntry,
+    NodeBytes,
+)> {
+    if bpin.hub.name != reference.key() {
+        eyre::bail!(
+            "node `{node_id}`: lockfile pins `{}` but the dataflow now references `{}` — \
+             regenerate with `dora build --write-lockfile`",
+            bpin.hub.name,
+            reference.key()
+        );
+    }
+    let version: dora_hub_client::semver::Version = bpin
+        .hub
+        .version
+        .parse()
+        .with_context(|| format!("node `{node_id}`: invalid version in lockfile"))?;
+    if !reference.requirement.matches(&version) {
+        eyre::bail!(
+            "node `{node_id}`: locked version {version} no longer satisfies `{}` — \
+             regenerate with `dora build --write-lockfile`",
+            reference.requirement
+        );
+    }
+    let entry = catalog
+        .entry(&reference.namespace, &reference.name, &version)
+        .with_context(|| {
+            format!(
+                "node `{node_id}`: pinned version {version} of `{}` is missing from the index",
+                reference.key()
+            )
+        })?;
+    if entry.yanked {
+        resolution.warnings.push(format!(
+            "node `{node_id}`: pinned version {version} of `{}` has been yanked — \
+             the pin keeps working, but consider updating",
+            reference.key()
+        ));
+    }
+    // the locked artifact should still match the (append-only) index entry
+    let agrees = matches!(
+        entry.source.select_binary(&bpin.platform),
+        Some(art) if art.url == bpin.url && art.sha256 == bpin.sha256
+    );
+    if !agrees {
+        resolution.warnings.push(format!(
+            "node `{node_id}`: the index entry for `{}@{version}` no longer matches the \
+             locked binary artifact for `{}` — the index may have been rewritten; \
+             the lockfile pin is used",
+            reference.key(),
+            bpin.platform
+        ));
+    }
+    if let Some(locked_digest) = &bpin.hub.manifest_digest
+        && *locked_digest != manifest_digest(&entry.manifest)?
+    {
+        eyre::bail!(
+            "node `{node_id}`: the locked index entry for `{}@{version}` changed its manifest \
+             (entrypoint, build, or contract) since the lockfile was written — \
+             regenerate with `dora build --write-lockfile`",
+            reference.key()
+        );
+    }
+    let bytes = NodeBytes::Binary {
+        url: bpin.url.clone(),
+        sha256: bpin.sha256.clone(),
+        platform: bpin.platform.clone(),
+    };
+    Ok((version, entry, bytes))
+}
+
 pub fn resolve_hub_nodes(
     dataflow: &mut Descriptor,
     registry: &mut TypeRegistry,
     offline: bool,
     pins: Option<&BTreeMap<NodeId, GitSource>>,
+    binary_pins: Option<&BTreeMap<NodeId, BinaryPin>>,
     overrides: &BTreeMap<String, PathBuf>,
 ) -> eyre::Result<HubResolution> {
     let mut resolution = HubResolution::default();
@@ -267,7 +360,8 @@ pub fn resolve_hub_nodes(
         // fail fast — *before* any index fetch — rather than hitting the
         // network (or an offline cache miss) only to bail afterwards.
         let pin = pins.and_then(|p| p.get(&node.id));
-        if pins.is_some() && pin.is_none() {
+        let binary_pin = binary_pins.and_then(|p| p.get(&node.id));
+        if pins.is_some() && pin.is_none() && binary_pin.is_none() {
             eyre::bail!(
                 "node `{}`: `hub:` reference is not in the lockfile — \
                  regenerate with `dora build --write-lockfile`",
@@ -281,144 +375,148 @@ pub fn resolve_hub_nodes(
             .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
-        let (version, entry, bytes) = match pin {
-            Some(pin) => {
-                // --locked: the pinned commit is used verbatim, no resolution
-                let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
-                    && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
-                if !valid_hash {
-                    eyre::bail!(
-                        "node `{}`: lockfile commit hash is not a valid hex hash",
-                        node.id
-                    );
-                }
-                let provenance = pin.hub.as_ref().with_context(|| {
-                    format!(
-                        "node `{}`: lockfile entry has no hub provenance — \
-                         regenerate with `dora build --write-lockfile`",
-                        node.id
-                    )
-                })?;
-                if provenance.name != reference.key() {
-                    eyre::bail!(
-                        "node `{}`: lockfile pins `{}` but the dataflow now references \
-                         `{}` — regenerate with `dora build --write-lockfile`",
-                        node.id,
-                        provenance.name,
-                        reference.key()
-                    );
-                }
-                let version: dora_hub_client::semver::Version = provenance
-                    .version
-                    .parse()
-                    .with_context(|| format!("node `{}`: invalid version in lockfile", node.id))?;
-                if !reference.requirement.matches(&version) {
-                    eyre::bail!(
-                        "node `{}`: locked version {version} no longer satisfies `{}` — \
-                         regenerate with `dora build --write-lockfile`",
-                        node.id,
-                        reference.requirement
-                    );
-                }
-                let entry = catalog
-                    .entry(&reference.namespace, &reference.name, &version)
-                    .with_context(|| {
+        let (version, entry, bytes) = if let Some(bpin) = binary_pin {
+            resolve_locked_binary(bpin, &catalog, &reference, &node.id, &mut resolution)?
+        } else {
+            match pin {
+                Some(pin) => {
+                    // --locked: the pinned commit is used verbatim, no resolution
+                    let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
+                        && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
+                    if !valid_hash {
+                        eyre::bail!(
+                            "node `{}`: lockfile commit hash is not a valid hex hash",
+                            node.id
+                        );
+                    }
+                    let provenance = pin.hub.as_ref().with_context(|| {
                         format!(
-                            "node `{}`: pinned version {version} of `{}` is missing \
-                             from the index",
-                            node.id,
-                            reference.key()
+                            "node `{}`: lockfile entry has no hub provenance — \
+                         regenerate with `dora build --write-lockfile`",
+                            node.id
                         )
                     })?;
-                if entry.yanked {
-                    resolution.warnings.push(format!(
-                        "node `{}`: pinned version {version} of `{}` has been yanked{} — \
-                         the pin keeps working, but consider updating",
-                        node.id,
-                        reference.key(),
-                        entry
-                            .yank_reason
-                            .as_deref()
-                            .map(|r| format!(
-                                " ({})",
-                                r.chars()
-                                    .filter(|c| !c.is_control())
-                                    .take(200)
-                                    .collect::<String>()
-                            ))
-                            .unwrap_or_default()
-                    ));
-                }
-                // the lockfile is authoritative for the pin, but the index
-                // entry of the pinned version should still agree — a mismatch
-                // means the append-only index was tampered with or rewritten
-                match entry.source.git_pin() {
-                    Ok((git, rev))
-                        if normalize_git_source_url(git) != pin.repo
-                            || rev != pin.commit_hash
-                            || entry.source.subdir != pin.subdir =>
-                    {
+                    if provenance.name != reference.key() {
+                        eyre::bail!(
+                            "node `{}`: lockfile pins `{}` but the dataflow now references \
+                         `{}` — regenerate with `dora build --write-lockfile`",
+                            node.id,
+                            provenance.name,
+                            reference.key()
+                        );
+                    }
+                    let version: dora_hub_client::semver::Version =
+                        provenance.version.parse().with_context(|| {
+                            format!("node `{}`: invalid version in lockfile", node.id)
+                        })?;
+                    if !reference.requirement.matches(&version) {
+                        eyre::bail!(
+                            "node `{}`: locked version {version} no longer satisfies `{}` — \
+                         regenerate with `dora build --write-lockfile`",
+                            node.id,
+                            reference.requirement
+                        );
+                    }
+                    let entry = catalog
+                        .entry(&reference.namespace, &reference.name, &version)
+                        .with_context(|| {
+                            format!(
+                                "node `{}`: pinned version {version} of `{}` is missing \
+                             from the index",
+                                node.id,
+                                reference.key()
+                            )
+                        })?;
+                    if entry.yanked {
                         resolution.warnings.push(format!(
-                            "node `{}`: the index entry for `{}@{version}` no longer matches \
+                            "node `{}`: pinned version {version} of `{}` has been yanked{} — \
+                         the pin keeps working, but consider updating",
+                            node.id,
+                            reference.key(),
+                            entry
+                                .yank_reason
+                                .as_deref()
+                                .map(|r| format!(
+                                    " ({})",
+                                    r.chars()
+                                        .filter(|c| !c.is_control())
+                                        .take(200)
+                                        .collect::<String>()
+                                ))
+                                .unwrap_or_default()
+                        ));
+                    }
+                    // the lockfile is authoritative for the pin, but the index
+                    // entry of the pinned version should still agree — a mismatch
+                    // means the append-only index was tampered with or rewritten
+                    match entry.source.git_pin() {
+                        Ok((git, rev))
+                            if normalize_git_source_url(git) != pin.repo
+                                || rev != pin.commit_hash
+                                || entry.source.subdir != pin.subdir =>
+                        {
+                            resolution.warnings.push(format!(
+                                "node `{}`: the index entry for `{}@{version}` no longer matches \
                              the lockfile pin — the index may have been rewritten; \
                              the lockfile pin is used",
-                            node.id,
-                            reference.key()
-                        ));
-                    }
-                    Err(_) => {
-                        resolution.warnings.push(format!(
-                            "node `{}`: the index entry for `{}@{version}` has a malformed \
+                                node.id,
+                                reference.key()
+                            ));
+                        }
+                        Err(_) => {
+                            resolution.warnings.push(format!(
+                                "node `{}`: the index entry for `{}@{version}` has a malformed \
                              source — the index may have been rewritten; \
                              the lockfile pin is used",
-                            node.id,
-                            reference.key()
-                        ));
+                                node.id,
+                                reference.key()
+                            ));
+                        }
+                        _ => {}
                     }
-                    _ => {}
-                }
-                // the commit hash pins the source *tree*, but the manifest
-                // (entrypoint, build command, and the typed contract) comes from
-                // the *mutable* index entry — so a rewritten entry could change
-                // any of it at a pinned version. `--locked` hard-errors if the
-                // manifest digest no longer matches what was locked. The digest
-                // doubles as the new-lockfile-format sentinel: when absent
-                // (lockfile predates this field) the check is skipped.
-                if let Some(provenance) = &pin.hub
-                    && let Some(locked_digest) = &provenance.manifest_digest
-                    && *locked_digest != manifest_digest(&entry.manifest)?
-                {
-                    eyre::bail!(
-                        "node `{}`: the locked index entry for `{}@{version}` changed its \
+                    // the commit hash pins the source *tree*, but the manifest
+                    // (entrypoint, build command, and the typed contract) comes from
+                    // the *mutable* index entry — so a rewritten entry could change
+                    // any of it at a pinned version. `--locked` hard-errors if the
+                    // manifest digest no longer matches what was locked. The digest
+                    // doubles as the new-lockfile-format sentinel: when absent
+                    // (lockfile predates this field) the check is skipped.
+                    if let Some(provenance) = &pin.hub
+                        && let Some(locked_digest) = &provenance.manifest_digest
+                        && *locked_digest != manifest_digest(&entry.manifest)?
+                    {
+                        eyre::bail!(
+                            "node `{}`: the locked index entry for `{}@{version}` changed its \
                          manifest (entrypoint, build, or contract) since the lockfile was \
                          written — regenerate with `dora build --write-lockfile`",
-                        node.id,
-                        reference.key()
-                    );
+                            node.id,
+                            reference.key()
+                        );
+                    }
+                    // Binary pins are not yet recorded in the lockfile, so a `--locked`
+                    // binary node arrives here with no pin and resolves live below.
+                    (version, entry, NodeBytes::Git(pin.clone()))
                 }
-                // Binary pins are not yet recorded in the lockfile, so a `--locked`
-                // binary node arrives here with no pin and resolves live below.
-                (version, entry, NodeBytes::Git(pin.clone()))
-            }
-            None => {
-                let resolved = catalog.resolve(&reference).with_context(|| {
-                    format!("node `{}`: failed to resolve `{raw_reference}`", node.id)
-                })?;
-                let bytes = resolve_node_bytes(
-                    &resolved.entry.source,
-                    &resolved.entry.manifest,
-                    &reference,
-                    &resolved.version,
-                )
-                .with_context(|| {
-                    format!(
-                        "node `{}`: invalid source for `{}@{}`",
-                        node.id,
-                        reference.key(),
-                        resolved.version
+                None => {
+                    let resolved = catalog.resolve(&reference).with_context(|| {
+                        format!("node `{}`: failed to resolve `{raw_reference}`", node.id)
+                    })?;
+                    let bytes = resolve_node_bytes(
+                        &resolved.entry.source,
+                        &resolved.entry.manifest,
+                        &reference,
+                        &resolved.version,
                     )
-                })?;
-                (resolved.version, resolved.entry, bytes)
+                    .with_context(|| {
+                        format!(
+                            "node `{}`: invalid source for `{}@{}`",
+                            node.id,
+                            reference.key(),
+                            resolved.version
+                        )
+                    })?;
+                    (resolved.version, resolved.entry, bytes)
+                }
             }
         };
 
@@ -507,10 +605,24 @@ pub fn resolve_hub_nodes(
                 ));
                 resolution.sources.insert(node.id.clone(), source);
             }
-            NodeBytes::Binary { url, sha256 } => {
+            NodeBytes::Binary {
+                url,
+                sha256,
+                platform,
+            } => {
                 // a prebuilt artifact: a sha256-verified URL download, no clone
-                // or build (spec §8.2). Not yet recorded in the lockfile, so a
-                // `--locked` build re-resolves it live (still hash-verified).
+                // or build (spec §8.2). Recorded in the lockfile so `--locked`
+                // reproduces this exact artifact.
+                let pin = BinaryPin {
+                    platform: platform.clone(),
+                    url: url.clone(),
+                    sha256: sha256.clone(),
+                    hub: HubProvenance {
+                        name: reference.key(),
+                        version: version.to_string(),
+                        manifest_digest: Some(manifest_digest(manifest)?),
+                    },
+                };
                 node.path = Some(url);
                 node.path_sha256 = Some(sha256);
                 node.build = None;
@@ -518,10 +630,10 @@ pub fn resolve_hub_nodes(
                 node.rev = None;
                 node.hub = None;
                 resolution.notes.push(format!(
-                    "node `{}`: resolved hub package {label} -> prebuilt binary for {}",
-                    node.id,
-                    current_platform()
+                    "node `{}`: resolved hub package {label} -> prebuilt binary for {platform}",
+                    node.id
                 ));
+                resolution.binary_sources.insert(node.id.clone(), pin);
             }
         }
     }

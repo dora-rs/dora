@@ -383,6 +383,22 @@ pub struct HubProvenance {
     pub manifest_digest: Option<String>,
 }
 
+/// Lockfile pin for a `hub:` node resolved to a prebuilt binary artifact
+/// (spec §8.2). Mirrors [`GitSource`] for the binary source form: the
+/// `url`+`sha256` pin the bytes (re-verified on download), and `hub` records
+/// the package/version/manifest provenance for `--locked` tamper detection.
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone, PartialEq, Eq)]
+pub struct BinaryPin {
+    /// Platform the artifact was selected for at lock time (`<os>-<arch>`).
+    pub platform: String,
+    /// Download URL of the prebuilt artifact.
+    pub url: String,
+    /// SHA-256 the download must match.
+    pub sha256: String,
+    /// Hub provenance (index key, version, manifest digest).
+    pub hub: HubProvenance,
+}
+
 // Test roundtrip serialization of LogMessage
 #[cfg(test)]
 mod tests {
