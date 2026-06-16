@@ -21,7 +21,10 @@ use dora_core::{
     types::TypeRegistry,
 };
 use dora_hub_client::{
-    config::ResolvedConfig, index::IndexCatalog, reference::PackageRef, transport::IndexFetcher,
+    config::ResolvedConfig,
+    index::{IndexCatalog, current_platform},
+    reference::PackageRef,
+    transport::IndexFetcher,
 };
 use dora_message::{
     common::{GitSource, HubProvenance},
@@ -92,6 +95,60 @@ fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
 /// the pinned commit is used verbatim and the index entry of the pinned
 /// version supplies the manifest. Without pins, each reference resolves to
 /// the highest non-yanked matching version.
+/// Where a resolved hub node's bytes come from: a git source (built from
+/// source, the default) or a prebuilt per-platform binary artifact (spec §8.2).
+enum NodeBytes {
+    Git(GitSource),
+    Binary { url: String, sha256: String },
+}
+
+/// Decide where a freshly-resolved entry's bytes come from (spec §8.1/§8.2):
+/// a prebuilt artifact for this platform if the entry ships one, else the
+/// `fallback-git` source build, else the plain git source.
+fn resolve_node_bytes(
+    source: &dora_hub_client::index::SourceSpec,
+    manifest: &dora_core::manifest::NodeManifest,
+    reference: &PackageRef,
+    version: &dora_hub_client::semver::Version,
+) -> eyre::Result<NodeBytes> {
+    let provenance = || -> eyre::Result<HubProvenance> {
+        Ok(HubProvenance {
+            name: reference.key(),
+            version: version.to_string(),
+            manifest_digest: Some(manifest_digest(manifest)?),
+        })
+    };
+    let git_bytes = |git: &str, rev: &str, subdir: Option<String>| -> eyre::Result<NodeBytes> {
+        Ok(NodeBytes::Git(GitSource {
+            repo: normalize_git_source_url(git),
+            commit_hash: rev.to_string(),
+            subdir,
+            hub: Some(provenance()?),
+        }))
+    };
+    if !source.binary.is_empty() {
+        let platform = current_platform();
+        if let Some(art) = source.select_binary(&platform) {
+            art.validate()?;
+            return Ok(NodeBytes::Binary {
+                url: art.url.clone(),
+                sha256: art.sha256.clone(),
+            });
+        }
+        // no artifact for this platform: degrade to a source build if the
+        // entry offers one (cargo-binstall model), else hard-fail.
+        if let Some(fallback) = &source.fallback_git {
+            let (git, rev) = fallback.git_pin()?;
+            return git_bytes(git, rev, fallback.subdir.clone());
+        }
+        eyre::bail!(
+            "no prebuilt binary for platform `{platform}` and no `fallback-git` to build from"
+        );
+    }
+    let (git, rev) = source.git_pin()?;
+    git_bytes(git, rev, source.subdir.clone())
+}
+
 pub fn resolve_hub_nodes(
     dataflow: &mut Descriptor,
     registry: &mut TypeRegistry,
@@ -224,7 +281,7 @@ pub fn resolve_hub_nodes(
             .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
-        let (version, entry, source) = match pin {
+        let (version, entry, bytes) = match pin {
             Some(pin) => {
                 // --locked: the pinned commit is used verbatim, no resolution
                 let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
@@ -339,13 +396,21 @@ pub fn resolve_hub_nodes(
                         reference.key()
                     );
                 }
-                (version, entry, pin.clone())
+                // Binary pins are not yet recorded in the lockfile, so a `--locked`
+                // binary node arrives here with no pin and resolves live below.
+                (version, entry, NodeBytes::Git(pin.clone()))
             }
             None => {
                 let resolved = catalog.resolve(&reference).with_context(|| {
                     format!("node `{}`: failed to resolve `{raw_reference}`", node.id)
                 })?;
-                let (git_url, rev) = resolved.entry.source.git_pin().with_context(|| {
+                let bytes = resolve_node_bytes(
+                    &resolved.entry.source,
+                    &resolved.entry.manifest,
+                    &reference,
+                    &resolved.version,
+                )
+                .with_context(|| {
                     format!(
                         "node `{}`: invalid source for `{}@{}`",
                         node.id,
@@ -353,21 +418,13 @@ pub fn resolve_hub_nodes(
                         resolved.version
                     )
                 })?;
-                let source = GitSource {
-                    repo: normalize_git_source_url(git_url),
-                    commit_hash: rev.to_string(),
-                    subdir: resolved.entry.source.subdir.clone(),
-                    hub: Some(HubProvenance {
-                        name: reference.key(),
-                        version: resolved.version.to_string(),
-                        manifest_digest: Some(manifest_digest(&resolved.entry.manifest)?),
-                    }),
-                };
-                (resolved.version, resolved.entry, source)
+                (resolved.version, resolved.entry, bytes)
             }
         };
 
-        if let Some(subdir) = &source.subdir {
+        if let NodeBytes::Git(git) = &bytes
+            && let Some(subdir) = &git.subdir
+        {
             validate_subdir(subdir)
                 .with_context(|| format!("node `{}`: invalid index entry", node.id))?;
         }
@@ -434,18 +491,39 @@ pub fn resolve_hub_nodes(
         }
         resolution.notes.extend(contracts.notes);
 
-        // desugar into a concrete git node
-        node.path = Some(manifest.entrypoint.replace('\\', "/"));
-        node.build = manifest.build.clone();
-        node.git = Some(source.repo.clone());
-        node.rev = Some(source.commit_hash.clone());
-        node.hub = None;
-        let short_hash: String = source.commit_hash.chars().take(12).collect();
-        resolution.notes.push(format!(
-            "node `{}`: resolved hub package {label} -> {short_hash}",
-            node.id
-        ));
-        resolution.sources.insert(node.id.clone(), source);
+        // desugar into a concrete node
+        match bytes {
+            NodeBytes::Git(source) => {
+                node.path = Some(manifest.entrypoint.replace('\\', "/"));
+                node.build = manifest.build.clone();
+                node.git = Some(source.repo.clone());
+                node.rev = Some(source.commit_hash.clone());
+                node.path_sha256 = None;
+                node.hub = None;
+                let short_hash: String = source.commit_hash.chars().take(12).collect();
+                resolution.notes.push(format!(
+                    "node `{}`: resolved hub package {label} -> {short_hash}",
+                    node.id
+                ));
+                resolution.sources.insert(node.id.clone(), source);
+            }
+            NodeBytes::Binary { url, sha256 } => {
+                // a prebuilt artifact: a sha256-verified URL download, no clone
+                // or build (spec §8.2). Not yet recorded in the lockfile, so a
+                // `--locked` build re-resolves it live (still hash-verified).
+                node.path = Some(url);
+                node.path_sha256 = Some(sha256);
+                node.build = None;
+                node.git = None;
+                node.rev = None;
+                node.hub = None;
+                resolution.notes.push(format!(
+                    "node `{}`: resolved hub package {label} -> prebuilt binary for {}",
+                    node.id,
+                    current_platform()
+                ));
+            }
+        }
     }
 
     for key in overrides.keys() {
@@ -486,5 +564,68 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(normalize_git_source_url(input), expected, "input `{input}`");
         }
+    }
+
+    #[test]
+    fn binary_source_selects_falls_back_or_errors() {
+        use dora_core::manifest::NodeManifest;
+        use dora_hub_client::index::{BinaryArtifact, SourceSpec, current_platform};
+
+        use super::{NodeBytes, PackageRef, resolve_node_bytes};
+
+        let manifest = NodeManifest::parse(
+            "apiVersion: 1\nname: dora-yolo\nnamespace: dora-rs\nruntime: python\nentrypoint: dora-yolo\n",
+        )
+        .unwrap();
+        let reference = PackageRef::parse("dora-yolo@^0.5").unwrap();
+        let version = dora_hub_client::semver::Version::parse("0.5.0").unwrap();
+        let art = |p: &str| BinaryArtifact {
+            platform: p.to_string(),
+            url: format!("https://example.com/{p}"),
+            sha256: "a".repeat(64),
+        };
+
+        // covered platform -> a prebuilt binary
+        let covered = SourceSpec {
+            binary: vec![art(&current_platform())],
+            ..Default::default()
+        };
+        assert!(matches!(
+            resolve_node_bytes(&covered, &manifest, &reference, &version).unwrap(),
+            NodeBytes::Binary { .. }
+        ));
+
+        // uncovered platform + fallback-git -> degrade to a source build
+        let fallback = SourceSpec {
+            binary: vec![art("nonexistent-arch")],
+            fallback_git: Some(Box::new(SourceSpec {
+                git: Some("https://github.com/acme/lidar".into()),
+                rev: Some("a".repeat(40)),
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(matches!(
+            resolve_node_bytes(&fallback, &manifest, &reference, &version).unwrap(),
+            NodeBytes::Git(_)
+        ));
+
+        // uncovered platform + no fallback -> hard error
+        let uncovered = SourceSpec {
+            binary: vec![art("nonexistent-arch")],
+            ..Default::default()
+        };
+        assert!(resolve_node_bytes(&uncovered, &manifest, &reference, &version).is_err());
+
+        // plain git source (no binary) -> git
+        let git = SourceSpec {
+            git: Some("https://github.com/dora-rs/dora-hub".into()),
+            rev: Some("b".repeat(40)),
+            ..Default::default()
+        };
+        assert!(matches!(
+            resolve_node_bytes(&git, &manifest, &reference, &version).unwrap(),
+            NodeBytes::Git(_)
+        ));
     }
 }

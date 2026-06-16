@@ -48,7 +48,20 @@ pub(super) async fn path_spawn_command(
             }
         }
         source => {
-            let resolved_path = if confined {
+            let resolved_path = if let Some(expected_sha256) = node
+                .path_sha256
+                .as_deref()
+                .filter(|_| source_is_url(source))
+            {
+                // hub binary artifact (spec §8.2): a sha256-pinned URL download.
+                // The checksum is the integrity guarantee, so this is allowed
+                // regardless of confinement / `permit_url`, and re-verified
+                // after download and on cache reuse (§8.4).
+                let target_dir = Path::new("build");
+                download_file(source, target_dir, Some(expected_sha256))
+                    .await
+                    .wrap_err("failed to download hub binary artifact")?
+            } else if confined {
                 // hub-sourced node (spec §11): the entrypoint resolves only
                 // within the node's own working dir or managed env — no env
                 // expansion, no URL download, no ambient-$PATH fallback.
