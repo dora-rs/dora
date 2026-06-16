@@ -35,13 +35,38 @@ pub fn validate_git_url(url: &str) -> eyre::Result<()> {
     const SCHEMES: &[&str] = &["https://", "ssh://", "file://", "git@"];
     // absolute paths are accepted for local repositories (tests, mirrors)
     let valid = SCHEMES.iter().any(|s| url.starts_with(s)) || url.starts_with('/');
-    if valid && !url.contains(|c: char| c.is_control()) {
-        return Ok(());
+    if !valid || url.contains(|c: char| c.is_control()) {
+        eyre::bail!(
+            "invalid git URL `{}`: expected a https/ssh/file URL or absolute path",
+            url.chars().filter(|c| !c.is_control()).collect::<String>()
+        );
     }
-    eyre::bail!(
-        "invalid git URL `{}`: expected a https/ssh/file URL or absolute path",
-        url.chars().filter(|c| !c.is_control()).collect::<String>()
-    )
+    // Defense-in-depth: reject a leading '-' in the host component.
+    // ssh://-oProxyCommand=... or git@-... passes the scheme check above but
+    // would look like an option flag to a bare `git` subprocess. All current
+    // callers use libgit2 or a `--` separator, but the validator is documented
+    // as the single pre-subprocess chokepoint (CVE-2017-1000117 shape).
+    let host = if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("ssh://"))
+        .or_else(|| url.strip_prefix("file://"))
+    {
+        // authority = everything before the first '/'; strip optional userinfo
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let after_at = authority.rsplit('@').next().unwrap_or(authority);
+        after_at.split(':').next().unwrap_or(after_at)
+    } else if let Some(rest) = url.strip_prefix("git@") {
+        rest.split(':').next().unwrap_or(rest)
+    } else {
+        ""
+    };
+    if host.starts_with('-') {
+        eyre::bail!(
+            "invalid git URL `{}`: host component starts with '-' (option injection risk)",
+            url.chars().filter(|c| !c.is_control()).collect::<String>()
+        );
+    }
+    Ok(())
 }
 
 /// Validate the `source.git` of an *untrusted* index entry — stricter than
@@ -75,7 +100,7 @@ pub const OFFICIAL_INDEX_ALIAS: &str = "official";
 
 #[cfg(test)]
 mod tests {
-    use super::validate_git_url_untrusted;
+    use super::{validate_git_url, validate_git_url_untrusted};
 
     #[test]
     fn untrusted_index_sources_reject_local_paths() {
@@ -89,5 +114,19 @@ mod tests {
         assert!(validate_git_url_untrusted("/srv/repo").is_err());
         // cleartext still rejected by the underlying validator
         assert!(validate_git_url_untrusted("http://github.com/o/r").is_err());
+    }
+
+    #[test]
+    fn rejects_leading_dash_in_host() {
+        // ssh://-oProxyCommand=... / git@-... are the classic option-injection
+        // shapes (CVE-2017-1000117); they pass the scheme check but have a
+        // leading '-' in the host component.
+        assert!(validate_git_url("ssh://-oProxyCommand=touch /tmp/x/path").is_err());
+        assert!(validate_git_url("https://-evil.example.com/r").is_err());
+        assert!(validate_git_url("git@-evil.example.com:o/r.git").is_err());
+        // normal URLs are unaffected
+        assert!(validate_git_url("ssh://git@github.com/o/r").is_ok());
+        assert!(validate_git_url("https://github.com/o/r.git").is_ok());
+        assert!(validate_git_url("git@github.com:o/r.git").is_ok());
     }
 }
