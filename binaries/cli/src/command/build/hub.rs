@@ -227,7 +227,7 @@ pub fn resolve_hub_nodes(
         let (version, entry, source) = match pin {
             Some(pin) => {
                 // --locked: the pinned commit is used verbatim, no resolution
-                let valid_hash = (7..=64).contains(&pin.commit_hash.len())
+                let valid_hash = matches!(pin.commit_hash.len(), 40 | 64)
                     && pin.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
                 if !valid_hash {
                     eyre::bail!(

@@ -153,7 +153,7 @@ fn resolve_single(reference: &str, ctx: &mut HubContext) -> eyre::Result<GitSour
 fn clone_pinned(source: &GitSource, target_dir: &std::path::Path) -> eyre::Result<()> {
     // re-validate the hash at the API boundary — `GitSource.commit_hash` is a
     // plain string and a future caller might not have run it through git_pin
-    let valid_hash = (7..=64).contains(&source.commit_hash.len())
+    let valid_hash = matches!(source.commit_hash.len(), 40 | 64)
         && source.commit_hash.chars().all(|c| c.is_ascii_hexdigit());
     if !valid_hash {
         eyre::bail!("invalid commit hash for `{}`", source.repo);
