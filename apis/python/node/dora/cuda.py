@@ -393,6 +393,21 @@ def tensor_from_info(tensor_info: dict) -> torch.Tensor:
         np_dtype = _TORCH_TO_NUMPY_DTYPE_MAP.get(dtype)
         if np_dtype is None:
             raise ValueError(f"Unsupported dtype: {dtype}")
+
+        # Validate that product(shape) * itemsize(dtype) does not
+        # exceed the registered size — a peer-controlled header that
+        # claims a large shape over a small buffer would produce an
+        # out-of-bounds GPU tensor (the CPU path is saved by numpy
+        # reshape, but the GPU path has no equivalent backstop).
+        expected_bytes = np.dtype(np_dtype).itemsize
+        for dim in shape:
+            expected_bytes *= dim
+        if expected_bytes > size:
+            raise ValueError(
+                f"tensor shape {shape} * {np_dtype} itemsize = {expected_bytes} bytes "
+                f"exceeds registered size {size} bytes — header may be corrupted"
+            )
+
         typestr = np.dtype(np_dtype).str
         wrapper = _CudaArrayInterface(ptr, shape, None, typestr)
         return torch.as_tensor(wrapper, device="cuda")

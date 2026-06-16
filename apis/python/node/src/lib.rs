@@ -1857,6 +1857,15 @@ impl Node {
                         let bound = helpers.bind(py);
                         let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
                     }
+                } else if slot.gpu_va != 0 {
+                    // Host-registered mapping (effective_as_cuda branch):
+                    // must cudaHostUnregister before munmap, or the pinned
+                    // registration leaks and the GPU may still reference
+                    // the region (UB).
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
+                    }
                 }
                 // slot._shmem drops here -> munmap
             }
