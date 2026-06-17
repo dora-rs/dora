@@ -1,0 +1,19 @@
+# Negative-path test: receiver reads from a freed memory pool.
+env:
+  sender_device: cpu
+  receiver_device: cuda
+  message_num: 2
+  memory_pool_scenario: read_after_free
+nodes:
+  - id: sender_node
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require

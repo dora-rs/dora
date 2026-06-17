@@ -64,6 +64,7 @@ members = [
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/mavlink2-bridge",
+    "libraries/extensions/memory-pool",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
@@ -119,6 +120,7 @@ dora-ros2-bridge = { version = "1.0.0-rc1", path = "libraries/extensions/ros2-br
 dora-ros2-bridge-msg-gen = { version = "1.0.0-rc1", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc1", path = "libraries/extensions/mavlink2-bridge" }
+dora-memory-pool = { version = "1.0.0-rc1", path = "libraries/extensions/memory-pool" }
 dora-message = { version = "1.0.0-rc1", path = "libraries/message" }
 arrow = { version = "58", default-features = false }
 arrow-schema = { version = "58" }

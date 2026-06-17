@@ -58,6 +58,53 @@ def _libcudart():
     lib.cudaIpcCloseMemHandle.argtypes = [ctypes.c_void_p]
     lib.cudaDeviceSynchronize.restype = ctypes.c_int
     lib.cudaDeviceSynchronize.argtypes = []
+
+    # Additional CUDA function declarations for pinned memory operations
+    lib.cudaHostRegister.restype = ctypes.c_int
+    lib.cudaHostRegister.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_uint,
+    ]
+
+    lib.cudaHostUnregister.restype = ctypes.c_int
+    lib.cudaHostUnregister.argtypes = [ctypes.c_void_p]
+
+    lib.cudaHostGetDevicePointer.restype = ctypes.c_int
+    lib.cudaHostGetDevicePointer.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_void_p,
+        ctypes.c_uint,
+    ]
+
+    lib.cudaMemcpyAsync.restype = ctypes.c_int
+    lib.cudaMemcpyAsync.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+        ctypes.c_void_p,
+    ]
+
+    lib.cudaStreamCreate.restype = ctypes.c_int
+    lib.cudaStreamCreate.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+
+    lib.cudaStreamSynchronize.restype = ctypes.c_int
+    lib.cudaStreamSynchronize.argtypes = [ctypes.c_void_p]
+
+    lib.cudaStreamDestroy.restype = ctypes.c_int
+    lib.cudaStreamDestroy.argtypes = [ctypes.c_void_p]
+
+    lib.cudaMemcpy.restype = ctypes.c_int
+    lib.cudaMemcpy.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+        ctypes.c_int,
+    ]
+
     return lib
 
 _cudaIpcMemLazyEnablePeerAccess = 1
@@ -80,7 +127,60 @@ _DTYPE_MAP = {
     "float16": torch.float16,
     "uint8": torch.uint8,
     "bool": torch.bool,
+    # Torch type names (used by tensor_from_info)
+    "torch.int64": torch.int64,
+    "torch.int32": torch.int32,
+    "torch.int16": torch.int16,
+    "torch.float32": torch.float32,
+    "torch.float64": torch.float64,
+    "torch.float16": torch.float16,
+    "torch.uint8": torch.uint8,
+    "torch.bool": torch.bool,
+    "torch.int8": torch.int8,
+    "torch.bfloat16": torch.bfloat16,
 }
+
+# Torch dtype -> numpy dtype mapping (used by tensor_from_info for
+# constructing numpy arrays from raw memory pointers).
+_TORCH_TO_NUMPY_DTYPE_MAP = {
+    torch.int64: np.int64,
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.int32: np.int32,
+    torch.int16: np.int16,
+    torch.int8: np.int8,
+    torch.uint8: np.uint8,
+    torch.bool: np.bool_,
+    torch.float16: np.float16,
+    torch.bfloat16: np.float16,  # bfloat16 maps to float16 in numpy
+}
+
+# CUDA error codes for better error messages
+_CUDA_ERROR_SUCCESS = 0
+_CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED = 712
+_CUDA_ERROR_HOST_MEMORY_NOT_REGISTERED = 713
+_CUDA_ERROR_INVALID_VALUE = 1
+_CUDA_ERROR_OUT_OF_MEMORY = 2
+_CUDA_ERROR_NOT_INITIALIZED = 3
+_CUDA_ERROR_DEINITIALIZED = 4
+_CUDA_ERROR_NO_DEVICE = 100
+_CUDA_ERROR_INVALID_DEVICE = 101
+
+
+def _cuda_error_string(err_code):
+    """Convert CUDA error code to human-readable string."""
+    error_map = {
+        _CUDA_ERROR_SUCCESS: "Success",
+        _CUDA_ERROR_INVALID_VALUE: "Invalid value",
+        _CUDA_ERROR_OUT_OF_MEMORY: "Out of memory",
+        _CUDA_ERROR_NOT_INITIALIZED: "CUDA runtime not initialized",
+        _CUDA_ERROR_DEINITIALIZED: "CUDA runtime deinitialized",
+        _CUDA_ERROR_NO_DEVICE: "No CUDA-capable device available",
+        _CUDA_ERROR_INVALID_DEVICE: "Invalid device",
+        _CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED: "Host memory already registered",
+        _CUDA_ERROR_HOST_MEMORY_NOT_REGISTERED: "Host memory not registered",
+    }
+    return error_map.get(err_code, f"Unknown error code: {err_code}")
 
 
 def _check(err, msg="CUDA call failed"):
@@ -232,3 +332,96 @@ def open_ipc_handle(
         yield tensor
     finally:
         ipc_handle.close()
+
+
+# ---------------------------------------------------------------------------
+# Tensor info helpers for memory-pool operations
+# ---------------------------------------------------------------------------
+
+
+class _ArrayInterface:
+    """Minimal object implementing ``__array_interface__`` so that
+    ``torch.as_tensor`` can wrap raw CPU memory as a tensor (zero-copy)."""
+
+    def __init__(self, ptr, shape, strides, dtype_str):
+        self.__array_interface__ = {
+            "shape": tuple(shape),
+            "strides": tuple(strides) if strides else None,
+            "typestr": dtype_str,
+            "data": (ptr, False),
+            "version": 3,
+        }
+
+
+def get_tensor_info(tensor: torch.Tensor) -> dict:
+    """Serialize a tensor into a ``tensor_info`` dict containing pointer,
+    size, dtype, shape, and device.
+
+    This is the canonical way to pass tensor metadata to memory-pool
+    operations such as ``register_memory_pool`` and ``write_memory_pool``.
+    """
+    if not tensor.is_contiguous():
+        tensor = tensor.contiguous()
+    return {
+        "ptr": tensor.data_ptr(),
+        "size": tensor.nbytes,
+        "dtype": str(tensor.dtype),
+        "shape": list(tensor.shape),
+        "device": str(tensor.device),
+    }
+
+
+def tensor_from_info(tensor_info: dict) -> torch.Tensor:
+    """Reconstruct a PyTorch tensor from a ``tensor_info`` dict (zero-copy).
+
+    The returned tensor shares the same underlying memory as the original
+    tensor that produced the ``tensor_info``.  Used by consumers that read
+    a memory pool via ``read_memory_pool``.
+    """
+    ptr = tensor_info.get('ptr', 0)
+    if ptr == 0:
+        raise ValueError("tensor_info has null pointer (ptr=0); pool may not exist or has been freed")
+    dtype_str = tensor_info["dtype"]
+    shape = tensor_info["shape"]
+    device = tensor_info.get("device", "cpu")
+    size = tensor_info.get("size", 0)
+
+    dtype = _DTYPE_MAP.get(dtype_str, torch.int64)
+
+    if device.startswith("cuda"):
+        # CUDA tensor — zero-copy via __cuda_array_interface__
+        np_dtype = _TORCH_TO_NUMPY_DTYPE_MAP.get(dtype)
+        if np_dtype is None:
+            raise ValueError(f"Unsupported dtype: {dtype}")
+
+        # Validate that product(shape) * itemsize(dtype) does not
+        # exceed the registered size — a peer-controlled header that
+        # claims a large shape over a small buffer would produce an
+        # out-of-bounds GPU tensor (the CPU path is saved by numpy
+        # reshape, but the GPU path has no equivalent backstop).
+        expected_bytes = np.dtype(np_dtype).itemsize
+        for dim in shape:
+            expected_bytes *= dim
+        if expected_bytes > size:
+            raise ValueError(
+                f"tensor shape {shape} * {np_dtype} itemsize = {expected_bytes} bytes "
+                f"exceeds registered size {size} bytes — header may be corrupted"
+            )
+
+        typestr = np.dtype(np_dtype).str
+        wrapper = _CudaArrayInterface(ptr, shape, None, typestr)
+        return torch.as_tensor(wrapper, device="cuda")
+    else:
+        # CPU tensor — zero-copy via numpy / torch.frombuffer
+        np_dtype = _TORCH_TO_NUMPY_DTYPE_MAP.get(dtype)
+        if np_dtype is None and dtype != torch.bfloat16:
+            raise ValueError(f"Unsupported dtype: {dtype}")
+
+        c_array = (ctypes.c_byte * size).from_address(ptr)
+
+        if dtype == torch.bfloat16:
+            byte_tensor = torch.frombuffer(c_array, dtype=torch.uint8)
+            return byte_tensor.view(dtype=torch.bfloat16).reshape(shape)
+
+        np_array = np.frombuffer(c_array, dtype=np_dtype).reshape(shape)
+        return torch.from_numpy(np_array)

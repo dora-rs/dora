@@ -215,6 +215,59 @@ class Node:
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
         ```"""
 
+    def register_memory_pool(
+        self, tensor_info: dict, device: str = "cpu"
+    ) -> pyarrow.Array:
+        """Register a tensor's pinned memory as a shared memory pool and
+        return a persistent buffer_id (pyarrow string array).
+
+        The tensor data is copied into page-locked shared memory (via DMA
+        if CUDA).  The returned buffer_id can be sent to another node,
+        which can call read_memory_pool() to get a zero-copy tensor_info
+        pointing to the same shared memory.
+
+        Args:
+            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
+            device: "cpu" or "cuda" — the receiver's device (controls DMA path)
+
+        Returns:
+            pyarrow string array containing the buffer_id
+        """
+
+    def write_memory_pool(
+        self, memory_pool_id: pyarrow.Array, tensor_info: dict
+    ) -> None:
+        """Write new tensor data into an existing memory pool.
+
+        Fast path: DORADMA header read from shmem, then memcpy data.
+        Slow path: falls back to daemon RPC.
+
+        Args:
+            memory_pool_id: pyarrow string array from register_memory_pool
+            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
+        """
+
+    def read_memory_pool(self, memory_pool_id: pyarrow.Array) -> dict:
+        """Read tensor metadata from a memory pool.
+
+        Fast path: DORADMA header read from shmem (zero-copy, no daemon).
+        Slow path: falls back to daemon RPC.
+
+        Returns a tensor_info dict with keys:
+            "ptr": int — pointer to the data
+            "size": int — data size in bytes
+            "dtype": str — e.g. "float32"
+            "shape": list[int] — tensor shape
+            "device": str — "cpu" or "cuda"
+        """
+
+    def free_memory_pool(self, memory_pool_id: pyarrow.Array) -> None:
+        """Free a memory pool by removing it from the daemon's tracking table.
+
+        Args:
+            memory_pool_id: pyarrow string array from register_memory_pool
+        """
+
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""
 

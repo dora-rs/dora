@@ -34,6 +34,8 @@ arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = { workspace = true }
 dora-ros2-bridge-python = { workspace = true }
+dora-download = { workspace = true }
+shared_memory_extended = "0.13.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 tracing = { workspace = true }
 

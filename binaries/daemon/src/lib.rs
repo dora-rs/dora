@@ -14,6 +14,7 @@ use dora_core::{
     },
     uhlc::{self, HLC},
 };
+use dora_memory_pool::{MemoryPoolId, MemoryPoolManager, MemoryPoolMetadata};
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
@@ -29,7 +30,7 @@ use dora_message::{
     },
     daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
-    metadata::{self, ArrowTypeInfo},
+    metadata::{self, ArrowTypeInfo, MetadataParameters},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
 use dora_node_api::arrow::datatypes::DataType;
@@ -300,6 +301,7 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    pub(crate) memory_pool: MemoryPoolManager,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -519,6 +521,79 @@ async fn collect_and_send_metrics_bg(
     }
 
     Ok(())
+}
+
+/// Convert MemoryPoolMetadata into daemon-protocol MetadataParameters.
+fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
+    use dora_message::metadata::Parameter;
+    let mut p = MetadataParameters::new();
+    p.insert("ptr".into(), Parameter::Integer(meta.ptr as i64));
+    p.insert("size".into(), Parameter::Integer(meta.size as i64));
+    p.insert("dtype".into(), Parameter::String(meta.dtype.clone()));
+    let shape: Vec<i64> = meta.shape.iter().map(|&x| x as i64).collect();
+    p.insert("shape".into(), Parameter::ListInt(shape));
+    p.insert("is_pinned".into(), Parameter::Bool(meta.is_pinned));
+    if let Some(ref t) = meta.pinned_type {
+        p.insert("pinned_type".into(), Parameter::String(t.clone()));
+    }
+    if let Some(ref n) = meta.shared_memory_name {
+        p.insert("shared_memory_name".into(), Parameter::String(n.clone()));
+    }
+    if let Some(ref b) = meta.buffer_id {
+        p.insert("buffer_id".into(), Parameter::String(b.clone()));
+    }
+    p
+}
+
+/// Reconstruct MemoryPoolMetadata from MetadataParameters (best-effort).
+fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata {
+    use dora_message::metadata::Parameter;
+    let get_int = |k: &str| -> Option<i64> {
+        params.get(k).and_then(|p| {
+            if let Parameter::Integer(v) = p {
+                Some(*v)
+            } else {
+                None
+            }
+        })
+    };
+    let get_str = |k: &str| -> Option<String> {
+        params.get(k).and_then(|p| {
+            if let Parameter::String(s) = p {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
+    };
+    let get_bool = |k: &str| -> Option<bool> {
+        params.get(k).and_then(|p| {
+            if let Parameter::Bool(v) = p {
+                Some(*v)
+            } else {
+                None
+            }
+        })
+    };
+    MemoryPoolMetadata {
+        ptr: get_int("ptr").unwrap_or(0) as u64,
+        size: get_int("size").unwrap_or(0) as usize,
+        dtype: get_str("dtype").unwrap_or_default(),
+        shape: params
+            .get("shape")
+            .and_then(|p| {
+                if let Parameter::ListInt(v) = p {
+                    Some(v.iter().map(|&x| x as usize).collect())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default(),
+        is_pinned: get_bool("is_pinned").unwrap_or(false),
+        shared_memory_name: get_str("shared_memory_name"),
+        buffer_id: get_str("buffer_id"),
+        pinned_type: get_str("pinned_type"),
+    }
 }
 
 impl Daemon {
@@ -1077,6 +1152,7 @@ impl Daemon {
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
+            memory_pool: MemoryPoolManager::new(),
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
@@ -1403,6 +1479,13 @@ impl Daemon {
             // a Destroy command), so a closed channel is not an error.
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::debug!("could not send Exit to coordinator (already gone?): {e}");
+            }
+        }
+
+        // Clean up any unfreed memory pool entries on daemon exit
+        if let Err(errors) = self.memory_pool.cleanup_all() {
+            for error in errors {
+                tracing::warn!("{error}");
             }
         }
 
@@ -2674,6 +2757,11 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Sweep orphaned /dev/shm segments from a previous crash of the
+        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
+        // daemon setups).
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)
@@ -3379,6 +3467,140 @@ impl Daemon {
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            DaemonNodeEvent::RegisterPinnedMemory {
+                shared_memory_id,
+                metadata,
+                reply_sender,
+            } => {
+                let result = (|| -> Result<(), String> {
+                    let pool_metadata = pool_metadata_from_params(&metadata.parameters);
+                    // Validate required fields that the helper fills with defaults
+                    if pool_metadata.ptr == 0 {
+                        return Err("missing or invalid ptr".to_string());
+                    }
+                    if pool_metadata.size == 0 {
+                        return Err("missing or invalid size".to_string());
+                    }
+                    if pool_metadata.dtype.is_empty() {
+                        return Err("missing or invalid dtype".to_string());
+                    }
+                    if pool_metadata.shape.is_empty() {
+                        return Err("missing shape".to_string());
+                    }
+                    // Mirror the Python-side size cap.
+                    if pool_metadata.size > 1024 * 1024 * 1024 {
+                        return Err(format!("size {} exceeds 1 GiB cap", pool_metadata.size));
+                    }
+                    // Require a shared memory name for cleanup.
+                    let shm_name = pool_metadata
+                        .shared_memory_name
+                        .as_ref()
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| "missing shared_memory_name".to_string())?;
+                    // Validate prefix in the same way free_shared_memory does.
+                    if !shm_name.starts_with("dora_pool_")
+                        || shm_name.contains('/')
+                        || shm_name.contains("..")
+                    {
+                        return Err(format!("shared_memory_name `{}` is invalid", shm_name));
+                    }
+
+                    // Per-daemon pool cap (soft limit — rejects excess registrations).
+                    const MAX_POOLS: usize = 512;
+                    if self.memory_pool.table_size() >= MAX_POOLS {
+                        return Err(format!(
+                            "daemon pool table full ({MAX_POOLS} entries); \
+                             free unused pools before registering more"
+                        ));
+                    }
+
+                    self.memory_pool.register_memory_pool(
+                        MemoryPoolId {
+                            dataflow_id: dataflow_id.to_string(),
+                            id: shared_memory_id,
+                        },
+                        pool_metadata,
+                        node_id.to_string(),
+                    )
+                })();
+                let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::ReadPinnedMemory {
+                shared_memory_id,
+                free,
+                reply_sender,
+            } => {
+                let result = (|| -> Result<dora_message::metadata::Metadata, String> {
+                    let id = MemoryPoolId {
+                        dataflow_id: dataflow_id.to_string(),
+                        id: shared_memory_id.clone(),
+                    };
+                    let metadata = self
+                        .memory_pool
+                        .read_memory_pool(&id, node_id.as_ref())
+                        .ok_or_else(|| {
+                            format!("memory pool with ID {} not found", shared_memory_id)
+                        })?;
+
+                    if free
+                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                    {
+                        tracing::warn!(
+                            "Failed to free memory pool {} after reading: {}",
+                            shared_memory_id,
+                            err
+                        );
+                    }
+
+                    let mut parameters = pool_metadata_to_params(&metadata);
+                    // When freeing, drop shared_memory_name — the segment has
+                    // been unlinked and the name is a dangling reference.
+                    if free {
+                        parameters.remove("shared_memory_name");
+                    }
+
+                    let timestamp = self.clock.new_timestamp();
+                    let type_info = dora_message::metadata::ArrowTypeInfo {
+                        data_type: DataType::Null,
+                        len: 0,
+                        null_count: 0,
+                        validity: None,
+                        offset: 0,
+                        buffer_offsets: vec![],
+                        child_data: vec![],
+                        field_names: None,
+                        schema_hash: None,
+                    };
+
+                    Ok(dora_message::metadata::Metadata::from_parameters(
+                        timestamp, type_info, parameters,
+                    ))
+                })();
+
+                match result {
+                    Ok(metadata) => {
+                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
+                    }
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    }
+                }
+            }
+            DaemonNodeEvent::FreePinnedMemory {
+                shared_memory_id,
+                reply_sender,
+            } => {
+                let id = MemoryPoolId {
+                    dataflow_id: dataflow_id.to_string(),
+                    id: shared_memory_id.clone(),
+                };
+                let result: Result<(), String> =
+                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
+                        Ok(_) => Ok(()),
+                        Err(e) => Err(e),
+                    };
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
         Ok(())
