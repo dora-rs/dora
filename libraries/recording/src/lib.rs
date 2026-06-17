@@ -67,12 +67,25 @@ impl<W: Write> RecordingWriter<W> {
         let record_len = u32::try_from(record_len_usize)
             .map_err(|_| eyre::eyre!("record length {record_len_usize} exceeds u32::MAX"))?;
 
+        let node_len = u16::try_from(node_id_bytes.len()).map_err(|_| {
+            eyre::eyre!(
+                "node_id too long: {} bytes (max {})",
+                node_id_bytes.len(),
+                u16::MAX
+            )
+        })?;
+        let output_len = u16::try_from(output_id_bytes.len()).map_err(|_| {
+            eyre::eyre!(
+                "output_id too long: {} bytes (max {})",
+                output_id_bytes.len(),
+                u16::MAX
+            )
+        })?;
+
         self.writer.write_all(&record_len.to_le_bytes())?;
-        self.writer
-            .write_all(&(node_id_bytes.len() as u16).to_le_bytes())?;
+        self.writer.write_all(&node_len.to_le_bytes())?;
         self.writer.write_all(node_id_bytes)?;
-        self.writer
-            .write_all(&(output_id_bytes.len() as u16).to_le_bytes())?;
+        self.writer.write_all(&output_len.to_le_bytes())?;
         self.writer.write_all(output_id_bytes)?;
         self.writer
             .write_all(&entry.timestamp_offset_nanos.to_le_bytes())?;
@@ -486,6 +499,38 @@ mod tests {
         assert!(
             err.to_string().contains("too large"),
             "expected 'too large' error, got: {err}"
+        );
+    }
+
+    /// `node_id` longer than `u16::MAX` bytes must return `Err`, not silently
+    /// truncate the length field and write a corrupt entry.
+    #[test]
+    fn writer_rejects_oversized_node_id() {
+        let header = sample_header();
+        let long_id = "x".repeat(usize::from(u16::MAX) + 1);
+        let entry = sample_entry(&long_id, "out", 0, b"data");
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        let err = writer.write_entry(&entry).unwrap_err();
+        assert!(
+            err.to_string().contains("node_id too long"),
+            "expected 'node_id too long' error, got: {err}"
+        );
+    }
+
+    /// `output_id` longer than `u16::MAX` bytes must return `Err`, not silently
+    /// truncate the length field and write a corrupt entry.
+    #[test]
+    fn writer_rejects_oversized_output_id() {
+        let header = sample_header();
+        let long_id = "y".repeat(usize::from(u16::MAX) + 1);
+        let entry = sample_entry("node", &long_id, 0, b"data");
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        let err = writer.write_entry(&entry).unwrap_err();
+        assert!(
+            err.to_string().contains("output_id too long"),
+            "expected 'output_id too long' error, got: {err}"
         );
     }
 
