@@ -40,6 +40,17 @@ impl Executable for List {
                 sanitize(&short)
             );
         }
+        for (node_id, pin) in &lockfile.binary_sources {
+            found = true;
+            // name/version/platform all come from the lockfile — sanitize before
+            // they reach the terminal, like the git path above.
+            println!(
+                "{node_id}: {} {} (binary {})",
+                sanitize(&pin.hub.name),
+                sanitize(&pin.hub.version),
+                sanitize(&pin.platform)
+            );
+        }
         if !found {
             println!("No hub packages pinned in {}.", lockfile_path.display());
         }

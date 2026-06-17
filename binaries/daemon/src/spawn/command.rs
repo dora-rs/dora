@@ -61,6 +61,16 @@ pub(super) async fn path_spawn_command(
                 .as_deref()
                 .filter(|_| source_is_url(source))
             {
+                // `path_sha256` is also a descriptor field, so a hand-written
+                // descriptor could set it to a traversal string. It is used as a
+                // path segment below, and `download_file` creates the target dir
+                // before verifying, so enforce the 64-hex-char shape at this
+                // trust boundary first (a valid digest has no `/`, `.`, …).
+                if expected_sha256.len() != 64
+                    || !expected_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+                {
+                    eyre::bail!("invalid `path_sha256` (must be 64 hex chars)");
+                }
                 // hub binary artifact (spec §8.2): a sha256-pinned URL download.
                 // The checksum is the integrity guarantee, so this is allowed
                 // regardless of confinement / `permit_url`. `download_file`
