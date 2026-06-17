@@ -543,11 +543,18 @@ pub fn resolve_hub_nodes(
             .with_context(|| format!("node `{}`: failed to fetch the hub index", node.id))?;
         let catalog = IndexCatalog::open(&catalog_dir)?;
 
+        // a pinned-resolution helper may push warnings (yank, index-rewrite)
+        // before it bails — in best-effort mode we discard the pin and resolve
+        // live, so those warnings describe an entry we throw away. Snapshot the
+        // warning count and truncate back on the fallback so they don't leak
+        // (and don't inflate `validate --strict`'s warning count).
+        let warns_before = resolution.warnings.len();
         let (version, entry, bytes) = if let Some(bpin) = binary_pin {
             match resolve_locked_binary(bpin, &catalog, &reference, &node.id, &mut resolution) {
                 Ok(resolved) => resolved,
                 Err(e) if locked => return Err(e),
                 Err(e) => {
+                    resolution.warnings.truncate(warns_before);
                     resolution.warnings.push(format!(
                         "node `{}`: lockfile binary pin unusable ({e:#}) — resolving live instead",
                         node.id
@@ -563,6 +570,7 @@ pub fn resolve_hub_nodes(
                 // best-effort (validate): a stale/rewritten pin warns and
                 // resolves live instead of failing the whole command.
                 Err(e) => {
+                    resolution.warnings.truncate(warns_before);
                     resolution.warnings.push(format!(
                         "node `{}`: lockfile pin unusable ({e:#}) — resolving live instead",
                         node.id

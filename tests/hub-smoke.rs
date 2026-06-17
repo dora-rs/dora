@@ -1308,3 +1308,62 @@ fn validate_resolves_unpinned_hub_node_live() {
         stderr(&out)
     );
 }
+
+/// Regression for #2234: a *stale* pin (the index entry's manifest changed
+/// since the lockfile was written) makes `dora validate` warn and resolve
+/// live, while `dora build --locked` still hard-fails on the digest mismatch.
+#[test]
+fn validate_resolves_stale_pin_live() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub validate stale-pin test");
+        return;
+    }
+    let fixture = build_fixture();
+    let flow = fixture.root.join("flow/dataflow.yml");
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "build failed: {}", stderr(&out));
+
+    // rewrite the index entry's manifest so the locked digest no longer matches
+    let entry_path = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    let original = std::fs::read_to_string(&entry_path).unwrap();
+    let tampered = original.replace(
+        "build: cargo build --release\nsource:",
+        "build: cargo build --release --quiet\nsource:",
+    );
+    assert_ne!(original, tampered, "tamper replace should change the entry");
+    std::fs::write(&entry_path, &tampered).unwrap();
+
+    // strict `--locked` must reject the digest mismatch
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success() && stderr(&out).contains("changed its manifest"),
+        "--locked must reject a stale pin: {}",
+        stderr(&out)
+    );
+
+    // best-effort validate warns and resolves live (succeeds)
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate must resolve a stale pin live, but failed:\n{}",
+        stderr(&out)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("pin unusable"),
+        "expected a 'pin unusable — resolving live' note, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
