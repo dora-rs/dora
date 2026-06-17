@@ -92,11 +92,20 @@ fn manifest_digest(manifest: &NodeManifest) -> eyre::Result<String> {
 /// the pinned commit is used verbatim and the index entry of the pinned
 /// version supplies the manifest. Without pins, each reference resolves to
 /// the highest non-yanked matching version.
+///
+/// `strict_pins` controls what happens when `pins` is `Some` but a hub node
+/// has no entry in the pins map:
+/// - `true` (used by `dora build --locked`): hard-fail immediately — the
+///   caller demanded every hub node be pinned.
+/// - `false` (used by `dora validate`): fall back to live resolution for
+///   the unpinned node rather than erroring; pinned nodes still use their
+///   lockfile entry.
 pub fn resolve_hub_nodes(
     dataflow: &mut Descriptor,
     registry: &mut TypeRegistry,
     offline: bool,
     pins: Option<&BTreeMap<NodeId, GitSource>>,
+    strict_pins: bool,
     overrides: &BTreeMap<String, PathBuf>,
 ) -> eyre::Result<HubResolution> {
     let mut resolution = HubResolution::default();
@@ -206,11 +215,17 @@ pub fn resolve_hub_nodes(
             continue;
         }
 
-        // under `--locked` (pins present), a node with no lockfile entry must
-        // fail fast — *before* any index fetch — rather than hitting the
-        // network (or an offline cache miss) only to bail afterwards.
+        // under `--locked` (pins present, strict_pins=true), a node with no
+        // lockfile entry must fail fast — *before* any index fetch — rather
+        // than hitting the network (or an offline cache miss) only to bail
+        // afterwards.
+        //
+        // When strict_pins=false (e.g. `dora validate` with a lockfile), a
+        // missing pin is not an error: the node is resolved live so that
+        // `dora validate` never fails harder than `dora build` (without
+        // `--locked`) would on the same dataflow.
         let pin = pins.and_then(|p| p.get(&node.id));
-        if pins.is_some() && pin.is_none() {
+        if strict_pins && pins.is_some() && pin.is_none() {
             eyre::bail!(
                 "node `{}`: `hub:` reference is not in the lockfile — \
                  regenerate with `dora build --write-lockfile`",

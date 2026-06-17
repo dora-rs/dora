@@ -122,11 +122,17 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
 
     // Resolve hub: references so their contracts take part in validation
     // (spec §6.2 ordering note).
+    //
+    // Use best-effort pins (strict_pins=false): nodes present in the lockfile
+    // use their pinned version; nodes absent from the lockfile fall back to
+    // live resolution rather than hard-failing. This keeps `dora validate` no
+    // stricter than `dora build` (without `--locked`) on the same dataflow.
     let hub_resolution = super::build::hub::resolve_hub_nodes(
         &mut descriptor,
         &mut registry,
         offline,
         hub_pins.as_ref(),
+        false,
         &std::collections::BTreeMap::<String, std::path::PathBuf>::new(),
     )?;
     for note in &hub_resolution.notes {

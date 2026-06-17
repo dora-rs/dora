@@ -349,6 +349,9 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         &mut registry,
         offline,
         hub_pins.as_ref(),
+        // `--locked` (build_lockfile.is_some()) means every hub node must have
+        // a lockfile pin; no fallback to live resolution.
+        build_lockfile.is_some(),
         &hub_override_dirs,
     )?;
     let hub_override_node_dirs = hub_resolution.override_dirs.clone();
