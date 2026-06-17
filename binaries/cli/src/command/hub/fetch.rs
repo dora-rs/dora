@@ -83,6 +83,12 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
     }
     let lockfile = BuildLockfile::read_from(&lockfile_path)?;
 
+    // hub nodes that resolved to a prebuilt binary — `dora hub fetch` clones git
+    // sources but does not pre-download binary artifacts yet (they are fetched +
+    // verified by the daemon at spawn time).
+    let binary_pinned: std::collections::BTreeSet<_> =
+        lockfile.binary_sources.keys().cloned().collect();
+
     // pinned hub sources from the lockfile, keyed by node id
     let pinned: std::collections::BTreeMap<_, _> = lockfile
         .git_sources
@@ -106,12 +112,19 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
         yaml_hub_nodes.insert(node.id.clone());
         let reference = PackageRef::parse(raw)
             .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
-        let source = pinned.get(&node.id).ok_or_else(|| {
-            eyre::eyre!(
+        let source = match pinned.get(&node.id) {
+            Some(source) => source,
+            None if binary_pinned.contains(&node.id) => eyre::bail!(
+                "node `{}`: resolves to a prebuilt binary artifact — `dora hub fetch` does not \
+                 pre-download binary artifacts yet (the daemon fetches and verifies them at \
+                 spawn time); offline (UC7) binary prefetch is a follow-up",
+                node.id
+            ),
+            None => eyre::bail!(
                 "node `{}`: `hub:` reference is not in the lockfile — {regen}",
                 node.id
-            )
-        })?;
+            ),
+        };
         let prov = source.hub.as_ref().expect("filtered to hub sources");
         let version = dora_hub_client::semver::Version::parse(&prov.version)
             .map_err(|_| eyre::eyre!("node `{}`: invalid version in lockfile", node.id))?;
@@ -124,7 +137,11 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
         }
     }
     // the lockfile must not pin a hub node the dataflow no longer has
-    if let Some(id) = pinned.keys().find(|id| !yaml_hub_nodes.contains(*id)) {
+    if let Some(id) = pinned
+        .keys()
+        .chain(binary_pinned.iter())
+        .find(|id| !yaml_hub_nodes.contains(*id))
+    {
         eyre::bail!(
             "node `{id}`: the lockfile pins a `hub:` node the dataflow no longer has — {regen}"
         );

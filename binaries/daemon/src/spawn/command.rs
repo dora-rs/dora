@@ -69,8 +69,11 @@ pub(super) async fn path_spawn_command(
                 // Download under the node's own working dir and return an
                 // absolute path: the spawned child's cwd is set to `working_dir`,
                 // so a relative download path (resolved against the daemon's cwd)
-                // would exec the wrong file or fail to find it.
-                let target_dir = working_dir.join("build");
+                // would exec the wrong file or fail to find it. Scope by the
+                // sha256 (content-addressed) so two nodes whose artifacts share a
+                // filename — and a `working_dir` that defaults to the shared
+                // dataflow dir — don't overwrite each other.
+                let target_dir = working_dir.join("build").join(expected_sha256);
                 let downloaded = download_file(source, &target_dir, Some(expected_sha256))
                     .await
                     .wrap_err("failed to download hub binary artifact")?;
