@@ -130,6 +130,9 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
         offline,
         hub_pins.as_ref(),
         hub_binary_pins.as_ref(),
+        // validate is advisory, not a reproducibility gate: use lockfile pins
+        // when valid, but a missing/stale pin resolves live instead of failing.
+        false,
         &std::collections::BTreeMap::<String, std::path::PathBuf>::new(),
     )?;
     for note in &hub_resolution.notes {

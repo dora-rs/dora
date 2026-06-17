@@ -351,6 +351,8 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         offline,
         hub_pins.as_ref(),
         hub_binary_pins.as_ref(),
+        // `dora build --locked` is the strict reproducible path.
+        locked,
         &hub_override_dirs,
     )?;
     let hub_override_node_dirs = hub_resolution.override_dirs.clone();

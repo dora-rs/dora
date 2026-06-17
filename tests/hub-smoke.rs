@@ -1251,3 +1251,145 @@ fn hub_update_dry_run_is_read_only() {
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
+
+/// Regression for #2234: `dora validate` must use lockfile pins best-effort —
+/// a hub node added since the lockfile was written resolves live, not fails.
+/// `dora build --locked` stays strict on the same dataflow.
+#[test]
+fn validate_resolves_unpinned_hub_node_live() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub validate test");
+        return;
+    }
+    let fixture = build_fixture();
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    // one hub node, lockfile written
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "build failed: {}", stderr(&out));
+
+    // add a second hub node that is NOT in the lockfile
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n  \
+         - id: hello2\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+
+    // validate must succeed: `hello` from its pin, `hello2` resolved live
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate must resolve the unpinned hub node live, but failed:\n{}",
+        stderr(&out)
+    );
+    // the stale lockfile is surfaced as a note (not hidden), but does NOT fail
+    // `--strict-types` (it's advisory, not a type warning)
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("not in the lockfile"),
+        "expected a stale-lockfile note for the added node, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap(), "--strict-types"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate --strict-types must not fail on a missing-pin fallback:\n{}",
+        stderr(&out)
+    );
+
+    // a strict `--locked` build on the same stale dataflow must still fail
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--locked must still reject a hub node missing from the lockfile"
+    );
+    assert!(
+        stderr(&out).contains("not in the lockfile"),
+        "expected a not-in-lockfile error, got: {}",
+        stderr(&out)
+    );
+}
+
+/// Regression for #2234: a *stale* pin (the index entry's manifest changed
+/// since the lockfile was written) makes `dora validate` warn and resolve
+/// live, while `dora build --locked` still hard-fails on the digest mismatch.
+#[test]
+fn validate_resolves_stale_pin_live() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub validate stale-pin test");
+        return;
+    }
+    let fixture = build_fixture();
+    let flow = fixture.root.join("flow/dataflow.yml");
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "build failed: {}", stderr(&out));
+
+    // rewrite the index entry's manifest so the locked digest no longer matches
+    let entry_path = fixture.root.join("index/test/hub-smoke-hello/0.1.0.yml");
+    let original = std::fs::read_to_string(&entry_path).unwrap();
+    let tampered = original.replace(
+        "build: cargo build --release\nsource:",
+        "build: cargo build --release --quiet\nsource:",
+    );
+    assert_ne!(original, tampered, "tamper replace should change the entry");
+    std::fs::write(&entry_path, &tampered).unwrap();
+
+    // strict `--locked` must reject the digest mismatch
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success() && stderr(&out).contains("changed its manifest"),
+        "--locked must reject a stale pin: {}",
+        stderr(&out)
+    );
+
+    // best-effort validate warns and resolves live (succeeds)
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate must resolve a stale pin live, but failed:\n{}",
+        stderr(&out)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("pin unusable"),
+        "expected a 'pin unusable — resolving live' note, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    // the advisory fallback note must NOT fail `--strict-types`
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap(), "--strict-types"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate --strict-types must not fail on a stale-pin fallback:\n{}",
+        stderr(&out)
+    );
+}
