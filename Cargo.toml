@@ -133,7 +133,10 @@ pyo3 = { version = "0.28", features = [
 ] }
 pythonize = "0.28"
 pyo3-build-config = { version = "0.28", features = ["resolve-config", "abi3-py311"] }
-git2 = { version = "0.20.4", features = ["vendored-openssl"] }
+# git2 0.21 dropped `https`/`ssh` from its default features (0.20 had
+# `default = ["ssh", "https"]`), so request them explicitly — otherwise
+# libgit2 ships without a TLS transport ("no TLS stream available").
+git2 = { version = "0.21", features = ["vendored-openssl", "https", "ssh"] }
 serde_yaml = "0.9.33"
 zenoh = { version = "~1.8", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
 serde_json = "1.0.145"
