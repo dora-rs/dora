@@ -1251,3 +1251,60 @@ fn hub_update_dry_run_is_read_only() {
 fn stderr(out: &std::process::Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
+
+/// Regression for #2234: `dora validate` must use lockfile pins best-effort —
+/// a hub node added since the lockfile was written resolves live, not fails.
+/// `dora build --locked` stays strict on the same dataflow.
+#[test]
+fn validate_resolves_unpinned_hub_node_live() {
+    if Command::new("git").arg("--version").output().is_err() {
+        eprintln!("git not available — skipping hub validate test");
+        return;
+    }
+    let fixture = build_fixture();
+    let flow = fixture.root.join("flow/dataflow.yml");
+
+    // one hub node, lockfile written
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--write-lockfile"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "build failed: {}", stderr(&out));
+
+    // add a second hub node that is NOT in the lockfile
+    write(
+        &flow,
+        "nodes:\n  - id: hello\n    hub: test/hub-smoke-hello@^0.1\n  \
+         - id: hello2\n    hub: test/hub-smoke-hello@^0.1\n",
+    );
+
+    // validate must succeed: `hello` from its pin, `hello2` resolved live
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate must resolve the unpinned hub node live, but failed:\n{}",
+        stderr(&out)
+    );
+
+    // a strict `--locked` build on the same stale dataflow must still fail
+    let out = dora(&fixture)
+        .args(["build", flow.to_str().unwrap(), "--locked", "--offline"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--locked must still reject a hub node missing from the lockfile"
+    );
+    assert!(
+        stderr(&out).contains("not in the lockfile"),
+        "expected a not-in-lockfile error, got: {}",
+        stderr(&out)
+    );
+}
