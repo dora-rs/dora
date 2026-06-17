@@ -548,14 +548,20 @@ pub fn resolve_hub_nodes(
         // live, so those warnings describe an entry we throw away. Snapshot the
         // warning count and truncate back on the fallback so they don't leak
         // (and don't inflate `validate --strict`'s warning count).
+        // the best-effort fallback is advisory: its diagnostics are *notes*, not
+        // *warnings*, so they don't fail `validate --strict-types` (a lockfile
+        // that's merely stale is not a type error).
         let warns_before = resolution.warnings.len();
+        let lockfile_present = pins.is_some() || binary_pins.is_some();
         let (version, entry, bytes) = if let Some(bpin) = binary_pin {
             match resolve_locked_binary(bpin, &catalog, &reference, &node.id, &mut resolution) {
                 Ok(resolved) => resolved,
+                // strict `--locked`: an unusable pin is fatal.
                 Err(e) if locked => return Err(e),
+                // best-effort: a stale/rewritten pin notes and resolves live.
                 Err(e) => {
                     resolution.warnings.truncate(warns_before);
-                    resolution.warnings.push(format!(
+                    resolution.notes.push(format!(
                         "node `{}`: lockfile binary pin unusable ({e:#}) — resolving live instead",
                         node.id
                     ));
@@ -565,13 +571,10 @@ pub fn resolve_hub_nodes(
         } else if let Some(pin) = pin {
             match resolve_locked_git(pin, &catalog, &reference, &node.id, &mut resolution) {
                 Ok(resolved) => resolved,
-                // strict `--locked`: an unusable pin is fatal.
                 Err(e) if locked => return Err(e),
-                // best-effort (validate): a stale/rewritten pin warns and
-                // resolves live instead of failing the whole command.
                 Err(e) => {
                     resolution.warnings.truncate(warns_before);
-                    resolution.warnings.push(format!(
+                    resolution.notes.push(format!(
                         "node `{}`: lockfile pin unusable ({e:#}) — resolving live instead",
                         node.id
                     ));
@@ -579,6 +582,16 @@ pub fn resolve_hub_nodes(
                 }
             }
         } else {
+            // no pin for this node. If a lockfile was provided it just doesn't
+            // cover this node (added since it was written) — note it so a stale
+            // lockfile isn't silently hidden until `build --locked` fails.
+            if lockfile_present {
+                resolution.notes.push(format!(
+                    "node `{}`: not in the lockfile — resolving live; \
+                     regenerate with `dora build --write-lockfile` to pin it",
+                    node.id
+                ));
+            }
             resolve_live(&catalog, &reference, &node.id, &raw_reference)?
         };
 

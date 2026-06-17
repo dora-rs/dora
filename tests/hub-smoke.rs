@@ -1292,6 +1292,22 @@ fn validate_resolves_unpinned_hub_node_live() {
         "validate must resolve the unpinned hub node live, but failed:\n{}",
         stderr(&out)
     );
+    // the stale lockfile is surfaced as a note (not hidden), but does NOT fail
+    // `--strict-types` (it's advisory, not a type warning)
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("not in the lockfile"),
+        "expected a stale-lockfile note for the added node, got:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap(), "--strict-types"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate --strict-types must not fail on a missing-pin fallback:\n{}",
+        stderr(&out)
+    );
 
     // a strict `--locked` build on the same stale dataflow must still fail
     let out = dora(&fixture)
@@ -1365,5 +1381,15 @@ fn validate_resolves_stale_pin_live() {
         String::from_utf8_lossy(&out.stdout).contains("pin unusable"),
         "expected a 'pin unusable — resolving live' note, got:\n{}",
         String::from_utf8_lossy(&out.stdout)
+    );
+    // the advisory fallback note must NOT fail `--strict-types`
+    let out = dora(&fixture)
+        .args(["validate", flow.to_str().unwrap(), "--strict-types"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "validate --strict-types must not fail on a stale-pin fallback:\n{}",
+        stderr(&out)
     );
 }
