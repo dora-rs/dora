@@ -87,6 +87,15 @@ fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
 /// delivered to `crate::host_log`, which will send them to `tracing::event!`.
 pub fn setup_logging(py: Python) -> PyResult<()> {
     let logging = py.import("logging")?;
+    // `setup_logging` runs on every `Node` construction. Installing the
+    // `basicConfig` wrapper a second time would wrap the wrapper (the new
+    // `oldBasicConfig` would be the first wrapper), so every `basicConfig`
+    // call would attach one `HostHandler` per `Node` ever created in this
+    // process and emit duplicate log records. `oldBasicConfig` only exists
+    // once the wrapper is installed, so use it as the install marker.
+    if logging.hasattr("oldBasicConfig")? {
+        return Ok(());
+    }
     logging.setattr("host_log", wrap_pyfunction!(host_log, &logging)?)?;
     py.run(
         cr#"
