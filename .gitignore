@@ -202,6 +202,8 @@ out/
 
 # Claude Code local settings (machine-specific)
 .claude/settings.local.json
+# Claude Code agent worktrees (created by the Agent tool's worktree isolation)
+.claude/worktrees/
 
 # macOS debug symbol bundles
 *.dSYM/
