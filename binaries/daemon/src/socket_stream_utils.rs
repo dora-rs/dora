@@ -25,6 +25,7 @@ pub async fn socket_stream_send(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn socket_stream_receive(
     connection: &mut (impl AsyncRead + Unpin),
 ) -> std::io::Result<Vec<u8>> {
