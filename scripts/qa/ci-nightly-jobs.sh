@@ -1159,13 +1159,22 @@ EOF
   # `dora replay` runs a local single-daemon `dora run` from the deploy-free
   # descriptor stored in the .drec. The recorded source nodes (rust-node and
   # rust-status-node) are swapped for replay nodes; rust-sink reprocesses the
-  # replayed status strings. `--speed 0` replays as fast as possible. Invoked
-  # from the repo root so the replay-node binary resolves under target/debug;
-  # the run's working_dir is the .drec's parent ($WORK), so node logs land in
-  # $WORK/out/.
-  echo "=== dora replay $DREC (local single-daemon run) ==="
+  # replayed status strings. Invoked from the repo root so the replay-node
+  # binary resolves under target/debug; the run's working_dir is the .drec's
+  # parent ($WORK), so node logs land in $WORK/out/.
+  #
+  # Replay at the recorded (real-time) speed -- NOT `--speed 0`. The exact
+  # baseline match below requires lossless delivery into rust-sink, but
+  # dora inputs default to `queue_size: 10` with the `DropOldest` overflow
+  # policy. `--speed 0` blasts all ~100 status outputs near-instantly, so the
+  # sink's size-10 queue overflows and silently drops the events it can't keep
+  # up with -- a flaky, scheduling-dependent ~80-of-100 sequence that diverges
+  # mid-stream (#2089). Real-time pacing (~10ms between outputs) lets the sink
+  # drain each message before the next arrives, which is exactly why the
+  # non-cluster `record-replay` job (also default speed) is stable.
+  echo "=== dora replay $DREC (local single-daemon run, real-time speed) ==="
   rm -rf "$WORK/out"
-  if ! timeout 120s dora replay "$DREC" --speed 0; then
+  if ! timeout 120s dora replay "$DREC"; then
     echo "ERROR: dora replay failed or exceeded 120s"
     rm -rf "$WORK"
     return 1
@@ -1188,10 +1197,10 @@ EOF
   fi
 
   # Validate that the replayed random-value sequence exactly reproduces the
-  # committed seed(42) baseline. dora's transport delivers every recorded
-  # output (reliable, ordered), so the replayed sink must see the full
-  # baseline sequence in order -- any drop, reorder, or value change is a
-  # genuine record/replay regression, not expected noise.
+  # committed seed(42) baseline. At real-time replay speed the sink keeps up
+  # with every recorded output (ordered, no queue overflow), so the replayed
+  # sink must see the full baseline sequence in order -- any drop, reorder, or
+  # value change is a genuine record/replay regression, not expected noise.
   echo "=== validate replayed state against seed(42) baseline ==="
   local baseline="tests/sample-inputs/expected-outputs-rust-status-node.jsonl"
   if ! python3 - "$sink_log" "$baseline" <<'PY'; then
