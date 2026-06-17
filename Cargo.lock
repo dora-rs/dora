@@ -1824,6 +1824,7 @@ dependencies = [
  "git2",
  "itertools 0.14.0",
  "log",
+ "proptest",
  "schemars 1.2.1",
  "semver",
  "serde",

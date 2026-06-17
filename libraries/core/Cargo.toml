@@ -11,6 +11,10 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+# Registers `cfg(kani)` for the formal-verification harnesses (`make qa-kani`).
+[lints]
+workspace = true
+
 [features]
 build = ["dep:git2", "dep:url"]
 zenoh = ["dep:zenoh"]
@@ -45,3 +49,4 @@ syn = { version = "2", features = ["full", "visit"], optional = true }
 tempfile = { workspace = true }
 # Direct arrow-buffer access for unit tests of metadata.rs unsafe paths.
 arrow-buffer = "58"
+proptest = { workspace = true }

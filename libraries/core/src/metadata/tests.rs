@@ -1,14 +1,12 @@
-//! Unit tests for the unsafe pointer arithmetic in `ArrowTypeInfoExt::from_array`.
+//! Unit tests for the region-containment logic in `ArrowTypeInfoExt::from_array`.
 //!
-//! These exist to make the unsafe code path testable in isolation
-//! (without spinning up real shared memory) so that:
-//!
-//! 1. Off-by-one bugs at the region boundary are caught.
-//! 2. The code can be analyzed by `miri` for undefined behavior in
-//!    pointer arithmetic (`offset_from`, provenance).
-//!
-//! These tests are part of the T2.3 miri rollout in
-//! `docs/plan-agentic-qa-strategy.md`.
+//! These exist to make the code path testable in isolation (without
+//! spinning up real shared memory) so that off-by-one bugs at the region
+//! boundary are caught. The containment check itself is a pure integer
+//! function (`buffer_offset_in_region`) with exhaustive Kani proofs — see
+//! `docs/formal-verification.md`; these tests cover the impure glue
+//! (real `ArrayData`, real pointers) on top of it, and remain miri-clean
+//! (part of the T2.3 miri rollout in `docs/plan-agentic-qa-strategy.md`).
 
 use super::ArrowTypeInfoExt;
 use arrow_buffer::Buffer;
@@ -74,21 +72,36 @@ fn from_array_records_offset_within_region() {
     // Build a 16-byte region. Pretend it starts 4 bytes before the buffer.
     let (array, buffer_ptr, buffer_len) = build_array_at(vec![1, 2, 3, 4]);
 
-    // Create a synthetic "region" that starts before the buffer. We use
-    // a separate allocation here so the test does NOT exercise the
-    // `offset_from` path with real provenance — it stays in the integer
-    // arithmetic branch validated by the early checks. miri should still
-    // catch any UB.
-    //
-    // To stay safe under strict provenance, we synthesize the region by
-    // pointer-arithmetic on the buffer pointer itself: imagine the
-    // region starts 0 bytes before the buffer (pointer == region_start).
+    // The containment check compares plain integer addresses (no pointer
+    // provenance), so we simply state the region as starting exactly at
+    // the buffer (pointer == region_start).
     let region_start = buffer_ptr;
     let region_len = buffer_len;
 
     let info = unsafe { ArrowTypeInfo::from_array(&array, region_start, region_len) }.unwrap();
     assert_eq!(info.buffer_offsets[0].offset, 0);
     assert_eq!(info.buffer_offsets[0].len, buffer_len);
+}
+
+/// A buffer from a *different allocation* than the region must be
+/// rejected: live allocations never overlap, so a non-empty buffer can
+/// never be contained in someone else's region. This test was undefined
+/// behavior to write when `from_array` used `ptr.offset_from(region_start)`
+/// (which requires both pointers to share an allocation); the integer
+/// containment check has no such precondition.
+#[test]
+fn from_array_rejects_buffer_from_other_allocation() {
+    let (array, _buffer_ptr, _buffer_len) = build_array_at(vec![1, 2, 3, 4]);
+
+    let unrelated_region = [0u8; 4];
+    let result = unsafe {
+        ArrowTypeInfo::from_array(&array, unrelated_region.as_ptr(), unrelated_region.len())
+    };
+
+    assert!(
+        result.is_err(),
+        "buffer from an unrelated allocation should be rejected"
+    );
 }
 
 /// Empty Arrow buffer at the region start should also work.

@@ -2307,3 +2307,117 @@ nodes:
         }
     }
 }
+
+/// Property-based tests for the pure parsing/validation helpers. These
+/// complement the Kani proofs in `crate::metadata` — see
+/// `docs/formal-verification.md` for how the tiers fit together.
+#[cfg(test)]
+mod proptest_properties {
+    use super::{parse_byte_size, validate_ros2_name};
+    use dora_message::id::NodeId;
+    use proptest::prelude::*;
+
+    fn node_id() -> NodeId {
+        NodeId::from("prop".to_owned())
+    }
+
+    /// Strategy for ROS2 names that are valid by construction: optional
+    /// leading '/', then '/'-separated tokens matching `[A-Za-z_][A-Za-z0-9_]*`.
+    fn valid_ros2_name() -> impl Strategy<Value = String> {
+        (
+            any::<bool>(),
+            prop::collection::vec("[A-Za-z_][A-Za-z0-9_]{0,8}", 1..4),
+        )
+            .prop_map(|(absolute, tokens)| {
+                let joined = tokens.join("/");
+                if absolute {
+                    format!("/{joined}")
+                } else {
+                    joined
+                }
+            })
+    }
+
+    proptest! {
+        /// Total: never panics, whatever the input.
+        #[test]
+        fn ros2_name_validation_never_panics(name in ".{0,32}") {
+            let _ = validate_ros2_name(&node_id(), "topic", &name);
+        }
+
+        /// Completeness: structurally valid names are always accepted.
+        #[test]
+        fn ros2_name_accepts_valid_names(name in valid_ros2_name()) {
+            prop_assert!(validate_ros2_name(&node_id(), "topic", &name).is_ok());
+        }
+
+        /// Soundness: every accepted name satisfies all documented rules.
+        ///
+        /// The strategy samples from the valid alphabet plus a few
+        /// near-miss characters ('.', '-', ' ') so that *accepted* names
+        /// are common — a fully random unicode strategy would virtually
+        /// never enter the accepted branch, making the property vacuous.
+        #[test]
+        fn ros2_name_accepted_implies_well_formed(name in "[a-zA-Z0-9_/. -]{0,16}") {
+            if validate_ros2_name(&node_id(), "topic", &name).is_ok() {
+                prop_assert!(!name.is_empty());
+                prop_assert!(name.chars().all(|c| c.is_ascii_alphanumeric()
+                    || c == '_'
+                    || c == '/'));
+                prop_assert!(!name.contains("//"));
+                prop_assert!(!name.ends_with('/'));
+                for (i, token) in name.split('/').enumerate() {
+                    if i == 0 && token.is_empty() {
+                        continue;
+                    }
+                    prop_assert!(!token.starts_with(|c: char| c.is_ascii_digit()));
+                }
+            }
+        }
+
+        /// Total: never panics, whatever the input.
+        #[test]
+        fn byte_size_parsing_never_panics(s in ".{0,24}") {
+            let _ = parse_byte_size(&s);
+        }
+
+        /// Integer inputs with units multiply exactly (no float rounding)
+        /// and overflow is reported as an error, never wrapped.
+        #[test]
+        fn byte_size_integer_units_are_exact(
+            num in any::<u64>(),
+            unit_idx in 0usize..7,
+            lowercase in any::<bool>(),
+        ) {
+            // All unit spellings accepted by `parse_byte_size` (which also
+            // uppercases, so lowercase forms must behave identically).
+            let (unit, multiplier) =
+                [("B", 1u64), ("KB", 1 << 10), ("K", 1 << 10), ("MB", 1 << 20),
+                 ("M", 1 << 20), ("GB", 1 << 30), ("G", 1 << 30)][unit_idx];
+            let unit = if lowercase { unit.to_lowercase() } else { unit.to_string() };
+            match parse_byte_size(&format!("{num}{unit}")) {
+                Ok(bytes) => prop_assert_eq!(Some(bytes), num.checked_mul(multiplier)),
+                Err(_) => prop_assert!(num.checked_mul(multiplier).is_none()),
+            }
+        }
+
+        /// Bare integers parse to themselves.
+        #[test]
+        fn byte_size_bare_integer_is_identity(num in any::<u64>()) {
+            prop_assert_eq!(parse_byte_size(&num.to_string()).unwrap(), num);
+        }
+
+        /// The float fallback path is total for ordinary decimals: any
+        /// simple non-negative decimal with a valid unit parses Ok.
+        #[test]
+        fn byte_size_fractional_inputs_parse(
+            int_part in 0u32..1_000_000,
+            frac in 0u32..100,
+            unit_idx in 0usize..7,
+        ) {
+            let unit = ["B", "KB", "K", "MB", "M", "GB", "G"][unit_idx];
+            let input = format!("{int_part}.{frac:02}{unit}");
+            prop_assert!(parse_byte_size(&input).is_ok(), "failed to parse '{input}'");
+        }
+    }
+}
