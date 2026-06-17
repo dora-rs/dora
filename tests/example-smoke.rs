@@ -1098,14 +1098,14 @@ fn contract_record_replay_reproduces_validated_pipeline() {
 
     let dora = dora_bin();
 
-    // The daemon<->node TCP transport aborts a first-message read after
-    // `TCP_READ_TIMEOUT` (30s, daemon `socket_stream_utils`). On a loaded CI
-    // runner the record- or replay-node spawn occasionally overshoots that on
-    // startup, surfacing as "TCP read header timed out" — an infrastructure
-    // stall, not a semantic break in the recording. Retry the whole
-    // record+replay cycle a bounded number of times on *that signature only*;
-    // a missing SUCCESS marker on an otherwise-clean run fails immediately, so
-    // a real record/replay regression is never masked by a retry.
+    // On a loaded CI runner the record-node spawn can be slow enough that
+    // the body read times out before the node sends its first message,
+    // surfacing as "TCP read body timed out" — an infrastructure stall, not a
+    // semantic break in the recording. Retry the whole record+replay cycle a
+    // bounded number of times on *that signature in the record step only*; the
+    // replay step treats TCP timeouts as semantic failures (the recording is
+    // already known-good, so a missing message is a real regression). A missing
+    // SUCCESS marker on an otherwise-clean run fails immediately.
     const MAX_ATTEMPTS: u32 = 3;
     for attempt in 1..=MAX_ATTEMPTS {
         match record_replay_once(&dora) {
@@ -1123,11 +1123,13 @@ fn contract_record_replay_reproduces_validated_pipeline() {
 
 /// Why a single record+replay cycle failed.
 enum RecordReplayFailure {
-    /// The daemon's `TCP_READ_TIMEOUT` fired on a node's first-message read —
-    /// an infrastructure stall under CI load. Safe to retry.
+    /// A TCP body timeout during the **record** step — an infrastructure stall
+    /// under CI load (slow node spawn). Safe to retry.
     InfraTimeout(String),
-    /// A real break: non-zero exit without the timeout signature, a missing
-    /// SUCCESS marker, or a missing/empty recording. Never retried.
+    /// A real break: non-zero exit without a record-step TCP timeout, a missing
+    /// SUCCESS marker, a missing/empty recording, or *any* failure in the replay
+    /// step (the recording is known-good, so a TCP timeout there is semantic).
+    /// Never retried.
     Semantic(String),
 }
 
@@ -1141,11 +1143,22 @@ impl std::fmt::Display for RecordReplayFailure {
     }
 }
 
-/// Classify a failed record/replay step: the daemon TCP-timeout signature is
-/// retryable infra noise; anything else is a real semantic failure.
-fn classify_record_replay(combined: &str, detail: String) -> RecordReplayFailure {
-    if combined.contains("TCP read header timed out")
-        || combined.contains("TCP read body timed out")
+/// Classify a failed record/replay step.
+///
+/// `in_record_step` gates whether a TCP-timeout signature is treated as
+/// retryable: during the **record** step a slow node spawn on a loaded CI runner
+/// can trigger the body timeout before the node sends its first message, and
+/// that is genuine infra noise. During the **replay** step the recording is
+/// already known-good, so a TCP timeout means a message never arrived and is a
+/// real replay regression — not safe to retry.
+fn classify_record_replay(
+    combined: &str,
+    detail: String,
+    in_record_step: bool,
+) -> RecordReplayFailure {
+    if in_record_step
+        && (combined.contains("TCP read header timed out")
+            || combined.contains("TCP read body timed out"))
     {
         RecordReplayFailure::InfraTimeout(detail)
     } else {
@@ -1199,6 +1212,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
                 "dora record exited non-zero: {:?}\n---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}",
                 rec.status
             ),
+            true, // record step: TCP timeout may be infra noise
         ));
     }
     if !(rec_stdout.contains(success_marker) || rec_stderr.contains(success_marker)) {
@@ -1209,6 +1223,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
                 "recorded run did not reach the SUCCESS marker — the baseline run is broken.\n\
                  ---- stdout ----\n{rec_stdout}\n---- stderr ----\n{rec_stderr}"
             ),
+            true, // record step: TCP timeout may be infra noise
         ));
     }
     if !(drec.exists()
@@ -1240,6 +1255,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
                 "dora replay exited non-zero: {:?}\n---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}",
                 rep.status
             ),
+            false, // replay step: the recording is known-good; a TCP timeout is a real regression
         ));
     }
     // The contract: replay produces the exact same SUCCESS marker as
@@ -1253,6 +1269,7 @@ fn record_replay_once(dora: &str) -> Result<(), RecordReplayFailure> {
                 "replay did not reproduce the SUCCESS marker — semantic equivalence broken.\n\
                  ---- stdout ----\n{rep_stdout}\n---- stderr ----\n{rep_stderr}"
             ),
+            false, // replay step: missing SUCCESS means a dropped/mutated message, not infra noise
         ));
     }
     Ok(())
