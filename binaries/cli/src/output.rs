@@ -282,10 +282,11 @@ pub fn word_to_color(word: &str) -> Color {
 
     // Adjust colors based on word features for similarity
     // Similar abbreviations will have similar features
-    let r = (base_r as f32 * 0.5 + repeat_ratio * 255.0 * 0.2 + char_sum * 0.3) as u8;
+    let r = (base_r as f32 * 0.5 + repeat_ratio * 255.0 * 0.2 + char_sum * 255.0 * 0.3) as u8;
     let g = (base_g as f32 * 0.5 + diversity * 255.0 * 0.25 + length_factor * 255.0 * 0.25) as u8;
-    let b =
-        (base_b as f32 * 0.5 + (1.0 - repeat_ratio) * 255.0 * 0.3 + (1.0 - char_sum) * 0.2) as u8;
+    let b = (base_b as f32 * 0.5
+        + (1.0 - repeat_ratio) * 255.0 * 0.3
+        + (1.0 - char_sum) * 255.0 * 0.2) as u8;
 
     Color::TrueColor { r, g, b }
 }
@@ -515,5 +516,29 @@ mod tests {
             Some("other"),
             &config,
         ));
+    }
+
+    // --- word_to_color ---
+
+    #[test]
+    fn word_to_color_returns_true_color() {
+        // Smoke test: function does not panic and returns TrueColor
+        assert!(matches!(word_to_color("stt"), Color::TrueColor { .. }));
+        assert!(matches!(word_to_color("vlm"), Color::TrueColor { .. }));
+    }
+
+    #[test]
+    fn word_to_color_char_sum_affects_output() {
+        // "aaa" has char_sum ≈ 1/26 (low); "zzz" has char_sum = 1.0 (high).
+        // After the fix (char_sum * 255.0 * weight), the two words must
+        // produce different colors. Before the fix both terms rounded to 0
+        // and the colors could be identical despite a 26x difference in
+        // char_sum.
+        let low = word_to_color("aaa");
+        let high = word_to_color("zzz");
+        assert_ne!(
+            low, high,
+            "char_sum should influence color: 'aaa' and 'zzz' must differ"
+        );
     }
 }
