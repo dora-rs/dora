@@ -1096,6 +1096,25 @@ impl Node {
     // === Memory Pool API ===
 
     /// Register a shared memory pool for zero-copy tensor transfer.
+    ///
+    /// The returned pool ID can be shared across nodes (e.g. via a Dora output)
+    /// so that a receiver can call [`read_memory_pool`] and [`free_memory_pool`]
+    /// on it.
+    ///
+    /// # Concurrency / safety
+    ///
+    /// **This pool provides no internal mutual exclusion for data bytes.**
+    /// The writer must not begin a new [`write_memory_pool`] while a receiver is
+    /// still consuming the previous tensor. Callers that share a pool across
+    /// nodes MUST enforce a **turn-based discipline** — for example, by waiting
+    /// for a `next_require` round-trip from the receiver before writing again.
+    /// The bundled `examples/memory-pool/` dataflows demonstrate this pattern.
+    ///
+    /// The on-segment seqlock guards metadata integrity (header fields written
+    /// once at registration) and detects in-flight overwrites, but it does
+    /// **not** block the writer from starting a new write while a consumer
+    /// holds a zero-copy tensor. Skipping the turn-based discipline risks
+    /// torn data at the consumer.
     #[pyo3(signature = (tensor_info, device))]
     pub fn register_memory_pool(
         &self,
@@ -1361,11 +1380,25 @@ impl Node {
 
     /// Write tensor data to an existing memory pool.
     ///
-    /// # Synchronization
+    /// Overwrites the data region of a previously-registered pool without
+    /// re-registering, enabling memory reuse across iterations.
     ///
-    /// The writer must not call this while a receiver is consuming the
-    /// previous tensor — use turn-based signaling (the example dataflow
-    /// enforces this via `next_require` round-trips).
+    /// # Concurrency / safety
+    ///
+    /// **This is a non-blocking overwrite.** The writer must not call this
+    /// while a receiver is consuming the previous tensor. Data-byte
+    /// consistency relies entirely on callers honoring a **turn-based
+    /// discipline**: wait for the receiver to signal completion (e.g. via
+    /// a `next_require` round-trip) before writing the next frame.
+    ///
+    /// The seqlock at header offset 96 detects in-flight overwrites so the
+    /// reader can retry, but it does **not** prevent the overwrite itself.
+    /// A writer that ignores the turn-based contract will produce torn
+    /// (partially updated) data at the consumer.
+    ///
+    /// The bundled `examples/memory-pool/` dataflows demonstrate correct
+    /// turn-based usage: the sender writes, outputs the pool ID, and waits
+    /// for the next input event before writing again.
     #[pyo3(signature = (memory_pool_id, tensor_info))]
     pub fn write_memory_pool(
         &self,
@@ -1704,7 +1737,26 @@ impl Node {
 
     /// Read tensor info from an existing memory pool (zero-copy).
     ///
-    /// Returns tensor_info dict compatible with tensor_from_info.
+    /// Returns a `tensor_info` dict compatible with `tensor_from_info`.
+    /// The returned tensor shares the underlying shared-memory mapping —
+    /// no copy is made, so data bytes reflect whatever the writer has most
+    /// recently stored.
+    ///
+    /// # Concurrency / safety
+    ///
+    /// **The returned tensor is a zero-copy view into shared memory.**
+    /// Its data bytes can be overwritten at any time by a concurrent (or
+    /// subsequent) [`write_memory_pool`] on the sender. The seqlock
+    /// re-check at end-of-read detects whether an overwrite occurred
+    /// mid-consumption, but it is the **caller's responsibility** to
+    /// ensure the tensor is not used after the writer is allowed to write
+    /// again.
+    ///
+    /// Correct consumers follow a **turn-based discipline**: read the
+    /// pool, consume the tensor fully, then signal the sender (e.g. via
+    /// the dataflow graph's `next_require` round-trip) that it is safe to
+    /// write the next frame. The bundled `examples/memory-pool/` dataflows
+    /// demonstrate this pattern.
     #[pyo3(signature = (memory_pool_id))]
     pub fn read_memory_pool(
         &self,
