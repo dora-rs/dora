@@ -208,6 +208,7 @@ out/
 
 # Dora auth token (generated at runtime)
 .dora-token
+.adora-token
 .daemon-id
 
 #Miscellaneous
