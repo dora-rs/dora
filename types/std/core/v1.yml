@@ -19,3 +19,9 @@ types:
     arrow: LargeBinary
   Bool:
     arrow: Boolean
+  Int8:
+    arrow: Int8
+  Int16:
+    arrow: Int16
+  UInt16:
+    arrow: UInt16
