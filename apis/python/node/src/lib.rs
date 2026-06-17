@@ -311,6 +311,12 @@ def _get_gpu_buf(slot, size):
     _gpu_bufs[slot] = (d_ptr.value, size)
     return d_ptr.value
 
+def _free_gpu_buf(slot):
+    """Free the pooled GPU buffer for the given slot."""
+    if slot in _gpu_bufs:
+        _lib.cudaFree(ctypes.c_void_p(_gpu_bufs[slot][0]))
+        del _gpu_bufs[slot]
+
 def _ipc_export(d_ptr):
     """Export GPU memory for cross-process sharing. Returns 64-byte handle."""
     handle = _CudaIpcMemHandle()
@@ -1128,6 +1134,12 @@ impl Node {
         if size == 0 || size > 1024 * 1024 * 1024 {
             eyre::bail!("Invalid size: {} bytes", size);
         }
+        if cfg!(not(target_os = "linux")) {
+            eyre::bail!(
+                "memory-pool transport requires Linux (uses /dev/shm). \
+                 This platform is not supported."
+            );
+        }
 
         // Generate unique pool counter for this registration
         let pool_counter = {
@@ -1432,6 +1444,17 @@ impl Node {
                     };
 
                     if !shmem_ptr.is_null() {
+                        // Guard against truncated segments before any
+                        // pointer arithmetic (mirrors slow-path + read guards).
+                        if shmem_capacity < DORADMA_HEADER_SIZE {
+                            if let Some(slot_data) = store_back {
+                                PINNED_POOL
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(counter, slot_data);
+                            }
+                            return Ok(());
+                        }
                         let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                         if magic == DORADMA_MAGIC {
                             let data_offset =
@@ -1886,6 +1909,7 @@ impl Node {
                     if let Ok(helpers) = get_cuda_helpers(py) {
                         let bound = helpers.bind(py);
                         let _ = bound.call_method1("_unregister_host", (slot.base,));
+                        let _ = bound.call_method1("_free_gpu_buf", (c,));
                     }
                     // PoolSlot dropped here -> Shmem unmapped
                 }
@@ -2087,11 +2111,14 @@ impl Node {
     ///
     /// # Synchronization model
     ///
-    /// The seqlock (write_gen at header offset 96) protects **metadata**
-    /// integrity (ptr/size/dtype) during concurrent access. It does NOT
-    /// protect the tensor data bytes from torn reads — a writer can start
-    /// overwriting data while a consumer is iterating the zero-copy tensor.
+    /// The seqlock (write_gen at header offset 96) guards **data-byte**
+    /// consistency across `write_memory_pool` overwrites — the end-of-read
+    /// generation re-check detects if a write occurred mid-read.  Header
+    /// fields (json_len, data_offset) are written once at registration and
+    /// never change, so they are not subject to torn-read risk.
     ///
+    /// The seqlock does NOT protect the tensor data bytes from being
+    /// overwritten while a consumer is iterating the zero-copy tensor.
     /// Callers must enforce a **turn-based** discipline: the writer must
     /// not begin a new `write_memory_pool` until the receiver has finished
     /// consuming the previous tensor. The example dataflow enforces this

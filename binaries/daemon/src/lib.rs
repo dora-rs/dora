@@ -3487,9 +3487,36 @@ impl Daemon {
                     if pool_metadata.shape.is_empty() {
                         return Err("missing shape".to_string());
                     }
+                    // Mirror the Python-side size cap.
+                    if pool_metadata.size > 1024 * 1024 * 1024 {
+                        return Err(format!("size {} exceeds 1 GiB cap", pool_metadata.size));
+                    }
+                    // Require a shared memory name for cleanup.
+                    let shm_name = pool_metadata
+                        .shared_memory_name
+                        .as_ref()
+                        .filter(|n| !n.is_empty())
+                        .ok_or_else(|| "missing shared_memory_name".to_string())?;
+                    // Validate prefix in the same way free_shared_memory does.
+                    if !shm_name.starts_with("dora_pool_")
+                        || shm_name.contains('/')
+                        || shm_name.contains("..")
+                    {
+                        return Err(format!("shared_memory_name `{}` is invalid", shm_name));
+                    }
+
+                    // Per-daemon pool cap (soft limit — rejects excess registrations).
+                    const MAX_POOLS: usize = 512;
+                    if self.memory_pool.table_size() >= MAX_POOLS {
+                        return Err(format!(
+                            "daemon pool table full ({MAX_POOLS} entries); \
+                             free unused pools before registering more"
+                        ));
+                    }
 
                     self.memory_pool.register_memory_pool(
                         MemoryPoolId {
+                            dataflow_id: dataflow_id.to_string(),
                             id: shared_memory_id,
                         },
                         pool_metadata,
@@ -3505,6 +3532,7 @@ impl Daemon {
             } => {
                 let result = (|| -> Result<dora_message::metadata::Metadata, String> {
                     let id = MemoryPoolId {
+                        dataflow_id: dataflow_id.to_string(),
                         id: shared_memory_id.clone(),
                     };
                     let metadata = self
@@ -3563,6 +3591,7 @@ impl Daemon {
                 reply_sender,
             } => {
                 let id = MemoryPoolId {
+                    dataflow_id: dataflow_id.to_string(),
                     id: shared_memory_id.clone(),
                 };
                 let result: Result<(), String> =

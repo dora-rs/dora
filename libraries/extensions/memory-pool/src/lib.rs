@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// Identifier for a memory pool buffer.
+/// Identifier for a memory pool buffer, scoped by dataflow.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct MemoryPoolId {
-    /// Unique identifier for the memory pool buffer.
+    /// The dataflow that owns this pool.
+    pub dataflow_id: String,
+    /// The per-node buffer identifier.
     pub id: String,
 }
 
@@ -313,6 +315,7 @@ mod tests {
 
     fn make_id(name: &str) -> MemoryPoolId {
         MemoryPoolId {
+            dataflow_id: "test_df".to_string(),
             id: name.to_string(),
         }
     }
