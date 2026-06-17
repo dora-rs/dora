@@ -76,7 +76,9 @@ where
     hasher.update(&bytes);
     let actual_hash = format!("{:x}", hasher.finalize());
     if let Some(expected) = expected_sha256 {
-        if actual_hash != expected {
+        // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
+        // uppercase, so compare case-insensitively rather than rejecting it.
+        if !expected.eq_ignore_ascii_case(&actual_hash) {
             eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
         }
     } else {

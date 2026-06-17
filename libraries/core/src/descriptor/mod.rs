@@ -116,6 +116,7 @@ impl DescriptorExt for Descriptor {
                 } => CoreNodeKind::Custom(CustomNode {
                     path: path.clone(),
                     source,
+                    path_sha256: node.path_sha256,
                     args: node.args,
                     build: node.build,
                     send_stdout_as: node.send_stdout_as,
@@ -160,6 +161,7 @@ impl DescriptorExt for Descriptor {
                     CoreNodeKind::Custom(CustomNode {
                         path: "dora-ros2-bridge-node".to_string(),
                         source: NodeSource::Local,
+                        path_sha256: None,
                         args: node.args,
                         build: None,
                         send_stdout_as: node.send_stdout_as,

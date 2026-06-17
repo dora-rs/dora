@@ -1973,6 +1973,7 @@ impl Daemon {
                             name: None,
                             description: None,
                             path: None,
+                            path_sha256: None,
                             args: None,
                             env: None,
                             operators: None,

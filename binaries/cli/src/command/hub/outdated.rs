@@ -35,10 +35,14 @@ impl Executable for Outdated {
         let mut checked = 0usize;
         let mut outdated = 0usize;
         let mut errored = 0usize;
-        for (node_id, source) in &lockfile.git_sources {
-            let Some(hub) = &source.hub else {
-                continue;
-            };
+        // both git-sourced and binary-sourced hub nodes carry the same hub
+        // provenance (name + version), so the upgrade check is identical.
+        let entries = lockfile
+            .git_sources
+            .iter()
+            .filter_map(|(id, s)| s.hub.as_ref().map(|h| (id, h)))
+            .chain(lockfile.binary_sources.iter().map(|(id, p)| (id, &p.hub)));
+        for (node_id, hub) in entries {
             checked += 1;
             // The node id, hub name, and version all come from the lockfile,
             // and resolve errors embed the lockfile-derived package key — none

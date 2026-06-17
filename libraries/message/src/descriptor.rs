@@ -304,6 +304,12 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
 
+    /// SHA-256 checksum the `path` download must match, verified after fetch
+    /// and on cache reuse (spec §8.2/§8.4). Set internally when a `hub:`
+    /// reference resolves to a prebuilt binary artifact; rarely set by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_sha256: Option<String>,
+
     /// Command-line arguments passed to the executable.
     ///
     /// The command-line arguments that should be passed to the executable/script specified in `path`.
@@ -1059,6 +1065,11 @@ pub struct CustomNode {
     /// Source can match any executable in PATH.
     pub path: String,
     pub source: NodeSource,
+    /// SHA-256 the `path` download must match (set for hub binary artifacts,
+    /// spec §8.2). When present the daemon fetches `path` as a verified URL
+    /// download regardless of confinement — the checksum is the trust anchor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path_sha256: Option<String>,
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,

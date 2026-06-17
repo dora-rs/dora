@@ -43,7 +43,7 @@ pub struct IndexEntry {
 /// The git form is the default and the v1 source-of-record. The binary form
 /// is reserved in the schema (spec §8.2) and parses, but consuming it is
 /// deferred to P2.8.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceSpec {
     /// Git repository URL holding the node's source.
@@ -105,6 +105,41 @@ impl SourceSpec {
             ),
             _ => eyre::bail!("index entry has an incomplete git source (needs `git` + `rev`)"),
         }
+    }
+
+    /// The prebuilt artifact matching `platform` (e.g. `linux-x86_64`), if the
+    /// source ships one (spec §8.2). Selection is exact-match on the platform
+    /// string; the caller falls back to `fallback_git` when this returns `None`.
+    pub fn select_binary(&self, platform: &str) -> Option<&BinaryArtifact> {
+        self.binary.iter().find(|a| a.platform == platform)
+    }
+}
+
+/// The platform string for the current host, matching a binary artifact's
+/// `platform` field: `<os>-<arch>` (`linux-x86_64`, `macos-aarch64`, …),
+/// from `std::env::consts::{OS, ARCH}`.
+pub fn current_platform() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+impl BinaryArtifact {
+    /// Validate an *untrusted* index artifact before it is used: the URL is an
+    /// `https://` download (it becomes a network fetch) and the digest is a
+    /// full SHA-256 (64 hex chars, re-verified after download — §8.4).
+    pub fn validate(&self) -> eyre::Result<()> {
+        if !self.url.starts_with("https://") {
+            eyre::bail!(
+                "binary artifact for `{}` has a non-https url",
+                self.platform
+            );
+        }
+        if self.sha256.len() != 64 || !self.sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+            eyre::bail!(
+                "binary artifact for `{}` has an invalid sha256 (need 64 hex chars)",
+                self.platform
+            );
+        }
+        Ok(())
     }
 }
 
@@ -636,5 +671,62 @@ mod tests {
             catalog.all_packages(),
             vec![("dora-rs".to_string(), "dora-yolo".to_string())]
         );
+    }
+
+    fn art(platform: &str) -> BinaryArtifact {
+        BinaryArtifact {
+            platform: platform.to_string(),
+            url: format!("https://example.com/{platform}"),
+            sha256: "a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn current_platform_is_os_dash_arch() {
+        assert_eq!(
+            current_platform(),
+            format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+        );
+    }
+
+    #[test]
+    fn select_binary_exact_matches_platform() {
+        let src = SourceSpec {
+            binary: vec![art("linux-x86_64"), art("macos-aarch64")],
+            ..SourceSpec::default()
+        };
+        assert_eq!(
+            src.select_binary("linux-x86_64").unwrap().platform,
+            "linux-x86_64"
+        );
+        assert_eq!(
+            src.select_binary("macos-aarch64").unwrap().platform,
+            "macos-aarch64"
+        );
+        // no fuzzy/substring matching — an uncovered arch returns None so the
+        // caller can fall back to `fallback-git`.
+        assert!(src.select_binary("linux-aarch64").is_none());
+        assert!(
+            SourceSpec::default()
+                .select_binary("linux-x86_64")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn binary_artifact_validate_rejects_http_and_bad_sha() {
+        assert!(art("linux-x86_64").validate().is_ok());
+        // non-https url
+        let mut a = art("linux-x86_64");
+        a.url = "http://example.com/x".into();
+        assert!(a.validate().is_err());
+        // short sha
+        let mut a = art("linux-x86_64");
+        a.sha256 = "abcd".into();
+        assert!(a.validate().is_err());
+        // non-hex sha of the right length
+        let mut a = art("linux-x86_64");
+        a.sha256 = "z".repeat(64);
+        assert!(a.validate().is_err());
     }
 }
