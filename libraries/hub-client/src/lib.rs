@@ -48,13 +48,47 @@ pub fn local_path_to_file_url(url: &str) -> Option<String> {
     if !is_local_path(url) {
         return None;
     }
-    let slashed = url.replace('\\', "/");
+    // `\` is the Windows separator (becomes `/`); the remaining bytes are
+    // percent-encoded so a URL delimiter inside a legitimate path (`/tmp/a#b`,
+    // `C:\a?b`) cannot become a fragment/query and truncate the path when the
+    // build re-parses it with `url::Url` — two distinct repos would otherwise
+    // collapse to the same clone dir.
+    let encoded = percent_encode_path(&url.replace('\\', "/"));
     // Unix `/srv/repo` -> `file:///srv/repo`; Windows `C:/repo` -> `file:///C:/repo`.
-    Some(if slashed.starts_with('/') {
-        format!("file://{slashed}")
+    Some(if encoded.starts_with('/') {
+        format!("file://{encoded}")
     } else {
-        format!("file:///{slashed}")
+        format!("file:///{encoded}")
     })
+}
+
+/// Percent-encode every byte of a path that is not an RFC 3986 `pchar` or the
+/// `/` separator, yielding a well-formed URL path. Non-ASCII bytes (UTF-8) are
+/// encoded byte-by-byte, as URLs require.
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                // unreserved
+                b'-' | b'.' | b'_' | b'~'
+                // sub-delims
+                | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+                // pchar extras + path separator
+                | b':' | b'@' | b'/'
+            );
+        if keep {
+            out.push(b as char);
+        } else {
+            // table index is a nibble (0..=15), so this never panics
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+    }
+    out
 }
 
 /// Validate a git URL before it is ever passed to a `git` subprocess.
@@ -170,6 +204,25 @@ mod tests {
         assert_eq!(
             local_path_to_file_url("C:/repo").as_deref(),
             Some("file:///C:/repo")
+        );
+        // URL delimiters in a legitimate path are percent-encoded so the path
+        // survives a later `url::Url` re-parse intact (no fragment/query split)
+        assert_eq!(
+            local_path_to_file_url("/tmp/a#b").as_deref(),
+            Some("file:///tmp/a%23b")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:\\a?b").as_deref(),
+            Some("file:///C:/a%3Fb")
+        );
+        assert_eq!(
+            local_path_to_file_url("/tmp/a b").as_deref(),
+            Some("file:///tmp/a%20b")
+        );
+        // an existing `%` is itself escaped, so the literal path round-trips
+        assert_eq!(
+            local_path_to_file_url("/tmp/a%20b").as_deref(),
+            Some("file:///tmp/a%2520b")
         );
         // remote/scp/relative are not local paths — left for the caller to pass through
         assert_eq!(local_path_to_file_url("https://h/o/r"), None);
