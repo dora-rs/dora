@@ -1,0 +1,18 @@
+# Sim-to-sim evaluation for the LeRobot Humanoid legs.
+#   sim2sim eval --config configs/eval_lerobot.yaml
+robot: robot/lerobot_legs.yaml
+policy: policy/lerobot_legs_flat.yaml
+
+# All backends. mjlab/genesis/isaaclab are GPU-only and are auto-skipped on a
+# CPU host; mjlab is where the LeRobot legged policies are trained.
+sims: [mujoco, pybullet, mjlab, genesis, isaaclab]
+
+episodes: 5
+max_steps: 500
+control_dt: 0.02              # 50 Hz policy rate
+seeds: [0, 1, 2, 3, 4]
+
+# Bipeds tip easily: a fall is base below ~half standing height or tipped >~45 deg.
+fall_height: 0.35
+fall_tilt: 0.7
+render: false

@@ -1,0 +1,67 @@
+<?xml version="1.0"?>
+<!--
+  lerobot_legs URDF for PyBullet. Same 12-DOF bipedal topology and link geometry
+  as lerobot_legs.xml (MuJoCo/mjlab) so the SAME policy faces the same robot in
+  every simulator. Joint order matches configs/robot/lerobot_legs.yaml.
+  Stand-in for the LeRobot Humanoid legs; swap in lerobot-humanoid-model assets
+  for high fidelity.
+-->
+<robot name="lerobot_legs">
+
+  <link name="pelvis">
+    <inertial><mass value="8.0"/><inertia ixx="0.06" iyy="0.05" izz="0.05" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><geometry><box size="0.16 0.20 0.14"/></geometry></collision>
+    <visual><geometry><box size="0.16 0.20 0.14"/></geometry></visual>
+  </link>
+
+  <!-- Per leg link/joint pattern (L shown; R mirrored on y):
+       pelvis -(0,0.085,-0.05),z- hip_yaw -(0),x- hip_roll -(0),y- hip_pitch[thigh]
+       -(0,0,-0.24),y- knee[shank] -(0,0,-0.24),y- ankle_pitch -(0),x- ankle_roll[foot] -->
+
+  <!-- ===================== LEFT ===================== -->
+  <link name="L_hip_yaw"><inertial><mass value="0.8"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.04"/></geometry></collision></link>
+  <link name="L_hip_roll"><inertial><mass value="0.6"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.035"/></geometry></collision></link>
+  <link name="L_hip_pitch">
+    <inertial><origin xyz="0 0 -0.12"/><mass value="2.0"/><inertia ixx="0.012" iyy="0.012" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0 0 -0.12"/><geometry><cylinder radius="0.03" length="0.24"/></geometry></collision>
+  </link>
+  <link name="L_knee">
+    <inertial><origin xyz="0 0 -0.12"/><mass value="1.4"/><inertia ixx="0.008" iyy="0.008" izz="0.0008" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0 0 -0.12"/><geometry><cylinder radius="0.026" length="0.24"/></geometry></collision>
+  </link>
+  <link name="L_ankle_pitch"><inertial><mass value="0.3"/><inertia ixx="0.0005" iyy="0.0005" izz="0.0005" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.03"/></geometry></collision></link>
+  <link name="L_ankle_roll">
+    <inertial><origin xyz="0.03 0 -0.04"/><mass value="0.6"/><inertia ixx="0.001" iyy="0.002" izz="0.002" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0.03 0 -0.04"/><geometry><box size="0.20 0.09 0.04"/></geometry></collision>
+  </link>
+  <joint name="L_hip_yaw" type="revolute"><parent link="pelvis"/><child link="L_hip_yaw"/><origin xyz="0 0.085 -0.05"/><axis xyz="0 0 1"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="L_hip_roll" type="revolute"><parent link="L_hip_yaw"/><child link="L_hip_roll"/><origin xyz="0 0 0"/><axis xyz="1 0 0"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="L_hip_pitch" type="revolute"><parent link="L_hip_roll"/><child link="L_hip_pitch"/><origin xyz="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="L_knee" type="revolute"><parent link="L_hip_pitch"/><child link="L_knee"/><origin xyz="0 0 -0.24"/><axis xyz="0 1 0"/><limit lower="0" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="L_ankle_pitch" type="revolute"><parent link="L_knee"/><child link="L_ankle_pitch"/><origin xyz="0 0 -0.24"/><axis xyz="0 1 0"/><limit lower="-2.6" upper="2.6" effort="60" velocity="20"/></joint>
+  <joint name="L_ankle_roll" type="revolute"><parent link="L_ankle_pitch"/><child link="L_ankle_roll"/><origin xyz="0 0 0"/><axis xyz="1 0 0"/><limit lower="-2.6" upper="2.6" effort="60" velocity="20"/></joint>
+
+  <!-- ===================== RIGHT ===================== -->
+  <link name="R_hip_yaw"><inertial><mass value="0.8"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.04"/></geometry></collision></link>
+  <link name="R_hip_roll"><inertial><mass value="0.6"/><inertia ixx="0.001" iyy="0.001" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.035"/></geometry></collision></link>
+  <link name="R_hip_pitch">
+    <inertial><origin xyz="0 0 -0.12"/><mass value="2.0"/><inertia ixx="0.012" iyy="0.012" izz="0.001" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0 0 -0.12"/><geometry><cylinder radius="0.03" length="0.24"/></geometry></collision>
+  </link>
+  <link name="R_knee">
+    <inertial><origin xyz="0 0 -0.12"/><mass value="1.4"/><inertia ixx="0.008" iyy="0.008" izz="0.0008" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0 0 -0.12"/><geometry><cylinder radius="0.026" length="0.24"/></geometry></collision>
+  </link>
+  <link name="R_ankle_pitch"><inertial><mass value="0.3"/><inertia ixx="0.0005" iyy="0.0005" izz="0.0005" ixy="0" ixz="0" iyz="0"/></inertial><collision><geometry><sphere radius="0.03"/></geometry></collision></link>
+  <link name="R_ankle_roll">
+    <inertial><origin xyz="0.03 0 -0.04"/><mass value="0.6"/><inertia ixx="0.001" iyy="0.002" izz="0.002" ixy="0" ixz="0" iyz="0"/></inertial>
+    <collision><origin xyz="0.03 0 -0.04"/><geometry><box size="0.20 0.09 0.04"/></geometry></collision>
+  </link>
+  <joint name="R_hip_yaw" type="revolute"><parent link="pelvis"/><child link="R_hip_yaw"/><origin xyz="0 -0.085 -0.05"/><axis xyz="0 0 1"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="R_hip_roll" type="revolute"><parent link="R_hip_yaw"/><child link="R_hip_roll"/><origin xyz="0 0 0"/><axis xyz="1 0 0"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="R_hip_pitch" type="revolute"><parent link="R_hip_roll"/><child link="R_hip_pitch"/><origin xyz="0 0 0"/><axis xyz="0 1 0"/><limit lower="-2.6" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="R_knee" type="revolute"><parent link="R_hip_pitch"/><child link="R_knee"/><origin xyz="0 0 -0.24"/><axis xyz="0 1 0"/><limit lower="0" upper="2.6" effort="80" velocity="20"/></joint>
+  <joint name="R_ankle_pitch" type="revolute"><parent link="R_knee"/><child link="R_ankle_pitch"/><origin xyz="0 0 -0.24"/><axis xyz="0 1 0"/><limit lower="-2.6" upper="2.6" effort="60" velocity="20"/></joint>
+  <joint name="R_ankle_roll" type="revolute"><parent link="R_ankle_pitch"/><child link="R_ankle_roll"/><origin xyz="0 0 0"/><axis xyz="1 0 0"/><limit lower="-2.6" upper="2.6" effort="60" velocity="20"/></joint>
+
+</robot>

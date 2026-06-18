@@ -16,6 +16,7 @@ from .base import Simulator
 _REGISTRY: dict[str, tuple[str, str]] = {
     "mujoco": ("sim2sim.sim.mujoco_adapter", "MujocoSimulator"),
     "pybullet": ("sim2sim.sim.pybullet_adapter", "PybulletSimulator"),
+    "mjlab": ("sim2sim.sim.mjlab_adapter", "MjlabSimulator"),
     "genesis": ("sim2sim.sim.genesis_adapter", "GenesisSimulator"),
     "isaaclab": ("sim2sim.sim.isaaclab_adapter", "IsaacLabSimulator"),
 }

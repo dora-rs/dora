@@ -1,7 +1,9 @@
 # sim2sim-locomotion
 
 Evaluate **one** locomotion policy across **multiple physics simulators** —
-MuJoCo, PyBullet, Genesis, and Isaac Lab — and compare the results side by side.
+MuJoCo, PyBullet, mjlab (MuJoCo-Warp), Genesis, and Isaac Lab — and compare the
+results side by side. Targets the **LeRobot legged** ecosystem: train a policy in
+mjlab, then sim-to-sim check it everywhere.
 
 This is the classic **sim-to-sim** robustness check that sits between training
 and sim-to-real. If a policy behaves consistently across simulators with
@@ -53,13 +55,17 @@ Adding a new simulator is one file implementing the
 |-----------|---------|----------|-------------------|
 | **MuJoCo** | `pip install mujoco` | CPU | ✅ yes (reference backend) |
 | **PyBullet** | `pip install pybullet` | CPU | ✅ yes |
+| **mjlab** | `pip install mjlab` | **NVIDIA GPU + CUDA** | ⚠️ GPU host only |
 | **Genesis** | `pip install genesis-world` | **NVIDIA GPU + CUDA** | ⚠️ GPU host only |
 | **Isaac Lab** | NVIDIA Isaac Sim stack (out-of-band) | **NVIDIA GPU + CUDA** | ⚠️ GPU host only |
 
-The Genesis and Isaac Lab adapters are written against their real APIs but
-cannot execute on a CPU host. They are **import-guarded**: the registry reports
-them unavailable and skips them instead of crashing. Their live behavior is
-validated on a GPU host (see [GPU runbook](#gpu-runbook)).
+[**mjlab**](https://github.com/mujocolab/mjlab) (MuJoCo-Warp, Isaac Lab-style
+API) is the simulator the **LeRobot legged** stack trains in — see
+[LeRobot integration](#lerobot-legged-integration). The mjlab, Genesis, and
+Isaac Lab adapters are written against their real APIs but cannot execute on a
+CPU host. They are **import-guarded**: the registry reports them unavailable and
+skips them instead of crashing. Their live behavior is validated on a GPU host
+(see [GPU runbook](#gpu-runbook)).
 
 ---
 
@@ -72,6 +78,7 @@ pip install -e ".[all-cpu,report]"
 # or individually
 pip install -e ".[mujoco]"
 pip install -e ".[pybullet]"
+pip install -e ".[mjlab]"       # GPU host (LeRobot legged training sim)
 pip install -e ".[genesis]"     # GPU host
 # Isaac Lab is installed via the NVIDIA Isaac Sim installer, not this extra.
 
@@ -116,15 +123,59 @@ meaningful comparison.)
 3. Run `sim2sim eval`. The obs dimension is validated against the ONNX graph at
    load time, so a layout mismatch fails fast instead of producing garbage.
 
-## The bundled robot (`quad12`)
+## Bundled robots
 
-A simplified 12-DOF quadruped (4 legs × {hip, thigh, calf}) whose joint topology
-mirrors a Unitree Go2. It ships as both [MJCF](src/sim2sim/assets/quad12/quad12.xml)
-(MuJoCo/Genesis) and [URDF](src/sim2sim/assets/quad12/quad12.urdf) (PyBullet) so
-the **same morphology** is loaded everywhere. It is a generic stand-in — for a
-high-fidelity study, drop a real Go2 MJCF/URDF (e.g. from `mujoco_menagerie`)
-into `assets/` and point `configs/robot/quad12.yaml` at it. No code change is
-needed: the robot is entirely config-driven.
+Two config-driven robots ship in the box, each as **both MJCF** (MuJoCo / mjlab /
+Genesis) **and URDF** (PyBullet; Isaac converts URDF→USD) so the **same
+morphology** loads in every backend:
+
+| Robot | Config | DOF | Notes |
+|-------|--------|-----|-------|
+| `lerobot_legs` | `configs/robot/lerobot_legs.yaml` | 12 | Bipedal "legs" stand-in for the **LeRobot Humanoid** (2 legs × {hip yaw/roll/pitch, knee, ankle pitch/roll}) |
+| `quad12` | `configs/robot/quad12.yaml` | 12 | Quadruped (Go2-like; 4 legs × {hip, thigh, calf}) |
+
+Both are **generic stand-ins** so the harness runs without external/proprietary
+assets. For a high-fidelity study, drop the real model into `assets/` and point
+the robot config at it — **no code change** is needed:
+
+- **LeRobot Humanoid legs**: use the `lerobot-humanoid-model` MJCF/URDF.
+- **Go2**: use `mujoco_menagerie`'s Go2 MJCF + a Go2 URDF.
+
+## LeRobot legged integration
+
+LeRobot's legged stack — [`lerobot-legged-zoo`](https://huggingface.co/blog/VirgileBatto/lerobot-humanoid)
+(MJLab training envs for the LeRobot Humanoid and other legged robots),
+[`mjlab`](https://github.com/mujocolab/mjlab) (MuJoCo-Warp), and
+`unitree_rl_mjlab` (Unitree Go2/G1/H1) — trains locomotion policies in **mjlab**.
+This project lets you take such a policy and check it **sim-to-sim**: run it in
+mjlab *and* in MuJoCo/PyBullet/Genesis/Isaac and compare.
+
+```bash
+# Evaluate the LeRobot Humanoid legs across all backends (GPU ones auto-skip on CPU)
+sim2sim eval --config configs/eval_lerobot.yaml
+```
+
+**Exporting a LeRobot / mjlab policy to ONNX.** The policy is consumed as ONNX so
+it is sim-agnostic. After training (e.g. with `unitree_rl_mjlab` / rsl_rl),
+export the actor MLP:
+
+```python
+import torch
+
+policy = runner.alg.actor_critic.actor   # your trained actor (obs -> action)
+obs_dim = 48                             # must match configs/policy/lerobot_legs_flat.yaml
+dummy = torch.zeros(1, obs_dim)
+torch.onnx.export(
+    policy, dummy, "lerobot_legs_policy.onnx",
+    input_names=["obs"], output_names=["action"],
+    dynamic_axes={"obs": {0: "batch"}, "action": {0: "batch"}}, opset_version=13,
+)
+```
+
+Then set `onnx_path: lerobot_legs_policy.onnx` in
+`configs/policy/lerobot_legs_flat.yaml` and make `obs_terms` (order + scales)
+match the observation the policy was trained on. The obs dimension is validated
+against the ONNX graph at load time, so a mismatch fails fast.
 
 ## Configuration
 
@@ -145,12 +196,15 @@ error**, mean torque, **cost of transport**, and action smoothness.
 On a host with an NVIDIA GPU + CUDA:
 
 ```bash
+pip install -e ".[mjlab,report]"            # mjlab (LeRobot legged training sim)
+sim2sim eval --config configs/eval_lerobot.yaml --sims mujoco,mjlab
+
 pip install -e ".[genesis,report]"          # Genesis
-sim2sim eval --config configs/eval.yaml --sims mujoco,pybullet,genesis
+sim2sim eval --config configs/eval_lerobot.yaml --sims mujoco,pybullet,genesis
 
 # Isaac Lab: install Isaac Sim + Isaac Lab per NVIDIA docs, then run with the
 # Isaac Lab python:
-./isaaclab.sh -p -m sim2sim.cli eval --config configs/eval.yaml --sims isaaclab
+./isaaclab.sh -p -m sim2sim.cli eval --config configs/eval_lerobot.yaml --sims isaaclab
 ```
 
 GPU-only tests are marked `@pytest.mark.gpu` (none required to ship; the CPU
@@ -172,14 +226,16 @@ end-to-end MuJoCo + PyBullet rollouts.
 
 ```
 src/sim2sim/
-  config.py            # dataclasses + YAML loader
-  sim/                 # Simulator ABC, RobotState, registry, 4 adapters
-  obs/                 # ObservationBuilder + command generator
-  control/             # shared action->torque PD law
-  policy/              # Policy protocol, ONNX policy, baselines
-  eval/                # metrics, runner, report
-  cli.py               # `sim2sim eval` / `sim2sim list-sims`
-  assets/quad12/       # bundled MJCF + URDF
+  config.py                # dataclasses + YAML loader
+  sim/                     # Simulator ABC, RobotState, registry, 5 adapters:
+                           #   mujoco, pybullet, mjlab, genesis, isaaclab
+  obs/                     # ObservationBuilder + command generator
+  control/                 # shared action->torque PD law
+  policy/                  # Policy protocol, ONNX policy, baselines
+  eval/                    # metrics, runner, report
+  cli.py                   # `sim2sim eval` / `sim2sim list-sims`
+  assets/lerobot_legs/     # bundled LeRobot Humanoid legs MJCF + URDF
+  assets/quad12/           # bundled quadruped MJCF + URDF
 configs/  examples/  tests/
 ```
 

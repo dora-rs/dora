@@ -23,6 +23,7 @@ dependencies = [
 [project.optional-dependencies]
 mujoco = ["mujoco>=3.0"]
 pybullet = ["pybullet>=3.2"]
+mjlab = ["mjlab"]                     # requires NVIDIA GPU + CUDA (MuJoCo-Warp); where LeRobot legged trains
 genesis = ["genesis-world>=0.2"]      # requires NVIDIA GPU + CUDA at runtime
 isaac = []                            # Isaac Lab is installed out-of-band (NVIDIA stack); see README
 all-cpu = ["mujoco>=3.0", "pybullet>=3.2"]
