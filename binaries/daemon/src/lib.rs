@@ -2346,8 +2346,9 @@ impl Daemon {
     /// the stuck process so the hang itself stays diagnosable.
     fn check_finish_stragglers(&mut self) {
         let grace = finish_drain_grace();
+        let now_millis = node_communication::current_millis();
         for (dataflow_id, dataflow) in self.running.iter_mut() {
-            for node_id in dataflow.finish_stragglers(grace) {
+            for node_id in dataflow.finish_stragglers(grace, now_millis) {
                 let drained_for_secs = dataflow
                     .all_inputs_closed_at
                     .get(&node_id)
