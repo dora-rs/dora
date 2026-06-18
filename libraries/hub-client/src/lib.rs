@@ -37,6 +37,26 @@ fn is_local_path(url: &str) -> bool {
     b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\')
 }
 
+/// Rewrite a local-filesystem repo path into its `file://` URL, or `None` for
+/// anything that is not a local path (a remote/scp URL, a relative path).
+///
+/// `git` accepts a bare path directly, but consumers that parse the source with
+/// `url::Url` (the CLI build's `GitManager`) read `C:\repo` as a `c:` URL and
+/// reject `/repo` outright. Sharing this with [`is_local_path`] keeps the set of
+/// paths the validators accept and the set the build can normalize identical.
+pub fn local_path_to_file_url(url: &str) -> Option<String> {
+    if !is_local_path(url) {
+        return None;
+    }
+    let slashed = url.replace('\\', "/");
+    // Unix `/srv/repo` -> `file:///srv/repo`; Windows `C:/repo` -> `file:///C:/repo`.
+    Some(if slashed.starts_with('/') {
+        format!("file://{slashed}")
+    } else {
+        format!("file:///{slashed}")
+    })
+}
+
 /// Validate a git URL before it is ever passed to a `git` subprocess.
 ///
 /// URLs come from untrusted places (a public index entry's `source.git`, a
@@ -134,6 +154,27 @@ mod tests {
         assert!(validate_git_url_untrusted("c:/repo").is_err());
         // cleartext still rejected by the underlying validator
         assert!(validate_git_url_untrusted("http://github.com/o/r").is_err());
+    }
+
+    #[test]
+    fn local_paths_rewrite_to_file_urls() {
+        use super::local_path_to_file_url;
+        assert_eq!(
+            local_path_to_file_url("/srv/repo").as_deref(),
+            Some("file:///srv/repo")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:\\repo").as_deref(),
+            Some("file:///C:/repo")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:/repo").as_deref(),
+            Some("file:///C:/repo")
+        );
+        // remote/scp/relative are not local paths — left for the caller to pass through
+        assert_eq!(local_path_to_file_url("https://h/o/r"), None);
+        assert_eq!(local_path_to_file_url("git@h:o/r"), None);
+        assert_eq!(local_path_to_file_url("repo"), None);
     }
 
     #[test]

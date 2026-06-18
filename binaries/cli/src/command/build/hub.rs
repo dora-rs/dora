@@ -61,10 +61,13 @@ impl HubResolution {
 
 /// Normalize an index `source.git` into a form the build's `GitManager` can
 /// consume. `validate_git_url` accepts two scheme-less forms — scp-style
-/// `git@host:path` and absolute local paths — but `GitManager::choose_clone_dir`
-/// parses the URL with `url::Url`, which rejects both. Rewrite them into the
-/// equivalent `ssh://` / `file://` URLs git treats identically, so a source
-/// that resolves also clones instead of failing late during the build.
+/// `git@host:path` and absolute local paths (Unix `/repo` and Windows
+/// `C:\repo`) — but `GitManager::choose_clone_dir` parses the URL with
+/// `url::Url`, which rejects `/repo` and misreads `C:\repo` as a `c:` URL.
+/// Rewrite them into the equivalent `ssh://` / `file://` URLs git treats
+/// identically, so a source that resolves also clones instead of failing late
+/// during the build. The local-path rewrite is shared with the validators so
+/// every path they accept is one the build can normalize.
 fn normalize_git_source_url(url: &str) -> String {
     if url.contains("://") {
         return url.to_string();
@@ -74,8 +77,8 @@ fn normalize_git_source_url(url: &str) -> String {
     {
         return format!("ssh://git@{host}/{}", path.trim_start_matches('/'));
     }
-    if url.starts_with('/') {
-        return format!("file://{url}");
+    if let Some(file_url) = dora_hub_client::local_path_to_file_url(url) {
+        return file_url;
     }
     url.to_string()
 }
@@ -740,6 +743,10 @@ mod tests {
                 "ssh://git@github.com/org/repo.git",
             ),
             ("/srv/mirrors/repo", "file:///srv/mirrors/repo"),
+            // Windows absolute paths → file:///C:/... (url::Url would read
+            // `C:\repo` as a `c:` scheme and drop the drive from `C:/repo`)
+            ("C:\\mirrors\\repo", "file:///C:/mirrors/repo"),
+            ("C:/mirrors/repo", "file:///C:/mirrors/repo"),
             // already-parseable forms are left untouched
             (
                 "https://github.com/org/repo.git",
