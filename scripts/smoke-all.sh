@@ -451,6 +451,24 @@ if [ "$RUN_RUST" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Hub example -- exercises `hub:` resolution + typed-contract injection against
+# the live catalog via `dora validate`. The detector is `hub: dora-yolo`, a
+# heavy ML node (torch/ultralytics + a model) that can't run in a smoke
+# context, so we validate (resolve + type-check, no node build) rather than
+# run. The full hermetic publish/build/run/yank/outdated/override flow is
+# covered by tests/hub-smoke.rs (nightly tier).
+# ---------------------------------------------------------------------------
+
+echo ""
+echo "=== Hub example (hub: resolution + type-check) ==="
+if "$DORA" validate examples/hub-dataflow/dataflow.yml > /tmp/dora-smoke-hub-validate.log 2>&1; then
+    log_pass "hub-dataflow (validate resolves dora-yolo from the catalog + type-checks)"
+else
+    log_skip "hub-dataflow" "hub: validate needs network to the live catalog (hermetic coverage in tests/hub-smoke.rs)"
+    grep -iE 'error|failed' /tmp/dora-smoke-hub-validate.log | head -2 | sed 's/^/    /' || true
+fi
+
+# ---------------------------------------------------------------------------
 # Python examples
 # ---------------------------------------------------------------------------
 

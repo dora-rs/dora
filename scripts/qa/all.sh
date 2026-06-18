@@ -362,6 +362,9 @@ case "$MODE" in
         PATH="$NIGHTLY_VENV/bin:$PATH" \
         cargo test -p dora-examples --test example-smoke \
         -- --test-threads=1
+      # Hub e2e (mirrors the nightly.yml hub-smoke job). Hermetic + Rust-only
+      # (no venv needed); the `hub:` feature is nightly-tier, not per-PR.
+      run "hub-smoke" cargo test -p dora-examples --test hub-smoke -- --test-threads=1
     fi
 
     # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
