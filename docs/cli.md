@@ -1164,7 +1164,7 @@ version (the index is append-only). For a git-backed index it prints the entry
 and where to add it; automated PR-opening against the official `node-index`
 lands with the index bootstrap.
 
-`search`/`info`/`fetch` accept `--offline` to use only the cached index.
+`search`/`info`/`outdated`/`update` accept `--offline` to use only the cached index.
 Indexes are configured in `~/.config/dora/hub.toml`; a namespace resolves
 against exactly one index (see the plan §7.3). `hub:` nodes in a dataflow are
 resolved by `dora build` — there is deliberately no `dora hub install` (hub

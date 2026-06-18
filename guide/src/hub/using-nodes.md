@@ -126,8 +126,9 @@ distribution](indexes.md#binary-distribution).
 
 Heavy builds run wherever the node runs, so on constrained devices prefer
 build-on-a-host-and-ship (see the manifest chapter's [build-location
-guidance](node-manifest.md#build-location-guidance) and the offline
-[`dora hub fetch`](reproducible-builds.md#offline-and-air-gapped-builds) flow).
+guidance](node-manifest.md#build-location-guidance) and
+[`dora hub fetch`](reproducible-builds.md#offline-builds-and-source-mirroring) for
+mirroring sources).
 
 ## Overriding a node locally
 

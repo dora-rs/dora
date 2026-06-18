@@ -89,18 +89,21 @@ lockfile — but compiles nothing. It produces a lockfile byte-identical to
 contract/type checks too), just without the build. Review the lockfile diff and
 commit it.
 
-All of these accept `--offline` to use only the cached index.
+`outdated` and `update` accept `--offline` to use only the cached index; `list`
+reads the local lockfile and needs no network.
 
-## Offline and air-gapped builds
+## Offline builds and source mirroring
 
-Two independent "offline" mechanisms:
+Two independent mechanisms for working with limited or no network:
 
-- **`--offline`** (on `build`, `validate`, and the `hub` query commands) skips
-  the network index refresh and uses the local cache, failing loudly on a cache
-  miss instead of silently going stale.
+- **`--offline`** (on `dora build`, `dora validate`, and `dora hub
+  search`/`info`/`outdated`/`update`) skips the network index refresh and uses
+  the local cache, failing loudly on a cache miss instead of silently going
+  stale.
 
-- **`dora hub fetch`** mirrors the pinned *sources* into a directory so a machine
-  with no network (or no git access to the source repos) can still build:
+- **`dora hub fetch`** mirrors the pinned *sources* into a directory — a
+  verifiable local copy of each pinned commit, for inspection, auditing, CI
+  source-caching, or manual transfer to another machine:
 
   ```bash
   dora hub fetch dataflow.yml                      # mirror the lockfile's pins
@@ -112,10 +115,13 @@ Two independent "offline" mechanisms:
   YAML, like `--locked`); a bare `name@version` resolves live against the index.
   Sources are blobless-cloned at their pinned commit into `<dir>/<commit>`.
 
-  > `fetch` mirrors **git** sources. Binary-node artifacts are **not**
-  > pre-downloaded — the daemon fetches and sha256-verifies them at spawn time.
-  > For a fully air-gapped binary node, host the artifact `url` somewhere the
-  > target can reach.
+  > **Not yet a turnkey air-gapped build.** `dora build` still fetches git
+  > sources through its own build cache and does **not** reuse this mirror yet
+  > (full air-gapped source reuse is a follow-up). Today `fetch` guarantees a
+  > verifiable local copy; consuming it from a fully offline build is manual.
+  > `fetch` also mirrors **git** sources only — binary-node artifacts are
+  > fetched and sha256-verified by the daemon at spawn time, so host a binary
+  > node's `url` somewhere the target can reach.
 
 ## Recommended workflow
 

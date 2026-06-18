@@ -67,7 +67,7 @@ satisfies it. See [Using Hub Nodes](using-nodes.md) for the full syntax.
 - **[Writing a Node Manifest](node-manifest.md)** — turn your own code into a
   node others can use with one line.
 - **[Reproducible Builds](reproducible-builds.md)** — lockfiles, `--locked`,
-  checking for and applying updates, offline and air-gapped builds.
+  checking for and applying updates, offline builds, and mirroring sources.
 - **[Publishing a Node](publishing.md)** — add your node to a catalog, manage
   versions, and the namespace/ownership model.
 - **[Custom & Enterprise Indexes](indexes.md)** — private/mirrored catalogs via

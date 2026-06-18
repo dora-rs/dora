@@ -313,7 +313,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `dora hub publish [PATH]` | Validate + add a pinned index entry (`--dry-run`) |
 | `dora hub yank <pkg>@<ver>` | Yank/restore a published version (`--undo`) |
 | `dora hub list/outdated/update <dataflow>` | Inspect, check, and refresh lockfile pins |
-| `dora hub fetch <target>` | Mirror pinned sources for offline builds |
+| `dora hub fetch <target>` | Mirror pinned sources locally (inspection / CI / transfer) |
 
 Reference a node with one line of YAML -- `hub: dora-yolo@^0.5` -- and `dora build` resolves, pins, and type-checks it. See the [Hub guide](guide/src/hub/overview.md).
 

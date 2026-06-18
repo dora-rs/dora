@@ -103,5 +103,5 @@ dora hub init                      # scaffold dora-node.yml (if you haven't)
 dora validate --node-manifest dora-node.yml   # manifest is well-formed
 # commit dora-node.yml + the version bump, push
 dora hub publish --dry-run         # preview the exact entry
-dora hub publish                   # open the PR (or append, for a local index)
+dora hub publish                   # print the entry + PR instructions (or append, for a local index)
 ```
