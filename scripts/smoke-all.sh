@@ -451,6 +451,34 @@ if [ "$RUN_RUST" = true ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Hub example -- exercises `hub:` resolution + typed-contract injection against
+# the live catalog via `dora validate`. The detector is `hub: dora-yolo`, a
+# heavy ML node (torch/ultralytics + a model) that can't run in a smoke
+# context, so we validate (resolve + type-check, no node build) rather than
+# run. The full hermetic publish/build/run/yank/outdated/override flow is
+# covered by tests/hub-smoke.rs (nightly tier).
+# ---------------------------------------------------------------------------
+
+# Run only on a full (default) run. The Hub example is neither a Rust nor a
+# Python example, so a scoped `--rust-only` / `--python-only` run -- which
+# intentionally excludes other classes of work -- omits it.
+if [ "$RUN_RUST" = true ] && [ "$RUN_PYTHON" = true ]; then
+    echo ""
+    echo "=== Hub example (hub: resolution + type-check) ==="
+    if "$DORA" validate examples/hub-dataflow/dataflow.yml > /tmp/dora-smoke-hub-validate.log 2>&1; then
+        log_pass "hub-dataflow (validate resolves dora-yolo from the catalog + type-checks)"
+    elif grep -qiE 'failed to clone|failed to fetch the hub index|could not resolve host|couldn.t resolve|unable to access|connection (refused|timed out|reset)|timed out|network is unreachable|temporary failure|cache miss|--offline' /tmp/dora-smoke-hub-validate.log; then
+        # Only an unreachable catalog / offline cache is environmental -> SKIP.
+        log_skip "hub-dataflow" "hub: catalog/network unreachable (hermetic coverage in tests/hub-smoke.rs)"
+    else
+        # A real validation failure (bad YAML, contract/type mismatch, resolver
+        # bug) is a regression -> FAIL loudly, don't mask it as "needs network".
+        log_fail "hub-dataflow (dora validate failed -- not a network error)"
+        tail -15 /tmp/dora-smoke-hub-validate.log | sed 's/^/    /'
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Python examples
 # ---------------------------------------------------------------------------
 

@@ -88,6 +88,26 @@ jobs:
         if: steps.smoke.outputs.exit_code != '0'
         run: exit 1
 
+  # Hub e2e (tests/hub-smoke.rs). The `hub:` feature is unstable + non-core, so
+  # it lives in nightly rather than the per-PR gate. Hermetic — a local git
+  # fixture + DORA_HUB_ALLOW_LOCAL_SOURCES, no network — so it needs only Rust
+  # + git: it builds a node and drives publish / build / run / yank / outdated /
+  # --hub-override / binary-source / identity. cargo test's exit code is
+  # reliable here (unlike the example-smoke harness), so no tee/fail dance.
+  hub-smoke:
+    name: Hub smoke suite (tests/hub-smoke.rs)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run hub smoke suite
+        # --test-threads=1: the run sub-tests share coordinator ports.
+        run: cargo test -p dora-examples --test hub-smoke -- --test-threads=1
+
   # Build the dora CLI once and upload as artifact for downstream jobs.
   # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
   build-cli:

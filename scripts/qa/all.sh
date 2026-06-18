@@ -13,10 +13,11 @@
 #   --tier1                      back-compat alias for --deep
 #   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
-#                                ci-nightly-jobs). After the #1716 rebalance,
-#                                nightly.yml has 18 test jobs: example-smoke
-#                                covers 4 (smoke-suite, log-sinks, service-action,
-#                                streaming); ci-nightly-jobs.sh drives the 14
+#                                hub-smoke + ci-nightly-jobs). nightly.yml has
+#                                19 test jobs: example-smoke covers 4
+#                                (smoke-suite, log-sinks, service-action,
+#                                streaming); hub-smoke covers 1 (the Hub e2e);
+#                                ci-nightly-jobs.sh drives the 14
 #                                remaining with platform-aware dispatch
 #                                (record-replay, cluster-smoke, topic-and-top-smoke,
 #                                cpu-affinity-smoke [Linux], redb-backend-smoke,
@@ -158,7 +159,14 @@ For overnight runs on a powerful machine. Will run:
                                                    matching the GHA Python setup exactly
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
-  14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
+  14.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
+                                                   e2e (publish / build / run /
+                                                   yank / outdated / --hub-override
+                                                   / binary / identity). Hermetic
+                                                   (local git fixture, no network),
+                                                   Rust-only -- no venv. Runs
+                                                   regardless of the uv/3.12 setup.
+  15.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    Platform-aware: runs the subset of GHA
                                                    nightly jobs that applies to the dev's OS.
                                                    Covers record-replay, cluster-smoke,
@@ -168,7 +176,8 @@ For overnight runs on a powerful machine. Will run:
                                                    examples, cli-tests, bench-example, msrv,
                                                    cross-check, ros2-bridge [Linux+ROS2].
 
-Steps 13 + 14 together cover all 18 GHA nightly test jobs. A green
+example-smoke + hub-smoke + ci-nightly-jobs together cover all 19 GHA
+nightly test jobs. A green
 local qa-nightly on platform X predicts a green CI nightly schedule
 for platform X's jobs. (Cross-platform jobs that the dev's OS can't
 run -- e.g. ros2-bridge on macOS -- SKIP locally with a clear note.)
@@ -363,6 +372,11 @@ case "$MODE" in
         cargo test -p dora-examples --test example-smoke \
         -- --test-threads=1
     fi
+
+    # Hub e2e (mirrors the nightly.yml hub-smoke job). Hermetic + Rust-only —
+    # no venv/Python needed, so it runs regardless of the uv/3.12 prerequisite
+    # above; the `hub:` feature is nightly-tier, not per-PR.
+    run "hub-smoke" cargo test -p dora-examples --test hub-smoke -- --test-threads=1
 
     # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
     # (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
