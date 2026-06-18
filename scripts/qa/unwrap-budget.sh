@@ -59,9 +59,22 @@ count_unwraps() {
     # after it is still counted.
     local n
     n=$(awk '
-      # Inside a multi-line test block: ends at a `}` dedented to its indent.
+      # Track raw-string spans (`r#"..."#`). The dedent that closes a test block
+      # is found by a `}` at the attribute indent — but a test fixture string
+      # (e.g. an embedded `fn main() { ... }`) can put a `}` at column 0 too,
+      # which would wrongly end the block and resume counting the rest of the
+      # test module as production. So remember whether THIS line is inside a raw
+      # string before doing the block-end check. (Single-hash `r#"` form — the
+      # form the fixtures use.)
+      {
+        line_was_raw = in_raw
+        if (in_raw) { if ($0 ~ /"#/) in_raw = 0 }
+        else if ($0 ~ /r#"/ && $0 !~ /r#".*"#/) in_raw = 1
+      }
+      # Inside a multi-line test block: ends at a `}` dedented to its indent —
+      # but only on a real code line, not raw-string fixture content.
       in_test {
-        if ($0 ~ ("^" ind "[}]")) in_test = 0
+        if (!line_was_raw && $0 ~ ("^" ind "[}]")) in_test = 0
         next
       }
       # Saw #[cfg(test)] with the item on later line(s): skip signature lines
