@@ -22,6 +22,75 @@ pub use semver;
 /// The namespace bare package names resolve to (spec §7.2).
 pub const OFFICIAL_NAMESPACE: &str = "dora-rs";
 
+/// True for a local-filesystem repository path (as opposed to a remote
+/// transport URL): a Unix absolute path (`/repo`) or a Windows drive-letter
+/// absolute path (`C:\repo` / `C:/repo`). UNC paths (`\\host\share`) are
+/// deliberately excluded — they are remote SMB locations, not vetted local
+/// repos. Used by both validators so the trusted/untrusted "is this local?"
+/// decisions can never disagree (a Windows path the trusted validator accepts
+/// must also trip the untrusted local-source gate).
+fn is_local_path(url: &str) -> bool {
+    if url.starts_with('/') {
+        return true;
+    }
+    let b = url.as_bytes();
+    b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'/' || b[2] == b'\\')
+}
+
+/// Rewrite a local-filesystem repo path into its `file://` URL, or `None` for
+/// anything that is not a local path (a remote/scp URL, a relative path).
+///
+/// `git` accepts a bare path directly, but consumers that parse the source with
+/// `url::Url` (the CLI build's `GitManager`) read `C:\repo` as a `c:` URL and
+/// reject `/repo` outright. Sharing this with [`is_local_path`] keeps the set of
+/// paths the validators accept and the set the build can normalize identical.
+pub fn local_path_to_file_url(url: &str) -> Option<String> {
+    if !is_local_path(url) {
+        return None;
+    }
+    // `\` is the Windows separator (becomes `/`); the remaining bytes are
+    // percent-encoded so a URL delimiter inside a legitimate path (`/tmp/a#b`,
+    // `C:\a?b`) cannot become a fragment/query and truncate the path when the
+    // build re-parses it with `url::Url` — two distinct repos would otherwise
+    // collapse to the same clone dir.
+    let encoded = percent_encode_path(&url.replace('\\', "/"));
+    // Unix `/srv/repo` -> `file:///srv/repo`; Windows `C:/repo` -> `file:///C:/repo`.
+    Some(if encoded.starts_with('/') {
+        format!("file://{encoded}")
+    } else {
+        format!("file:///{encoded}")
+    })
+}
+
+/// Percent-encode every byte of a path that is not an RFC 3986 `pchar` or the
+/// `/` separator, yielding a well-formed URL path. Non-ASCII bytes (UTF-8) are
+/// encoded byte-by-byte, as URLs require.
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path.as_bytes() {
+        let keep = b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                // unreserved
+                b'-' | b'.' | b'_' | b'~'
+                // sub-delims
+                | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+                // pchar extras + path separator
+                | b':' | b'@' | b'/'
+            );
+        if keep {
+            out.push(b as char);
+        } else {
+            // table index is a nibble (0..=15), so this never panics
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0x0f) as usize] as char);
+        }
+    }
+    out
+}
+
 /// Validate a git URL before it is ever passed to a `git` subprocess.
 ///
 /// URLs come from untrusted places (a public index entry's `source.git`, a
@@ -33,8 +102,9 @@ pub fn validate_git_url(url: &str) -> eyre::Result<()> {
     // index is a supply-chain trust root and its fast-forward protection is
     // meaningless against a MITM-controlled remote
     const SCHEMES: &[&str] = &["https://", "ssh://", "file://", "git@"];
-    // absolute paths are accepted for local repositories (tests, mirrors)
-    let valid = SCHEMES.iter().any(|s| url.starts_with(s)) || url.starts_with('/');
+    // absolute paths are accepted for local repositories (tests, mirrors) —
+    // both Unix (`/repo`) and Windows (`C:\repo`) forms
+    let valid = SCHEMES.iter().any(|s| url.starts_with(s)) || is_local_path(url);
     if !valid || url.contains(|c: char| c.is_control()) {
         eyre::bail!(
             "invalid git URL `{}`: expected a https/ssh/file URL or absolute path",
@@ -79,7 +149,7 @@ pub fn validate_git_url(url: &str) -> eyre::Result<()> {
 /// the permissive [`validate_git_url`] — that is the user's own trusted config.
 pub fn validate_git_url_untrusted(url: &str) -> eyre::Result<()> {
     validate_git_url(url)?;
-    let is_local = url.starts_with("file://") || url.starts_with('/');
+    let is_local = url.starts_with("file://") || is_local_path(url);
     if is_local && std::env::var_os("DORA_HUB_ALLOW_LOCAL_SOURCES").is_none() {
         eyre::bail!(
             "index entry source `{}` is a local path; a public index must use an \
@@ -112,8 +182,65 @@ mod tests {
         // rejected for untrusted index entries (no opt-in env in this test)
         assert!(validate_git_url_untrusted("file:///tmp/repo").is_err());
         assert!(validate_git_url_untrusted("/srv/repo").is_err());
+        // a Windows local path is just as much a local source: it must trip the
+        // same gate, not slip through because the check only looked for `/`
+        assert!(validate_git_url_untrusted("C:\\Users\\victim\\repo").is_err());
+        assert!(validate_git_url_untrusted("c:/repo").is_err());
         // cleartext still rejected by the underlying validator
         assert!(validate_git_url_untrusted("http://github.com/o/r").is_err());
+    }
+
+    #[test]
+    fn local_paths_rewrite_to_file_urls() {
+        use super::local_path_to_file_url;
+        assert_eq!(
+            local_path_to_file_url("/srv/repo").as_deref(),
+            Some("file:///srv/repo")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:\\repo").as_deref(),
+            Some("file:///C:/repo")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:/repo").as_deref(),
+            Some("file:///C:/repo")
+        );
+        // URL delimiters in a legitimate path are percent-encoded so the path
+        // survives a later `url::Url` re-parse intact (no fragment/query split)
+        assert_eq!(
+            local_path_to_file_url("/tmp/a#b").as_deref(),
+            Some("file:///tmp/a%23b")
+        );
+        assert_eq!(
+            local_path_to_file_url("C:\\a?b").as_deref(),
+            Some("file:///C:/a%3Fb")
+        );
+        assert_eq!(
+            local_path_to_file_url("/tmp/a b").as_deref(),
+            Some("file:///tmp/a%20b")
+        );
+        // an existing `%` is itself escaped, so the literal path round-trips
+        assert_eq!(
+            local_path_to_file_url("/tmp/a%20b").as_deref(),
+            Some("file:///tmp/a%2520b")
+        );
+        // remote/scp/relative are not local paths — left for the caller to pass through
+        assert_eq!(local_path_to_file_url("https://h/o/r"), None);
+        assert_eq!(local_path_to_file_url("git@h:o/r"), None);
+        assert_eq!(local_path_to_file_url("repo"), None);
+    }
+
+    #[test]
+    fn accepts_windows_absolute_paths() {
+        // local repos/mirrors are part of the contract on every platform
+        assert!(validate_git_url("C:\\repo").is_ok());
+        assert!(validate_git_url("C:/repo").is_ok());
+        assert!(validate_git_url("/srv/repo").is_ok());
+        // not absolute: a relative path or a drive-relative `C:repo` (no
+        // separator) is rejected, as is a UNC path (remote SMB, not a local repo)
+        assert!(validate_git_url("repo").is_err());
+        assert!(validate_git_url("C:repo").is_err());
+        assert!(validate_git_url("\\\\host\\share\\repo").is_err());
     }
 
     #[test]
