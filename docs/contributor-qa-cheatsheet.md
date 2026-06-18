@@ -103,7 +103,9 @@ make qa-nightly    # ~3-4 hours
 Runs `qa-deep` plus property tests at 1000 cases, miri on unsafe code
 (skipped if `cargo +nightly miri` isn't installed), **plus the
 example-smoke suite** (`cargo test -p dora-examples --test example-smoke
--- --test-threads=1`), **plus `scripts/qa/ci-nightly-jobs.sh`**, which
+-- --test-threads=1`), **plus the hub-smoke suite** (`cargo test -p
+dora-examples --test hub-smoke -- --test-threads=1`), **plus
+`scripts/qa/ci-nightly-jobs.sh`**, which
 drives the **14 CI-only GHA jobs** locally with platform-aware dispatch
 (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
 redb-backend, daemon-reconnect [Linux], state-reconstruction,

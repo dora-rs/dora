@@ -13,10 +13,11 @@
 #   --tier1                      back-compat alias for --deep
 #   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
-#                                ci-nightly-jobs). After the #1716 rebalance,
-#                                nightly.yml has 18 test jobs: example-smoke
-#                                covers 4 (smoke-suite, log-sinks, service-action,
-#                                streaming); ci-nightly-jobs.sh drives the 14
+#                                hub-smoke + ci-nightly-jobs). nightly.yml has
+#                                19 test jobs: example-smoke covers 4
+#                                (smoke-suite, log-sinks, service-action,
+#                                streaming); hub-smoke covers 1 (the Hub e2e);
+#                                ci-nightly-jobs.sh drives the 14
 #                                remaining with platform-aware dispatch
 #                                (record-replay, cluster-smoke, topic-and-top-smoke,
 #                                cpu-affinity-smoke [Linux], redb-backend-smoke,
