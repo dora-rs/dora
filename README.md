@@ -87,7 +87,7 @@
 
 - **Communication patterns** -- built-in [service (request/reply)](docs/patterns.md#2-service-requestreply), [action (goal/feedback/result)](docs/patterns.md#3-action-goalfeedbackresult), and [streaming (session/segment/chunk)](docs/patterns.md#4-streaming-sessionsegmentchunk) patterns via well-known metadata keys; no daemon or YAML changes required
 - **ROS2 bridge** -- bidirectional interop with ROS2 topics, services, and actions; QoS mapping; Arrow-native type conversion
-- **Pre-packaged nodes** -- [node hub](https://github.com/dora-rs/dora-hub/) with ready-made nodes for cameras, YOLO, LLMs, TTS, and more
+- **Node Hub (package manager)** -- pull a reusable node into a dataflow with one line -- `hub: dora-yolo@^0.5` -- with cargo-style versioned resolution, reproducible lockfiles (`--locked`), and typed contracts checked at build time; backed by a git-based [public catalog](https://github.com/dora-rs/dora-hub/) of ready-made nodes for cameras, YOLO, LLMs, TTS, and more. See the [Hub guide](guide/src/hub/overview.md) *(unstable)*
 - **In-process operators** -- lightweight functions that run inside a shared runtime, avoiding per-node process overhead for simple transformations
 
 ## Installation
@@ -302,6 +302,20 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 | `dora system` | System management (daemon/coordinator control) |
 | `dora completion <SHELL>` | Generate shell completions |
 | `dora self update` | Update dora CLI |
+
+### Node Hub (unstable)
+
+| Command | Description |
+|---------|-------------|
+| `dora hub search <query>` | Find nodes by name, keyword, or category |
+| `dora hub info <pkg>[@<ver>]` | Show a package's typed contracts + example |
+| `dora hub init [PATH]` | Scaffold a `dora-node.yml` manifest |
+| `dora hub publish [PATH]` | Validate + add a pinned index entry (`--dry-run`) |
+| `dora hub yank <pkg>@<ver>` | Yank/restore a published version (`--undo`) |
+| `dora hub list/outdated/update <dataflow>` | Inspect, check, and refresh lockfile pins |
+| `dora hub fetch <target>` | Mirror pinned sources for offline builds |
+
+Reference a node with one line of YAML -- `hub: dora-yolo@^0.5` -- and `dora build` resolves, pins, and type-checks it. See the [Hub guide](guide/src/hub/overview.md).
 
 For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 

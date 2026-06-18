@@ -57,7 +57,7 @@ Every node requires an `id`. All other fields are optional (though most nodes ne
 
 ### Source
 
-A node's executable comes from a local path, a git repository, a module reference, or is implicit (operator/ROS2 nodes).
+A node's executable comes from a local path, a git repository, a hub package, a module reference, or is implicit (operator/ROS2 nodes).
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -67,6 +67,7 @@ A node's executable comes from a local path, a git repository, a module referenc
 | `branch` | string | Branch to checkout (requires `git`, mutually exclusive with `tag`/`rev`) |
 | `tag` | string | Tag to checkout (requires `git`, mutually exclusive with `branch`/`rev`) |
 | `rev` | string | Commit hash to checkout (requires `git`, mutually exclusive with `branch`/`tag`) |
+| `hub` | string | A Hub package reference `[<namespace>/]<name>@<version-req>` (mutually exclusive with `path`/`git`/`build`). `dora build` resolves it to a pinned commit (or binary) and injects its typed contracts. **Unstable.** See [Hub guide](../guide/src/hub/overview.md) |
 | `build` | string | Build commands run during `dora build`. Each line runs separately. With `--uv`, `pip`/`pip3` lines use `uv pip` and Python nodes get a dedicated managed venv at `<working-dir>/.dora/python-envs/<node-id>/` that the runtime reuses at spawn time. See [CLI reference](cli.md#dora-build) for details. |
 | `args` | string | Command-line arguments (space-separated) |
 
@@ -78,6 +79,17 @@ Example with git source:
   branch: main
   build: cargo build -p example-node --release
   path: target/release/example-node
+```
+
+Example with a hub source (resolution provides the build + path):
+
+```yaml
+- id: detector
+  hub: dora-yolo@^0.5        # [namespace/]name@semver-req; bare name = dora-rs/
+  inputs:
+    image: camera/image
+  outputs:
+    - bbox
 ```
 
 ### Data I/O

@@ -1101,17 +1101,19 @@ See the [Type Annotations Guide](types.md) for the full type library and usage d
 
 #### `dora hub` (unstable)
 
-Package, discover, and use dora nodes (see
-[the Dora Hub plan](plan-node-hub.md)):
+Package, discover, and use dora nodes. For the full walkthrough see the
+[Hub guide](../guide/src/hub/overview.md); the design spec is
+[the Dora Hub plan](plan-node-hub.md).
 
 ```
 dora hub init [PATH]                       # scaffold a dora-node.yml manifest
 dora hub search <query> [--category C]     # find nodes by name/keyword/category
-                        [--platform P]
-dora hub info <pkg>[@<ver>]                # contracts + example for a package
+                        [--platform P] [--offline]
+dora hub info <pkg>[@<ver>] [--offline]    # contracts + example for a package
 dora hub list <dataflow.yml>               # hub packages pinned in the lockfile
 dora hub fetch <dataflow.yml | pkg@ver>    # warm the index cache + mirror sources
                [--target-dir DIR]
+dora hub install                           # (stub) prints how to add a hub: node
 dora hub publish [PATH] [--dry-run]        # validate + add a pinned index entry
                  [--rev REF] [--repo URL]
                  [--version SEMVER] [--index ALIAS]
