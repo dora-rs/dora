@@ -159,7 +159,14 @@ For overnight runs on a powerful machine. Will run:
                                                    matching the GHA Python setup exactly
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
-  14.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
+  14.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
+                                                   e2e (publish / build / run /
+                                                   yank / outdated / --hub-override
+                                                   / binary / identity). Hermetic
+                                                   (local git fixture, no network),
+                                                   Rust-only -- no venv. Runs
+                                                   regardless of the uv/3.12 setup.
+  15.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    Platform-aware: runs the subset of GHA
                                                    nightly jobs that applies to the dev's OS.
                                                    Covers record-replay, cluster-smoke,
