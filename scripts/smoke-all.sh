@@ -501,6 +501,15 @@ if [ "$RUN_PYTHON" = true ]; then
     echo "=== Queue/timeout regression tests (local, timing-sensitive) ==="
     run_local "local-queue-size-and-timeout"         "tests/queue_size_and_timeout_python/dataflow.yaml" 20
     run_local "local-queue-size-latest-data-python"  "tests/queue_size_latest_data_python/dataflow.yaml" 20
+
+    echo ""
+    echo "=== Memory-pool CPU transport (requires torch) ==="
+    if python3 -c "import torch, tqdm" 2>/dev/null; then
+        run_networked "memory-pool-cpu2cpu"       "examples/memory-pool/cpu2cpu.yml" 60
+        run_local     "local-memory-pool-cpu2cpu" "examples/memory-pool/cpu2cpu.yml" 60
+    else
+        log_skip "memory-pool-cpu2cpu" "requires torch + tqdm (pip install torch tqdm)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
