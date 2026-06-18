@@ -5653,6 +5653,50 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
     }
 
+    // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
+
+    /// Mark `node` silent since the epoch so `finish_stragglers` sees it as
+    /// long-idle regardless of the grace.
+    fn insert_silent_node(df: &mut RunningDataflow, node: &NodeId) {
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(node.clone(), running);
+    }
+
+    #[test]
+    fn timer_fed_node_is_not_a_finish_straggler() {
+        // A long-running timer-only node never drains and sends no daemon
+        // traffic, so it looks "silent + never drained" exactly like a wedge —
+        // but it is alive by design and must NOT be force-killed (#2270).
+        let mut df = test_dataflow();
+        let timer_node: NodeId = "timer_node".to_string().into();
+        insert_silent_node(&mut df, &timer_node);
+        df.timers
+            .entry(Duration::from_millis(100))
+            .or_default()
+            .insert((timer_node.clone(), "tick".to_string().into()));
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "timer-fed node must not be escalated: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn wedged_user_input_node_is_a_finish_straggler() {
+        // A node with no timer/log input that has gone silent past grace while
+        // the rest of the dataflow finished IS a straggler and is escalated.
+        let mut df = test_dataflow();
+        let stuck: NodeId = "stuck".to_string().into();
+        insert_silent_node(&mut df, &stuck);
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert_eq!(selected, vec![stuck]);
+    }
+
     // -- Test 2: close_input sends AllInputsClosed + disable_restart on last input --
 
     #[test]

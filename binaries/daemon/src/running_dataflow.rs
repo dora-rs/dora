@@ -607,12 +607,6 @@ impl RunningDataflow {
         }
         select_finish_stragglers(
             self.running_nodes.iter().map(|(id, node)| {
-                let is_source = self
-                    .descriptor
-                    .nodes
-                    .iter()
-                    .find(|n| &n.id == id)
-                    .is_some_and(|n| n.inputs.is_empty());
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
                 // last == 0 means never connected; treat as active so a
                 // node that has not started is not mistaken for a wedge.
@@ -624,7 +618,7 @@ impl RunningDataflow {
                 StragglerNode {
                     id,
                     dynamic: node.node_config.dynamic,
-                    is_source,
+                    never_finishes: self.node_never_finishes(id),
                     drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
                     silent_for,
                 }
@@ -633,14 +627,41 @@ impl RunningDataflow {
             grace,
         )
     }
+
+    /// Whether a node can never reach natural finish, so the finish-straggler
+    /// watchdog must leave it alone (it is stopped only via the explicit-stop
+    /// path). True for a source (no inputs) and — crucially — for any node fed
+    /// by a `Timer` or `Logs` input: those virtual inputs never close, so the
+    /// node never receives `AllInputsClosed`, and timer/log delivery is
+    /// daemon-to-node so it never refreshes `last_activity`. Such a node looks
+    /// "silent and never drained" exactly like a wedge, but is alive by design
+    /// (dora-rs/dora#2270) — e.g. a long-running timer-only side-effect node.
+    fn node_never_finishes(&self, node_id: &NodeId) -> bool {
+        let is_source = self
+            .descriptor
+            .nodes
+            .iter()
+            .find(|n| &n.id == node_id)
+            .is_some_and(|n| n.inputs.is_empty());
+        let has_timer = self
+            .timers
+            .values()
+            .any(|receivers| receivers.iter().any(|(id, _)| id == node_id));
+        let has_logs = self
+            .log_subscribers
+            .iter()
+            .any(|sub| &sub.node_id == node_id);
+        is_source || has_timer || has_logs
+    }
 }
 
 /// One running node's view for [`select_finish_stragglers`].
 struct StragglerNode<'a> {
     id: &'a NodeId,
     dynamic: bool,
-    /// No inputs in the descriptor — a source that never drains.
-    is_source: bool,
+    /// Node that never reaches natural finish — a source, or one kept alive by
+    /// a `Timer`/`Logs` input (see [`RunningDataflow::node_never_finishes`]).
+    never_finishes: bool,
     /// Time since `AllInputsClosed`, or `None` if it never reached drain.
     drained_for: Option<Duration>,
     /// Time since the last daemon-bound message from this node.
@@ -661,8 +682,9 @@ fn select_finish_stragglers<'a>(
         if node.dynamic {
             continue;
         }
-        if node.is_source {
-            // a live source keeps the dataflow producing
+        if node.never_finishes {
+            // a live source (or timer/log-fed node) keeps the dataflow running;
+            // it is stopped only via the explicit-stop path, never escalated here
             return Vec::new();
         }
         match node.drained_for {
@@ -704,23 +726,23 @@ mod tests {
     const PAST_GRACE: Duration = Duration::from_secs(2);
     const WITHIN_GRACE: Duration = Duration::ZERO;
 
-    /// A non-source node draining for `age` (received `AllInputsClosed`).
+    /// A finishing (non-source, no timer/log) node draining for `age`.
     fn drained<'a>(id: &'a NodeId, age: Duration) -> StragglerNode<'a> {
         StragglerNode {
             id,
             dynamic: false,
-            is_source: false,
+            never_finishes: false,
             drained_for: Some(age),
             silent_for: Duration::ZERO,
         }
     }
 
-    /// A non-source node that never drained, silent for `silent_for`.
+    /// A finishing node that never drained, silent for `silent_for`.
     fn never_drained<'a>(id: &'a NodeId, silent_for: Duration) -> StragglerNode<'a> {
         StragglerNode {
             id,
             dynamic: false,
-            is_source: false,
+            never_finishes: false,
             drained_for: None,
             silent_for,
         }
@@ -757,7 +779,7 @@ mod tests {
         let source_node = StragglerNode {
             id: &source,
             dynamic: false,
-            is_source: true,
+            never_finishes: true,
             drained_for: None,
             silent_for: PAST_GRACE,
         };
@@ -776,7 +798,7 @@ mod tests {
         let dynamic_node = StragglerNode {
             id: &dynamic,
             dynamic: true,
-            is_source: false,
+            never_finishes: false,
             drained_for: None,
             silent_for: WITHIN_GRACE,
         };
@@ -846,19 +868,20 @@ mod tests {
     }
 
     #[test]
-    fn silent_source_is_never_escalated() {
-        // a source has no inputs and is stopped via the explicit-stop path,
+    fn never_finishing_node_is_not_escalated_when_silent() {
+        // a source or timer/log-fed node is stopped via the explicit-stop path,
         // never via finish-straggler escalation — even when silent past grace.
-        let source = node_id("source");
-        let source_node = StragglerNode {
-            id: &source,
+        // Guards the dora#2270 regression where a long-running timer-only node
+        // (silent, never drained) was force-killed after the grace period.
+        let perpetual = node_id("timer_node");
+        let node = StragglerNode {
+            id: &perpetual,
             dynamic: false,
-            is_source: true,
+            never_finishes: true,
             drained_for: None,
             silent_for: PAST_GRACE,
         };
-        let selected =
-            select_finish_stragglers([source_node].into_iter(), &BTreeSet::new(), TEST_GRACE);
+        let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
     }
 
