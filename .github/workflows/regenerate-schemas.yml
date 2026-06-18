@@ -21,20 +21,27 @@ jobs:
 
       - name: Update Schema
         run: cargo run -p dora-core --bin generate_schema
-      - name: Create if changed
+      - name: Create or update the schema-sync PR if changed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if git diff --exit-code -- libraries/core/dora-schema.json libraries/core/dora-node-schema.json; then
-              echo "Schema file was not changed"
+              echo "Schema file is up to date"
           else
-              git switch -c schema-update-for-${{ github.sha }}
+              # Reuse ONE branch + PR: force-push so an already-open sync PR is
+              # updated in place instead of opening a fresh PR on every push to
+              # main (which otherwise piles up dozens of duplicates while the
+              # schema stays drifted).
+              git checkout -B auto/schema-update
               git add libraries/core/dora-schema.json libraries/core/dora-node-schema.json
               git config user.email "dora-bot@phil-opp.com"
               git config user.name "Dora Bot"
-              git commit -m "Update JSON schema for ${{ github.sha }}"
-              git push -u origin HEAD
-              git fetch origin main
-              gh pr create --title "Update JSON schema for \`dora-core\`" --body "Update JSON schema for ${{ github.sha }}"
+              git commit -m "Update JSON schema (${{ github.sha }})"
+              git push -f -u origin auto/schema-update
+              if [ -z "$(gh pr list --head auto/schema-update --state open --json number --jq '.[].number')" ]; then
+                  gh pr create --head auto/schema-update --base main \
+                    --title "Update JSON schema for \`dora-core\`" \
+                    --body "The committed JSON schema drifted from \`cargo run -p dora-core --bin generate_schema\`. Merge to resync. This PR is force-updated in place on every push to main, so there is only ever one open."
+              fi
           fi
-          
+
