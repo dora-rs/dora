@@ -8,9 +8,11 @@ manifest."
 
 ## Prerequisites
 
-1. A committed [`dora-node.yml`](node-manifest.md) at your node's root, with a
-   `namespace`, `name`, and version (the version is read from
-   `[package].version` / `[project].version` at the pinned commit).
+1. A committed [`dora-node.yml`](node-manifest.md) at your node's root with a
+   `namespace` and `name`. The **version is not part of the manifest** — it is
+   read from `[package].version` (Cargo) / `[project].version` (pyproject) at the
+   pinned commit, or supplied with `--version`. (Adding `version:` to the
+   manifest is rejected — it uses `deny_unknown_fields`.)
 2. The node's source pushed to a git remote (the index entry points at it).
 3. Your `namespace` matches a GitHub org or user you control (see
    [Namespaces & ownership](#namespaces--ownership)).
