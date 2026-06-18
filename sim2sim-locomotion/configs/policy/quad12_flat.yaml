@@ -1,0 +1,24 @@
+# Observation contract for a flat-terrain velocity-tracking policy on quad12.
+# Term order + scales MUST match what the policy was trained with. This layout
+# follows the common legged_gym / Isaac Lab velocity task (45-dim for 12 DOF):
+#   3 + 3 + 3 + 3 + 12 + 12 + 12 = 48? -> here 3+3+3+3+12+12 = 36 without last_action,
+#   48 with last_action. We include last_action -> dim = 48.
+
+# Point this at your exported policy. Leave null to use a scripted baseline.
+onnx_path: null
+
+obs_terms:
+  - { name: base_lin_vel,      scale: 2.0 }
+  - { name: base_ang_vel,      scale: 0.25 }
+  - { name: projected_gravity, scale: 1.0 }
+  - { name: velocity_command,  scale: 1.0 }
+  - { name: joint_pos_rel,     scale: 1.0 }
+  - { name: joint_vel,         scale: 0.05 }
+  - { name: last_action,       scale: 1.0 }
+
+command_ranges:
+  lin_vel_x: [-1.0, 1.0]
+  lin_vel_y: [-0.5, 0.5]
+  ang_vel_z: [-1.0, 1.0]
+
+clip_actions: 5.0

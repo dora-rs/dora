@@ -1,0 +1,107 @@
+<!--
+  quad12: a simplified 12-DOF quadruped used as the bundled, dependency-free
+  reference robot. Its joint topology mirrors a Unitree Go2 (4 legs x
+  {hip abduction, thigh, calf}) so observation/action dimensions are realistic,
+  but the link masses/sizes are generic. Drop a real Go2 MJCF into assets/ and
+  point configs/robot/*.yaml at it for high-fidelity studies.
+
+  Joint order (canonical, must match configs/robot/quad12.yaml):
+    FL_hip FL_thigh FL_calf FR_hip FR_thigh FR_calf
+    RL_hip RL_thigh RL_calf RR_hip RR_thigh RR_calf
+-->
+<mujoco model="quad12">
+  <compiler angle="radian"/>
+  <option timestep="0.005" gravity="0 0 -9.81" integrator="RK4"/>
+
+  <default>
+    <joint armature="0.01" damping="0.2" limited="true" range="-3.14 3.14"/>
+    <geom contype="1" conaffinity="1" friction="1.0 0.1 0.1" rgba="0.6 0.6 0.65 1"/>
+    <motor ctrllimited="false"/>
+  </default>
+
+  <worldbody>
+    <light name="top" pos="0 0 2"/>
+    <geom name="floor" type="plane" size="0 0 0.1" pos="0 0 0" rgba="0.3 0.3 0.35 1"
+          contype="1" conaffinity="1" friction="1.0 0.1 0.1"/>
+
+    <body name="trunk" pos="0 0 0.40">
+      <freejoint name="root"/>
+      <geom name="trunk" type="box" size="0.20 0.09 0.045" mass="6.0"/>
+
+      <!-- ============================ FL (front-left) ============================ -->
+      <body name="FL_hip" pos="0.18 0.09 0">
+        <joint name="FL_hip" axis="1 0 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0.06 0" size="0.025" mass="0.6"/>
+        <body name="FL_thigh" pos="0 0.06 0">
+          <joint name="FL_thigh" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.022" mass="0.9"/>
+          <body name="FL_calf" pos="0 0 -0.18">
+            <joint name="FL_calf" axis="0 1 0"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.018" mass="0.4"/>
+            <geom name="FL_foot" type="sphere" pos="0 0 -0.18" size="0.025" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ============================ FR (front-right) =========================== -->
+      <body name="FR_hip" pos="0.18 -0.09 0">
+        <joint name="FR_hip" axis="1 0 0"/>
+        <geom type="capsule" fromto="0 0 0 0 -0.06 0" size="0.025" mass="0.6"/>
+        <body name="FR_thigh" pos="0 -0.06 0">
+          <joint name="FR_thigh" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.022" mass="0.9"/>
+          <body name="FR_calf" pos="0 0 -0.18">
+            <joint name="FR_calf" axis="0 1 0"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.018" mass="0.4"/>
+            <geom name="FR_foot" type="sphere" pos="0 0 -0.18" size="0.025" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ============================ RL (rear-left) ============================= -->
+      <body name="RL_hip" pos="-0.18 0.09 0">
+        <joint name="RL_hip" axis="1 0 0"/>
+        <geom type="capsule" fromto="0 0 0 0 0.06 0" size="0.025" mass="0.6"/>
+        <body name="RL_thigh" pos="0 0.06 0">
+          <joint name="RL_thigh" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.022" mass="0.9"/>
+          <body name="RL_calf" pos="0 0 -0.18">
+            <joint name="RL_calf" axis="0 1 0"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.018" mass="0.4"/>
+            <geom name="RL_foot" type="sphere" pos="0 0 -0.18" size="0.025" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- ============================ RR (rear-right) ============================ -->
+      <body name="RR_hip" pos="-0.18 -0.09 0">
+        <joint name="RR_hip" axis="1 0 0"/>
+        <geom type="capsule" fromto="0 0 0 0 -0.06 0" size="0.025" mass="0.6"/>
+        <body name="RR_thigh" pos="0 -0.06 0">
+          <joint name="RR_thigh" axis="0 1 0"/>
+          <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.022" mass="0.9"/>
+          <body name="RR_calf" pos="0 0 -0.18">
+            <joint name="RR_calf" axis="0 1 0"/>
+            <geom type="capsule" fromto="0 0 0 0 0 -0.18" size="0.018" mass="0.4"/>
+            <geom name="RR_foot" type="sphere" pos="0 0 -0.18" size="0.025" mass="0.05"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FL_hip"   joint="FL_hip"   gear="1"/>
+    <motor name="FL_thigh" joint="FL_thigh" gear="1"/>
+    <motor name="FL_calf"  joint="FL_calf"  gear="1"/>
+    <motor name="FR_hip"   joint="FR_hip"   gear="1"/>
+    <motor name="FR_thigh" joint="FR_thigh" gear="1"/>
+    <motor name="FR_calf"  joint="FR_calf"  gear="1"/>
+    <motor name="RL_hip"   joint="RL_hip"   gear="1"/>
+    <motor name="RL_thigh" joint="RL_thigh" gear="1"/>
+    <motor name="RL_calf"  joint="RL_calf"  gear="1"/>
+    <motor name="RR_hip"   joint="RR_hip"   gear="1"/>
+    <motor name="RR_thigh" joint="RR_thigh" gear="1"/>
+    <motor name="RR_calf"  joint="RR_calf"  gear="1"/>
+  </actuator>
+</mujoco>

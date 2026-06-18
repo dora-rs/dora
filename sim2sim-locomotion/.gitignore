@@ -1,0 +1,21 @@
+# Generated eval artifacts
+/report/
+report/
+*.png
+!docs/**/*.png
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Models / converted assets
+*.onnx
+/tmp/sim2sim_isaac/
