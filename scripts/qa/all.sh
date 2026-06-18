@@ -168,7 +168,8 @@ For overnight runs on a powerful machine. Will run:
                                                    examples, cli-tests, bench-example, msrv,
                                                    cross-check, ros2-bridge [Linux+ROS2].
 
-Steps 13 + 14 together cover all 18 GHA nightly test jobs. A green
+example-smoke + hub-smoke + ci-nightly-jobs together cover all 19 GHA
+nightly test jobs. A green
 local qa-nightly on platform X predicts a green CI nightly schedule
 for platform X's jobs. (Cross-platform jobs that the dev's OS can't
 run -- e.g. ros2-bridge on macOS -- SKIP locally with a clear note.)
@@ -362,10 +363,12 @@ case "$MODE" in
         PATH="$NIGHTLY_VENV/bin:$PATH" \
         cargo test -p dora-examples --test example-smoke \
         -- --test-threads=1
-      # Hub e2e (mirrors the nightly.yml hub-smoke job). Hermetic + Rust-only
-      # (no venv needed); the `hub:` feature is nightly-tier, not per-PR.
-      run "hub-smoke" cargo test -p dora-examples --test hub-smoke -- --test-threads=1
     fi
+
+    # Hub e2e (mirrors the nightly.yml hub-smoke job). Hermetic + Rust-only —
+    # no venv/Python needed, so it runs regardless of the uv/3.12 prerequisite
+    # above; the `hub:` feature is nightly-tier, not per-PR.
+    run "hub-smoke" cargo test -p dora-examples --test hub-smoke -- --test-threads=1
 
     # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
     # (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],

@@ -463,9 +463,14 @@ echo ""
 echo "=== Hub example (hub: resolution + type-check) ==="
 if "$DORA" validate examples/hub-dataflow/dataflow.yml > /tmp/dora-smoke-hub-validate.log 2>&1; then
     log_pass "hub-dataflow (validate resolves dora-yolo from the catalog + type-checks)"
+elif grep -qiE 'failed to clone|failed to fetch the hub index|could not resolve host|couldn.t resolve|unable to access|connection (refused|timed out|reset)|timed out|network is unreachable|temporary failure|cache miss|--offline' /tmp/dora-smoke-hub-validate.log; then
+    # Only an unreachable catalog / offline cache is environmental -> SKIP.
+    log_skip "hub-dataflow" "hub: catalog/network unreachable (hermetic coverage in tests/hub-smoke.rs)"
 else
-    log_skip "hub-dataflow" "hub: validate needs network to the live catalog (hermetic coverage in tests/hub-smoke.rs)"
-    grep -iE 'error|failed' /tmp/dora-smoke-hub-validate.log | head -2 | sed 's/^/    /' || true
+    # A real validation failure (bad YAML, contract/type mismatch, resolver
+    # bug) is a regression -> FAIL loudly, don't mask it as "needs network".
+    log_fail "hub-dataflow (dora validate failed -- not a network error)"
+    tail -15 /tmp/dora-smoke-hub-validate.log | sed 's/^/    /'
 fi
 
 # ---------------------------------------------------------------------------

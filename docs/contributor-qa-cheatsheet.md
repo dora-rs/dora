@@ -110,8 +110,8 @@ redb-backend, daemon-reconnect [Linux], state-reconstruction,
 test-cross-platform [macOS+Windows], examples, cli-tests, bench-example,
 cross-check, ros2-bridge [Linux+ROS2], msrv).
 
-Together example-smoke + ci-nightly-jobs cover **all 18 GHA nightly
-test jobs** (4 + 14) after the #1716 rebalance. A green local run on
+Together example-smoke + hub-smoke + ci-nightly-jobs cover **all 19 GHA
+nightly test jobs** (4 + 1 + 14). A green local run on
 platform X predicts a green CI nightly for platform X's jobs. Jobs
 that can't run on the dev's OS SKIP cleanly with a clear note.
 
