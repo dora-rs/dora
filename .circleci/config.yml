@@ -865,22 +865,44 @@ jobs:
             source "$BASH_ENV"
       - run:
           name: Run semantic contract tests
-          command: >
-            cargo test -p dora-examples --test example-smoke contract_
-            --
-            --test-threads=1
-            --nocapture
+          # Wall-clock cap (dora-rs/dora#2064): a hung `--uv` dataflow keeps
+          # emitting log output, so CircleCI's output-based `no_output_timeout`
+          # never fires and the job runs ~50min–2h to the hard wall. `timeout`
+          # fires regardless of output. With `--test-threads=1 --nocapture` the
+          # last `test contract_… ` line without a following result names the
+          # hung test. Normal runtime is well under 28m (full job ~22m).
+          command: |
+            # `|| rc=$?` (not a bare `rc=$?`): CircleCI runs steps under
+            # `bash -eo pipefail`, so a bare timeout failure would trip errexit
+            # and exit before the diagnostic branch. `|| ` marks it checked.
+            rc=0
+            timeout --kill-after=30s 1680s \
+              cargo test -p dora-examples --test example-smoke contract_ \
+              -- --test-threads=1 --nocapture || rc=$?
+            if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+              echo "ERROR (dora#2064): contract tests hit the 28m wall-clock cap."
+              echo "The hung test is the last 'test contract_…' line above with no 'ok'/'FAILED' after it."
+            fi
+            exit "$rc"
           no_output_timeout: 30m
       # Python variant of the lifecycle test piggybacks on this
       # job because it needs uv (already set up via setup-python-uv
       # above). Rust + C++ variants run in the `e2e` job.
       - run:
           name: Run dora node lifecycle E2E (Python)
-          command: >
-            cargo test -p dora-examples --test node-lifecycle-e2e
-            --
-            --test-threads=1
-            lifecycle_python
+          # Wall-clock cap, same rationale as the contract step above (#2064).
+          command: |
+            # `|| rc=$?`: checked so the wall-clock failure doesn't trip
+            # errexit before the diagnostic branch (CircleCI runs `bash -eo
+            # pipefail`).
+            rc=0
+            timeout --kill-after=30s 840s \
+              cargo test -p dora-examples --test node-lifecycle-e2e \
+              -- --test-threads=1 lifecycle_python || rc=$?
+            if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+              echo "ERROR (dora#2064): lifecycle_python hit the 14m wall-clock cap (hung --uv dataflow)."
+            fi
+            exit "$rc"
           no_output_timeout: 15m
       - cargo-cache-save
 
