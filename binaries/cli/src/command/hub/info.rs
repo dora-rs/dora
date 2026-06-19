@@ -96,21 +96,25 @@ fn resolve_or_yanked(
 )> {
     match catalog.resolve(reference) {
         Ok(resolved) => Ok((resolved.version, resolved.entry)),
-        Err(resolve_err) => catalog
+        Err(resolve_err) => {
             // `versions()` is sorted ascending, so `.rev()` yields highest-first.
-            .versions(&reference.namespace, &reference.name)
-            .unwrap_or_default()
-            .into_iter()
-            .rev()
-            .filter(|v| reference.requirement.matches(v))
-            .find_map(|v| {
-                catalog
-                    .entry(&reference.namespace, &reference.name, &v)
-                    .ok()
-                    .filter(|e| e.yanked)
-                    .map(|e| (v, e))
-            })
-            .ok_or_else(|| resolve_err.wrap_err(format!("failed to resolve `{package_label}`"))),
+            // Use `?` rather than `.ok()` so that corrupt entry files surface their
+            // parse error instead of being silently skipped — otherwise a malformed
+            // non-yanked entry could be masked by a lower valid yanked result.
+            for v in catalog
+                .versions(&reference.namespace, &reference.name)
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .filter(|v| reference.requirement.matches(v))
+            {
+                let entry = catalog.entry(&reference.namespace, &reference.name, &v)?;
+                if entry.yanked {
+                    return Ok((v, entry));
+                }
+            }
+            Err(resolve_err.wrap_err(format!("failed to resolve `{package_label}`")))
+        }
     }
 }
 
