@@ -4555,6 +4555,10 @@ impl Daemon {
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow.grace_duration_kills.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    // a respawned node must re-subscribe before it counts as
+                    // connected, else a slow restart could be silence-escalated
+                    // mid-startup (dora-rs/dora#2270).
+                    dataflow.connected_nodes.remove(&node_id);
                 }
 
                 logger
@@ -5786,6 +5790,32 @@ mod fault_tolerance_tests {
         assert!(
             selected.is_empty(),
             "a re-added node ID must not be selected before its new incarnation subscribes"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_clears_connected_marker() {
+        // A restarting node keeps its ID but is a new incarnation: clear the
+        // connected marker so the restarting process isn't silence-escalatable
+        // before it re-subscribes (a slow restart / model reload) — #2270 review.
+        use crate::running_dataflow::{ProcessHandle, ProcessOperation};
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+
+        let mut running = test_running_node();
+        let (op_tx, _op_rx) = flume::unbounded::<ProcessOperation>();
+        running.process = Some(ProcessHandle::new(op_tx));
+        df.running_nodes.insert(node_a.clone(), running);
+        df.connected_nodes.insert(node_a.clone());
+        df.all_inputs_closed_at
+            .insert(node_a.clone(), std::time::Instant::now());
+
+        df.restart_single_node(&node_a, &clock, None).unwrap();
+
+        assert!(
+            !df.connected_nodes.contains(&node_a),
+            "restart must clear the connected marker so the new incarnation re-subscribes"
         );
     }
 

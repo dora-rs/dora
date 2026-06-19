@@ -522,8 +522,12 @@ impl RunningDataflow {
             .store(true, atomic::Ordering::Release);
         // A fresh incarnation starts with a clean drain state: a stale
         // AllInputsClosed timestamp from the previous incarnation must not
-        // trip the finish-straggler watchdog on the restarted node.
+        // trip the finish-straggler watchdog on the restarted node. The
+        // connected marker is cleared too, so the restarting process is not
+        // treated as connected (and silence-escalatable) before it re-subscribes
+        // (dora-rs/dora#2270).
         self.all_inputs_closed_at.remove(node_id);
+        self.connected_nodes.remove(node_id);
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,
