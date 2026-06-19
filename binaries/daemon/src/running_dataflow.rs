@@ -199,6 +199,11 @@ pub struct RunningDataflow {
     /// that node's drain phase. Drives the finish-straggler watchdog
     /// (dora-rs/dora#2152).
     pub(crate) all_inputs_closed_at: HashMap<NodeId, Instant>,
+    /// Nodes that have subscribed at least once. Distinguishes a node that has
+    /// connected and may have since dropped its event stream (a drain-clock /
+    /// finish-straggler candidate) from one that has not started up yet. Set on
+    /// subscribe, never cleared while the dataflow runs (dora-rs/dora#2270).
+    pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
     pub(crate) stop_sent: bool,
@@ -262,6 +267,7 @@ impl RunningDataflow {
             open_external_mappings: Default::default(),
             _timer_handles: BTreeMap::new(),
             all_inputs_closed_at: HashMap::new(),
+            connected_nodes: BTreeSet::new(),
             finish_escalated: BTreeSet::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
