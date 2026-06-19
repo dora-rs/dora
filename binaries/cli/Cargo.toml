@@ -104,3 +104,6 @@ crate-type = ["lib", "cdylib"]
 [package.metadata.dist]
 # Enable dora-cli binary to be distributed
 dist = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
