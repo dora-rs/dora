@@ -526,6 +526,11 @@ if [ "$RUN_PYTHON" = true ]; then
     run_local "local-python-zero-copy-send-contract" "examples/python-zero-copy-send/contract_dataflow.yml" 15
 
     echo ""
+    echo "=== Memory-pool transport (CPU-only, GPU-less CI safe) ==="
+    run_networked "memory-pool-cpu2cpu"       "examples/memory-pool/cpu2cpu.yml" 120
+    run_local     "local-memory-pool-cpu2cpu" "examples/memory-pool/cpu2cpu.yml" 120
+
+    echo ""
     echo "=== Queue/timeout regression tests (local, timing-sensitive) ==="
     run_local "local-queue-size-and-timeout"         "tests/queue_size_and_timeout_python/dataflow.yaml" 20
     run_local "local-queue-size-latest-data-python"  "tests/queue_size_latest_data_python/dataflow.yaml" 20

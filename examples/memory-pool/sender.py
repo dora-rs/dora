@@ -22,6 +22,10 @@ data_generation = np.random.default_rng()
 memory_pool_id = None
 for i in range(MESSAGE_COUNT):
     random_data = data_generation.integers(1000, size=SIZE, dtype=np.int64)
+    # Stamp the iteration counter into element [0] so the receiver can
+    # validate deterministically that the pool write propagated (avoids a
+    # probabilistically-flaky checksum over random data).
+    random_data[0] = i
     torch_tensor = torch.tensor(random_data, dtype=torch.int64, device=SENDER_DEVICE)
     t_send = time.perf_counter_ns()
     metadata = {"t_send": t_send, "scenario": SCENARIO}

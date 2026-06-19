@@ -747,6 +747,32 @@ fn smoke_local_streaming_example() {
 }
 
 // ---------------------------------------------------------------------------
+// Memory-pool transport (CPU-only path, GPU-less CI runner safe)
+//
+// Exercises register/write/read/free lifecycle for the pinned shared-memory
+// transport added in PR #2168. cpu2cpu.yml is the CPU-only scenario whose
+// header comment explicitly notes it was designed for GPU-less CI runners.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn smoke_memory_pool_cpu2cpu() {
+    run_smoke_test(
+        "memory-pool-cpu2cpu",
+        "examples/memory-pool/cpu2cpu.yml",
+        Duration::from_secs(120),
+    );
+}
+
+#[test]
+fn smoke_local_memory_pool_cpu2cpu() {
+    run_smoke_test_local(
+        "local-memory-pool-cpu2cpu",
+        "examples/memory-pool/cpu2cpu.yml",
+        120,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Cross-language interoperability tests (Rust <-> Python)
 // ---------------------------------------------------------------------------
 
