@@ -1,0 +1,35 @@
+# Validates the finish-straggler watchdog (dora-rs/dora#2270).
+#
+# `source` emits one value on its first tick, then exits. Once it exits the
+# daemon closes its output, so `wedge`'s only input closes while `wedge` is
+# still alive — the dataflow is now "otherwise finished" except for `wedge`,
+# which subscribed (so it is a connected candidate) then dropped its event
+# stream and sleeps forever.
+#
+# With DORA_FINISH_DRAIN_GRACE_SECS set (by the test process) the watchdog
+# escalates `wedge` (Stop -> SIGTERM -> SIGKILL) once it has been quiescent
+# past the grace, so the dataflow terminates instead of hanging until
+# stop_after. `health_check_interval` is the tick that drives the watchdog
+# (check_finish_stragglers); shorten it so the check fires promptly.
+health_check_interval: 0.1
+
+nodes:
+  - id: source
+    build: cargo build -p emit-then-exit-source-node
+    path: ../../target/debug/emit-then-exit-source-node
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - value
+
+  - id: wedge
+    build: cargo build -p hang-after-init-node
+    path: ../../target/debug/hang-after-init-node
+    # restart_policy: never keeps the assertion on the escalation kill itself.
+    restart_policy: never
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-finish-straggler-marker.log
+    # A plain user input (no timer/logs) so `wedge` is a finishing,
+    # non-source node — eligible for finish-straggler escalation.
+    inputs:
+      value: source/value

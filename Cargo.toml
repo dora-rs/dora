@@ -73,6 +73,7 @@ members = [
     "tests/fault_tolerance/always_crash_node",
     "tests/fault_tolerance/clean_exit_node",
     "tests/fault_tolerance/delayed_crash_node",
+    "tests/fault_tolerance/emit_then_exit_source_node",
     "tests/fault_tolerance/event_log_observer_node",
     "tests/fault_tolerance/fire_and_forget_source_node",
     "tests/fault_tolerance/hang_after_init_node",
@@ -265,6 +266,10 @@ path = "tests/example-smoke.rs"
 [[test]]
 name = "hub-smoke"
 path = "tests/hub-smoke.rs"
+
+[[test]]
+name = "finish-straggler-e2e"
+path = "tests/finish-straggler-e2e.rs"
 
 [profile.release]
 lto = "thin"

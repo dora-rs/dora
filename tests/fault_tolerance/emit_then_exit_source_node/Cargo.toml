@@ -1,0 +1,22 @@
+[package]
+name = "emit-then-exit-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: emits a single `value` output on the first tick, then
+# exits. Once it exits the daemon closes its output, so a downstream
+# node's input closes while that node is still alive — the setup for the
+# finish-straggler watchdog (dora-rs/dora#2270).
+
+[[bin]]
+name = "emit-then-exit-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
