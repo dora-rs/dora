@@ -2363,8 +2363,8 @@ impl Daemon {
     /// ladder used by explicit stops — after capturing a stack sample of
     /// the stuck process so the hang itself stays diagnosable.
     fn check_finish_stragglers(&mut self) {
-        // Opt-in: with DORA_FINISH_DRAIN_GRACE_SECS unset the watchdog is
-        // disabled and never escalates (ships dark; see `finish_drain_grace`).
+        // On by default; only DORA_FINISH_DRAIN_GRACE_SECS=off/disabled turns
+        // escalation off entirely (see `finish_drain_grace`).
         let Some(grace) = finish_drain_grace() else {
             return;
         };
