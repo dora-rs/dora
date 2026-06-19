@@ -2156,6 +2156,10 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    // clear the connected marker too, else a re-added node ID
+                    // would look already-connected before its new incarnation
+                    // subscribes and could be selected mid-startup (dora#2270).
+                    dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
@@ -2345,7 +2349,11 @@ impl Daemon {
     /// ladder used by explicit stops — after capturing a stack sample of
     /// the stuck process so the hang itself stays diagnosable.
     fn check_finish_stragglers(&mut self) {
-        let grace = finish_drain_grace();
+        // Opt-in: with DORA_FINISH_DRAIN_GRACE_SECS unset the watchdog is
+        // disabled and never escalates (ships dark; see `finish_drain_grace`).
+        let Some(grace) = finish_drain_grace() else {
+            return;
+        };
         let now_millis = node_communication::current_millis();
         for (dataflow_id, dataflow) in self.running.iter_mut() {
             for node_id in dataflow.finish_stragglers(grace, now_millis) {
@@ -3882,6 +3890,10 @@ impl Daemon {
         event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         clock: &HLC,
     ) {
+        // record that this node has connected — it stays a finish-straggler
+        // candidate even if it later drops its event stream (dora#2270).
+        dataflow.connected_nodes.insert(node_id.clone());
+
         // some inputs might have been closed already -> report those events
         let closed_inputs = dataflow
             .mappings
@@ -5298,30 +5310,46 @@ fn break_input(
     }
 }
 
-/// Grace period before the finish-straggler watchdog escalates
-/// (dora-rs/dora#2152). Conservative by default: a sink may legitimately
-/// keep working for a while after its inputs close (flushing recordings,
-/// final writes). Override with `DORA_FINISH_DRAIN_GRACE_SECS`.
+/// Grace period used when the finish-straggler watchdog is enabled but
+/// `DORA_FINISH_DRAIN_GRACE_SECS` is set to an unparseable value. Conservative:
+/// a sink may legitimately keep working for a while after its inputs close
+/// (flushing recordings, final writes).
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
 
-fn finish_drain_grace() -> Duration {
-    match std::env::var("DORA_FINISH_DRAIN_GRACE_SECS") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(secs) => Duration::from_secs(secs),
-            Err(_) => {
-                static WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !WARNED.swap(true, atomic::Ordering::Relaxed) {
-                    tracing::warn!(
-                        "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
-                         (expected whole seconds); using the default of {}s",
-                        DEFAULT_FINISH_DRAIN_GRACE.as_secs()
-                    );
-                }
-                DEFAULT_FINISH_DRAIN_GRACE
+/// Grace period before the finish-straggler watchdog escalates a stuck node, or
+/// `None` if the watchdog is **disabled**.
+///
+/// The watchdog is opt-in and ships dark: with `DORA_FINISH_DRAIN_GRACE_SECS`
+/// unset it does nothing, so the SIGKILL-on-stuck-node behaviour can be enabled
+/// per-deployment and validated on real workloads before becoming default —
+/// this path is exercised only at shutdown and is not reproducible locally
+/// (dora-rs/dora#2152, #2270). Set the var to a whole number of seconds to
+/// enable it; a set-but-garbage value enables it at the default grace (the user
+/// clearly intended it on).
+fn finish_drain_grace() -> Option<Duration> {
+    parse_finish_drain_grace(
+        std::env::var("DORA_FINISH_DRAIN_GRACE_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_finish_drain_grace(value: Option<&str>) -> Option<Duration> {
+    let value = value?;
+    match value.parse::<u64>() {
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
+                     (expected whole seconds); using the default of {}s",
+                    DEFAULT_FINISH_DRAIN_GRACE.as_secs()
+                );
             }
-        },
-        Err(_) => DEFAULT_FINISH_DRAIN_GRACE,
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
+        }
     }
 }
 
@@ -5655,8 +5683,8 @@ mod fault_tolerance_tests {
 
     // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
 
-    /// Insert a connected (subscribed) node that has been silent since the
-    /// epoch, so `finish_stragglers` sees it as long-idle regardless of grace.
+    /// Insert a connected node that has been silent since the epoch, so
+    /// `finish_stragglers` sees it as long-idle regardless of grace.
     fn insert_silent_node(df: &mut RunningDataflow, node: &NodeId) {
         let running = test_running_node();
         running.last_activity.store(1, atomic::Ordering::Release);
@@ -5664,6 +5692,7 @@ mod fault_tolerance_tests {
         // a real running node has subscribed (can receive finish events)
         let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node.clone(), tx);
+        df.connected_nodes.insert(node.clone());
     }
 
     #[test]
@@ -5717,6 +5746,66 @@ mod fault_tolerance_tests {
         assert!(
             selected.is_empty(),
             "a node that has not subscribed must not be escalated: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn dropped_stream_node_is_still_a_finish_straggler() {
+        // A node that connected, then dropped its event stream (channel removed)
+        // but kept its process alive, is still a wedge candidate — `connected`
+        // tracks `connected_nodes`, not current channel presence (#2270 review).
+        let mut df = test_dataflow();
+        let stuck: NodeId = "stuck".to_string().into();
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(stuck.clone(), running);
+        df.connected_nodes.insert(stuck.clone());
+        // NOTE: no subscribe_channels entry — the event stream was dropped.
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert_eq!(selected, vec![stuck]);
+    }
+
+    #[test]
+    fn removed_node_id_is_not_connected_on_reuse() {
+        // RemoveNode clears connected_nodes, so a re-added node ID starts fresh:
+        // its slow-starting new incarnation must not be selected before it
+        // subscribes, even though the previous incarnation had connected.
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        df.connected_nodes.insert(node_a.clone());
+        df.connected_nodes.remove(&node_a); // (the RemoveNode cleanup line)
+
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "a re-added node ID must not be selected before its new incarnation subscribes"
+        );
+    }
+
+    #[test]
+    fn finish_drain_grace_is_opt_in() {
+        // unset → watchdog disabled (ships dark)
+        assert_eq!(parse_finish_drain_grace(None), None);
+        // set → enabled at the given grace
+        assert_eq!(
+            parse_finish_drain_grace(Some("30")),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_finish_drain_grace(Some("0")),
+            Some(Duration::from_secs(0))
+        );
+        // set-but-garbage → enabled at the default (the user meant to turn it on)
+        assert_eq!(
+            parse_finish_drain_grace(Some("not-a-number")),
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
         );
     }
 

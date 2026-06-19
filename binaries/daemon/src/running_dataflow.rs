@@ -199,6 +199,12 @@ pub struct RunningDataflow {
     /// that node's drain phase. Drives the finish-straggler watchdog
     /// (dora-rs/dora#2152).
     pub(crate) all_inputs_closed_at: HashMap<NodeId, Instant>,
+    /// Nodes that have subscribed at least once. Distinguishes a node that has
+    /// connected (and may since have dropped its event stream) from one still
+    /// starting up — only the former is a finish-straggler candidate. Set on
+    /// subscribe, cleared on node removal so a re-added node ID starts a fresh
+    /// incarnation rather than looking already-connected (dora-rs/dora#2270).
+    pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
     pub(crate) stop_sent: bool,
@@ -262,6 +268,7 @@ impl RunningDataflow {
             open_external_mappings: Default::default(),
             _timer_handles: BTreeMap::new(),
             all_inputs_closed_at: HashMap::new(),
+            connected_nodes: BTreeSet::new(),
             finish_escalated: BTreeSet::new(),
             stop_sent: false,
             empty_set: BTreeSet::new(),
@@ -613,11 +620,14 @@ impl RunningDataflow {
                     dynamic: node.node_config.dynamic,
                     never_finishes: self.node_never_finishes(id),
                     // A node is only a silence candidate once it has subscribed
-                    // — i.e. can actually receive AllInputsClosed/Stop. Until
-                    // then it is still starting (a slow model-load node), not a
-                    // wedge, even though `last_activity` is seeded at spawn time
-                    // and would otherwise read as long-silent (dora#2270 review).
-                    connected: self.subscribe_channels.contains_key(id),
+                    // — i.e. has connected and can receive AllInputsClosed/Stop.
+                    // Until then it is still starting (a slow model-load node),
+                    // not a wedge, even though `last_activity` is seeded at spawn
+                    // time and would otherwise read as long-silent. Uses the
+                    // sticky `connected_nodes` rather than current channel
+                    // presence so a node that dropped its event stream but is
+                    // still alive remains a candidate (dora#2270 review).
+                    connected: self.connected_nodes.contains(id),
                     drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
                     silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                 }
