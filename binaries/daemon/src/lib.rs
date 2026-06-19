@@ -3916,13 +3916,22 @@ impl Daemon {
             if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
                 if node.inputs.is_empty() {
                     // do not send AllInputsClosed for source nodes
-                } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
-                    == Some(true)
-                {
-                    dataflow.inc_pending(&node_id);
+                } else {
+                    if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
+                        == Some(true)
+                    {
+                        dataflow.inc_pending(&node_id);
+                    }
+                    // Start the drain clock once the daemon knows the inputs are
+                    // closed, even if the AllInputsClosed send was dropped (e.g.
+                    // a full event channel on a node that has stopped draining).
+                    // Without this the finish-straggler watchdog never arms and
+                    // the node hangs the dataflow (dora#2152). `or_insert` keeps
+                    // the clock monotonic across repeated calls.
                     dataflow
                         .all_inputs_closed_at
-                        .insert(node_id.clone(), Instant::now());
+                        .entry(node_id.clone())
+                        .or_insert_with(Instant::now);
                 }
             }
         }
@@ -5244,10 +5253,16 @@ fn close_input(
             }
             if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
             }
+            // Start the drain clock once the daemon knows the inputs are closed,
+            // even if the AllInputsClosed send was dropped (e.g. a full event
+            // channel on a node that stopped draining) — otherwise the finish-
+            // straggler watchdog never arms and the node hangs the dataflow
+            // (dora#2152). `or_insert` keeps the clock monotonic.
+            dataflow
+                .all_inputs_closed_at
+                .entry(receiver_id.clone())
+                .or_insert_with(Instant::now);
         }
     }
 }
@@ -5289,10 +5304,16 @@ fn break_input(
             }
             if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
                 dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
             }
+            // Start the drain clock once the daemon knows the inputs are closed,
+            // even if the AllInputsClosed send was dropped (e.g. a full event
+            // channel on a node that stopped draining) — otherwise the finish-
+            // straggler watchdog never arms and the node hangs the dataflow
+            // (dora#2152). `or_insert` keeps the clock monotonic.
+            dataflow
+                .all_inputs_closed_at
+                .entry(receiver_id.clone())
+                .or_insert_with(Instant::now);
         }
     }
 }
@@ -5682,6 +5703,39 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
         assert!(matches_event(&events[1], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+        // the drain clock is armed once all inputs are closed
+        assert!(df.all_inputs_closed_at.contains_key(&node_a));
+    }
+
+    // -- dora#2152 (drain-clock prototype): the drain clock must arm even when
+    //    the AllInputsClosed delivery fails, so a wedged node whose event
+    //    channel has filled/closed is still escalated by the watchdog. --
+
+    #[test]
+    fn drain_clock_arms_when_all_inputs_closed_send_fails() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        df.running_nodes.insert(node_a.clone(), test_running_node());
+
+        // Subscribed, but the receiver is dropped → every send to this channel
+        // fails, exactly like a wedged node whose channel has filled/closed.
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        drop(rx);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(
+            df.all_inputs_closed_at.contains_key(&node_a),
+            "drain clock must arm even when AllInputsClosed delivery fails"
+        );
     }
 
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
