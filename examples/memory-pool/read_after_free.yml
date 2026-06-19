@@ -1,7 +1,7 @@
 # Negative-path test: receiver reads from a freed memory pool.
 env:
   sender_device: cpu
-  receiver_device: cuda
+  receiver_device: cpu
   message_num: 2
   memory_pool_scenario: read_after_free
 nodes:
