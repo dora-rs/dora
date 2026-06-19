@@ -2156,6 +2156,10 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    // clear the connected marker too, else a re-added node ID
+                    // would look already-connected before its new incarnation
+                    // subscribes and could be armed mid-startup (dora#2270).
+                    dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
@@ -5792,6 +5796,36 @@ mod fault_tolerance_tests {
         assert!(
             !df.all_inputs_closed_at.contains_key(&node_a),
             "a node that has never connected must not arm the drain clock"
+        );
+    }
+
+    #[test]
+    fn removed_node_id_is_not_connected_on_reuse() {
+        // RemoveNode clears connected_nodes, so a re-added node ID starts fresh:
+        // its slow-starting new incarnation must not be armed before it
+        // subscribes, even though the previous incarnation had connected
+        // (dora#2270 review).
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        // first incarnation connected; RemoveNode clears the marker
+        df.connected_nodes.insert(node_a.clone());
+        df.connected_nodes.remove(&node_a); // (the RemoveNode cleanup line)
+
+        // re-added incarnation: running, inputs present, not yet subscribed
+        df.running_nodes.insert(node_a.clone(), test_running_node());
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(
+            !df.all_inputs_closed_at.contains_key(&node_a),
+            "a re-added node ID must not arm before its new incarnation subscribes"
         );
     }
 

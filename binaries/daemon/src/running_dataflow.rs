@@ -202,7 +202,9 @@ pub struct RunningDataflow {
     /// Nodes that have subscribed at least once. Distinguishes a node that has
     /// connected and may have since dropped its event stream (a drain-clock /
     /// finish-straggler candidate) from one that has not started up yet. Set on
-    /// subscribe, never cleared while the dataflow runs (dora-rs/dora#2270).
+    /// subscribe and cleared when the node is removed, so a re-added node ID
+    /// starts a fresh incarnation rather than looking already-connected
+    /// (dora-rs/dora#2270).
     pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
