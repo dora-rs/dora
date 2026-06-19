@@ -2149,6 +2149,16 @@ impl Daemon {
                     for receivers in dataflow.mappings.values_mut() {
                         receivers.retain(|(nid, _)| nid != &node_id);
                     }
+                    // Drop this node's timer/log virtual-input subscriptions —
+                    // both to stop delivering to a removed node and so a re-added
+                    // ID is classified by its own inputs, not stale timer/log
+                    // state (which would mark it never-finishing forever, #2270).
+                    for receivers in dataflow.timers.values_mut() {
+                        receivers.retain(|(nid, _)| nid != &node_id);
+                    }
+                    dataflow
+                        .log_subscribers
+                        .retain(|sub| sub.node_id != node_id);
 
                     // Clean up remaining state for this node.
                     dataflow.running_nodes.remove(&node_id);
@@ -2198,6 +2208,10 @@ impl Daemon {
                         .entry(output_id)
                         .or_default()
                         .insert((target_node.clone(), target_input.clone()));
+                    // Reopening an input ends any drain: clear the stale clock so
+                    // the selector does not treat the node as drained-and-eligible
+                    // on a timestamp from before the mapping was re-added (#2270).
+                    dataflow.all_inputs_closed_at.remove(&target_node);
                     dataflow
                         .open_inputs
                         .entry(target_node)
@@ -5790,6 +5804,71 @@ mod fault_tolerance_tests {
         assert!(
             selected.is_empty(),
             "a re-added node ID must not be selected before its new incarnation subscribes"
+        );
+    }
+
+    #[test]
+    fn cleared_timer_state_makes_reused_id_escalatable() {
+        // A timer-fed node is never-finishing (vetoed). RemoveNode clears its
+        // timer subscription, so a re-added user-input node under the same ID is
+        // classified by its own inputs and can be escalated (#2270 review).
+        let mut df = test_dataflow();
+        let node: NodeId = "reused".to_string().into();
+        insert_silent_node(&mut df, &node);
+        df.timers
+            .entry(Duration::from_millis(100))
+            .or_default()
+            .insert((node.clone(), "tick".to_string().into()));
+
+        let now = node_communication::current_millis();
+        // as a timer node → vetoed
+        assert!(
+            df.finish_stragglers(Duration::from_millis(1), now)
+                .is_empty(),
+            "timer-fed node must be vetoed"
+        );
+
+        // RemoveNode clears the timer subscription
+        for receivers in df.timers.values_mut() {
+            receivers.retain(|(nid, _)| nid != &node);
+        }
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![node],
+            "once its timer state is cleared the node is classified by its own inputs"
+        );
+    }
+
+    #[test]
+    fn reopened_input_clears_stale_drain_timestamp() {
+        // A node drained long ago is eligible via the drained arm. Reopening a
+        // mapping must clear that timestamp so the node — now actively receiving
+        // again, not silent — is not force-stopped on a stale drain (#2270 review).
+        let mut df = test_dataflow();
+        let node: NodeId = "node_a".to_string().into();
+        let running = test_running_node();
+        // recent activity → not silent (only a stale drain clock could select it)
+        running.last_activity.store(
+            node_communication::current_millis(),
+            atomic::Ordering::Release,
+        );
+        df.running_nodes.insert(node.clone(), running);
+        df.connected_nodes.insert(node.clone());
+        df.all_inputs_closed_at.insert(
+            node.clone(),
+            std::time::Instant::now() - Duration::from_secs(1),
+        );
+
+        let grace = Duration::from_millis(500);
+        let now = node_communication::current_millis();
+        // drained past grace → selected
+        assert_eq!(df.finish_stragglers(grace, now), vec![node.clone()]);
+
+        // AddMapping reopen clears the drain clock
+        df.all_inputs_closed_at.remove(&node);
+        assert!(
+            df.finish_stragglers(grace, now).is_empty(),
+            "an active node with a reopened input must not be selected on a stale drain"
         );
     }
 
