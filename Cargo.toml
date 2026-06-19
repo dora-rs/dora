@@ -73,6 +73,7 @@ members = [
     "tests/fault_tolerance/always_crash_node",
     "tests/fault_tolerance/clean_exit_node",
     "tests/fault_tolerance/delayed_crash_node",
+    "tests/fault_tolerance/emit_then_exit_source_node",
     "tests/fault_tolerance/event_log_observer_node",
     "tests/fault_tolerance/fire_and_forget_source_node",
     "tests/fault_tolerance/hang_after_init_node",
