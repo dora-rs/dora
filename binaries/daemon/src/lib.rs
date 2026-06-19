@@ -2149,6 +2149,16 @@ impl Daemon {
                     for receivers in dataflow.mappings.values_mut() {
                         receivers.retain(|(nid, _)| nid != &node_id);
                     }
+                    // Drop this node's timer/log virtual-input subscriptions —
+                    // both to stop delivering to a removed node and so a re-added
+                    // ID is classified by its own inputs, not stale timer/log
+                    // state (which would mark it never-finishing forever, #2270).
+                    for receivers in dataflow.timers.values_mut() {
+                        receivers.retain(|(nid, _)| nid != &node_id);
+                    }
+                    dataflow
+                        .log_subscribers
+                        .retain(|sub| sub.node_id != node_id);
 
                     // Clean up remaining state for this node.
                     dataflow.running_nodes.remove(&node_id);
@@ -2156,6 +2166,10 @@ impl Daemon {
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    // clear the connected marker too, else a re-added node ID
+                    // would look already-connected before its new incarnation
+                    // subscribes and could be selected mid-startup (dora#2270).
+                    dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
@@ -2194,6 +2208,10 @@ impl Daemon {
                         .entry(output_id)
                         .or_default()
                         .insert((target_node.clone(), target_input.clone()));
+                    // Reopening an input ends any drain: clear the stale clock so
+                    // the selector does not treat the node as drained-and-eligible
+                    // on a timestamp from before the mapping was re-added (#2270).
+                    dataflow.all_inputs_closed_at.remove(&target_node);
                     dataflow
                         .open_inputs
                         .entry(target_node)
@@ -2345,9 +2363,14 @@ impl Daemon {
     /// ladder used by explicit stops — after capturing a stack sample of
     /// the stuck process so the hang itself stays diagnosable.
     fn check_finish_stragglers(&mut self) {
-        let grace = finish_drain_grace();
+        // Opt-in: with DORA_FINISH_DRAIN_GRACE_SECS unset the watchdog is
+        // disabled and never escalates (ships dark; see `finish_drain_grace`).
+        let Some(grace) = finish_drain_grace() else {
+            return;
+        };
+        let now_millis = node_communication::current_millis();
         for (dataflow_id, dataflow) in self.running.iter_mut() {
-            for node_id in dataflow.finish_stragglers(grace) {
+            for node_id in dataflow.finish_stragglers(grace, now_millis) {
                 let drained_for_secs = dataflow
                     .all_inputs_closed_at
                     .get(&node_id)
@@ -3881,6 +3904,10 @@ impl Daemon {
         event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         clock: &HLC,
     ) {
+        // record that this node has connected — it stays a finish-straggler
+        // candidate even if it later drops its event stream (dora#2270).
+        dataflow.connected_nodes.insert(node_id.clone());
+
         // some inputs might have been closed already -> report those events
         let closed_inputs = dataflow
             .mappings
@@ -4542,6 +4569,10 @@ impl Daemon {
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow.grace_duration_kills.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
+                    // a respawned node must re-subscribe before it counts as
+                    // connected, else a slow restart could be silence-escalated
+                    // mid-startup (dora-rs/dora#2270).
+                    dataflow.connected_nodes.remove(&node_id);
                 }
 
                 logger
@@ -5297,30 +5328,46 @@ fn break_input(
     }
 }
 
-/// Grace period before the finish-straggler watchdog escalates
-/// (dora-rs/dora#2152). Conservative by default: a sink may legitimately
-/// keep working for a while after its inputs close (flushing recordings,
-/// final writes). Override with `DORA_FINISH_DRAIN_GRACE_SECS`.
+/// Grace period used when the finish-straggler watchdog is enabled but
+/// `DORA_FINISH_DRAIN_GRACE_SECS` is set to an unparseable value. Conservative:
+/// a sink may legitimately keep working for a while after its inputs close
+/// (flushing recordings, final writes).
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
 
-fn finish_drain_grace() -> Duration {
-    match std::env::var("DORA_FINISH_DRAIN_GRACE_SECS") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(secs) => Duration::from_secs(secs),
-            Err(_) => {
-                static WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !WARNED.swap(true, atomic::Ordering::Relaxed) {
-                    tracing::warn!(
-                        "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
-                         (expected whole seconds); using the default of {}s",
-                        DEFAULT_FINISH_DRAIN_GRACE.as_secs()
-                    );
-                }
-                DEFAULT_FINISH_DRAIN_GRACE
+/// Grace period before the finish-straggler watchdog escalates a stuck node, or
+/// `None` if the watchdog is **disabled**.
+///
+/// The watchdog is opt-in and ships dark: with `DORA_FINISH_DRAIN_GRACE_SECS`
+/// unset it does nothing, so the SIGKILL-on-stuck-node behaviour can be enabled
+/// per-deployment and validated on real workloads before becoming default —
+/// this path is exercised only at shutdown and is not reproducible locally
+/// (dora-rs/dora#2152, #2270). Set the var to a whole number of seconds to
+/// enable it; a set-but-garbage value enables it at the default grace (the user
+/// clearly intended it on).
+fn finish_drain_grace() -> Option<Duration> {
+    parse_finish_drain_grace(
+        std::env::var("DORA_FINISH_DRAIN_GRACE_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_finish_drain_grace(value: Option<&str>) -> Option<Duration> {
+    let value = value?;
+    match value.parse::<u64>() {
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
+                     (expected whole seconds); using the default of {}s",
+                    DEFAULT_FINISH_DRAIN_GRACE.as_secs()
+                );
             }
-        },
-        Err(_) => DEFAULT_FINISH_DRAIN_GRACE,
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
+        }
     }
 }
 
@@ -5650,6 +5697,225 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "InputClosed"));
+    }
+
+    // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
+
+    /// Insert a connected node that has been silent since the epoch, so
+    /// `finish_stragglers` sees it as long-idle regardless of grace.
+    fn insert_silent_node(df: &mut RunningDataflow, node: &NodeId) {
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(node.clone(), running);
+        // a real running node has subscribed (can receive finish events)
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node.clone(), tx);
+        df.connected_nodes.insert(node.clone());
+    }
+
+    #[test]
+    fn timer_fed_node_is_not_a_finish_straggler() {
+        // A long-running timer-only node never drains and sends no daemon
+        // traffic, so it looks "silent + never drained" exactly like a wedge —
+        // but it is alive by design and must NOT be force-killed (#2270).
+        let mut df = test_dataflow();
+        let timer_node: NodeId = "timer_node".to_string().into();
+        insert_silent_node(&mut df, &timer_node);
+        df.timers
+            .entry(Duration::from_millis(100))
+            .or_default()
+            .insert((timer_node.clone(), "tick".to_string().into()));
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "timer-fed node must not be escalated: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn wedged_user_input_node_is_a_finish_straggler() {
+        // A connected node with no timer/log input that has gone silent past
+        // grace while the rest of the dataflow finished IS a straggler.
+        let mut df = test_dataflow();
+        let stuck: NodeId = "stuck".to_string().into();
+        insert_silent_node(&mut df, &stuck);
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert_eq!(selected, vec![stuck]);
+    }
+
+    #[test]
+    fn unconnected_slow_starting_node_is_not_a_finish_straggler() {
+        // `last_activity` is seeded at spawn, so a node that has not subscribed
+        // yet looks long-silent — but it is still starting up (e.g. loading a
+        // model) and must not be force-killed (#2270 review).
+        let mut df = test_dataflow();
+        let starting: NodeId = "slow_loader".to_string().into();
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(starting.clone(), running);
+        // NOTE: deliberately NOT added to subscribe_channels (not connected).
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "a node that has not subscribed must not be escalated: {selected:?}"
+        );
+    }
+
+    #[test]
+    fn dropped_stream_node_is_still_a_finish_straggler() {
+        // A node that connected, then dropped its event stream (channel removed)
+        // but kept its process alive, is still a wedge candidate — `connected`
+        // tracks `connected_nodes`, not current channel presence (#2270 review).
+        let mut df = test_dataflow();
+        let stuck: NodeId = "stuck".to_string().into();
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(stuck.clone(), running);
+        df.connected_nodes.insert(stuck.clone());
+        // NOTE: no subscribe_channels entry — the event stream was dropped.
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert_eq!(selected, vec![stuck]);
+    }
+
+    #[test]
+    fn removed_node_id_is_not_connected_on_reuse() {
+        // RemoveNode clears connected_nodes, so a re-added node ID starts fresh:
+        // its slow-starting new incarnation must not be selected before it
+        // subscribes, even though the previous incarnation had connected.
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        df.connected_nodes.insert(node_a.clone());
+        df.connected_nodes.remove(&node_a); // (the RemoveNode cleanup line)
+
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "a re-added node ID must not be selected before its new incarnation subscribes"
+        );
+    }
+
+    #[test]
+    fn cleared_timer_state_makes_reused_id_escalatable() {
+        // A timer-fed node is never-finishing (vetoed). RemoveNode clears its
+        // timer subscription, so a re-added user-input node under the same ID is
+        // classified by its own inputs and can be escalated (#2270 review).
+        let mut df = test_dataflow();
+        let node: NodeId = "reused".to_string().into();
+        insert_silent_node(&mut df, &node);
+        df.timers
+            .entry(Duration::from_millis(100))
+            .or_default()
+            .insert((node.clone(), "tick".to_string().into()));
+
+        let now = node_communication::current_millis();
+        // as a timer node → vetoed
+        assert!(
+            df.finish_stragglers(Duration::from_millis(1), now)
+                .is_empty(),
+            "timer-fed node must be vetoed"
+        );
+
+        // RemoveNode clears the timer subscription
+        for receivers in df.timers.values_mut() {
+            receivers.retain(|(nid, _)| nid != &node);
+        }
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![node],
+            "once its timer state is cleared the node is classified by its own inputs"
+        );
+    }
+
+    #[test]
+    fn reopened_input_clears_stale_drain_timestamp() {
+        // A node drained long ago is eligible via the drained arm. Reopening a
+        // mapping must clear that timestamp so the node — now actively receiving
+        // again, not silent — is not force-stopped on a stale drain (#2270 review).
+        let mut df = test_dataflow();
+        let node: NodeId = "node_a".to_string().into();
+        let running = test_running_node();
+        // recent activity → not silent (only a stale drain clock could select it)
+        running.last_activity.store(
+            node_communication::current_millis(),
+            atomic::Ordering::Release,
+        );
+        df.running_nodes.insert(node.clone(), running);
+        df.connected_nodes.insert(node.clone());
+        df.all_inputs_closed_at.insert(
+            node.clone(),
+            std::time::Instant::now() - Duration::from_secs(1),
+        );
+
+        let grace = Duration::from_millis(500);
+        let now = node_communication::current_millis();
+        // drained past grace → selected
+        assert_eq!(df.finish_stragglers(grace, now), vec![node.clone()]);
+
+        // AddMapping reopen clears the drain clock
+        df.all_inputs_closed_at.remove(&node);
+        assert!(
+            df.finish_stragglers(grace, now).is_empty(),
+            "an active node with a reopened input must not be selected on a stale drain"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_clears_connected_marker() {
+        // A restarting node keeps its ID but is a new incarnation: clear the
+        // connected marker so the restarting process isn't silence-escalatable
+        // before it re-subscribes (a slow restart / model reload) — #2270 review.
+        use crate::running_dataflow::{ProcessHandle, ProcessOperation};
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+
+        let mut running = test_running_node();
+        let (op_tx, _op_rx) = flume::unbounded::<ProcessOperation>();
+        running.process = Some(ProcessHandle::new(op_tx));
+        df.running_nodes.insert(node_a.clone(), running);
+        df.connected_nodes.insert(node_a.clone());
+        df.all_inputs_closed_at
+            .insert(node_a.clone(), std::time::Instant::now());
+
+        df.restart_single_node(&node_a, &clock, None).unwrap();
+
+        assert!(
+            !df.connected_nodes.contains(&node_a),
+            "restart must clear the connected marker so the new incarnation re-subscribes"
+        );
+    }
+
+    #[test]
+    fn finish_drain_grace_is_opt_in() {
+        // unset → watchdog disabled (ships dark)
+        assert_eq!(parse_finish_drain_grace(None), None);
+        // set → enabled at the given grace
+        assert_eq!(
+            parse_finish_drain_grace(Some("30")),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_finish_drain_grace(Some("0")),
+            Some(Duration::from_secs(0))
+        );
+        // set-but-garbage → enabled at the default (the user meant to turn it on)
+        assert_eq!(
+            parse_finish_drain_grace(Some("not-a-number")),
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
+        );
     }
 
     // -- Test 2: close_input sends AllInputsClosed + disable_restart on last input --
