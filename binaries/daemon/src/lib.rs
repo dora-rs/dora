@@ -5335,15 +5335,15 @@ fn break_input(
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
 
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
-/// `None` if the watchdog is **disabled**.
+/// `None` if the watchdog has been explicitly **disabled**.
 ///
-/// The watchdog is opt-in and ships dark: with `DORA_FINISH_DRAIN_GRACE_SECS`
-/// unset it does nothing, so the SIGKILL-on-stuck-node behaviour can be enabled
-/// per-deployment and validated on real workloads before becoming default —
-/// this path is exercised only at shutdown and is not reproducible locally
-/// (dora-rs/dora#2152, #2270). Set the var to a whole number of seconds to
-/// enable it; a set-but-garbage value enables it at the default grace (the user
-/// clearly intended it on).
+/// The watchdog is **on by default** (dora-rs/dora#2270): a node still stuck
+/// past the grace once its dataflow is otherwise finished is escalated rather
+/// than hanging until an external timeout. `DORA_FINISH_DRAIN_GRACE_SECS` tunes
+/// it — a whole number of seconds sets the grace; `off`/`disabled` opts out
+/// entirely (the escape hatch for a deployment that hits a false positive). It
+/// shipped dark first and was validated on nightly + a deterministic e2e
+/// (#2271, #2276, #2280) before this default flip.
 fn finish_drain_grace() -> Option<Duration> {
     parse_finish_drain_grace(
         std::env::var("DORA_FINISH_DRAIN_GRACE_SECS")
@@ -5353,7 +5353,14 @@ fn finish_drain_grace() -> Option<Duration> {
 }
 
 fn parse_finish_drain_grace(value: Option<&str>) -> Option<Duration> {
-    let value = value?;
+    let Some(value) = value else {
+        // unset → enabled at the conservative default grace (on by default)
+        return Some(DEFAULT_FINISH_DRAIN_GRACE);
+    };
+    // explicit opt-out escape hatch for a deployment that hits a false positive
+    if value.eq_ignore_ascii_case("off") || value.eq_ignore_ascii_case("disabled") {
+        return None;
+    }
     match value.parse::<u64>() {
         Ok(secs) => Some(Duration::from_secs(secs)),
         Err(_) => {
@@ -5362,7 +5369,7 @@ fn parse_finish_drain_grace(value: Option<&str>) -> Option<Duration> {
             if !WARNED.swap(true, atomic::Ordering::Relaxed) {
                 tracing::warn!(
                     "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
-                     (expected whole seconds); using the default of {}s",
+                     (expected whole seconds or `off`); using the default of {}s",
                     DEFAULT_FINISH_DRAIN_GRACE.as_secs()
                 );
             }
@@ -5899,9 +5906,16 @@ mod fault_tolerance_tests {
     }
 
     #[test]
-    fn finish_drain_grace_is_opt_in() {
-        // unset → watchdog disabled (ships dark)
-        assert_eq!(parse_finish_drain_grace(None), None);
+    fn finish_drain_grace_defaults_on_with_opt_out() {
+        // unset → enabled at the default grace (on by default, dora#2270 step 3)
+        assert_eq!(
+            parse_finish_drain_grace(None),
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
+        );
+        // explicit opt-out escape hatch → disabled
+        assert_eq!(parse_finish_drain_grace(Some("off")), None);
+        assert_eq!(parse_finish_drain_grace(Some("disabled")), None);
+        assert_eq!(parse_finish_drain_grace(Some("OFF")), None);
         // set → enabled at the given grace
         assert_eq!(
             parse_finish_drain_grace(Some("30")),

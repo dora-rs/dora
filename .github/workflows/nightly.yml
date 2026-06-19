@@ -41,14 +41,10 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.92.0"
-  # Enable the finish-straggler watchdog (opt-in / off by default) across the
-  # nightly suite to validate it on the shutdown path it targets — most notably
-  # the macOS Examples job where dora-rs/dora#2152 reproduces. It only acts on a
-  # node still stuck 120s after the dataflow is otherwise finished, so it is a
-  # no-op for cleanly-finishing dataflows and for jobs that run no daemon. This
-  # is rollout step 2 of dora-rs/dora#2270: bake on nightly, then flip the
-  # default once it's proven to bound the hang without false-positive kills.
-  DORA_FINISH_DRAIN_GRACE_SECS: "120"
+  # The finish-straggler watchdog (dora-rs/dora#2270) is now on by default, so
+  # the explicit DORA_FINISH_DRAIN_GRACE_SECS override added for the step-2
+  # nightly bake is no longer needed — nightly now exercises the default-on
+  # path, same as production.
 
 jobs:
   smoke-suite:
