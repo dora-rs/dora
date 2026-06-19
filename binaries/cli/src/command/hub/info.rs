@@ -236,4 +236,26 @@ mod tests {
             .is_err()
         );
     }
+
+    // A corrupt/unreadable matching entry must surface its parse error rather
+    // than being skipped so a lower yanked entry is shown in its place
+    // (#2275 review): the highest matching version (0.7.0) is malformed.
+    #[test]
+    fn corrupt_matching_entry_is_surfaced_not_masked_by_yanked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yolo = tmp.path().join("dora-rs/dora-yolo");
+        std::fs::create_dir_all(&yolo).unwrap();
+        write_entry(&yolo, "0.6.0", true); // readable yanked
+        // higher version, but its entry fails to parse (manifest must be a map)
+        std::fs::write(yolo.join("0.7.0.yml"), "manifest: not-a-map\n").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+
+        let err = resolve_or_yanked(&catalog, &parse("dora-rs/dora-yolo"), "dora-rs/dora-yolo")
+            .expect_err("a corrupt matching entry must surface, not fall back to yanked");
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("0.7.0") || msg.contains("invalid index entry"),
+            "expected the corrupt-entry error, got: {msg}"
+        );
+    }
 }
