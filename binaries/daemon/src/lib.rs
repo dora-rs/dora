@@ -5655,12 +5655,15 @@ mod fault_tolerance_tests {
 
     // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
 
-    /// Mark `node` silent since the epoch so `finish_stragglers` sees it as
-    /// long-idle regardless of the grace.
+    /// Insert a connected (subscribed) node that has been silent since the
+    /// epoch, so `finish_stragglers` sees it as long-idle regardless of grace.
     fn insert_silent_node(df: &mut RunningDataflow, node: &NodeId) {
         let running = test_running_node();
         running.last_activity.store(1, atomic::Ordering::Release);
         df.running_nodes.insert(node.clone(), running);
+        // a real running node has subscribed (can receive finish events)
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node.clone(), tx);
     }
 
     #[test]
@@ -5686,8 +5689,8 @@ mod fault_tolerance_tests {
 
     #[test]
     fn wedged_user_input_node_is_a_finish_straggler() {
-        // A node with no timer/log input that has gone silent past grace while
-        // the rest of the dataflow finished IS a straggler and is escalated.
+        // A connected node with no timer/log input that has gone silent past
+        // grace while the rest of the dataflow finished IS a straggler.
         let mut df = test_dataflow();
         let stuck: NodeId = "stuck".to_string().into();
         insert_silent_node(&mut df, &stuck);
@@ -5695,6 +5698,26 @@ mod fault_tolerance_tests {
         let now = node_communication::current_millis();
         let selected = df.finish_stragglers(Duration::from_millis(1), now);
         assert_eq!(selected, vec![stuck]);
+    }
+
+    #[test]
+    fn unconnected_slow_starting_node_is_not_a_finish_straggler() {
+        // `last_activity` is seeded at spawn, so a node that has not subscribed
+        // yet looks long-silent — but it is still starting up (e.g. loading a
+        // model) and must not be force-killed (#2270 review).
+        let mut df = test_dataflow();
+        let starting: NodeId = "slow_loader".to_string().into();
+        let running = test_running_node();
+        running.last_activity.store(1, atomic::Ordering::Release);
+        df.running_nodes.insert(starting.clone(), running);
+        // NOTE: deliberately NOT added to subscribe_channels (not connected).
+
+        let now = node_communication::current_millis();
+        let selected = df.finish_stragglers(Duration::from_millis(1), now);
+        assert!(
+            selected.is_empty(),
+            "a node that has not subscribed must not be escalated: {selected:?}"
+        );
     }
 
     // -- Test 2: close_input sends AllInputsClosed + disable_restart on last input --

@@ -608,19 +608,18 @@ impl RunningDataflow {
         select_finish_stragglers(
             self.running_nodes.iter().map(|(id, node)| {
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
-                // last == 0 means never connected; treat as active so a
-                // node that has not started is not mistaken for a wedge.
-                let silent_for = if last == 0 {
-                    Duration::ZERO
-                } else {
-                    Duration::from_millis(now_millis.saturating_sub(last))
-                };
                 StragglerNode {
                     id,
                     dynamic: node.node_config.dynamic,
                     never_finishes: self.node_never_finishes(id),
+                    // A node is only a silence candidate once it has subscribed
+                    // — i.e. can actually receive AllInputsClosed/Stop. Until
+                    // then it is still starting (a slow model-load node), not a
+                    // wedge, even though `last_activity` is seeded at spawn time
+                    // and would otherwise read as long-silent (dora#2270 review).
+                    connected: self.subscribe_channels.contains_key(id),
                     drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
-                    silent_for,
+                    silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                 }
             }),
             &self.finish_escalated,
@@ -662,9 +661,13 @@ struct StragglerNode<'a> {
     /// Node that never reaches natural finish — a source, or one kept alive by
     /// a `Timer`/`Logs` input (see [`RunningDataflow::node_never_finishes`]).
     never_finishes: bool,
+    /// Whether the node has subscribed and can receive finish events. A node
+    /// that has not connected yet is still starting up, not wedged.
+    connected: bool,
     /// Time since `AllInputsClosed`, or `None` if it never reached drain.
     drained_for: Option<Duration>,
-    /// Time since the last daemon-bound message from this node.
+    /// Time since the last daemon-bound message from this node. Only meaningful
+    /// once `connected` — `last_activity` is seeded at spawn time.
     silent_for: Duration,
 }
 
@@ -695,9 +698,12 @@ fn select_finish_stragglers<'a>(
                     eligible.push(node.id.clone());
                 }
             }
-            // never drained: only "finished" if it has wedged silent past grace
+            // never drained: only "finished" if a connected node has wedged
+            // silent past grace. An unconnected node is still starting up (so
+            // the dataflow is not otherwise finished); a connected but active
+            // node still has work in progress — both veto.
             None => {
-                if node.silent_for >= grace {
+                if node.connected && node.silent_for >= grace {
                     eligible.push(node.id.clone());
                 } else {
                     return Vec::new();
@@ -726,23 +732,25 @@ mod tests {
     const PAST_GRACE: Duration = Duration::from_secs(2);
     const WITHIN_GRACE: Duration = Duration::ZERO;
 
-    /// A finishing (non-source, no timer/log) node draining for `age`.
+    /// A finishing (non-source, no timer/log), connected node draining for `age`.
     fn drained<'a>(id: &'a NodeId, age: Duration) -> StragglerNode<'a> {
         StragglerNode {
             id,
             dynamic: false,
             never_finishes: false,
+            connected: true,
             drained_for: Some(age),
             silent_for: Duration::ZERO,
         }
     }
 
-    /// A finishing node that never drained, silent for `silent_for`.
+    /// A finishing, connected node that never drained, silent for `silent_for`.
     fn never_drained<'a>(id: &'a NodeId, silent_for: Duration) -> StragglerNode<'a> {
         StragglerNode {
             id,
             dynamic: false,
             never_finishes: false,
+            connected: true,
             drained_for: None,
             silent_for,
         }
@@ -780,6 +788,7 @@ mod tests {
             id: &source,
             dynamic: false,
             never_finishes: true,
+            connected: true,
             drained_for: None,
             silent_for: PAST_GRACE,
         };
@@ -799,6 +808,7 @@ mod tests {
             id: &dynamic,
             dynamic: true,
             never_finishes: false,
+            connected: true,
             drained_for: None,
             silent_for: WITHIN_GRACE,
         };
@@ -850,6 +860,24 @@ mod tests {
     }
 
     #[test]
+    fn unconnected_node_silent_past_grace_is_not_escalated() {
+        // `last_activity` is seeded at spawn, so a slow-starting node that has
+        // not subscribed yet reads as long-silent — but it is still coming up,
+        // not wedged, and must not be killed (dora#2270 review regression).
+        let starting = node_id("slow_loader");
+        let node = StragglerNode {
+            id: &starting,
+            dynamic: false,
+            never_finishes: false,
+            connected: false,
+            drained_for: None,
+            silent_for: PAST_GRACE,
+        };
+        let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
     fn non_source_active_without_drain_blocks_escalation() {
         // a non-source node still sending daemon traffic means work is in
         // progress — the dataflow is not otherwise finished.
@@ -878,6 +906,7 @@ mod tests {
             id: &perpetual,
             dynamic: false,
             never_finishes: true,
+            connected: true,
             drained_for: None,
             silent_for: PAST_GRACE,
         };
