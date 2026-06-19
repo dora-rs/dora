@@ -30,11 +30,22 @@ impl Executable for Search {
         let mut hits = Vec::new();
         for (_alias, catalog) in ctx.all_catalogs() {
             for (namespace, name) in catalog.all_packages() {
-                let Some(version) = catalog.versions(&namespace, &name)?.into_iter().next_back()
+                // Skip yanked versions — find the highest non-yanked version.
+                // versions() returns all versions including yanked ones, so we
+                // must filter here to match the behavior of resolve() and
+                // `dora hub info` / `dora hub outdated`.
+                let Some((version, entry)) = catalog
+                    .versions(&namespace, &name)?
+                    .into_iter()
+                    .rev()
+                    .find_map(|v| {
+                        catalog
+                            .entry(&namespace, &name, &v)
+                            .ok()
+                            .filter(|e| !e.yanked)
+                            .map(|e| (v, e))
+                    })
                 else {
-                    continue;
-                };
-                let Ok(entry) = catalog.entry(&namespace, &name, &version) else {
                     continue;
                 };
                 let m = &entry.manifest;
