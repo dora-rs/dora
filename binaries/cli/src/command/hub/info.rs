@@ -3,7 +3,6 @@
 use super::common::{HubContext, sanitize};
 use crate::command::Executable;
 use dora_hub_client::reference::PackageRef;
-use eyre::Context;
 
 /// Show details of a hub node
 #[derive(Debug, clap::Args)]
@@ -21,14 +20,41 @@ impl Executable for Info {
         let reference = PackageRef::parse(&self.package)?;
         let mut ctx = HubContext::load(self.offline)?;
         let catalog = ctx.catalog_for_namespace(&reference.namespace)?;
-        let resolved = catalog
-            .resolve(&reference)
-            .with_context(|| format!("failed to resolve `{}`", self.package))?;
+
+        // resolve() only returns non-yanked entries. If it fails (e.g. every
+        // matching version is yanked), fall back to the highest yanked match so
+        // `info` can surface the (yanked) marker instead of an opaque error.
+        let (version, entry) = match catalog.resolve(&reference) {
+            Ok(resolved) => (resolved.version, resolved.entry),
+            Err(resolve_err) => {
+                let yanked_match = catalog
+                    .versions(&reference.namespace, &reference.name)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .rev()
+                    .filter(|v| reference.requirement.matches(v))
+                    .find_map(|v| {
+                        catalog
+                            .entry(&reference.namespace, &reference.name, &v)
+                            .ok()
+                            .filter(|e| e.yanked)
+                            .map(|e| (v, e))
+                    });
+                match yanked_match {
+                    Some(pair) => pair,
+                    None => {
+                        return Err(
+                            resolve_err.wrap_err(format!("failed to resolve `{}`", self.package))
+                        );
+                    }
+                }
+            }
+        };
         ctx.drain_warnings();
 
-        let m = &resolved.entry.manifest;
-        println!("{} {}", reference.key(), resolved.version);
-        if resolved.entry.yanked {
+        let m = &entry.manifest;
+        println!("{} {}", reference.key(), version);
+        if entry.yanked {
             println!("  (yanked)");
         }
         if let Some(desc) = &m.description {
