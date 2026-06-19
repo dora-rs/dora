@@ -2353,7 +2353,11 @@ impl Daemon {
     /// ladder used by explicit stops — after capturing a stack sample of
     /// the stuck process so the hang itself stays diagnosable.
     fn check_finish_stragglers(&mut self) {
-        let grace = finish_drain_grace();
+        // Opt-in: with DORA_FINISH_DRAIN_GRACE_SECS unset the watchdog is
+        // disabled and never escalates (ships dark; see `finish_drain_grace`).
+        let Some(grace) = finish_drain_grace() else {
+            return;
+        };
         for (dataflow_id, dataflow) in self.running.iter_mut() {
             for node_id in dataflow.finish_stragglers(grace) {
                 let drained_for_secs = dataflow
@@ -5325,30 +5329,46 @@ fn break_input(
     arm_all_inputs_closed(dataflow, receiver_id, clock);
 }
 
-/// Grace period before the finish-straggler watchdog escalates
-/// (dora-rs/dora#2152). Conservative by default: a sink may legitimately
-/// keep working for a while after its inputs close (flushing recordings,
-/// final writes). Override with `DORA_FINISH_DRAIN_GRACE_SECS`.
+/// Grace period used when the finish-straggler watchdog is enabled but
+/// `DORA_FINISH_DRAIN_GRACE_SECS` is set to an unparseable value. Conservative:
+/// a sink may legitimately keep working for a while after its inputs close
+/// (flushing recordings, final writes).
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
 
-fn finish_drain_grace() -> Duration {
-    match std::env::var("DORA_FINISH_DRAIN_GRACE_SECS") {
-        Ok(value) => match value.parse::<u64>() {
-            Ok(secs) => Duration::from_secs(secs),
-            Err(_) => {
-                static WARNED: std::sync::atomic::AtomicBool =
-                    std::sync::atomic::AtomicBool::new(false);
-                if !WARNED.swap(true, atomic::Ordering::Relaxed) {
-                    tracing::warn!(
-                        "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
-                         (expected whole seconds); using the default of {}s",
-                        DEFAULT_FINISH_DRAIN_GRACE.as_secs()
-                    );
-                }
-                DEFAULT_FINISH_DRAIN_GRACE
+/// Grace period before the finish-straggler watchdog escalates a stuck node, or
+/// `None` if the watchdog is **disabled**.
+///
+/// The watchdog is opt-in and ships dark: with `DORA_FINISH_DRAIN_GRACE_SECS`
+/// unset it does nothing, so the SIGKILL-on-stuck-node behaviour can be enabled
+/// per-deployment and validated on real workloads before becoming default —
+/// this path is exercised only at shutdown and is not reproducible locally
+/// (dora-rs/dora#2152, #2270). Set the var to a whole number of seconds to
+/// enable it; a set-but-garbage value enables it at the default grace (the user
+/// clearly intended it on).
+fn finish_drain_grace() -> Option<Duration> {
+    parse_finish_drain_grace(
+        std::env::var("DORA_FINISH_DRAIN_GRACE_SECS")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn parse_finish_drain_grace(value: Option<&str>) -> Option<Duration> {
+    let value = value?;
+    match value.parse::<u64>() {
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => {
+            static WARNED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !WARNED.swap(true, atomic::Ordering::Relaxed) {
+                tracing::warn!(
+                    "invalid DORA_FINISH_DRAIN_GRACE_SECS value `{value}` \
+                     (expected whole seconds); using the default of {}s",
+                    DEFAULT_FINISH_DRAIN_GRACE.as_secs()
+                );
             }
-        },
-        Err(_) => DEFAULT_FINISH_DRAIN_GRACE,
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
+        }
     }
 }
 
@@ -5826,6 +5846,26 @@ mod fault_tolerance_tests {
         assert!(
             !df.all_inputs_closed_at.contains_key(&node_a),
             "a re-added node ID must not arm before its new incarnation subscribes"
+        );
+    }
+
+    #[test]
+    fn finish_drain_grace_is_opt_in() {
+        // unset → watchdog disabled (ships dark)
+        assert_eq!(parse_finish_drain_grace(None), None);
+        // set → enabled at the given grace
+        assert_eq!(
+            parse_finish_drain_grace(Some("30")),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            parse_finish_drain_grace(Some("0")),
+            Some(Duration::from_secs(0))
+        );
+        // set-but-garbage → enabled at the default (the user meant to turn it on)
+        assert_eq!(
+            parse_finish_drain_grace(Some("not-a-number")),
+            Some(DEFAULT_FINISH_DRAIN_GRACE)
         );
     }
 
