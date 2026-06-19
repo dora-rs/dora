@@ -280,6 +280,15 @@ jobs:
           --test-threads=1
           lifecycle_rust lifecycle_cxx
         timeout-minutes: 15
+      # Finish-straggler watchdog regression (#2270): a deterministic wedge
+      # (source exits, downstream node hangs) must be escalated/killed by the
+      # watchdog rather than hanging until stop_after. Lives in `dora-examples`
+      # (excluded from the bulk `cargo test --all` step), so it needs an
+      # explicit invocation; the test sets DORA_FINISH_DRAIN_GRACE_SECS itself.
+      - name: Run finish-straggler watchdog E2E
+        run: >
+          cargo test -p dora-examples --test finish-straggler-e2e -- --test-threads=1
+        timeout-minutes: 10
 
   # Semantic contract tests — promoted from nightly per #1632.
   #

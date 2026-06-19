@@ -10,6 +10,11 @@
 //! ladder instead of hanging until `stop_after`. This is the behaviour the
 //! nightly only exercises when the #2152 flake happens to fire; here it is
 //! forced every run.
+//!
+//! This is a plain `#[test]` (not `#[tokio::test]`) because it mutates the
+//! process environment: under Rust 2024 `std::env::set_var` is only sound
+//! while the process is single-threaded, so the var must be set before any
+//! runtime threads exist. The test sets it first, then builds the runtime.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -17,8 +22,14 @@ use std::time::{Duration, Instant};
 use dora_daemon::{Daemon, LogDestination};
 use dora_message::SessionId;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn finish_straggler_watchdog_escalates_wedged_node() {
+#[test]
+fn finish_straggler_watchdog_escalates_wedged_node() {
+    // Enable the opt-in watchdog for this daemon. Set BEFORE any runtime or
+    // other thread exists so the env mutation is single-threaded.
+    // SAFETY: the process is still single-threaded here — no runtime has been
+    // built and `cargo build` below only spawns separate child processes.
+    unsafe { std::env::set_var("DORA_FINISH_DRAIN_GRACE_SECS", "2") };
+
     for pkg in ["emit-then-exit-source-node", "hang-after-init-node"] {
         let status = std::process::Command::new("cargo")
             .args(["build", "-p", pkg])
@@ -27,12 +38,14 @@ async fn finish_straggler_watchdog_escalates_wedged_node() {
         assert!(status.success(), "failed to build {pkg}");
     }
 
-    // Enable the opt-in watchdog for this daemon. This is the daemon's own
-    // process env (run_dataflow runs in-process); set here because the test
-    // owns this dedicated test binary, so no other test races the var.
-    // SAFETY: single-threaded set before any daemon thread reads it.
-    unsafe { std::env::set_var("DORA_FINISH_DRAIN_GRACE_SECS", "2") };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+    runtime.block_on(run());
+}
 
+async fn run() {
     let marker = Path::new("/tmp/dora-finish-straggler-marker.log");
     let _ = std::fs::remove_file(marker);
 

@@ -267,6 +267,10 @@ path = "tests/example-smoke.rs"
 name = "hub-smoke"
 path = "tests/hub-smoke.rs"
 
+[[test]]
+name = "finish-straggler-e2e"
+path = "tests/finish-straggler-e2e.rs"
+
 [profile.release]
 lto = "thin"
 
