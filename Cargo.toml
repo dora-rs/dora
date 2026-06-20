@@ -232,6 +232,10 @@ name = "cxx-thread-safe-output"
 path = "examples/cxx-thread-safe-output/run.rs"
 
 [[example]]
+name = "cxx-thread-safe-output-bench"
+path = "examples/cxx-thread-safe-output-bench/run.rs"
+
+[[example]]
 name = "mavlink2-bridge-cxx"
 path = "examples/mavlink2-bridge/run-cxx.rs"
 
