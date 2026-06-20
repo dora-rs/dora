@@ -12,15 +12,13 @@ use dora_node_api::DoraNode;
 use eyre::Context;
 
 fn main() -> eyre::Result<()> {
-    // Initialize as a dora node so the daemon can manage the process
-    // lifecycle. Consume the first tick event so the daemon has time to
-    // set up log forwarding before we print and exit (avoids a race where
-    // the output is lost if the process exits before the coordinator buffers it).
+    // Initialize as a dora node so the daemon can manage the process lifecycle.
     let (_node, mut events) =
         DoraNode::init_from_env().context("failed to init dora node from env")?;
 
-    // Wait for the first timer tick so our stdout is captured by the daemon
-    // log forwarder before we exit.
+    // Consume one tick before printing: avoids a race where the process exits
+    // before the daemon's async stdout forwarder buffers the log line, causing
+    // the coordinator to archive the dataflow before LogSubscribe is set up.
     let _ = events.recv();
 
     #[cfg(target_os = "linux")]
