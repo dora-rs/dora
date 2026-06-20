@@ -2088,6 +2088,7 @@ impl Daemon {
                             max_restart_delay: None,
                             restart_window: None,
                             health_check_timeout: None,
+                            finish_grace_secs: None,
                             module: None,
                             params: Default::default(),
                             cpu_affinity: None,
@@ -5596,6 +5597,7 @@ mod fault_tolerance_tests {
             force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
             health_check_timeout: None,
+            finish_grace_secs: None,
         }
     }
 
