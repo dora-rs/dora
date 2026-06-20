@@ -1,6 +1,7 @@
 use std::{
     any::Any,
     collections::{BTreeMap, VecDeque},
+    sync::Mutex,
     time::{Duration, Instant},
     vec,
 };
@@ -108,6 +109,7 @@ mod ffi {
     extern "Rust" {
         type Events;
         type OutputSender;
+        type SafeOutputSender;
         type DoraEvent;
         type DrainedEvents;
         type MergedEvents;
@@ -194,6 +196,15 @@ mod ffi {
 
         fn is_dora(self: &CombinedEvent) -> bool;
         fn downcast_dora(event: CombinedEvent) -> Result<Box<DoraEvent>>;
+
+        fn create_safe_output_sender(output_sender: Box<OutputSender>) -> Box<SafeOutputSender>;
+
+        fn safe_send_output(
+            sender: &SafeOutputSender,
+            id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
+        ) -> DoraResult;
 
         unsafe fn send_arrow_output(
             output_sender: &mut Box<OutputSender>,
@@ -857,6 +868,54 @@ unsafe fn event_as_arrow_input_with_info(
 }
 
 pub struct OutputSender(dora_node_api::DoraNode);
+/// Thread-safe wrapper around `OutputSender`.
+///
+/// The `Mutex` serializes access to the inner `DoraNode`, so multiple
+/// worker threads can call `safe_send_output` concurrently and the FFI
+/// layer still sees the `&mut DoraNode` exclusivity it requires. The
+/// wrapper is shared across threads by reference (`&SafeOutputSender`),
+/// so no `Arc` is needed — `SafeOutputSender` is `Sync`.
+///
+/// **Ownership:** `create_safe_output_sender` takes the `Box<OutputSender>`
+/// by value, consuming it. After calling it, the original `DoraNode.send_output`
+/// on the C++ side is invalidated — any subsequent use (e.g. `node_config_json`,
+/// `close_outputs`, `log_message`) is use-after-move. This is the intended
+/// opt-in behavior: users who want thread-safe output give up the old API.
+pub struct SafeOutputSender {
+    inner: Mutex<OutputSender>,
+}
+
+/// Creates a `SafeOutputSender` from an existing `OutputSender`.
+///
+/// **Warning:** this consumes the `Box<OutputSender>`, invalidating the
+/// original `DoraNode.send_output` on the C++ side. Only call this if
+/// you intend to exclusively use `safe_send_output` from worker threads.
+#[allow(clippy::boxed_local)] // signature dictated by cxx::bridge
+fn create_safe_output_sender(sender: Box<OutputSender>) -> Box<SafeOutputSender> {
+    Box::new(SafeOutputSender {
+        inner: Mutex::new(*sender),
+    })
+}
+
+/// Thread-safe output send. Can be called from any worker thread.
+///
+/// Locks the `Mutex`, calls `send_output_raw` on the inner `DoraNode`,
+/// then releases the lock. Other threads block on the `Mutex` while
+/// this call is in progress.
+#[allow(clippy::boxed_local)] // metadata signature dictated by cxx::bridge
+fn safe_send_output(
+    sender: &SafeOutputSender,
+    id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+) -> ffi::DoraResult {
+    let metadata = *metadata;
+    let parameters = metadata.into_parameters();
+    // Recover from a poisoned lock rather than cascading the panic: a prior
+    // panicking send must not permanently wedge every other worker thread.
+    let mut guard = sender.inner.lock().unwrap_or_else(|e| e.into_inner());
+    send_output_internal(&mut guard, id, data, parameters)
+}
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
     send_output_internal(sender, id, data, Default::default())
@@ -882,8 +941,10 @@ fn send_output_with_metadata(
     send_output_internal(sender, id, data, parameters)
 }
 
+/// Common send path. Takes `&mut OutputSender` (not `&mut Box`) so a `Box` or
+/// a `MutexGuard<OutputSender>` both coerce to it.
 fn send_output_internal(
-    sender: &mut Box<OutputSender>,
+    sender: &mut OutputSender,
     id: String,
     data: &[u8],
     metadata: DoraMetadataParameters,
@@ -1054,5 +1115,17 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// `safe_send_output` is sound only if `&SafeOutputSender` can cross
+    /// thread boundaries, i.e. `SafeOutputSender: Send + Sync`. The C++ side
+    /// shares the wrapper by reference across worker threads, so this is the
+    /// load-bearing guarantee for the whole thread-safety story. A full
+    /// concurrent-send test needs a live `DoraNode`/daemon and lives in the
+    /// example smoke tests; this is the cheap compile-time backstop.
+    #[test]
+    fn safe_output_sender_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SafeOutputSender>();
     }
 }
