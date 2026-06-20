@@ -232,6 +232,8 @@ jobs:
           -p rust-dataflow-example-node
           -p rust-dataflow-example-status-node
           -p rust-dataflow-example-sink
+      - name: Build dora-record-node
+        run: cargo build -p dora-record-node
       - name: Record rust-dataflow
         run: |
           # `dora record <yaml>` instruments the dataflow and runs it;
@@ -580,6 +582,8 @@ jobs:
         run: |
           chmod +x ./cli-bin/dora
           echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+      - name: Build cpu-affinity-probe
+        run: cargo build -p cpu-affinity-probe
       - name: Session 1 — write state to redb
         run: |
           STORE=/tmp/dora-redb-smoke.db
