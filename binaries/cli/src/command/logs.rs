@@ -436,7 +436,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
         let rest = match name.strip_prefix(&stem) {
             Some(rest) => rest,
             None => continue,
-        };       
+        };
         if rest.starts_with('.') && (rest.ends_with(".jsonl") || rest.ends_with(".txt")) {
             files.push(entry.path());
         }
