@@ -6,12 +6,14 @@ env:
   memory_pool_scenario: duplicate_free
 nodes:
   - id: sender_node
+    build: pip install torch --index-url https://download.pytorch.org/whl/cpu numpy
     path: sender.py
     inputs:
       next_require: receiver_node/next_require
     outputs:
       - data
   - id: receiver_node
+    build: pip install torch --index-url https://download.pytorch.org/whl/cpu numpy tqdm
     path: receiver.py
     inputs:
       latency: sender_node/data
