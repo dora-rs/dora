@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, InputMapping, NodeRunConfig},
+    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -1034,20 +1034,6 @@ impl From<PythonSourceDef> for PythonSource {
             PythonSourceDef::WithOptions { source, conda_env } => Self { source, conda_env },
         }
     }
-}
-
-#[allow(missing_docs)]
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PythonOperatorConfig {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
-    /// Per-output framing overrides (default: Raw for all).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub output_framing: BTreeMap<DataId, OutputFraming>,
 }
 
 #[allow(missing_docs)]
