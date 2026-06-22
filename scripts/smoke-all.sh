@@ -529,6 +529,17 @@ if [ "$RUN_PYTHON" = true ]; then
     echo "=== Queue/timeout regression tests (local, timing-sensitive) ==="
     run_local "local-queue-size-and-timeout"         "tests/queue_size_and_timeout_python/dataflow.yaml" 20
     run_local "local-queue-size-latest-data-python"  "tests/queue_size_latest_data_python/dataflow.yaml" 20
+
+    echo ""
+    echo "=== Memory-pool CPU transport ==="
+    # Dependencies (torch, numpy, tqdm) are provisioned by per-node
+    # `build:` steps in each YAML — no host-side gate needed.
+    run_networked "memory-pool-cpu2cpu"            "examples/memory-pool/cpu2cpu.yml" 60
+    run_local     "local-memory-pool-cpu2cpu"      "examples/memory-pool/cpu2cpu.yml" 60
+    run_local     "local-memory-pool-auto-cleanup" "examples/memory-pool/auto_cleanup.yml" 10
+    run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
+    run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
+    run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
 fi
 
 # ---------------------------------------------------------------------------
