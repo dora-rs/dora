@@ -89,7 +89,7 @@ fn print_span_tree(spans: &[TraceSpan]) {
     let present: HashSet<u64> = spans.iter().map(|s| s.span_id).collect();
     let mut roots: Vec<&TraceSpan> = spans
         .iter()
-        .filter(|s| s.parent_span_id.map_or(true, |p| !present.contains(&p)))
+        .filter(|s| s.parent_span_id.is_none_or(|p| !present.contains(&p)))
         .collect();
     roots.sort_by_key(|s| s.start_time);
 
