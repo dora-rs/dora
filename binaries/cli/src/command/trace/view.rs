@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use clap::Args;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::TraceSpan};
@@ -82,14 +82,39 @@ fn print_span_tree(spans: &[TraceSpan]) {
         list.sort_by_key(|s| s.start_time);
     }
 
-    if let Some(roots) = children.get(&None) {
-        for root in roots {
-            print_span(root, &children, 0);
-        }
+    // Spans whose parent is absent from this snapshot (e.g. evicted from the
+    // ring buffer, or recorded by a different component) are "orphans".  Treat
+    // them as roots so they appear in the output rather than being silently
+    // dropped.
+    let present: HashSet<u64> = spans.iter().map(|s| s.span_id).collect();
+    let mut roots: Vec<&TraceSpan> = spans
+        .iter()
+        .filter(|s| s.parent_span_id.map_or(true, |p| !present.contains(&p)))
+        .collect();
+    roots.sort_by_key(|s| s.start_time);
+
+    if roots.iter().any(|r| r.parent_span_id.is_some()) {
+        eprintln!(
+            "note: trace is partial — some spans reference a parent not present in this \
+             snapshot (orphaned spans shown as top-level roots)"
+        );
+    }
+
+    let mut visited = HashSet::new();
+    for root in roots {
+        print_span(root, &children, 0, &mut visited);
     }
 }
 
-fn print_span(span: &TraceSpan, children: &HashMap<Option<u64>, Vec<&TraceSpan>>, depth: usize) {
+fn print_span(
+    span: &TraceSpan,
+    children: &HashMap<Option<u64>, Vec<&TraceSpan>>,
+    depth: usize,
+    visited: &mut HashSet<u64>,
+) {
+    if !visited.insert(span.span_id) {
+        return; // cycle guard: skip already-visited spans
+    }
     let indent = "  ".repeat(depth);
     let dur = format_duration_us(span.duration_us);
     let fields = if span.fields.is_empty() {
@@ -106,7 +131,7 @@ fn print_span(span: &TraceSpan, children: &HashMap<Option<u64>, Vec<&TraceSpan>>
 
     if let Some(kids) = children.get(&Some(span.span_id)) {
         for child in kids {
-            print_span(child, children, depth + 1);
+            print_span(child, children, depth + 1, visited);
         }
     }
 }
