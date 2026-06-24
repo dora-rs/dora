@@ -786,7 +786,6 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `MAX_MESSAGE_BYTES` | 64 MiB | Max TCP/bincode message |
 | `MAX_CONTROL_MESSAGE_BYTES` | 1 MiB | Max control plane JSON message |
 | `TCP_READ_TIMEOUT` | 30 seconds | Socket read timeout |
-| `WS_PING_INTERVAL` | 10 seconds | WebSocket keepalive |
 | `MAX_WS_CONNECTIONS` | 256 | Concurrent WebSocket limit |
 | `MAX_CONNECTIONS_PER_IP` | 20 / 60s | Rate limiting |
 | `MAX_TOPICS_PER_SUBSCRIBE` | 64 | Topic batch limit |
