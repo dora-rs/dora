@@ -3,13 +3,26 @@ use std::{borrow::Borrow, convert::Infallible, str::FromStr};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Validate that a node identifier contains only safe characters: `[a-zA-Z0-9_.-]`.
+/// Validate that a node identifier contains only safe characters: `[a-zA-Z0-9_.-]`,
+/// does not start with `.`, and is not empty.
 ///
 /// NodeIds must NOT contain `/` because `/` is the separator between
 /// `<node_id>/<output_id>` in input mapping syntax.
+///
+/// Leading dots are rejected because the node id is joined into filesystem paths
+/// (e.g. `managed_python_env_dir` appends `node.id` under `.dora/python-envs/`).
+/// A node id of `..` or `.` would resolve to a parent directory, and
+/// `uv venv --clear` would then wipe that directory — destroying sibling envs.
+/// This mirrors the `is_valid_key_part` guard in the hub-client index.
 fn validate_node_id(id: &str) -> Result<(), InvalidId> {
     if id.is_empty() {
         return Err(InvalidId("identifier must not be empty".into()));
+    }
+    if id.starts_with('.') {
+        return Err(InvalidId(format!(
+            "identifier '{id}' must not start with '.' \
+             (dot-segments such as '.' and '..' can traverse parent directories)"
+        )));
     }
     if let Some(ch) = id
         .chars()
@@ -267,6 +280,31 @@ mod tests {
         assert!(validate_node_id("node name").is_err());
         assert!(validate_node_id("node;rm").is_err());
         assert!(validate_node_id("node\0").is_err());
+    }
+
+    #[test]
+    fn node_id_rejects_dot_segments() {
+        // Dot-only ids resolve to parent directory when joined into filesystem paths
+        assert!(validate_node_id(".").is_err(), ". must be rejected");
+        assert!(validate_node_id("..").is_err(), ".. must be rejected");
+        // Any leading dot is rejected (mirrors hub-client is_valid_key_part)
+        assert!(
+            validate_node_id(".hidden").is_err(),
+            ".hidden must be rejected"
+        );
+        assert!(
+            validate_node_id(".config").is_err(),
+            ".config must be rejected"
+        );
+        // Embedded dots are still fine
+        assert!(
+            validate_node_id("node.v2").is_ok(),
+            "embedded dot is allowed"
+        );
+        assert!(
+            validate_node_id("a.b.c").is_ok(),
+            "multiple embedded dots are allowed"
+        );
     }
 
     #[test]
