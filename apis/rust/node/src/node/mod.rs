@@ -1031,10 +1031,18 @@ impl DoraNode {
     ///
     /// Closing outputs early can be helpful to receivers.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
+        // Validate the whole batch before mutating any local state. Removing
+        // outputs eagerly would leave the node's local output set out of sync
+        // with the daemon if a later id is unknown: the early ones would be
+        // gone locally, yet `report_closed_outputs` is skipped on error so the
+        // daemon never learns about them.
         for output_id in &outputs_ids {
-            if !self.node_config.outputs.remove(output_id) {
+            if !self.node_config.outputs.contains(output_id) {
                 return Err(NodeError::Output(format!("unknown output {output_id}")));
             }
+        }
+        for output_id in &outputs_ids {
+            self.node_config.outputs.remove(output_id);
         }
 
         self.control_channel
@@ -1984,6 +1992,32 @@ mod tests {
         assert!(
             err.to_string().contains("does not match"),
             "unexpected error message: {err}"
+        );
+
+        drop(node);
+        drop(events);
+    }
+
+    /// `close_outputs` must be atomic: if any id in the batch is unknown, the
+    /// call fails *without* removing the valid ids from the local output set.
+    /// Otherwise the daemon (never notified, because `report_closed_outputs` is
+    /// skipped on error) and the node disagree about which outputs are open, and
+    /// the node would silently drop subsequent sends to a still-open output.
+    #[test]
+    fn close_outputs_is_atomic_on_unknown_id() {
+        let (mut node, events, _rx) = test_node();
+        let valid: DataId = "valid".into();
+        node.node_config.outputs.insert(valid.clone());
+
+        let result = node.close_outputs(vec![valid.clone(), "unknown".into()]);
+
+        assert!(
+            result.is_err(),
+            "closing a batch containing an unknown output must fail"
+        );
+        assert!(
+            node.node_config.outputs.contains(&valid),
+            "a failed close_outputs must not remove the valid output from local state"
         );
 
         drop(node);
