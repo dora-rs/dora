@@ -47,15 +47,20 @@ const MAX_PENDING_REQUESTS: usize = 64;
 ///
 /// You can also use `ros_paths` if you don't want to use env variable.
 ///
+/// The DDS domain id is taken from the `domain_id` argument; if omitted, from
+/// the `ROS_DOMAIN_ID` environment variable; if neither is set, default to 0.
+///
 /// warning::
 ///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
 ///     at any point without it being considered a breaking change.
 ///
 /// ```python
-/// context = Ros2Context()
+/// context = Ros2Context(domain_id=1)   # explicit domain
+/// context = Ros2Context()              # domain from ROS_DOMAIN_ID, else 0
 /// ```
 ///
 /// :type ros_paths: typing.List[str], optional
+/// :type domain_id: int, optional
 ///
 #[pyclass]
 pub struct Ros2Context {
@@ -67,8 +72,8 @@ pub struct Ros2Context {
 impl Ros2Context {
     /// Create a new context
     #[new]
-    #[pyo3(signature = (ros_paths=None))]
-    pub fn new(ros_paths: Option<Vec<PathBuf>>) -> eyre::Result<Self> {
+    #[pyo3(signature = (ros_paths=None, domain_id=None))]
+    pub fn new(ros_paths: Option<Vec<PathBuf>>, domain_id: Option<u16>) -> eyre::Result<Self> {
         Python::attach(|py| -> Result<()> {
             let warnings = py
                 .import("warnings")
@@ -123,8 +128,19 @@ impl Ros2Context {
             }
         }
 
+        // DDS domain: explicit arg, else ROS_DOMAIN_ID, else 0.
+        let domain_id = domain_id
+            .or_else(|| {
+                std::env::var("ROS_DOMAIN_ID")
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+            })
+            .unwrap_or(0);
+
         Ok(Self {
-            context: ros2_client::Context::new()?,
+            context: ros2_client::Context::with_options(
+                ros2_client::ContextOptions::new().domain_id(domain_id),
+            )?,
             messages: Arc::new(messages),
         })
     }
