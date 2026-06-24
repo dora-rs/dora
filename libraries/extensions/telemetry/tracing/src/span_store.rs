@@ -86,7 +86,11 @@ impl FieldVisitor {
             return;
         }
         if value.len() > MAX_FIELD_VALUE_BYTES {
-            value.truncate(MAX_FIELD_VALUE_BYTES);
+            let mut end = MAX_FIELD_VALUE_BYTES;
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            value.truncate(end);
             value.push_str("...");
         }
         self.0.push((name.to_string(), value));
@@ -217,6 +221,23 @@ where
 mod tests {
     use super::*;
     use tracing_subscriber::{Registry, layer::SubscriberExt};
+
+    #[test]
+    fn field_visitor_truncates_at_char_boundary() {
+        // A 4-byte emoji straddles byte 4096 — raw truncate would panic.
+        let mut value = "a".repeat(4095);
+        value.push('😀'); // occupies bytes 4095..4099
+        assert!(!value.is_char_boundary(4096));
+
+        let mut visitor = FieldVisitor(Vec::new());
+        visitor.push_field("key", value);
+
+        let (_, stored) = &visitor.0[0];
+        assert!(stored.ends_with("..."));
+        assert!(stored.is_char_boundary(stored.len()));
+        // Stored value must be valid UTF-8 (would panic on display otherwise)
+        let _ = stored.len();
+    }
 
     #[test]
     fn span_store_evicts_oldest() {
