@@ -6,8 +6,6 @@
 //!
 //! Feature-gated behind `type-inference`.
 
-use std::path::Path;
-
 use syn::{Expr, ExprMethodCall, visit::Visit};
 
 /// A suggested type annotation inferred from source code.
@@ -41,16 +39,6 @@ impl std::fmt::Display for TypeSuggestion {
             )
         }
     }
-}
-
-/// Scan a Rust source file for type hints. Returns suggestions.
-pub fn infer_types_from_file(
-    source_path: &Path,
-    node_id: &str,
-) -> Result<Vec<TypeSuggestion>, String> {
-    let content = std::fs::read_to_string(source_path)
-        .map_err(|e| format!("{}: {e}", source_path.display()))?;
-    infer_types_from_source(&content, source_path.to_string_lossy().as_ref(), node_id)
 }
 
 /// Scan Rust source text for type hints.
