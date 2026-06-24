@@ -1,17 +1,19 @@
 # Negative-path test: daemon releases an unreleased memory pool on shutdown.
 env:
   sender_device: cpu
-  receiver_device: cuda
+  receiver_device: cpu
   message_num: 2
   memory_pool_scenario: auto_cleanup
 nodes:
   - id: sender_node
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy
     path: sender.py
     inputs:
       next_require: receiver_node/next_require
     outputs:
       - data
   - id: receiver_node
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy tqdm
     path: receiver.py
     inputs:
       latency: sender_node/data

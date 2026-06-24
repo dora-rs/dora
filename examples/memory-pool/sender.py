@@ -22,6 +22,7 @@ data_generation = np.random.default_rng()
 memory_pool_id = None
 for i in range(MESSAGE_COUNT):
     random_data = data_generation.integers(1000, size=SIZE, dtype=np.int64)
+    random_data[0] = i  # monotonic counter lets receiver detect change without collision risk
     torch_tensor = torch.tensor(random_data, dtype=torch.int64, device=SENDER_DEVICE)
     t_send = time.perf_counter_ns()
     metadata = {"t_send": t_send, "scenario": SCENARIO}

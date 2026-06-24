@@ -1884,6 +1884,76 @@ fn smoke_shell_node_blocked_without_flag() {
 }
 
 // ---------------------------------------------------------------------------
+// Memory-pool CPU transport (#2168)
+//
+// Requires `torch` and `tqdm` — not installed in standard PR CI. Run
+// explicitly on machines with torch available:
+//   cargo test --test example-smoke -- --ignored smoke_memory_pool
+// or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_memory_pool_cpu2cpu() {
+    run_smoke_test(
+        "memory-pool-cpu2cpu",
+        "examples/memory-pool/cpu2cpu.yml",
+        Duration::from_secs(60),
+    );
+}
+
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_cpu2cpu() {
+    run_smoke_test_local(
+        "local-memory-pool-cpu2cpu",
+        "examples/memory-pool/cpu2cpu.yml",
+        60,
+    );
+}
+
+// Negative-lifecycle scenarios validate the "warn, don't crash" contract.
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_auto_cleanup() {
+    run_smoke_test_local(
+        "local-memory-pool-auto-cleanup",
+        "examples/memory-pool/auto_cleanup.yml",
+        10,
+    );
+}
+
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_duplicate_free() {
+    run_smoke_test_local(
+        "local-memory-pool-duplicate-free",
+        "examples/memory-pool/duplicate_free.yml",
+        10,
+    );
+}
+
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_read_after_free() {
+    run_smoke_test_local(
+        "local-memory-pool-read-after-free",
+        "examples/memory-pool/read_after_free.yml",
+        10,
+    );
+}
+
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_write_after_free() {
+    run_smoke_test_local(
+        "local-memory-pool-write-after-free",
+        "examples/memory-pool/write_after_free.yml",
+        10,
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
 // dep); others are intentionally covered by a DIFFERENT CI job. Keep this
@@ -1903,6 +1973,12 @@ fn smoke_shell_node_blocked_without_flag() {
 //
 // | Example                   | Where it's tested / blocker                          | Tracking |
 // |---------------------------|------------------------------------------------------|----------|
+// | memory-pool               | covered: smoke_memory_pool_cpu2cpu /                 | #2264    |
+// |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
+// |                           | duplicate_free, read_after_free, write_after_free}   |          |
+// |                           | (#[ignore], run when torch+tqdm available);          |          |
+// |                           | smoke-all.sh gates on `import torch`.                 |          |
+// |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
 // | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |
 // |                           | corrupts dataflow state                              |          |

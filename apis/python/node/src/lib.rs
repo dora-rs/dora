@@ -1195,8 +1195,7 @@ impl Node {
             .wrap_err("failed to extract JSON string")?
             .into_bytes();
         let json_len = json_bytes.len();
-        let padded_json_len = ((json_len + DORADMA_METADATA_ALIGN - 1) / DORADMA_METADATA_ALIGN)
-            * DORADMA_METADATA_ALIGN;
+        let padded_json_len = json_len.div_ceil(DORADMA_METADATA_ALIGN) * DORADMA_METADATA_ALIGN;
         let data_offset = DORADMA_HEADER_SIZE + padded_json_len;
         let total_size = data_offset + size;
 
@@ -1270,30 +1269,21 @@ impl Node {
         // GPU pool: DMA data into pooled GPU buffer + IPC export.
         // Receiver imports the handle once (cudaIpcOpenMemHandle) and
         // reads from GPU DRAM with zero copy thereafter.
-        if receiver_is_cuda {
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                if let Ok(gpu_ptr) = bound
-                    .call_method1("dma_copy", (ptr_val, size, pool_counter))
-                    .and_then(|r| r.extract::<u64>())
-                {
-                    if let Ok(handle) = bound
-                        .call_method1("_ipc_export", (gpu_ptr,))
-                        .and_then(|r| r.extract::<Vec<u8>>())
-                    {
-                        if handle.len() == 64 {
-                            unsafe {
-                                // Write IPC handle into DORADMA reserved area [32..96)
-                                std::ptr::copy_nonoverlapping(
-                                    handle.as_ptr(),
-                                    shmem_ptr.add(32),
-                                    64,
-                                );
-                                // ipc_present flag at byte 24
-                                std::ptr::write(shmem_ptr.add(24) as *mut u64, 1u64);
-                            }
-                        }
-                    }
+        if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+            let bound = helpers.bind(py);
+            if let Ok(gpu_ptr) = bound
+                .call_method1("dma_copy", (ptr_val, size, pool_counter))
+                .and_then(|r| r.extract::<u64>())
+                && let Ok(handle) = bound
+                    .call_method1("_ipc_export", (gpu_ptr,))
+                    .and_then(|r| r.extract::<Vec<u8>>())
+                && handle.len() == 64
+            {
+                unsafe {
+                    // Write IPC handle into DORADMA reserved area [32..96)
+                    std::ptr::copy_nonoverlapping(handle.as_ptr(), shmem_ptr.add(32), 64);
+                    // ipc_present flag at byte 24
+                    std::ptr::write(shmem_ptr.add(24) as *mut u64, 1u64);
                 }
             }
         }
@@ -1443,160 +1433,77 @@ impl Node {
         if buffer_id.starts_with("pool_") {
             // Extract counter from the last underscore segment — node_id
             // may legitimately contain underscores.
-            if let Some((_, counter_str)) = buffer_id.rsplit_once('_') {
-                if let Ok(counter) = counter_str.parse::<u64>() {
-                    // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
-                    // register_memory_pool already stored the Shmem here; taking it
-                    // prevents munmap, and storing it back keeps the mapping alive.
-                    let pool_slot = {
-                        PINNED_POOL
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&counter)
-                    };
+            if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
+                && let Ok(counter) = counter_str.parse::<u64>()
+            {
+                // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
+                // register_memory_pool already stored the Shmem here; taking it
+                // prevents munmap, and storing it back keeps the mapping alive.
+                let pool_slot = {
+                    PINNED_POOL
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&counter)
+                };
 
-                    // Both cache-hit and cache-miss produce a PoolSlot that is
-                    // stored back into PINNED_POOL after the write — this keeps
-                    // the shmem mapping alive for the duration of the data copy.
-                    let (shmem_ptr, shmem_capacity, store_back) = if let Some(slot_data) = pool_slot
-                    {
-                        // Cache hit: reuse the persistent mapping (no mmap)
-                        let cap = slot_data.size;
-                        (slot_data.base as *mut u8, cap, Some(slot_data))
-                    } else {
-                        // Cache miss: open via ShmemConf, wrap immediately
-                        // so the mapping stays alive until post-write re-insert.
-                        let shmem_name = format!(
-                            "dora_pool_{}_{}_{}",
-                            self.dataflow_id, self.node_id, counter
-                        );
-                        match ShmemConf::new().os_id(&shmem_name).open() {
-                            Ok(shmem) => {
-                                let cap = shmem.len();
-                                let base = shmem.as_ptr() as u64;
-                                let slot = PoolSlot {
-                                    _shmem: shmem,
-                                    base,
-                                    size: cap,
-                                };
-                                (base as *mut u8, cap, Some(slot))
-                            }
-                            Err(_) => (std::ptr::null_mut(), 0, None),
+                // Both cache-hit and cache-miss produce a PoolSlot that is
+                // stored back into PINNED_POOL after the write — this keeps
+                // the shmem mapping alive for the duration of the data copy.
+                let (shmem_ptr, shmem_capacity, store_back) = if let Some(slot_data) = pool_slot {
+                    // Cache hit: reuse the persistent mapping (no mmap)
+                    let cap = slot_data.size;
+                    (slot_data.base as *mut u8, cap, Some(slot_data))
+                } else {
+                    // Cache miss: open via ShmemConf, wrap immediately
+                    // so the mapping stays alive until post-write re-insert.
+                    let shmem_name = format!(
+                        "dora_pool_{}_{}_{}",
+                        self.dataflow_id, self.node_id, counter
+                    );
+                    match ShmemConf::new().os_id(&shmem_name).open() {
+                        Ok(shmem) => {
+                            let cap = shmem.len();
+                            let base = shmem.as_ptr() as u64;
+                            let slot = PoolSlot {
+                                _shmem: shmem,
+                                base,
+                                size: cap,
+                            };
+                            (base as *mut u8, cap, Some(slot))
                         }
-                    };
+                        Err(_) => (std::ptr::null_mut(), 0, None),
+                    }
+                };
 
-                    if !shmem_ptr.is_null() {
-                        // Guard against truncated segments before any
-                        // pointer arithmetic (mirrors slow-path + read guards).
-                        if shmem_capacity < DORADMA_HEADER_SIZE {
-                            if let Some(slot_data) = store_back {
-                                PINNED_POOL
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .insert(counter, slot_data);
-                            }
-                            return Ok(());
+                if !shmem_ptr.is_null() {
+                    // Guard against truncated segments before any
+                    // pointer arithmetic (mirrors slow-path + read guards).
+                    if shmem_capacity < DORADMA_HEADER_SIZE {
+                        if let Some(slot_data) = store_back {
+                            PINNED_POOL
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(counter, slot_data);
                         }
-                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == DORADMA_MAGIC {
-                            let data_offset =
-                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
+                        return Ok(());
+                    }
+                    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                    if magic == DORADMA_MAGIC {
+                        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
-                            // Check if this pool has GPU DMA path enabled
-                            let ipc_present =
-                                unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
+                        // Check if this pool has GPU DMA path enabled
+                        let ipc_present =
+                            unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
-                            // Validate write size against pool capacity
-                            if size == 0 || size > shmem_capacity.saturating_sub(data_offset) {
-                                tracing::warn!(
-                                    "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
-                                    self.node_id,
-                                    size,
-                                    data_offset,
-                                    shmem_capacity
-                                );
-                                // Store back to PINNED_POOL to keep shmem alive
-                                if let Some(slot_data) = store_back {
-                                    PINNED_POOL
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(counter, slot_data);
-                                }
-                                return Ok(());
-                            }
-
-                            if ipc_present == 1 && !is_cuda {
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                // DMA: source CPU data -> GPU pool buffer via DMA engine
-                                if let Ok(helpers) = get_cuda_helpers(py) {
-                                    let bound = helpers.bind(py);
-                                    let _ =
-                                        bound.call_method1("dma_copy", (ptr_val, size, counter));
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            } else if is_cuda {
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                if let Ok(helpers) = get_cuda_helpers(py) {
-                                    let bound = helpers.bind(py);
-                                    let _ = bound.call_method1(
-                                        "_cuda_memcpy",
-                                        (
-                                            shmem_ptr as u64 + data_offset as u64,
-                                            ptr_val,
-                                            size,
-                                            2u32,
-                                        ),
-                                    );
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            } else {
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        ptr_val as *const u8,
-                                        shmem_ptr.add(data_offset),
-                                        size,
-                                    );
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            }
-
+                        // Validate write size against pool capacity
+                        if size == 0 || size > shmem_capacity.saturating_sub(data_offset) {
+                            tracing::warn!(
+                                "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                self.node_id,
+                                size,
+                                data_offset,
+                                shmem_capacity
+                            );
                             // Store back to PINNED_POOL to keep shmem alive
                             if let Some(slot_data) = store_back {
                                 PINNED_POOL
@@ -1604,9 +1511,84 @@ impl Node {
                                     .unwrap_or_else(|e| e.into_inner())
                                     .insert(counter, slot_data);
                             }
-
                             return Ok(());
                         }
+
+                        if ipc_present == 1 && !is_cuda {
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            // DMA: source CPU data -> GPU pool buffer via DMA engine
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let _ = bound.call_method1("dma_copy", (ptr_val, size, counter));
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                        } else if is_cuda {
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let _ = bound.call_method1(
+                                    "_cuda_memcpy",
+                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                                );
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                        } else {
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    ptr_val as *const u8,
+                                    shmem_ptr.add(data_offset),
+                                    size,
+                                );
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                        }
+
+                        // Store back to PINNED_POOL to keep shmem alive
+                        if let Some(slot_data) = store_back {
+                            PINNED_POOL
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(counter, slot_data);
+                        }
+
+                        return Ok(());
                     }
                 }
             }
@@ -1627,110 +1609,103 @@ impl Node {
                     }
                 });
 
-                if let Some(ref name) = shmem_name {
-                    if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
-                        // Mirror fast-path guard: reject segments smaller
-                        // than the header before any pointer arithmetic.
-                        if shmem.len() < DORADMA_HEADER_SIZE {
+                if let Some(ref name) = shmem_name
+                    && let Ok(shmem) = ShmemConf::new().os_id(name).open()
+                {
+                    // Mirror fast-path guard: reject segments smaller
+                    // than the header before any pointer arithmetic.
+                    if shmem.len() < DORADMA_HEADER_SIZE {
+                        return Ok(());
+                    }
+                    let shmem_ptr = shmem.as_ptr();
+
+                    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                    if magic == DORADMA_MAGIC {
+                        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
+
+                        // Validate write size against pool capacity
+                        let shmem_len = shmem.len();
+                        if size == 0 || size > shmem_len.saturating_sub(data_offset) {
+                            tracing::warn!(
+                                "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                self.node_id,
+                                size,
+                                data_offset,
+                                shmem_len
+                            );
                             return Ok(());
                         }
-                        let shmem_ptr = shmem.as_ptr();
 
-                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == DORADMA_MAGIC {
-                            let data_offset =
-                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
+                        // Check if this pool has GPU DMA path enabled
+                        let ipc_present =
+                            unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
-                            // Validate write size against pool capacity
-                            let shmem_len = shmem.len();
-                            if size == 0 || size > shmem_len.saturating_sub(data_offset) {
-                                tracing::warn!(
-                                    "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
-                                    self.node_id,
-                                    size,
-                                    data_offset,
-                                    shmem_len
-                                );
-                                return Ok(());
+                        if ipc_present == 1 && !is_cuda {
+                            // Extract counter for the DMA slot from buffer_id.
+                            let slow_counter = buffer_id
+                                .rsplit_once('_')
+                                .and_then(|(_, c)| c.parse::<u64>().ok());
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
-
-                            // Check if this pool has GPU DMA path enabled
-                            let ipc_present =
-                                unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
-
-                            if ipc_present == 1 && !is_cuda {
-                                // Extract counter for the DMA slot from buffer_id.
-                                let slow_counter = buffer_id
-                                    .rsplit_once('_')
-                                    .and_then(|(_, c)| c.parse::<u64>().ok());
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter)
-                                {
-                                    let bound = helpers.bind(py);
-                                    let _ = bound.call_method1("dma_copy", (ptr_val, size, c));
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            } else if is_cuda {
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                if let Ok(helpers) = get_cuda_helpers(py) {
-                                    let bound = helpers.bind(py);
-                                    let _ = bound.call_method1(
-                                        "_cuda_memcpy",
-                                        (
-                                            shmem_ptr as u64 + data_offset as u64,
-                                            ptr_val,
-                                            size,
-                                            2u32,
-                                        ),
-                                    );
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            } else {
-                                // Seqlock: begin write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                                unsafe {
-                                    std::ptr::copy_nonoverlapping(
-                                        ptr_val as *const u8,
-                                        shmem_ptr.add(data_offset),
-                                        size,
-                                    );
-                                }
-                                // Seqlock: end write
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let old_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
+                            if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
+                                let bound = helpers.bind(py);
+                                let _ = bound.call_method1("dma_copy", (ptr_val, size, c));
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                        } else if is_cuda {
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let _ = bound.call_method1(
+                                    "_cuda_memcpy",
+                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                                );
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                        } else {
+                            // Seqlock: begin write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            unsafe {
+                                std::ptr::copy_nonoverlapping(
+                                    ptr_val as *const u8,
+                                    shmem_ptr.add(data_offset),
+                                    size,
+                                );
+                            }
+                            // Seqlock: end write
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         }
                     }
@@ -1852,51 +1827,50 @@ impl Node {
                 });
 
                 let mut read_ptr: i64 = 0;
-                if let Some(ref name) = shmem_name {
-                    if let Ok(shmem) = ShmemConf::new().os_id(name).open() {
-                        // Mirror fast-path guard: reject segments smaller
-                        // than the header before any pointer arithmetic.
-                        if shmem.len() < DORADMA_HEADER_SIZE {
+                if let Some(ref name) = shmem_name
+                    && let Ok(shmem) = ShmemConf::new().os_id(name).open()
+                {
+                    // Mirror fast-path guard: reject segments smaller
+                    // than the header before any pointer arithmetic.
+                    if shmem.len() < DORADMA_HEADER_SIZE {
+                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                        return Err(eyre::eyre!(
+                            "memory pool {} segment too small ({})",
+                            buffer_id,
+                            shmem.len()
+                        ));
+                    }
+                    let shmem_ptr = shmem.as_ptr();
+                    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                    if magic == DORADMA_MAGIC {
+                        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
+                        if data_offset > shmem.len()
+                            || (size as usize) > shmem.len().saturating_sub(data_offset)
+                        {
                             warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                             return Err(eyre::eyre!(
-                                "memory pool {} segment too small ({})",
+                                "memory pool {} header bounds exceeded: data_offset {} + size {} > shmem_len {}",
                                 buffer_id,
+                                data_offset,
+                                size,
                                 shmem.len()
                             ));
                         }
-                        let shmem_ptr = shmem.as_ptr();
-                        let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                        if magic == DORADMA_MAGIC {
-                            let data_offset =
-                                unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                            if data_offset > shmem.len()
-                                || (size as usize) > shmem.len().saturating_sub(data_offset)
-                            {
-                                warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                                return Err(eyre::eyre!(
-                                    "memory pool {} header bounds exceeded: data_offset {} + size {} > shmem_len {}",
-                                    buffer_id,
-                                    data_offset,
-                                    size,
-                                    shmem.len()
-                                ));
-                            }
-                            // Mirroring try_doradma_read: check cache first,
-                            // so on a cache hit we return the cached mapping's
-                            // pointer (not the fresh mmap, which will be dropped).
-                            let mut cpu_cache =
-                                RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(cached) = cpu_cache.get(&buffer_id) {
-                                read_ptr = (cached.base + data_offset as u64) as i64;
-                            } else {
-                                let base = shmem_ptr as u64;
-                                read_ptr = (base + data_offset as u64) as i64;
-                                cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
-                                    _shmem: shmem,
-                                    base,
-                                    generation: 0,
-                                });
-                            }
+                        // Mirroring try_doradma_read: check cache first,
+                        // so on a cache hit we return the cached mapping's
+                        // pointer (not the fresh mmap, which will be dropped).
+                        let mut cpu_cache =
+                            RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(cached) = cpu_cache.get(&buffer_id) {
+                            read_ptr = (cached.base + data_offset as u64) as i64;
+                        } else {
+                            let base = shmem_ptr as u64;
+                            read_ptr = (base + data_offset as u64) as i64;
+                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
+                                _shmem: shmem,
+                                base,
+                                generation: 0,
+                            });
                         }
                     }
                 }
@@ -1961,20 +1935,18 @@ impl Node {
                 .strip_prefix("pool_")
                 .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
                 .and_then(|c| c.parse::<u64>().ok());
-            if let Some(c) = counter {
-                if let Some(slot) = PINNED_POOL
+            if let Some(c) = counter
+                && let Some(slot) = PINNED_POOL
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c)
-                {
-                    if let Ok(helpers) = get_cuda_helpers(py) {
-                        let bound = helpers.bind(py);
-                        let _ = bound.call_method1("_unregister_host", (slot.base,));
-                        let _ = bound.call_method1("_free_gpu_buf", (c,));
-                    }
-                    // PoolSlot dropped here -> Shmem unmapped
-                }
+                && let Ok(helpers) = get_cuda_helpers(py)
+            {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_unregister_host", (slot.base,));
+                let _ = bound.call_method1("_free_gpu_buf", (c,));
             }
+            // PoolSlot dropped here -> Shmem unmapped
         }
 
         // Clean up receiver-side caches so the shmem mappings are released.
