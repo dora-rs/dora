@@ -432,8 +432,12 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
         let entry = entry?;
         let name = entry.file_name().to_str().unwrap_or_default().to_string();
         // Match: log_<node>.jsonl, log_<node>.1.jsonl, log_<node>.txt
-        let prefix = format!("log_{node_str}");
-        if name.starts_with(&prefix) && (name.ends_with(".jsonl") || name.ends_with(".txt")) {
+        let stem = format!("log_{node_str}");
+        let rest = match name.strip_prefix(&stem) {
+            Some(rest) => rest,
+            None => continue,
+        };
+        if rest.starts_with('.') && (rest.ends_with(".jsonl") || rest.ends_with(".txt")) {
             files.push(entry.path());
         }
     }
@@ -898,5 +902,21 @@ mod tests {
         let now = Utc::now();
         let msg = make_msg("hello", Some("sensor"), Some("target"), now);
         assert!(!matches_grep(&msg, Some("zzz_missing")));
+    }
+
+    #[test]
+    fn find_node_log_files_does_not_match_prefix_sharing_nodes() {
+        use std::fs::File;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        File::create(dir.path().join("log_cam.jsonl")).unwrap();
+        File::create(dir.path().join("log_cam_left.jsonl")).unwrap();
+
+        let node_id = NodeId::from("cam".to_string());
+        let files = find_node_log_files(dir.path(), &node_id).unwrap();
+
+        assert_eq!(files.len(), 1);
+        assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
     }
 }
