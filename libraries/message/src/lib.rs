@@ -15,9 +15,6 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// Read timeout for TCP/socket connections (30 seconds).
 pub const TCP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// WebSocket ping interval for keepalive (10 seconds).
-pub const WS_PING_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
 pub mod auth;
 pub mod common;
 pub mod config;
