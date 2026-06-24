@@ -240,6 +240,11 @@ impl Executable for Run {
         let result = rt
             .block_on(handle)
             .context("dora-run daemon task panicked")??;
+        // Bound runtime shutdown to prevent hanging on blocking Drop impls
+        // (e.g. zenoh::Session::drop blocks tokio workers on macOS during
+        // TCP teardown). Without this, `rt` drops implicitly at end of scope
+        // and waits indefinitely for all worker threads to exit (#2287).
+        rt.shutdown_timeout(Duration::from_secs(10));
         handle_dataflow_result(result, None)
     }
 }

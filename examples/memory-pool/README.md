@@ -8,21 +8,15 @@ This example exercises Dora's pinned memory-pool transport for repeated tensor t
 
 ```bash
 pip install dora-rs-cli  # if not already present
-
-# Install pyarrow with GPU support
-conda install pyarrow "arrow-cpp-proc=*=cuda" -c conda-forge
-python -c "import pyarrow.cuda"
-
-# Install numba for CUDA helper interop
-pip install numba
-python -c "import numba.cuda"
-
-# Install torch if it is not already present
-pip install torch
-python -c "import torch"
 ```
 
-If you run a CUDA receiver scenario, also verify CUDA is available:
+When running with `--uv`, Dora provisions torch into the per-node managed environments automatically via the `build:` steps in each YAML file. If you run outside `--uv`, install the dependencies manually:
+
+```bash
+pip install torch numpy pyarrow tqdm
+```
+
+For CUDA receiver scenarios (`cpu2cuda.yml`, `cuda2cpu.yml`), also verify CUDA is available:
 
 ```bash
 python -c "import torch; assert torch.cuda.is_available()"
@@ -32,18 +26,20 @@ python -c "import torch; assert torch.cuda.is_available()"
 
 - `sender.py` — registers and updates a memory pool from the sender side.
 - `receiver.py` — reads from the memory pool, measures throughput, and triggers lifecycle scenarios.
+- `cpu2cpu.yml` — positive throughput test for CPU sender → CPU receiver (GPU-less CI safe).
 - `cpu2cuda.yml` — positive throughput test for CPU sender → CUDA receiver.
 - `cuda2cpu.yml` — positive throughput test for CUDA sender → CPU receiver.
-- `duplicate_free.yml` — receiver frees the same memory pool twice.
-- `read_after_free.yml` — receiver frees, then reads the same memory pool again.
-- `write_after_free.yml` — sender frees, then writes the same memory pool again.
-- `auto_cleanup.yml` — receiver does not free; daemon cleanup is expected on shutdown.
+- `duplicate_free.yml` — receiver frees the same memory pool twice (CPU receiver).
+- `read_after_free.yml` — receiver frees, then reads the same memory pool again (CPU receiver).
+- `write_after_free.yml` — sender frees, then writes the same memory pool again (CPU receiver).
+- `auto_cleanup.yml` — receiver does not free; daemon cleanup is expected on shutdown (CPU receiver).
 
 ## Run
 
 ### Positive throughput scenarios
 
 ```bash
+dora run examples/memory-pool/cpu2cpu.yml
 dora run examples/memory-pool/cpu2cuda.yml
 dora run examples/memory-pool/cuda2cpu.yml
 ```
@@ -77,5 +73,7 @@ Expected warnings/info:
 ## Notes
 
 - The scenario is controlled through the `memory_pool_scenario` environment variable in each YAML file.
-- The CUDA receiver scenarios require a working CUDA runtime.
+- `cpu2cpu.yml` and the four negative-lifecycle YAMLs use CPU-only receiver (`receiver_device: cpu`) and are safe for GPU-less CI runners.
+- The CUDA receiver scenarios (`cpu2cuda.yml`, `cuda2cpu.yml`) require a working CUDA runtime.
 - The negative scenarios use a reduced message count to keep lifecycle validation short and focused.
+- When running with `--uv`, each YAML's `build:` step provisions torch (CPU-only from `download.pytorch.org/whl/cpu`) into per-node managed environments, so no pre-installed torch is needed.
