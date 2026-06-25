@@ -354,8 +354,16 @@ impl EventStream {
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
                                     // persistent decoder stays in sync.
-                                    let mut decoder =
-                                        decoder.lock().unwrap_or_else(|p| p.into_inner());
+                                    let mut decoder = decoder.lock().unwrap_or_else(|poison| {
+                                        // A prior callback panicked mid-decode
+                                        // (caught below), poisoning the lock and
+                                        // leaving the decoder in an undefined
+                                        // state. Reset it so the next batch is not
+                                        // fed into a corrupt decoder.
+                                        let mut guard = poison.into_inner();
+                                        guard.reset();
+                                        guard
+                                    });
                                     let data =
                                         match decode_zenoh_sample(&mut decoder, &metadata, payload)
                                         {

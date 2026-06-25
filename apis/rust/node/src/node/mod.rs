@@ -1228,19 +1228,33 @@ impl DoraNode {
                     }
                 }
 
-                // Small heap message: apply the schema-once optimization — send
-                // the full IPC stream periodically (and on schema change), but
-                // only the schema-less record batch in between. Falls back to the
-                // verbatim full stream if it isn't parseable.
-                let (attachment, is_batch) =
+                // Apply the schema-once optimization only to genuinely small
+                // messages. A large message reaches this arm only when SHM
+                // allocation failed; send it as a full stream — the per-message
+                // schema overhead is negligible at that size, and mixing
+                // schema-less batches into an output whose other messages take
+                // the SHM full-stream path would strand the receiver's decoder.
+                let schema_once = if avec.len() < self.zenoh_zero_copy_threshold {
                     schema_once_decision(&mut self.zenoh_schema_state, output_id, &avec, metadata)
-                        .unwrap_or_else(|| (metadata_bytes.clone(), false));
-                let payload: &[u8] = if is_batch {
-                    arrow_utils::ipc_encode::batch_slice(&avec).unwrap_or(&avec)
                 } else {
-                    &avec
+                    None
                 };
-                match publisher.put(payload).attachment(&attachment[..]).wait() {
+                // Pick the (payload, attachment). Never ship a full stream under
+                // a `BATCH=true` attachment: if the batch slice can't be taken
+                // (cannot happen for a real stream — defensive), send the full
+                // stream with the plain metadata so the receiver decodes it
+                // standalone instead of feeding it to `decode_batch`.
+                let (payload, attachment): (&[u8], &[u8]) = match schema_once.as_ref() {
+                    Some((att, is_batch)) if *is_batch => {
+                        match arrow_utils::ipc_encode::batch_slice(&avec) {
+                            Some(slice) => (slice, att.as_slice()),
+                            None => (&avec[..], &metadata_bytes[..]),
+                        }
+                    }
+                    Some((att, _)) => (&avec[..], att.as_slice()),
+                    None => (&avec[..], &metadata_bytes[..]),
+                };
+                match publisher.put(payload).attachment(attachment).wait() {
                     Ok(()) => Ok(PublishOutcome::Published),
                     Err(e) => {
                         tracing::warn!("zenoh publish failed ({e}); falling back to daemon path");

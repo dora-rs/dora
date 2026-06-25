@@ -539,7 +539,20 @@ impl InputDecoder {
         if self.schema_hash != Some(schema_hash) {
             return Ok(None);
         }
-        decode_one_batch(&mut self.decoder, buffer).map(Some)
+        match decode_one_batch(&mut self.decoder, buffer) {
+            Ok(array) => Ok(Some(array)),
+            Err(e) => {
+                // A failed batch decode (truncated/corrupt payload — zenoh
+                // tail-loss or a malicious peer) leaves the persistent decoder
+                // mid-message. Reset it so the NEXT batch is not fed into that
+                // poisoned state (which would mis-decode it into this message's
+                // stale buffers and deliver corrupt data as a valid input).
+                // Subsequent batches are then dropped (`Ok(None)`) until the
+                // next periodic full stream re-primes a fresh decoder.
+                self.reset();
+                Err(e)
+            }
+        }
     }
 }
 
@@ -694,6 +707,59 @@ mod tests {
         assert_eq!(
             dec.decode_batch(batch_buf(&after), 99).unwrap().unwrap(),
             after
+        );
+    }
+
+    /// Regression: a failed (truncated) batch decode must reset the persistent
+    /// decoder, so the next valid batch is dropped (until re-primed) rather than
+    /// silently mis-decoded into the truncated message's stale state.
+    #[test]
+    fn decode_batch_resets_on_error_no_corruption() {
+        fn batch_buf(array: &ArrayData) -> Vec<u8> {
+            let len = batch_fast_path_len(array).unwrap();
+            let mut buf = vec![0u8; len];
+            encode_batch_into(array, &mut buf).unwrap();
+            buf
+        }
+
+        let mut dec = InputDecoder::new();
+        let first = Float32Array::from(vec![1.0, 2.0, 3.0]).into_data();
+        dec.decode_full(Buffer::from_vec(fast_encode(&first)), 7)
+            .unwrap();
+
+        // A valid batch decodes.
+        let good = Float32Array::from(vec![4.0, 5.0]).into_data();
+        assert_eq!(
+            dec.decode_batch(Buffer::from_vec(batch_buf(&good)), 7)
+                .unwrap()
+                .unwrap(),
+            good
+        );
+
+        // A truncated batch errors (body shorter than the declared length).
+        let dropped = Float32Array::from(vec![6.0, 7.0, 8.0, 9.0]).into_data();
+        let mut truncated = batch_buf(&dropped);
+        truncated.truncate(truncated.len() - 8);
+        assert!(dec.decode_batch(Buffer::from_vec(truncated), 7).is_err());
+
+        // The next valid batch (same hash) must now be DROPPED, not mis-decoded.
+        let after = Float32Array::from(vec![10.0, 11.0]).into_data();
+        assert!(
+            dec.decode_batch(Buffer::from_vec(batch_buf(&after)), 7)
+                .unwrap()
+                .is_none(),
+            "after a failed batch the decoder must drop until re-primed, not corrupt"
+        );
+
+        // A new full stream re-primes; batches work again.
+        dec.decode_full(Buffer::from_vec(fast_encode(&after)), 7)
+            .unwrap();
+        let final_batch = Float32Array::from(vec![12.0]).into_data();
+        assert_eq!(
+            dec.decode_batch(Buffer::from_vec(batch_buf(&final_batch)), 7)
+                .unwrap()
+                .unwrap(),
+            final_batch
         );
     }
 
