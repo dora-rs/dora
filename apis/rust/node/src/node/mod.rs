@@ -7,19 +7,13 @@ use crate::{
     },
 };
 
-use self::{
-    arrow_utils::{
-        compute_schema_hash, copy_array_into_sample, encode_arrow_ipc, required_data_size,
-    },
-    control_channel::ControlChannel,
-};
+use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
 use aligned_vec::{AVec, ConstAlign};
-use arrow::array::Array;
+use arrow::array::{Array, ArrayData};
 use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
-    metadata::ArrowTypeInfoExt,
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST},
     types::TypeRegistry,
     uhlc,
@@ -27,10 +21,9 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
-    descriptor::OutputFraming,
     metadata::{
-        ArrowTypeInfo, FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters,
-        Parameter, SEGMENT_ID, SEQ, SESSION_ID,
+        FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
+        SEGMENT_ID, SEQ, SESSION_ID,
     },
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
@@ -783,12 +776,13 @@ impl DoraNode {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
-        let mut sample = self.allocate_data_sample(data_len)?;
-        data(&mut sample);
-
-        let type_info = ArrowTypeInfo::byte_array(data_len);
-
-        self.send_output_sample(output_id, type_info, parameters, Some(sample))
+        // The receiver expects a self-describing Arrow IPC stream, so wrap the
+        // user's raw bytes in a `UInt8Array` and IPC-encode it just like
+        // `send_output` does for any other array.
+        let mut buf = vec![0u8; data_len];
+        data(&mut buf);
+        let array = arrow::array::UInt8Array::from(buf).into_data();
+        self.send_output_array(output_id, parameters, array)
     }
 
     /// Sends the give Arrow array as an output message.
@@ -842,51 +836,45 @@ impl DoraNode {
             }
         }
 
-        let framing = self
-            .node_config
-            .output_framing
-            .get(&output_id)
-            .copied()
-            .unwrap_or_default();
+        self.send_output_array(output_id, parameters, arrow_array)
+    }
 
-        match framing {
-            OutputFraming::Raw => {
-                let total_len = required_data_size(&arrow_array);
-                let mut sample = self.allocate_data_sample(total_len)?;
-                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
+    /// IPC-encode `arrow_array` into a (shared-memory) sample and send it.
+    ///
+    /// Every data-plane payload is a self-describing Arrow IPC stream. Uses the
+    /// hand-rolled 1-copy fast path when the array type is eligible, falling
+    /// back to the official writer (one extra copy) otherwise. The shared send
+    /// path for [`send_output`](Self::send_output) and
+    /// [`send_output_raw`](Self::send_output_raw).
+    fn send_output_array(
+        &mut self,
+        output_id: DataId,
+        mut parameters: MetadataParameters,
+        arrow_array: ArrayData,
+    ) -> NodeResult<()> {
+        parameters.insert(
+            FRAMING.to_string(),
+            Parameter::String(FRAMING_ARROW_IPC.to_string()),
+        );
 
-                self.send_output_sample(output_id, type_info, parameters, Some(sample))
-                    .wrap_err("failed to send output")?;
-            }
-            OutputFraming::ArrowIpc => {
-                let ipc_buf = encode_arrow_ipc(&arrow_array)
+        let sample = match ipc_encode::ipc_fast_path_len(&arrow_array) {
+            Some(len) => {
+                let mut s = self.allocate_data_sample(len)?;
+                ipc_encode::encode_ipc_into(&arrow_array, &mut s)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-
-                let mut sample = self.allocate_data_sample(ipc_buf.len())?;
-                sample.copy_from_slice(&ipc_buf);
-
-                let type_info = ArrowTypeInfo {
-                    data_type: arrow_array.data_type().clone(),
-                    len: arrow_array.len(),
-                    null_count: arrow_array.null_count(),
-                    validity: None,
-                    offset: 0,
-                    buffer_offsets: vec![],
-                    child_data: vec![],
-                    field_names: None,
-                    schema_hash: Some(compute_schema_hash(arrow_array.data_type())),
-                };
-
-                let mut parameters = parameters;
-                parameters.insert(
-                    FRAMING.to_string(),
-                    Parameter::String(FRAMING_ARROW_IPC.to_string()),
-                );
-
-                self.send_output_sample(output_id, type_info, parameters, Some(sample))
-                    .wrap_err("failed to send output")?;
+                s
             }
-        }
+            None => {
+                let bytes = ipc_encode::encode_ipc_to_vec(&arrow_array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                let mut s = self.allocate_data_sample(bytes.len())?;
+                s.copy_from_slice(&bytes);
+                s
+            }
+        };
+
+        self.send_output_sample(output_id, parameters, Some(sample))
+            .wrap_err("failed to send output")?;
 
         Ok(())
     }
@@ -922,43 +910,18 @@ impl DoraNode {
         })
     }
 
-    /// Send the give raw byte data with the provided type information.
+    /// Sends the given [`DataSample`] as output.
     ///
-    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
-    ///
-    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
-    /// configuration file.
-    pub fn send_typed_output<F>(
-        &mut self,
-        output_id: DataId,
-        type_info: ArrowTypeInfo,
-        parameters: MetadataParameters,
-        data_len: usize,
-        data: F,
-    ) -> NodeResult<()>
-    where
-        F: FnOnce(&mut [u8]),
-    {
-        if !self.validate_output(&output_id) {
-            return Ok(());
-        };
-
-        let mut sample = self.allocate_data_sample(data_len)?;
-        data(&mut sample);
-
-        self.send_output_sample(output_id, type_info, parameters, Some(sample))
-    }
-
-    /// Sends the given [`DataSample`] as output, combined with the given type information.
-    ///
-    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
+    /// The sample must already be a self-describing Arrow IPC stream (the
+    /// `FRAMING_ARROW_IPC` parameter should be set). It is recommended to use a
+    /// function like [`send_output`][Self::send_output] instead, which handles
+    /// the encoding.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
-        type_info: ArrowTypeInfo,
         #[allow(unused_mut)] mut parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> NodeResult<()> {
@@ -980,7 +943,7 @@ impl DoraNode {
             }
         }
 
-        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
+        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
 
         let finalized = sample.map(|sample| sample.finalize());
 
@@ -2193,6 +2156,55 @@ mod tests {
         match sample.finalize().into_data_message() {
             DataMessage::Vec(v) => assert_eq!(v.as_slice(), &[1, 2, 3, 4, 5, 6, 7, 8]),
         }
+    }
+
+    /// End-to-end wire contract: a few representative arrays IPC-encoded (fast
+    /// path) into a sample and decoded back via `decode_arrow_ipc_zero_copy`
+    /// must equal the input. This is the send->receive round-trip the data
+    /// plane relies on (zenoh can't be smoke-tested here, so this stands in).
+    #[test]
+    fn send_output_ipc_roundtrip() {
+        use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use arrow::array::{ArrayRef, Float32Array, StringArray, StructArray, UInt64Array};
+        use arrow_schema::{DataType, Field};
+        use std::ptr::NonNull;
+
+        fn roundtrip(data: ArrayData) {
+            let len = ipc_fast_path_len(&data).expect("array should be fast-path eligible");
+            let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
+            encode_ipc_into(&data, &mut buf).expect("fast-path IPC encode");
+
+            // Wrap the aligned sample as an Arrow Buffer (no copy), mirroring the
+            // receive path, then decode.
+            let ptr = NonNull::new(buf.as_ptr() as *mut u8).unwrap();
+            let blen = buf.len();
+            // SAFETY: ptr/len describe `buf`; the Arc keeps it alive.
+            let buffer =
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, blen, Arc::new(buf)) };
+            let decoded = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy IPC decode");
+            assert_eq!(
+                data, decoded,
+                "IPC send->receive round-trip must preserve the array"
+            );
+        }
+
+        roundtrip(Float32Array::from(vec![1.0, 2.5, -3.0, 4.0]).into_data());
+        roundtrip(UInt64Array::from(vec![Some(1), None, Some(3)]).into_data());
+        roundtrip(StringArray::from(vec![Some("hello"), None, Some("world")]).into_data());
+        roundtrip(
+            StructArray::from(vec![
+                (
+                    Arc::new(Field::new("v", DataType::UInt64, true)),
+                    Arc::new(UInt64Array::from(vec![Some(1), None, Some(3)])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("s", DataType::Utf8, true)),
+                    Arc::new(StringArray::from(vec![Some("a"), Some("bb"), None])) as ArrayRef,
+                ),
+            ])
+            .into_data(),
+        );
     }
 
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the

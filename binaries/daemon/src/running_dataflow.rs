@@ -1,8 +1,8 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
-    pending::PendingNodes, send_with_timestamp,
+    DoraEvent, OutputId, coordinator, fault_tolerance::CascadingErrorCauses, pending::PendingNodes,
+    send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId},
@@ -330,11 +330,8 @@ impl RunningDataflow {
                     #[cfg(not(feature = "telemetry"))]
                     let parameters = BTreeMap::new();
 
-                    let metadata = metadata::Metadata::from_parameters(
-                        clock.new_timestamp(),
-                        empty_type_info(),
-                        parameters,
-                    );
+                    let metadata =
+                        metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
 
                     let event = Timestamped {
                         inner: DoraEvent::Timer {

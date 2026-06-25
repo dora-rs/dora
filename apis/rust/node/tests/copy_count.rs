@@ -9,11 +9,10 @@
 //! | strategy                       | payload copies | intermediate alloc |
 //! |--------------------------------|----------------|--------------------|
 //! | construct in place (write dst) | 0              | ~0                 |
-//! | raw `copy_array_into_sample`   | 1 (into dst)   | ~0                 |
 //! | IPC fast `encode_ipc_into`     | 1 (into dst)   | ~0                 |
 //! | IPC fallback `encode_ipc_to_vec` | 2 (array->Vec->dst) | >= payload   |
 //!
-//! The first three write straight into the caller's buffer and never allocate a
+//! The first two write straight into the caller's buffer and never allocate a
 //! second payload-sized buffer; the fallback allocates a full payload-sized
 //! `Vec` (the official writer's staging buffer). This is the regression guard
 //! for the #1745 two-copy SHM path that W0-A removed and the fast-vs-fallback
@@ -26,7 +25,6 @@ use dora_node_api::arrow::array::{Array, Float32Array};
 use dora_node_api::arrow_utils::ipc_encode::{
     encode_ipc_into, encode_ipc_to_vec, ipc_fast_path_len,
 };
-use dora_node_api::arrow_utils::{copy_array_into_sample, required_data_size};
 
 /// Bytes allocated since process start (only the growth, for reallocs).
 static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
@@ -78,71 +76,60 @@ fn big_array() -> dora_node_api::arrow::array::ArrayData {
 /// builder, and the small per-buffer metadata vectors are all far below this.
 const NO_PAYLOAD_INTERMEDIATE: usize = PAYLOAD / 8;
 
+/// All strategies are measured in ONE test on purpose: the allocation counter
+/// is process-global, so two measured regions running on parallel test threads
+/// would pollute each other's deltas. A single test runs alone in this binary,
+/// keeping every `allocated_during` window free of concurrent allocations. (If
+/// you add another `#[test]` here, gate both with a shared mutex or run
+/// `--test-threads=1`.)
 #[test]
-fn construct_in_place_allocates_no_payload_intermediate() {
-    // Build the message straight into a pre-allocated sample (0 copies from a
-    // source array — the write *is* the construction).
-    let mut sample = vec![0u8; PAYLOAD];
-    sample.iter_mut().for_each(|b| *b = 0); // pre-fault
+fn send_strategies_intermediate_allocation() {
+    // --- construct in place: build straight into a pre-allocated sample (0
+    // copies from a source array — the write *is* the construction). ---
+    {
+        let mut sample = vec![0u8; PAYLOAD];
+        sample.iter_mut().for_each(|b| *b = 0); // pre-fault
+        let (allocated, ()) = allocated_during(|| {
+            for (i, chunk) in sample.chunks_exact_mut(4).enumerate() {
+                chunk.copy_from_slice(&(i as f32).to_le_bytes());
+            }
+        });
+        assert!(
+            allocated < NO_PAYLOAD_INTERMEDIATE,
+            "construct-in-place allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
+             expected no payload-sized intermediate"
+        );
+    }
 
-    let (allocated, ()) = allocated_during(|| {
-        for (i, chunk) in sample.chunks_exact_mut(4).enumerate() {
-            chunk.copy_from_slice(&(i as f32).to_le_bytes());
-        }
-    });
-    assert!(
-        allocated < NO_PAYLOAD_INTERMEDIATE,
-        "construct-in-place allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
-         expected no payload-sized intermediate"
-    );
-}
+    // --- IPC fast path: writes the payload straight into the sample, no body Vec. ---
+    {
+        let data = big_array();
+        let len = ipc_fast_path_len(&data).expect("primitive array is fast-path eligible");
+        let mut sample = vec![0u8; len];
+        sample.iter_mut().for_each(|b| *b = 0); // pre-fault
+        let (allocated, result) = allocated_during(|| encode_ipc_into(&data, &mut sample));
+        result.expect("fast-path encode");
+        assert!(
+            allocated < NO_PAYLOAD_INTERMEDIATE,
+            "IPC fast path allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
+             it must write the payload straight into the sample with no body Vec"
+        );
+    }
 
-#[test]
-fn raw_copy_allocates_no_payload_intermediate() {
-    let data = big_array();
-    let mut sample = vec![0u8; required_data_size(&data)];
-    sample.iter_mut().for_each(|b| *b = 0); // pre-fault
-
-    let (allocated, _info) = allocated_during(|| copy_array_into_sample(&mut sample, &data));
-    assert!(
-        allocated < NO_PAYLOAD_INTERMEDIATE,
-        "raw copy_array_into_sample allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
-         the payload should be copied once, straight into the sample"
-    );
-}
-
-#[test]
-fn ipc_fast_allocates_no_payload_intermediate() {
-    let data = big_array();
-    let len = ipc_fast_path_len(&data).expect("primitive array is fast-path eligible");
-    let mut sample = vec![0u8; len];
-    sample.iter_mut().for_each(|b| *b = 0); // pre-fault
-
-    let (allocated, result) = allocated_during(|| encode_ipc_into(&data, &mut sample));
-    result.expect("fast-path encode");
-    assert!(
-        allocated < NO_PAYLOAD_INTERMEDIATE,
-        "IPC fast path allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
-         it must write the payload straight into the sample with no body Vec"
-    );
-}
-
-#[test]
-fn ipc_fallback_allocates_payload_intermediate() {
-    // Force the fallback with a Float32 array (it IS fast-path eligible, but
-    // `encode_ipc_to_vec` always uses the official writer, which stages the body
-    // in a payload-sized Vec — the second copy).
-    let data = big_array();
-
-    let (allocated, vec) = allocated_during(|| encode_ipc_to_vec(&data).unwrap());
-    assert!(
-        vec.len() >= PAYLOAD,
-        "fallback stream {} should contain the whole payload",
-        vec.len()
-    );
-    assert!(
-        allocated >= PAYLOAD,
-        "IPC fallback allocated only {allocated} bytes (< {PAYLOAD}); \
-         the official writer is expected to stage a payload-sized Vec"
-    );
+    // --- IPC fallback: the official writer stages the body in a payload-sized
+    // Vec (the second copy). ---
+    {
+        let data = big_array();
+        let (allocated, vec) = allocated_during(|| encode_ipc_to_vec(&data).unwrap());
+        assert!(
+            vec.len() >= PAYLOAD,
+            "fallback stream {} should contain the whole payload",
+            vec.len()
+        );
+        assert!(
+            allocated >= PAYLOAD,
+            "IPC fallback allocated only {allocated} bytes (< {PAYLOAD}); \
+             the official writer is expected to stage a payload-sized Vec"
+        );
+    }
 }

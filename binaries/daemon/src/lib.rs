@@ -30,10 +30,9 @@ use dora_message::{
     },
     daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
-    metadata::{self, ArrowTypeInfo, MetadataParameters},
+    metadata::{self, MetadataParameters},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use dora_node_api::arrow::datatypes::DataType;
 use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
@@ -133,22 +132,11 @@ pub mod bench_support {
     /// Create a reusable fixture for the routing hot path (call once per config).
     pub fn make_fixture(clock: &HLC, payload_size: usize) -> RoutingFixture {
         let data = vec![0u8; payload_size];
-        let type_info = ArrowTypeInfo {
-            data_type: dora_node_api::arrow::datatypes::DataType::UInt8,
-            len: payload_size,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         RoutingFixture {
             sender_id: "sender".to_string().into(),
             output_id: "output".to_string().into(),
             data_msg: DataMessage::Vec(AVec::from_slice(128, &data)),
-            metadata: metadata::Metadata::new(clock.new_timestamp(), type_info),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
         }
     }
 
@@ -3584,20 +3572,8 @@ impl Daemon {
                     }
 
                     let timestamp = self.clock.new_timestamp();
-                    let type_info = dora_message::metadata::ArrowTypeInfo {
-                        data_type: DataType::Null,
-                        len: 0,
-                        null_count: 0,
-                        validity: None,
-                        offset: 0,
-                        buffer_offsets: vec![],
-                        child_data: vec![],
-                        field_names: None,
-                        schema_hash: None,
-                    };
-
                     Ok(dora_message::metadata::Metadata::from_parameters(
-                        timestamp, type_info, parameters,
+                        timestamp, parameters,
                     ))
                 })();
 
@@ -4332,15 +4308,21 @@ impl Daemon {
                     }
                 };
 
-                // Convert to Arrow once, share the sample across subscribers
+                // Convert to a self-describing Arrow IPC stream once, share the
+                // sample across subscribers. The node-side receive path decodes
+                // the IPC stream, so set the `arrow-ipc` framing parameter.
                 use dora_arrow_convert::IntoArrow;
                 let array = json.as_str().into_arrow();
                 let array: dora_node_api::arrow::array::ArrayData = array.into();
-                let total_len = dora_node_api::arrow_utils::required_data_size(&array);
-                let mut sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
-                    aligned_vec::AVec::__from_elem(128, 0, total_len);
-                let type_info =
-                    dora_node_api::arrow_utils::copy_array_into_sample(&mut sample, &array);
+                let ipc_bytes = match dora_node_api::arrow_utils::encode_arrow_ipc(&array) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("failed to Arrow-IPC-encode LogMessage: {e}");
+                        return Ok(());
+                    }
+                };
+                let sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
+                    aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
                 let mut closed = Vec::new();
@@ -4366,8 +4348,15 @@ impl Daemon {
                         continue;
                     };
 
+                    let mut params = MetadataParameters::new();
+                    params.insert(
+                        dora_message::metadata::FRAMING.to_string(),
+                        dora_message::metadata::Parameter::String(
+                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                        ),
+                    );
                     let metadata =
-                        metadata::Metadata::new(self.clock.new_timestamp(), type_info.clone());
+                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
 
                     let send_result = send_with_timestamp(
                         channel,
@@ -5431,20 +5420,6 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 // RunningDataflow and related types are in running_dataflow.rs
 // FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
 
-pub(crate) fn empty_type_info() -> ArrowTypeInfo {
-    ArrowTypeInfo {
-        data_type: DataType::Null,
-        len: 0,
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: Vec::new(),
-        child_data: Vec::new(),
-        field_names: None,
-        schema_hash: None,
-    }
-}
-
 fn set_up_ctrlc_handler(
     clock: Arc<HLC>,
 ) -> eyre::Result<tokio::sync::mpsc::Receiver<Timestamped<Event>>> {
@@ -6127,20 +6102,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Send data from upstream
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,
@@ -6178,17 +6140,6 @@ mod fault_tolerance_tests {
     async fn data_bytes_returned_with_and_without_local_receivers() {
         let clock = test_clock();
         let payload = [1u8, 2, 3, 4];
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::UInt8,
-            len: payload.len(),
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let sender: NodeId = "sender".to_string().into();
         let output: DataId = "output".to_string().into();
 
@@ -6196,7 +6147,7 @@ mod fault_tolerance_tests {
         // is moved out (no copy) but must still be returned for the remote
         // forwarding path.
         let mut df = test_dataflow();
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info.clone());
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender.clone(),
@@ -6223,7 +6174,7 @@ mod fault_tolerance_tests {
             .insert((receiver.clone(), input.clone()));
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info);
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender,
@@ -6301,20 +6252,7 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
 
         // Step 2: Upstream sends data again — recovery
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,

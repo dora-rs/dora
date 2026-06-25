@@ -46,8 +46,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
-use dora_message::metadata::ArrowTypeInfo;
-use dora_node_api::dora_core::metadata::ArrowTypeInfoExt;
 use dora_node_api::{DataSample, DoraNode, MetadataParameters, dora_core::config::DataId};
 use dora_operator_api_python::DelayedCleanup;
 #[cfg(Py_3_11)]
@@ -264,7 +262,6 @@ impl SampleBuffer {
 /// Per-send metadata. Lives in `SampleHandler.meta` until `send()` takes it.
 struct SampleMeta {
     data_id: DataId,
-    type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
 }
 
@@ -315,12 +312,10 @@ impl SampleHandler {
         node: DelayedCleanup<DoraNode>,
     ) -> eyre::Result<Self> {
         let sample = node.get_mut().allocate_data_sample(data_length)?;
-        let type_info = ArrowTypeInfo::byte_array(data_length);
         Ok(Self {
             node,
             meta: Some(SampleMeta {
                 data_id,
-                type_info,
                 parameters,
             }),
             state: SampleBufferState::new(sample),
@@ -393,10 +388,16 @@ impl SampleHandler {
 
         let sample = sample.ok_or_else(|| eyre::eyre!("DataSample missing (concurrent send?)"))?;
 
-        // 3. Send (zero additional copies).
+        // 3. Send. The data plane is Arrow-IPC-only, so the raw bytes Python
+        //    wrote into the sample are wrapped in a `UInt8Array` and IPC-encoded
+        //    by `send_output_raw` (the buffer-protocol fast path's zero-copy
+        //    benefit no longer survives the IPC framing).
+        let data_len = sample.len();
         self.node
             .get_mut()
-            .send_output_sample(meta.data_id, meta.type_info, meta.parameters, Some(sample))
+            .send_output_raw(meta.data_id, meta.parameters, data_len, |out| {
+                out.copy_from_slice(&sample);
+            })
             .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
         Ok(())
     }

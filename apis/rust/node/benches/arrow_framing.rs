@@ -1,13 +1,11 @@
-//! Encode/decode benchmarks for Dora's Arrow framing.
+//! Encode/decode benchmarks for Dora's Arrow IPC framing.
 //!
 //! Encode strategies (all write into a **pre-allocated, pre-faulted, reused**
 //! destination, so first-touch page faults don't confound the measurement):
-//!   * `raw`          — `copy_array_into_sample` (custom raw buffer layout)
 //!   * `ipc_fast`     — `ipc_encode::encode_ipc_into` (1-copy IPC fast path)
 //!   * `ipc_official` — `encode_arrow_ipc` (`StreamWriter`, stages a body `Vec`)
 //!
 //! Decode strategies:
-//!   * `raw`                        — `buffer_into_arrow_array`
 //!   * `ipc_streamreader_copy`      — `decode_arrow_ipc` (`StreamReader`, copies)
 //!   * `ipc_streamdecoder_zerocopy` — `decode_arrow_ipc_zero_copy` (aliases input)
 //!
@@ -21,10 +19,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, 
 use dora_node_api::arrow::array::{Array, ArrayData, Float32Array};
 use dora_node_api::arrow::buffer::Buffer;
 use dora_node_api::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
-use dora_node_api::arrow_utils::{
-    buffer_into_arrow_array, copy_array_into_sample, decode_arrow_ipc, decode_arrow_ipc_zero_copy,
-    encode_arrow_ipc, required_data_size,
-};
+use dora_node_api::arrow_utils::{decode_arrow_ipc, decode_arrow_ipc_zero_copy, encode_arrow_ipc};
 
 /// Copy `bytes` into a 128-byte-aligned Arrow buffer, mirroring how Dora's
 /// receive path backs payloads (`AVec<u8, ConstAlign<128>>` / page-aligned
@@ -62,13 +57,6 @@ fn bench_framing(c: &mut Criterion) {
         // -------- encode (reused, pre-faulted destinations) --------
         let mut enc = c.benchmark_group("encode");
         enc.throughput(Throughput::Bytes(payload_bytes));
-        enc.bench_with_input(BenchmarkId::new("raw", payload_bytes), &data, |b, data| {
-            let mut dst = prefaulted(required_data_size(data));
-            b.iter(|| {
-                let info = copy_array_into_sample(&mut dst, data);
-                black_box(&info);
-            })
-        });
         enc.bench_with_input(
             BenchmarkId::new("ipc_fast", payload_bytes),
             &data,
@@ -88,19 +76,11 @@ fn bench_framing(c: &mut Criterion) {
         enc.finish();
 
         // -------- decode (pre-encode the inputs, reuse aligned buffers) --------
-        let total = required_data_size(&data);
-        let mut sample = vec![0u8; total];
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        let raw_buf = aligned_buffer_from(&sample);
-
         let ipc_bytes = encode_arrow_ipc(&data).unwrap();
         let ipc_aligned = aligned_buffer_from(&ipc_bytes);
 
         let mut dec = c.benchmark_group("decode");
         dec.throughput(Throughput::Bytes(payload_bytes));
-        dec.bench_with_input(BenchmarkId::new("raw", payload_bytes), &(), |b, _| {
-            b.iter(|| black_box(buffer_into_arrow_array(&raw_buf, &type_info).unwrap()))
-        });
         dec.bench_with_input(
             BenchmarkId::new("ipc_streamreader_copy", payload_bytes),
             &(),

@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -29,6 +26,7 @@ use crate::{
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::RawData,
 };
+use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::{Input, NodeId},
     uhlc,
@@ -994,7 +992,7 @@ impl EventStream {
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data_inner = data.map(Arc::unwrap_or_clone);
-                    let result = data_to_arrow_array(data_inner, &metadata);
+                    let result = data_to_arrow_array(data_inner);
                     match result {
                         Ok(data) => Event::Input {
                             id,
@@ -1034,7 +1032,7 @@ impl EventStream {
                 metadata,
                 payload,
             } => {
-                let result = zenoh_payload_to_arrow_array(payload, &metadata);
+                let result = zenoh_payload_to_arrow_array(payload);
                 match result {
                     Ok(data) => Event::Input {
                         id,
@@ -1084,222 +1082,57 @@ unsafe impl Send for ZBytesAllocation {}
 impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 
 /// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
+///
+/// Every data-plane payload is a self-describing Arrow IPC stream, so the
+/// decode needs no type sidecar. An empty payload is a metadata-only message
+/// and maps to the unit array.
 fn zenoh_payload_to_arrow_array(
     payload: zenoh::bytes::ZBytes,
-    metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc_zero_copy};
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
     use std::ptr::NonNull;
-
-    let is_ipc = dora_message::metadata::get_string_param(
-        &metadata.parameters,
-        dora_message::metadata::FRAMING,
-    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
 
     if payload.is_empty() {
-        // Mirror the daemon raw path (`arrow_utils::buffer_into_arrow_array`):
-        // an empty payload still carries a meaningful `type_info`, so rebuild
-        // the array from it with an empty backing buffer. This preserves both
-        // the declared type (a zero-length *typed* array stays typed, avoiding
-        // a downstream `as_primitive` panic — cross-transport non-determinism,
-        // dora-rs/dora#2027) AND the declared length (a `NullArray::new(n)` or
-        // struct-of-nulls keeps its length `n` instead of collapsing to 0 —
-        // dora-rs/dora#2083).
-        //
-        // `data_type` is peer-controlled (bincode-decoded from the zenoh
-        // attachment). `ArrayData::try_new` is meant to validate and return an
-        // error rather than panic, but some malformed types (e.g. empty `Union`
-        // fields, a `Dictionary` with a non-integer key) can still abort inside
-        // Arrow. Keep the unwind guard so a buggy or malicious peer can't crash
-        // the node with an empty payload (#2027 anti-panic, dora-rs/dora#2083).
-        let empty = arrow::buffer::Buffer::from_vec(Vec::<u8>::new());
-        let array = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            buffer_into_arrow_array(&empty, &metadata.type_info)
-        }))
-        .map_err(|_| {
-            eyre!(
-                "cannot build an empty array for declared type {:?}",
-                metadata.type_info.data_type
-            )
-        })??;
-        return Ok(arrow::array::make_array(array));
+        return Ok(arrow::array::make_array(().into_arrow().into()));
     }
 
-    if is_ipc {
-        // Zero-copy IPC: wrap the payload as an Arrow `Buffer` (aliasing the
-        // Zenoh SHM mapping for borrowed payloads, owning the materialized Vec
-        // otherwise) and let `StreamDecoder` slice the array buffers out of it.
-        // It realigns internally only if the payload is under-aligned, so no
-        // explicit alignment gating is needed here.
-        let raw_buffer = match payload.to_bytes() {
-            std::borrow::Cow::Borrowed(slice) => {
-                let ptr =
-                    NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
-                let len = slice.len();
-                // SAFETY: `ptr` points into the SHM region owned by `payload`;
-                // moving `payload` into the Arc keeps the region mapped for the
-                // lifetime of the Buffer.
-                unsafe {
-                    arrow::buffer::Buffer::from_custom_allocation(
-                        ptr,
-                        len,
-                        Arc::new(ZBytesAllocation(payload)),
-                    )
-                }
-            }
-            std::borrow::Cow::Owned(vec) => arrow::buffer::Buffer::from_vec(vec),
-        };
-        return decode_arrow_ipc_zero_copy(raw_buffer).map(arrow::array::make_array);
-    }
-
-    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer. Borrowed
-    // payloads point into zenoh-owned shared memory; owned payloads are
-    // materialized heap buffers. In both cases the resulting Arrow buffer must
-    // be 64-byte aligned before Arrow can safely run SIMD loads on strict ARM
-    // cores.
+    // Zero-copy IPC: wrap the payload as an Arrow `Buffer` (aliasing the Zenoh
+    // SHM mapping for borrowed payloads, owning the materialized Vec otherwise)
+    // and let `StreamDecoder` slice the array buffers out of it. It realigns
+    // internally only if the payload is under-aligned, so no explicit alignment
+    // gating is needed here.
     let raw_buffer = match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
-            if raw_payload_is_arrow_aligned(slice.as_ptr(), &metadata.type_info) {
-                // SHM path: the slice points into memory owned by `payload`
-                // (the zenoh shared-memory mapping). Wrap `payload` in an
-                // Arc as the allocation owner so the mapping stays alive for
-                // the lifetime of the Arrow buffer.
-                let ptr =
-                    NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
-                let len = slice.len();
-
-                // SAFETY: `ptr` points into the SHM region owned by
-                // `payload`. Moving `payload` into the Arc keeps the region
-                // mapped for the lifetime of the Buffer.
-                unsafe {
-                    arrow::buffer::Buffer::from_custom_allocation(
-                        ptr,
-                        len,
-                        Arc::new(ZBytesAllocation(payload)),
-                    )
-                }
-            } else {
-                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohShm, slice.as_ptr());
-                copy_to_aligned_arrow_buffer(slice)
+            let ptr =
+                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+            let len = slice.len();
+            // SAFETY: `ptr` points into the SHM region owned by `payload`;
+            // moving `payload` into the Arc keeps the region mapped for the
+            // lifetime of the Buffer.
+            unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(
+                    ptr,
+                    len,
+                    Arc::new(ZBytesAllocation(payload)),
+                )
             }
         }
-        std::borrow::Cow::Owned(vec) => {
-            if raw_payload_is_arrow_aligned(vec.as_ptr(), &metadata.type_info) {
-                // Non-SHM path: zenoh materialized a fresh Vec. Let the Arrow
-                // buffer own that Vec directly — no copy, correct ownership.
-                arrow::buffer::Buffer::from_vec(vec)
-            } else {
-                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohHeap, vec.as_ptr());
-                copy_to_aligned_arrow_buffer(&vec)
-            }
-        }
+        std::borrow::Cow::Owned(vec) => arrow::buffer::Buffer::from_vec(vec),
     };
-
-    buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
-}
-
-fn raw_payload_is_arrow_aligned(
-    base_ptr: *const u8,
-    type_info: &dora_message::metadata::ArrowTypeInfo,
-) -> bool {
-    is_aligned_for_arrow(base_ptr)
-        && raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, type_info)
-}
-
-fn raw_payload_buffer_offsets_are_arrow_aligned(
-    base_ptr: *const u8,
-    type_info: &dora_message::metadata::ArrowTypeInfo,
-) -> bool {
-    let layout = arrow::array::layout(&type_info.data_type);
-    for (buffer, spec) in type_info.buffer_offsets.iter().zip(&layout.buffers) {
-        if let arrow::array::BufferSpec::FixedWidth { alignment, .. } = *spec
-            && !(base_ptr as usize + buffer.offset).is_multiple_of(alignment)
-        {
-            return false;
-        }
-    }
-
-    type_info
-        .child_data
-        .iter()
-        .all(|child| raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, child))
-}
-
-fn is_aligned_for_arrow(ptr: *const u8) -> bool {
-    (ptr as usize).is_multiple_of(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
-}
-
-enum MisalignedPayloadSource {
-    ZenohShm,
-    ZenohHeap,
-}
-
-impl MisalignedPayloadSource {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::ZenohShm => "zenoh SHM",
-            Self::ZenohHeap => "zenoh heap",
-        }
-    }
-
-    fn warned_flag(&self) -> &'static AtomicBool {
-        static WARNED_SHM: AtomicBool = AtomicBool::new(false);
-        static WARNED_HEAP: AtomicBool = AtomicBool::new(false);
-
-        match self {
-            Self::ZenohShm => &WARNED_SHM,
-            Self::ZenohHeap => &WARNED_HEAP,
-        }
-    }
-}
-
-fn warn_misaligned_payload_once(source: MisalignedPayloadSource, ptr: *const u8) {
-    if !source.warned_flag().swap(true, Ordering::Relaxed) {
-        tracing::warn!(
-            source = source.as_str(),
-            address = %format_args!("{:#x}", ptr as usize),
-            alignment = crate::arrow_utils::ARROW_BUFFER_ALIGNMENT,
-            "received misaligned Zenoh payload, copying before Arrow decode"
-        );
-    }
-}
-
-fn copy_to_aligned_arrow_buffer(slice: &[u8]) -> arrow::buffer::Buffer {
-    use std::ptr::NonNull;
-
-    // The raw Arrow layout requires 64-byte alignment; this follows the
-    // codebase-wide AVec convention of over-aligning data buffers to 128 bytes.
-    let mut aligned: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
-        aligned_vec::AVec::__from_elem(128, 0, slice.len());
-    aligned.copy_from_slice(slice);
-    debug_assert!(is_aligned_for_arrow(aligned.as_ptr()));
-
-    let ptr = NonNull::new(aligned.as_ptr() as *mut u8).expect("aligned payload ptr is null");
-    let len = aligned.len();
-    // SAFETY: `ptr` points into `aligned`, and the Arc keeps that allocation
-    // alive for the lifetime of the Arrow Buffer.
-    unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(aligned)) }
+    decode_arrow_ipc_zero_copy(raw_buffer).map(arrow::array::make_array)
 }
 
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
-    metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data: eyre::Result<Option<RawData>> = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
     };
 
-    let is_ipc = dora_message::metadata::get_string_param(
-        &metadata.parameters,
-        dora_message::metadata::FRAMING,
-    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
-
     data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data
-            .into_arrow_array(&metadata.type_info, is_ipc)
-            .map(arrow::array::make_array)
+        raw_data.into_arrow_array().map(arrow::array::make_array)
     })
 }
 
@@ -1506,23 +1339,9 @@ impl EventStream {
     /// after `Stop` instead of dropping them (dora-rs/dora#2027).
     fn push_scheduler_input_for_testing(&mut self, id: &str) {
         use crate::event_stream::thread::EventItem;
-        use dora_message::{
-            daemon_to_node::NodeEvent,
-            metadata::{ArrowTypeInfo, Metadata},
-        };
+        use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
-        let type_info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info);
+        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
         self.scheduler.add_event(EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: id.into(),
@@ -1548,23 +1367,6 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn copy_to_aligned_arrow_buffer_realigns_misaligned_payload() {
-        let payload: Vec<u8> = (0..64).collect();
-        let mut storage = vec![0; payload.len() + 1];
-        let start = usize::from(is_aligned_for_arrow(storage.as_ptr()));
-        storage[start..start + payload.len()].copy_from_slice(&payload);
-        let misaligned = &storage[start..start + payload.len()];
-        assert!(
-            !is_aligned_for_arrow(misaligned.as_ptr()),
-            "test setup must provide a misaligned slice"
-        );
-
-        let buffer = copy_to_aligned_arrow_buffer(misaligned);
-        assert!(is_aligned_for_arrow(buffer.as_ptr()));
-        assert_eq!(buffer.as_slice(), payload.as_slice());
-    }
 
     #[test]
     fn convert_param_update() {
@@ -1776,27 +1578,12 @@ mod tests {
     use arrow::datatypes::DataType as ArrowDataType;
     use dora_arrow_convert::ArrowData;
     use dora_message::metadata::{
-        ArrowTypeInfo, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
+        GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
     };
 
     fn make_metadata(params: MetadataParameters) -> Metadata {
-        let type_info = ArrowTypeInfo {
-            data_type: ArrowDataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        Metadata::from_parameters(
-            dora_core::uhlc::HLC::default().new_timestamp(),
-            type_info,
-            params,
-        )
+        Metadata::from_parameters(dora_core::uhlc::HLC::default().new_timestamp(), params)
     }
 
     fn make_input_event(id: &str, params: MetadataParameters) -> Event {
@@ -2141,80 +1928,35 @@ mod tests {
         assert!(events.recv().is_none(), "stream must close after the input");
     }
 
-    /// #2027 + #2083: an empty payload over the zenoh transport must round-trip
-    /// through the array's real `type_info` (as produced by the send side),
-    /// preserving both the DECLARED type and the DECLARED length.
-    ///
-    /// #2027: a zero-length typed array stays typed (it previously degraded to
-    /// `NullArray` only on the zenoh path, so a downstream `as_primitive` would
-    /// panic on one transport but not the other).
-    ///
-    /// #2083: a zero-footprint array with a non-zero length (e.g.
-    /// `NullArray::new(n)`) keeps its length instead of collapsing to 0.
+    /// The zenoh receive path is Arrow-IPC-only. An empty payload is a
+    /// metadata-only message and maps to the unit array; a non-empty payload is
+    /// a self-describing IPC stream and round-trips to its original array (with
+    /// no type sidecar involved).
     #[test]
-    fn zenoh_empty_payload_preserves_declared_type_and_length() {
-        use crate::arrow_utils::{copy_array_into_sample, required_data_size};
-        use arrow::array::{Array, Int32Array, NullArray};
-        use dora_message::metadata::Metadata;
+    fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use arrow::array::{Array, Int32Array};
 
-        // Build the real `type_info` the send side would record for `array`.
-        // (Hand-built `type_info` would not match the serialized layout — e.g. a
-        // typed array always records a zero-length data-buffer offset.)
-        fn meta_for(array: &dyn Array) -> Metadata {
-            let data = array.to_data();
-            let mut sample = vec![0; required_data_size(&data)];
-            assert!(sample.is_empty(), "expected a zero-footprint array");
-            let type_info = copy_array_into_sample(&mut sample, &data);
-            Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
-        }
-
-        let empty = zenoh::bytes::ZBytes::new();
-
-        // #2027: zero-length typed array stays typed.
-        let typed = zenoh_payload_to_arrow_array(
-            empty.clone(),
-            &meta_for(&Int32Array::from(Vec::<i32>::new())),
-        )
-        .unwrap();
-        assert_eq!(typed.data_type(), &arrow_schema::DataType::Int32);
-        assert_eq!(typed.len(), 0);
-
-        // #2083: a NullArray with a non-zero length keeps its length.
-        let null = zenoh_payload_to_arrow_array(empty, &meta_for(&NullArray::new(5))).unwrap();
-        assert_eq!(null.data_type(), &arrow_schema::DataType::Null);
+        // Empty payload -> unit array (metadata-only message). The unit array
+        // is the canonical empty/metadata-only Arrow value used across the
+        // codebase for payload-less messages.
+        let unit = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::new()).unwrap();
         assert_eq!(
-            null.len(),
-            5,
-            "NullArray length must survive the zenoh path"
+            unit.data_type(),
+            &arrow_schema::DataType::Null,
+            "empty payload maps to the unit array"
         );
 
-        // #2027 review (P2): `data_type` is peer-controlled. A malformed type
-        // (`Dictionary` with a non-integer key) must surface as `Err`, not crash
-        // the node — the `catch_unwind` guard on the empty-payload path turns any
-        // panic inside Arrow into a clean error. (A panic trace printed during
-        // this test is expected — it is the caught unwind.)
-        let malformed = dora_message::metadata::ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Dictionary(
-                Box::new(arrow_schema::DataType::Utf8),
-                Box::new(arrow_schema::DataType::Int32),
-            ),
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        let result = zenoh_payload_to_arrow_array(
-            zenoh::bytes::ZBytes::new(),
-            &Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), malformed),
-        );
-        assert!(
-            result.is_err(),
-            "malformed peer type must produce Err, not panic"
-        );
+        // Non-empty IPC payload round-trips to the original array.
+        let array = Int32Array::from(vec![10, 20, 30]);
+        let data = array.to_data();
+        let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
+        let mut buf = vec![0u8; len];
+        encode_ipc_into(&data, &mut buf).unwrap();
+
+        let decoded = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::from(buf)).unwrap();
+        assert_eq!(decoded.data_type(), &arrow_schema::DataType::Int32);
+        assert_eq!(&decoded.to_data(), &data);
     }
 
     /// Same invariant as `recv_returns_none_after_stop`, verified via

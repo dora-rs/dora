@@ -13,7 +13,6 @@ pub mod descriptor;
 #[cfg(feature = "type-inference")]
 pub mod inference;
 pub mod manifest;
-pub mod metadata;
 pub mod topics;
 pub mod types;
 

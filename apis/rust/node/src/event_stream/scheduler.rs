@@ -332,26 +332,14 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::uhlc;
-    use arrow_schema::DataType;
     use dora_message::{
         daemon_to_node::NodeEvent,
-        metadata::{ArrowTypeInfo, FLUSH, Metadata, MetadataParameters, Parameter},
+        metadata::{FLUSH, Metadata, MetadataParameters, Parameter},
     };
 
     fn make_input(id: &str, params: MetadataParameters) -> EventItem {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let ts = uhlc::HLC::default().new_timestamp();
-        let metadata = Metadata::from_parameters(ts, type_info, params);
+        let metadata = Metadata::from_parameters(ts, params);
         EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: DataId::from(id.to_string()),
@@ -693,19 +681,8 @@ mod tests {
     // ---- issue #2212: log_correlation_drop must also fire for ZenohInput ----
 
     fn make_zenoh_input(id: &str, params: MetadataParameters) -> EventItem {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let ts = uhlc::HLC::default().new_timestamp();
-        let metadata = Metadata::from_parameters(ts, type_info, params);
+        let metadata = Metadata::from_parameters(ts, params);
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),

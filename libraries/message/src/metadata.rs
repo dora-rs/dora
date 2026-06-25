@@ -1,35 +1,32 @@
 use std::collections::BTreeMap;
 
-use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Additional data that is sent as part of output messages.
 ///
-/// Includes a timestamp, type information, and additional user-provided parameters.
+/// Includes a timestamp and additional user-provided parameters. The payload is
+/// a self-describing Arrow IPC stream, so the message carries no separate type
+/// descriptor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
-    pub type_info: ArrowTypeInfo,
     pub parameters: MetadataParameters,
 }
 
 impl Metadata {
-    pub fn new(timestamp: uhlc::Timestamp, type_info: ArrowTypeInfo) -> Self {
-        Self::from_parameters(timestamp, type_info, Default::default())
+    pub fn new(timestamp: uhlc::Timestamp) -> Self {
+        Self::from_parameters(timestamp, Default::default())
     }
 
-    pub fn from_parameters(
-        timestamp: uhlc::Timestamp,
-        type_info: ArrowTypeInfo,
-        parameters: MetadataParameters,
-    ) -> Self {
+    pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
-            metadata_version: 0,
+            // Bumped from 0 when the `ArrowTypeInfo` sidecar was dropped and the
+            // wire format became Arrow-IPC-only.
+            metadata_version: 1,
             timestamp,
             parameters,
-            type_info,
         }
     }
 
@@ -46,30 +43,6 @@ impl Metadata {
 
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrowTypeInfo {
-    pub data_type: DataType,
-    pub len: usize,
-    pub null_count: usize,
-    pub validity: Option<Vec<u8>>,
-    pub offset: usize,
-    pub buffer_offsets: Vec<BufferOffset>,
-    pub child_data: Vec<ArrowTypeInfo>,
-    /// Optional field names for struct types (enables schema introspection
-    /// without full Arrow IPC framing).
-    ///
-    /// NOTE: must not use `#[serde(skip_serializing_if)]`. The wire format
-    /// is bincode, which is positional and non-self-describing; skipping a
-    /// field at serialize time desyncs the deserializer (dora-rs/adora#135).
-    pub field_names: Option<Vec<String>>,
-    /// Hash of the full Arrow schema for fast type matching.
-    /// Populated when data is sent via the raw buffer path or Arrow IPC framing.
-    /// Receivers can compare this O(1) value before doing a full type check.
-    ///
-    /// NOTE: see `field_names` above — no `skip_serializing_if`.
-    pub schema_hash: Option<u64>,
-}
 
 /// A metadata parameter that can be sent as part of output messages.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -158,12 +131,6 @@ pub const FRAMING: &str = "_framing";
 
 /// Value for [`FRAMING`] indicating Arrow IPC stream framing.
 pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BufferOffset {
-    pub offset: usize,
-    pub len: usize,
-}
 
 #[cfg(test)]
 mod tests {
@@ -262,30 +229,5 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert("n".to_string(), Parameter::Integer(1));
         assert_eq!(get_bool_param(&params, "n"), None);
-    }
-
-    /// Regression test for dora-rs/adora#135: `ArrowTypeInfo` must survive a
-    /// bincode roundtrip even when the optional fields `field_names` and
-    /// `schema_hash` are mixed (one `None`, one `Some`). bincode is a
-    /// positional format, so `#[serde(skip_serializing_if)]` desyncs the
-    /// wire and the deserializer reads misaligned bytes.
-    #[test]
-    fn arrow_type_info_bincode_roundtrip() {
-        let value = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: Vec::new(),
-            child_data: Vec::new(),
-            field_names: None,
-            schema_hash: Some(0xdead_beef_cafe_1234),
-        };
-
-        let bytes = bincode::serialize(&value).expect("serialize");
-        let decoded: ArrowTypeInfo = bincode::deserialize(&bytes).expect("deserialize");
-        assert_eq!(decoded.schema_hash, value.schema_hash);
-        assert_eq!(decoded.field_names, value.field_names);
     }
 }

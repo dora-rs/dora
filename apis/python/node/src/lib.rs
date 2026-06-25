@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use arrow::array::{Array, BinaryArray, StringArray};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_message::metadata::{ArrowTypeInfo, Parameter};
+use dora_message::metadata::Parameter;
 use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
@@ -735,7 +735,7 @@ impl Node {
     ///
     /// ## Wire format
     ///
-    /// The buffer is sent as a 1-D Arrow byte array (``ArrowTypeInfo::byte_array``).
+    /// The buffer is sent as a 1-D Arrow ``UInt8`` array inside an Arrow IPC stream.
     /// On the receive side, ``event["value"]`` is a ``pyarrow.UInt8Array`` /
     /// ``LargeBinary`` shape — call ``.to_numpy()`` for a numpy view, then
     /// ``.reshape(...)`` or ``.view(dtype=...)`` to interpret it as a typed
@@ -1313,7 +1313,6 @@ impl Node {
 
         // Register with daemon for lifecycle tracking
         {
-            use arrow::datatypes::DataType;
             let hlc = dora_node_api::dora_core::uhlc::HLC::default();
             let ts = hlc.new_timestamp();
             let mut params = dora_node_api::MetadataParameters::new();
@@ -1351,18 +1350,7 @@ impl Node {
                 dora_node_api::Parameter::String(buffer_id.clone()),
             );
 
-            let type_info = ArrowTypeInfo {
-                data_type: DataType::Null,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            };
-            let meta = dora_node_api::Metadata::from_parameters(ts, type_info, params);
+            let meta = dora_node_api::Metadata::from_parameters(ts, params);
             if let Err(e) = self
                 .node
                 .get_mut()

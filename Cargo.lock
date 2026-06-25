@@ -1799,6 +1799,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "1.0.0-rc1"
 dependencies = [
+ "arrow",
  "axum",
  "bincode 1.3.3",
  "ctrlc",

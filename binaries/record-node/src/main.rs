@@ -62,14 +62,15 @@ fn main() -> eyre::Result<()> {
                     None => continue,
                 };
 
+                // Record the payload as a self-describing Arrow IPC stream so
+                // replay can reconstruct the array without a type sidecar.
                 let arrow_data = data.to_data();
-                let data_size = arrow_utils::required_data_size(&arrow_data);
-                let raw_data = if data_size > 0 {
-                    let mut buf = vec![0u8; data_size];
-                    arrow_utils::copy_array_into_sample(&mut buf, &arrow_data);
-                    Some(AVec::from_slice(128, &buf))
-                } else {
+                let raw_data = if arrow_data.is_empty() {
                     None
+                } else {
+                    let ipc_bytes = arrow_utils::encode_arrow_ipc(&arrow_data)
+                        .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+                    Some(AVec::from_slice(128, &ipc_bytes))
                 };
 
                 let timestamp = metadata.timestamp();
