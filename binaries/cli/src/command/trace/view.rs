@@ -78,7 +78,7 @@ fn print_span_tree(spans: &[TraceSpan]) {
     if partial {
         eprintln!(
             "note: trace is partial — some spans reference a parent that is absent from this \
-             snapshot or forms a cycle (shown as top-level roots)"
+             snapshot or form a cycle (shown as top-level roots)"
         );
     }
 
