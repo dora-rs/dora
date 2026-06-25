@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dora_node_api::arrow::array::{Array, Float32Array};
 use dora_node_api::arrow_utils::ipc_encode::{
-    encode_ipc_into, encode_ipc_to_vec, ipc_fast_path_len,
+    encode_ipc_into, encode_ipc_to_vec, encode_uint8_ipc_header, ipc_fast_path_len, uint8_ipc_len,
 };
 
 /// Bytes allocated since process start (only the growth, for reallocs).
@@ -98,6 +98,28 @@ fn send_strategies_intermediate_allocation() {
             allocated < NO_PAYLOAD_INTERMEDIATE,
             "construct-in-place allocated {allocated} bytes (>= {NO_PAYLOAD_INTERMEDIATE}); \
              expected no payload-sized intermediate"
+        );
+    }
+
+    // --- send_output_raw / Python: pre-write the UInt8 IPC header into a
+    // pre-allocated sample, then fill the data region in place. The whole stream
+    // is constructed in the sample with NO payload-sized intermediate. ---
+    {
+        let total = uint8_ipc_len(PAYLOAD).unwrap();
+        let mut sample = vec![0u8; total];
+        sample.iter_mut().for_each(|b| *b = 0); // pre-fault
+        let (allocated, ()) = allocated_during(|| {
+            let offset = encode_uint8_ipc_header(&mut sample, PAYLOAD).unwrap();
+            // The caller writes the data straight into the wire payload.
+            for (i, b) in sample[offset..offset + PAYLOAD].iter_mut().enumerate() {
+                *b = i as u8;
+            }
+        });
+        assert!(
+            allocated < NO_PAYLOAD_INTERMEDIATE,
+            "send_output_raw construct-in-place allocated {allocated} bytes \
+             (>= {NO_PAYLOAD_INTERMEDIATE}); the header is tiny and the data is \
+             written in place, so there must be no payload-sized intermediate"
         );
     }
 
