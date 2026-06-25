@@ -61,7 +61,6 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `binaries/runtime` | dora-runtime | In-process operator execution runtime |
 | `libraries/message` | dora-message | All inter-component message types and protocol definitions |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
-| `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for large messages (>4KB) |
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
 | `apis/rust/operator` | dora-operator-api | Rust API for writing in-process operators |
 | `apis/python/node` | dora-node-api-python | Python node API (PyO3) |

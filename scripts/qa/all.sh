@@ -213,9 +213,9 @@ EOF
       cat <<EOF
 ============================================================
 $header
-Runs cargo-mutants --full on 6 critical crates: dora-core, dora-daemon,
-dora-coordinator, dora-message, dora-coordinator-store,
-shared-memory-server. About 1679 mutants last measured.
+Runs cargo-mutants --full on 5 critical crates: dora-core, dora-daemon,
+dora-coordinator, dora-message, dora-coordinator-store. About 1679
+mutants last measured.
 
 A test-quality audit, NOT a code gate. Run when:
   - Investigating low test coverage in a specific crate.
