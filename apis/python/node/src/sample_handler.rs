@@ -429,13 +429,14 @@ impl SampleHandler {
             return Ok(buf.clone_ref(py));
         }
 
-        // Extract a stable raw pointer to the DataSample's bytes. The
-        // `DataSample` is heap-allocated via `AVec`, so its buffer address
-        // does not move; the pointer is valid as long as the `DataSample`
-        // remains inside `state.sample`. `send()` is the only path that
-        // takes the sample out, and it requires `view_count == 0` first —
-        // so any view we hand out via this `ptr` will be released before
-        // the memory can be reclaimed.
+        // Extract a stable raw pointer to the DataSample's bytes. A
+        // `DataSample` is backed by either a heap `AVec` or a zenoh SHM buffer
+        // (`ZShmMut`); in both cases the byte address is fixed for the lifetime
+        // of the `DataSample` (neither relocates in place), so the pointer is
+        // valid as long as the `DataSample` remains inside `state.sample`.
+        // `send()` is the only path that takes the sample out, and it requires
+        // `view_count == 0` first — so any view we hand out via this `ptr` will
+        // be released before the memory can be reclaimed.
         let (ptr, len) = {
             let sample_lock = self.state.sample.lock().map_err(|_| {
                 pyo3::exceptions::PyRuntimeError::new_err("DataSample lock poisoned")

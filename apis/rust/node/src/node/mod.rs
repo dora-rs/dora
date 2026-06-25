@@ -1088,10 +1088,13 @@ impl DoraNode {
         use zenoh::Wait;
         use zenoh::qos::{CongestionControl, Priority};
 
-        let session = self
-            .zenoh_session
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("zenoh session not initialized"))?;
+        // Every failure *before* the payload is moved into `put` returns the
+        // sample as `NotPublished` so the caller can still deliver it via the
+        // daemon. Only a failed `put` of an SHM buffer (which consumes it)
+        // returns `Err` — that is the single non-recoverable case.
+        let Some(session) = self.zenoh_session.as_ref() else {
+            return Ok(PublishOutcome::NotPublished(finalized));
+        };
 
         // Get or create publisher for this output. QoS is configured at
         // declare time so it applies to every put: `express(true)` bypasses
@@ -1107,25 +1110,35 @@ impl DoraNode {
                 &self.id,
                 output_id,
             );
-            let key_expr = zenoh::key_expr::KeyExpr::new(topic)
-                .map_err(|e| eyre::eyre!("invalid zenoh key: {e}"))?
-                .into_owned();
-            let publisher = session
+            let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
+                Ok(key) => key.into_owned(),
+                Err(e) => {
+                    tracing::warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
+                    return Ok(PublishOutcome::NotPublished(finalized));
+                }
+            };
+            let publisher = match session
                 .declare_publisher(key_expr)
                 .congestion_control(CongestionControl::Drop)
                 .express(true)
                 .priority(Priority::RealTime)
                 .wait()
-                .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
+            {
+                Ok(publisher) => publisher,
+                Err(e) => {
+                    tracing::warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
+                    return Ok(PublishOutcome::NotPublished(finalized));
+                }
+            };
             self.zenoh_publishers.insert(output_id.clone(), publisher);
             true
         } else {
             false
         };
-        let publisher = self
-            .zenoh_publishers
-            .get(output_id)
-            .ok_or_else(|| eyre::eyre!("zenoh publisher missing for output `{output_id}`"))?;
+        let Some(publisher) = self.zenoh_publishers.get(output_id) else {
+            tracing::warn!(output = %output_id, "zenoh publisher missing; falling back to daemon path");
+            return Ok(PublishOutcome::NotPublished(finalized));
+        };
 
         if declared_publisher {
             let wait_until = Instant::now() + ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT;
@@ -1153,9 +1166,14 @@ impl DoraNode {
             }
         }
 
-        // Serialize metadata as zenoh attachment
-        let metadata_bytes = bincode::serialize(metadata)
-            .wrap_err("failed to serialize metadata for zenoh attachment")?;
+        // Serialize metadata as zenoh attachment.
+        let metadata_bytes = match bincode::serialize(metadata) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
+                return Ok(PublishOutcome::NotPublished(finalized));
+            }
+        };
 
         match finalized {
             // The producer already wrote into shared memory. Move the SHM
@@ -1461,14 +1479,22 @@ impl DoraNode {
                 .wait()
             {
                 Ok(sbuf) => {
-                    debug_assert_eq!(
-                        sbuf.as_ref().len(),
-                        data_len,
-                        "zenoh SHM alloc must return an exact-size buffer"
+                    // Use the SHM buffer only when it is exactly the requested
+                    // size — zenoh 1.8 guarantees this (the logical length
+                    // matches the request even when the backing chunk is
+                    // larger). If a future provider ever over-allocates, fall
+                    // back to heap rather than expose or publish an oversized
+                    // slice (`DataSample` has no length cap of its own).
+                    if sbuf.as_ref().len() == data_len {
+                        return Ok(DataSample {
+                            storage: SampleStorage::Shm(sbuf),
+                        });
+                    }
+                    tracing::debug!(
+                        "zenoh SHM alloc returned {} bytes for a {data_len}-byte \
+                         request; using heap",
+                        sbuf.as_ref().len()
                     );
-                    return Ok(DataSample {
-                        storage: SampleStorage::Shm(sbuf),
-                    });
                 }
                 Err(e) => {
                     tracing::debug!("SHM alloc failed ({e}), using heap buffer");

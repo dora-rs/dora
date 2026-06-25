@@ -28,9 +28,11 @@
 //!    a logically-equal array. The only generated buffer is the all-ones
 //!    validity bitmap for a node with no nulls, exactly as arrow emits.
 //!
-//! `FixedSizeList` is the one type whose child length is implied rather than
-//! offset-encoded, so its child is sliced to `len * value_size` before
-//! recursion.
+//! Two types need their children sliced before recursion because the child's
+//! IPC length is the parent's rather than the child's own: `Struct` (each field
+//! to the struct's `len`) and `FixedSizeList` (its child to `len * value_size`).
+//! `List`/`LargeList` children are bounded by an offsets buffer and recursed at
+//! full length.
 
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
@@ -116,8 +118,17 @@ struct Layout {
 }
 
 impl Layout {
-    fn push_buffer(&mut self, off: &mut usize, len: usize, src: BufferSrc) {
+    /// Append a buffer descriptor at the current (64-aligned) offset and advance
+    /// past it (padded to 64). Returns `None` if the running body size would
+    /// overflow `usize` or exceed [`super::MAX_IPC_BYTES`] — such arrays route to
+    /// the fallback rather than wrapping to a too-small offset.
+    fn push_buffer(&mut self, off: &mut usize, len: usize, src: BufferSrc) -> Option<()> {
         // `*off` is always 64-aligned here (the invariant `push_buffer` keeps).
+        let padded = len.checked_add(ALIGN - 1).map(|n| n & !(ALIGN - 1))?;
+        let next = off.checked_add(padded)?;
+        if next > super::MAX_IPC_BYTES {
+            return None;
+        }
         self.ipc_buffers
             .push(IpcBuffer::new(*off as i64, len as i64));
         self.descs.push(Desc {
@@ -125,7 +136,8 @@ impl Layout {
             len,
             src,
         });
-        *off += round_up(len, ALIGN);
+        *off = next;
+        Some(())
     }
 }
 
@@ -168,18 +180,18 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
                 }
                 let sliced = nulls.inner().sliced();
                 let bytes = sliced.len();
-                layout.push_buffer(off, bytes, BufferSrc::Bytes(sliced, 0));
+                layout.push_buffer(off, bytes, BufferSrc::Bytes(sliced, 0))?;
             }
             None => {
                 let bytes = len.div_ceil(8);
-                layout.push_buffer(off, bytes, BufferSrc::AllOnes);
+                layout.push_buffer(off, bytes, BufferSrc::AllOnes)?;
             }
         }
     }
 
     // Data buffers, copied in full (empty for Struct/FixedSizeList).
     for buffer in array.buffers() {
-        layout.push_buffer(off, buffer.len(), BufferSrc::Bytes(buffer.clone(), 0));
+        layout.push_buffer(off, buffer.len(), BufferSrc::Bytes(buffer.clone(), 0))?;
     }
 
     // Children.
@@ -194,7 +206,23 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
             }
             build_layout_rec(&child.slice(0, n), layout, off)?;
         }
+        DataType::Struct(_) => {
+            // Every struct field's IPC field node must report the struct's row
+            // count. A child `ArrayData` may legally be *longer* than the struct
+            // (e.g. built via the low-level builder), so slice each child to the
+            // struct's `len` before recursing — otherwise the child node would
+            // declare a different length and the stream would be un-decodable.
+            for child in array.child_data() {
+                if child.len() < len {
+                    return None;
+                }
+                build_layout_rec(&child.slice(0, len), layout, off)?;
+            }
+        }
         _ => {
+            // List/LargeList: the single child is the values array, bounded by
+            // the offsets buffer (its length is independent of the parent's), so
+            // it is recursed at full length.
             for child in array.child_data() {
                 build_layout_rec(child, layout, off)?;
             }
@@ -492,6 +520,37 @@ mod tests {
         ])
         .into_data();
         assert_fast_roundtrip(&array);
+    }
+
+    /// Regression: a Struct whose child `ArrayData` is *longer* than the struct
+    /// (constructible via the low-level builder) must be sliced to the struct's
+    /// len, otherwise the child field node declares the wrong row count and the
+    /// stream is un-decodable.
+    #[test]
+    fn roundtrip_struct_with_oversized_child() {
+        use arrow_schema::Fields;
+        let child = Int32Array::from(vec![10, 20, 30]).into_data(); // len 3
+        let fields: Fields = vec![Field::new("v", DataType::Int32, false)].into();
+        let struct_data = ArrayData::builder(DataType::Struct(fields))
+            .len(2) // shorter than the child
+            .add_child_data(child)
+            .build()
+            .unwrap();
+
+        assert!(
+            ipc_fast_path_len(&struct_data).is_some(),
+            "struct with an oversized child should stay on the fast path"
+        );
+        let decoded = read_official(&fast_encode(&struct_data));
+        assert_eq!(decoded.len(), 2);
+        let arr = arrow::array::make_array(decoded);
+        let sa = arr.as_any().downcast_ref::<StructArray>().unwrap();
+        let col = sa.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
+        assert_eq!(
+            col.values(),
+            &[10, 20],
+            "child must be truncated to the struct's len"
+        );
     }
 
     #[test]
