@@ -366,7 +366,22 @@ pub fn encode_ipc_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> {
     debug_assert_eq!(at, prepared.schema_block + prepared.record_batch_block);
 
     let body_start = at;
-    for desc in &prepared.layout.descs {
+    write_body(dst, body_start, &prepared.layout);
+    at = body_start + prepared.layout.body_len;
+
+    // End-of-stream: continuation marker + zero length.
+    dst[at..at + 4].copy_from_slice(&CONTINUATION_MARKER);
+    dst[at + 4..at + 8].copy_from_slice(&0i32.to_le_bytes());
+    debug_assert_eq!(at + PREFIX_LEN, prepared.total);
+
+    Ok(())
+}
+
+/// Copy each body buffer to its 64-aligned offset within `dst[body_start..]`,
+/// zeroing per-buffer alignment padding (the destination may be uninitialized
+/// SHM). Shared by the full-stream and schema-less-batch encoders.
+fn write_body(dst: &mut [u8], body_start: usize, layout: &Layout) {
+    for desc in &layout.descs {
         let start = body_start + desc.offset;
         let end = start + desc.len;
         match &desc.src {
@@ -375,17 +390,52 @@ pub fn encode_ipc_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> {
             }
             BufferSrc::AllOnes => dst[start..end].fill(0xff),
         }
-        // Zero this buffer's trailing alignment padding.
         let padded_end = body_start + desc.offset + round_up(desc.len, ALIGN);
         dst[end..padded_end].fill(0);
     }
-    at = body_start + prepared.layout.body_len;
+}
 
-    // End-of-stream: continuation marker + zero length.
-    dst[at..at + 4].copy_from_slice(&CONTINUATION_MARKER);
-    dst[at + 4..at + 8].copy_from_slice(&0i32.to_le_bytes());
-    debug_assert_eq!(at + PREFIX_LEN, prepared.total);
+/// Encode the IPC **schema message** for `data_type` as a framed,
+/// 64-byte-aligned block (one nullable field named `data`).
+///
+/// This is the schema prefix of a stream, sent once. A receiver feeds it to a
+/// persistent [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) to prime it,
+/// then decodes a sequence of schema-less batch messages from
+/// [`encode_batch_into`] against the same decoder (the W3 schema-once path).
+pub fn encode_schema_message(data_type: &DataType) -> eyre::Result<Vec<u8>> {
+    let schema_message = build_schema_message(data_type)?;
+    let block = round_up(PREFIX_LEN + schema_message.len(), ALIGN);
+    let mut dst = vec![0u8; block];
+    write_framed_message(&mut dst, 0, &schema_message);
+    Ok(dst)
+}
 
+/// Exact byte length of the schema-less batch message [`encode_batch_into`]
+/// would write (record-batch header block + body, **no** schema and **no**
+/// end-of-stream marker), or `None` if `array` is not fast-path eligible.
+pub fn batch_fast_path_len(array: &ArrayData) -> Option<usize> {
+    let prepared = prepare(array)?;
+    Some(prepared.record_batch_block + prepared.layout.body_len)
+}
+
+/// Encode `array` as a schema-less Arrow IPC **batch message** into `dst`:
+/// the record-batch header block followed by the body, with no schema prefix
+/// and no end-of-stream marker. Decoded by a [`StreamDecoder`] already primed
+/// with the matching [`encode_schema_message`]. `dst.len()` must equal
+/// [`batch_fast_path_len(array)`](batch_fast_path_len).
+pub fn encode_batch_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> {
+    let prepared =
+        prepare(array).ok_or_else(|| eyre!("array is not Arrow IPC fast-path eligible"))?;
+    let expected = prepared.record_batch_block + prepared.layout.body_len;
+    if dst.len() != expected {
+        bail!(
+            "destination size {} does not match required batch length {expected}",
+            dst.len(),
+        );
+    }
+    let at = write_framed_message(dst, 0, &prepared.record_batch_message);
+    debug_assert_eq!(at, prepared.record_batch_block);
+    write_body(dst, at, &prepared.layout);
     Ok(())
 }
 
@@ -457,6 +507,47 @@ mod tests {
         let (buffer, _, _) = aligned_buffer(&encoded);
         let zc = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy decode");
         assert_eq!(array, &zc, "zero-copy decode must equal the input");
+    }
+
+    /// The W3 schema-once contract: prime one persistent `StreamDecoder` with a
+    /// single schema message, then decode a *sequence* of schema-less batch
+    /// messages against it. (A fresh full stream per message can't do this — its
+    /// EOS terminates the decoder.)
+    #[test]
+    fn schema_primed_decoder_decodes_batch_sequence() {
+        let schema = encode_schema_message(&DataType::Float32).unwrap();
+        let mut decoder = StreamDecoder::new();
+
+        // Prime: feeding the schema message yields no batch.
+        let mut sbuf = Buffer::from_vec(schema);
+        while !sbuf.is_empty() {
+            assert!(
+                decoder.decode(&mut sbuf).unwrap().is_none(),
+                "schema message must not yield a batch"
+            );
+        }
+
+        for vals in [vec![1.0f32, 2.0, 3.0], vec![4.0, 5.0], vec![6.0]] {
+            let array = Float32Array::from(vals).into_data();
+            let len = batch_fast_path_len(&array).unwrap();
+            let mut buf = vec![0u8; len];
+            encode_batch_into(&array, &mut buf).unwrap();
+
+            let mut bbuf = Buffer::from_vec(buf);
+            let mut got = None;
+            while !bbuf.is_empty() {
+                if let Some(b) = decoder.decode(&mut bbuf).unwrap() {
+                    got = Some(b);
+                    break;
+                }
+            }
+            assert_eq!(
+                got.expect("batch message must decode against the primed decoder")
+                    .column(0)
+                    .to_data(),
+                array
+            );
+        }
     }
 
     #[test]
