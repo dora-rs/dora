@@ -1889,7 +1889,8 @@ fn smoke_shell_node_blocked_without_flag() {
 // Requires `torch` and `tqdm` — not installed in standard PR CI. Run
 // explicitly on machines with torch available:
 //   cargo test --test example-smoke -- --ignored smoke_memory_pool
-// or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`.
+// or via `scripts/smoke-all.sh` (skips gracefully when download.pytorch.org
+// is unreachable; torch is installed by per-node `build:` steps).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1977,7 +1978,8 @@ fn smoke_local_memory_pool_write_after_free() {
 // |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
 // |                           | duplicate_free, read_after_free, write_after_free}   |          |
 // |                           | (#[ignore], run when torch+tqdm available);          |          |
-// |                           | smoke-all.sh gates on `import torch`.                 |          |
+// |                           | smoke-all.sh skips when download.pytorch.org is      |          |
+// |                           | unreachable (torch installed via per-node build:);   |          |
 // |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
 // | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |
