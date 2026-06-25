@@ -982,44 +982,63 @@ impl DoraNode {
 
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
 
-        let data = sample.map(|sample| sample.finalize());
+        let finalized = sample.map(|sample| sample.finalize());
+
+        // How a data-plane message should be delivered.
+        enum Delivery {
+            /// zenoh delivered the payload (or it was consumed by a failed SHM
+            /// put); only the daemon's control-plane state needs syncing.
+            Zenoh,
+            /// Deliver via the daemon control channel. `None` is a metadata-only
+            /// message with no payload.
+            Daemon(Option<DataMessage>),
+        }
 
         // Always publish data-plane messages via zenoh when a session is
-        // available. The control channel is only used as a fallback when the
-        // zenoh session could not be opened (e.g. interactive/testing modes).
-        // Zenoh internally chooses SHM (zero-copy) vs heap based on
-        // `self.zenoh_zero_copy_threshold` (see `zenoh_publish`).
-        let zenoh_published =
-            if let (Some(_), Some(DataMessage::Vec(v))) = (&self.zenoh_session, data.as_ref()) {
-                let raw_bytes = v.as_ref();
+        // available. The daemon control channel is only used as a fallback when
+        // the zenoh session could not be opened (e.g. interactive/testing mode)
+        // or when no subscriber matched in time. An SHM-backed sample is moved
+        // straight into zenoh's `put` (no extra copy); only the daemon fallback
+        // copies it out into a `DataMessage::Vec`.
+        let delivery = match finalized {
+            Some(finalized) if self.zenoh_session.is_some() => {
                 tracing::trace!(
                     output = %output_id,
-                    size = raw_bytes.len(),
+                    size = finalized.byte_len(),
                     "publishing via zenoh"
                 );
-                match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
-                    Ok(published) => published,
+                match self.zenoh_publish(&output_id, &metadata, finalized) {
+                    Ok(PublishOutcome::Published) => Delivery::Zenoh,
+                    Ok(PublishOutcome::NotPublished(sample)) => {
+                        Delivery::Daemon(Some(sample.into_data_message()))
+                    }
                     Err(e) => {
-                        tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
-                        false
+                        tracing::warn!(
+                            "zenoh publish failed ({e}); message dropped \
+                             (SHM payload consumed, no daemon fallback)"
+                        );
+                        Delivery::Zenoh
                     }
                 }
-            } else {
-                false
-            };
+            }
+            Some(finalized) => Delivery::Daemon(Some(finalized.into_data_message())),
+            None => Delivery::Daemon(None),
+        };
 
-        if zenoh_published {
-            // Keep the daemon's control-plane state in sync (input deadlines,
-            // circuit-breaker recovery) without duplicating the data payload
-            // that Zenoh already delivered.
-            self.control_channel
-                .report_output_sent(output_id.clone(), metadata)
-                .wrap_err_with(|| format!("failed to report output {output_id}"))?;
-        } else {
-            // Fallback: no zenoh session, deliver via daemon.
-            self.control_channel
-                .send_message(output_id.clone(), metadata, data)
-                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        match delivery {
+            Delivery::Zenoh => {
+                // Keep the daemon's control-plane state in sync (input
+                // deadlines, circuit-breaker recovery) without duplicating the
+                // data payload that zenoh already delivered.
+                self.control_channel
+                    .report_output_sent(output_id.clone(), metadata)
+                    .wrap_err_with(|| format!("failed to report output {output_id}"))?;
+            }
+            Delivery::Daemon(data) => {
+                self.control_channel
+                    .send_message(output_id.clone(), metadata, data)
+                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+            }
         }
 
         Ok(())
@@ -1064,8 +1083,8 @@ impl DoraNode {
         &mut self,
         output_id: &DataId,
         metadata: &Metadata,
-        data: &[u8],
-    ) -> eyre::Result<bool> {
+        finalized: FinalizedSample,
+    ) -> eyre::Result<PublishOutcome> {
         use zenoh::Wait;
         use zenoh::qos::{CongestionControl, Priority};
 
@@ -1121,14 +1140,14 @@ impl DoraNode {
                             output = %output_id,
                             "no matching zenoh subscriber before first publish timeout"
                         );
-                        return Ok(false);
+                        return Ok(PublishOutcome::NotPublished(finalized));
                     }
                     Err(err) => {
                         tracing::warn!(
                             output = %output_id,
                             "failed to query zenoh matching status before first publish: {err}"
                         );
-                        return Ok(false);
+                        return Ok(PublishOutcome::NotPublished(finalized));
                     }
                 }
             }
@@ -1138,42 +1157,72 @@ impl DoraNode {
         let metadata_bytes = bincode::serialize(metadata)
             .wrap_err("failed to serialize metadata for zenoh attachment")?;
 
-        // Try SHM allocation, fall back to heap. Skip the SHM path entirely
-        // for payloads below `zenoh_zero_copy_threshold` — the SHM provider is
-        // page-aligned (4 KiB on Linux), so allocating a full page for smaller
-        // payloads is pure waste; the heap-buffered zenoh put is faster.
-        if data.len() >= self.zenoh_zero_copy_threshold
-            && let Some(provider) = &self.zenoh_shm_provider
-        {
-            use zenoh::shm::{BlockOn, GarbageCollect};
-            match provider
-                .alloc(data.len())
-                .with_policy::<BlockOn<GarbageCollect>>()
-                .wait()
-            {
-                Ok(mut sbuf) => {
-                    sbuf.as_mut().copy_from_slice(data);
-                    publisher
-                        .put(sbuf)
-                        .attachment(&metadata_bytes[..])
+        match finalized {
+            // The producer already wrote into shared memory. Move the SHM
+            // buffer straight into `put` — no realloc, no copy. This is the
+            // path that eliminates the former heap-to-SHM second copy.
+            //
+            // On a put error the buffer has been consumed and cannot be
+            // recovered for the daemon fallback, so this returns an error
+            // (the caller logs and drops the message). This is a deliberate
+            // trade-off for zero-copy on the common matched-subscriber path.
+            FinalizedSample::Shm(sbuf) => {
+                publisher
+                    .put(sbuf)
+                    .attachment(&metadata_bytes[..])
+                    .wait()
+                    .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
+                Ok(PublishOutcome::Published)
+            }
+            // Heap payload. At or above the threshold, copy once into a fresh
+            // SHM buffer so local subscribers still get zero-copy delivery;
+            // below it, a heap-buffered put is cheaper than a full SHM page.
+            // The heap buffer is only borrowed, so any put error can fall back
+            // to the daemon path with the payload intact.
+            FinalizedSample::Vec(avec) => {
+                if avec.len() >= self.zenoh_zero_copy_threshold
+                    && let Some(provider) = &self.zenoh_shm_provider
+                {
+                    use zenoh::shm::{BlockOn, GarbageCollect};
+                    match provider
+                        .alloc(avec.len())
+                        .with_policy::<BlockOn<GarbageCollect>>()
                         .wait()
-                        .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
-                    return Ok(true);
+                    {
+                        Ok(mut sbuf) => {
+                            sbuf.as_mut().copy_from_slice(&avec);
+                            return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
+                            {
+                                Ok(()) => Ok(PublishOutcome::Published),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "zenoh SHM publish failed ({e}); \
+                                         falling back to daemon path"
+                                    );
+                                    Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+
+                // Fallback: publish raw bytes (no SHM).
+                match publisher
+                    .put(&avec[..])
+                    .attachment(&metadata_bytes[..])
+                    .wait()
+                {
+                    Ok(()) => Ok(PublishOutcome::Published),
+                    Err(e) => {
+                        tracing::warn!("zenoh publish failed ({e}); falling back to daemon path");
+                        Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                    }
                 }
             }
         }
-
-        // Fallback: publish raw bytes (no SHM)
-        publisher
-            .put(data)
-            .attachment(&metadata_bytes[..])
-            .wait()
-            .map_err(|e| eyre::eyre!("zenoh publish failed: {e}"))?;
-
-        Ok(true)
     }
 
     /// Returns the ID of the node as specified in the dataflow configuration file.
@@ -1393,10 +1442,40 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     ///
-    /// Zero-copy transport for large messages is handled by the zenoh SHM
-    /// provider inside [`send_output`](Self::send_output); this allocation itself is a heap
-    /// buffer.
+    /// For payloads at or above the zero-copy threshold the buffer is allocated
+    /// directly from the zenoh SHM provider (when available), so the producer
+    /// writes straight into shared memory and publishing moves the buffer into
+    /// zenoh's `put` without a further copy. Smaller payloads — or the case
+    /// where no SHM provider exists (interactive/testing mode) — use a
+    /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
+    /// page-aligned, so dedicating a full page to a small message is pure waste.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
+        if data_len >= self.zenoh_zero_copy_threshold
+            && let Some(provider) = &self.zenoh_shm_provider
+        {
+            use zenoh::Wait;
+            use zenoh::shm::{BlockOn, GarbageCollect};
+            match provider
+                .alloc(data_len)
+                .with_policy::<BlockOn<GarbageCollect>>()
+                .wait()
+            {
+                Ok(sbuf) => {
+                    debug_assert_eq!(
+                        sbuf.as_ref().len(),
+                        data_len,
+                        "zenoh SHM alloc must return an exact-size buffer"
+                    );
+                    return Ok(DataSample {
+                        storage: SampleStorage::Shm(sbuf),
+                    });
+                }
+                Err(e) => {
+                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                }
+            }
+        }
+
         let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
         Ok(avec.into())
     }
@@ -1626,14 +1705,36 @@ impl Drop for DoraNode {
 ///
 /// `DataSample` implements the [`Deref`](std::ops::Deref) and
 /// [`DerefMut`](std::ops::DerefMut) traits to read and write the mapped data.
+///
+/// The backing storage is either a heap buffer or — for payloads at or above
+/// the zero-copy threshold when a zenoh SHM provider is available — a
+/// zenoh-shared-memory buffer. Writing into an SHM-backed sample lets the
+/// producer construct the message straight in shared memory, so publishing it
+/// needs no further copy (the SHM buffer is moved directly into zenoh's `put`).
 pub struct DataSample {
-    buffer: AVec<u8, ConstAlign<128>>,
-    len: usize,
+    storage: SampleStorage,
+}
+
+/// Backing storage for a [`DataSample`]. Kept private so the public API never
+/// exposes a zenoh SHM type; callers only ever see the `[u8]` view via
+/// `Deref`/`DerefMut`.
+enum SampleStorage {
+    /// Heap-allocated, 128-byte-aligned buffer (used below the zero-copy
+    /// threshold or when no SHM provider is available).
+    Heap(AVec<u8, ConstAlign<128>>),
+    /// Zenoh shared-memory buffer. The producer writes the payload directly
+    /// into it and the buffer is later moved into the zenoh `put` without
+    /// copying.
+    Shm(zenoh::shm::ZShmMut),
 }
 
 impl DataSample {
-    fn finalize(self) -> DataMessage {
-        DataMessage::Vec(self.buffer)
+    /// Consume the sample into a [`FinalizedSample`] ready for transport.
+    fn finalize(self) -> FinalizedSample {
+        match self.storage {
+            SampleStorage::Heap(buffer) => FinalizedSample::Vec(buffer),
+            SampleStorage::Shm(sbuf) => FinalizedSample::Shm(sbuf),
+        }
     }
 }
 
@@ -1641,21 +1742,26 @@ impl std::ops::Deref for DataSample {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.buffer[..self.len]
+        match &self.storage {
+            SampleStorage::Heap(buffer) => buffer,
+            SampleStorage::Shm(sbuf) => sbuf.as_ref(),
+        }
     }
 }
 
 impl std::ops::DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer[..self.len]
+        match &mut self.storage {
+            SampleStorage::Heap(buffer) => buffer,
+            SampleStorage::Shm(sbuf) => sbuf.as_mut(),
+        }
     }
 }
 
 impl From<AVec<u8, ConstAlign<128>>> for DataSample {
     fn from(value: AVec<u8, ConstAlign<128>>) -> Self {
         Self {
-            len: value.len(),
-            buffer: value,
+            storage: SampleStorage::Heap(value),
         }
     }
 }
@@ -1663,9 +1769,56 @@ impl From<AVec<u8, ConstAlign<128>>> for DataSample {
 impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataSample")
-            .field("len", &self.len)
+            .field("len", &self.len())
             .finish_non_exhaustive()
     }
+}
+
+/// A finalized output payload ready for transport.
+///
+/// Kept separate from [`DataMessage`] so SHM buffers stay out of the
+/// `Serialize`/`Deserialize` TCP path: the zenoh data plane moves an `Shm`
+/// buffer straight into `put` (zero extra copy), while the daemon fallback
+/// converts to [`DataMessage::Vec`], copying out of shared memory only when the
+/// zenoh path could not deliver.
+enum FinalizedSample {
+    Vec(AVec<u8, ConstAlign<128>>),
+    Shm(zenoh::shm::ZShmMut),
+}
+
+impl FinalizedSample {
+    fn byte_len(&self) -> usize {
+        match self {
+            FinalizedSample::Vec(v) => v.len(),
+            FinalizedSample::Shm(sbuf) => sbuf.as_ref().len(),
+        }
+    }
+
+    /// Convert into a TCP-transportable [`DataMessage`]. For the `Shm` arm this
+    /// copies the payload out of shared memory into a heap buffer; it runs only
+    /// on the daemon fallback (no matching zenoh subscriber / no session).
+    fn into_data_message(self) -> DataMessage {
+        match self {
+            FinalizedSample::Vec(v) => DataMessage::Vec(v),
+            FinalizedSample::Shm(sbuf) => {
+                let bytes = sbuf.as_ref();
+                let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
+                avec.copy_from_slice(bytes);
+                DataMessage::Vec(avec)
+            }
+        }
+    }
+}
+
+/// Outcome of a zenoh publish attempt.
+enum PublishOutcome {
+    /// The payload was delivered to zenoh (or, on a rare SHM put error,
+    /// consumed and lost — see [`DoraNode::zenoh_publish`]).
+    Published,
+    /// No matching subscriber, or a transport error before the payload was
+    /// consumed. The sample is returned so the caller can fall back to the
+    /// daemon path.
+    NotPublished(FinalizedSample),
 }
 
 /// Returns `true` if the given metadata carries any pattern-correlation
@@ -1996,6 +2149,24 @@ mod tests {
 
         drop(node);
         drop(events);
+    }
+
+    /// A heap-backed `DataSample` is writable through `DerefMut`, readable
+    /// through `Deref`, and `finalize().into_data_message()` preserves the bytes
+    /// as the `DataMessage::Vec` daemon-path payload. (The SHM-backed arm needs
+    /// a live zenoh provider and is covered by the copy-count harness/smoke.)
+    #[test]
+    fn data_sample_heap_roundtrip() {
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, 8);
+        let mut sample: DataSample = avec.into();
+        sample.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        assert_eq!(&sample[..], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(sample.len(), 8);
+
+        match sample.finalize().into_data_message() {
+            DataMessage::Vec(v) => assert_eq!(v.as_slice(), &[1, 2, 3, 4, 5, 6, 7, 8]),
+        }
     }
 
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
