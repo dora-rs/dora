@@ -532,14 +532,26 @@ if [ "$RUN_PYTHON" = true ]; then
 
     echo ""
     echo "=== Memory-pool CPU transport ==="
-    # Dependencies (torch, numpy, tqdm) are provisioned by per-node
-    # `build:` steps in each YAML — no host-side gate needed.
-    run_networked "memory-pool-cpu2cpu"            "examples/memory-pool/cpu2cpu.yml" 60
-    run_local     "local-memory-pool-cpu2cpu"      "examples/memory-pool/cpu2cpu.yml" 60
-    run_local     "local-memory-pool-auto-cleanup" "examples/memory-pool/auto_cleanup.yml" 10
-    run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
-    run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
-    run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
+    # Dependencies (torch, numpy, tqdm) are provisioned by per-node `build:`
+    # steps that pip-install from download.pytorch.org/whl/cpu.  Skip
+    # gracefully on air-gapped / network-restricted machines where that index
+    # is unreachable; the gate is a lightweight TCP probe, not an import check.
+    if python3 -c "
+import urllib.request, sys
+try:
+    urllib.request.urlopen('https://download.pytorch.org/whl/cpu/', timeout=5)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null; then
+        run_networked "memory-pool-cpu2cpu"            "examples/memory-pool/cpu2cpu.yml" 60
+        run_local     "local-memory-pool-cpu2cpu"      "examples/memory-pool/cpu2cpu.yml" 60
+        run_local     "local-memory-pool-auto-cleanup" "examples/memory-pool/auto_cleanup.yml" 10
+        run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
+        run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
+        run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
+    else
+        log_skip "memory-pool" "download.pytorch.org unreachable (run on a machine with PyPI access to exercise this suite)"
+    fi
 fi
 
 # ---------------------------------------------------------------------------
