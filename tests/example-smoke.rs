@@ -1886,8 +1886,11 @@ fn smoke_shell_node_blocked_without_flag() {
 // ---------------------------------------------------------------------------
 // Memory-pool CPU transport (#2168)
 //
-// Requires `torch` and `tqdm` — not installed in standard PR CI. Run
-// explicitly on machines with torch available:
+// Requires `torch` and `tqdm`, so these are `#[ignore]`-gated and skipped by
+// the main `smoke-suite` nightly job. They run in their own nightly job —
+// `memory-pool-smoke` in .github/workflows/nightly.yml — which executes them
+// with `--ignored`; the per-node `build:` steps pip-install CPU torch, so no
+// GPU is needed. Run locally with:
 //   cargo test --test example-smoke -- --ignored smoke_memory_pool
 // or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`.
 // ---------------------------------------------------------------------------
@@ -1976,7 +1979,7 @@ fn smoke_local_memory_pool_write_after_free() {
 // | memory-pool               | covered: smoke_memory_pool_cpu2cpu /                 | #2264    |
 // |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
 // |                           | duplicate_free, read_after_free, write_after_free}   |          |
-// |                           | (#[ignore], run when torch+tqdm available);          |          |
+// |                           | (#[ignore]); nightly memory-pool-smoke job;          |          |
 // |                           | smoke-all.sh gates on `import torch`.                 |          |
 // |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
