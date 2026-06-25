@@ -7,8 +7,24 @@ use eyre::{Context, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
+
+/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
+/// the filesystem — the executable may not be built yet when this is called.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
 
 /// Check if a path string is absolute on any platform.
 /// On Windows, `Path::is_absolute()` returns false for Unix-style `/foo` paths,
@@ -376,12 +392,15 @@ fn expand_module_node(
         }
         inner_node.inputs = new_inputs;
 
-        // Resolve relative paths: make inner node paths relative to base_dir
+        // Resolve relative paths: make inner node paths relative to base_dir.
+        // Normalize lexically (collapse `..`) before the containment check so
+        // that paths like `../../evil` are detected even though the binary may
+        // not exist yet (ruling out filesystem canonicalize).
         if let Some(ref path) = inner_node.path
             && !super::source_is_url(path)
             && !Path::new(path).is_absolute()
         {
-            let resolved = module_dir.join(path);
+            let resolved = normalize_path(&module_dir.join(path));
             let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
                 eyre::eyre!(
                     "module node `{}` path `{}` resolves outside the project \
@@ -1643,6 +1662,45 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_inner_node_path_traversal_via_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        // Module file that declares an inner node with a `..`-escaping path.
+        // The binary doesn't need to exist — the check is purely lexical.
+        write_file(
+            base,
+            "escape_node_module.yml",
+            r#"
+module:
+  name: escape_node
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: evil
+    path: ../../etc/evil-binary
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: escape_node_module.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err(), "expected error but got success");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resolves outside the project directory"),
+            "got: {msg}"
+        );
     }
 
     #[test]
