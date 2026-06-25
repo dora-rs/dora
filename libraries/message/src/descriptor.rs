@@ -1145,13 +1145,6 @@ impl NodeSource {
 
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub enum ResolvedNodeSource {
-    Local,
-    GitCommit { repo: String, commit_hash: String },
-}
-
-#[allow(missing_docs)]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub enum GitRepoRev {
     Branch(String),
     Tag(String),
