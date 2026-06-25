@@ -25,16 +25,9 @@ pub async fn socket_stream_send(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub async fn socket_stream_receive(
-    connection: &mut (impl AsyncRead + Unpin),
-) -> std::io::Result<Vec<u8>> {
-    socket_stream_receive_with_header_timeout(connection, Some(dora_message::TCP_READ_TIMEOUT))
-        .await
-}
-
-/// Like [`socket_stream_receive`], but with a configurable timeout for the
-/// header read. Pass `None` for connections that may legitimately stay idle
+/// Receive a length-prefixed frame, with a configurable timeout for the header
+/// read. Pass `Some(dora_message::TCP_READ_TIMEOUT)` for request/response
+/// connections, or `None` for connections that may legitimately stay idle
 /// between requests; the body read always uses
 /// [`dora_message::TCP_READ_TIMEOUT`] because a mid-frame stall is a fault.
 pub async fn socket_stream_receive_with_header_timeout(
@@ -87,10 +80,17 @@ pub async fn socket_stream_receive_with_header_timeout(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        socket_stream_receive, socket_stream_receive_with_header_timeout, socket_stream_send,
-    };
+    use super::{socket_stream_receive_with_header_timeout, socket_stream_send};
     use tokio::io::{AsyncWriteExt, duplex};
+
+    /// Receive a frame using the default header timeout, mirroring the
+    /// production request/response call sites.
+    async fn socket_stream_receive(
+        connection: &mut (impl tokio::io::AsyncRead + Unpin),
+    ) -> std::io::Result<Vec<u8>> {
+        socket_stream_receive_with_header_timeout(connection, Some(dora_message::TCP_READ_TIMEOUT))
+            .await
+    }
 
     // Length-prefixed framing guards on the daemon side of the daemon<->node TCP
     // transport (dora-rs/dora#2027 verified test gap): DoS-sized frames must be
