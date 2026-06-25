@@ -1071,12 +1071,24 @@ pub enum TryRecvError {
 /// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
 /// achieving true zero-copy. For `Cow::Owned` (normal network path),
 /// copy into Dora's aligned buffer type before reconstructing Arrow arrays.
+/// Newtype that owns a Zenoh [`ZBytes`](zenoh::bytes::ZBytes) payload so it can
+/// back an Arrow `Buffer` via `Buffer::from_custom_allocation`. Keeping the
+/// `ZBytes` alive keeps the underlying SHM mapping (or heap buffer) valid for
+/// the lifetime of the zero-copy Arrow buffer.
+#[allow(dead_code)] // field kept alive to own the zenoh buffer
+struct ZBytesAllocation(zenoh::bytes::ZBytes);
+// SAFETY: the wrapped `ZBytes` is only used to keep the backing allocation
+// alive; the bytes are treated as immutable for the Buffer's lifetime.
+unsafe impl Sync for ZBytesAllocation {}
+unsafe impl Send for ZBytesAllocation {}
+impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+
 /// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
 fn zenoh_payload_to_arrow_array(
     payload: zenoh::bytes::ZBytes,
     metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
+    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc_zero_copy};
     use std::ptr::NonNull;
 
     let is_ipc = dora_message::metadata::get_string_param(
@@ -1114,9 +1126,30 @@ fn zenoh_payload_to_arrow_array(
     }
 
     if is_ipc {
-        // IPC path: need contiguous bytes for the IPC reader.
-        let bytes = payload.to_bytes();
-        return decode_arrow_ipc(&bytes).map(arrow::array::make_array);
+        // Zero-copy IPC: wrap the payload as an Arrow `Buffer` (aliasing the
+        // Zenoh SHM mapping for borrowed payloads, owning the materialized Vec
+        // otherwise) and let `StreamDecoder` slice the array buffers out of it.
+        // It realigns internally only if the payload is under-aligned, so no
+        // explicit alignment gating is needed here.
+        let raw_buffer = match payload.to_bytes() {
+            std::borrow::Cow::Borrowed(slice) => {
+                let ptr =
+                    NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+                let len = slice.len();
+                // SAFETY: `ptr` points into the SHM region owned by `payload`;
+                // moving `payload` into the Arc keeps the region mapped for the
+                // lifetime of the Buffer.
+                unsafe {
+                    arrow::buffer::Buffer::from_custom_allocation(
+                        ptr,
+                        len,
+                        Arc::new(ZBytesAllocation(payload)),
+                    )
+                }
+            }
+            std::borrow::Cow::Owned(vec) => arrow::buffer::Buffer::from_vec(vec),
+        };
+        return decode_arrow_ipc_zero_copy(raw_buffer).map(arrow::array::make_array);
     }
 
     // Raw buffer path: wrap the zenoh payload as an Arrow Buffer. Borrowed
@@ -1134,13 +1167,6 @@ fn zenoh_payload_to_arrow_array(
                 let ptr =
                     NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
                 let len = slice.len();
-
-                // Newtype satisfying arrow's Allocation trait.
-                #[allow(dead_code)] // field kept alive to own the zenoh buffer
-                struct ZBytesAllocation(zenoh::bytes::ZBytes);
-                unsafe impl Sync for ZBytesAllocation {}
-                unsafe impl Send for ZBytesAllocation {}
-                impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 
                 // SAFETY: `ptr` points into the SHM region owned by
                 // `payload`. Moving `payload` into the Arc keeps the region

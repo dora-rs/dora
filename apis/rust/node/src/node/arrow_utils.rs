@@ -296,6 +296,61 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     Ok(batch.column(0).to_data())
 }
 
+/// Decode an Arrow IPC stream from an Arrow [`Buffer`] **without copying** the
+/// payload buffers when they are properly aligned.
+///
+/// Unlike [`decode_arrow_ipc`], which reads from a byte slice through
+/// `StreamReader` (and therefore allocates a fresh buffer and copies every
+/// array buffer out of the stream), this uses
+/// [`arrow::ipc::reader::StreamDecoder`], which slices the array buffers
+/// directly out of the provided [`Buffer`]. When the input buffer is suitably
+/// aligned — as Dora's shared-memory payloads always are (128-byte `AVec` /
+/// page-aligned Zenoh SHM) — the decoded array aliases the input and no payload
+/// copy happens.
+///
+/// The decoder runs with the default `require_alignment = false`, so an
+/// under-aligned input (e.g. an arbitrary heap `Vec`) is handled gracefully by
+/// copying just the misaligned buffers rather than erroring. This keeps the
+/// receive path robust while preserving zero-copy for the common SHM case.
+pub fn decode_arrow_ipc_zero_copy(
+    mut buffer: arrow::buffer::Buffer,
+) -> eyre::Result<arrow::array::ArrayData> {
+    use arrow::ipc::reader::StreamDecoder;
+
+    if buffer.len() > MAX_IPC_BYTES {
+        eyre::bail!(
+            "Arrow IPC payload too large: {} bytes (max {MAX_IPC_BYTES})",
+            buffer.len()
+        );
+    }
+
+    let mut decoder = StreamDecoder::new();
+    let mut batch = None;
+    // `decode` is push-based: it may consume the schema message and return
+    // `None` before yielding the record batch, so loop until we get a batch or
+    // exhaust the input.
+    while !buffer.is_empty() {
+        if let Some(b) = decoder
+            .decode(&mut buffer)
+            .context("failed to decode Arrow IPC stream")?
+        {
+            batch = Some(b);
+            break;
+        }
+    }
+
+    let batch = batch.ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?;
+
+    if batch.num_columns() != 1 {
+        eyre::bail!(
+            "expected 1 column in IPC record batch, got {}",
+            batch.num_columns()
+        );
+    }
+
+    Ok(batch.column(0).to_data())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +376,104 @@ mod tests {
         let data = array.into_data();
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    /// Copy `bytes` into a 128-byte-aligned buffer, mirroring how Dora's
+    /// receive path backs IPC payloads (an `AVec<u8, ConstAlign<128>>` for the
+    /// daemon path, page-aligned Zenoh SHM for the zero-copy path). This is the
+    /// precondition under which `decode_arrow_ipc_zero_copy` aliases the input.
+    fn aligned_buffer_from(bytes: &[u8]) -> (arrow::buffer::Buffer, usize, usize) {
+        use aligned_vec::{AVec, ConstAlign};
+        use std::ptr::NonNull;
+
+        let mut aligned: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
+        aligned.copy_from_slice(bytes);
+        let base = aligned.as_ptr() as usize;
+        let len = aligned.len();
+        let ptr = NonNull::new(aligned.as_ptr() as *mut u8).unwrap();
+        // SAFETY: `ptr`/`len` describe `aligned`'s allocation, which the Arc
+        // keeps alive for the Buffer's lifetime.
+        let buffer = unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(ptr, len, std::sync::Arc::new(aligned))
+        };
+        (buffer, base, len)
+    }
+
+    #[test]
+    fn ipc_zero_copy_roundtrip_primitive() {
+        let array = UInt64Array::from((0..1000u64).collect::<Vec<_>>());
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let (buffer, _, _) = aligned_buffer_from(&encoded);
+        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    /// The headline claim: for an aligned input buffer the decoded array's data
+    /// buffer points *into* the input allocation (no payload copy), and the
+    /// strict `require_alignment(true)` decoder accepts it without falling back
+    /// to a realigning copy.
+    #[test]
+    fn ipc_decode_is_zero_copy_for_aligned_buffer() {
+        use arrow::ipc::reader::StreamDecoder;
+
+        // A large primitive array so the data buffer dominates and any copy
+        // would be unmistakable.
+        let array = UInt64Array::from((0..100_000u64).collect::<Vec<_>>());
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+
+        // 1) Proof via the strict decoder: require_alignment(true) errors if any
+        //    buffer would need realigning. A clean decode proves the body
+        //    buffers are used in place.
+        {
+            let (mut buffer, _, _) = aligned_buffer_from(&encoded);
+            let mut decoder = StreamDecoder::new().with_require_alignment(true);
+            let mut got = None;
+            while !buffer.is_empty() {
+                if let Some(b) = decoder
+                    .decode(&mut buffer)
+                    .expect("aligned IPC buffer must decode without realignment")
+                {
+                    got = Some(b);
+                    break;
+                }
+            }
+            assert_eq!(got.unwrap().column(0).to_data(), data);
+        }
+
+        // 2) Proof via pointer aliasing: the decoded data buffer lies within the
+        //    input allocation's address range.
+        {
+            let (buffer, base, len) = aligned_buffer_from(&encoded);
+            let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+            let data_ptr = decoded.buffers()[0].as_ptr() as usize;
+            assert!(
+                data_ptr >= base && data_ptr < base + len,
+                "decoded data buffer at {data_ptr:#x} is outside input \
+                 [{base:#x}, {:#x}) — a copy happened (not zero-copy)",
+                base + len
+            );
+        }
+    }
+
+    /// Production safety: an *under-aligned* input must still decode correctly.
+    /// The default decoder (`require_alignment = false`) falls back to copying
+    /// only the misaligned buffers rather than erroring.
+    #[test]
+    fn ipc_zero_copy_decoder_handles_misaligned_input() {
+        let array = UInt64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+
+        // Force a 1-byte-offset (deliberately misaligned) backing buffer.
+        let mut shifted = Vec::with_capacity(encoded.len() + 1);
+        shifted.push(0u8);
+        shifted.extend_from_slice(&encoded);
+        let buffer = arrow::buffer::Buffer::from_vec(shifted).slice(1);
+
+        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
         assert_eq!(data, decoded);
     }
 
