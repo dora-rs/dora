@@ -1890,9 +1890,11 @@ fn smoke_shell_node_blocked_without_flag() {
 // the main `smoke-suite` nightly job. They run in their own nightly job —
 // `memory-pool-smoke` in .github/workflows/nightly.yml — which executes them
 // with `--ignored`; the per-node `build:` steps pip-install CPU torch, so no
-// GPU is needed. Run locally with:
-//   cargo test --test example-smoke -- --ignored smoke_memory_pool
-// or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`.
+// GPU is needed. Run all six locally with the same filter CI uses:
+//   cargo test --test example-smoke -- --ignored memory_pool
+// (`memory_pool` matches both `smoke_memory_pool_*` and
+// `smoke_local_memory_pool_*`; `smoke_memory_pool` would miss the latter).
+// Or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`.
 // ---------------------------------------------------------------------------
 
 #[test]
