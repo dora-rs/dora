@@ -22,8 +22,8 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{
-        FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
-        SEGMENT_ID, SEQ, SESSION_ID,
+        BATCH, FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
+        SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
@@ -99,6 +99,23 @@ const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(
 /// enforceable when zenoh's net runtime is wedged.
 const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How often a small zenoh output re-sends the full Arrow IPC stream (schema +
+/// batch) instead of a schema-less batch. The schema is re-advertised every
+/// `SCHEMA_REFRESH_INTERVAL` messages so a late-joining or
+/// dropped-priming-message subscriber re-primes its decoder within at most this
+/// many messages (the data plane is lossy — `CongestionControl::Drop`). A
+/// schema change also forces an immediate full stream.
+const SCHEMA_REFRESH_INTERVAL: u64 = 64;
+
+/// Per-output state for the schema-once send path.
+#[derive(Clone, Copy)]
+struct SchemaSendState {
+    /// FNV-1a hash of the schema block last sent for this output.
+    last_hash: u64,
+    /// Number of messages sent for this output (drives periodic refresh).
+    count: u64,
+}
+
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -120,6 +137,10 @@ pub struct DoraNode {
     /// so it doesn't borrow from the session field on this struct.
     /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
     zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    /// Per-output schema-once send state for small zenoh messages: the schema
+    /// hash last advertised and a message counter driving periodic full-stream
+    /// refreshes (see [`SCHEMA_REFRESH_INTERVAL`]).
+    zenoh_schema_state: HashMap<DataId, SchemaSendState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
 
@@ -679,6 +700,7 @@ impl DoraNode {
             zenoh_session,
             zenoh_shm_provider,
             zenoh_publishers: HashMap::new(),
+            zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
@@ -1206,12 +1228,19 @@ impl DoraNode {
                     }
                 }
 
-                // Fallback: publish raw bytes (no SHM).
-                match publisher
-                    .put(&avec[..])
-                    .attachment(&metadata_bytes[..])
-                    .wait()
-                {
+                // Small heap message: apply the schema-once optimization — send
+                // the full IPC stream periodically (and on schema change), but
+                // only the schema-less record batch in between. Falls back to the
+                // verbatim full stream if it isn't parseable.
+                let (attachment, is_batch) =
+                    schema_once_decision(&mut self.zenoh_schema_state, output_id, &avec, metadata)
+                        .unwrap_or_else(|| (metadata_bytes.clone(), false));
+                let payload: &[u8] = if is_batch {
+                    arrow_utils::ipc_encode::batch_slice(&avec).unwrap_or(&avec)
+                } else {
+                    &avec
+                };
+                match publisher.put(payload).attachment(&attachment[..]).wait() {
                     Ok(()) => Ok(PublishOutcome::Published),
                     Err(e) => {
                         tracing::warn!("zenoh publish failed ({e}); falling back to daemon path");
@@ -1834,6 +1863,56 @@ enum PublishOutcome {
 /// flow through a single output/input, distinguished by metadata
 /// rather than a fixed Arrow type. Type checks are skipped for such
 /// messages (dora-rs/adora#150).
+/// FNV-1a hash of `bytes` with a fixed seed (cross-process deterministic).
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Decide how to send a small (heap) zenoh output under the schema-once scheme.
+///
+/// `full_stream` is the complete Arrow IPC stream the producer encoded. Returns
+/// `(attachment_metadata_bytes, is_batch)`: every `SCHEMA_REFRESH_INTERVAL`-th
+/// message (and on a schema change) sends the full stream (`is_batch == false`);
+/// the rest send only the schema-less record-batch+body (caller slices via
+/// `ipc_encode::batch_slice`). The attachment carries the schema hash so the
+/// receiver can match batches to a primed decoder. Returns `None` if
+/// `full_stream` is not a parseable IPC stream (caller sends it verbatim).
+///
+/// Takes the state map by `&mut` (not `&mut self`) so it can be called while an
+/// immutable borrow of `self.zenoh_publishers` (the publisher) is live.
+fn schema_once_decision(
+    state: &mut HashMap<DataId, SchemaSendState>,
+    output_id: &DataId,
+    full_stream: &[u8],
+    base_metadata: &Metadata,
+) -> Option<(Vec<u8>, bool)> {
+    let block = arrow_utils::ipc_encode::schema_block_len(full_stream)?;
+    let hash = fnv1a(full_stream.get(..block)?);
+
+    let entry = state.entry(output_id.clone()).or_insert(SchemaSendState {
+        last_hash: hash,
+        count: 0,
+    });
+    let send_full = entry.count.is_multiple_of(SCHEMA_REFRESH_INTERVAL) || entry.last_hash != hash;
+    entry.last_hash = hash;
+    entry.count = entry.count.wrapping_add(1);
+
+    let mut metadata = base_metadata.clone();
+    metadata
+        .parameters
+        .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
+    metadata
+        .parameters
+        .insert(BATCH.to_string(), Parameter::Bool(!send_full));
+    let attachment = bincode::serialize(&metadata).ok()?;
+    Some((attachment, !send_full))
+}
+
 pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
     params.contains_key(dora_message::metadata::REQUEST_ID)
         || params.contains_key(dora_message::metadata::GOAL_ID)

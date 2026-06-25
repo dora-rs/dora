@@ -683,10 +683,11 @@ mod tests {
     fn make_zenoh_input(id: &str, params: MetadataParameters) -> EventItem {
         let ts = uhlc::HLC::default().new_timestamp();
         let metadata = Metadata::from_parameters(ts, params);
+        use dora_arrow_convert::IntoArrow;
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),
-            payload: zenoh::bytes::ZBytes::default(),
+            data: ().into_arrow().into(),
         }
     }
 

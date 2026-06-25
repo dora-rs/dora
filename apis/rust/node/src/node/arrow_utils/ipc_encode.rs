@@ -458,6 +458,15 @@ pub fn schema_block_len(stream: &[u8]) -> Option<usize> {
     (block <= stream.len()).then_some(block)
 }
 
+/// Given a full IPC stream, return the schema-less record-batch+body slice
+/// (everything after the schema block, minus the trailing 8-byte end-of-stream
+/// marker) — the payload of a batch message. `None` if `stream` is malformed.
+pub fn batch_slice(stream: &[u8]) -> Option<&[u8]> {
+    let block = schema_block_len(stream)?;
+    let end = stream.len().checked_sub(PREFIX_LEN)?;
+    (end >= block).then(|| &stream[block..end])
+}
+
 /// Per-input receive state for the schema-once zenoh path: one persistent
 /// [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) primed by the latest
 /// full stream, then reused to decode schema-less batch messages.

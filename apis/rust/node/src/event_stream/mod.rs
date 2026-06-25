@@ -314,6 +314,13 @@ impl EventStream {
                     };
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
+                    // Per-input persistent decoder for the schema-once path. Owned
+                    // by the callback so it is fed in zenoh receipt order (the
+                    // scheduler downstream reorders/drops events). `Mutex` because
+                    // the zenoh callback is `Fn`; uncontended in practice (one
+                    // subscriber delivers its samples serially).
+                    let decoder =
+                        std::sync::Mutex::new(crate::arrow_utils::ipc_encode::InputDecoder::new());
                     let subscriber = session
                         .declare_subscriber(key_expr)
                         .callback(move |sample| {
@@ -345,6 +352,26 @@ impl EventStream {
                                         }
                                     };
                                     let payload = sample.payload().clone();
+                                    // Decode here (receipt order) so the per-input
+                                    // persistent decoder stays in sync.
+                                    let mut decoder =
+                                        decoder.lock().unwrap_or_else(|p| p.into_inner());
+                                    let data =
+                                        match decode_zenoh_sample(&mut decoder, &metadata, payload)
+                                        {
+                                            Ok(Some(data)) => data,
+                                            // Schema-less batch before its priming full
+                                            // stream — drop (lossy data plane).
+                                            Ok(None) => return,
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    input = %input_id_cb,
+                                                    "zenoh payload decode failed: {e}"
+                                                );
+                                                return;
+                                            }
+                                        };
+                                    drop(decoder);
                                     // Callback runs on zenoh's tokio IO worker —
                                     // `blocking_send` panics from a tokio context, so
                                     // use `try_send`. If the channel is full the event
@@ -353,7 +380,7 @@ impl EventStream {
                                     if let Err(e) = tx_cb.try_send(EventItem::ZenohInput {
                                         id: input_id_cb.clone(),
                                         metadata: std::sync::Arc::new(metadata),
-                                        payload,
+                                        data,
                                     }) {
                                         use tokio::sync::mpsc::error::TrySendError;
                                         match e {
@@ -1027,21 +1054,12 @@ impl EventStream {
                 }
             },
 
-            EventItem::ZenohInput {
+            EventItem::ZenohInput { id, metadata, data } => Event::Input {
                 id,
-                metadata,
-                payload,
-            } => {
-                let result = zenoh_payload_to_arrow_array(payload);
-                match result {
-                    Ok(data) => Event::Input {
-                        id,
-                        metadata: Arc::unwrap_or_clone(metadata),
-                        data: data.into(),
-                    },
-                    Err(err) => Event::Error(format!("{err:?}")),
-                }
-            }
+                // Already decoded in the subscriber callback (receipt order).
+                metadata: Arc::unwrap_or_clone(metadata),
+                data: arrow::array::make_array(data).into(),
+            },
 
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
@@ -1086,22 +1104,11 @@ impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 /// Every data-plane payload is a self-describing Arrow IPC stream, so the
 /// decode needs no type sidecar. An empty payload is a metadata-only message
 /// and maps to the unit array.
-fn zenoh_payload_to_arrow_array(
-    payload: zenoh::bytes::ZBytes,
-) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+/// Wrap a zenoh payload as an Arrow `Buffer` — aliasing the zenoh SHM mapping
+/// for borrowed payloads (zero-copy), owning the materialized `Vec` otherwise.
+fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buffer {
     use std::ptr::NonNull;
-
-    if payload.is_empty() {
-        return Ok(arrow::array::make_array(().into_arrow().into()));
-    }
-
-    // Zero-copy IPC: wrap the payload as an Arrow `Buffer` (aliasing the Zenoh
-    // SHM mapping for borrowed payloads, owning the materialized Vec otherwise)
-    // and let `StreamDecoder` slice the array buffers out of it. It realigns
-    // internally only if the payload is under-aligned, so no explicit alignment
-    // gating is needed here.
-    let raw_buffer = match payload.to_bytes() {
+    match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
             let ptr =
                 NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
@@ -1118,8 +1125,38 @@ fn zenoh_payload_to_arrow_array(
             }
         }
         std::borrow::Cow::Owned(vec) => arrow::buffer::Buffer::from_vec(vec),
-    };
-    decode_arrow_ipc_zero_copy(raw_buffer).map(arrow::array::make_array)
+    }
+}
+
+/// Decode a zenoh sample in receipt order. Schema-once messages (a
+/// `SCHEMA_HASH` parameter is present) feed the per-input persistent decoder —
+/// a full stream re-primes it, a schema-less batch decodes against it (or
+/// returns `Ok(None)` if it arrived before its priming full stream, in which
+/// case the caller drops it). Other messages (large/SHM full streams, fallback
+/// types) decode standalone.
+fn decode_zenoh_sample(
+    decoder: &mut crate::arrow_utils::ipc_encode::InputDecoder,
+    metadata: &dora_message::metadata::Metadata,
+    payload: zenoh::bytes::ZBytes,
+) -> eyre::Result<Option<arrow::array::ArrayData>> {
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+    use dora_message::metadata::{BATCH, SCHEMA_HASH, get_bool_param, get_integer_param};
+
+    if payload.is_empty() {
+        return Ok(Some(().into_arrow().into()));
+    }
+    let buffer = zenoh_payload_to_buffer(payload);
+    match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
+        Some(hash) => {
+            let hash = hash as u64;
+            if get_bool_param(&metadata.parameters, BATCH).unwrap_or(false) {
+                decoder.decode_batch(buffer, hash)
+            } else {
+                decoder.decode_full(buffer, hash).map(Some)
+            }
+        }
+        None => decode_arrow_ipc_zero_copy(buffer).map(Some),
+    }
 }
 
 pub fn data_to_arrow_array(
@@ -1934,13 +1971,18 @@ mod tests {
     /// no type sidecar involved).
     #[test]
     fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
-        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::ipc_encode::{InputDecoder, encode_ipc_into, ipc_fast_path_len};
         use arrow::array::{Array, Int32Array};
 
-        // Empty payload -> unit array (metadata-only message). The unit array
-        // is the canonical empty/metadata-only Arrow value used across the
-        // codebase for payload-less messages.
-        let unit = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::new()).unwrap();
+        // A standalone full stream (no SCHEMA_HASH parameter) decodes directly.
+        let metadata =
+            dora_message::metadata::Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
+        let mut decoder = InputDecoder::new();
+
+        // Empty payload -> unit array (metadata-only message).
+        let unit = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(
             unit.data_type(),
             &arrow_schema::DataType::Null,
@@ -1948,15 +1990,16 @@ mod tests {
         );
 
         // Non-empty IPC payload round-trips to the original array.
-        let array = Int32Array::from(vec![10, 20, 30]);
-        let data = array.to_data();
+        let data = Int32Array::from(vec![10, 20, 30]).into_data();
         let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
         let mut buf = vec![0u8; len];
         encode_ipc_into(&data, &mut buf).unwrap();
 
-        let decoded = zenoh_payload_to_arrow_array(zenoh::bytes::ZBytes::from(buf)).unwrap();
+        let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
+            .unwrap()
+            .unwrap();
         assert_eq!(decoded.data_type(), &arrow_schema::DataType::Int32);
-        assert_eq!(&decoded.to_data(), &data);
+        assert_eq!(&decoded, &data);
     }
 
     /// Same invariant as `recv_returns_none_after_stop`, verified via

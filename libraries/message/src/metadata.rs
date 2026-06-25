@@ -132,6 +132,19 @@ pub const FRAMING: &str = "_framing";
 /// Value for [`FRAMING`] indicating Arrow IPC stream framing.
 pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 
+/// Metadata key carrying the FNV-1a hash (as an `i64`) of the Arrow IPC schema
+/// for a zenoh data message. Present on schema-once messages so a receiver can
+/// tell which primed decoder a schema-less batch belongs to and detect schema
+/// changes. Absent on messages a receiver should decode as a standalone full
+/// stream (large/SHM and daemon-path payloads).
+pub const SCHEMA_HASH: &str = "_schema_hash";
+
+/// Metadata key (`Bool`) marking a zenoh payload as a *schema-less batch*
+/// (record batch + body only) to be decoded against the per-input decoder
+/// primed by the most recent full stream. When `false`/absent the payload is a
+/// full IPC stream (schema + batch) that re-primes the decoder.
+pub const BATCH: &str = "_batch";
+
 #[cfg(test)]
 mod tests {
     use super::*;
