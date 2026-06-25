@@ -150,10 +150,15 @@ impl DaemonConnection {
             pending.insert(id, reply_tx);
         }
 
-        self.sender
-            .send(json)
-            .await
-            .map_err(|_| eyre!("WS daemon send channel closed"))?;
+        if self.sender.send(json).await.is_err() {
+            // The send failed, so no reply will ever arrive for `id`. Remove the
+            // pending entry we just inserted; otherwise it lingers in the map
+            // until the connection is dropped, needlessly consuming one of the
+            // `MAX_PENDING_REPLIES` slots. Mirrors the cleanup in the timeout
+            // arm below.
+            self.pending_replies.lock().await.remove(&id);
+            return Err(eyre!("WS daemon send channel closed"));
+        }
 
         let response_json =
             match tokio::time::timeout(dora_message::TCP_READ_TIMEOUT, reply_rx).await {
@@ -604,5 +609,31 @@ mod hub_capability_tests {
         assert!(!conns.supports_hub_sources(&legacy));
         // unknown daemon → false (fail-closed: refuse to route a hub node)
         assert!(!conns.supports_hub_sources(&DaemonId::new(Some("ghost".into()))));
+    }
+}
+
+#[cfg(test)]
+mod send_and_receive_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn send_failure_does_not_leak_pending_reply() {
+        // A closed receiver makes every `sender.send` fail. The request id is
+        // inserted into `pending_replies` before the send, so the error path
+        // must remove it again — otherwise it lingers until the connection is
+        // dropped, consuming a `MAX_PENDING_REPLIES` slot for nothing.
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let conn = DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+
+        let result = conn.send_and_receive(b"{}").await;
+
+        assert!(result.is_err(), "send_and_receive should fail on closed WS");
+        assert!(
+            pending.lock().await.is_empty(),
+            "pending reply leaked after send failure"
+        );
     }
 }
