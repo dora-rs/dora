@@ -2084,6 +2084,7 @@ dependencies = [
  "dora-metrics",
  "dora-tracing",
  "eyre",
+ "flatbuffers",
  "flume 0.10.14",
  "futures",
  "futures-concurrency",

@@ -1,5 +1,7 @@
 //! Utility functions for converting Arrow arrays to/from raw data.
 //!
+pub mod ipc_encode;
+
 use arrow::array::{ArrayData, BufferSpec};
 use arrow_schema::DataType;
 use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
