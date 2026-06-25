@@ -446,6 +446,100 @@ pub fn encode_ipc_to_vec(array: &ArrayData) -> eyre::Result<Vec<u8>> {
     super::encode_arrow_ipc(array).context("Arrow IPC fallback encode")
 }
 
+/// IPC layout of a `UInt8` array of `data_len` elements (no nulls): the byte
+/// offsets and message blocks, computed directly without materializing the
+/// data buffer (so it is cheap for a large image/tensor).
+struct Uint8Layout {
+    schema_message: Vec<u8>,
+    record_batch_message: Vec<u8>,
+    validity_len: usize,
+    validity_padded: usize,
+    body_len: usize,
+    total: usize,
+    data_offset: usize,
+}
+
+fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
+    if data_len > super::MAX_IPC_BYTES {
+        bail!(
+            "UInt8 payload too large: {data_len} bytes (max {})",
+            super::MAX_IPC_BYTES
+        );
+    }
+    let validity_len = data_len.div_ceil(8);
+    let validity_padded = round_up(validity_len, ALIGN);
+    let body_len = validity_padded + round_up(data_len, ALIGN);
+    // Matches what `encode_ipc_into` emits for a no-null UInt8Array: one field
+    // node, then [validity all-ones | data].
+    let nodes = [FieldNode::new(data_len as i64, 0)];
+    let buffers = [
+        IpcBuffer::new(0, validity_len as i64),
+        IpcBuffer::new(validity_padded as i64, data_len as i64),
+    ];
+    let record_batch_message = build_record_batch_message(data_len, &nodes, &buffers, body_len);
+    let schema_message = build_schema_message(&DataType::UInt8)?;
+    let schema_block = round_up(PREFIX_LEN + schema_message.len(), ALIGN);
+    let record_batch_block = round_up(PREFIX_LEN + record_batch_message.len(), ALIGN);
+    let total = schema_block + record_batch_block + body_len + PREFIX_LEN;
+    let data_offset = schema_block + record_batch_block + validity_padded;
+    Ok(Uint8Layout {
+        schema_message,
+        record_batch_message,
+        validity_len,
+        validity_padded,
+        body_len,
+        total,
+        data_offset,
+    })
+}
+
+/// Total IPC stream length for a no-null `UInt8` array of `data_len` elements.
+/// Lets a caller size the sample before constructing the message in place via
+/// [`encode_uint8_ipc_header`].
+pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
+    Ok(uint8_layout(data_len)?.total)
+}
+
+/// Write a complete no-null `UInt8` IPC stream into `dst` **except the data
+/// region**, and return the byte offset at which the caller must write the
+/// `data_len` data bytes (the buffer-protocol "construct in place" path).
+///
+/// `dst.len()` must equal [`uint8_ipc_len(data_len)`](uint8_ipc_len). After the
+/// caller fills `dst[offset..offset + data_len]`, `dst` is a valid IPC stream
+/// that decodes to the user's bytes as a `UInt8Array` — with zero payload
+/// copies.
+pub fn encode_uint8_ipc_header(dst: &mut [u8], data_len: usize) -> eyre::Result<usize> {
+    let layout = uint8_layout(data_len)?;
+    if dst.len() != layout.total {
+        bail!(
+            "destination size {} does not match required UInt8 IPC length {}",
+            dst.len(),
+            layout.total
+        );
+    }
+    let mut at = 0;
+    at += write_framed_message(dst, at, &layout.schema_message);
+    at += write_framed_message(dst, at, &layout.record_batch_message);
+    let body_start = at;
+
+    // Validity: all-ones bitmap, then padding to the data buffer.
+    dst[body_start..body_start + layout.validity_len].fill(0xff);
+    dst[body_start + layout.validity_len..body_start + layout.validity_padded].fill(0);
+
+    // The data region [data_offset .. data_offset + data_len] is left for the
+    // caller. Zero only its trailing alignment padding.
+    let data_end = layout.data_offset + data_len;
+    let body_end = body_start + layout.body_len;
+    dst[data_end..body_end].fill(0);
+
+    // End-of-stream marker.
+    dst[body_end..body_end + 4].copy_from_slice(&CONTINUATION_MARKER);
+    dst[body_end + 4..body_end + 8].copy_from_slice(&0i32.to_le_bytes());
+    debug_assert_eq!(body_end + PREFIX_LEN, layout.total);
+
+    Ok(layout.data_offset)
+}
+
 /// Length of the leading schema-message block of a full IPC stream produced by
 /// [`encode_ipc_into`] (so a receiver can split it into the schema prefix and
 /// the record-batch+body), or `None` if `stream` is not a framed IPC message.
@@ -801,6 +895,31 @@ mod tests {
                     .to_data(),
                 array
             );
+        }
+    }
+
+    /// `encode_uint8_ipc_header` + caller-filled data region produces a valid
+    /// IPC stream identical to `encode_ipc_into` of the equivalent UInt8Array —
+    /// the zero-copy "construct in place" path for `send_output_raw`/Python.
+    #[test]
+    fn uint8_ipc_header_constructs_in_place() {
+        for data_len in [0usize, 1, 7, 8, 9, 1000] {
+            let bytes: Vec<u8> = (0..data_len).map(|i| (i % 251) as u8).collect();
+            let total = uint8_ipc_len(data_len).unwrap();
+            let mut dst = vec![0u8; total];
+            let offset = encode_uint8_ipc_header(&mut dst, data_len).unwrap();
+            // The caller writes the data in place (no copy in real use).
+            dst[offset..offset + data_len].copy_from_slice(&bytes);
+
+            // Decodes to the original bytes as a no-null UInt8Array.
+            let arr = arrow::array::make_array(read_official(&dst));
+            let u8 = arr.as_any().downcast_ref::<UInt8Array>().unwrap();
+            assert_eq!(u8.values(), bytes.as_slice(), "len {data_len}");
+            assert_eq!(u8.null_count(), 0);
+
+            // Byte-identical to encoding the equivalent array directly.
+            let array = UInt8Array::from(bytes).into_data();
+            assert_eq!(dst, fast_encode(&array), "len {data_len}");
         }
     }
 

@@ -798,13 +798,23 @@ impl DoraNode {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
-        // The receiver expects a self-describing Arrow IPC stream, so wrap the
-        // user's raw bytes in a `UInt8Array` and IPC-encode it just like
-        // `send_output` does for any other array.
-        let mut buf = vec![0u8; data_len];
-        data(&mut buf);
-        let array = arrow::array::UInt8Array::from(buf).into_data();
-        self.send_output_array(output_id, parameters, array)
+        // The receiver expects a self-describing Arrow IPC stream. Build it in
+        // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
+        // then let the caller write their bytes straight into the data region —
+        // zero payload copies (and the SHM sample is moved into zenoh's `put`).
+        let total = ipc_encode::uint8_ipc_len(data_len)
+            .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+        let mut sample = self.allocate_data_sample(total)?;
+        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+            .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+        data(&mut sample[offset..offset + data_len]);
+
+        let mut parameters = parameters;
+        parameters.insert(
+            FRAMING.to_string(),
+            Parameter::String(FRAMING_ARROW_IPC.to_string()),
+        );
+        self.send_output_sample(output_id, parameters, Some(sample))
     }
 
     /// Sends the give Arrow array as an output message.
