@@ -998,6 +998,22 @@ impl DoraNode {
                     .wrap_err_with(|| format!("failed to report output {output_id}"))?;
             }
             Delivery::Daemon(data) => {
+                // The daemon/TCP path serializes the whole message; an oversized
+                // IPC payload would otherwise fail deep in the transport with a
+                // generic error. Reject it here with a clear, output-specific
+                // message. Large payloads are expected to reach a zenoh
+                // subscriber instead, which has no such limit.
+                if let Some(DataMessage::Vec(v)) = &data
+                    && v.len() > dora_message::MAX_MESSAGE_BYTES
+                {
+                    return Err(NodeError::Output(format!(
+                        "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
+                         the {}-byte daemon transport limit (no matching zenoh subscriber to \
+                         take the large payload)",
+                        v.len(),
+                        dora_message::MAX_MESSAGE_BYTES,
+                    )));
+                }
                 self.control_channel
                     .send_message(output_id.clone(), metadata, data)
                     .wrap_err_with(|| format!("failed to send output {output_id}"))?;

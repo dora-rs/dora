@@ -37,3 +37,51 @@ impl std::fmt::Debug for RawData {
         f.debug_struct("Data").finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::arrow_utils::ipc_encode;
+    use arrow::array::{Array, Float32Array};
+    use dora_message::node_to_daemon::DataMessage;
+
+    /// The daemon/TCP fallback carries the IPC stream as a bincode-serialized
+    /// `DataMessage::Vec`. A round-trip through that serialization must preserve
+    /// both the payload and its 128-byte alignment, so the receiver still
+    /// decodes zero-copy via `decode_arrow_ipc_zero_copy`.
+    #[test]
+    fn daemon_path_ipc_roundtrip_preserves_payload_and_alignment() {
+        let data = Float32Array::from((0..1000).map(|i| i as f32).collect::<Vec<_>>()).into_data();
+
+        // Encode the IPC stream into a 128-byte-aligned AVec, exactly as the
+        // send path does for the daemon fallback.
+        let len = ipc_encode::ipc_fast_path_len(&data).unwrap();
+        let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
+        ipc_encode::encode_ipc_into(&data, &mut avec).unwrap();
+        let message = DataMessage::Vec(avec);
+
+        // bincode round-trip = what the node->daemon->node TCP hops do.
+        let bytes = bincode::serialize(&message).unwrap();
+        let restored: DataMessage = bincode::deserialize(&bytes).unwrap();
+        let DataMessage::Vec(avec) = restored;
+        assert_eq!(
+            avec.as_ptr() as usize % 128,
+            0,
+            "deserialized DataMessage::Vec must stay 128-byte aligned for zero-copy decode"
+        );
+
+        let decoded = RawData::Vec(avec).into_arrow_array().unwrap();
+        assert_eq!(
+            data, decoded,
+            "daemon-path payload must decode to the input"
+        );
+    }
+
+    /// An empty payload (metadata-only message) decodes to the unit array, never
+    /// an error.
+    #[test]
+    fn empty_payload_decodes_to_unit_array() {
+        let decoded = RawData::Empty.into_arrow_array().unwrap();
+        assert_eq!(decoded, ().into_arrow().into());
+    }
+}
