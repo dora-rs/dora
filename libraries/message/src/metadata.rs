@@ -16,18 +16,32 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    /// Current metadata wire-format version, stamped on every outgoing message.
+    ///
+    /// Bumped from 0 to 1 when the `ArrowTypeInfo` sidecar was dropped and the
+    /// wire format became Arrow-IPC-only. A receiver can compare
+    /// [`metadata_version`](Self::metadata_version) against this to detect a peer
+    /// speaking an incompatible format and report it clearly instead of failing
+    /// with a cryptic positional-deserialization error.
+    pub const CURRENT_VERSION: u16 = 1;
+
     pub fn new(timestamp: uhlc::Timestamp) -> Self {
         Self::from_parameters(timestamp, Default::default())
     }
 
     pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
-            // Bumped from 0 when the `ArrowTypeInfo` sidecar was dropped and the
-            // wire format became Arrow-IPC-only.
-            metadata_version: 1,
+            metadata_version: Self::CURRENT_VERSION,
             timestamp,
             parameters,
         }
+    }
+
+    /// The wire-format version stamped on this metadata. Compare against
+    /// [`CURRENT_VERSION`](Self::CURRENT_VERSION) on receive to reject peers
+    /// using an incompatible format.
+    pub fn metadata_version(&self) -> u16 {
+        self.metadata_version
     }
 
     pub fn timestamp(&self) -> uhlc::Timestamp {
@@ -197,6 +211,23 @@ mod tests {
                 assert_ne!(a, b);
             }
         }
+    }
+
+    #[test]
+    fn outgoing_metadata_is_stamped_with_current_version() {
+        // The wire format is positional (bincode) and carries no separate type
+        // descriptor, so `metadata_version` is the only in-band signal of an
+        // incompatible layout. Every constructor must stamp `CURRENT_VERSION`.
+        assert_eq!(Metadata::CURRENT_VERSION, 1);
+        let ts = uhlc::HLC::default().new_timestamp();
+        assert_eq!(
+            Metadata::new(ts).metadata_version(),
+            Metadata::CURRENT_VERSION
+        );
+        assert_eq!(
+            Metadata::from_parameters(ts, Default::default()).metadata_version(),
+            Metadata::CURRENT_VERSION
+        );
     }
 
     #[test]

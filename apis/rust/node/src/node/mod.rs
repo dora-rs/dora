@@ -1922,7 +1922,14 @@ fn schema_once_decision(
         last_hash: hash,
         count: 0,
     });
-    let send_full = entry.count.is_multiple_of(SCHEMA_REFRESH_INTERVAL) || entry.last_hash != hash;
+    // A schema change forces a full stream AND re-anchors the periodic cadence
+    // (reset the counter) so the next refresh lands SCHEMA_REFRESH_INTERVAL
+    // messages after the change rather than at the next arbitrary multiple.
+    let schema_changed = entry.last_hash != hash;
+    if schema_changed {
+        entry.count = 0;
+    }
+    let send_full = schema_changed || entry.count.is_multiple_of(SCHEMA_REFRESH_INTERVAL);
     entry.last_hash = hash;
     entry.count = entry.count.wrapping_add(1);
 

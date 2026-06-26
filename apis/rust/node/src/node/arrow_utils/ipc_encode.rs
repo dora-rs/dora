@@ -601,6 +601,7 @@ impl InputDecoder {
         buffer: ArrowBuffer,
         schema_hash: u64,
     ) -> eyre::Result<arrow::array::ArrayData> {
+        check_ipc_size(buffer.len())?;
         let block = schema_block_len(buffer.as_slice())
             .ok_or_else(|| eyre!("malformed IPC stream header"))?;
         // [schema: block][record batch + body: X][EOS: 8]. Drop the EOS so the
@@ -630,6 +631,7 @@ impl InputDecoder {
         buffer: ArrowBuffer,
         schema_hash: u64,
     ) -> eyre::Result<Option<arrow::array::ArrayData>> {
+        check_ipc_size(buffer.len())?;
         if self.schema_hash != Some(schema_hash) {
             return Ok(None);
         }
@@ -648,6 +650,20 @@ impl InputDecoder {
             }
         }
     }
+}
+
+/// Reject an IPC payload larger than [`super::MAX_IPC_BYTES`] before decoding.
+/// Defense-in-depth against an oversized peer-controlled zenoh payload, mirroring
+/// the guard in [`decode_arrow_ipc_zero_copy`](super::decode_arrow_ipc_zero_copy)
+/// (the persistent-decoder paths receive the same untrusted bytes).
+fn check_ipc_size(len: usize) -> eyre::Result<()> {
+    if len > super::MAX_IPC_BYTES {
+        bail!(
+            "Arrow IPC payload too large: {len} bytes (max {})",
+            super::MAX_IPC_BYTES
+        );
+    }
+    Ok(())
 }
 
 /// Feed a schema message to `decoder`; it must yield no batch.
@@ -857,6 +873,75 @@ mod tests {
         );
     }
 
+    /// Schema-once batch path for a *fallback* (dictionary) type. Dictionary
+    /// arrays are not fast-path eligible, so the full stream comes from the
+    /// official writer as `[schema][dictionary batch][record batch][EOS]`. The
+    /// schema-once optimization still applies to small messages (node/mod.rs),
+    /// shipping `batch_slice` = `[dictionary batch][record batch]` against an
+    /// already-primed decoder — i.e. a *replacement* dictionary on every
+    /// message. The `InputDecoder` tests otherwise use only `Float32`; a failure
+    /// here is silent intermittent input loss (decode error → reset → drop until
+    /// the next refresh), so it needs an explicit oracle.
+    #[test]
+    fn input_decoder_dictionary_fallback_batch_sequence() {
+        use arrow::array::DictionaryArray;
+        use arrow::datatypes::Int32Type;
+
+        // Build a Dictionary<Int32, Utf8> from words, distinct values in
+        // first-seen order (deterministic, no iterator-trait ambiguity).
+        fn dict(words: &[&str]) -> ArrayData {
+            let mut values: Vec<&str> = Vec::new();
+            let mut keys: Vec<i32> = Vec::new();
+            for w in words {
+                let idx = values.iter().position(|v| v == w).unwrap_or_else(|| {
+                    values.push(*w);
+                    values.len() - 1
+                });
+                keys.push(idx as i32);
+            }
+            DictionaryArray::<Int32Type>::try_new(
+                Int32Array::from(keys),
+                Arc::new(StringArray::from(values)),
+            )
+            .unwrap()
+            .into_data()
+        }
+
+        let first = dict(&["a", "b", "a", "c", "b"]);
+        // Confirm this really exercises the fallback (not the fast path).
+        assert!(
+            ipc_fast_path_len(&first).is_none(),
+            "dictionary must route to the official-writer fallback"
+        );
+
+        let mut dec = InputDecoder::new();
+        let got = dec
+            .decode_full(Buffer::from_vec(encode_ipc_to_vec(&first).unwrap()), 1)
+            .unwrap();
+        assert_eq!(got, first);
+
+        // Following messages ship only the schema-less batch slice (which for a
+        // dictionary type carries a replacement dictionary batch + record batch)
+        // against the primed decoder. Each must decode to its own input.
+        for words in [
+            ["x", "y", "x", "z"].as_slice(),
+            ["b", "b"].as_slice(),
+            ["new", "values", "entirely"].as_slice(),
+        ] {
+            let arr = dict(words);
+            let full = encode_ipc_to_vec(&arr).unwrap();
+            let slice = batch_slice(&full).expect("fallback stream is a valid IPC stream");
+            let got = dec
+                .decode_batch(Buffer::from(slice), 1)
+                .unwrap()
+                .expect("batch must decode against the primed decoder");
+            assert_eq!(
+                got, arr,
+                "replacement-dictionary batch must decode correctly"
+            );
+        }
+    }
+
     /// The W3 schema-once contract: prime one persistent `StreamDecoder` with a
     /// single schema message, then decode a *sequence* of schema-less batch
     /// messages against it. (A fresh full stream per message can't do this — its
@@ -967,6 +1052,56 @@ mod tests {
         let array = FixedSizeBinaryArray::try_from_iter(values.into_iter())
             .unwrap()
             .into_data();
+        assert_fast_roundtrip(&array);
+    }
+
+    /// `FixedSizeList` exercises the unique fast-path child-slicing branch
+    /// (`n = len * value_size`, then `child.slice(0, n)`). No other test covers
+    /// it — `roundtrip_fixed_size_binary` is `FixedSizeBinary`, a leaf type.
+    #[test]
+    fn roundtrip_fixed_size_list() {
+        use arrow::array::FixedSizeListArray;
+        let values = Int32Array::from((0..12).collect::<Vec<_>>());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let array = FixedSizeListArray::try_new(field, 3, Arc::new(values), None)
+            .unwrap()
+            .into_data();
+        assert_fast_roundtrip(&array);
+    }
+
+    /// `FixedSizeList` with a list-level validity bitmap (null lists), so the
+    /// child-slicing branch runs alongside the parent's null buffer.
+    #[test]
+    fn roundtrip_fixed_size_list_with_nulls() {
+        use arrow::array::FixedSizeListArray;
+        use arrow::buffer::NullBuffer;
+        let values = Int32Array::from((0..12).collect::<Vec<_>>());
+        let field = Arc::new(Field::new("item", DataType::Int32, true));
+        let nulls = NullBuffer::from(vec![true, false, true, true]);
+        let array = FixedSizeListArray::try_new(field, 3, Arc::new(values), Some(nulls))
+            .unwrap()
+            .into_data();
+        assert_fast_roundtrip(&array);
+    }
+
+    /// `Decimal128` is fast-path (buffer copied verbatim) but otherwise untested.
+    #[test]
+    fn roundtrip_decimal128() {
+        use arrow::array::Decimal128Array;
+        let array = Decimal128Array::from(vec![Some(12_345i128), None, Some(-9_876), Some(0)])
+            .with_precision_and_scale(20, 4)
+            .unwrap()
+            .into_data();
+        assert_fast_roundtrip(&array);
+    }
+
+    /// A temporal type (`Timestamp`) — also fast-path-verbatim, also untested.
+    #[test]
+    fn roundtrip_timestamp_temporal() {
+        use arrow::array::TimestampMicrosecondArray;
+        let array =
+            TimestampMicrosecondArray::from(vec![Some(1_000_000i64), None, Some(2_500_000)])
+                .into_data();
         assert_fast_roundtrip(&array);
     }
 

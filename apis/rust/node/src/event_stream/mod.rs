@@ -330,20 +330,43 @@ impl EventStream {
                             // it and exits cleanly.
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    use dora_message::metadata::Metadata;
                                     let metadata = match sample.attachment() {
-                                        Some(att) => match bincode::deserialize::<
-                                            dora_message::metadata::Metadata,
-                                        >(
-                                            &att.to_bytes()
-                                        ) {
-                                            Ok(m) => m,
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "zenoh metadata deserialization failed: {e}"
-                                                );
-                                                return;
+                                        Some(att) => {
+                                            match bincode::deserialize::<Metadata>(&att.to_bytes())
+                                            {
+                                                // A version mismatch that still happens
+                                                // to deserialize: reject with a clear
+                                                // message rather than acting on data from
+                                                // an incompatible wire format.
+                                                Ok(m)
+                                                    if m.metadata_version()
+                                                        != Metadata::CURRENT_VERSION =>
+                                                {
+                                                    tracing::warn!(
+                                                        "dropping zenoh sample: incompatible \
+                                                     metadata wire version {} (this node \
+                                                     speaks {})",
+                                                        m.metadata_version(),
+                                                        Metadata::CURRENT_VERSION
+                                                    );
+                                                    return;
+                                                }
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    // A pre-1.0 peer (old ArrowTypeInfo
+                                                    // sidecar layout) misaligns here; name
+                                                    // the likely cause so the failure isn't
+                                                    // a bare bincode error.
+                                                    tracing::warn!(
+                                                        "zenoh metadata deserialization failed \
+                                                     (possibly a peer using an incompatible \
+                                                     wire format/version): {e}"
+                                                    );
+                                                    return;
+                                                }
                                             }
-                                        },
+                                        }
                                         None => {
                                             tracing::warn!(
                                                 "zenoh sample missing metadata attachment"
@@ -353,7 +376,11 @@ impl EventStream {
                                     };
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
-                                    // persistent decoder stays in sync.
+                                    // persistent decoder stays in sync. This runs on
+                                    // zenoh's IO worker: the aligned-SHM path is
+                                    // zero-copy, but an under-aligned heap payload
+                                    // copies its buffers on this thread (acceptable —
+                                    // only small messages take the heap path).
                                     let mut decoder = decoder.lock().unwrap_or_else(|poison| {
                                         // A prior callback panicked mid-decode
                                         // (caught below), poisoning the lock and

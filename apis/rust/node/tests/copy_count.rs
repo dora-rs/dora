@@ -17,6 +17,14 @@
 //! `Vec` (the official writer's staging buffer). This is the regression guard
 //! for the #1745 two-copy SHM path that W0-A removed and the fast-vs-fallback
 //! distinction W0-B introduced.
+//!
+//! Scope: this asserts the **encoder primitives** (`encode_ipc_into`,
+//! `encode_uint8_ipc_header`, `encode_ipc_to_vec`) materialize no payload-sized
+//! intermediate. It does not drive the full `send_output`/`zenoh_publish`
+//! SHM/daemon path, so the per-path rows in the PR's copy table (the SHM-move
+//! and daemon-fallback copy-out) are validated end-to-end by the benchmark, not
+//! asserted here. The "construct in place" block writes to a plain local `Vec`
+//! as the 0-copy reference floor, not as a test of dora code.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
