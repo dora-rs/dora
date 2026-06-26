@@ -562,11 +562,18 @@ pub fn batch_slice(stream: &[u8]) -> Option<&[u8]> {
 }
 
 /// Per-input receive state for the schema-once zenoh path: one persistent
-/// [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) primed by the latest
-/// full stream, then reused to decode schema-less batch messages.
+/// [`StreamDecoder`](arrow::ipc::reader::StreamDecoder) primed from the schema
+/// published on the output's `@schema` subtopic, then reused to decode the
+/// schema-less batch messages that flow on the data topic.
 pub struct InputDecoder {
+    /// Live decoder, primed with the schema for [`schema_hash`](Self::schema_hash).
     decoder: arrow::ipc::reader::StreamDecoder,
+    /// Hash of the schema the live `decoder` is currently primed with.
     schema_hash: Option<u64>,
+    /// The framed schema message last installed via [`set_schema`](Self::set_schema),
+    /// retained so the decoder can be re-primed locally (no network round-trip)
+    /// after a failed batch decode soft-resets the live decoder.
+    primed_schema: Option<(u64, ArrowBuffer)>,
 }
 
 impl Default for InputDecoder {
@@ -576,76 +583,81 @@ impl Default for InputDecoder {
 }
 
 impl InputDecoder {
-    /// Create an unprimed decoder. The first message it decodes must be a full
-    /// stream (via [`decode_full`](Self::decode_full)) to establish the schema.
+    /// Create an unprimed decoder. It decodes nothing until a schema is
+    /// installed via [`set_schema`](Self::set_schema) (delivered from the output's
+    /// `@schema` subtopic).
     pub fn new() -> Self {
         Self {
             decoder: arrow::ipc::reader::StreamDecoder::new(),
             schema_hash: None,
+            primed_schema: None,
         }
     }
 
-    /// Forget the primed schema (e.g. on producer restart). The next message
-    /// must be a full stream to re-prime.
+    /// Forget all state — the primed decoder AND the retained schema. The next
+    /// schema message must re-establish priming. Used on producer restart and
+    /// for lock-poison recovery.
     pub fn reset(&mut self) {
         self.decoder = arrow::ipc::reader::StreamDecoder::new();
         self.schema_hash = None;
+        self.primed_schema = None;
     }
 
-    /// Decode a full IPC stream `buffer` (schema + record batch + EOS): start a
-    /// fresh decoder, prime it with the stream's schema, and decode the batch.
-    /// Caches the primed decoder under `schema_hash` so subsequent schema-less
-    /// batches with the same hash decode against it.
-    pub fn decode_full(
-        &mut self,
-        buffer: ArrowBuffer,
-        schema_hash: u64,
-    ) -> eyre::Result<arrow::array::ArrayData> {
-        check_ipc_size(buffer.len())?;
-        let block = schema_block_len(buffer.as_slice())
-            .ok_or_else(|| eyre!("malformed IPC stream header"))?;
-        // [schema: block][record batch + body: X][EOS: 8]. Drop the EOS so the
-        // freshly-primed decoder stays open for later schema-less batches.
-        let body_end = buffer
-            .len()
-            .checked_sub(PREFIX_LEN)
-            .filter(|end| *end >= block)
-            .ok_or_else(|| eyre!("IPC stream shorter than its schema block"))?;
-        let schema = buffer.slice_with_length(0, block);
-        let batch = buffer.slice_with_length(block, body_end - block);
+    /// Install the schema for `hash` from a framed IPC **schema message** (the
+    /// payload published on the `@schema` subtopic): prime a fresh decoder with
+    /// it and retain the bytes for later local re-priming.
+    pub fn set_schema(&mut self, hash: u64, schema: ArrowBuffer) -> eyre::Result<()> {
+        check_ipc_size(schema.len())?;
+        self.prime(hash, schema)
+    }
 
+    /// Prime a fresh `StreamDecoder` with `schema` and record it as the current
+    /// and retained schema for `hash`.
+    fn prime(&mut self, hash: u64, schema: ArrowBuffer) -> eyre::Result<()> {
         let mut decoder = arrow::ipc::reader::StreamDecoder::new();
-        prime_with_schema(&mut decoder, schema)?;
-        let array = decode_one_batch(&mut decoder, batch)?;
+        prime_with_schema(&mut decoder, schema.clone())?;
         self.decoder = decoder;
-        self.schema_hash = Some(schema_hash);
-        Ok(array)
+        self.schema_hash = Some(hash);
+        self.primed_schema = Some((hash, schema));
+        Ok(())
     }
 
-    /// Decode a schema-less batch message against the primed decoder. Returns
-    /// `Ok(None)` if the decoder is not primed for `schema_hash` (its priming
-    /// full stream was dropped) — the caller drops the message, which is fine on
-    /// the lossy `CongestionControl::Drop` data plane.
+    /// Decode a schema-less batch message against the decoder primed for `hash`.
+    ///
+    /// If the live decoder is not primed for `hash` but a matching schema was
+    /// previously installed (e.g. after a soft reset), it re-primes from the
+    /// retained bytes first. Returns `Ok(None)` when no schema for `hash` is
+    /// known yet — the caller drops the message, which is fine on the lossy
+    /// `CongestionControl::Drop` data plane (the `@schema` history query or the
+    /// next schema publish will prime it).
     pub fn decode_batch(
         &mut self,
         buffer: ArrowBuffer,
-        schema_hash: u64,
+        hash: u64,
     ) -> eyre::Result<Option<arrow::array::ArrayData>> {
         check_ipc_size(buffer.len())?;
-        if self.schema_hash != Some(schema_hash) {
-            return Ok(None);
+        if self.schema_hash != Some(hash) {
+            match &self.primed_schema {
+                Some((primed, schema)) if *primed == hash => {
+                    let schema = schema.clone();
+                    self.prime(hash, schema)?;
+                }
+                // No schema for this hash known yet — drop (lossy plane).
+                _ => return Ok(None),
+            }
         }
         match decode_one_batch(&mut self.decoder, buffer) {
             Ok(array) => Ok(Some(array)),
             Err(e) => {
                 // A failed batch decode (truncated/corrupt payload — zenoh
                 // tail-loss or a malicious peer) leaves the persistent decoder
-                // mid-message. Reset it so the NEXT batch is not fed into that
-                // poisoned state (which would mis-decode it into this message's
-                // stale buffers and deliver corrupt data as a valid input).
-                // Subsequent batches are then dropped (`Ok(None)`) until the
-                // next periodic full stream re-primes a fresh decoder.
-                self.reset();
+                // mid-message. Soft-reset the LIVE decoder so the next batch is
+                // not fed into that poisoned state (which would mis-decode it
+                // into this message's stale buffers and deliver corrupt data).
+                // The retained schema is kept, so the next batch re-primes
+                // locally — instant recovery, with no wait for a schema refresh.
+                self.decoder = arrow::ipc::reader::StreamDecoder::new();
+                self.schema_hash = None;
                 Err(e)
             }
         }
@@ -768,51 +780,42 @@ mod tests {
         assert_eq!(array, &zc, "zero-copy decode must equal the input");
     }
 
-    /// The W3 periodic-schema-refresh contract end to end: an `InputDecoder`
-    /// primes from a full stream, decodes following schema-less batches, and
-    /// drops a batch whose schema hash it isn't primed for.
+    /// The schema-once receive contract: an `InputDecoder` is primed by a schema
+    /// message (as delivered from the `@schema` subtopic), then decodes the
+    /// schema-less batches that follow, and drops a batch whose hash it isn't
+    /// primed for.
     #[test]
-    fn input_decoder_full_then_batches() {
+    fn input_decoder_schema_then_batches() {
         fn batch_buf(array: &ArrayData) -> Buffer {
             let len = batch_fast_path_len(array).unwrap();
             let mut buf = vec![0u8; len];
             encode_batch_into(array, &mut buf).unwrap();
             Buffer::from_vec(buf)
         }
+        let f32_schema = || Buffer::from_vec(encode_schema_message(&DataType::Float32).unwrap());
 
         let mut dec = InputDecoder::new();
 
-        // A batch arriving before any full stream is dropped (not primed).
+        // A batch arriving before any schema is dropped (not primed).
         let early = Float32Array::from(vec![9.0]).into_data();
         assert!(dec.decode_batch(batch_buf(&early), 7).unwrap().is_none());
 
-        // Full stream primes the decoder and decodes its own batch.
-        let first = Float32Array::from(vec![1.0, 2.0, 3.0]).into_data();
-        let got = dec
-            .decode_full(Buffer::from_vec(fast_encode(&first)), 7)
-            .unwrap();
-        assert_eq!(got, first);
-
-        // Following schema-less batches (same hash) decode against it.
-        for vals in [vec![4.0f32], vec![5.0, 6.0, 7.0]] {
+        // Installing the schema primes the decoder; following batches decode.
+        dec.set_schema(7, f32_schema()).unwrap();
+        for vals in [vec![1.0f32, 2.0, 3.0], vec![4.0], vec![5.0, 6.0, 7.0]] {
             let array = Float32Array::from(vals).into_data();
-            let got = dec.decode_batch(batch_buf(&array), 7).unwrap().unwrap();
-            assert_eq!(got, array);
+            assert_eq!(
+                dec.decode_batch(batch_buf(&array), 7).unwrap().unwrap(),
+                array
+            );
         }
 
-        // A batch tagged with a different schema hash is dropped.
-        let mismatched = Float32Array::from(vec![8.0]).into_data();
-        assert!(
-            dec.decode_batch(batch_buf(&mismatched), 99)
-                .unwrap()
-                .is_none()
-        );
+        // A batch tagged with a hash the decoder isn't primed for is dropped.
+        let other = Float32Array::from(vec![8.0]).into_data();
+        assert!(dec.decode_batch(batch_buf(&other), 99).unwrap().is_none());
 
-        // A new full stream (new hash) re-primes; later batches use the new hash.
-        let reprimed = dec
-            .decode_full(Buffer::from_vec(fast_encode(&mismatched)), 99)
-            .unwrap();
-        assert_eq!(reprimed, mismatched);
+        // Installing a schema under the new hash primes it; its batches decode.
+        dec.set_schema(99, f32_schema()).unwrap();
         let after = Float32Array::from(vec![10.0, 11.0]).into_data();
         assert_eq!(
             dec.decode_batch(batch_buf(&after), 99).unwrap().unwrap(),
@@ -820,11 +823,12 @@ mod tests {
         );
     }
 
-    /// Regression: a failed (truncated) batch decode must reset the persistent
-    /// decoder, so the next valid batch is dropped (until re-primed) rather than
-    /// silently mis-decoded into the truncated message's stale state.
+    /// A failed (truncated) batch decode must soft-reset the persistent decoder
+    /// so the next valid batch is not mis-decoded into the truncated message's
+    /// stale state — and, because the schema is retained, that next batch
+    /// re-primes locally and decodes (instant recovery, not drop-until-refresh).
     #[test]
-    fn decode_batch_resets_on_error_no_corruption() {
+    fn decode_batch_resets_on_error_then_reprimes() {
         fn batch_buf(array: &ArrayData) -> Vec<u8> {
             let len = batch_fast_path_len(array).unwrap();
             let mut buf = vec![0u8; len];
@@ -833,9 +837,11 @@ mod tests {
         }
 
         let mut dec = InputDecoder::new();
-        let first = Float32Array::from(vec![1.0, 2.0, 3.0]).into_data();
-        dec.decode_full(Buffer::from_vec(fast_encode(&first)), 7)
-            .unwrap();
+        dec.set_schema(
+            7,
+            Buffer::from_vec(encode_schema_message(&DataType::Float32).unwrap()),
+        )
+        .unwrap();
 
         // A valid batch decodes.
         let good = Float32Array::from(vec![4.0, 5.0]).into_data();
@@ -846,30 +852,31 @@ mod tests {
             good
         );
 
-        // A truncated batch errors (body shorter than the declared length).
+        // A truncated batch errors and soft-resets the live decoder.
         let dropped = Float32Array::from(vec![6.0, 7.0, 8.0, 9.0]).into_data();
         let mut truncated = batch_buf(&dropped);
         truncated.truncate(truncated.len() - 8);
         assert!(dec.decode_batch(Buffer::from_vec(truncated), 7).is_err());
 
-        // The next valid batch (same hash) must now be DROPPED, not mis-decoded.
+        // The next valid batch (same hash) re-primes from the retained schema and
+        // decodes correctly — not dropped, not corrupted.
         let after = Float32Array::from(vec![10.0, 11.0]).into_data();
-        assert!(
+        assert_eq!(
             dec.decode_batch(Buffer::from_vec(batch_buf(&after)), 7)
                 .unwrap()
-                .is_none(),
-            "after a failed batch the decoder must drop until re-primed, not corrupt"
+                .unwrap(),
+            after,
+            "after a failed batch the decoder must re-prime from the retained schema"
         );
 
-        // A new full stream re-primes; batches work again.
-        dec.decode_full(Buffer::from_vec(fast_encode(&after)), 7)
-            .unwrap();
+        // `reset()` forgets the schema too; batches then drop until re-installed.
+        dec.reset();
         let final_batch = Float32Array::from(vec![12.0]).into_data();
-        assert_eq!(
+        assert!(
             dec.decode_batch(Buffer::from_vec(batch_buf(&final_batch)), 7)
                 .unwrap()
-                .unwrap(),
-            final_batch
+                .is_none(),
+            "after a full reset the decoder must drop until a schema is re-installed"
         );
     }
 
@@ -877,11 +884,11 @@ mod tests {
     /// arrays are not fast-path eligible, so the full stream comes from the
     /// official writer as `[schema][dictionary batch][record batch][EOS]`. The
     /// schema-once optimization still applies to small messages (node/mod.rs),
-    /// shipping `batch_slice` = `[dictionary batch][record batch]` against an
-    /// already-primed decoder — i.e. a *replacement* dictionary on every
-    /// message. The `InputDecoder` tests otherwise use only `Float32`; a failure
-    /// here is silent intermittent input loss (decode error → reset → drop until
-    /// the next refresh), so it needs an explicit oracle.
+    /// shipping `batch_slice` = `[dictionary batch][record batch]` against a
+    /// decoder primed from the schema subtopic — i.e. a *replacement* dictionary
+    /// on every message. The `InputDecoder` tests otherwise use only `Float32`; a
+    /// failure here is silent intermittent input loss, so it needs an explicit
+    /// oracle.
     #[test]
     fn input_decoder_dictionary_fallback_batch_sequence() {
         use arrow::array::DictionaryArray;
@@ -914,15 +921,24 @@ mod tests {
             "dictionary must route to the official-writer fallback"
         );
 
+        // Prime from the schema block of the dictionary stream — exactly the
+        // bytes the producer publishes on the `@schema` subtopic.
         let mut dec = InputDecoder::new();
-        let got = dec
-            .decode_full(Buffer::from_vec(encode_ipc_to_vec(&first).unwrap()), 1)
-            .unwrap();
-        assert_eq!(got, first);
+        let full0 = encode_ipc_to_vec(&first).unwrap();
+        let block = schema_block_len(&full0).unwrap();
+        dec.set_schema(1, Buffer::from(&full0[..block])).unwrap();
 
-        // Following messages ship only the schema-less batch slice (which for a
-        // dictionary type carries a replacement dictionary batch + record batch)
-        // against the primed decoder. Each must decode to its own input.
+        // Every message (including the first) ships only the schema-less batch
+        // slice (which for a dictionary type carries a replacement dictionary
+        // batch + record batch) against the primed decoder. Each must decode to
+        // its own input.
+        let slice0 = batch_slice(&full0).expect("fallback stream is a valid IPC stream");
+        assert_eq!(
+            dec.decode_batch(Buffer::from(slice0), 1)
+                .unwrap()
+                .expect("first batch decodes against the primed decoder"),
+            first
+        );
         for words in [
             ["x", "y", "x", "z"].as_slice(),
             ["b", "b"].as_slice(),

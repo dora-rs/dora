@@ -77,6 +77,9 @@ pub struct EventStream {
     /// callback itself will see `blocking_send` return Err once the
     /// `receiver` (declared above) is dropped.
     _zenoh_subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
+    /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
+    _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -293,6 +296,7 @@ impl EventStream {
         // must be kept alive for the lifetime of the EventStream — we store
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
+        let mut zenoh_schema_subscribers = Vec::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -312,15 +316,32 @@ impl EventStream {
                             continue;
                         }
                     };
+                    // Per-input persistent decoder for the schema-once path,
+                    // shared between this data subscriber (which decodes batches
+                    // in zenoh receipt order) and the `@schema` subscriber (which
+                    // primes it from the cached/live schema). `Mutex` because the
+                    // zenoh callbacks are `Fn`; uncontended in practice (each
+                    // subscriber delivers its samples serially).
+                    let decoder = std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::arrow_utils::ipc_encode::InputDecoder::new(),
+                    ));
+                    // The `@schema` subscriber primes `decoder`; its history query
+                    // fetches the cached schema on join (late joiners), and
+                    // `detect_late_publishers` covers a producer that starts later.
+                    declare_schema_subscriber(
+                        session,
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                        input_id,
+                        decoder.clone(),
+                        tx.clone(),
+                        &mut zenoh_schema_subscribers,
+                    );
+
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
-                    // Per-input persistent decoder for the schema-once path. Owned
-                    // by the callback so it is fed in zenoh receipt order (the
-                    // scheduler downstream reorders/drops events). `Mutex` because
-                    // the zenoh callback is `Fn`; uncontended in practice (one
-                    // subscriber delivers its samples serially).
-                    let decoder =
-                        std::sync::Mutex::new(crate::arrow_utils::ipc_encode::InputDecoder::new());
+                    let decoder = decoder.clone();
                     let subscriber = session
                         .declare_subscriber(key_expr)
                         .callback(move |sample| {
@@ -482,6 +503,7 @@ impl EventStream {
             receiver: rx,
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
+            _zenoh_schema_subscribers: zenoh_schema_subscribers,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -1163,33 +1185,88 @@ fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buff
     }
 }
 
-/// Decode a zenoh sample in receipt order. Schema-once messages (a
-/// `SCHEMA_HASH` parameter is present) feed the per-input persistent decoder —
-/// a full stream re-primes it, a schema-less batch decodes against it (or
-/// returns `Ok(None)` if it arrived before its priming full stream, in which
-/// case the caller drops it). Other messages (large/SHM full streams, fallback
-/// types) decode standalone.
+/// Declare the `@schema` AdvancedSubscriber for an input: its callback primes
+/// `decoder` from the schema published on the output's schema subtopic. The
+/// history query fetches the cached schema on join; `detect_late_publishers`
+/// re-queries a producer that appears after this subscriber. A failure here just
+/// disables schema-once for this input (its batches are dropped until a schema
+/// arrives) — it never blocks the data subscriber.
+#[allow(clippy::too_many_arguments)]
+fn declare_schema_subscriber(
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    source_node: &NodeId,
+    source_output: &DataId,
+    input_id: &DataId,
+    decoder: Arc<std::sync::Mutex<crate::arrow_utils::ipc_encode::InputDecoder>>,
+    tx: tokio::sync::mpsc::Sender<EventItem>,
+    out: &mut Vec<zenoh_ext::AdvancedSubscriber<()>>,
+) {
+    use zenoh::Wait;
+    use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
+
+    let topic =
+        dora_core::topics::zenoh_output_schema_topic(dataflow_id, source_node, source_output);
+    let key = match zenoh::key_expr::KeyExpr::new(topic) {
+        Ok(k) => k.into_owned(),
+        Err(e) => {
+            tracing::warn!(input = %input_id, "invalid @schema zenoh key ({e}); schema-once disabled for this input");
+            return;
+        }
+    };
+    let input_id_cb = input_id.clone();
+    let sub = session
+        .declare_subscriber(key)
+        .history(HistoryConfig::default().detect_late_publishers())
+        .callback(move |sample| {
+            // catch_unwind: a panic must not unwind through zenoh's IO worker.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let buffer = zenoh_payload_to_buffer(sample.payload().clone());
+                let hash = crate::node::fnv1a(buffer.as_slice());
+                let mut decoder = decoder.lock().unwrap_or_else(|poison| {
+                    let mut guard = poison.into_inner();
+                    guard.reset();
+                    guard
+                });
+                if let Err(e) = decoder.set_schema(hash, buffer) {
+                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
+                }
+            }));
+            if result.is_err() {
+                tracing::error!(input = %input_id_cb, "zenoh @schema subscriber callback panicked");
+                let _ = tx.try_send(EventItem::FatalError(eyre!(
+                    "zenoh @schema subscriber for input `{input_id_cb}` panicked"
+                )));
+            }
+        })
+        .wait();
+    match sub {
+        Ok(s) => out.push(s),
+        Err(e) => {
+            tracing::warn!(input = %input_id, "failed to declare @schema subscriber ({e}); schema-once disabled for this input");
+        }
+    }
+}
+
+/// Decode a zenoh data sample in receipt order. A schema-less batch (the
+/// `SCHEMA_HASH` parameter is present) decodes against the per-input decoder
+/// primed from the output's `@schema` subtopic — returning `Ok(None)` if that
+/// schema hasn't been received yet, in which case the caller drops it. Other
+/// messages (large/SHM full streams, daemon-path payloads) decode standalone.
 fn decode_zenoh_sample(
     decoder: &mut crate::arrow_utils::ipc_encode::InputDecoder,
     metadata: &dora_message::metadata::Metadata,
     payload: zenoh::bytes::ZBytes,
 ) -> eyre::Result<Option<arrow::array::ArrayData>> {
     use crate::arrow_utils::decode_arrow_ipc_zero_copy;
-    use dora_message::metadata::{BATCH, SCHEMA_HASH, get_bool_param, get_integer_param};
+    use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     if payload.is_empty() {
         return Ok(Some(().into_arrow().into()));
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
-        Some(hash) => {
-            let hash = hash as u64;
-            if get_bool_param(&metadata.parameters, BATCH).unwrap_or(false) {
-                decoder.decode_batch(buffer, hash)
-            } else {
-                decoder.decode_full(buffer, hash).map(Some)
-            }
-        }
+        Some(hash) => decoder.decode_batch(buffer, hash as u64),
         None => decode_arrow_ipc_zero_copy(buffer).map(Some),
     }
 }

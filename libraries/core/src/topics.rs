@@ -335,6 +335,25 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
+/// Zenoh key carrying the Arrow IPC **schema** for an output's data topic, as a
+/// `/@schema` sub-key of [`zenoh_output_publish_topic`]. The producer publishes
+/// the schema here (on change) through a zenoh-ext `AdvancedPublisher` whose
+/// cache retains the last sample; a subscriber's `AdvancedSubscriber` history
+/// query fetches it on join, so the data topic only ever carries schema-less
+/// record batches. The `@`-prefixed final chunk keeps it from matching the
+/// concrete data key (no cross-delivery to the data subscriber).
+#[cfg(feature = "zenoh")]
+pub fn zenoh_output_schema_topic(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
+) -> String {
+    format!(
+        "{}/@schema",
+        zenoh_output_publish_topic(dataflow_id, node_id, output_id)
+    )
+}
+
 /// Zenoh key for control frames associated with a node output.
 ///
 /// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh

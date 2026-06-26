@@ -22,7 +22,7 @@ use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
     metadata::{
-        BATCH, FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
+        FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
         SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
@@ -99,23 +99,6 @@ const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(
 /// enforceable when zenoh's net runtime is wedged.
 const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
-/// How often a small zenoh output re-sends the full Arrow IPC stream (schema +
-/// batch) instead of a schema-less batch. The schema is re-advertised every
-/// `SCHEMA_REFRESH_INTERVAL` messages so a late-joining or
-/// dropped-priming-message subscriber re-primes its decoder within at most this
-/// many messages (the data plane is lossy — `CongestionControl::Drop`). A
-/// schema change also forces an immediate full stream.
-const SCHEMA_REFRESH_INTERVAL: u64 = 64;
-
-/// Per-output state for the schema-once send path.
-#[derive(Clone, Copy)]
-struct SchemaSendState {
-    /// FNV-1a hash of the schema block last sent for this output.
-    last_hash: u64,
-    /// Number of messages sent for this output (drives periodic refresh).
-    count: u64,
-}
-
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -137,10 +120,15 @@ pub struct DoraNode {
     /// so it doesn't borrow from the session field on this struct.
     /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
     zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
-    /// Per-output schema-once send state for small zenoh messages: the schema
-    /// hash last advertised and a message counter driving periodic full-stream
-    /// refreshes (see [`SCHEMA_REFRESH_INTERVAL`]).
-    zenoh_schema_state: HashMap<DataId, SchemaSendState>,
+    /// Per-output schema publishers on the `@schema` subtopic (lazily created on
+    /// the first small message). Their cache retains the last schema so a
+    /// late-joining subscriber fetches it via a history query, letting the data
+    /// topic carry only schema-less batches. Dropped before the session, like
+    /// [`zenoh_publishers`](Self::zenoh_publishers).
+    zenoh_schema_publishers: HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    /// FNV-1a hash of the schema last published on each output's `@schema`
+    /// subtopic, so the producer only re-publishes the schema when it changes.
+    zenoh_schema_state: HashMap<DataId, u64>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
 
@@ -700,6 +688,7 @@ impl DoraNode {
             zenoh_session,
             zenoh_shm_provider,
             zenoh_publishers: HashMap::new(),
+            zenoh_schema_publishers: HashMap::new(),
             zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
@@ -1245,29 +1234,35 @@ impl DoraNode {
                 }
 
                 // Apply the schema-once optimization only to genuinely small
-                // messages. A large message reaches this arm only when SHM
-                // allocation failed; send it as a full stream — the per-message
-                // schema overhead is negligible at that size, and mixing
-                // schema-less batches into an output whose other messages take
-                // the SHM full-stream path would strand the receiver's decoder.
+                // messages. Publish the schema on the `@schema` subtopic (only on
+                // change) and send just the schema-less batch on the data topic,
+                // tagged with the schema hash so the receiver matches it to the
+                // decoder primed from the subtopic. A large message reaches this
+                // arm only when SHM allocation failed; send it as a self-contained
+                // full stream (negligible schema overhead at that size, decoded
+                // standalone). `schema_once` is bound here, not inside the match,
+                // so its attachment bytes outlive the `put` below.
                 let schema_once = if avec.len() < self.zenoh_zero_copy_threshold {
-                    schema_once_decision(&mut self.zenoh_schema_state, output_id, &avec, metadata)
+                    publish_schema_once(
+                        &mut self.zenoh_schema_publishers,
+                        &mut self.zenoh_schema_state,
+                        session,
+                        self.dataflow_id,
+                        &self.id,
+                        output_id,
+                        &avec,
+                        metadata,
+                    )
                 } else {
                     None
                 };
-                // Pick the (payload, attachment). Never ship a full stream under
-                // a `BATCH=true` attachment: if the batch slice can't be taken
-                // (cannot happen for a real stream — defensive), send the full
-                // stream with the plain metadata so the receiver decodes it
-                // standalone instead of feeding it to `decode_batch`.
+                // Fall back to a full standalone stream if the batch slice can't
+                // be taken (a real IPC stream always can — defensive).
                 let (payload, attachment): (&[u8], &[u8]) = match schema_once.as_ref() {
-                    Some((att, is_batch)) if *is_batch => {
-                        match arrow_utils::ipc_encode::batch_slice(&avec) {
-                            Some(slice) => (slice, att.as_slice()),
-                            None => (&avec[..], &metadata_bytes[..]),
-                        }
-                    }
-                    Some((att, _)) => (&avec[..], att.as_slice()),
+                    Some(att) => match arrow_utils::ipc_encode::batch_slice(&avec) {
+                        Some(slice) => (slice, att.as_slice()),
+                        None => (&avec[..], &metadata_bytes[..]),
+                    },
                     None => (&avec[..], &metadata_bytes[..]),
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
@@ -1719,6 +1714,7 @@ impl Drop for DoraNode {
         // Tear down zenoh before notifying the daemon below, so that
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
+        let schema_publishers = std::mem::take(&mut self.zenoh_schema_publishers);
         let shm_provider = self.zenoh_shm_provider.take();
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
@@ -1731,9 +1727,10 @@ impl Drop for DoraNode {
             // hang node shutdown (and with it the daemon, which waits for
             // `InputClosed`). Bound the teardown with a deadline instead.
             let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
-                // documented drop order: publishers before the session,
-                // owned runtime last so async cleanup can still run
+                // documented drop order: publishers (data + schema) before the
+                // session, owned runtime last so async cleanup can still run
                 drop(publishers);
+                drop(schema_publishers);
                 drop(shm_provider);
                 drop(session);
                 drop(runtime);
@@ -1894,7 +1891,7 @@ enum PublishOutcome {
 /// rather than a fixed Arrow type. Type checks are skipped for such
 /// messages (dora-rs/adora#150).
 /// FNV-1a hash of `bytes` with a fixed seed (cross-process deterministic).
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf29ce484222325;
     for b in bytes {
         hash ^= *b as u64;
@@ -1903,51 +1900,98 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Decide how to send a small (heap) zenoh output under the schema-once scheme.
+/// Publish the Arrow IPC schema for `output_id` on its `@schema` subtopic when
+/// it changes, and return the attachment metadata (carrying the schema hash)
+/// for the schema-less batch the caller sends on the data topic. Returns `None`
+/// if `full_stream` is not a parseable IPC stream (caller sends it verbatim).
 ///
-/// `full_stream` is the complete Arrow IPC stream the producer encoded. Returns
-/// `(attachment_metadata_bytes, is_batch)`: every `SCHEMA_REFRESH_INTERVAL`-th
-/// message (and on a schema change) sends the full stream (`is_batch == false`);
-/// the rest send only the schema-less record-batch+body (caller slices via
-/// `ipc_encode::batch_slice`). The attachment carries the schema hash so the
-/// receiver can match batches to a primed decoder. Returns `None` if
-/// `full_stream` is not a parseable IPC stream (caller sends it verbatim).
-///
-/// Takes the state map by `&mut` (not `&mut self`) so it can be called while an
-/// immutable borrow of `self.zenoh_publishers` (the publisher) is live.
-fn schema_once_decision(
-    state: &mut HashMap<DataId, SchemaSendState>,
+/// Takes the maps by `&mut` (not `&mut self`) so it can run while an immutable
+/// borrow of `self.zenoh_publishers` (the data publisher) is live.
+#[allow(clippy::too_many_arguments)]
+fn publish_schema_once(
+    schema_publishers: &mut HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    last_schema_hash: &mut HashMap<DataId, u64>,
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
     output_id: &DataId,
     full_stream: &[u8],
     base_metadata: &Metadata,
-) -> Option<(Vec<u8>, bool)> {
+) -> Option<Vec<u8>> {
     let block = arrow_utils::ipc_encode::schema_block_len(full_stream)?;
-    let hash = fnv1a(full_stream.get(..block)?);
+    let schema_bytes = full_stream.get(..block)?;
+    let hash = fnv1a(schema_bytes);
 
-    let entry = state.entry(output_id.clone()).or_insert(SchemaSendState {
-        last_hash: hash,
-        count: 0,
-    });
-    // A schema change forces a full stream AND re-anchors the periodic cadence
-    // (reset the counter) so the next refresh lands SCHEMA_REFRESH_INTERVAL
-    // messages after the change rather than at the next arbitrary multiple.
-    let schema_changed = entry.last_hash != hash;
-    if schema_changed {
-        entry.count = 0;
+    // Publish the schema on the `@schema` subtopic only when it changes; the
+    // AdvancedPublisher's cache retains the last sample for late joiners.
+    if last_schema_hash.get(output_id) != Some(&hash)
+        && let Some(publisher) =
+            schema_publisher(schema_publishers, session, dataflow_id, node_id, output_id)
+    {
+        use zenoh::Wait;
+        match publisher.put(schema_bytes).wait() {
+            // Record the hash only on a successful publish, so a failed emission
+            // is retried on the next message rather than silently skipped.
+            Ok(()) => {
+                last_schema_hash.insert(output_id.clone(), hash);
+            }
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to publish schema on @schema subtopic ({e})");
+            }
+        }
     }
-    let send_full = schema_changed || entry.count.is_multiple_of(SCHEMA_REFRESH_INTERVAL);
-    entry.last_hash = hash;
-    entry.count = entry.count.wrapping_add(1);
 
+    // Every batch carries the schema hash so the receiver can match it to the
+    // decoder primed from the subtopic (and detect a schema change).
     let mut metadata = base_metadata.clone();
     metadata
         .parameters
         .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-    metadata
-        .parameters
-        .insert(BATCH.to_string(), Parameter::Bool(!send_full));
-    let attachment = bincode::serialize(&metadata).ok()?;
-    Some((attachment, !send_full))
+    bincode::serialize(&metadata).ok()
+}
+
+/// Get or lazily declare the schema `AdvancedPublisher` for `output_id` on its
+/// `@schema` subtopic. The cache (depth 1) retains the last schema so a
+/// late-joining subscriber's history query can fetch it; `publisher_detection`
+/// lets a subscriber that started first discover this publisher and query its
+/// cache. `CongestionControl::Block` keeps the single live schema emission from
+/// being dropped under congestion.
+fn schema_publisher<'a>(
+    schema_publishers: &'a mut HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    output_id: &DataId,
+) -> Option<&'a zenoh_ext::AdvancedPublisher<'static>> {
+    if !schema_publishers.contains_key(output_id) {
+        use zenoh::Wait;
+        use zenoh::qos::CongestionControl;
+        use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
+
+        let topic = dora_core::topics::zenoh_output_schema_topic(dataflow_id, node_id, output_id);
+        let key = zenoh::key_expr::KeyExpr::new(topic).ok()?.into_owned();
+        let publisher = match session
+            .declare_publisher(key)
+            .congestion_control(CongestionControl::Block)
+            // `sample_miss_detection` selects SequenceNumber sequencing instead of
+            // the cache's default Timestamp sequencing, so the schema publisher
+            // doesn't require session-wide timestamping (which would otherwise add
+            // an HLC timestamp to every data-plane message too). Its default
+            // config adds no heartbeat, so there's no extra periodic traffic.
+            .sample_miss_detection(MissDetectionConfig::default())
+            .cache(CacheConfig::default())
+            .publisher_detection()
+            .wait()
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare schema publisher ({e})");
+                return None;
+            }
+        };
+        schema_publishers.insert(output_id.clone(), publisher);
+    }
+    schema_publishers.get(output_id)
 }
 
 pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
