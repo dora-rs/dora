@@ -4,14 +4,6 @@ use dora_operator_api_types::{
 };
 use std::ffi::c_void;
 
-pub type OutputFnRaw = unsafe extern "C" fn(
-    id_start: *const u8,
-    id_len: usize,
-    data_start: *const u8,
-    data_len: usize,
-    output_context: *const c_void,
-) -> isize;
-
 pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
     let operator: O = Default::default();
     let ptr: *mut O = Box::leak(Box::new(operator));
