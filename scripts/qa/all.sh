@@ -303,17 +303,20 @@ case "$MODE" in
       --exclude dora-examples \
       -- proptest
 
-    # miri requires nightly Rust + miri component. Skip (with note) if missing.
-    #
-    # Scoped to the `metadata::tests::` module only. Those tests were
-    # specifically written to exercise the unsafe pointer-arithmetic
-    # path in `ArrowTypeInfoExt::from_array` under miri (see the
-    # module doc comment and docs/plan-agentic-qa-strategy.md §T2.3).
-    # Running `cargo miri test -p dora-core` without a filter tries
-    # every test in the crate; most fail because they use `tempfile`
-    # or other filesystem ops that miri's isolation sandbox rejects.
-    run_optional "miri" "cargo +nightly miri --version" \
-      cargo +nightly miri test -p dora-core -- metadata::tests
+    # miri: the previous target — dora-core's `metadata::tests`, written to
+    # exercise the unsafe pointer arithmetic in `ArrowTypeInfoExt::from_array`
+    # — was removed when the `ArrowTypeInfo` sidecar was dropped for Arrow-IPC
+    # framing. `libraries/core/src/metadata.rs` no longer exists and dora-core
+    # now has zero `unsafe`, so `-- metadata::tests` matched no tests and the
+    # gate silently reported PASS while testing nothing (worse than an honest
+    # skip). The miri-worthy unsafe moved to `dora-node-api`'s IPC encode/
+    # decode paths (`arrow_utils/ipc_encode.rs`, `event_stream`), but that
+    # crate links zenoh + shared-memory-server (`shm_open`), which miri cannot
+    # run wholesale (same limitation as shared-memory-server itself). Pointing
+    # miri at a tightly-scoped, FFI-free subset of those tests needs a verified
+    # run first; until then, skip explicitly rather than fake-pass.
+    echo
+    echo "=== miri (SKIP: no miri-runnable unsafe target after metadata.rs removal) ==="
 
     # Ambient Python venv for example-smoke. CI smoke jobs all set one up
     # with `uv pip install -e apis/python/node` before running cargo test;
