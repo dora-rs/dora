@@ -195,20 +195,10 @@ pub async fn start_with_auth(
     .await
 }
 
-/// Like [`start`] but without registering a ctrl-c handler.
+/// Testing-only entry point. Starts the coordinator without auth and without
+/// registering a ctrl-c handler, allowing a custom store to be injected.
 /// Useful for tests that run multiple coordinators in the same process.
-/// Testing-only entry point. Starts coordinator without auth.
 /// Do NOT use in production.
-#[doc(hidden)]
-pub async fn start_testing(
-    bind: SocketAddr,
-    external_events: impl Stream<Item = Event> + Unpin,
-) -> Result<(u16, impl Future<Output = eyre::Result<()>>), eyre::ErrReport> {
-    let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
-    start_testing_with_store(bind, external_events, store).await
-}
-
-/// Like [`start_testing`], but allows injecting a custom store.
 #[doc(hidden)]
 pub async fn start_testing_with_store(
     bind: SocketAddr,
