@@ -1187,7 +1187,14 @@ fn raw_payload_buffer_offsets_are_arrow_aligned(
     let layout = arrow::array::layout(&type_info.data_type);
     for (buffer, spec) in type_info.buffer_offsets.iter().zip(&layout.buffers) {
         if let arrow::array::BufferSpec::FixedWidth { alignment, .. } = *spec
-            && !(base_ptr as usize + buffer.offset).is_multiple_of(alignment)
+            // `buffer.offset` is peer-controlled (bincode-decoded from the zenoh
+            // attachment), so a hostile/buggy value could overflow this add and
+            // panic in debug builds. Treat an overflowing offset as "not aligned"
+            // so the caller falls back to the copy path, mirroring the
+            // `checked_add` discipline in `buffer_into_arrow_array`.
+            && (base_ptr as usize)
+                .checked_add(buffer.offset)
+                .is_none_or(|addr| !addr.is_multiple_of(alignment))
         {
             return false;
         }
@@ -2205,6 +2212,38 @@ mod tests {
         assert!(
             second.is_none(),
             "Stream::next must yield None after Stop, got {second:?}"
+        );
+    }
+
+    #[test]
+    fn alignment_check_does_not_overflow_on_hostile_offset() {
+        use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
+
+        // `buffer.offset` is peer-controlled. A value near `usize::MAX` would
+        // overflow `base_ptr as usize + buffer.offset`, panicking in debug
+        // builds. The check must instead treat it as "not aligned" (so the
+        // caller copies into an aligned buffer) without panicking.
+        let type_info = ArrowTypeInfo {
+            data_type: arrow::datatypes::DataType::Int32,
+            len: 1,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![BufferOffset {
+                offset: usize::MAX,
+                len: 4,
+            }],
+            child_data: Vec::new(),
+            field_names: None,
+            schema_hash: None,
+        };
+
+        // A 64-byte-aligned base pointer; any non-zero offset added to it would
+        // overflow when offset == usize::MAX.
+        let base_ptr = 64usize as *const u8;
+        assert!(
+            !raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, &type_info),
+            "an overflowing offset must be reported as not aligned, not panic"
         );
     }
 }
