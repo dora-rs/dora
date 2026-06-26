@@ -130,13 +130,9 @@ pub async fn register(
                             "failed to connect to coordinator at {display_url} after {attempts} attempts: {err}"
                         ));
                     }
-                    // Add jitter: +/- 25% of backoff to prevent thundering herd
-                    let jitter_range = backoff / 4;
-                    let jitter = Duration::from_millis(
-                        (rand_jitter_millis() % (jitter_range.as_millis() as u64 * 2 + 1))
-                            .saturating_sub(jitter_range.as_millis() as u64),
-                    );
-                    let sleep_duration = backoff.saturating_add(jitter);
+                    // Add +/- 25% jitter to prevent a thundering herd of
+                    // daemons reconnecting in lockstep.
+                    let sleep_duration = jittered_backoff(backoff, rand_jitter_millis());
                     tracing::warn!(
                         "Could not connect to WS at {display_url}: {err}. Retrying in {sleep_duration:#?} ({attempts}/{DAEMON_COORDINATOR_RETRY_LIMIT}).."
                     );
@@ -327,4 +323,75 @@ fn rand_jitter_millis() -> u64 {
     std::collections::hash_map::RandomState::new()
         .build_hasher()
         .finish()
+}
+
+/// Apply symmetric +/- 25% jitter to `backoff` to spread out daemons that
+/// would otherwise reconnect in lockstep.
+///
+/// `rand` is an arbitrary value (e.g. from [`rand_jitter_millis`]); it is
+/// mapped uniformly onto `-range..=+range` (where `range == backoff / 4`) and
+/// added to `backoff`, so the result lies in
+/// `[backoff - backoff/4, backoff + backoff/4]`.
+fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
+    let range = (backoff / 4).as_millis() as u64;
+    // `rand % (2*range + 1)` is uniform in `0..=2*range`; subtracting `range`
+    // recenters it to `-range..=+range`. (The previous code applied
+    // `saturating_sub` to the unsigned value, which clamped the whole lower
+    // half to 0 — so the jitter was actually `+0..=+range`, never negative,
+    // and collapsed ~half of all draws onto exactly `backoff`.)
+    let offset = (rand % (range * 2 + 1)) as i64 - range as i64;
+    Duration::from_millis((backoff.as_millis() as u64).saturating_add_signed(offset))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jittered_backoff_is_centered_and_symmetric() {
+        let backoff = Duration::from_secs(4); // 4000ms, range = 1000ms
+        let range_ms = 1000;
+        let base_ms = 4000;
+
+        // rand == 0 maps to the minimum (backoff - range).
+        assert_eq!(
+            jittered_backoff(backoff, 0),
+            Duration::from_millis(base_ms - range_ms)
+        );
+        // rand == 2*range maps to the maximum (backoff + range).
+        assert_eq!(
+            jittered_backoff(backoff, (range_ms * 2) as u64),
+            Duration::from_millis(base_ms + range_ms)
+        );
+        // rand == range maps to exactly backoff.
+        assert_eq!(
+            jittered_backoff(backoff, range_ms as u64),
+            Duration::from_millis(base_ms)
+        );
+    }
+
+    #[test]
+    fn jittered_backoff_stays_within_bounds_and_can_decrease() {
+        let backoff = Duration::from_secs(8); // range = 2000ms
+        let range_ms = 2000u128;
+        let lo = backoff.as_millis() - range_ms;
+        let hi = backoff.as_millis() + range_ms;
+        let mut saw_below = false;
+        for rand in 0..(range_ms as u64 * 2 + 1) {
+            let ms = jittered_backoff(backoff, rand).as_millis();
+            assert!((lo..=hi).contains(&ms), "out of range: {ms}");
+            if ms < backoff.as_millis() {
+                saw_below = true;
+            }
+        }
+        // The pre-fix implementation could never sleep less than `backoff`.
+        assert!(saw_below, "jitter never produced a value below backoff");
+    }
+
+    #[test]
+    fn jittered_backoff_handles_zero_range() {
+        // Sub-4ms backoff yields range == 0; must not divide/modulo by zero.
+        let backoff = Duration::from_millis(3);
+        assert_eq!(jittered_backoff(backoff, 12345), backoff);
+    }
 }
