@@ -41,13 +41,29 @@ fn payload_buffer_alignment(spec: &BufferSpec) -> usize {
 /// Uses FNV-1a with a fixed seed for cross-process determinism (unlike
 /// `DefaultHasher` which may be randomized per process).
 pub fn compute_schema_hash(data_type: &DataType) -> u64 {
-    let s = format!("{data_type:?}");
-    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for byte in s.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
+    use std::fmt::Write;
+
+    // FNV-1a accumulator that hashes the `Debug` formatting of the type as it
+    // is written, without materializing the intermediate `String`. This is
+    // called once per array node (recursively over children) on every
+    // `send_output`, so avoiding the per-message heap allocation matters on the
+    // latency-critical path. The byte stream — and therefore the resulting
+    // hash — is identical to hashing `format!("{data_type:?}")` directly.
+    struct FnvWriter(u64);
+    impl Write for FnvWriter {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            for byte in s.bytes() {
+                self.0 ^= byte as u64;
+                self.0 = self.0.wrapping_mul(0x100000001b3); // FNV prime
+            }
+            Ok(())
+        }
     }
-    hash
+
+    let mut writer = FnvWriter(0xcbf29ce484222325); // FNV offset basis
+    // `Debug` for `DataType` and our `write_str` are both infallible.
+    let _ = write!(writer, "{data_type:?}");
+    writer.0
 }
 
 /// Calculates the data size in bytes required for storing a continuous copy of the given Arrow
@@ -300,6 +316,7 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 mod tests {
     use super::*;
     use arrow::array::{Array, ArrayRef, StringArray, StructArray, UInt64Array};
+    use arrow::datatypes::Field;
     use std::sync::Arc;
 
     fn assert_buffer_offsets_are_aligned(type_info: &ArrowTypeInfo) {
@@ -339,6 +356,49 @@ mod tests {
         let h1 = compute_schema_hash(&dt);
         let h2 = compute_schema_hash(&dt);
         assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn schema_hash_matches_debug_fnv_for_nested_types() {
+        // Guards the allocation-free `fmt::Write` accumulator against the
+        // straightforward `format!("{dt:?}")` + FNV-1a reference. The two must
+        // produce identical hashes for arbitrary (including deeply nested)
+        // types so the value stays stable across the optimization and across
+        // processes running the same build.
+        fn reference(data_type: &DataType) -> u64 {
+            let s = format!("{data_type:?}");
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for byte in s.bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x100000001b3);
+            }
+            hash
+        }
+
+        let types = [
+            DataType::Null,
+            DataType::UInt8,
+            DataType::Utf8,
+            DataType::List(Arc::new(Field::new("item", DataType::Int32, true))),
+            DataType::Struct(
+                vec![
+                    Field::new("a", DataType::Float64, false),
+                    Field::new(
+                        "b",
+                        DataType::List(Arc::new(Field::new("item", DataType::UInt16, true))),
+                        true,
+                    ),
+                ]
+                .into(),
+            ),
+        ];
+        for dt in &types {
+            assert_eq!(
+                compute_schema_hash(dt),
+                reference(dt),
+                "mismatch for {dt:?}"
+            );
+        }
     }
 
     #[test]
