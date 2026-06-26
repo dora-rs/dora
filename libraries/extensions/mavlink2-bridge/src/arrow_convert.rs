@@ -48,11 +48,8 @@ fn missing(name: &str) -> BridgeError {
     BridgeError::Config(format!("missing column: {name}"))
 }
 
-fn build(fields: Vec<Field>, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch> {
-    Ok(RecordBatch::try_new(
-        Arc::new(Schema::new(fields)),
-        columns,
-    )?)
+fn build(schema: Schema, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch> {
+    Ok(RecordBatch::try_new(Arc::new(schema), columns)?)
 }
 
 // readers
@@ -176,11 +173,7 @@ impl MavlinkArrow for common::HEARTBEAT_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.custom_mode),
                 arr_u32(self.mavtype as u32),
@@ -229,11 +222,7 @@ impl MavlinkArrow for common::SYS_STATUS_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.onboard_control_sensors_present.bits()),
                 arr_u32(self.onboard_control_sensors_enabled.bits()),
@@ -291,11 +280,7 @@ impl MavlinkArrow for common::SYSTEM_TIME_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![arr_u64(self.time_unix_usec), arr_u32(self.time_boot_ms)],
         )
     }
@@ -327,11 +312,7 @@ impl MavlinkArrow for common::ATTITUDE_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_f32(self.roll),
@@ -377,11 +358,7 @@ impl MavlinkArrow for common::ATTITUDE_QUATERNION_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_f32(self.q1),
@@ -428,11 +405,7 @@ impl MavlinkArrow for common::LOCAL_POSITION_NED_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_f32(self.x),
@@ -479,11 +452,7 @@ impl MavlinkArrow for common::GLOBAL_POSITION_INT_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_i32(self.lat),
@@ -535,11 +504,7 @@ impl MavlinkArrow for common::GPS_RAW_INT_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u64(self.time_usec),
                 arr_i32(self.lat),
@@ -588,11 +553,7 @@ impl MavlinkArrow for common::RC_CHANNELS_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_u16(self.chan1_raw),
@@ -666,11 +627,7 @@ impl MavlinkArrow for common::RC_CHANNELS_OVERRIDE_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u8(self.target_system),
                 arr_u8(self.target_component),
@@ -718,11 +675,7 @@ impl MavlinkArrow for common::SERVO_OUTPUT_RAW_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_usec),
                 arr_u16(self.servo1_raw),
@@ -777,11 +730,7 @@ impl MavlinkArrow for common::COMMAND_LONG_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_f32(self.param1),
                 arr_f32(self.param2),
@@ -829,11 +778,7 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![arr_u32(self.command as u32), arr_u32(self.result as u32)],
         )
     }
@@ -874,11 +819,7 @@ impl MavlinkArrow for common::SET_MODE_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.custom_mode),
                 arr_u8(self.target_system),
@@ -943,11 +884,7 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_i32(self.lat_int),
@@ -1027,11 +964,7 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_LOCAL_NED_DATA {
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
         build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
+            Self::schema(),
             vec![
                 arr_u32(self.time_boot_ms),
                 arr_f32(self.x),
@@ -1091,14 +1024,7 @@ impl MavlinkArrow for common::MISSION_CURRENT_DATA {
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
-        build(
-            Self::schema()
-                .fields()
-                .iter()
-                .map(|f| f.as_ref().clone())
-                .collect(),
-            vec![arr_u16(self.seq)],
-        )
+        build(Self::schema(), vec![arr_u16(self.seq)])
     }
 
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
