@@ -167,14 +167,6 @@ fn read_token_from_path(path: &Path) -> std::io::Result<Option<AuthToken>> {
     }
 }
 
-/// Remove the token file if it exists (from both working dir and config dir).
-pub fn remove_token(working_dir: &Path) {
-    let _ = fs::remove_file(token_path(working_dir));
-    if let Some(config_path) = config_token_path() {
-        let _ = fs::remove_file(config_path);
-    }
-}
-
 /// Attempt to read the auth token from (in order):
 /// 1. `DORA_AUTH_TOKEN` environment variable
 /// 2. `<cwd>/.dora-token` file
@@ -264,9 +256,6 @@ mod tests {
 
         let read_back = read_token(dir.path()).unwrap().unwrap();
         assert_eq!(token.as_hex(), read_back.as_hex());
-
-        remove_token(dir.path());
-        assert!(read_token(dir.path()).unwrap().is_none());
     }
 
     #[test]
