@@ -6,10 +6,10 @@
 //! SequenceNumber sequencing via `sample_miss_detection` so no session
 //! timestamping is needed, `publisher_detection` + `detect_late_publishers`).
 //!
-//! `#[ignore]` because it opens real loopback zenoh sessions on a fixed port:
-//! run on demand with `cargo test -p dora-node-api --test zenoh_schema_cache --
-//! --ignored`. Kept out of the default suite to avoid port/timing flakiness in
-//! parallel CI. The cold-start path is covered end-to-end by the example smoke.
+//! Runs in the default suite: it forms a loopback peer link on an OS-assigned
+//! port (a transient `TcpListener` bind reserves a free port, so there is no
+//! fixed-port clash) with multicast disabled. The cold-start path is covered
+//! end-to-end by the example smoke.
 
 use std::time::Duration;
 
@@ -46,15 +46,24 @@ fn config(listen: &[&str], connect: &[&str]) -> zenoh::Config {
 }
 
 #[test]
-#[ignore = "opens real loopback zenoh sessions; run with --ignored"]
 fn advanced_pub_cache_serves_late_joining_subscriber() {
-    let endpoint = "tcp/127.0.0.1:17471";
+    // OS-assigned free port: bind :0, read the port, release it. The brief gap
+    // before zenoh rebinds it is harmless (the socket was never connected, so no
+    // TIME_WAIT) and avoids the fixed-port clashes that would flake CI.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let endpoint = format!("tcp/127.0.0.1:{port}");
     let key = "dora/test/schema-cache/output/@schema";
     let schema = b"PRETEND-IPC-SCHEMA-MESSAGE";
 
     // Producer joins first and publishes the schema, then keeps its session
     // (and the cache) alive for the rest of the test.
-    let pub_session = zenoh::open(config(&[endpoint], &[])).wait().unwrap();
+    let pub_session = zenoh::open(config(&[endpoint.as_str()], &[]))
+        .wait()
+        .unwrap();
     let publisher = pub_session
         .declare_publisher(key)
         .congestion_control(CongestionControl::Block)
@@ -71,7 +80,9 @@ fn advanced_pub_cache_serves_late_joining_subscriber() {
     // Subscriber joins LATER — it missed the live publish and must recover the
     // schema from the publisher's cache through its history query.
     let (tx, rx) = std::sync::mpsc::channel();
-    let sub_session = zenoh::open(config(&[], &[endpoint])).wait().unwrap();
+    let sub_session = zenoh::open(config(&[], &[endpoint.as_str()]))
+        .wait()
+        .unwrap();
     let _subscriber = sub_session
         .declare_subscriber(key)
         .history(HistoryConfig::default().detect_late_publishers())
