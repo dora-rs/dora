@@ -295,7 +295,17 @@ impl FromStr for InputMapping {
                 Some(("logs", rest)) => {
                     // dora/logs/{level} or dora/logs/{level}/{node_id}
                     let (level_str, node_filter) = match rest.split_once('/') {
-                        Some((level, node)) => (Some(level), Some(NodeId(node.to_owned()))),
+                        Some((level, node)) => {
+                            // Validate the node segment instead of constructing a
+                            // `NodeId` directly: `rest.split_once('/')` keeps every
+                            // slash after the first inside `node`, so an input such
+                            // as `dora/logs/info/a/b` would otherwise build a NodeId
+                            // containing `/` -- a value `validate_node_id` forbids and
+                            // that no real node id can ever equal, silently producing
+                            // a filter that never matches.
+                            let node_id = node.parse::<NodeId>().map_err(|e| e.to_string())?;
+                            (Some(level), Some(node_id))
+                        }
                         None => {
                             if rest.is_empty() {
                                 (None, None)
@@ -864,6 +874,19 @@ mod tests {
     fn parse_logs_invalid_level() {
         let result: Result<InputMapping, _> = "dora/logs/banana".parse();
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_logs_rejects_invalid_node_filter() {
+        // A node segment with an extra `/` (kept by `split_once`) is not a valid
+        // NodeId and must be rejected rather than silently yielding a filter that
+        // can never match a real (validated) node id.
+        let result: Result<InputMapping, _> = "dora/logs/info/a/b".parse();
+        assert!(result.is_err(), "node filter `a/b` must be rejected");
+
+        // A node segment containing a space is likewise invalid.
+        let result: Result<InputMapping, _> = "dora/logs/info/bad node".parse();
+        assert!(result.is_err(), "node filter `bad node` must be rejected");
     }
 
     #[test]
