@@ -1195,6 +1195,12 @@ impl DoraNode {
             // recovered for the daemon fallback, so this returns an error
             // (the caller logs and drops the message). This is a deliberate
             // trade-off for zero-copy on the common matched-subscriber path.
+            // Producer-constructed SHM sample: `put` *moves* (consumes) the SHM
+            // buffer, so — unlike the borrowed-heap `Vec` arm below — there is no
+            // intact payload left to retry on error. A put failure is therefore
+            // best-effort: the message is dropped (the caller logs it). This is
+            // the deliberate, accepted trade-off for the zero-copy large-output
+            // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
                 publisher
                     .put(sbuf)

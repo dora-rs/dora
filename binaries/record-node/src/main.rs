@@ -6,7 +6,7 @@ use dora_message::{
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use dora_node_api::{DoraNode, Event, arrow_utils};
+use dora_node_api::{DoraNode, Event, arrow::datatypes::DataType, arrow_utils};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
 
@@ -65,13 +65,23 @@ fn main() -> eyre::Result<()> {
                 // Record the payload as a self-describing Arrow IPC stream so
                 // replay can reconstruct the array without a type sidecar.
                 let arrow_data = data.to_data();
-                let raw_data = if arrow_data.is_empty() {
-                    None
-                } else {
-                    let ipc_bytes = arrow_utils::encode_arrow_ipc(&arrow_data)
-                        .wrap_err("failed to Arrow-IPC-encode recorded output")?;
-                    Some(AVec::from_slice(128, &ipc_bytes))
-                };
+                let raw_data =
+                    if matches!(arrow_data.data_type(), DataType::Null) && arrow_data.is_empty() {
+                        // Exactly the unit array that replay rebuilds from an absent
+                        // payload (`NullArray::new(0)`) — record `None` to skip the
+                        // IPC framing.
+                        None
+                    } else {
+                        // Encode every other array — including a zero-length *typed*
+                        // array (e.g. an empty `Float32Array`) and a non-empty
+                        // `NullArray` — as a self-describing IPC stream, so replay
+                        // preserves the declared type and length instead of
+                        // collapsing it to `NullArray::new(0)`. (The deleted
+                        // `type_info` sidecar used to preserve this; #2027/#2083.)
+                        let ipc_bytes = arrow_utils::encode_arrow_ipc(&arrow_data)
+                            .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+                        Some(AVec::from_slice(128, &ipc_bytes))
+                    };
 
                 let timestamp = metadata.timestamp();
                 let inter_event = InterDaemonEvent::Output {

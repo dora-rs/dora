@@ -273,6 +273,21 @@ mod tests {
         assert_eq!(data.len(), decoded.len());
     }
 
+    /// A zero-length *typed* array must encode to a self-describing stream that
+    /// decodes back to the SAME type, not `Null`. record/replay relies on this:
+    /// `record-node` IPC-encodes empty typed arrays (rather than dropping them
+    /// to an absent payload) so replay preserves the type instead of collapsing
+    /// to `NullArray::new(0)` (#2027/#2083).
+    #[test]
+    fn ipc_roundtrip_empty_typed_array_preserves_type() {
+        use arrow::array::Float32Array;
+        let data = Float32Array::from(Vec::<f32>::new()).into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(decoded.data_type(), &arrow_schema::DataType::Float32);
+        assert_eq!(decoded.len(), 0);
+    }
+
     #[test]
     fn ipc_roundtrip_with_nulls() {
         let array = UInt64Array::from(vec![Some(1), None, Some(3)]);
