@@ -114,7 +114,7 @@ pub fn get_string_literal_parser(
     match string_type {
         GenericString::String | GenericString::WString => Box::new(string_literal),
         GenericString::BoundedString(max_size) | GenericString::BoundedWString(max_size) => {
-            Box::new(move |s| verify(string_literal, |s: &str| s.len() <= max_size)(s))
+            Box::new(move |s| verify(string_literal, |s: &str| s.chars().count() <= max_size)(s))
         }
     }
 }
@@ -270,6 +270,24 @@ mod test {
         assert_eq!(string_literal(r#""aaa\"aaa" "#)?.1, r#"aaa"aaa"#);
         assert_eq!(string_literal(r#"'aaa\'aaa' "#)?.1, "aaa'aaa");
         Ok(())
+    }
+
+    #[test]
+    fn bounded_string_uses_char_count_not_byte_length() {
+        use crate::types::primitives::GenericString;
+        // "€€€" is 3 chars but 9 UTF-8 bytes; a bound of 4 should accept it.
+        let parser = get_string_literal_parser(GenericString::BoundedString(4));
+        // Wrap in a Box<dyn FnMut> as returned by get_string_literal_parser.
+        let mut p = parser;
+        assert!(
+            p("€€€").is_ok(),
+            "3-char multi-byte string rejected by bound of 4 — byte length wrongly used"
+        );
+        // A 5-char string should be rejected by a bound of 4.
+        assert!(
+            p("hello").is_err(),
+            "5-char string should be rejected by bound of 4"
+        );
     }
 
     #[test]
