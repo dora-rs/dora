@@ -31,6 +31,33 @@ use std::sync::Arc;
 /// [`from_record_batch`] expects; both sides carry exactly one row, and
 /// [`from_record_batch`] rejects any other row count.
 ///
+/// # Example
+///
+/// Encode a MAVLink message to a 1-row Arrow batch and decode it back:
+///
+/// ```
+/// use dora_mavlink2_bridge::MavlinkArrow;
+/// use dora_mavlink2_bridge::mavlink::common::{
+///     HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
+/// };
+///
+/// let heartbeat = HEARTBEAT_DATA {
+///     custom_mode: 42,
+///     mavtype: MavType::MAV_TYPE_QUADROTOR,
+///     autopilot: MavAutopilot::MAV_AUTOPILOT_GENERIC,
+///     base_mode: MavModeFlag::MAV_MODE_FLAG_SAFETY_ARMED,
+///     system_status: MavState::MAV_STATE_ACTIVE,
+///     mavlink_version: 3,
+/// };
+///
+/// let batch = heartbeat.to_record_batch()?;
+/// assert_eq!(batch.num_rows(), 1);
+///
+/// let decoded = HEARTBEAT_DATA::from_record_batch(&batch)?;
+/// assert_eq!(decoded, heartbeat);
+/// # Ok::<(), dora_mavlink2_bridge::BridgeError>(())
+/// ```
+///
 /// [`schema`]: MavlinkArrow::schema
 /// [`to_record_batch`]: MavlinkArrow::to_record_batch
 /// [`from_record_batch`]: MavlinkArrow::from_record_batch
