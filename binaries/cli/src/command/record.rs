@@ -323,15 +323,43 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         );
     }
 
-    // Use the first active dataflow (or let user pick if multiple)
-    let dataflow_id = if active_ids.len() == 1 {
-        active_ids[0].uuid
+    // Try to narrow to dataflows whose coordinator-assigned name matches the
+    // descriptor's file stem (e.g. "dataflow" for "examples/foo/dataflow.yml").
+    // Users can set this name via `dora start --name <name>`. If no match is
+    // found fall back to all running dataflows with a warning so the operator
+    // can pick the right one rather than silently recording an unrelated flow.
+    let expected_name = PathBuf::from(&args.file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    let candidates: Vec<_> = if let Some(ref name) = expected_name {
+        let matched: Vec<_> = active_ids
+            .iter()
+            .filter(|d| d.name.as_deref() == Some(name.as_str()))
+            .cloned()
+            .collect();
+        if matched.is_empty() {
+            eprintln!(
+                "warning: no running dataflow named `{name}` matches the descriptor file. \
+                 Showing all running dataflows — select the one started from `{}`.",
+                args.file
+            );
+            active_ids.clone()
+        } else {
+            matched
+        }
     } else {
-        let choices: Vec<String> = active_ids.iter().map(|d| d.to_string()).collect();
+        active_ids.clone()
+    };
+
+    let dataflow_id = if candidates.len() == 1 {
+        candidates[0].uuid
+    } else {
+        let choices: Vec<String> = candidates.iter().map(|d| d.to_string()).collect();
         let selected = inquire::Select::new("Select dataflow to record:", choices)
             .prompt()
             .wrap_err("dataflow selection cancelled")?;
-        active_ids
+        candidates
             .iter()
             .find(|d| d.to_string() == selected)
             .unwrap()
