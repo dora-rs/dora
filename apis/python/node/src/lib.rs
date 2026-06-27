@@ -156,6 +156,13 @@ struct PoolSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
     size: usize,
+    /// Whether the source tensor should be pinned (cudaHostRegister)
+    /// before DMA transfer.  Auto-set in register_memory_pool based on
+    /// tensor size: true for >25 MiB (where pinned bandwidth wins),
+    /// false for smaller (where pin overhead dominates DMA gain).
+    is_pinned: bool,
+    /// "cpu" or "cuda" — the receiver device type.
+    pinned_type: String,
 }
 
 unsafe impl Send for PoolSlot {}
@@ -356,13 +363,18 @@ def _ipc_close(d_ptr):
     if err != 0:
         raise RuntimeError(f'cudaIpcCloseMemHandle(0x{d_ptr:x}) failed: {err}')
 
-def dma_copy(ptr, size, slot):
+def dma_copy(ptr, size, slot, no_dma):
     """DMA transfer from host to pre-allocated GPU buffer.
 
     Pins source memory, copies via cudaMemcpyHtoD (DMA engine),
     then unpins. Returns the device pointer of the pooled GPU buffer.
+
+    When no_dma=True, the pin/unpin calls are skipped so the copy uses
+    pageable memory (faster for small tensors where pin overhead
+    dominates the DMA bandwidth advantage).
     """
-    _register_host(ptr, size)
+    if not no_dma:
+        _register_host(ptr, size)
     try:
         d_ptr = _get_gpu_buf(slot, size)
         err = _lib.cudaMemcpy(
@@ -375,7 +387,8 @@ def dma_copy(ptr, size, slot):
             raise RuntimeError(f'cudaMemcpy failed: {err}')
         _lib.cudaDeviceSynchronize()
     finally:
-        _unregister_host(ptr)
+        if not no_dma:
+            _unregister_host(ptr)
     return d_ptr
 
 "#;
@@ -1155,6 +1168,13 @@ impl Node {
         let is_cuda = tensor_device.starts_with("cuda");
         let receiver_is_cuda = device.starts_with("cuda");
         let cpu_mode = !receiver_is_cuda;
+        // Auto-select pinning strategy: for CPU→CUDA transfers, pin only
+        // when tensor > 25 MiB (where pinned DMA bandwidth outweighs the
+        // per-frame cudaHostRegister overhead).  Below 25 MiB, pageable
+        // cudaMemcpy is faster because pin/unpin fixed cost (~100 µs)
+        // dominates the transfer time.
+        let is_pinned = !cpu_mode && size > 25 * 1024 * 1024;
+        let pinned_type = if cpu_mode { "cpu" } else { "cuda" };
 
         if ptr_val == 0 {
             eyre::bail!("Invalid source pointer (NULL)");
@@ -1184,7 +1204,7 @@ impl Node {
         header_meta.set_item("size", size)?;
         header_meta.set_item("dtype", &dtype)?;
         header_meta.set_item("shape", shape_list.clone())?;
-        header_meta.set_item("pinned_type", if cpu_mode { "cpu" } else { "cuda" })?;
+        header_meta.set_item("pinned_type", pinned_type)?;
 
         let json_bytes = py
             .import("json")
@@ -1272,7 +1292,7 @@ impl Node {
         if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
             let bound = helpers.bind(py);
             if let Ok(gpu_ptr) = bound
-                .call_method1("dma_copy", (ptr_val, size, pool_counter))
+                .call_method1("dma_copy", (ptr_val, size, pool_counter, !is_pinned))
                 .and_then(|r| r.extract::<u64>())
                 && let Ok(handle) = bound
                     .call_method1("_ipc_export", (gpu_ptr,))
@@ -1305,6 +1325,8 @@ impl Node {
                     _shmem: shmem,
                     base: shmem_ptr as u64,
                     size: total_size,
+                    is_pinned,
+                    pinned_type: pinned_type.to_string(),
                 },
             );
         }
@@ -1336,15 +1358,11 @@ impl Node {
             );
             params.insert(
                 "is_pinned".to_string(),
-                dora_node_api::Parameter::Bool(true),
+                dora_node_api::Parameter::Bool(is_pinned),
             );
             params.insert(
                 "pinned_type".to_string(),
-                dora_node_api::Parameter::String(if cpu_mode {
-                    "cpu".to_string()
-                } else {
-                    "cuda".to_string()
-                }),
+                dora_node_api::Parameter::String(pinned_type.to_string()),
             );
             params.insert(
                 "buffer_id".to_string(),
@@ -1449,31 +1467,35 @@ impl Node {
                 // Both cache-hit and cache-miss produce a PoolSlot that is
                 // stored back into PINNED_POOL after the write — this keeps
                 // the shmem mapping alive for the duration of the data copy.
-                let (shmem_ptr, shmem_capacity, store_back) = if let Some(slot_data) = pool_slot {
-                    // Cache hit: reuse the persistent mapping (no mmap)
-                    let cap = slot_data.size;
-                    (slot_data.base as *mut u8, cap, Some(slot_data))
-                } else {
-                    // Cache miss: open via ShmemConf, wrap immediately
-                    // so the mapping stays alive until post-write re-insert.
-                    let shmem_name = format!(
-                        "dora_pool_{}_{}_{}",
-                        self.dataflow_id, self.node_id, counter
-                    );
-                    match ShmemConf::new().os_id(&shmem_name).open() {
-                        Ok(shmem) => {
-                            let cap = shmem.len();
-                            let base = shmem.as_ptr() as u64;
-                            let slot = PoolSlot {
-                                _shmem: shmem,
-                                base,
-                                size: cap,
-                            };
-                            (base as *mut u8, cap, Some(slot))
+                let (shmem_ptr, shmem_capacity, store_back, is_pinned) =
+                    if let Some(slot_data) = pool_slot {
+                        // Cache hit: reuse the persistent mapping (no mmap)
+                        let cap = slot_data.size;
+                        let pinned = slot_data.is_pinned;
+                        (slot_data.base as *mut u8, cap, Some(slot_data), pinned)
+                    } else {
+                        // Cache miss: open via ShmemConf, wrap immediately
+                        // so the mapping stays alive until post-write re-insert.
+                        let shmem_name = format!(
+                            "dora_pool_{}_{}_{}",
+                            self.dataflow_id, self.node_id, counter
+                        );
+                        match ShmemConf::new().os_id(&shmem_name).open() {
+                            Ok(shmem) => {
+                                let cap = shmem.len();
+                                let base = shmem.as_ptr() as u64;
+                                let slot = PoolSlot {
+                                    _shmem: shmem,
+                                    base,
+                                    size: cap,
+                                    is_pinned: false,
+                                    pinned_type: "cuda".to_string(),
+                                };
+                                (base as *mut u8, cap, Some(slot), false)
+                            }
+                            Err(_) => (std::ptr::null_mut(), 0, None, false),
                         }
-                        Err(_) => (std::ptr::null_mut(), 0, None),
-                    }
-                };
+                    };
 
                 if !shmem_ptr.is_null() {
                     // Guard against truncated segments before any
@@ -1522,10 +1544,14 @@ impl Node {
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
-                            // DMA: source CPU data -> GPU pool buffer via DMA engine
+                            // DMA: source CPU data -> GPU pool buffer via DMA engine.
+                            // When is_pinned=false, dma_copy skips cudaHostRegister/
+                            // cudaHostUnregister — pageable cudaMemcpy is faster for
+                            // small tensors where pin overhead dominates.
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let _ = bound.call_method1("dma_copy", (ptr_val, size, counter));
+                                let _ = bound
+                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned));
                             }
                             // Seqlock: end write
                             unsafe {
@@ -1652,9 +1678,12 @@ impl Node {
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
+                            // Slow path: default to pinned DMA (no_dma=false).
+                            // The fast path is the primary code path; the slow
+                            // path is a rare daemon-mediated fallback.
                             if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
                                 let bound = helpers.bind(py);
-                                let _ = bound.call_method1("dma_copy", (ptr_val, size, c));
+                                let _ = bound.call_method1("dma_copy", (ptr_val, size, c, false));
                             }
                             // Seqlock: end write
                             unsafe {
