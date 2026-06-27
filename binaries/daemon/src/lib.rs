@@ -5136,16 +5136,22 @@ async fn send_output_to_local_receivers(
             }) {
                 Ok(()) => {
                     dataflow.inc_pending(receiver_id);
-                    if let Some(deadline) = dataflow
-                        .input_deadlines
-                        .get_mut(&(receiver_id.clone(), input_id.clone()))
+                    // Looking up these maps requires cloning the `(NodeId, DataId)`
+                    // key (the tuple key type can't borrow). Both maps are empty
+                    // unless input deadlines or circuit breakers are configured, so
+                    // skip the per-message key clone + hash in the common case.
+                    if !dataflow.input_deadlines.is_empty()
+                        && let Some(deadline) = dataflow
+                            .input_deadlines
+                            .get_mut(&(receiver_id.clone(), input_id.clone()))
                     {
                         deadline.last_received = Some(Instant::now());
                     }
                     // Circuit breaker recovery: re-open broken input
-                    if let Some(timeout) = dataflow
-                        .broken_inputs
-                        .remove(&(receiver_id.clone(), input_id.clone()))
+                    if !dataflow.broken_inputs.is_empty()
+                        && let Some(timeout) = dataflow
+                            .broken_inputs
+                            .remove(&(receiver_id.clone(), input_id.clone()))
                     {
                         tracing::info!(
                             "input `{receiver_id}/{input_id}` recovered, \
