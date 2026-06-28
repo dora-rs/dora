@@ -1444,6 +1444,13 @@ impl Node {
             }
         }
 
+        // Auto-select pinning: for CPU→CUDA transfers, pin only when
+        // tensor > 25 MiB (matching the threshold in register_memory_pool).
+        // The sender-side is_cuda guards this: pinning only matters when the
+        // source is CPU (cudaHostRegister on CUDA memory is a no-op).
+        // Used by both fast-path (cache-miss) and slow-path below.
+        let auto_pin = !is_cuda && size > 25 * 1024 * 1024;
+
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
             // Extract counter from the last underscore segment — node_id
@@ -1485,9 +1492,9 @@ impl Node {
                                     _shmem: shmem,
                                     base,
                                     size: cap,
-                                    is_pinned: false,
+                                    is_pinned: auto_pin,
                                 };
-                                (base as *mut u8, cap, Some(slot), false)
+                                (base as *mut u8, cap, Some(slot), auto_pin)
                             }
                             Err(_) => (std::ptr::null_mut(), 0, None, false),
                         }
@@ -1674,12 +1681,16 @@ impl Node {
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
-                            // Slow path: default to pinned DMA (no_dma=false).
-                            // The fast path is the primary code path; the slow
-                            // path is a rare daemon-mediated fallback.
+                            // Slow path: daemon-mediated fallback (rare).
+                            // Respect the same 25 MiB auto-pin threshold as the
+                            // fast path and register_memory_pool.  no_dma=true
+                            // skips cudaHostRegister for small pageable tensors
+                            // where pin overhead dominates DMA gain.
+                            let slow_no_dma = !auto_pin;
                             if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
                                 let bound = helpers.bind(py);
-                                let _ = bound.call_method1("dma_copy", (ptr_val, size, c, false));
+                                let _ =
+                                    bound.call_method1("dma_copy", (ptr_val, size, c, slow_no_dma));
                             }
                             // Seqlock: end write
                             unsafe {
