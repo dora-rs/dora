@@ -161,8 +161,6 @@ struct PoolSlot {
     /// tensor size: true for >25 MiB (where pinned bandwidth wins),
     /// false for smaller (where pin overhead dominates DMA gain).
     is_pinned: bool,
-    /// "cpu" or "cuda" — the receiver device type.
-    pinned_type: String,
 }
 
 unsafe impl Send for PoolSlot {}
@@ -1326,7 +1324,6 @@ impl Node {
                     base: shmem_ptr as u64,
                     size: total_size,
                     is_pinned,
-                    pinned_type: pinned_type.to_string(),
                 },
             );
         }
@@ -1489,7 +1486,6 @@ impl Node {
                                     base,
                                     size: cap,
                                     is_pinned: false,
-                                    pinned_type: "cuda".to_string(),
                                 };
                                 (base as *mut u8, cap, Some(slot), false)
                             }
