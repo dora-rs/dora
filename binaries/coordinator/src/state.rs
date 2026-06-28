@@ -121,17 +121,17 @@ impl DaemonConnection {
         }
     }
 
+    /// Maximum number of in-flight requests per daemon WebSocket connection.
+    ///
+    /// `pending_replies` is an `Arc<Mutex<_>>` shared by every
+    /// `DaemonConnection` clone, so this cap is enforced globally across all
+    /// clones of one connection rather than independently per clone.
+    const MAX_PENDING_REPLIES: usize = 256;
+
     /// Send a message to the daemon and wait for a reply.
     ///
     /// Embeds raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
-    /// Maximum number of in-flight requests per `DaemonConnection` clone.
-    ///
-    /// `DaemonConnection` is cloneable and each clone keeps an independent
-    /// pending-reply map, so this cap is enforced per clone rather than
-    /// globally per WebSocket connection.
-    const MAX_PENDING_REPLIES: usize = 256;
-
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
