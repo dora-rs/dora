@@ -174,7 +174,6 @@ struct RecvGpuSlot {
     gpu_va: u64,    // device VA from cudaHostGetDevicePointer, 0 if IPC path
     gpu_buf: u64,   // IPC-opened GPU DRAM pointer, 0 if GPU VA path
     host_base: u64, // original host ptr passed to cudaHostRegister
-    generation: u64,
 }
 unsafe impl Send for RecvGpuSlot {}
 unsafe impl Sync for RecvGpuSlot {}
@@ -191,7 +190,6 @@ static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuSlot>>> =
 struct RecvCpuSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
-    generation: u64,
 }
 unsafe impl Send for RecvCpuSlot {}
 unsafe impl Sync for RecvCpuSlot {}
@@ -1869,7 +1867,6 @@ impl Node {
                             cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
                                 _shmem: shmem,
                                 base,
-                                generation: 0,
                             });
                         }
                     }
@@ -2333,7 +2330,6 @@ impl Node {
                                 gpu_va: 0,
                                 gpu_buf: gpu_ptr,
                                 host_base: shmem_ptr as u64,
-                                generation: read_gen,
                             },
                         );
                         gpu_ptr
@@ -2370,7 +2366,6 @@ impl Node {
                                 gpu_va: va,
                                 gpu_buf: 0,
                                 host_base: shmem_ptr as u64,
-                                generation: read_gen,
                             },
                         );
                         va + data_offset as u64
@@ -2391,7 +2386,6 @@ impl Node {
                         RecvCpuSlot {
                             _shmem: shmem,
                             base,
-                            generation: read_gen,
                         },
                     );
                     base + data_offset as u64
