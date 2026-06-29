@@ -30,8 +30,9 @@ pub(crate) async fn handle_daemon_ws(
     let pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    // Track daemon_id from incoming events for cleanup on disconnect
+    // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
+    let mut tracked_connection_id: Option<Uuid> = None;
 
     loop {
         tokio::select! {
@@ -72,6 +73,7 @@ pub(crate) async fn handle_daemon_ws(
                         &cmd_tx,
                         &pending_replies,
                         &mut tracked_daemon_id,
+                        &mut tracked_connection_id,
                     ).await {
                         break;
                     }
@@ -89,10 +91,17 @@ pub(crate) async fn handle_daemon_ws(
         }
     }
 
-    // Emit DaemonExit on WS close for immediate cleanup
-    if let Some(daemon_id) = tracked_daemon_id {
+    // Emit DaemonExit on WS close for immediate cleanup.
+    // Only emit if we also have a connection_id — they are always set together,
+    // but this guards against a half-initialized state.
+    if let (Some(daemon_id), Some(connection_id)) = (tracked_daemon_id, tracked_connection_id) {
         tracing::info!("daemon WS connection closed for `{daemon_id}`");
-        let _ = event_tx.send(Event::DaemonExit { daemon_id }).await;
+        let _ = event_tx
+            .send(Event::DaemonExit {
+                daemon_id,
+                connection_id,
+            })
+            .await;
     }
 }
 
@@ -114,6 +123,7 @@ async fn handle_daemon_request(
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
     tracked_daemon_id: &mut Option<DaemonId>,
+    tracked_connection_id: &mut Option<Uuid>,
 ) -> bool {
     let parsed: DaemonWsRequestRaw = match serde_json::from_str(raw_text) {
         Ok(m) => m,
@@ -153,6 +163,8 @@ async fn handle_daemon_request(
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
+            // Capture the connection_id before moving `connection` into the event.
+            let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
             let event = DaemonRequest::Register {
                 connection,
@@ -164,9 +176,10 @@ async fn handle_daemon_request(
             if event_tx.send(Event::Daemon(event)).await.is_err() {
                 return false;
             }
-            // Capture the assigned daemon_id for cleanup on disconnect
+            // Capture the assigned daemon_id and connection_id for cleanup on disconnect
             if let Ok(daemon_id) = daemon_id_rx.await {
                 *tracked_daemon_id = Some(daemon_id);
+                *tracked_connection_id = Some(connection_id);
             }
             true
         }
@@ -180,7 +193,11 @@ async fn handle_daemon_request(
                 );
                 return false;
             }
-            if let Some(coordinator_event) = translate_daemon_event(daemon_id, event) {
+            // Use the tracked connection_id (set at registration); fall back to a fresh
+            // UUID if somehow called before registration (shouldn't happen in practice).
+            let connection_id = tracked_connection_id.unwrap_or_else(Uuid::new_v4);
+            if let Some(coordinator_event) = translate_daemon_event(daemon_id, event, connection_id)
+            {
                 event_tx.send(coordinator_event).await.is_ok()
             } else {
                 true
@@ -189,7 +206,11 @@ async fn handle_daemon_request(
     }
 }
 
-fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Event> {
+fn translate_daemon_event(
+    daemon_id: DaemonId,
+    event: DaemonEvent,
+    connection_id: Uuid,
+) -> Option<Event> {
     match event {
         DaemonEvent::AllNodesReady {
             dataflow_id,
@@ -213,7 +234,10 @@ fn translate_daemon_event(daemon_id: DaemonId, event: DaemonEvent) -> Option<Eve
             ft_stats,
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
-        DaemonEvent::Exit => Some(Event::DaemonExit { daemon_id }),
+        DaemonEvent::Exit => Some(Event::DaemonExit {
+            daemon_id,
+            connection_id,
+        }),
         DaemonEvent::NodeMetrics {
             dataflow_id,
             metrics,
