@@ -122,12 +122,19 @@ pub fn decode_arrow_ipc_zero_copy(
     // `None` before yielding the record batch, so loop until we get a batch or
     // exhaust the input.
     while !buffer.is_empty() {
+        let before = buffer.len();
         if let Some(b) = decoder
             .decode(&mut buffer)
             .context("failed to decode Arrow IPC stream")?
         {
             batch = Some(b);
             break;
+        }
+        // `decode` must consume bytes when it yields no batch; a crafted or
+        // truncated payload that leaves the buffer unchanged would otherwise
+        // spin this loop forever on the zenoh IO worker. Bail instead.
+        if buffer.len() == before {
+            eyre::bail!("Arrow IPC decoder made no progress on a partial/corrupt stream");
         }
     }
 

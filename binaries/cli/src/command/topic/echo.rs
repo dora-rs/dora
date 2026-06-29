@@ -281,12 +281,20 @@ fn decode_arrow_ipc_zero_copy(
     let mut decoder = StreamDecoder::new();
     let mut batch = None;
     while !buffer.is_empty() {
+        let before = buffer.len();
         if let Some(b) = decoder
             .decode(&mut buffer)
             .context("failed to decode Arrow IPC stream")?
         {
             batch = Some(b);
             break;
+        }
+        // Guard against a crafted/truncated payload that yields no batch without
+        // consuming bytes — otherwise this loop spins forever.
+        if buffer.len() == before {
+            return Err(eyre!(
+                "Arrow IPC decoder made no progress on a partial/corrupt stream"
+            ));
         }
     }
 

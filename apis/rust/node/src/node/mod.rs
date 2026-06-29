@@ -1234,15 +1234,44 @@ impl DoraNode {
                 }
 
                 // Apply the schema-once optimization only to genuinely small
-                // messages. Publish the schema on the `@schema` subtopic (only on
-                // change) and send just the schema-less batch on the data topic,
-                // tagged with the schema hash so the receiver matches it to the
-                // decoder primed from the subtopic. A large message reaches this
-                // arm only when SHM allocation failed; send it as a self-contained
-                // full stream (negligible schema overhead at that size, decoded
-                // standalone). `schema_once` is bound here, not inside the match,
-                // so its attachment bytes outlive the `put` below.
-                let schema_once = if avec.len() < self.zenoh_zero_copy_threshold {
+                // messages with a stable Arrow schema. Publish the schema on the
+                // `@schema` subtopic (only on change) and send just the
+                // schema-less batch on the data topic, tagged with the schema
+                // hash so the receiver matches it to the decoder primed from the
+                // subtopic. A large message reaches this arm only when SHM
+                // allocation failed; send it as a self-contained full stream
+                // (negligible schema overhead at that size, decoded standalone).
+                //
+                // Service/action request-reply messages (carrying
+                // `request_id`/`goal_id`/`goal_status`) are excluded: a server
+                // legitimately multiplexes multiple response schemas through one
+                // output, interleaved per request, while the receiver retains
+                // only the single most-recently-primed schema. A schema-less
+                // batch tagged for schema B reaching a consumer still primed for
+                // A is dropped until A→B re-primes over the *separate* `@schema`
+                // topic — and the data plane (`CongestionControl::Drop`) racing
+                // the `@schema` plane (`Block`) makes that loss routine when
+                // schemas alternate per message. Sending them as full
+                // self-describing streams (the pre-PR behavior) makes each
+                // message decode standalone regardless of schema order, at the
+                // cost of ~400 B of framing per message — acceptable for these
+                // request/reply-rate patterns.
+                //
+                // Streaming (`session_id`/`segment_id`) is deliberately NOT
+                // excluded: every chunk of a stream shares one schema, so
+                // schema-once primes once and each chunk reuses it — streaming is
+                // the high-rate small-message case schema-once exists for. A
+                // schema change at a segment boundary is just the one-time
+                // re-prime window any schema-once output has, not the per-message
+                // alternation that makes service/action lossy.
+                //
+                // `schema_once` is bound here, not inside the match, so its
+                // attachment bytes outlive the `put` below.
+                let schema_once = if schema_once_eligible(
+                    avec.len(),
+                    self.zenoh_zero_copy_threshold,
+                    &metadata.parameters,
+                ) {
                     publish_schema_once(
                         &mut self.zenoh_schema_publishers,
                         &mut self.zenoh_schema_state,
@@ -2000,6 +2029,22 @@ pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
         || params.contains_key(dora_message::metadata::GOAL_STATUS)
 }
 
+/// Whether the schema-once optimization may be applied to a data-plane message.
+///
+/// Eligible only when the payload is below the zero-copy threshold *and* the
+/// output does not interleave multiple Arrow schemas. Service/action
+/// request-reply messages (`request_id`/`goal_id`/`goal_status`) multiplex
+/// response schemas per request and must travel as full self-describing streams
+/// so each decodes standalone; streaming chunks share one schema and stay
+/// eligible. See the rationale at the call site in `zenoh_publish`.
+fn schema_once_eligible(
+    payload_len: usize,
+    zero_copy_threshold: usize,
+    params: &MetadataParameters,
+) -> bool {
+    payload_len < zero_copy_threshold && !carries_pattern_correlation(params)
+}
+
 /// Init Opentelemetry Tracing
 ///
 /// This requires a tokio runtime spawning this function to be functional
@@ -2455,6 +2500,60 @@ mod tests {
             dora_message::metadata::Parameter::String("value".into()),
         );
         assert!(!carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn schema_once_excludes_pattern_correlation_outputs() {
+        // Regression (dora-rs/dora#2366 review): a small service/action
+        // request-reply message — which multiplexes response schemas per request
+        // — must NOT use schema-once, or a schema-less batch could reach a
+        // consumer primed for a different schema and be silently dropped. It must
+        // travel as a full self-describing stream instead.
+        const THRESHOLD: usize = 4096;
+
+        let plain = MetadataParameters::default();
+        assert!(
+            schema_once_eligible(100, THRESHOLD, &plain),
+            "small message on a stable-schema output is eligible"
+        );
+        assert!(
+            !schema_once_eligible(THRESHOLD, THRESHOLD, &plain),
+            "a message at/above the threshold is not eligible (goes via SHM/full stream)"
+        );
+
+        for key in [
+            dora_message::metadata::REQUEST_ID,
+            dora_message::metadata::GOAL_ID,
+            dora_message::metadata::GOAL_STATUS,
+        ] {
+            let mut params = MetadataParameters::default();
+            params.insert(
+                key.to_string(),
+                dora_message::metadata::Parameter::String("x".into()),
+            );
+            assert!(
+                !schema_once_eligible(100, THRESHOLD, &params),
+                "small pattern-correlation message ({key}) must bypass schema-once"
+            );
+        }
+
+        // Streaming is deliberately NOT excluded: every chunk of a stream shares
+        // one schema, so streaming stays the high-rate beneficiary of
+        // schema-once. Locking this in guards against a well-meaning "also
+        // exclude streaming" change that would defeat the optimization.
+        let mut stream = MetadataParameters::default();
+        stream.insert(
+            dora_message::metadata::SESSION_ID.to_string(),
+            dora_message::metadata::Parameter::String("s1".into()),
+        );
+        stream.insert(
+            dora_message::metadata::SEGMENT_ID.to_string(),
+            dora_message::metadata::Parameter::Integer(0),
+        );
+        assert!(
+            schema_once_eligible(100, THRESHOLD, &stream),
+            "small streaming chunk (stable schema) stays eligible for schema-once"
+        );
     }
 
     #[test]

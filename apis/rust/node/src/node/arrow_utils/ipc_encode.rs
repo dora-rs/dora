@@ -652,8 +652,8 @@ impl InputDecoder {
                 // A failed batch decode (truncated/corrupt payload — zenoh
                 // tail-loss or a malicious peer) leaves the persistent decoder
                 // mid-message. Soft-reset the LIVE decoder so the next batch is
-                // not fed into that poisoned state (which would mis-decode it
-                // into this message's stale buffers and deliver corrupt data).
+                // not fed into that poisoned state (which would misinterpret it
+                // against this message's stale buffers and deliver corrupt data).
                 // The retained schema is kept, so the next batch re-primes
                 // locally — instant recovery, with no wait for a schema refresh.
                 self.decoder = arrow::ipc::reader::StreamDecoder::new();
@@ -684,12 +684,18 @@ fn prime_with_schema(
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<()> {
     while !buffer.is_empty() {
+        let before = buffer.len();
         if decoder
             .decode(&mut buffer)
             .map_err(|e| eyre!("failed to decode IPC schema message: {e}"))?
             .is_some()
         {
             bail!("expected a schema message but got a record batch");
+        }
+        // Guard against a crafted/truncated payload that decodes to no batch
+        // without consuming bytes — otherwise this loop spins forever.
+        if buffer.len() == before {
+            bail!("IPC schema decoder made no progress on a partial/corrupt message");
         }
     }
     Ok(())
@@ -701,6 +707,7 @@ fn decode_one_batch(
     mut buffer: ArrowBuffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
     while !buffer.is_empty() {
+        let before = buffer.len();
         if let Some(batch) = decoder
             .decode(&mut buffer)
             .map_err(|e| eyre!("failed to decode IPC record batch: {e}"))?
@@ -712,6 +719,11 @@ fn decode_one_batch(
                 );
             }
             return Ok(batch.column(0).to_data());
+        }
+        // Guard against a crafted/truncated payload that decodes to no batch
+        // without consuming bytes — otherwise this loop spins forever.
+        if buffer.len() == before {
+            bail!("IPC batch decoder made no progress on a partial/corrupt message");
         }
     }
     bail!("IPC batch message yielded no record batch")
@@ -824,7 +836,7 @@ mod tests {
     }
 
     /// A failed (truncated) batch decode must soft-reset the persistent decoder
-    /// so the next valid batch is not mis-decoded into the truncated message's
+    /// so the next valid batch is not misinterpreted against the truncated message's
     /// stale state — and, because the schema is retained, that next batch
     /// re-primes locally and decodes (instant recovery, not drop-until-refresh).
     #[test]
