@@ -1886,11 +1886,16 @@ fn smoke_shell_node_blocked_without_flag() {
 // ---------------------------------------------------------------------------
 // Memory-pool CPU transport (#2168)
 //
-// Requires `torch` and `tqdm` — not installed in standard PR CI. Run
-// explicitly on machines with torch available:
-//   cargo test --test example-smoke -- --ignored smoke_memory_pool
-// or via `scripts/smoke-all.sh` (skips gracefully when download.pytorch.org
-// is unreachable; torch is installed by per-node `build:` steps).
+// Requires `torch` and `tqdm`, so these are `#[ignore]`-gated and skipped by
+// the main `smoke-suite` nightly job. They run in their own nightly job —
+// `memory-pool-smoke` in .github/workflows/nightly.yml — which executes them
+// with `--ignored`; the per-node `build:` steps pip-install CPU torch, so no
+// GPU is needed. Run all six locally with the same filter CI uses:
+//   cargo test --test example-smoke -- --ignored memory_pool
+// (`memory_pool` matches both `smoke_memory_pool_*` and
+// `smoke_local_memory_pool_*`; `smoke_memory_pool` would miss the latter).
+// Or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`
+// and skips gracefully when download.pytorch.org is unreachable.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1977,9 +1982,9 @@ fn smoke_local_memory_pool_write_after_free() {
 // | memory-pool               | covered: smoke_memory_pool_cpu2cpu /                 | #2264    |
 // |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
 // |                           | duplicate_free, read_after_free, write_after_free}   |          |
-// |                           | (#[ignore], run when torch+tqdm available);          |          |
-// |                           | smoke-all.sh skips when download.pytorch.org is      |          |
-// |                           | unreachable (torch installed via per-node build:);   |          |
+// |                           | (#[ignore]); nightly memory-pool-smoke job;          |          |
+// |                           | smoke-all.sh gates on `import torch`, skips          |          |
+// |                           | gracefully when download.pytorch.org unreachable.    |          |
 // |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
 // | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |

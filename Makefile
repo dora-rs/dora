@@ -13,7 +13,7 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 21 test jobs: example-smoke
+#                                        nightly.yml has 22 test jobs: example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
 #                                        the 17 remaining with platform-aware dispatch
@@ -23,7 +23,12 @@
 #                                        daemon-reconnect [Linux], state-reconstruction,
 #                                        test-cross-platform, examples, cli-tests,
 #                                        bench-example, cross-check, ros2-bridge [Linux+ROS2],
-#                                        msrv, kani-proofs [skipped if Kani absent]). Green local run on platform X predicts
+#                                        msrv, kani-proofs [skipped if Kani absent]). The
+#                                        22nd, memory-pool-smoke (torch-gated #[ignore]
+#                                        memory-pool tests), is covered locally by
+#                                        `make qa-examples` / smoke-all.sh, not the
+#                                        qa-nightly example-smoke step (which skips
+#                                        #[ignore] tests). Green local run on platform X predicts
 #                                        green CI nightly for platform X's jobs.
 #   make qa-release-gate                 Tier 3 automatable parts (deep + semver;
 #                                        audit/dogfood are human)
