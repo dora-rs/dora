@@ -71,6 +71,12 @@ impl DaemonConnections {
         self.daemons.remove(daemon_id)
     }
 
+    /// Returns the `connection_id` of the currently-registered connection for
+    /// `daemon_id`, or `None` if the daemon is not connected.
+    pub(crate) fn connection_id_of(&self, daemon_id: &DaemonId) -> Option<Uuid> {
+        self.daemons.get(daemon_id).map(|c| c.connection_id)
+    }
+
     pub(crate) fn unnamed(&self) -> impl Iterator<Item = &DaemonId> {
         self.daemons.keys().filter(|id| id.machine_id().is_none())
     }
@@ -101,6 +107,10 @@ pub(crate) struct DaemonConnection {
     /// for a daemon too old to advertise it, so the coordinator can refuse to
     /// route a hub node to it with a clear error.
     pub(crate) supports_hub_sources: bool,
+    /// Unique ID for this connection instance. Used to distinguish a stale
+    /// connection's `DaemonExit` from a freshly re-registered connection
+    /// that reused the same `DaemonId` (daemon reconnect race, #2392).
+    pub(crate) connection_id: Uuid,
 }
 
 impl DaemonConnection {
@@ -118,6 +128,7 @@ impl DaemonConnection {
             // set from the register request at the real registration site;
             // conservative default keeps non-registration constructors safe
             supports_hub_sources: false,
+            connection_id: Uuid::new_v4(),
         }
     }
 
