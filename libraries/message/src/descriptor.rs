@@ -791,6 +791,21 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Per-node finish-drain grace period in seconds.
+    ///
+    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
+    /// When all other nodes in a dataflow have finished, the daemon waits this
+    /// long after the node's last input closes before force-stopping it.
+    ///
+    /// Set to a large value (e.g. `3600.0`) for nodes that need significant
+    /// post-input compute time (ML training, large-batch inference, checkpoint
+    /// writes) to prevent premature SIGKILL while the computation is in progress.
+    ///
+    /// When unset, the global grace period applies (default 120s, controlled
+    /// by `DORA_FINISH_DRAIN_GRACE_SECS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_grace_secs: Option<f64>,
+
     /// Path to a module definition file (e.g. `nav_module.yml`).
     ///
     /// A module is a reusable sub-dataflow: a group of nodes with declared
@@ -1107,6 +1122,12 @@ pub struct CustomNode {
     /// policy is evaluated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
+
+    /// Per-node finish-drain grace period in seconds.
+    ///
+    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_grace_secs: Option<f64>,
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
