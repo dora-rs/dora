@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, io::Write, path::PathBuf, time::SystemTime};
 
 use clap::Args;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, id::NodeId};
+use dora_message::{
+    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
+    id::NodeId,
+};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
 
@@ -51,6 +54,13 @@ pub struct Record {
     /// Useful when the target machine has no local disk.
     #[clap(long)]
     proxy: bool,
+
+    /// Name of the running dataflow to record (matches `dora start --name`).
+    ///
+    /// Only used in `--proxy` mode. When omitted, dora auto-selects if a
+    /// single dataflow is running and prompts otherwise.
+    #[clap(long, value_name = "NAME")]
+    name: Option<String>,
 
     #[clap(flatten)]
     coordinator: crate::common::CoordinatorOptions,
@@ -323,30 +333,25 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         );
     }
 
-    // Select which running dataflow to record.  There is no reliable way to
-    // match a descriptor file against a running dataflow from the CLI side
-    // (the coordinator assigns random petnames to un-named dataflows), so we
-    // make the selection *visible* instead of silent so the user can abort
-    // (Ctrl-C) if the wrong dataflow is shown.
-    let dataflow_id = if active_ids.len() == 1 {
-        let selected = &active_ids[0];
-        eprintln!("Auto-selected dataflow: {selected}");
-        eprintln!(
-            "hint: if this is not the dataflow for `{}`, press Ctrl-C and use \
-             `dora list` to find the correct dataflow UUID.",
-            args.file
-        );
-        selected.uuid
-    } else {
-        let choices: Vec<String> = active_ids.iter().map(|d| d.to_string()).collect();
-        let selected = inquire::Select::new("Select dataflow to record:", choices)
-            .prompt()
-            .wrap_err("dataflow selection cancelled")?;
-        active_ids
-            .iter()
-            .find(|d| d.to_string() == selected)
-            .unwrap()
-            .uuid
+    // Narrow the running dataflows down to the one to record.
+    let file_stem = PathBuf::from(&args.file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string);
+    let dataflow_id = match select_dataflow(active_ids, args.name.as_deref(), file_stem.as_deref())?
+    {
+        Selection::One(dataflow) => dataflow.uuid,
+        Selection::Many(candidates) => {
+            let choices: Vec<String> = candidates.iter().map(|d| d.to_string()).collect();
+            let selected = inquire::Select::new("Select dataflow to record:", choices)
+                .prompt()
+                .wrap_err("dataflow selection cancelled")?;
+            candidates
+                .iter()
+                .find(|d| d.to_string() == selected)
+                .unwrap()
+                .uuid
+        }
     };
 
     // Subscribe to topics via WS
@@ -454,5 +459,112 @@ fn format_topics(topics: Vec<String>) -> String {
         topics.join(", ")
     } else {
         format!("{} topics", topics.len())
+    }
+}
+
+#[derive(Debug)]
+enum Selection {
+    One(DataflowIdAndName),
+    Many(Vec<DataflowIdAndName>),
+}
+
+/// Choose which running dataflow to record.
+///
+/// Priority:
+/// 1. If `explicit_name` is given, filter by exact coordinator name — error if
+///    no match, auto-select if exactly one, prompt if multiple.
+/// 2. If `file_stem` matches exactly one running dataflow's name, silently
+///    auto-select it (convenience for `dora start --name <stem>` users).
+/// 3. Fall back: single running dataflow → auto-select; multiple → prompt.
+fn select_dataflow(
+    active_ids: Vec<DataflowIdAndName>,
+    explicit_name: Option<&str>,
+    file_stem: Option<&str>,
+) -> eyre::Result<Selection> {
+    if let Some(name) = explicit_name {
+        let mut matched: Vec<_> = active_ids
+            .into_iter()
+            .filter(|d| d.name.as_deref() == Some(name))
+            .collect();
+        return match matched.len() {
+            0 => bail!(
+                "no running dataflow named `{name}`. \
+                 Run `dora list` to see the names of running dataflows."
+            ),
+            1 => Ok(Selection::One(matched.remove(0))),
+            _ => Ok(Selection::Many(matched)),
+        };
+    }
+    if let Some(stem) = file_stem {
+        let mut matched: Vec<_> = active_ids
+            .iter()
+            .filter(|d| d.name.as_deref() == Some(stem))
+            .cloned()
+            .collect();
+        if matched.len() == 1 {
+            return Ok(Selection::One(matched.remove(0)));
+        }
+    }
+    Ok(match active_ids.len() {
+        1 => Selection::One(active_ids.into_iter().next().unwrap()),
+        _ => Selection::Many(active_ids),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn make_df(name: Option<&str>) -> DataflowIdAndName {
+        DataflowIdAndName {
+            uuid: Uuid::new_v4(),
+            name: name.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn explicit_name_selects_exact_match() {
+        let target = make_df(Some("my-flow"));
+        let other = make_df(Some("other-flow"));
+        let target_uuid = target.uuid;
+        let result = select_dataflow(vec![other, target], Some("my-flow"), None).unwrap();
+        assert!(matches!(result, Selection::One(d) if d.uuid == target_uuid));
+    }
+
+    #[test]
+    fn explicit_name_with_no_match_is_an_error() {
+        let df = make_df(Some("happy-tree"));
+        let result = select_dataflow(vec![df], Some("my-flow"), None);
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("my-flow"),
+            "error should name the missing flow: {msg}"
+        );
+    }
+
+    #[test]
+    fn file_stem_auto_selects_single_match() {
+        let target = make_df(Some("dataflow"));
+        let target_uuid = target.uuid;
+        let result = select_dataflow(vec![target], None, Some("dataflow")).unwrap();
+        assert!(matches!(result, Selection::One(d) if d.uuid == target_uuid));
+    }
+
+    #[test]
+    fn unmatched_stem_falls_back_to_single_running_without_warning() {
+        let df = make_df(Some("happy-tree"));
+        let df_uuid = df.uuid;
+        // stem doesn't match the petname → fall back to the only running dataflow
+        let result = select_dataflow(vec![df], None, Some("dataflow")).unwrap();
+        assert!(matches!(result, Selection::One(d) if d.uuid == df_uuid));
+    }
+
+    #[test]
+    fn unmatched_stem_with_multiple_running_prompts() {
+        let dfs = vec![make_df(Some("happy-tree")), make_df(Some("sad-rock"))];
+        let result = select_dataflow(dfs, None, Some("dataflow")).unwrap();
+        assert!(matches!(result, Selection::Many(v) if v.len() == 2));
     }
 }
