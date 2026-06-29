@@ -92,6 +92,63 @@ jobs:
         if: steps.smoke.outputs.exit_code != '0'
         run: exit 1
 
+  # Memory-pool CPU transport smoke tests (dora-rs/dora#2168).
+  #
+  # These 6 tests (smoke_memory_pool_cpu2cpu + smoke_local_memory_pool_*) are
+  # `#[ignore]`-gated in tests/example-smoke.rs because they need torch + tqdm,
+  # which the smoke-suite job above does not install — so that job skips them
+  # and they ran in NO workflow (#2302 Finding 1; the gap #2264 Finding 1 first
+  # raised). They are CPU-only (sender_device/receiver_device: cpu), so no GPU
+  # is required: the per-node `build:` steps pip-install CPU torch from
+  # download.pytorch.org via uv. A dedicated job keeps the torch-download cost
+  # and any pytorch-index flakiness off the main smoke-suite, and makes the
+  # unsafe seqlock / pointer-arithmetic / bounds / free paths flagged by #2264
+  # execute at least once per nightly run.
+  memory-pool-smoke:
+    name: Memory-pool CPU smoke tests (#2168)
+    runs-on: ubuntu-latest
+    # 6 tests, --test-threads=1 (they share coordinator ports). Most of the
+    # wall clock is the one-time CPU-torch download/install in the per-node
+    # build steps; 45 min leaves margin on top of a cold cargo compile.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+      - name: Set up Python venv
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
+      - name: Run memory-pool smoke tests
+        id: smoke
+        continue-on-error: true
+        # `--ignored memory_pool` runs only the ignored memory-pool tests; the
+        # per-node `build:` steps install torch/tqdm/numpy into the active venv.
+        run: |
+          cargo test -p dora-examples --test example-smoke -- \
+            --ignored --test-threads=1 memory_pool 2>&1 | tee memory-pool-smoke.log
+          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: Upload smoke log
+        uses: actions/upload-artifact@v7
+        with:
+          name: memory-pool-smoke-output
+          path: memory-pool-smoke.log
+          retention-days: 14
+      - name: Fail the job if memory-pool smoke tests failed
+        if: steps.smoke.outputs.exit_code != '0'
+        run: exit 1
+
   # Hub e2e (tests/hub-smoke.rs). The `hub:` feature is unstable + non-core, so
   # it lives in nightly rather than the per-PR gate. Hermetic — a local git
   # fixture + DORA_HUB_ALLOW_LOCAL_SOURCES, no network — so it needs only Rust
@@ -1700,6 +1757,7 @@ jobs:
     needs:
       - build-cli
       - smoke-suite
+      - memory-pool-smoke
       - log-sinks
       - service-action
       - streaming
@@ -1758,6 +1816,10 @@ jobs:
                 ;;
               smoke-suite)
                 echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
+                ;;
+              memory-pool-smoke)
+                # Needs torch+tqdm; the per-node build steps install CPU torch.
+                echo 'cargo test -p dora-examples --test example-smoke -- --ignored --test-threads=1 memory_pool'
                 ;;
               log-sinks)
                 # Three dataflows in this job; run each individually on failure.
@@ -1835,6 +1897,7 @@ jobs:
             case "$1" in
               build-cli) echo '^Build dora CLI \(shared\)$' ;;
               smoke-suite) echo '^Smoke suite \(tests/example-smoke\.rs\)$' ;;
+              memory-pool-smoke) echo '^Memory-pool CPU smoke tests \(#2168\)$' ;;
               log-sinks) echo '^Log-sink examples \(Python sources\)$' ;;
               service-action) echo '^Service / Action patterns \(Rust-only\)$' ;;
               streaming) echo '^Streaming example \(Python\)$' ;;
