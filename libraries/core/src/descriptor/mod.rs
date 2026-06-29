@@ -188,6 +188,12 @@ impl DescriptorExt for Descriptor {
                 }
             };
 
+            if resolved.contains_key(&node.id) {
+                eyre::bail!(
+                    "duplicate node ID `{}` — each node must have a unique `id`",
+                    node.id
+                );
+            }
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
@@ -733,5 +739,27 @@ nodes:
         );
         let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
         assert!(b.env.is_none(), "node b has no env anywhere");
+    }
+
+    #[test]
+    fn duplicate_node_id_is_rejected() {
+        // Regression for #2393: a plain dataflow with two nodes sharing the
+        // same `id` must return an error instead of silently discarding one.
+        let yaml = r#"
+nodes:
+  - id: my-node
+    path: ./a
+  - id: my-node
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("duplicate node ID must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("duplicate node ID") && msg.contains("my-node"),
+            "unexpected error message: {msg}"
+        );
     }
 }
