@@ -563,7 +563,19 @@ impl DoraNode {
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
             })
-            .unwrap_or(8 * 1024 * 1024); // 8 MB default
+            // 8 MB default — kept deliberately small so the pool fits a
+            // constrained `/dev/shm` (Docker/Kubernetes commonly cap it at
+            // 64 MB). A pool that doesn't fit backing memory was observed to
+            // break large-output delivery entirely (the segment can't be backed
+            // as it fills), so bumping this default is NOT a safe way to widen
+            // the large-message pipeline. Throughput under large-message bursts
+            // is handled instead by the non-blocking `GarbageCollect` alloc
+            // policy (see `allocate_data_sample` / `zenoh_publish`): the producer
+            // never stalls on a momentarily-full pool, it just copies via the
+            // heap path. Raise this only alongside a matching `/dev/shm` (via
+            // `shared_memory_pool_size` / `DORA_NODE_SHM_POOL_SIZE`) to keep more
+            // large outputs zero-copy.
+            .unwrap_or(8 * 1024 * 1024);
         let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -1207,10 +1219,18 @@ impl DoraNode {
                 if avec.len() >= self.zenoh_zero_copy_threshold
                     && let Some(provider) = &self.zenoh_shm_provider
                 {
-                    use zenoh::shm::{BlockOn, GarbageCollect};
+                    use zenoh::shm::GarbageCollect;
+                    // Non-blocking: garbage-collect freed chunks and allocate, but
+                    // do NOT block waiting for the pool to drain. Under a burst of
+                    // large messages the zero-copy receiver pins each segment for
+                    // the whole receive pipeline, so the pool can be momentarily
+                    // exhausted; `BlockOn` would then sleep 1 ms per retry (zenoh
+                    // 1.8 has no alloc signalling yet), throttling throughput to
+                    // ~1k msg/s. Falling back to a heap-buffered put instead keeps
+                    // the producer moving (PR #2366).
                     match provider
                         .alloc(avec.len())
-                        .with_policy::<BlockOn<GarbageCollect>>()
+                        .with_policy::<GarbageCollect>()
                         .wait()
                     {
                         Ok(mut sbuf) => {
@@ -1534,10 +1554,15 @@ impl DoraNode {
             && let Some(provider) = &self.zenoh_shm_provider
         {
             use zenoh::Wait;
-            use zenoh::shm::{BlockOn, GarbageCollect};
+            use zenoh::shm::GarbageCollect;
+            // Non-blocking (see `zenoh_publish`): GC and allocate, but fall back
+            // to a heap buffer rather than `BlockOn`-sleeping 1 ms when the pool
+            // is momentarily full under a large-message burst. The heap buffer
+            // costs one extra copy on publish but keeps the producer from
+            // stalling, which is what regressed sustained throughput (PR #2366).
             match provider
                 .alloc(data_len)
-                .with_policy::<BlockOn<GarbageCollect>>()
+                .with_policy::<GarbageCollect>()
                 .wait()
             {
                 Ok(sbuf) => {
