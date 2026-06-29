@@ -411,22 +411,23 @@ pub fn encode_schema_message(data_type: &DataType) -> eyre::Result<Vec<u8>> {
 }
 
 /// Exact byte length of the schema-less batch message [`encode_batch_into`]
-/// would write (record-batch header block + body, **no** schema and **no**
-/// end-of-stream marker), or `None` if `array` is not fast-path eligible.
+/// would write (record-batch header block + body + 8-byte end-of-stream marker,
+/// **no** schema prefix), or `None` if `array` is not fast-path eligible.
 pub fn batch_fast_path_len(array: &ArrayData) -> Option<usize> {
     let prepared = prepare(array)?;
-    Some(prepared.record_batch_block + prepared.layout.body_len)
+    Some(prepared.record_batch_block + prepared.layout.body_len + PREFIX_LEN)
 }
 
 /// Encode `array` as a schema-less Arrow IPC **batch message** into `dst`:
-/// the record-batch header block followed by the body, with no schema prefix
-/// and no end-of-stream marker. Decoded by a [`StreamDecoder`] already primed
-/// with the matching [`encode_schema_message`]. `dst.len()` must equal
-/// [`batch_fast_path_len(array)`](batch_fast_path_len).
+/// the record-batch header block, the body, and a trailing 8-byte end-of-stream
+/// marker (no schema prefix). Decoded by a [`StreamDecoder`] already primed with
+/// the matching [`encode_schema_message`]. The trailing marker lets the decoder
+/// flush a 0-row batch (empty body); a non-empty batch never reads it. `dst.len()`
+/// must equal [`batch_fast_path_len(array)`](batch_fast_path_len).
 pub fn encode_batch_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> {
     let prepared =
         prepare(array).ok_or_else(|| eyre!("array is not Arrow IPC fast-path eligible"))?;
-    let expected = prepared.record_batch_block + prepared.layout.body_len;
+    let expected = prepared.record_batch_block + prepared.layout.body_len + PREFIX_LEN;
     if dst.len() != expected {
         bail!(
             "destination size {} does not match required batch length {expected}",
@@ -436,6 +437,11 @@ pub fn encode_batch_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> 
     let at = write_framed_message(dst, 0, &prepared.record_batch_message);
     debug_assert_eq!(at, prepared.record_batch_block);
     write_body(dst, at, &prepared.layout);
+    // End-of-stream marker (continuation + zero length), matching the tail of a
+    // full stream so an empty batch flushes through the persistent decoder.
+    let body_end = at + prepared.layout.body_len;
+    dst[body_end..body_end + 4].copy_from_slice(&CONTINUATION_MARKER);
+    dst[body_end + 4..body_end + PREFIX_LEN].copy_from_slice(&0i32.to_le_bytes());
     Ok(())
 }
 
@@ -552,13 +558,16 @@ pub fn schema_block_len(stream: &[u8]) -> Option<usize> {
     (block <= stream.len()).then_some(block)
 }
 
-/// Given a full IPC stream, return the schema-less record-batch+body slice
-/// (everything after the schema block, minus the trailing 8-byte end-of-stream
-/// marker) — the payload of a batch message. `None` if `stream` is malformed.
+/// Given a full IPC stream, return the schema-less record-batch slice —
+/// everything after the schema block, **including** the trailing 8-byte
+/// end-of-stream marker. The marker is what lets the receiver's persistent
+/// decoder flush a 0-row batch (whose body is empty); a non-empty batch never
+/// reads it. `None` if `stream` is malformed. See [`decode_one_batch`].
 pub fn batch_slice(stream: &[u8]) -> Option<&[u8]> {
     let block = schema_block_len(stream)?;
-    let end = stream.len().checked_sub(PREFIX_LEN)?;
-    (end >= block).then(|| &stream[block..end])
+    // The stream is [schema block][record-batch block][body][EOS(8)]; keep
+    // everything from the record-batch block onward.
+    (stream.len() >= block + PREFIX_LEN).then(|| &stream[block..])
 }
 
 /// Per-input receive state for the schema-once zenoh path: one persistent
@@ -702,6 +711,15 @@ fn prime_with_schema(
 }
 
 /// Feed a record-batch message to `decoder` and return the single decoded array.
+///
+/// The schema-less batch is terminated by an 8-byte end-of-stream marker (see
+/// [`encode_batch_into`]/[`batch_slice`]). For a non-empty batch the body bytes
+/// flush it on their own; the marker matters for a **0-row** batch, whose
+/// zero-length body arrow's `StreamDecoder` only emits when polled with more
+/// input — without the trailing marker an empty array is silently dropped
+/// (PR #2366). The decoder yields the pending batch *before* consuming the
+/// marker's zero length, so it never reaches its terminal state and stays
+/// usable for the next batch.
 fn decode_one_batch(
     decoder: &mut arrow::ipc::reader::StreamDecoder,
     mut buffer: ArrowBuffer,
@@ -864,10 +882,13 @@ mod tests {
             good
         );
 
-        // A truncated batch errors and soft-resets the live decoder.
+        // A truncated batch errors and soft-resets the live decoder. Cut the
+        // buffer in half so the record-batch header survives but its declared
+        // body is incomplete (a tail loss) — dropping only the trailing 8-byte
+        // EOS marker would leave a still-valid batch.
         let dropped = Float32Array::from(vec![6.0, 7.0, 8.0, 9.0]).into_data();
         let mut truncated = batch_buf(&dropped);
-        truncated.truncate(truncated.len() - 8);
+        truncated.truncate(truncated.len() / 2);
         assert!(dec.decode_batch(Buffer::from_vec(truncated), 7).is_err());
 
         // The next valid batch (same hash) re-primes from the retained schema and
@@ -1052,6 +1073,85 @@ mod tests {
     fn roundtrip_empty_primitive() {
         let array = Int32Array::from(Vec::<i32>::new()).into_data();
         assert_fast_roundtrip(&array);
+    }
+
+    /// A 0-row array sent through the `send_output_raw` UInt8-header path decodes
+    /// back to a 0-row `UInt8` array via the full-stream zero-copy decoder.
+    /// (The full stream keeps its end-of-stream marker, so this path was never
+    /// broken — this pins it as a baseline alongside the schema-once regression
+    /// below.)
+    #[test]
+    fn uint8_header_zero_len_full_stream_roundtrip() {
+        let len = uint8_ipc_len(0).unwrap();
+        let mut buf = vec![0u8; len];
+        let off = encode_uint8_ipc_header(&mut buf, 0).unwrap();
+        // Empty data region: it sits immediately before the 8-byte EOS marker.
+        assert_eq!(off, len - PREFIX_LEN);
+        assert_eq!(read_official(&buf).len(), 0);
+        let (buffer, _, _) = aligned_buffer(&buf);
+        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+        assert_eq!(decoded.data_type(), &DataType::UInt8);
+        assert_eq!(decoded.len(), 0);
+    }
+
+    /// The schema-once receive path must decode a 0-row (empty) batch, not drop
+    /// it. A schema-less batch carries no trailing end-of-stream marker, and
+    /// arrow's `StreamDecoder` only emits a zero-length body on the poll *after*
+    /// the header — so `decode_one_batch` must poll once more once its input
+    /// drains. Regression guard for the empty-array drop reported on PR #2366.
+    #[test]
+    fn schema_once_zero_len_batch_roundtrip() {
+        let schema = || Buffer::from_vec(encode_schema_message(&DataType::UInt8).unwrap());
+        let batch = |vals: &[u8]| {
+            let a = UInt8Array::from(vals.to_vec()).into_data();
+            let len = batch_fast_path_len(&a).unwrap();
+            let mut b = vec![0u8; len];
+            encode_batch_into(&a, &mut b).unwrap();
+            Buffer::from_vec(b)
+        };
+
+        let mut dec = InputDecoder::new();
+        dec.set_schema(1, schema()).unwrap();
+
+        // The empty batch decodes to a 0-row UInt8 array, not `Ok(None)`/error.
+        let decoded = dec
+            .decode_batch(batch(&[]), 1)
+            .unwrap()
+            .expect("0-row batch must decode, not drop");
+        assert_eq!(decoded.data_type(), &DataType::UInt8);
+        assert_eq!(decoded.len(), 0);
+
+        // The persistent decoder stays usable across mixed empty/non-empty
+        // batches (flushing the empty body must not wedge or terminate it).
+        for vals in [vec![1u8, 2, 3], vec![], vec![9u8], vec![]] {
+            let d = dec.decode_batch(batch(&vals), 1).unwrap().unwrap();
+            assert_eq!(d.len(), vals.len());
+            assert_eq!(d.data_type(), &DataType::UInt8);
+        }
+    }
+
+    /// Same regression, but exercising the exact production producer path: the
+    /// full stream is built by the UInt8 header encoder, the schema is extracted
+    /// via [`schema_block_len`] and the schema-less batch via [`batch_slice`]
+    /// (as `zenoh_publish` does), then decoded by the per-input [`InputDecoder`].
+    #[test]
+    fn schema_once_zero_len_via_batch_slice_roundtrip() {
+        let total = uint8_ipc_len(0).unwrap();
+        let mut full = vec![0u8; total];
+        encode_uint8_ipc_header(&mut full, 0).unwrap();
+
+        let sblock = schema_block_len(&full).unwrap();
+        let schema = Buffer::from(&full[..sblock]);
+        let batch = batch_slice(&full).expect("batch slice of a valid stream");
+
+        let mut dec = InputDecoder::new();
+        dec.set_schema(7, schema).unwrap();
+        let decoded = dec
+            .decode_batch(Buffer::from(batch), 7)
+            .unwrap()
+            .expect("0-row batch via batch_slice must decode, not drop");
+        assert_eq!(decoded.data_type(), &DataType::UInt8);
+        assert_eq!(decoded.len(), 0);
     }
 
     #[test]
