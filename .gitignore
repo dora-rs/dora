@@ -200,8 +200,9 @@ out/
 # MacOS DS_Store
 .DS_Store
 
-# Claude Code local settings (machine-specific)
+# Claude Code local settings and temporary agent worktrees (machine-specific)
 .claude/settings.local.json
+.claude/worktrees/
 
 # macOS debug symbol bundles
 *.dSYM/
