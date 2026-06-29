@@ -323,43 +323,26 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         );
     }
 
-    // Try to narrow to dataflows whose coordinator-assigned name matches the
-    // descriptor's file stem (e.g. "dataflow" for "examples/foo/dataflow.yml").
-    // Users can set this name via `dora start --name <name>`. If no match is
-    // found fall back to all running dataflows with a warning so the operator
-    // can pick the right one rather than silently recording an unrelated flow.
-    let expected_name = PathBuf::from(&args.file)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(str::to_string);
-    let candidates: Vec<_> = if let Some(ref name) = expected_name {
-        let matched: Vec<_> = active_ids
-            .iter()
-            .filter(|d| d.name.as_deref() == Some(name.as_str()))
-            .cloned()
-            .collect();
-        if matched.is_empty() {
-            eprintln!(
-                "warning: no running dataflow named `{name}` matches the descriptor file. \
-                 Showing all running dataflows — select the one started from `{}`.",
-                args.file
-            );
-            active_ids.clone()
-        } else {
-            matched
-        }
+    // Select which running dataflow to record.  There is no reliable way to
+    // match a descriptor file against a running dataflow from the CLI side
+    // (the coordinator assigns random petnames to un-named dataflows), so we
+    // make the selection *visible* instead of silent so the user can abort
+    // (Ctrl-C) if the wrong dataflow is shown.
+    let dataflow_id = if active_ids.len() == 1 {
+        let selected = &active_ids[0];
+        eprintln!("Auto-selected dataflow: {selected}");
+        eprintln!(
+            "hint: if this is not the dataflow for `{}`, press Ctrl-C and use \
+             `dora list` to find the correct dataflow UUID.",
+            args.file
+        );
+        selected.uuid
     } else {
-        active_ids.clone()
-    };
-
-    let dataflow_id = if candidates.len() == 1 {
-        candidates[0].uuid
-    } else {
-        let choices: Vec<String> = candidates.iter().map(|d| d.to_string()).collect();
+        let choices: Vec<String> = active_ids.iter().map(|d| d.to_string()).collect();
         let selected = inquire::Select::new("Select dataflow to record:", choices)
             .prompt()
             .wrap_err("dataflow selection cancelled")?;
-        candidates
+        active_ids
             .iter()
             .find(|d| d.to_string() == selected)
             .unwrap()
