@@ -320,10 +320,16 @@ impl FromStr for InputMapping {
                 }),
                 None => return Err("dora input has invalid format".into()),
             },
-            _ => Self::User(UserInputMapping {
-                source: source.to_owned().into(),
-                output: output.to_owned().into(),
-            }),
+            _ => {
+                // Validate the source/output segments instead of using the
+                // panicking `From<String>` impls (`.into()`): an input mapping
+                // string comes straight from user-authored descriptor YAML, so an
+                // invalid identifier (e.g. containing a space) must surface as a
+                // clean deserialization error rather than panicking the parser.
+                let source = source.parse::<NodeId>().map_err(|e| e.to_string())?;
+                let output = output.parse::<DataId>().map_err(|e| e.to_string())?;
+                Self::User(UserInputMapping { source, output })
+            }
         };
 
         Ok(mapping)
@@ -621,6 +627,23 @@ mod tests {
         let input: Input = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(input.queue_size, Some(5));
         assert_eq!(input.queue_policy, None);
+    }
+
+    #[test]
+    fn parse_user_mapping_rejects_invalid_ids() {
+        // A source node id with a space is not a valid `NodeId` and must be
+        // rejected with a clean error rather than panicking the parser via the
+        // `From<String>` impl.
+        let result: Result<InputMapping, _> = "bad node/output".parse();
+        assert!(result.is_err(), "invalid source node id must be rejected");
+
+        // An output data id with an invalid character must likewise be rejected.
+        let result: Result<InputMapping, _> = "node_a/bad output".parse();
+        assert!(result.is_err(), "invalid output data id must be rejected");
+
+        // A valid mapping still parses successfully.
+        let mapping: InputMapping = "node_a/output_1".parse().unwrap();
+        assert!(matches!(mapping, InputMapping::User(_)));
     }
 
     #[test]
