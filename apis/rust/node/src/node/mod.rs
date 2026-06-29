@@ -1253,14 +1253,27 @@ impl DoraNode {
                     }
                 }
 
-                // Apply the schema-once optimization only to genuinely small
-                // messages with a stable Arrow schema. Publish the schema on the
+                // A large payload that did not make it into SHM (no provider, or
+                // the pool was momentarily full) must NOT be published over the
+                // zenoh data plane: a payload larger than the transport batch
+                // size is fragmented, and the express/`Drop` data publisher
+                // silently drops fragmented messages — `put` reports success but
+                // the subscriber never receives them (PR #2366). Route it via the
+                // reliable daemon path instead (TCP, up to `MAX_MESSAGE_BYTES`).
+                // Only sub-threshold payloads, which fit a single batch and never
+                // fragment, take the zenoh heap put below.
+                if avec.len() >= self.zenoh_zero_copy_threshold {
+                    return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
+                }
+
+                // Only sub-threshold (single-batch, never-fragmented) payloads
+                // reach this point — large payloads were routed to the daemon
+                // path above. Apply the schema-once optimization to small
+                // messages with a stable Arrow schema: publish the schema on the
                 // `@schema` subtopic (only on change) and send just the
                 // schema-less batch on the data topic, tagged with the schema
                 // hash so the receiver matches it to the decoder primed from the
-                // subtopic. A large message reaches this arm only when SHM
-                // allocation failed; send it as a self-contained full stream
-                // (negligible schema overhead at that size, decoded standalone).
+                // subtopic.
                 //
                 // Service/action request-reply messages (carrying
                 // `request_id`/`goal_id`/`goal_status`) are excluded: a server
