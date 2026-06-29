@@ -55,12 +55,18 @@ impl IpRateLimiter {
         let now = Instant::now();
         let window = std::time::Duration::from_secs(RATE_WINDOW_SECS);
 
+        // Drop entries whose window has already elapsed. Without this the map
+        // grows without bound: `check` inserts an entry for every distinct IP
+        // that ever connects and nothing ever removes them, so a peer rotating
+        // source addresses leaks memory for the coordinator's whole lifetime.
+        // Pruning here bounds the map to IPs seen within the last window, and
+        // means every surviving (or freshly inserted) entry is within its
+        // window — so the count below is always compared within the current
+        // fixed window.
+        map.retain(|_, (_, started)| now.duration_since(*started) < window);
+
         let entry = map.entry(ip).or_insert((0, now));
-        if now.duration_since(entry.1) >= window {
-            // Reset window
-            *entry = (1, now);
-            true
-        } else if entry.0 < MAX_CONNECTIONS_PER_IP {
+        if entry.0 < MAX_CONNECTIONS_PER_IP {
             entry.0 += 1;
             true
         } else {
@@ -365,5 +371,33 @@ mod tests {
         }
         assert!(!rl.check(ip1));
         assert!(rl.check(ip2));
+    }
+
+    #[test]
+    fn rate_limiter_prunes_expired_entries() {
+        let rl = IpRateLimiter::new();
+
+        // Seed a stale entry whose window has already elapsed.
+        let stale_ip: IpAddr = "10.0.0.5".parse().unwrap();
+        {
+            let mut map = rl.windows.lock().unwrap();
+            let expired = Instant::now()
+                .checked_sub(std::time::Duration::from_secs(RATE_WINDOW_SECS + 1))
+                .expect("clock far enough from start");
+            map.insert(stale_ip, (MAX_CONNECTIONS_PER_IP, expired));
+            assert_eq!(map.len(), 1);
+        }
+
+        // A check for an unrelated IP must evict the stale entry rather than
+        // letting the map grow unbounded.
+        let other_ip: IpAddr = "10.0.0.6".parse().unwrap();
+        assert!(rl.check(other_ip));
+
+        let map = rl.windows.lock().unwrap();
+        assert!(
+            !map.contains_key(&stale_ip),
+            "stale entry should have been pruned"
+        );
+        assert_eq!(map.len(), 1, "only the active IP should remain");
     }
 }
