@@ -1034,6 +1034,41 @@ mod tests {
         assert_eq!(selected, vec![node_id("sink")]);
     }
 
+    #[test]
+    fn never_drained_node_within_per_node_grace_vetoes_whole_dataflow() {
+        // Intended behavioral expansion (dora-rs/dora#2284): a connected node
+        // that has NOT yet drained (no AllInputsClosed) but declares a large
+        // `finish_grace_secs` is treated as legitimately busy. While it is
+        // within its own grace it takes the never-drained `None` arm and vetoes
+        // escalation for the ENTIRE dataflow — even a sibling that drained long
+        // past the global grace. This deliberately holds the finish-straggler
+        // watchdog open for the long-grace node's window (e.g. a trainer that
+        // keeps computing after a sibling sink finished), rather than killing
+        // the dataflow at the global grace as before this PR.
+        let sink = node_id("sink");
+        let trainer = node_id("trainer");
+        let long_grace = Duration::from_secs(600);
+        let trainer_node = StragglerNode {
+            id: &trainer,
+            dynamic: false,
+            never_finishes: false,
+            connected: true,
+            drained_for: None,       // has not received AllInputsClosed yet
+            silent_for: PAST_GRACE,  // silent past global grace, within per-node grace
+            node_grace: Some(long_grace),
+        };
+        let selected = select_finish_stragglers(
+            [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+        assert!(
+            selected.is_empty(),
+            "a busy long-grace node not yet drained must hold the dataflow open, \
+             vetoing escalation of drained siblings"
+        );
+    }
+
     // ---- dora-rs/adora#149: InputDeadline::is_timed_out ----
 
     #[test]

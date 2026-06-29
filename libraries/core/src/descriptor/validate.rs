@@ -122,6 +122,14 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         }
     }
 
+    // reject negative / non-finite timing values before they reach the daemon,
+    // where `Duration::from_secs_f64` would panic on spawn.
+    for node in nodes.values() {
+        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+            check_timing_fields(&node.id, custom)?;
+        }
+    }
+
     // check that all inputs mappings point to an existing output
     check_wiring(dataflow)?;
 
@@ -143,6 +151,34 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         check_python_runtime()?;
     }
 
+    Ok(())
+}
+
+/// Reject negative / non-finite second-valued timing fields on a custom node.
+///
+/// The daemon converts these to `Duration` via `Duration::from_secs_f64`, which
+/// panics on negative, NaN, or infinite input. Catching them here surfaces a
+/// clean descriptor error instead of crashing the daemon on node spawn.
+fn check_timing_fields(
+    node_id: &NodeId,
+    custom: &dora_message::descriptor::CustomNode,
+) -> eyre::Result<()> {
+    for (field, value) in [
+        ("finish_grace_secs", custom.finish_grace_secs),
+        ("health_check_timeout", custom.health_check_timeout),
+        ("restart_delay", custom.restart_delay),
+        ("max_restart_delay", custom.max_restart_delay),
+        ("restart_window", custom.restart_window),
+    ] {
+        if let Some(value) = value
+            && (!value.is_finite() || value < 0.0)
+        {
+            bail!(
+                "node `{node_id}` has invalid `{field}`: {value} \
+                 (must be a finite, non-negative number of seconds)"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1216,6 +1252,68 @@ operators:
 "#,
         )
         .unwrap()
+    }
+
+    fn custom_node() -> dora_message::descriptor::CustomNode {
+        dora_message::descriptor::CustomNode {
+            path: "node".to_string(),
+            source: dora_message::descriptor::NodeSource::Local,
+            path_sha256: None,
+            args: None,
+            envs: None,
+            build: None,
+            send_stdout_as: None,
+            send_logs_as: None,
+            min_log_level: None,
+            max_log_size: None,
+            max_rotated_files: None,
+            restart_policy: Default::default(),
+            max_restarts: 0,
+            restart_delay: None,
+            max_restart_delay: None,
+            restart_window: None,
+            health_check_timeout: None,
+            finish_grace_secs: None,
+            run_config: serde_yaml::from_str("{}").unwrap(),
+        }
+    }
+
+    #[test]
+    fn timing_fields_accept_finite_non_negative_and_none() {
+        let id = NodeId::from("n".to_owned());
+        let mut node = custom_node();
+        // unset is fine
+        check_timing_fields(&id, &node).unwrap();
+        // a large finite grace is fine
+        node.finish_grace_secs = Some(3600.0);
+        node.health_check_timeout = Some(0.0);
+        check_timing_fields(&id, &node).unwrap();
+    }
+
+    #[test]
+    fn timing_fields_reject_negative_finish_grace_secs() {
+        let id = NodeId::from("n".to_owned());
+        let mut node = custom_node();
+        node.finish_grace_secs = Some(-1.0);
+        let err = check_timing_fields(&id, &node).unwrap_err().to_string();
+        assert!(
+            err.contains("finish_grace_secs") && err.contains("non-negative"),
+            "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn timing_fields_reject_non_finite_values() {
+        let id = NodeId::from("n".to_owned());
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut node = custom_node();
+            node.health_check_timeout = Some(bad);
+            let err = check_timing_fields(&id, &node).unwrap_err().to_string();
+            assert!(
+                err.contains("health_check_timeout"),
+                "non-finite {bad} should be rejected, got: {err}"
+            );
+        }
     }
 
     fn user_input(source: &str, output: &str) -> Input {
