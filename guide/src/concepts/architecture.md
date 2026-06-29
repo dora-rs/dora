@@ -808,7 +808,7 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `DataflowId` | `uuid::Uuid` | Assigned on dataflow start |
 | `SessionId` | `uuid::Uuid` (v7) | Per CLI session |
 | `BuildId` | `uuid::Uuid` (v7) | Per build operation |
-| `DaemonId` | `{ machine_id: Option<String>, uuid: Uuid (v7) }` | Persisted in `.daemon-id` |
+| `DaemonId` | `{ machine_id: Option<String>, uuid: Uuid (v7) }` | Created fresh on each start via `DaemonId::new(machine_id)` |
 | `NodeId` | `String` | Validated: `[a-zA-Z0-9_.-]`, non-empty |
 | `DataId` | `String` | Same validation as `NodeId` |
 | `OperatorId` | `String` | No validation |
