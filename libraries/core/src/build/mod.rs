@@ -344,8 +344,10 @@ pub fn managed_python_env_dir(node: &ResolvedNode, node_working_dir: &Path) -> O
         // so this assertion should never fire in practice — it guards against future
         // callers that bypass validation.
         debug_assert!(
-            env_dir.components().count() > envs_base.components().count(),
-            "node id '{id}' escaped python-envs directory (env_dir={env_dir:?}, base={envs_base:?})",
+            !Path::new(node.id.as_ref())
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir)),
+            "node id '{id}' contains a parent-dir segment",
             id = node.id,
         );
         env_dir

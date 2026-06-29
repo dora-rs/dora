@@ -7,8 +7,24 @@ use eyre::{Context, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
+
+/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
+/// the filesystem — the executable may not be built yet when this is called.
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
 
 /// Check if a path string is absolute on any platform.
 /// On Windows, `Path::is_absolute()` returns false for Unix-style `/foo` paths,
@@ -376,12 +392,15 @@ fn expand_module_node(
         }
         inner_node.inputs = new_inputs;
 
-        // Resolve relative paths: make inner node paths relative to base_dir
+        // Resolve relative paths: make inner node paths relative to base_dir.
+        // Normalize lexically (collapse `..`) before the containment check so
+        // that paths like `../../evil` are detected even though the binary may
+        // not exist yet (ruling out filesystem canonicalize).
         if let Some(ref path) = inner_node.path
             && !super::source_is_url(path)
             && !Path::new(path).is_absolute()
         {
-            let resolved = module_dir.join(path);
+            let resolved = normalize_path(&module_dir.join(path));
             let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
                 eyre::eyre!(
                     "module node `{}` path `{}` resolves outside the project \
@@ -424,8 +443,20 @@ fn expand_module_node(
     for inner_node in prefixed_nodes {
         if inner_node.module.is_some() {
             let nested_id = inner_node.id.to_string();
-            let (nested, nested_omap) =
+            let accumulated_build = inner_node.build.clone();
+            let (mut nested, nested_omap) =
                 expand_module_node(&inner_node, module_dir, canonical_base, depth + 1, seen)?;
+            // Propagate the outer module's accumulated build to each nested leaf node,
+            // mirroring how `deploy` is propagated through recursion.
+            if let Some(ref outer_build) = accumulated_build {
+                for nested_node in &mut nested {
+                    let inner_build = nested_node.build.take();
+                    nested_node.build = Some(match inner_build {
+                        Some(existing) => format!("{outer_build}\n{existing}"),
+                        None => outer_build.clone(),
+                    });
+                }
+            }
             nested_output_maps.insert(nested_id, nested_omap);
             final_nodes.extend(nested);
         } else {
@@ -1634,6 +1665,45 @@ nodes:
     }
 
     #[test]
+    fn reject_inner_node_path_traversal_via_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        // Module file that declares an inner node with a `..`-escaping path.
+        // The binary doesn't need to exist — the check is purely lexical.
+        write_file(
+            base,
+            "escape_node_module.yml",
+            r#"
+module:
+  name: escape_node
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: evil
+    path: ../../etc/evil-binary
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: escape_node_module.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err(), "expected error but got success");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resolves outside the project directory"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
     fn reject_invalid_param_key() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -1712,6 +1782,75 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("duplicate node ID"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_nested_module_build_propagated() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer
+  inputs: [x]
+  outputs: [y]
+
+build: pip install outer-deps
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+    inputs:
+      x: _mod/x
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: top
+    module: outer_module.yml
+    inputs:
+      x: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "top.inner.worker")
+            .unwrap();
+        let build = worker.build.as_deref().unwrap();
+        assert!(
+            build.contains("pip install outer-deps"),
+            "outer module build must propagate through nested modules; got: {build}"
+        );
     }
 
     #[test]

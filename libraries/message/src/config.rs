@@ -7,7 +7,6 @@ use std::{
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
@@ -207,19 +206,6 @@ pub enum InputMapping {
     /// Syntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`
     Logs(LogSubscriptionFilter),
     User(UserInputMapping),
-}
-
-impl InputMapping {
-    pub fn source(&self) -> &NodeId {
-        static DORA_NODE_ID: OnceLock<NodeId> = OnceLock::new();
-
-        match self {
-            InputMapping::User(mapping) => &mapping.source,
-            InputMapping::Timer { .. } | InputMapping::Logs(_) => {
-                DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string()))
-            }
-        }
-    }
 }
 
 impl fmt::Display for InputMapping {
@@ -896,12 +882,6 @@ mod tests {
     fn display_roundtrip_logs_with_level_and_node() {
         let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
-    }
-
-    #[test]
-    fn logs_source_is_dora() {
-        let mapping: InputMapping = "dora/logs".parse().unwrap();
-        assert_eq!(mapping.source().to_string(), "dora");
     }
 
     #[test]

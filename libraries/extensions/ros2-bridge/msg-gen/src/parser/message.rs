@@ -41,9 +41,12 @@ pub fn parse_message_string(
 
         let (_, rest) = split_once(line, ' ');
 
-        match rest.unwrap().find('=') {
-            Some(_) => constants.push(constant_def(line)?),
-            None => members.push(member_def(line)?),
+        // rest is None when the line has no space (e.g. tab-separated or single-token);
+        // treat absence of '=' as a member definition rather than panicking.
+        if rest.is_some_and(|r| r.contains('=')) {
+            constants.push(constant_def(line)?);
+        } else {
+            members.push(member_def(line)?);
         }
     }
 
@@ -156,5 +159,22 @@ mod test {
     fn parse_wstrings() -> Result<()> {
         let _result = parse_msg_def("WStrings")?;
         Ok(())
+    }
+
+    #[test]
+    fn parse_message_string_tab_separated_field() -> Result<()> {
+        // Tab-separated lines must produce a member, not panic.
+        let msg = parse_message_string("pkg", "Msg", "int8\tfoo")?;
+        assert_eq!(msg.members.len(), 1);
+        assert_eq!(msg.members[0].name, "foo");
+        Ok(())
+    }
+
+    #[test]
+    fn parse_message_string_single_token_line_returns_error() {
+        // A single-token line with no space is malformed and must return an
+        // error, not a panic.
+        let result = parse_message_string("pkg", "Msg", "garbage");
+        assert!(result.is_err());
     }
 }

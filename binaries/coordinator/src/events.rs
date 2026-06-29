@@ -33,6 +33,10 @@ pub enum Event {
     Log(LogMessage),
     DaemonExit {
         daemon_id: DaemonId,
+        /// Connection-instance ID stamped at registration time. Used to guard
+        /// against a stale connection's exit evicting a freshly re-registered
+        /// connection that reused the same `DaemonId` (#2392).
+        connection_id: Uuid,
     },
     DataflowBuildResult {
         build_id: BuildId,

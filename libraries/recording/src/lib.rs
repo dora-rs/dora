@@ -114,10 +114,6 @@ impl<W: Write> RecordingWriter<W> {
     pub fn flush(&mut self) -> eyre::Result<()> {
         self.writer.flush().wrap_err("flush failed")
     }
-
-    pub fn stats(&self) -> (u64, u64) {
-        (self.total_messages, self.total_bytes)
-    }
 }
 
 /// Reads recording entries from disk.

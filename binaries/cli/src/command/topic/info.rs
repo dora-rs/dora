@@ -87,12 +87,20 @@ impl TopicStats {
         }
 
         let now = Instant::now();
-        let cutoff = now - window;
-        let recent: Vec<_> = timestamps
-            .iter()
-            .filter(|&&t| t >= cutoff)
-            .copied()
-            .collect();
+        // `now - window` would panic ("overflow when subtracting duration from
+        // instant") when `window` exceeds the monotonic clock value -- reachable
+        // via a large `--duration` (the flag accepts any `u64`) when the topic
+        // closes early, so the full window never elapses before this runs. When
+        // the cutoff predates the monotonic epoch, every recorded timestamp is
+        // within the window, so keep them all.
+        let recent: Vec<_> = match now.checked_sub(window) {
+            Some(cutoff) => timestamps
+                .iter()
+                .filter(|&&t| t >= cutoff)
+                .copied()
+                .collect(),
+            None => timestamps.iter().copied().collect(),
+        };
 
         if recent.len() < 2 {
             return None;
@@ -343,5 +351,31 @@ fn format_arrow_type(data_type: &DataType) -> String {
             )
         }
         _ => format!("{:?}", data_type),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculate_hz_does_not_panic_on_oversized_window() {
+        // Regression: a large `--duration` (the flag accepts any u64) made
+        // `now - window` underflow the monotonic clock and panic with
+        // "overflow when subtracting duration from instant". This is reachable
+        // when the topic closes early so the full window never elapses.
+        let stats = TopicStats::default();
+        let now = Instant::now();
+        {
+            let mut ts = stats.timestamps.lock().unwrap();
+            ts.push(now);
+            ts.push(now + Duration::from_millis(100));
+        }
+        // A window far larger than any plausible monotonic-clock value.
+        let hz = stats.calculate_hz(Duration::from_secs(u64::MAX));
+        // With the cutoff before the monotonic epoch, every timestamp counts,
+        // so a finite positive rate is returned instead of a panic.
+        let hz = hz.expect("expected a frequency from two timestamps");
+        assert!(hz.is_finite() && hz > 0.0, "unexpected hz: {hz}");
     }
 }

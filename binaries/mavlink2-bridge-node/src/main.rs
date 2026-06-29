@@ -56,7 +56,7 @@ use dora_mavlink2_bridge::{
 };
 use dora_node_api::{
     DoraNode, Event, MetadataParameters, TryRecvError,
-    arrow::array::{ArrayRef, AsArray, RecordBatch, StructArray},
+    arrow::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray},
     dora_core::config::DataId,
     flume,
 };
@@ -326,6 +326,15 @@ fn decode_input<T: MavlinkArrow>(data: &ArrayRef, input: &str) -> Result<T> {
             data.data_type()
         )
     })?;
+    // RecordBatch::from(&StructArray) asserts null_count == 0; check first
+    // so malformed inputs surface as BridgeError rather than a process panic.
+    if struct_array.null_count() > 0 {
+        bail!(
+            "input '{input}' is a nullable StructArray with {} null row(s); \
+             expected exactly one non-null MAVLink message",
+            struct_array.null_count()
+        );
+    }
     let batch = RecordBatch::from(struct_array);
     T::from_record_batch(&batch).with_context(|| format!("decoding {input} from incoming Arrow"))
 }
@@ -601,7 +610,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    //! Shutdown-path regression tests.
+    //! Shutdown-path and input-decode regression tests.
     //!
     //! These cover the failure mode the original review flagged: a
     //! reader thread blocked in `conn.recv()` against a silent
@@ -856,6 +865,64 @@ mod tests {
         assert!(
             !attempt_data_stream_request(conn.as_ref(), &header),
             "with no UDP peer connected the request is dropped (0 bytes) and must be retried"
+        );
+    }
+
+    /// Regression test for #2298: a nullable top-level `StructArray` (i.e. one
+    /// with a validity/null buffer and `null_count > 0`) must be rejected by
+    /// `decode_input` as a `BridgeError`, not panic inside
+    /// `RecordBatch::from(&StructArray)`.
+    #[test]
+    fn decode_input_rejects_nullable_struct_array() {
+        use arrow::array::{
+            Float32Array, StructArray as ArrowStructArray, UInt8Array, UInt32Array,
+        };
+        use arrow::buffer::NullBuffer;
+        use arrow::datatypes::{DataType, Field};
+        use dora_mavlink2_bridge::mavlink::common::COMMAND_LONG_DATA;
+        use std::sync::Arc;
+
+        let fields = vec![
+            Arc::new(Field::new("param1", DataType::Float32, false)),
+            Arc::new(Field::new("param2", DataType::Float32, false)),
+            Arc::new(Field::new("param3", DataType::Float32, false)),
+            Arc::new(Field::new("param4", DataType::Float32, false)),
+            Arc::new(Field::new("param5", DataType::Float32, false)),
+            Arc::new(Field::new("param6", DataType::Float32, false)),
+            Arc::new(Field::new("param7", DataType::Float32, false)),
+            Arc::new(Field::new("command", DataType::UInt32, false)),
+            Arc::new(Field::new("target_system", DataType::UInt8, false)),
+            Arc::new(Field::new("target_component", DataType::UInt8, false)),
+            Arc::new(Field::new("confirmation", DataType::UInt8, false)),
+        ];
+        let arrays: Vec<arrow::array::ArrayRef> = vec![
+            Arc::new(Float32Array::from(vec![1.0f32])),
+            Arc::new(Float32Array::from(vec![2.0f32])),
+            Arc::new(Float32Array::from(vec![3.0f32])),
+            Arc::new(Float32Array::from(vec![4.0f32])),
+            Arc::new(Float32Array::from(vec![5.0f32])),
+            Arc::new(Float32Array::from(vec![6.0f32])),
+            Arc::new(Float32Array::from(vec![7.0f32])),
+            Arc::new(UInt32Array::from(vec![22u32])),
+            Arc::new(UInt8Array::from(vec![1u8])),
+            Arc::new(UInt8Array::from(vec![1u8])),
+            Arc::new(UInt8Array::from(vec![0u8])),
+        ];
+        // Build a StructArray with a top-level null buffer marking row 0 as null.
+        let nulls = NullBuffer::from(vec![false]); // row 0 is null
+        let struct_array = ArrowStructArray::new(
+            fields.into_iter().collect::<arrow::datatypes::Fields>(),
+            arrays,
+            Some(nulls),
+        );
+        let array_ref: ArrayRef = Arc::new(struct_array);
+
+        let err = decode_input::<COMMAND_LONG_DATA>(&array_ref, "command_long_cmd")
+            .expect_err("nullable StructArray must be rejected, not panic");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("nullable") || msg.contains("null"),
+            "error must mention null rows, got: {msg}"
         );
     }
 }

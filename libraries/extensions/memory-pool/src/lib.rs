@@ -209,15 +209,6 @@ impl MemoryPoolManager {
         }
     }
 
-    /// Get all memory pool entries for cleanup on shutdown.
-    pub fn get_all_entries(&self) -> Vec<(MemoryPoolId, MemoryPoolEntry)> {
-        let table = self.lock_table();
-        table
-            .iter()
-            .map(|(id, entry)| (id.clone(), entry.clone()))
-            .collect()
-    }
-
     /// Sweep orphaned shared-memory segments from a previous crash or
     /// SIGKILL of the same dataflow.
     ///

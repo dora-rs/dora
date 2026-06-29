@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, InputMapping, NodeRunConfig},
+    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -1037,20 +1037,6 @@ impl From<PythonSourceDef> for PythonSource {
 }
 
 #[allow(missing_docs)]
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PythonOperatorConfig {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
-    /// Per-output framing overrides (default: Raw for all).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub output_framing: BTreeMap<DataId, OutputFraming>,
-}
-
-#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     /// Path of the source code
@@ -1141,13 +1127,6 @@ impl NodeSource {
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
-}
-
-#[allow(missing_docs)]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub enum ResolvedNodeSource {
-    Local,
-    GitCommit { repo: String, commit_hash: String },
 }
 
 #[allow(missing_docs)]

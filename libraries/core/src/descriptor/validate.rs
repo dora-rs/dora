@@ -322,7 +322,17 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
     if !num.is_finite() || num < 0.0 {
         bail!("byte size must be a non-negative, finite number: '{s}'");
     }
-    Ok((num * multiplier as f64) as u64)
+    let bytes = num * multiplier as f64;
+    // A finite product can still exceed u64::MAX (e.g. "99999999999999999999GB"),
+    // and casting an out-of-range f64 to u64 saturates to u64::MAX instead of
+    // erroring, silently turning an absurd limit into the maximum. `u64::MAX as
+    // f64` rounds up to 2^64 and no f64 values exist between u64::MAX and 2^64,
+    // so `>=` rejects exactly the products that overflow u64. Mirrors the guard
+    // in `ByteSize::from_str` (dora-message).
+    if bytes >= u64::MAX as f64 {
+        bail!("byte size '{s}' overflows u64");
+    }
+    Ok(bytes as u64)
 }
 
 fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdout> {
@@ -2226,6 +2236,17 @@ nodes:
         // (debug) or silently wrap (release).
         assert!(parse_byte_size("20000000000GB").is_err());
         assert!(parse_byte_size("18446744073709551615GB").is_err());
+    }
+
+    #[test]
+    fn parse_byte_size_rejects_float_overflow() {
+        // num does not fit in u64 (so it takes the f64 path) and is finite and
+        // positive, but num * multiplier exceeds u64::MAX. Casting the result
+        // to u64 saturates to u64::MAX instead of erroring, so it must be
+        // rejected up front rather than silently clamped.
+        assert!(parse_byte_size("99999999999999999999GB").is_err());
+        assert!(parse_byte_size("99999999999999999999.0GB").is_err());
+        assert!(parse_byte_size("184467440737095516160B").is_err());
     }
 
     #[test]
