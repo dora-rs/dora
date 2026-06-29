@@ -171,14 +171,18 @@ async fn handle_daemon_request(
             true
         }
         CoordinatorRequest::Event { daemon_id, event } => {
-            // Verify daemon_id matches the registered one (prevent impersonation)
-            if let Some(tracked) = tracked_daemon_id
-                && *tracked != daemon_id
-            {
-                tracing::warn!(
-                    "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}` — closing connection"
-                );
-                return false;
+            match tracked_daemon_id {
+                None => {
+                    tracing::warn!("daemon sent event before registering — closing connection");
+                    return false;
+                }
+                Some(tracked) if *tracked != daemon_id => {
+                    tracing::warn!(
+                        "daemon sent event with mismatched id: expected `{tracked}`, got `{daemon_id}` — closing connection"
+                    );
+                    return false;
+                }
+                Some(_) => {}
             }
             if let Some(coordinator_event) = translate_daemon_event(daemon_id, event) {
                 event_tx.send(coordinator_event).await.is_ok()
