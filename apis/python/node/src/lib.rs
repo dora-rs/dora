@@ -215,13 +215,6 @@ static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<String, RecvCpuSlot>>> 
 const DORADMA_HEADER_SIZE: usize = 256;
 const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
 const DORADMA_METADATA_ALIGN: usize = 256;
-// Header field offsets
-const OFF_MAGIC: usize = 0;
-const OFF_JSON_LEN: usize = 8;
-const OFF_DATA_OFF: usize = 16;
-const OFF_IPC_FLAG: usize = 24;
-const OFF_IPC_HANDLE: usize = 32;
-const OFF_WRITE_GEN: usize = 96;
 
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
