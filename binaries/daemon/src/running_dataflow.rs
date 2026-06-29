@@ -1053,8 +1053,8 @@ mod tests {
             dynamic: false,
             never_finishes: false,
             connected: true,
-            drained_for: None,       // has not received AllInputsClosed yet
-            silent_for: PAST_GRACE,  // silent past global grace, within per-node grace
+            drained_for: None,      // has not received AllInputsClosed yet
+            silent_for: PAST_GRACE, // silent past global grace, within per-node grace
             node_grace: Some(long_grace),
         };
         let selected = select_finish_stragglers(
