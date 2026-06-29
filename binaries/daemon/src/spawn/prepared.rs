@@ -132,6 +132,7 @@ impl PreparedNode {
             },
             last_activity: self.last_activity.clone(),
             health_check_timeout: self.health_check_timeout(),
+            finish_grace_secs: self.finish_grace_secs(),
         };
 
         tokio::spawn(self.restart_loop(
@@ -157,6 +158,15 @@ impl PreparedNode {
         match &self.node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 n.health_check_timeout.map(Duration::from_secs_f64)
+            }
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
+        }
+    }
+
+    fn finish_grace_secs(&self) -> Option<Duration> {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+                n.finish_grace_secs.map(Duration::from_secs_f64)
             }
             dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
