@@ -230,6 +230,12 @@ const OFF_IPC_FLAG: usize = 24;
 const OFF_IPC_HANDLE: usize = 32;
 const OFF_WRITE_GEN: usize = 96;
 
+/// Crossover where pinned-DMA bandwidth overtakes pageable copy +
+/// cudaHostRegister/unregister fixed cost (~100 µs).  Determined by
+/// ablation study (2026-06-27): pageable faster below, pinned faster
+/// above.  Shared by `register_memory_pool` and `write_memory_pool`.
+const DMA_PIN_THRESHOLD_BYTES: usize = 25 * 1024 * 1024;
+
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -364,12 +370,15 @@ def _ipc_close(d_ptr):
 def dma_copy(ptr, size, slot, no_dma):
     """DMA transfer from host to pre-allocated GPU buffer.
 
-    Pins source memory, copies via cudaMemcpyHtoD (DMA engine),
-    then unpins. Returns the device pointer of the pooled GPU buffer.
-
-    When no_dma=True, the pin/unpin calls are skipped so the copy uses
+    Copies via cudaMemcpyHtoD (DMA engine).  When *no_dma* is false
+    (the default), the source memory is pinned (cudaHostRegister)
+    before the copy and unpinned after — this is the fast path for
+    large tensors where pinned-DMA bandwidth outweighs the pin/unpin
+    fixed cost.  When *no_dma* is true, pin/unpin is skipped, using
     pageable memory (faster for small tensors where pin overhead
-    dominates the DMA bandwidth advantage).
+    dominates).
+
+    Returns the device pointer of the pooled GPU buffer.
     """
     if not no_dma:
         _register_host(ptr, size)
@@ -1166,12 +1175,10 @@ impl Node {
         let is_cuda = tensor_device.starts_with("cuda");
         let receiver_is_cuda = device.starts_with("cuda");
         let cpu_mode = !receiver_is_cuda;
-        // Auto-select pinning strategy: for CPU→CUDA transfers, pin only
-        // when tensor > 25 MiB (where pinned DMA bandwidth outweighs the
-        // per-frame cudaHostRegister overhead).  Below 25 MiB, pageable
-        // cudaMemcpy is faster because pin/unpin fixed cost (~100 µs)
-        // dominates the transfer time.
-        let is_pinned = !cpu_mode && size > 25 * 1024 * 1024;
+        // Auto-select pinning: key off the source device — pinning only
+        // matters when the source is CPU (cudaHostRegister on device memory
+        // is a no-op).  Use the 25 MiB crossover from the ablation study.
+        let is_pinned = !is_cuda && size > DMA_PIN_THRESHOLD_BYTES;
         let pinned_type = if cpu_mode { "cpu" } else { "cuda" };
 
         if ptr_val == 0 {
@@ -1444,12 +1451,9 @@ impl Node {
             }
         }
 
-        // Auto-select pinning: for CPU→CUDA transfers, pin only when
-        // tensor > 25 MiB (matching the threshold in register_memory_pool).
-        // The sender-side is_cuda guards this: pinning only matters when the
-        // source is CPU (cudaHostRegister on CUDA memory is a no-op).
-        // Used by both fast-path (cache-miss) and slow-path below.
-        let auto_pin = !is_cuda && size > 25 * 1024 * 1024;
+        // Pin-decision guard shared by cache-miss PoolSlot construction and
+        // slow-path dma_copy (cache-hit reuses the slot's stored is_pinned).
+        let auto_pin = !is_cuda && size > DMA_PIN_THRESHOLD_BYTES;
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
