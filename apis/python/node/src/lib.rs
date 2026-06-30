@@ -1176,8 +1176,8 @@ impl Node {
         let receiver_is_cuda = device.starts_with("cuda");
         let cpu_mode = !receiver_is_cuda;
         // Auto-select pinning: key off the source device — pinning only
-        // matters when the source is CPU (cudaHostRegister on device memory
-        // is a no-op).  Use the 25 MiB crossover from the ablation study.
+        // matters when the source is CPU (cudaHostRegister would raise on a
+        // device pointer; prevented by the !is_cuda guard above).
         let is_pinned = !is_cuda && size > DMA_PIN_THRESHOLD_BYTES;
         let pinned_type = if cpu_mode { "cpu" } else { "cuda" };
 
