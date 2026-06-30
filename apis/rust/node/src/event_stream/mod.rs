@@ -325,6 +325,14 @@ impl EventStream {
                     let decoder = std::sync::Arc::new(std::sync::Mutex::new(
                         crate::arrow_utils::ipc_encode::InputDecoder::new(),
                     ));
+                    // Set if the `@schema` subscriber fails to declare: the decoder
+                    // can then never be primed, so every schema-once batch this
+                    // input receives would be silently dropped forever. The data
+                    // callback turns that permanent loss into a `FatalError`
+                    // instead (see below), distinguishing it from the transient
+                    // "schema not arrived yet" drop.
+                    let schema_plane_failed =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                     // The `@schema` subscriber primes `decoder`; its history query
                     // fetches the cached schema on join (late joiners), and
                     // `detect_late_publishers` covers a producer that starts later.
@@ -336,6 +344,7 @@ impl EventStream {
                         input_id,
                         decoder.clone(),
                         tx.clone(),
+                        schema_plane_failed.clone(),
                         &mut zenoh_schema_subscribers,
                     );
 
@@ -416,9 +425,45 @@ impl EventStream {
                                         match decode_zenoh_sample(&mut decoder, &metadata, payload)
                                         {
                                             Ok(Some(data)) => data,
-                                            // Schema-less batch before its priming full
-                                            // stream — drop (lossy data plane).
-                                            Ok(None) => return,
+                                            // Schema-less batch we can't decode yet.
+                                            // Normally transient: the priming schema
+                                            // hasn't arrived (lossy data plane), so drop
+                                            // and wait. But if the `@schema` subscriber
+                                            // failed to declare, the schema can NEVER
+                                            // arrive — surface a `FatalError` so the node
+                                            // exits loudly instead of silently dropping
+                                            // every batch for the dataflow's lifetime. Only
+                                            // clear the flag once the error is actually
+                                            // queued, so a momentarily-full channel can't
+                                            // swallow the one-shot fatal signal forever; it
+                                            // retries on the next undecodable batch. This
+                                            // callback is the sole reader, so the
+                                            // load-then-store is race-free. `Relaxed` is
+                                            // sufficient: the flag is stored in
+                                            // `declare_schema_subscriber` before the data
+                                            // subscriber that drives this callback is even
+                                            // declared, so that write happens-before any
+                                            // read here.
+                                            Ok(None) => {
+                                                if schema_plane_failed
+                                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                                    && tx_cb
+                                                        .try_send(EventItem::FatalError(eyre!(
+                                                            "input `{input_id_cb}`: the `@schema` \
+                                                             subscriber failed to declare, so \
+                                                             schema-once batches can never be \
+                                                             decoded — every message on this \
+                                                             input would be silently dropped"
+                                                        )))
+                                                        .is_ok()
+                                                {
+                                                    schema_plane_failed.store(
+                                                        false,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                }
+                                                return;
+                                            }
                                             Err(e) => {
                                                 tracing::warn!(
                                                     input = %input_id_cb,
@@ -1188,9 +1233,12 @@ fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buff
 /// Declare the `@schema` AdvancedSubscriber for an input: its callback primes
 /// `decoder` from the schema published on the output's schema subtopic. The
 /// history query fetches the cached schema on join; `detect_late_publishers`
-/// re-queries a producer that appears after this subscriber. A failure here just
-/// disables schema-once for this input (its batches are dropped until a schema
-/// arrives) — it never blocks the data subscriber.
+/// re-queries a producer that appears after this subscriber.
+///
+/// On failure, `schema_plane_failed` is set so the data subscriber can turn the
+/// resulting permanent "decoder never primes" condition into a `FatalError`
+/// (rather than silently dropping every schema-once batch). It never blocks the
+/// data subscriber.
 #[allow(clippy::too_many_arguments)]
 fn declare_schema_subscriber(
     session: &zenoh::Session,
@@ -1200,6 +1248,7 @@ fn declare_schema_subscriber(
     input_id: &DataId,
     decoder: Arc<std::sync::Mutex<crate::arrow_utils::ipc_encode::InputDecoder>>,
     tx: tokio::sync::mpsc::Sender<EventItem>,
+    schema_plane_failed: Arc<std::sync::atomic::AtomicBool>,
     out: &mut Vec<zenoh_ext::AdvancedSubscriber<()>>,
 ) {
     use zenoh::Wait;
@@ -1211,6 +1260,7 @@ fn declare_schema_subscriber(
         Ok(k) => k.into_owned(),
         Err(e) => {
             tracing::warn!(input = %input_id, "invalid @schema zenoh key ({e}); schema-once disabled for this input");
+            schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
             return;
         }
     };
@@ -1244,6 +1294,7 @@ fn declare_schema_subscriber(
         Ok(s) => out.push(s),
         Err(e) => {
             tracing::warn!(input = %input_id, "failed to declare @schema subscriber ({e}); schema-once disabled for this input");
+            schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
