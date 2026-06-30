@@ -2891,6 +2891,7 @@ impl Daemon {
         // watchers — never re-delivered to local receivers (the publishing
         // node already delivered the payload via Zenoh).
         if dataflow.enable_debug_inspection {
+            use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
             for node in nodes.values().filter(|n| spawn_nodes.contains(&n.id)) {
                 for output_id in node.kind.run_config().outputs {
                     let topic = zenoh_output_publish_topic(dataflow_id, &node.id, &output_id);
@@ -2903,11 +2904,55 @@ impl Daemon {
                         .wrap_err_with(|| {
                             format!("failed to declare debug subscriber on {topic}")
                         })?;
+
+                    // Small node→node outputs use the schema-once path: the
+                    // schema is published once on the `@schema` subtopic and each
+                    // data sample carries only the schema-less record batch (see
+                    // `DoraNode::publish_schema_once`). `dora topic` expects a
+                    // full self-describing stream, so cache the schema here and
+                    // rebuild it before forwarding. An `AdvancedSubscriber`
+                    // (history + late-publisher detection) mirrors the node
+                    // receive path so the (single, stable) schema is fetched even
+                    // when the producer starts after this subscriber.
+                    let schema_cache: DebugSchemaCache = Arc::new(std::sync::Mutex::new(None));
+                    let schema_topic = dora_core::topics::zenoh_output_schema_topic(
+                        dataflow_id,
+                        &node.id,
+                        &output_id,
+                    );
+                    let schema_subscriber = {
+                        let cache = schema_cache.clone();
+                        match self
+                            .zenoh_session
+                            .declare_subscriber(schema_topic.clone())
+                            .history(HistoryConfig::default().detect_late_publishers())
+                            .callback(move |sample| {
+                                let bytes = sample.payload().to_bytes().to_vec();
+                                let hash = dora_message::metadata::fnv1a(&bytes);
+                                *cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some((hash, bytes));
+                            })
+                            .await
+                        {
+                            Ok(s) => Some(s),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to declare @schema debug subscriber on \
+                                     {schema_topic} ({e}); schema-once outputs may render as \
+                                     undecodable in `dora topic`"
+                                );
+                                None
+                            }
+                        }
+                    };
+
                     let events_tx = self.events_tx.clone();
                     let clock = self.clock.clone();
                     let node_id = node.id.clone();
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     tokio::spawn(async move {
+                        // Keep the `@schema` subscriber alive for the task's life.
+                        let _schema_subscriber = schema_subscriber;
                         let mut finished = pin!(finished_rx.recv());
                         loop {
                             match future::select(finished, subscriber.recv_async()).await {
@@ -2925,11 +2970,27 @@ impl Daemon {
                                     }) else {
                                         continue;
                                     };
+                                    let payload = sample.payload().to_bytes();
+                                    let data = {
+                                        let cached =
+                                            schema_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                        rebuild_debug_topic_stream(
+                                            cached.as_ref(),
+                                            &metadata.parameters,
+                                            &payload[..],
+                                        )
+                                    };
+                                    let Some(data) = data else {
+                                        // schema-once batch whose schema hasn't been
+                                        // cached yet — drop this inspection frame
+                                        // (transient, recovers once `@schema` arrives).
+                                        continue;
+                                    };
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
                                         metadata,
-                                        data: Some(sample.payload().to_bytes().to_vec()),
+                                        data: Some(data),
                                     };
                                     if events_tx
                                         .send(Timestamped {
@@ -5522,6 +5583,104 @@ impl CoreNodeKindExt for CoreNodeKind {
                 matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
             }
         }
+    }
+}
+
+/// Cached `@schema` bytes (with their FNV-1a hash) for one debug-watched
+/// output, shared between the `@schema` subscriber callback and the data task.
+type DebugSchemaCache = Arc<std::sync::Mutex<Option<(u64, Vec<u8>)>>>;
+
+/// Rebuild a self-describing Arrow IPC stream for a `dora topic` debug frame.
+///
+/// Small node→node outputs travel as schema-once batches: the schema is
+/// published once on the `@schema` subtopic and each data sample carries only
+/// the schema-less record batch (`DoraNode::publish_schema_once`). The
+/// `dora topic` decoder expects a full self-describing stream, so for such a
+/// batch we prepend the cached schema block — concatenation reconstructs the
+/// exact original stream (`schema_block ++ batch_slice == full_stream`).
+///
+/// Returns `None` (drop the inspection frame) when the batch is schema-once but
+/// no schema matching its `SCHEMA_HASH` has been cached yet — a transient,
+/// inspection-only gap. A full self-describing payload (no `SCHEMA_HASH`) is
+/// forwarded as-is.
+fn rebuild_debug_topic_stream(
+    cached_schema: Option<&(u64, Vec<u8>)>,
+    parameters: &dora_message::metadata::MetadataParameters,
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
+
+    match get_integer_param(parameters, SCHEMA_HASH) {
+        Some(hash) => {
+            let (cached_hash, schema) = cached_schema?;
+            // Only rebuild when the cached schema matches this batch's hash —
+            // otherwise wait for the right `@schema` rather than emit a stream
+            // the CLI would decode against the wrong (stale/future) schema.
+            if *cached_hash != hash as u64 {
+                return None;
+            }
+            let mut full = Vec::with_capacity(schema.len() + payload.len());
+            full.extend_from_slice(schema);
+            full.extend_from_slice(payload);
+            Some(full)
+        }
+        None => Some(payload.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod debug_topic_tests {
+    use super::rebuild_debug_topic_stream;
+    use dora_message::metadata::{MetadataParameters, Parameter, SCHEMA_HASH, fnv1a};
+
+    fn params_with_schema_hash(hash: u64) -> MetadataParameters {
+        let mut params = MetadataParameters::default();
+        params.insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
+        params
+    }
+
+    #[test]
+    fn full_stream_payload_is_forwarded_verbatim() {
+        // No SCHEMA_HASH ⇒ already a self-describing stream (large/SHM or
+        // service/action output); forward the bytes unchanged.
+        let payload = b"self-describing-stream".to_vec();
+        let out = rebuild_debug_topic_stream(None, &MetadataParameters::default(), &payload);
+        assert_eq!(out, Some(payload));
+    }
+
+    #[test]
+    fn schema_once_batch_is_prepended_with_cached_schema() {
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let out = rebuild_debug_topic_stream(
+            Some(&(hash, schema.clone())),
+            &params_with_schema_hash(hash),
+            &batch,
+        );
+        let mut expected = schema;
+        expected.extend_from_slice(&batch);
+        assert_eq!(out, Some(expected));
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_when_schema_not_cached() {
+        let batch = b"schema-less-batch".to_vec();
+        let out = rebuild_debug_topic_stream(None, &params_with_schema_hash(42), &batch);
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_on_hash_mismatch() {
+        // Cached schema is for a different hash (e.g. a stale schema mid-change):
+        // drop rather than emit a stream the CLI would mis-decode.
+        let schema = b"OTHER-SCHEMA".to_vec();
+        let out = rebuild_debug_topic_stream(
+            Some(&(999, schema)),
+            &params_with_schema_hash(42),
+            b"batch",
+        );
+        assert_eq!(out, None);
     }
 }
 

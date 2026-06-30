@@ -1958,13 +1958,10 @@ enum PublishOutcome {
 /// rather than a fixed Arrow type. Type checks are skipped for such
 /// messages (dora-rs/adora#150).
 /// FNV-1a hash of `bytes` with a fixed seed (cross-process deterministic).
+/// Delegates to [`dora_message::metadata::fnv1a`] — the single source of truth
+/// shared with the daemon's `dora topic` debug path, so schema hashes match.
 pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for b in bytes {
-        hash ^= *b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    dora_message::metadata::fnv1a(bytes)
 }
 
 /// Publish the Arrow IPC schema for `output_id` on its `@schema` subtopic when

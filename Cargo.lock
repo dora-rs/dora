@@ -1922,6 +1922,7 @@ dependencies = [
  "which",
  "windows 0.61.3",
  "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]

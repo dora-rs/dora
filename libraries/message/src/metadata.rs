@@ -153,9 +153,32 @@ pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 /// stream (large/SHM and daemon-path payloads).
 pub const SCHEMA_HASH: &str = "_schema_hash";
 
+/// FNV-1a-64 hash with a fixed seed (cross-process deterministic). Used to
+/// fingerprint an Arrow IPC schema block so a schema-less batch can be matched
+/// to the schema it was encoded against (see [`SCHEMA_HASH`]). The producer
+/// node, the consumer node, and the daemon's `dora topic` debug path all hash
+/// the same schema-block bytes with this function, so the value must stay
+/// identical across crates — keep this the single source of truth.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fnv1a_matches_standard_vectors() {
+        // Canonical FNV-1a-64 vectors — pin the algorithm so the producer and
+        // consumers (across crates/processes) never disagree on a schema hash.
+        assert_eq!(fnv1a(b""), 0xcbf29ce484222325);
+        assert_eq!(fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+    }
 
     #[test]
     fn well_known_keys_have_stable_values() {

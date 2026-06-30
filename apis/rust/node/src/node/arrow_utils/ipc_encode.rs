@@ -1154,6 +1154,26 @@ mod tests {
         assert_eq!(decoded.len(), 0);
     }
 
+    /// The daemon's `dora topic` debug path rebuilds a schema-once batch into a
+    /// full self-describing stream by concatenating the cached `@schema` block
+    /// with the schema-less batch. That only works because
+    /// `schema_block ++ batch_slice` is byte-identical to the original stream —
+    /// lock that invariant (and that the result still decodes) here.
+    #[test]
+    fn schema_block_plus_batch_slice_reconstructs_full_stream() {
+        let array = Int32Array::from(vec![1, 2, 3]).into_data();
+        let full = fast_encode(&array);
+        let sblock = schema_block_len(&full).unwrap();
+        let schema = &full[..sblock];
+        let batch = batch_slice(&full).expect("batch slice of a valid stream");
+        let rebuilt = [schema, batch].concat();
+        assert_eq!(
+            rebuilt, full,
+            "schema_block ++ batch_slice must equal the original stream"
+        );
+        assert_eq!(read_official(&rebuilt), array);
+    }
+
     #[test]
     fn roundtrip_boolean() {
         let array =
