@@ -425,7 +425,7 @@ CLI                    WsSession              Coordinator
 
 **u128 workaround in tests**: Daemon test helpers construct WsRequest JSON strings manually via `format!()` + `serde_json::to_string()` (not `serde_json::to_value()`) to preserve `uhlc::ID` u128 values on the wire.
 
-**Test coordinator setup**: Both integration and E2E tests use `dora_coordinator::start_testing()` which binds to port 0 (OS-assigned) and accepts an empty external event stream.
+**Test coordinator setup**: Both integration and E2E tests use `dora_coordinator::start_testing_with_store()` which binds to port 0 (OS-assigned), accepts an empty external event stream, and takes an injected store (typically `Arc::new(InMemoryStore::new())`).
 
 ---
 
@@ -452,9 +452,10 @@ shutdown.shutdown(); // graceful stop
 
 ```rust
 // Binds to port 0, returns (port, future)
-let (port, future) = dora_coordinator::start_testing(
+let (port, future) = dora_coordinator::start_testing_with_store(
     "127.0.0.1:0".parse().unwrap(),
     futures::stream::empty(),
+    Arc::new(dora_coordinator::InMemoryStore::new()),
 ).await?;
 ```
 

@@ -139,6 +139,7 @@ impl DescriptorExt for Descriptor {
                     max_restart_delay: node.max_restart_delay,
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
+                    finish_grace_secs: node.finish_grace_secs,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
@@ -184,6 +185,7 @@ impl DescriptorExt for Descriptor {
                         max_restart_delay: node.max_restart_delay,
                         restart_window: node.restart_window,
                         health_check_timeout: node.health_check_timeout,
+                        finish_grace_secs: node.finish_grace_secs,
                     })
                 }
             };
@@ -348,6 +350,26 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     }
 }
 
+/// Returns `true` if `source` is an `http://` or `https://` URL.
+///
+/// This is the trust boundary that decides whether a node `path` is fetched as
+/// a remote download (and, for hub artifacts, checksum-verified) versus
+/// resolved as a local filesystem path. The match is on the literal scheme
+/// prefix and is **case-sensitive**: an upper-cased scheme such as `HTTPS://`
+/// is treated as a path, not a URL. Schemes other than HTTP(S) (e.g. `ftp://`,
+/// `s3://`, `file://`) are likewise not considered URLs here.
+///
+/// ```
+/// use dora_core::descriptor::source_is_url;
+///
+/// assert!(source_is_url("https://example.com/node"));
+/// assert!(source_is_url("http://example.com/node"));
+///
+/// assert!(!source_is_url("./build/my_node"));
+/// assert!(!source_is_url("/usr/bin/my_node"));
+/// assert!(!source_is_url("s3://bucket/key"));
+/// assert!(!source_is_url("HTTPS://example.com/node")); // case-sensitive
+/// ```
 pub fn source_is_url(source: &str) -> bool {
     source.starts_with("https://") || source.starts_with("http://")
 }
