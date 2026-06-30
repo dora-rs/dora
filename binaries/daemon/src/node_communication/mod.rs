@@ -80,7 +80,7 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
-    queue: VecDeque<Box<Option<Timestamped<NodeEvent>>>>,
+    queue: VecDeque<Timestamped<NodeEvent>>,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
 }
@@ -180,7 +180,7 @@ impl Listener {
                     future::Either::Right((message, _)) => break message,
                 };
 
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(event);
                 self.handle_events().await?;
             };
 
@@ -207,7 +207,7 @@ impl Listener {
                 if let Some(counter) = &self.pending_counter {
                     counter.fetch_sub(1, Ordering::Relaxed);
                 }
-                self.queue.push_back(Box::new(Some(event)));
+                self.queue.push_back(event);
             }
         }
         Ok(())
@@ -300,10 +300,7 @@ impl Listener {
             }
             DaemonRequest::NextEvent => {
                 // try to take the queued events first
-                let queued_events: Vec<_> = mem::take(&mut self.queue)
-                    .into_iter()
-                    .filter_map(|e| *e)
-                    .collect();
+                let queued_events: Vec<_> = mem::take(&mut self.queue).into_iter().collect();
                 let reply = if queued_events.is_empty() {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
@@ -326,9 +323,9 @@ impl Listener {
                     DaemonReply::NextEvents(queued_events)
                 };
 
-                self.send_reply(reply.clone(), connection)
+                self.send_reply(reply, connection)
                     .await
-                    .wrap_err_with(|| format!("failed to send NextEvent reply: {reply:?}"))?;
+                    .wrap_err("failed to send NextEvent reply")?;
             }
             DaemonRequest::EventStreamDropped => {
                 let (reply_sender, reply) = oneshot::channel();
