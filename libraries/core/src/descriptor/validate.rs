@@ -797,7 +797,9 @@ pub struct TypeCheckResult {
 /// Timer nodes auto-inject this type.
 const TIMER_TYPE: &str = "std/core/v1/UInt64";
 
-/// Check type annotations in a dataflow.
+/// Check type annotations in a dataflow, with strict mode support.
+///
+/// Returns the collected warnings plus any inferred edge types.
 ///
 /// Checks:
 /// 1. `output_types` keys exist in `outputs`
@@ -808,14 +810,6 @@ const TIMER_TYPE: &str = "std/core/v1/UInt64";
 /// 6. Metadata annotation validation (Phase 5)
 /// 7. Arrow schema validation (Phase 6)
 /// 8. Strict mode: warn on unannotated ports connected to annotated ports
-pub fn check_type_annotations(
-    dataflow: &super::Descriptor,
-    registry: &crate::types::TypeRegistry,
-) -> Vec<TypeWarning> {
-    check_type_annotations_full(dataflow, registry, false).warnings
-}
-
-/// Full type checking with strict mode support. Returns warnings + inferences.
 pub fn check_type_annotations_full(
     dataflow: &super::Descriptor,
     registry: &crate::types::TypeRegistry,
@@ -1752,7 +1746,7 @@ operators:
     fn type_check_no_annotations_no_warnings() {
         let dataflow = parse_dataflow("nodes:\n  - id: a\n");
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(warnings.is_empty());
     }
 
@@ -1762,7 +1756,7 @@ operators:
             "nodes:\n  - id: camera\n    outputs:\n      - image\n    output_types:\n      image: std/media/v1/Image\n",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(warnings.is_empty());
     }
 
@@ -1772,7 +1766,7 @@ operators:
             "nodes:\n  - id: camera\n    output_types:\n      image: std/media/v1/Image\n",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("not found in outputs"));
     }
@@ -1783,7 +1777,7 @@ operators:
             "nodes:\n  - id: camera\n    outputs:\n      - image\n    output_types:\n      image: std/media/v1/Imag\n",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("unknown type"));
         assert!(warnings[0].message.contains("did you mean"));
@@ -1807,7 +1801,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(warnings.is_empty());
     }
 
@@ -1829,7 +1823,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("type mismatch"));
         assert!(warnings[0].message.contains("Float32"));
@@ -1970,7 +1964,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(warnings.is_empty(), "UInt8 -> UInt32 should be compatible");
     }
 
@@ -1992,7 +1986,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(
             warnings.is_empty(),
             "anything -> Bytes should be compatible"
@@ -2020,7 +2014,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(
             warnings.is_empty(),
             "user-defined rule should make this compatible"
@@ -2041,7 +2035,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(warnings.is_empty());
     }
 
@@ -2057,7 +2051,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("unknown pattern"));
     }
@@ -2075,7 +2069,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].message.contains("output_metadata key"));
     }
@@ -2095,7 +2089,7 @@ nodes:
 ",
         );
         let reg = TypeRegistry::new();
-        let warnings = check_type_annotations(&dataflow, &reg);
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
         assert!(!warnings.is_empty());
         assert!(warnings[0].message.contains("type mismatch"));
     }
