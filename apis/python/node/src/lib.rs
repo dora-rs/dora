@@ -236,6 +236,60 @@ const OFF_WRITE_GEN: usize = 96;
 /// above.  Shared by `register_memory_pool` and `write_memory_pool`.
 const DMA_PIN_THRESHOLD_BYTES: usize = 25 * 1024 * 1024;
 
+/// Returns `true` when the source tensor should be pinned before DMA.
+///
+/// Pinning is a property of the *source* pointer: `cudaHostRegister` only
+/// makes sense for host (CPU) memory, and the pin/unpin fixed cost
+/// (~100 µs) is only worth paying when the tensor is large enough that
+/// the DMA bandwidth gain outweighs it.
+///
+/// # Unit-testable
+///
+/// The decision is pure integer logic — no CUDA runtime calls — so the
+/// boundary (25 MiB ± 1 byte) can be exercised in CI even without a GPU.
+#[inline]
+const fn should_pin(is_cuda: bool, size: usize) -> bool {
+    !is_cuda && size > DMA_PIN_THRESHOLD_BYTES
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn pin_cpu_source_above_threshold() {
+        // CPU source, 25 MiB + 1 byte → should pin
+        assert!(should_pin(false, 25 * 1024 * 1024 + 1));
+        // CPU source, 100 MiB → should pin
+        assert!(should_pin(false, 100 * 1024 * 1024));
+    }
+
+    #[test]
+    fn pin_cpu_source_below_threshold() {
+        // CPU source, exactly at threshold → should NOT pin (> not >=)
+        assert!(!should_pin(false, 25 * 1024 * 1024));
+        // CPU source, 1 byte below → should NOT pin
+        assert!(!should_pin(false, 25 * 1024 * 1024 - 1));
+        // CPU source, tiny → should NOT pin
+        assert!(!should_pin(false, 1));
+    }
+
+    #[test]
+    fn pin_cuda_source_never_pins() {
+        // CUDA source regardless of size → never pin
+        assert!(!should_pin(true, 0));
+        assert!(!should_pin(true, 25 * 1024 * 1024));
+        assert!(!should_pin(true, 100 * 1024 * 1024));
+        assert!(!should_pin(true, 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn pin_zero_size_cpu() {
+        // Zero-size CPU tensor → below threshold, don't pin
+        assert!(!should_pin(false, 0));
+    }
+}
+
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -1178,7 +1232,7 @@ impl Node {
         // Auto-select pinning: key off the source device — pinning only
         // matters when the source is CPU (cudaHostRegister would raise on a
         // device pointer; prevented by the !is_cuda guard above).
-        let is_pinned = !is_cuda && size > DMA_PIN_THRESHOLD_BYTES;
+        let is_pinned = should_pin(is_cuda, size);
         let pinned_type = if cpu_mode { "cpu" } else { "cuda" };
 
         if ptr_val == 0 {
@@ -1453,7 +1507,7 @@ impl Node {
 
         // Pin-decision guard shared by cache-miss PoolSlot construction and
         // slow-path dma_copy (cache-hit reuses the slot's stored is_pinned).
-        let auto_pin = !is_cuda && size > DMA_PIN_THRESHOLD_BYTES;
+        let auto_pin = should_pin(is_cuda, size);
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
