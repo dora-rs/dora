@@ -113,9 +113,16 @@ pub fn get_string_literal_parser(
 ) -> Box<dyn FnMut(&str) -> IResult<&str, String>> {
     match string_type {
         GenericString::String | GenericString::WString => Box::new(string_literal),
-        GenericString::BoundedString(max_size) | GenericString::BoundedWString(max_size) => {
-            Box::new(move |s| verify(string_literal, |s: &str| s.len() <= max_size)(s))
+        // ROS 2 spec: string<=N bound is in UTF-8 bytes; wstring<=N bound is in UTF-16 code units.
+        // Keep these separate so the parser metric matches the codegen validator in value_tokens().
+        GenericString::BoundedString(max_size) => {
+            Box::new(move |s| verify(string_literal, move |s: &str| s.len() <= max_size)(s))
         }
+        GenericString::BoundedWString(max_size) => Box::new(move |s| {
+            verify(string_literal, move |s: &str| {
+                s.encode_utf16().count() <= max_size
+            })(s)
+        }),
     }
 }
 
@@ -270,6 +277,56 @@ mod test {
         assert_eq!(string_literal(r#""aaa\"aaa" "#)?.1, r#"aaa"aaa"#);
         assert_eq!(string_literal(r#"'aaa\'aaa' "#)?.1, "aaa'aaa");
         Ok(())
+    }
+
+    #[test]
+    fn bounded_string_enforces_byte_limit_per_ros2_spec() {
+        use crate::types::primitives::GenericString;
+        // ROS 2 spec: string<=N is a byte limit, not a character limit.
+        // "hi" is 2 bytes, accepted under bound 4.
+        let mut p = get_string_literal_parser(GenericString::BoundedString(4));
+        assert!(
+            p("hi").is_ok(),
+            "2-byte string should be accepted by byte bound of 4"
+        );
+        // "hello" is 5 bytes, rejected under bound 4.
+        assert!(
+            p("hello").is_err(),
+            "5-byte string should be rejected by byte bound of 4"
+        );
+        // "€€€" is 9 UTF-8 bytes (3 chars), rejected under bound 4.
+        assert!(
+            p("€€€").is_err(),
+            "9-byte string should be rejected by byte bound of 4"
+        );
+    }
+
+    #[test]
+    fn bounded_wstring_enforces_utf16_code_unit_limit_per_ros2_spec() {
+        use crate::types::primitives::GenericString;
+        // ROS 2 spec: wstring<=N is a UTF-16 code-unit limit.
+        // "hi" is 2 UTF-16 code units, accepted under bound 4.
+        let mut p = get_string_literal_parser(GenericString::BoundedWString(4));
+        assert!(
+            p("hi").is_ok(),
+            "2-code-unit string should be accepted by UTF-16 bound of 4"
+        );
+        // "hello" is 5 UTF-16 code units, rejected under bound 4.
+        assert!(
+            p("hello").is_err(),
+            "5-code-unit string should be rejected by UTF-16 bound of 4"
+        );
+        // "€€€" is 3 UTF-16 code units (U+20AC × 3, all in BMP), accepted under bound 4.
+        assert!(
+            p("€€€").is_ok(),
+            "3-code-unit string should be accepted by UTF-16 bound of 4"
+        );
+        // An astral character like 😀 (U+1F600) takes 2 UTF-16 code units.
+        // "😀😀😀" = 6 code units, rejected under bound 4.
+        assert!(
+            p("😀😀😀").is_err(),
+            "6-code-unit astral string should be rejected by UTF-16 bound of 4"
+        );
     }
 
     #[test]
