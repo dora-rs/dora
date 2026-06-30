@@ -3676,7 +3676,7 @@ impl Daemon {
             data,
             &self.clock,
             Some(&self.ft_stats),
-            remote_receivers,
+            remote_receivers || has_debug_watchers,
         )
         .await?;
 
