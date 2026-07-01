@@ -49,6 +49,7 @@ const MAX_PENDING_REQUESTS: usize = 64;
 ///
 /// The DDS domain id is taken from the `domain_id` argument; if omitted, from
 /// the `ROS_DOMAIN_ID` environment variable; if neither is set, default to 0.
+/// A `ROS_DOMAIN_ID` that is set but not a valid domain id raises an error.
 ///
 /// warning::
 ///     dora Ros2 bridge functionality is considered **unstable**. It may be changed
@@ -66,6 +67,52 @@ const MAX_PENDING_REQUESTS: usize = 64;
 pub struct Ros2Context {
     context: ros2_client::Context,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
+}
+
+/// Resolve the DDS domain: explicit `domain_id` wins, else `ROS_DOMAIN_ID`, else 0.
+/// A `ROS_DOMAIN_ID` that is set but unparsable is an error (as rcl treats it), not a
+/// silent fall back to domain 0 — which would surface as "no ROS topics visible".
+fn resolve_domain_id(
+    explicit: Option<u16>,
+    env: Result<String, std::env::VarError>,
+) -> eyre::Result<u16> {
+    match explicit {
+        Some(id) => Ok(id),
+        None => match env {
+            // Empty/whitespace means unset (some setups export `ROS_DOMAIN_ID=`).
+            Ok(s) if s.trim().is_empty() => Ok(0),
+            Ok(s) => s
+                .trim()
+                .parse()
+                .wrap_err_with(|| format!("invalid ROS_DOMAIN_ID {:?}", s.trim())),
+            Err(std::env::VarError::NotPresent) => Ok(0),
+            Err(std::env::VarError::NotUnicode(s)) => {
+                eyre::bail!(
+                    "ROS_DOMAIN_ID is not valid unicode: {}",
+                    s.to_string_lossy()
+                )
+            }
+        },
+    }
+}
+
+#[cfg(test)]
+mod domain_id_tests {
+    use super::resolve_domain_id;
+    use std::env::VarError;
+
+    #[test]
+    fn resolves_domain_id() {
+        assert_eq!(resolve_domain_id(Some(5), Ok("9".into())).unwrap(), 5); // explicit wins
+        assert_eq!(resolve_domain_id(None, Ok(" 7 ".into())).unwrap(), 7); // env, trimmed
+        assert_eq!(resolve_domain_id(None, Ok("  ".into())).unwrap(), 0); // empty/ws -> unset
+        assert_eq!(
+            resolve_domain_id(None, Err(VarError::NotPresent)).unwrap(),
+            0
+        ); // unset -> 0
+        assert!(resolve_domain_id(None, Ok("abc".into())).is_err()); // set-but-invalid -> error
+        assert!(resolve_domain_id(None, Ok("70000".into())).is_err()); // out of u16 range -> error
+    }
 }
 
 #[pymethods]
@@ -128,14 +175,7 @@ impl Ros2Context {
             }
         }
 
-        // DDS domain: explicit arg, else ROS_DOMAIN_ID, else 0.
-        let domain_id = domain_id
-            .or_else(|| {
-                std::env::var("ROS_DOMAIN_ID")
-                    .ok()
-                    .and_then(|s| s.trim().parse().ok())
-            })
-            .unwrap_or(0);
+        let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
 
         Ok(Self {
             context: ros2_client::Context::with_options(
