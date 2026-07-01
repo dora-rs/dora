@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -29,6 +26,7 @@ use crate::{
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::RawData,
 };
+use dora_arrow_convert::IntoArrow;
 use dora_core::{
     config::{Input, NodeId},
     uhlc,
@@ -79,6 +77,9 @@ pub struct EventStream {
     /// callback itself will see `blocking_send` return Err once the
     /// `receiver` (declared above) is dropped.
     _zenoh_subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+    /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
+    /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
+    _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -295,6 +296,7 @@ impl EventStream {
         // must be kept alive for the lifetime of the EventStream — we store
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
+        let mut zenoh_schema_subscribers = Vec::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -314,8 +316,41 @@ impl EventStream {
                             continue;
                         }
                     };
+                    // Per-input persistent decoder for the schema-once path,
+                    // shared between this data subscriber (which decodes batches
+                    // in zenoh receipt order) and the `@schema` subscriber (which
+                    // primes it from the cached/live schema). `Mutex` because the
+                    // zenoh callbacks are `Fn`; uncontended in practice (each
+                    // subscriber delivers its samples serially).
+                    let decoder = std::sync::Arc::new(std::sync::Mutex::new(
+                        crate::arrow_utils::ipc_encode::InputDecoder::new(),
+                    ));
+                    // Set if the `@schema` subscriber fails to declare: the decoder
+                    // can then never be primed, so every schema-once batch this
+                    // input receives would be silently dropped forever. The data
+                    // callback turns that permanent loss into a `FatalError`
+                    // instead (see below), distinguishing it from the transient
+                    // "schema not arrived yet" drop.
+                    let schema_plane_failed =
+                        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    // The `@schema` subscriber primes `decoder`; its history query
+                    // fetches the cached schema on join (late joiners), and
+                    // `detect_late_publishers` covers a producer that starts later.
+                    declare_schema_subscriber(
+                        session,
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                        input_id,
+                        decoder.clone(),
+                        tx.clone(),
+                        schema_plane_failed.clone(),
+                        &mut zenoh_schema_subscribers,
+                    );
+
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
+                    let decoder = decoder.clone();
                     let subscriber = session
                         .declare_subscriber(key_expr)
                         .callback(move |sample| {
@@ -325,20 +360,43 @@ impl EventStream {
                             // it and exits cleanly.
                             let result =
                                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    use dora_message::metadata::Metadata;
                                     let metadata = match sample.attachment() {
-                                        Some(att) => match bincode::deserialize::<
-                                            dora_message::metadata::Metadata,
-                                        >(
-                                            &att.to_bytes()
-                                        ) {
-                                            Ok(m) => m,
-                                            Err(e) => {
-                                                tracing::warn!(
-                                                    "zenoh metadata deserialization failed: {e}"
-                                                );
-                                                return;
+                                        Some(att) => {
+                                            match bincode::deserialize::<Metadata>(&att.to_bytes())
+                                            {
+                                                // A version mismatch that still happens
+                                                // to deserialize: reject with a clear
+                                                // message rather than acting on data from
+                                                // an incompatible wire format.
+                                                Ok(m)
+                                                    if m.metadata_version()
+                                                        != Metadata::CURRENT_VERSION =>
+                                                {
+                                                    tracing::warn!(
+                                                        "dropping zenoh sample: incompatible \
+                                                     metadata wire version {} (this node \
+                                                     speaks {})",
+                                                        m.metadata_version(),
+                                                        Metadata::CURRENT_VERSION
+                                                    );
+                                                    return;
+                                                }
+                                                Ok(m) => m,
+                                                Err(e) => {
+                                                    // A pre-1.0 peer (old ArrowTypeInfo
+                                                    // sidecar layout) misaligns here; name
+                                                    // the likely cause so the failure isn't
+                                                    // a bare bincode error.
+                                                    tracing::warn!(
+                                                        "zenoh metadata deserialization failed \
+                                                     (possibly a peer using an incompatible \
+                                                     wire format/version): {e}"
+                                                    );
+                                                    return;
+                                                }
                                             }
-                                        },
+                                        }
                                         None => {
                                             tracing::warn!(
                                                 "zenoh sample missing metadata attachment"
@@ -347,6 +405,74 @@ impl EventStream {
                                         }
                                     };
                                     let payload = sample.payload().clone();
+                                    // Decode here (receipt order) so the per-input
+                                    // persistent decoder stays in sync. This runs on
+                                    // zenoh's IO worker: the aligned-SHM path is
+                                    // zero-copy, but an under-aligned heap payload
+                                    // copies its buffers on this thread (acceptable —
+                                    // only small messages take the heap path).
+                                    let mut decoder = decoder.lock().unwrap_or_else(|poison| {
+                                        // A prior callback panicked mid-decode
+                                        // (caught below), poisoning the lock and
+                                        // leaving the decoder in an undefined
+                                        // state. Reset it so the next batch is not
+                                        // fed into a corrupt decoder.
+                                        let mut guard = poison.into_inner();
+                                        guard.reset();
+                                        guard
+                                    });
+                                    let data =
+                                        match decode_zenoh_sample(&mut decoder, &metadata, payload)
+                                        {
+                                            Ok(Some(data)) => data,
+                                            // Schema-less batch we can't decode yet.
+                                            // Normally transient: the priming schema
+                                            // hasn't arrived (lossy data plane), so drop
+                                            // and wait. But if the `@schema` subscriber
+                                            // failed to declare, the schema can NEVER
+                                            // arrive — surface a `FatalError` so the node
+                                            // exits loudly instead of silently dropping
+                                            // every batch for the dataflow's lifetime. Only
+                                            // clear the flag once the error is actually
+                                            // queued, so a momentarily-full channel can't
+                                            // swallow the one-shot fatal signal forever; it
+                                            // retries on the next undecodable batch. This
+                                            // callback is the sole reader, so the
+                                            // load-then-store is race-free. `Relaxed` is
+                                            // sufficient: the flag is stored in
+                                            // `declare_schema_subscriber` before the data
+                                            // subscriber that drives this callback is even
+                                            // declared, so that write happens-before any
+                                            // read here.
+                                            Ok(None) => {
+                                                if schema_plane_failed
+                                                    .load(std::sync::atomic::Ordering::Relaxed)
+                                                    && tx_cb
+                                                        .try_send(EventItem::FatalError(eyre!(
+                                                            "input `{input_id_cb}`: the `@schema` \
+                                                             subscriber failed to declare, so \
+                                                             schema-once batches can never be \
+                                                             decoded — every message on this \
+                                                             input would be silently dropped"
+                                                        )))
+                                                        .is_ok()
+                                                {
+                                                    schema_plane_failed.store(
+                                                        false,
+                                                        std::sync::atomic::Ordering::Relaxed,
+                                                    );
+                                                }
+                                                return;
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(
+                                                    input = %input_id_cb,
+                                                    "zenoh payload decode failed: {e}"
+                                                );
+                                                return;
+                                            }
+                                        };
+                                    drop(decoder);
                                     // Callback runs on zenoh's tokio IO worker —
                                     // `blocking_send` panics from a tokio context, so
                                     // use `try_send`. If the channel is full the event
@@ -355,7 +481,7 @@ impl EventStream {
                                     if let Err(e) = tx_cb.try_send(EventItem::ZenohInput {
                                         id: input_id_cb.clone(),
                                         metadata: std::sync::Arc::new(metadata),
-                                        payload,
+                                        data,
                                     }) {
                                         use tokio::sync::mpsc::error::TrySendError;
                                         match e {
@@ -422,6 +548,7 @@ impl EventStream {
             receiver: rx,
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
+            _zenoh_schema_subscribers: zenoh_schema_subscribers,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -994,7 +1121,7 @@ impl EventStream {
                 NodeEvent::NodeRestarted { id } => Event::NodeRestarted { id },
                 NodeEvent::Input { id, metadata, data } => {
                     let data_inner = data.map(Arc::unwrap_or_clone);
-                    let result = data_to_arrow_array(data_inner, &metadata);
+                    let result = data_to_arrow_array(data_inner);
                     match result {
                         Ok(data) => Event::Input {
                             id,
@@ -1029,21 +1156,12 @@ impl EventStream {
                 }
             },
 
-            EventItem::ZenohInput {
+            EventItem::ZenohInput { id, metadata, data } => Event::Input {
                 id,
-                metadata,
-                payload,
-            } => {
-                let result = zenoh_payload_to_arrow_array(payload, &metadata);
-                match result {
-                    Ok(data) => Event::Input {
-                        id,
-                        metadata: Arc::unwrap_or_clone(metadata),
-                        data: data.into(),
-                    },
-                    Err(err) => Event::Error(format!("{err:?}")),
-                }
-            }
+                // Already decoded in the subscriber callback (receipt order).
+                metadata: Arc::unwrap_or_clone(metadata),
+                data: arrow::array::make_array(data).into(),
+            },
 
             EventItem::FatalError(err) => {
                 Event::Error(format!("fatal event stream error: {err:?}"))
@@ -1071,216 +1189,150 @@ pub enum TryRecvError {
 /// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
 /// achieving true zero-copy. For `Cow::Owned` (normal network path),
 /// copy into Dora's aligned buffer type before reconstructing Arrow arrays.
+/// Newtype that owns a Zenoh [`ZBytes`](zenoh::bytes::ZBytes) payload so it can
+/// back an Arrow `Buffer` via `Buffer::from_custom_allocation`. Keeping the
+/// `ZBytes` alive keeps the underlying SHM mapping (or heap buffer) valid for
+/// the lifetime of the zero-copy Arrow buffer.
+#[allow(dead_code)] // field kept alive to own the zenoh buffer
+struct ZBytesAllocation(zenoh::bytes::ZBytes);
+// SAFETY: the wrapped `ZBytes` is only used to keep the backing allocation
+// alive; the bytes are treated as immutable for the Buffer's lifetime.
+unsafe impl Sync for ZBytesAllocation {}
+unsafe impl Send for ZBytesAllocation {}
+impl std::panic::RefUnwindSafe for ZBytesAllocation {}
+
 /// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
-fn zenoh_payload_to_arrow_array(
-    payload: zenoh::bytes::ZBytes,
-    metadata: &dora_message::metadata::Metadata,
-) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    use crate::arrow_utils::{buffer_into_arrow_array, decode_arrow_ipc};
+///
+/// Every data-plane payload is a self-describing Arrow IPC stream, so the
+/// decode needs no type sidecar. An empty payload is a metadata-only message
+/// and maps to the unit array.
+/// Wrap a zenoh payload as an Arrow `Buffer` — aliasing the zenoh SHM mapping
+/// for borrowed payloads (zero-copy), owning the materialized `Vec` otherwise.
+fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buffer {
     use std::ptr::NonNull;
-
-    let is_ipc = dora_message::metadata::get_string_param(
-        &metadata.parameters,
-        dora_message::metadata::FRAMING,
-    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
-
-    if payload.is_empty() {
-        // Mirror the daemon raw path (`arrow_utils::buffer_into_arrow_array`):
-        // an empty payload still carries a meaningful `type_info`, so rebuild
-        // the array from it with an empty backing buffer. This preserves both
-        // the declared type (a zero-length *typed* array stays typed, avoiding
-        // a downstream `as_primitive` panic — cross-transport non-determinism,
-        // dora-rs/dora#2027) AND the declared length (a `NullArray::new(n)` or
-        // struct-of-nulls keeps its length `n` instead of collapsing to 0 —
-        // dora-rs/dora#2083).
-        //
-        // `data_type` is peer-controlled (bincode-decoded from the zenoh
-        // attachment). `ArrayData::try_new` is meant to validate and return an
-        // error rather than panic, but some malformed types (e.g. empty `Union`
-        // fields, a `Dictionary` with a non-integer key) can still abort inside
-        // Arrow. Keep the unwind guard so a buggy or malicious peer can't crash
-        // the node with an empty payload (#2027 anti-panic, dora-rs/dora#2083).
-        let empty = arrow::buffer::Buffer::from_vec(Vec::<u8>::new());
-        let array = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            buffer_into_arrow_array(&empty, &metadata.type_info)
-        }))
-        .map_err(|_| {
-            eyre!(
-                "cannot build an empty array for declared type {:?}",
-                metadata.type_info.data_type
-            )
-        })??;
-        return Ok(arrow::array::make_array(array));
-    }
-
-    if is_ipc {
-        // IPC path: need contiguous bytes for the IPC reader.
-        let bytes = payload.to_bytes();
-        return decode_arrow_ipc(&bytes).map(arrow::array::make_array);
-    }
-
-    // Raw buffer path: wrap the zenoh payload as an Arrow Buffer. Borrowed
-    // payloads point into zenoh-owned shared memory; owned payloads are
-    // materialized heap buffers. In both cases the resulting Arrow buffer must
-    // be 64-byte aligned before Arrow can safely run SIMD loads on strict ARM
-    // cores.
-    let raw_buffer = match payload.to_bytes() {
+    match payload.to_bytes() {
         std::borrow::Cow::Borrowed(slice) => {
-            if raw_payload_is_arrow_aligned(slice.as_ptr(), &metadata.type_info) {
-                // SHM path: the slice points into memory owned by `payload`
-                // (the zenoh shared-memory mapping). Wrap `payload` in an
-                // Arc as the allocation owner so the mapping stays alive for
-                // the lifetime of the Arrow buffer.
-                let ptr =
-                    NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
-                let len = slice.len();
-
-                // Newtype satisfying arrow's Allocation trait.
-                #[allow(dead_code)] // field kept alive to own the zenoh buffer
-                struct ZBytesAllocation(zenoh::bytes::ZBytes);
-                unsafe impl Sync for ZBytesAllocation {}
-                unsafe impl Send for ZBytesAllocation {}
-                impl std::panic::RefUnwindSafe for ZBytesAllocation {}
-
-                // SAFETY: `ptr` points into the SHM region owned by
-                // `payload`. Moving `payload` into the Arc keeps the region
-                // mapped for the lifetime of the Buffer.
-                unsafe {
-                    arrow::buffer::Buffer::from_custom_allocation(
-                        ptr,
-                        len,
-                        Arc::new(ZBytesAllocation(payload)),
-                    )
-                }
-            } else {
-                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohShm, slice.as_ptr());
-                copy_to_aligned_arrow_buffer(slice)
+            let ptr =
+                NonNull::new(slice.as_ptr() as *mut u8).expect("zenoh SHM payload ptr is null");
+            let len = slice.len();
+            // SAFETY: `ptr` points into the SHM region owned by `payload`;
+            // moving `payload` into the Arc keeps the region mapped for the
+            // lifetime of the Buffer.
+            unsafe {
+                arrow::buffer::Buffer::from_custom_allocation(
+                    ptr,
+                    len,
+                    Arc::new(ZBytesAllocation(payload)),
+                )
             }
         }
-        std::borrow::Cow::Owned(vec) => {
-            if raw_payload_is_arrow_aligned(vec.as_ptr(), &metadata.type_info) {
-                // Non-SHM path: zenoh materialized a fresh Vec. Let the Arrow
-                // buffer own that Vec directly — no copy, correct ownership.
-                arrow::buffer::Buffer::from_vec(vec)
-            } else {
-                warn_misaligned_payload_once(MisalignedPayloadSource::ZenohHeap, vec.as_ptr());
-                copy_to_aligned_arrow_buffer(&vec)
-            }
+        std::borrow::Cow::Owned(vec) => arrow::buffer::Buffer::from_vec(vec),
+    }
+}
+
+/// Declare the `@schema` AdvancedSubscriber for an input: its callback primes
+/// `decoder` from the schema published on the output's schema subtopic. The
+/// history query fetches the cached schema on join; `detect_late_publishers`
+/// re-queries a producer that appears after this subscriber.
+///
+/// On failure, `schema_plane_failed` is set so the data subscriber can turn the
+/// resulting permanent "decoder never primes" condition into a `FatalError`
+/// (rather than silently dropping every schema-once batch). It never blocks the
+/// data subscriber.
+#[allow(clippy::too_many_arguments)]
+fn declare_schema_subscriber(
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    source_node: &NodeId,
+    source_output: &DataId,
+    input_id: &DataId,
+    decoder: Arc<std::sync::Mutex<crate::arrow_utils::ipc_encode::InputDecoder>>,
+    tx: tokio::sync::mpsc::Sender<EventItem>,
+    schema_plane_failed: Arc<std::sync::atomic::AtomicBool>,
+    out: &mut Vec<zenoh_ext::AdvancedSubscriber<()>>,
+) {
+    use zenoh::Wait;
+    use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
+
+    let topic =
+        dora_core::topics::zenoh_output_schema_topic(dataflow_id, source_node, source_output);
+    let key = match zenoh::key_expr::KeyExpr::new(topic) {
+        Ok(k) => k.into_owned(),
+        Err(e) => {
+            tracing::warn!(input = %input_id, "invalid @schema zenoh key ({e}); schema-once disabled for this input");
+            schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
+            return;
         }
     };
-
-    buffer_into_arrow_array(&raw_buffer, &metadata.type_info).map(arrow::array::make_array)
-}
-
-fn raw_payload_is_arrow_aligned(
-    base_ptr: *const u8,
-    type_info: &dora_message::metadata::ArrowTypeInfo,
-) -> bool {
-    is_aligned_for_arrow(base_ptr)
-        && raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, type_info)
-}
-
-fn raw_payload_buffer_offsets_are_arrow_aligned(
-    base_ptr: *const u8,
-    type_info: &dora_message::metadata::ArrowTypeInfo,
-) -> bool {
-    let layout = arrow::array::layout(&type_info.data_type);
-    for (buffer, spec) in type_info.buffer_offsets.iter().zip(&layout.buffers) {
-        if let arrow::array::BufferSpec::FixedWidth { alignment, .. } = *spec
-            // `buffer.offset` is peer-controlled (bincode-decoded from the zenoh
-            // attachment), so a hostile/buggy value could overflow this add and
-            // panic in debug builds. Treat an overflowing offset as "not aligned"
-            // so the caller falls back to the copy path, mirroring the
-            // `checked_add` discipline in `buffer_into_arrow_array`.
-            && (base_ptr as usize)
-                .checked_add(buffer.offset)
-                .is_none_or(|addr| !addr.is_multiple_of(alignment))
-        {
-            return false;
-        }
-    }
-
-    type_info
-        .child_data
-        .iter()
-        .all(|child| raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, child))
-}
-
-fn is_aligned_for_arrow(ptr: *const u8) -> bool {
-    (ptr as usize).is_multiple_of(crate::arrow_utils::ARROW_BUFFER_ALIGNMENT)
-}
-
-enum MisalignedPayloadSource {
-    ZenohShm,
-    ZenohHeap,
-}
-
-impl MisalignedPayloadSource {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::ZenohShm => "zenoh SHM",
-            Self::ZenohHeap => "zenoh heap",
-        }
-    }
-
-    fn warned_flag(&self) -> &'static AtomicBool {
-        static WARNED_SHM: AtomicBool = AtomicBool::new(false);
-        static WARNED_HEAP: AtomicBool = AtomicBool::new(false);
-
-        match self {
-            Self::ZenohShm => &WARNED_SHM,
-            Self::ZenohHeap => &WARNED_HEAP,
+    let input_id_cb = input_id.clone();
+    let sub = session
+        .declare_subscriber(key)
+        .history(HistoryConfig::default().detect_late_publishers())
+        .callback(move |sample| {
+            // catch_unwind: a panic must not unwind through zenoh's IO worker.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let buffer = zenoh_payload_to_buffer(sample.payload().clone());
+                let hash = crate::node::fnv1a(buffer.as_slice());
+                let mut decoder = decoder.lock().unwrap_or_else(|poison| {
+                    let mut guard = poison.into_inner();
+                    guard.reset();
+                    guard
+                });
+                if let Err(e) = decoder.set_schema(hash, buffer) {
+                    tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
+                }
+            }));
+            if result.is_err() {
+                tracing::error!(input = %input_id_cb, "zenoh @schema subscriber callback panicked");
+                let _ = tx.try_send(EventItem::FatalError(eyre!(
+                    "zenoh @schema subscriber for input `{input_id_cb}` panicked"
+                )));
+            }
+        })
+        .wait();
+    match sub {
+        Ok(s) => out.push(s),
+        Err(e) => {
+            tracing::warn!(input = %input_id, "failed to declare @schema subscriber ({e}); schema-once disabled for this input");
+            schema_plane_failed.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
 
-fn warn_misaligned_payload_once(source: MisalignedPayloadSource, ptr: *const u8) {
-    if !source.warned_flag().swap(true, Ordering::Relaxed) {
-        tracing::warn!(
-            source = source.as_str(),
-            address = %format_args!("{:#x}", ptr as usize),
-            alignment = crate::arrow_utils::ARROW_BUFFER_ALIGNMENT,
-            "received misaligned Zenoh payload, copying before Arrow decode"
-        );
+/// Decode a zenoh data sample in receipt order. A schema-less batch (the
+/// `SCHEMA_HASH` parameter is present) decodes against the per-input decoder
+/// primed from the output's `@schema` subtopic — returning `Ok(None)` if that
+/// schema hasn't been received yet, in which case the caller drops it. Other
+/// messages (large/SHM full streams, daemon-path payloads) decode standalone.
+fn decode_zenoh_sample(
+    decoder: &mut crate::arrow_utils::ipc_encode::InputDecoder,
+    metadata: &dora_message::metadata::Metadata,
+    payload: zenoh::bytes::ZBytes,
+) -> eyre::Result<Option<arrow::array::ArrayData>> {
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+    use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
+
+    if payload.is_empty() {
+        return Ok(Some(().into_arrow().into()));
     }
-}
-
-fn copy_to_aligned_arrow_buffer(slice: &[u8]) -> arrow::buffer::Buffer {
-    use std::ptr::NonNull;
-
-    // The raw Arrow layout requires 64-byte alignment; this follows the
-    // codebase-wide AVec convention of over-aligning data buffers to 128 bytes.
-    let mut aligned: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
-        aligned_vec::AVec::__from_elem(128, 0, slice.len());
-    aligned.copy_from_slice(slice);
-    debug_assert!(is_aligned_for_arrow(aligned.as_ptr()));
-
-    let ptr = NonNull::new(aligned.as_ptr() as *mut u8).expect("aligned payload ptr is null");
-    let len = aligned.len();
-    // SAFETY: `ptr` points into `aligned`, and the Arc keeps that allocation
-    // alive for the lifetime of the Arrow Buffer.
-    unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(aligned)) }
+    let buffer = zenoh_payload_to_buffer(payload);
+    match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
+        Some(hash) => decoder.decode_batch(buffer, hash as u64),
+        None => decode_arrow_ipc_zero_copy(buffer).map(Some),
+    }
 }
 
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
-    metadata: &dora_message::metadata::Metadata,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
     let data: eyre::Result<Option<RawData>> = match data {
         None => Ok(None),
         Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
     };
 
-    let is_ipc = dora_message::metadata::get_string_param(
-        &metadata.parameters,
-        dora_message::metadata::FRAMING,
-    ) == Some(dora_message::metadata::FRAMING_ARROW_IPC);
-
     data.and_then(|data| {
         let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data
-            .into_arrow_array(&metadata.type_info, is_ipc)
-            .map(arrow::array::make_array)
+        raw_data.into_arrow_array().map(arrow::array::make_array)
     })
 }
 
@@ -1487,23 +1539,9 @@ impl EventStream {
     /// after `Stop` instead of dropping them (dora-rs/dora#2027).
     fn push_scheduler_input_for_testing(&mut self, id: &str) {
         use crate::event_stream::thread::EventItem;
-        use dora_message::{
-            daemon_to_node::NodeEvent,
-            metadata::{ArrowTypeInfo, Metadata},
-        };
+        use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
-        let type_info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info);
+        let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
         self.scheduler.add_event(EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: id.into(),
@@ -1529,23 +1567,6 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn copy_to_aligned_arrow_buffer_realigns_misaligned_payload() {
-        let payload: Vec<u8> = (0..64).collect();
-        let mut storage = vec![0; payload.len() + 1];
-        let start = usize::from(is_aligned_for_arrow(storage.as_ptr()));
-        storage[start..start + payload.len()].copy_from_slice(&payload);
-        let misaligned = &storage[start..start + payload.len()];
-        assert!(
-            !is_aligned_for_arrow(misaligned.as_ptr()),
-            "test setup must provide a misaligned slice"
-        );
-
-        let buffer = copy_to_aligned_arrow_buffer(misaligned);
-        assert!(is_aligned_for_arrow(buffer.as_ptr()));
-        assert_eq!(buffer.as_slice(), payload.as_slice());
-    }
 
     #[test]
     fn convert_param_update() {
@@ -1757,27 +1778,12 @@ mod tests {
     use arrow::datatypes::DataType as ArrowDataType;
     use dora_arrow_convert::ArrowData;
     use dora_message::metadata::{
-        ArrowTypeInfo, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
+        GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
     };
 
     fn make_metadata(params: MetadataParameters) -> Metadata {
-        let type_info = ArrowTypeInfo {
-            data_type: ArrowDataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        Metadata::from_parameters(
-            dora_core::uhlc::HLC::default().new_timestamp(),
-            type_info,
-            params,
-        )
+        Metadata::from_parameters(dora_core::uhlc::HLC::default().new_timestamp(), params)
     }
 
     fn make_input_event(id: &str, params: MetadataParameters) -> Event {
@@ -2122,80 +2128,41 @@ mod tests {
         assert!(events.recv().is_none(), "stream must close after the input");
     }
 
-    /// #2027 + #2083: an empty payload over the zenoh transport must round-trip
-    /// through the array's real `type_info` (as produced by the send side),
-    /// preserving both the DECLARED type and the DECLARED length.
-    ///
-    /// #2027: a zero-length typed array stays typed (it previously degraded to
-    /// `NullArray` only on the zenoh path, so a downstream `as_primitive` would
-    /// panic on one transport but not the other).
-    ///
-    /// #2083: a zero-footprint array with a non-zero length (e.g.
-    /// `NullArray::new(n)`) keeps its length instead of collapsing to 0.
+    /// The zenoh receive path is Arrow-IPC-only. An empty payload is a
+    /// metadata-only message and maps to the unit array; a non-empty payload is
+    /// a self-describing IPC stream and round-trips to its original array (with
+    /// no type sidecar involved).
     #[test]
-    fn zenoh_empty_payload_preserves_declared_type_and_length() {
-        use crate::arrow_utils::{copy_array_into_sample, required_data_size};
-        use arrow::array::{Array, Int32Array, NullArray};
-        use dora_message::metadata::Metadata;
+    fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
+        use crate::arrow_utils::ipc_encode::{InputDecoder, encode_ipc_into, ipc_fast_path_len};
+        use arrow::array::{Array, Int32Array};
 
-        // Build the real `type_info` the send side would record for `array`.
-        // (Hand-built `type_info` would not match the serialized layout — e.g. a
-        // typed array always records a zero-length data-buffer offset.)
-        fn meta_for(array: &dyn Array) -> Metadata {
-            let data = array.to_data();
-            let mut sample = vec![0; required_data_size(&data)];
-            assert!(sample.is_empty(), "expected a zero-footprint array");
-            let type_info = copy_array_into_sample(&mut sample, &data);
-            Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
-        }
+        // A standalone full stream (no SCHEMA_HASH parameter) decodes directly.
+        let metadata =
+            dora_message::metadata::Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
+        let mut decoder = InputDecoder::new();
 
-        let empty = zenoh::bytes::ZBytes::new();
-
-        // #2027: zero-length typed array stays typed.
-        let typed = zenoh_payload_to_arrow_array(
-            empty.clone(),
-            &meta_for(&Int32Array::from(Vec::<i32>::new())),
-        )
-        .unwrap();
-        assert_eq!(typed.data_type(), &arrow_schema::DataType::Int32);
-        assert_eq!(typed.len(), 0);
-
-        // #2083: a NullArray with a non-zero length keeps its length.
-        let null = zenoh_payload_to_arrow_array(empty, &meta_for(&NullArray::new(5))).unwrap();
-        assert_eq!(null.data_type(), &arrow_schema::DataType::Null);
+        // Empty payload -> unit array (metadata-only message).
+        let unit = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::new())
+            .unwrap()
+            .unwrap();
         assert_eq!(
-            null.len(),
-            5,
-            "NullArray length must survive the zenoh path"
+            unit.data_type(),
+            &arrow_schema::DataType::Null,
+            "empty payload maps to the unit array"
         );
 
-        // #2027 review (P2): `data_type` is peer-controlled. A malformed type
-        // (`Dictionary` with a non-integer key) must surface as `Err`, not crash
-        // the node — the `catch_unwind` guard on the empty-payload path turns any
-        // panic inside Arrow into a clean error. (A panic trace printed during
-        // this test is expected — it is the caught unwind.)
-        let malformed = dora_message::metadata::ArrowTypeInfo {
-            data_type: arrow_schema::DataType::Dictionary(
-                Box::new(arrow_schema::DataType::Utf8),
-                Box::new(arrow_schema::DataType::Int32),
-            ),
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        let result = zenoh_payload_to_arrow_array(
-            zenoh::bytes::ZBytes::new(),
-            &Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), malformed),
-        );
-        assert!(
-            result.is_err(),
-            "malformed peer type must produce Err, not panic"
-        );
+        // Non-empty IPC payload round-trips to the original array.
+        let data = Int32Array::from(vec![10, 20, 30]).into_data();
+        let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
+        let mut buf = vec![0u8; len];
+        encode_ipc_into(&data, &mut buf).unwrap();
+
+        let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.data_type(), &arrow_schema::DataType::Int32);
+        assert_eq!(&decoded, &data);
     }
 
     /// Same invariant as `recv_returns_none_after_stop`, verified via
@@ -2212,38 +2179,6 @@ mod tests {
         assert!(
             second.is_none(),
             "Stream::next must yield None after Stop, got {second:?}"
-        );
-    }
-
-    #[test]
-    fn alignment_check_does_not_overflow_on_hostile_offset() {
-        use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
-
-        // `buffer.offset` is peer-controlled. A value near `usize::MAX` would
-        // overflow `base_ptr as usize + buffer.offset`, panicking in debug
-        // builds. The check must instead treat it as "not aligned" (so the
-        // caller copies into an aligned buffer) without panicking.
-        let type_info = ArrowTypeInfo {
-            data_type: arrow::datatypes::DataType::Int32,
-            len: 1,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![BufferOffset {
-                offset: usize::MAX,
-                len: 4,
-            }],
-            child_data: Vec::new(),
-            field_names: None,
-            schema_hash: None,
-        };
-
-        // A 64-byte-aligned base pointer; any non-zero offset added to it would
-        // overflow when offset == usize::MAX.
-        let base_ptr = 64usize as *const u8;
-        assert!(
-            !raw_payload_buffer_offsets_are_arrow_aligned(base_ptr, &type_info),
-            "an overflowing offset must be reported as not aligned, not panic"
         );
     }
 }

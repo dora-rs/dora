@@ -30,10 +30,9 @@ use dora_message::{
     },
     daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
-    metadata::{self, ArrowTypeInfo, MetadataParameters},
+    metadata::{self, MetadataParameters},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use dora_node_api::arrow::datatypes::DataType;
 use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
@@ -133,22 +132,11 @@ pub mod bench_support {
     /// Create a reusable fixture for the routing hot path (call once per config).
     pub fn make_fixture(clock: &HLC, payload_size: usize) -> RoutingFixture {
         let data = vec![0u8; payload_size];
-        let type_info = ArrowTypeInfo {
-            data_type: dora_node_api::arrow::datatypes::DataType::UInt8,
-            len: payload_size,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         RoutingFixture {
             sender_id: "sender".to_string().into(),
             output_id: "output".to_string().into(),
             data_msg: DataMessage::Vec(AVec::from_slice(128, &data)),
-            metadata: metadata::Metadata::new(clock.new_timestamp(), type_info),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
         }
     }
 
@@ -2903,6 +2891,7 @@ impl Daemon {
         // watchers — never re-delivered to local receivers (the publishing
         // node already delivered the payload via Zenoh).
         if dataflow.enable_debug_inspection {
+            use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
             for node in nodes.values().filter(|n| spawn_nodes.contains(&n.id)) {
                 for output_id in node.kind.run_config().outputs {
                     let topic = zenoh_output_publish_topic(dataflow_id, &node.id, &output_id);
@@ -2915,11 +2904,55 @@ impl Daemon {
                         .wrap_err_with(|| {
                             format!("failed to declare debug subscriber on {topic}")
                         })?;
+
+                    // Small node→node outputs use the schema-once path: the
+                    // schema is published once on the `@schema` subtopic and each
+                    // data sample carries only the schema-less record batch (see
+                    // `DoraNode::publish_schema_once`). `dora topic` expects a
+                    // full self-describing stream, so cache the schema here and
+                    // rebuild it before forwarding. An `AdvancedSubscriber`
+                    // (history + late-publisher detection) mirrors the node
+                    // receive path so the (single, stable) schema is fetched even
+                    // when the producer starts after this subscriber.
+                    let schema_cache: DebugSchemaCache = Arc::new(std::sync::Mutex::new(None));
+                    let schema_topic = dora_core::topics::zenoh_output_schema_topic(
+                        dataflow_id,
+                        &node.id,
+                        &output_id,
+                    );
+                    let schema_subscriber = {
+                        let cache = schema_cache.clone();
+                        match self
+                            .zenoh_session
+                            .declare_subscriber(schema_topic.clone())
+                            .history(HistoryConfig::default().detect_late_publishers())
+                            .callback(move |sample| {
+                                let bytes = sample.payload().to_bytes().to_vec();
+                                let hash = dora_message::metadata::fnv1a(&bytes);
+                                *cache.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some((hash, bytes));
+                            })
+                            .await
+                        {
+                            Ok(s) => Some(s),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to declare @schema debug subscriber on \
+                                     {schema_topic} ({e}); schema-once outputs may render as \
+                                     undecodable in `dora topic`"
+                                );
+                                None
+                            }
+                        }
+                    };
+
                     let events_tx = self.events_tx.clone();
                     let clock = self.clock.clone();
                     let node_id = node.id.clone();
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     tokio::spawn(async move {
+                        // Keep the `@schema` subscriber alive for the task's life.
+                        let _schema_subscriber = schema_subscriber;
                         let mut finished = pin!(finished_rx.recv());
                         loop {
                             match future::select(finished, subscriber.recv_async()).await {
@@ -2937,11 +2970,27 @@ impl Daemon {
                                     }) else {
                                         continue;
                                     };
+                                    let payload = sample.payload().to_bytes();
+                                    let data = {
+                                        let cached =
+                                            schema_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                        rebuild_debug_topic_stream(
+                                            cached.as_ref(),
+                                            &metadata.parameters,
+                                            &payload[..],
+                                        )
+                                    };
+                                    let Some(data) = data else {
+                                        // schema-once batch whose schema hasn't been
+                                        // cached yet — drop this inspection frame
+                                        // (transient, recovers once `@schema` arrives).
+                                        continue;
+                                    };
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
                                         metadata,
-                                        data: Some(sample.payload().to_bytes().to_vec()),
+                                        data: Some(data),
                                     };
                                     if events_tx
                                         .send(Timestamped {
@@ -3585,20 +3634,8 @@ impl Daemon {
                     }
 
                     let timestamp = self.clock.new_timestamp();
-                    let type_info = dora_message::metadata::ArrowTypeInfo {
-                        data_type: DataType::Null,
-                        len: 0,
-                        null_count: 0,
-                        validity: None,
-                        offset: 0,
-                        buffer_offsets: vec![],
-                        child_data: vec![],
-                        field_names: None,
-                        schema_hash: None,
-                    };
-
                     Ok(dora_message::metadata::Metadata::from_parameters(
-                        timestamp, type_info, parameters,
+                        timestamp, parameters,
                     ))
                 })();
 
@@ -4333,15 +4370,21 @@ impl Daemon {
                     }
                 };
 
-                // Convert to Arrow once, share the sample across subscribers
+                // Convert to a self-describing Arrow IPC stream once, share the
+                // sample across subscribers. The node-side receive path decodes
+                // the IPC stream, so set the `arrow-ipc` framing parameter.
                 use dora_arrow_convert::IntoArrow;
                 let array = json.as_str().into_arrow();
                 let array: dora_node_api::arrow::array::ArrayData = array.into();
-                let total_len = dora_node_api::arrow_utils::required_data_size(&array);
-                let mut sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
-                    aligned_vec::AVec::__from_elem(128, 0, total_len);
-                let type_info =
-                    dora_node_api::arrow_utils::copy_array_into_sample(&mut sample, &array);
+                let ipc_bytes = match dora_node_api::arrow_utils::encode_arrow_ipc(&array) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("failed to Arrow-IPC-encode LogMessage: {e}");
+                        return Ok(());
+                    }
+                };
+                let sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
+                    aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
                 let mut closed = Vec::new();
@@ -4367,8 +4410,15 @@ impl Daemon {
                         continue;
                     };
 
+                    let mut params = MetadataParameters::new();
+                    params.insert(
+                        dora_message::metadata::FRAMING.to_string(),
+                        dora_message::metadata::Parameter::String(
+                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                        ),
+                    );
                     let metadata =
-                        metadata::Metadata::new(self.clock.new_timestamp(), type_info.clone());
+                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
 
                     let send_result = send_with_timestamp(
                         channel,
@@ -5438,20 +5488,6 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 // RunningDataflow and related types are in running_dataflow.rs
 // FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
 
-pub(crate) fn empty_type_info() -> ArrowTypeInfo {
-    ArrowTypeInfo {
-        data_type: DataType::Null,
-        len: 0,
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: Vec::new(),
-        child_data: Vec::new(),
-        field_names: None,
-        schema_hash: None,
-    }
-}
-
 fn set_up_ctrlc_handler(
     clock: Arc<HLC>,
 ) -> eyre::Result<tokio::sync::mpsc::Receiver<Timestamped<Event>>> {
@@ -5547,6 +5583,104 @@ impl CoreNodeKindExt for CoreNodeKind {
                 matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
             }
         }
+    }
+}
+
+/// Cached `@schema` bytes (with their FNV-1a hash) for one debug-watched
+/// output, shared between the `@schema` subscriber callback and the data task.
+type DebugSchemaCache = Arc<std::sync::Mutex<Option<(u64, Vec<u8>)>>>;
+
+/// Rebuild a self-describing Arrow IPC stream for a `dora topic` debug frame.
+///
+/// Small node→node outputs travel as schema-once batches: the schema is
+/// published once on the `@schema` subtopic and each data sample carries only
+/// the schema-less record batch (`DoraNode::publish_schema_once`). The
+/// `dora topic` decoder expects a full self-describing stream, so for such a
+/// batch we prepend the cached schema block — concatenation reconstructs the
+/// exact original stream (`schema_block ++ batch_slice == full_stream`).
+///
+/// Returns `None` (drop the inspection frame) when the batch is schema-once but
+/// no schema matching its `SCHEMA_HASH` has been cached yet — a transient,
+/// inspection-only gap. A full self-describing payload (no `SCHEMA_HASH`) is
+/// forwarded as-is.
+fn rebuild_debug_topic_stream(
+    cached_schema: Option<&(u64, Vec<u8>)>,
+    parameters: &dora_message::metadata::MetadataParameters,
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
+
+    match get_integer_param(parameters, SCHEMA_HASH) {
+        Some(hash) => {
+            let (cached_hash, schema) = cached_schema?;
+            // Only rebuild when the cached schema matches this batch's hash —
+            // otherwise wait for the right `@schema` rather than emit a stream
+            // the CLI would decode against the wrong (stale/future) schema.
+            if *cached_hash != hash as u64 {
+                return None;
+            }
+            let mut full = Vec::with_capacity(schema.len() + payload.len());
+            full.extend_from_slice(schema);
+            full.extend_from_slice(payload);
+            Some(full)
+        }
+        None => Some(payload.to_vec()),
+    }
+}
+
+#[cfg(test)]
+mod debug_topic_tests {
+    use super::rebuild_debug_topic_stream;
+    use dora_message::metadata::{MetadataParameters, Parameter, SCHEMA_HASH, fnv1a};
+
+    fn params_with_schema_hash(hash: u64) -> MetadataParameters {
+        let mut params = MetadataParameters::default();
+        params.insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
+        params
+    }
+
+    #[test]
+    fn full_stream_payload_is_forwarded_verbatim() {
+        // No SCHEMA_HASH ⇒ already a self-describing stream (large/SHM or
+        // service/action output); forward the bytes unchanged.
+        let payload = b"self-describing-stream".to_vec();
+        let out = rebuild_debug_topic_stream(None, &MetadataParameters::default(), &payload);
+        assert_eq!(out, Some(payload));
+    }
+
+    #[test]
+    fn schema_once_batch_is_prepended_with_cached_schema() {
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let out = rebuild_debug_topic_stream(
+            Some(&(hash, schema.clone())),
+            &params_with_schema_hash(hash),
+            &batch,
+        );
+        let mut expected = schema;
+        expected.extend_from_slice(&batch);
+        assert_eq!(out, Some(expected));
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_when_schema_not_cached() {
+        let batch = b"schema-less-batch".to_vec();
+        let out = rebuild_debug_topic_stream(None, &params_with_schema_hash(42), &batch);
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_on_hash_mismatch() {
+        // Cached schema is for a different hash (e.g. a stale schema mid-change):
+        // drop rather than emit a stream the CLI would mis-decode.
+        let schema = b"OTHER-SCHEMA".to_vec();
+        let out = rebuild_debug_topic_stream(
+            Some(&(999, schema)),
+            &params_with_schema_hash(42),
+            b"batch",
+        );
+        assert_eq!(out, None);
     }
 }
 
@@ -6135,20 +6269,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Send data from upstream
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,
@@ -6186,17 +6307,6 @@ mod fault_tolerance_tests {
     async fn data_bytes_returned_with_and_without_local_receivers() {
         let clock = test_clock();
         let payload = [1u8, 2, 3, 4];
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::UInt8,
-            len: payload.len(),
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let sender: NodeId = "sender".to_string().into();
         let output: DataId = "output".to_string().into();
 
@@ -6204,7 +6314,7 @@ mod fault_tolerance_tests {
         // is moved out (no copy) but must still be returned for the remote
         // forwarding path.
         let mut df = test_dataflow();
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info.clone());
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender.clone(),
@@ -6231,7 +6341,7 @@ mod fault_tolerance_tests {
             .insert((receiver.clone(), input.clone()));
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info);
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender,
@@ -6309,20 +6419,7 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
 
         // Step 2: Upstream sends data again — recovery
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,
