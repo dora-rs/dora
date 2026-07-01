@@ -55,7 +55,7 @@ mod tests {
             return Ok(());
         }
 
-        let context = Ros2Context::new(None).context("Could not create a context")?;
+        let context = Ros2Context::new(None, None).context("Could not create a context")?;
         let messages = context.messages.clone();
         // Belt-and-suspenders: a sourced distro path that yields no messages.
         if messages.is_empty() {
