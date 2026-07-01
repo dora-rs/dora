@@ -4369,9 +4369,18 @@ async fn broadcast_all_nodes_ready(
             tracing::warn!("no daemon connection found for machine `{daemon_id}`");
             continue;
         };
-        connection.send(&message).await.wrap_err_with(|| {
-            format!("failed to send AllNodesReady({uuid}) message to machine {daemon_id}")
-        })?;
+        // A per-daemon send failure means that daemon's WS command channel was
+        // dropped (it disconnected, but its `DaemonExit` event is still queued
+        // behind this one). Treat it as a warning and keep notifying the other
+        // daemons — mirroring `notify_daemons_about_disconnected_peers`. Bubbling
+        // it with `?` used to propagate out of `start_inner` and tear down the
+        // whole coordinator (taking every other dataflow with it) whenever a
+        // daemon happened to disconnect during a ready-barrier release.
+        if let Err(err) = connection.send(&message).await {
+            tracing::warn!(
+                "failed to send AllNodesReady({uuid}) message to machine {daemon_id}: {err}"
+            );
+        }
     }
 
     schedule_param_replay_for_ready_dataflow(
