@@ -29,25 +29,93 @@ use types::{
 
 pub mod raw;
 
+/// An event delivered to an operator's [`DoraOperator::on_event`] callback.
+///
+/// The dataflow runtime dispatches one `Event` per occurrence: a received
+/// input, a failed input decode, an input that will produce no more data, or a
+/// request to shut down. The enum is `#[non_exhaustive]`, so implementations
+/// must include a catch-all arm to stay forward-compatible with future variants.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
+    /// A new input arrived on one of the operator's declared inputs.
     Input {
+        /// The input id, as declared in the dataflow YAML.
         id: &'a str,
+        /// Metadata associated with this input (e.g. OpenTelemetry context).
         metadata: &'a types::Metadata,
+        /// The Arrow-encoded payload.
         data: ArrowData,
     },
+    /// The payload for an input could not be decoded into an Arrow array.
+    ///
+    /// The input id and a human-readable description are provided so the
+    /// operator can log or surface the failure.
     InputParseError {
+        /// The input id whose payload failed to decode.
         id: &'a str,
+        /// A human-readable description of the decode failure.
         error: String,
     },
+    /// An input was closed: its source finished, so no further `Input` events
+    /// will be delivered for this id.
     InputClosed {
+        /// The input id that was closed.
         id: &'a str,
     },
+    /// The runtime requested a graceful shutdown. The operator should finish
+    /// any pending work and return [`DoraStatus::Stop`].
     Stop,
 }
 
+/// Trait implemented by every dora operator.
+///
+/// An operator is driven by the dataflow runtime: it is constructed via
+/// [`Default`] and then receives a stream of [`Event`]s through
+/// [`on_event`](DoraOperator::on_event), sending outputs back through the
+/// [`DoraOutputSender`]. Register your implementation with the
+/// [`register_operator!`](crate::register_operator) macro so the runtime can
+/// load it.
+///
+/// # Example
+///
+/// ```
+/// use dora_operator_api::{DoraOperator, DoraOutputSender, DoraStatus, Event, IntoArrow};
+///
+/// #[derive(Default)]
+/// struct ExampleOperator {
+///     ticks: u64,
+/// }
+///
+/// impl DoraOperator for ExampleOperator {
+///     fn on_event(
+///         &mut self,
+///         event: &Event,
+///         output_sender: &mut DoraOutputSender,
+///     ) -> Result<DoraStatus, String> {
+///         match event {
+///             Event::Input { id, .. } if *id == "tick" => {
+///                 self.ticks += 1;
+///                 output_sender.send("count", self.ticks.into_arrow())?;
+///                 Ok(DoraStatus::Continue)
+///             }
+///             Event::InputParseError { id, error } => {
+///                 Err(format!("failed to parse input `{id}`: {error}"))
+///             }
+///             Event::Stop => Ok(DoraStatus::Stop),
+///             // Ignore other inputs, input-closed notifications, and any
+///             // future (non_exhaustive) variants.
+///             _ => Ok(DoraStatus::Continue),
+///         }
+///     }
+/// }
+/// ```
 pub trait DoraOperator: Default {
+    /// Handle a single [`Event`].
+    ///
+    /// Return [`DoraStatus::Continue`] to keep running or [`DoraStatus::Stop`]
+    /// to shut the operator down. Returning `Err` reports a fatal error to the
+    /// runtime and stops the operator.
     #[allow(clippy::result_unit_err)] // we use a () error type only for testing
     fn on_event(
         &mut self,
