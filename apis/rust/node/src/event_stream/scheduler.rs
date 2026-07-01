@@ -248,17 +248,24 @@ impl Scheduler {
             }
         }
 
-        // Enforce queue size limit
-        let (size, queue) = self
-            .event_queues
-            .entry(event_id.clone())
-            .or_insert_with(|| {
-                tracing::warn!(
-                    "no queue config for input `{event_id}`, using default size {DEFAULT_QUEUE_SIZE}"
-                );
-                self.last_used.push_back(event_id.clone());
-                (DEFAULT_QUEUE_SIZE, Default::default())
-            });
+        // Enforce queue size limit.
+        //
+        // The queue is normally preconfigured for every input at construction
+        // (see `with_policies`), so look it up by reference first to avoid
+        // cloning the `DataId` key on every event. Only the rare unconfigured
+        // input path needs to allocate an owned key for insertion.
+        if !self.event_queues.contains_key(event_id) {
+            tracing::warn!(
+                "no queue config for input `{event_id}`, using default size {DEFAULT_QUEUE_SIZE}"
+            );
+            self.last_used.push_back(event_id.clone());
+            self.event_queues
+                .insert(event_id.clone(), (DEFAULT_QUEUE_SIZE, Default::default()));
+        }
+        let Some((size, queue)) = self.event_queues.get_mut(event_id) else {
+            // Unreachable: the entry was just inserted above when missing.
+            return;
+        };
 
         let policy = self
             .queue_policies
