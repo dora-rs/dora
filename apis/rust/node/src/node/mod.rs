@@ -104,7 +104,7 @@ const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(
 
 /// Must exceed zenoh's internal 10s session close timeout, which is not
 /// enforceable when zenoh's net runtime is wedged.
-const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -1540,7 +1540,7 @@ impl DoraNodeBuilder {
 /// until process exit. That is acceptable for nodes dropped right before
 /// exit; long-lived hosts (e.g. a Python interpreter dropping a node during
 /// GC) inherit only the bounded delay instead of a permanent hang.
-fn teardown_with_timeout(
+pub(crate) fn teardown_with_timeout(
     label: &str,
     timeout: Duration,
     teardown: impl FnOnce() + Send + 'static,
