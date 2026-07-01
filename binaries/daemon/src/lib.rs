@@ -5037,7 +5037,13 @@ fn note_output_sent_to_local_receivers(
             .subscribe_channels
             .get(receiver_id)
             .is_some_and(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+        // Looking up these maps requires cloning the `(NodeId, DataId)` key
+        // (the tuple key type can't borrow). Both maps are empty unless input
+        // deadlines or circuit breakers are configured, so skip the per-receiver
+        // key clone + hash in the common case. Mirrors the identical guards in
+        // `send_output_to_local_receivers`.
         if receiver_keeping_up
+            && !dataflow.input_deadlines.is_empty()
             && let Some(deadline) = dataflow
                 .input_deadlines
                 .get_mut(&(receiver_id.clone(), input_id.clone()))
@@ -5045,6 +5051,9 @@ fn note_output_sent_to_local_receivers(
             deadline.last_received = Some(now);
         }
 
+        if dataflow.broken_inputs.is_empty() {
+            continue;
+        }
         let Some(timeout) = dataflow
             .broken_inputs
             .remove(&(receiver_id.clone(), input_id.clone()))
