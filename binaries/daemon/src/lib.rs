@@ -5516,35 +5516,50 @@ fn close_input(
         return;
     }
 
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if was_open
-            && send_with_timestamp(
-                channel,
-                NodeEvent::InputClosed {
-                    id: input_id.clone(),
-                },
-                clock,
-            )
-            .ok()
-                == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && was_open
+        && send_with_timestamp(
+            channel,
+            NodeEvent::InputClosed {
+                id: input_id.clone(),
+            },
+            clock,
+        )
+        .ok()
+            == Some(true)
+    {
+        dataflow.inc_pending(receiver_id);
+    }
 
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+}
+
+/// If `receiver_id` has no remaining open inputs (and none are circuit-broken),
+/// disable its restart policy and notify it that all inputs are closed.
+///
+/// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
+/// no-op if the node still has open/broken inputs or has no subscribe channel.
+fn signal_all_inputs_closed_if_drained(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    clock: &HLC,
+) {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return;
+    };
+    let has_broken = dataflow
+        .broken_inputs
+        .keys()
+        .any(|(nid, _)| nid == receiver_id);
+    if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
+        if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
+            node.disable_restart();
+        }
+        if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
+            dataflow.inc_pending(receiver_id);
+            dataflow
+                .all_inputs_closed_at
+                .insert(receiver_id.clone(), Instant::now());
         }
     }
 }
@@ -5562,8 +5577,8 @@ fn break_input(
     {
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if send_with_timestamp(
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && send_with_timestamp(
             channel,
             NodeEvent::InputClosed {
                 id: input_id.clone(),
@@ -5572,26 +5587,11 @@ fn break_input(
         )
         .ok()
             == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
-
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
-        }
+    {
+        dataflow.inc_pending(receiver_id);
     }
+
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
 }
 
 /// Grace period used when the finish-straggler watchdog is enabled but
