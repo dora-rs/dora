@@ -128,22 +128,7 @@ impl std::fmt::Display for NodeError {
             NodeExitStatus::IoError(err) => write!(f, "I/O error while reading exit status: {err}"),
             NodeExitStatus::ExitCode(code) => write!(f, "exited with code {code}"),
             NodeExitStatus::Signal(signal) => {
-                let signal_str: Cow<_> = match signal {
-                    1 => "SIGHUP".into(),
-                    2 => "SIGINT".into(),
-                    3 => "SIGQUIT".into(),
-                    4 => "SIGILL".into(),
-                    6 => "SIGABRT".into(),
-                    8 => "SIGFPE".into(),
-                    9 => "SIGKILL".into(),
-                    11 => "SIGSEGV".into(),
-                    13 => "SIGPIPE".into(),
-                    14 => "SIGALRM".into(),
-                    15 => "SIGTERM".into(),
-                    22 => "SIGABRT".into(),
-                    23 => "NSIG".into(),
-                    other => other.to_string().into(),
-                };
+                let signal_str = signal_name(*signal);
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
                     write!(
                         f,
@@ -172,6 +157,31 @@ impl std::fmt::Display for NodeError {
         }
 
         Ok(())
+    }
+}
+
+/// Map a Unix termination signal number to its conventional name for
+/// diagnostics, falling back to the numeric value for signals not listed.
+///
+/// Numbering follows Linux `signal(7)` (dora's primary platform). Unknown or
+/// platform-specific signals are rendered as their raw number rather than a
+/// possibly-misleading name.
+fn signal_name(signal: i32) -> Cow<'static, str> {
+    match signal {
+        1 => "SIGHUP".into(),
+        2 => "SIGINT".into(),
+        3 => "SIGQUIT".into(),
+        4 => "SIGILL".into(),
+        6 => "SIGABRT".into(),
+        8 => "SIGFPE".into(),
+        9 => "SIGKILL".into(),
+        11 => "SIGSEGV".into(),
+        13 => "SIGPIPE".into(),
+        14 => "SIGALRM".into(),
+        15 => "SIGTERM".into(),
+        22 => "SIGTTOU".into(),
+        23 => "SIGURG".into(),
+        other => other.to_string().into(),
     }
 }
 
@@ -406,6 +416,22 @@ mod tests {
         let serialized = serde_yaml::to_string(&log_message).unwrap();
         let deserialized: LogMessageHelper = serde_yaml::from_str(&serialized).unwrap();
         assert_eq!(log_message, LogMessage::from(deserialized));
+    }
+
+    #[test]
+    fn signal_names_match_linux_numbering() {
+        // Common signals keep their conventional names.
+        assert_eq!(signal_name(6), "SIGABRT");
+        assert_eq!(signal_name(9), "SIGKILL");
+        assert_eq!(signal_name(11), "SIGSEGV");
+        assert_eq!(signal_name(15), "SIGTERM");
+        // Regression: 22/23 were previously mislabeled as SIGABRT/NSIG.
+        // On Linux signal(7), 22 is SIGTTOU and 23 is SIGURG; NSIG is a
+        // signal-count sentinel, not a deliverable signal.
+        assert_eq!(signal_name(22), "SIGTTOU");
+        assert_eq!(signal_name(23), "SIGURG");
+        // Unlisted signals fall back to their raw number.
+        assert_eq!(signal_name(42), "42");
     }
 
     #[test]
