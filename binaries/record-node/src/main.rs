@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs::File, time::SystemTime};
 
-use aligned_vec::AVec;
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
@@ -65,9 +65,13 @@ fn main() -> eyre::Result<()> {
                 let arrow_data = data.to_data();
                 let data_size = arrow_utils::required_data_size(&arrow_data);
                 let raw_data = if data_size > 0 {
-                    let mut buf = vec![0u8; data_size];
+                    // Serialize the arrow buffers straight into the aligned
+                    // target buffer. Going through a temporary `Vec<u8>` and
+                    // then `AVec::from_slice` would allocate and memcpy the
+                    // whole payload a second time on every recorded message.
+                    let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_size);
                     arrow_utils::copy_array_into_sample(&mut buf, &arrow_data);
-                    Some(AVec::from_slice(128, &buf))
+                    Some(buf)
                 } else {
                     None
                 };
