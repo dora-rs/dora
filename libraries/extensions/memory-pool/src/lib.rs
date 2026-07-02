@@ -263,19 +263,26 @@ impl MemoryPoolManager {
             }
         }
 
-        if unreleased_count > 0 {
-            tracing::info!(
-                "Successfully released {} unreleased memory pools!",
-                unreleased_count
-            );
-        }
+        let released_count = unreleased_count - errors.len();
 
         if errors.is_empty() {
+            if unreleased_count > 0 {
+                tracing::info!(
+                    "Successfully released {} unreleased memory pools!",
+                    released_count
+                );
+            }
             Ok(CleanupSummary {
                 unreleased_count,
-                released_count: unreleased_count,
+                released_count,
             })
         } else {
+            tracing::warn!(
+                "Released {} of {} unreleased memory pools; {} failed",
+                released_count,
+                unreleased_count,
+                errors.len()
+            );
             Err(errors)
         }
     }
@@ -390,7 +397,29 @@ mod tests {
 
         let summary = mgr.cleanup_all().unwrap();
         assert_eq!(summary.unreleased_count, 3);
+        assert_eq!(summary.released_count, 3);
         assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn cleanup_all_reports_partial_release_on_failure() {
+        let mgr = MemoryPoolManager::new();
+
+        // One entry frees cleanly (no backing shmem name)...
+        mgr.register_memory_pool(make_id("ok"), make_metadata(), "node_a".into())
+            .unwrap();
+        // ...and one whose shared_memory_name fails the `dora_pool_` validation
+        // in `free_shared_memory`, so its release errors.
+        let mut bad_meta = make_metadata();
+        bad_meta.shared_memory_name = Some("invalid_name".to_string());
+        mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into())
+            .unwrap();
+
+        // cleanup_all must surface the failure (rather than silently claiming
+        // "Successfully released") and still drain every entry from the table.
+        let errors = mgr.cleanup_all().unwrap_err();
+        assert_eq!(errors.len(), 1, "exactly one free should have failed");
+        assert_eq!(mgr.table_size(), 0, "all entries must be removed");
     }
 
     #[test]

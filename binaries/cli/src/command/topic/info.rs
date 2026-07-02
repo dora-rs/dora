@@ -87,12 +87,20 @@ impl TopicStats {
         }
 
         let now = Instant::now();
-        let cutoff = now - window;
-        let recent: Vec<_> = timestamps
-            .iter()
-            .filter(|&&t| t >= cutoff)
-            .copied()
-            .collect();
+        // `now - window` would panic ("overflow when subtracting duration from
+        // instant") when `window` exceeds the monotonic clock value -- reachable
+        // via a large `--duration` (the flag accepts any `u64`) when the topic
+        // closes early, so the full window never elapses before this runs. When
+        // the cutoff predates the monotonic epoch, every recorded timestamp is
+        // within the window, so keep them all.
+        let recent: Vec<_> = match now.checked_sub(window) {
+            Some(cutoff) => timestamps
+                .iter()
+                .filter(|&&t| t >= cutoff)
+                .copied()
+                .collect(),
+            None => timestamps.iter().copied().collect(),
+        };
 
         if recent.len() < 2 {
             return None;
@@ -185,6 +193,12 @@ fn info(
     .join()
     .map_err(|_| eyre::eyre!("stats collection thread panicked"))?;
 
+    // Use the actual collection time rather than the configured window: the
+    // loop breaks early when the publisher closes (`OutputClosed`), so dividing
+    // by the full `duration_secs` would under-report the bandwidth of a topic
+    // that stops mid-window.
+    let elapsed_secs = start_time.elapsed().as_secs_f64();
+
     // Display the information
     let message_count = *stats
         .message_count
@@ -232,14 +246,26 @@ fn info(
     // Statistics
     println!("Statistics:");
     println!("  Total messages: {}", message_count);
-    if duration_secs > 0 {
-        let bandwidth_mbps = (total_bytes as f64 * 8.0) / (duration_secs as f64 * 1_000_000.0);
-        println!("  Bandwidth: {:.2} Mbps", bandwidth_mbps);
-    } else {
-        println!("  Bandwidth: <unknown>");
+    match bandwidth_mbps(total_bytes, message_count, elapsed_secs) {
+        Some(mbps) => println!("  Bandwidth: {:.2} Mbps", mbps),
+        None => println!("  Bandwidth: <unknown>"),
     }
 
     Ok(())
+}
+
+/// Compute the average bandwidth in Mbps over the actual collection window.
+///
+/// Returns `None` when no messages were observed or the elapsed time is
+/// non-positive, so the caller can render `<unknown>` instead of a misleading
+/// `0.00` or a division-by-zero result.
+fn bandwidth_mbps(total_bytes: u64, message_count: u64, elapsed_secs: f64) -> Option<f64> {
+    // `elapsed_secs` comes from `Duration::as_secs_f64`, so it is finite and
+    // non-negative; `<= 0.0` only rejects a zero window.
+    if message_count == 0 || elapsed_secs <= 0.0 {
+        return None;
+    }
+    Some((total_bytes as f64 * 8.0) / (elapsed_secs * 1_000_000.0))
 }
 
 fn format_arrow_type(data_type: &DataType) -> String {
@@ -324,5 +350,46 @@ fn format_arrow_type(data_type: &DataType) -> String {
             )
         }
         _ => format!("{:?}", data_type),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calculate_hz_does_not_panic_on_oversized_window() {
+        // Regression: a large `--duration` (the flag accepts any u64) made
+        // `now - window` underflow the monotonic clock and panic with
+        // "overflow when subtracting duration from instant". This is reachable
+        // when the topic closes early so the full window never elapses.
+        let stats = TopicStats::default();
+        let now = Instant::now();
+        {
+            let mut ts = stats.timestamps.lock().unwrap();
+            ts.push(now);
+            ts.push(now + Duration::from_millis(100));
+        }
+        // A window far larger than any plausible monotonic-clock value.
+        let hz = stats.calculate_hz(Duration::from_secs(u64::MAX));
+        // With the cutoff before the monotonic epoch, every timestamp counts,
+        // so a finite positive rate is returned instead of a panic.
+        let hz = hz.expect("expected a frequency from two timestamps");
+        assert!(hz.is_finite() && hz > 0.0, "unexpected hz: {hz}");
+    }
+
+    #[test]
+    fn bandwidth_uses_actual_elapsed_window() {
+        // 1_000_000 bytes over 1 s = 8 Mbps. A publisher that closed after 1 s
+        // of a 10 s window must report 8 Mbps (over the actual elapsed time),
+        // not 0.8 Mbps (over the full configured window).
+        let mbps = bandwidth_mbps(1_000_000, 5, 1.0).expect("some bandwidth");
+        assert!((mbps - 8.0).abs() < 1e-9, "expected 8 Mbps, got {mbps}");
+    }
+
+    #[test]
+    fn bandwidth_unknown_without_messages_or_time() {
+        assert_eq!(bandwidth_mbps(0, 0, 5.0), None, "no messages -> unknown");
+        assert_eq!(bandwidth_mbps(100, 1, 0.0), None, "no elapsed -> unknown");
     }
 }

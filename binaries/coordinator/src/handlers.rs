@@ -174,7 +174,7 @@ pub(crate) async fn handle_destroy(
         }
     }
     for dataflow_uuid in running_dataflows.keys().cloned().collect::<Vec<_>>() {
-        let _ = stop_dataflow(
+        if let Err(e) = stop_dataflow(
             running_dataflows,
             dataflow_uuid,
             daemon_connections,
@@ -182,7 +182,10 @@ pub(crate) async fn handle_destroy(
             None,
             false,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!("failed to stop dataflow {dataflow_uuid} during destroy: {e:#}");
+        }
     }
 
     destroy_daemons(daemon_connections, clock.new_timestamp()).await?;

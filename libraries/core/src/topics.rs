@@ -11,8 +11,6 @@ pub const DORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 /// without multicast (dev containers, locked-down hosts, many CI runners).
 pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 
-pub const MANUAL_STOP: &str = "dora/stop";
-
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
     let (session, _) = open_zenoh_session_with_listen(coordinator_addr, None, None).await?;

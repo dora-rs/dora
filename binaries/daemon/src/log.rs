@@ -532,8 +532,13 @@ struct Indent<'a>(&'a str);
 
 impl std::fmt::Display for Indent<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for line in self.0.lines() {
-            writeln!(f, "   {line}")?;
+        let mut lines = self.0.lines().peekable();
+        while let Some(line) = lines.next() {
+            if lines.peek().is_some() {
+                writeln!(f, "   {line}")?;
+            } else {
+                write!(f, "   {line}")?;
+            }
         }
         Ok(())
     }
@@ -700,13 +705,15 @@ mod tests {
     #[test]
     fn indent_preserves_newlines_between_lines() {
         let out = Indent("line1\nline2\nline3").to_string();
-        assert_eq!(out, "   line1\n   line2\n   line3\n");
+        // No trailing newline: tracing adds its own per-event newline.
+        assert_eq!(out, "   line1\n   line2\n   line3");
     }
 
     #[test]
-    fn indent_single_line_gets_newline() {
+    fn indent_single_line_no_trailing_newline() {
         let out = Indent("hello").to_string();
-        assert_eq!(out, "   hello\n");
+        // No trailing newline: tracing adds its own per-event newline.
+        assert_eq!(out, "   hello");
     }
 
     #[test]

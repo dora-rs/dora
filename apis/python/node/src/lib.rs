@@ -179,7 +179,6 @@ struct RecvGpuSlot {
     gpu_va: u64,    // device VA from cudaHostGetDevicePointer, 0 if IPC path
     gpu_buf: u64,   // IPC-opened GPU DRAM pointer, 0 if GPU VA path
     host_base: u64, // original host ptr passed to cudaHostRegister
-    generation: u64,
 }
 unsafe impl Send for RecvGpuSlot {}
 unsafe impl Sync for RecvGpuSlot {}
@@ -196,7 +195,6 @@ static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuSlot>>> =
 struct RecvCpuSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
-    generation: u64,
 }
 unsafe impl Send for RecvCpuSlot {}
 unsafe impl Sync for RecvCpuSlot {}
@@ -222,13 +220,66 @@ static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<String, RecvCpuSlot>>> 
 const DORADMA_HEADER_SIZE: usize = 256;
 const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
 const DORADMA_METADATA_ALIGN: usize = 256;
-// Header field offsets
-const OFF_MAGIC: usize = 0;
-const OFF_JSON_LEN: usize = 8;
-const OFF_DATA_OFF: usize = 16;
-const OFF_IPC_FLAG: usize = 24;
-const OFF_IPC_HANDLE: usize = 32;
-const OFF_WRITE_GEN: usize = 96;
+
+/// Crossover where pinned-DMA bandwidth overtakes pageable copy +
+/// cudaHostRegister/unregister fixed cost (~100 µs).  Determined by
+/// ablation study (2026-06-27): pageable faster below, pinned faster
+/// above.  Shared by `register_memory_pool` and `write_memory_pool`.
+const DMA_PIN_THRESHOLD_BYTES: usize = 25 * 1024 * 1024;
+
+/// Returns `true` when the source tensor should be pinned before DMA.
+///
+/// Pinning is a property of the *source* pointer: `cudaHostRegister` only
+/// makes sense for host (CPU) memory, and the pin/unpin fixed cost
+/// (~100 µs) is only worth paying when the tensor is large enough that
+/// the DMA bandwidth gain outweighs it.
+///
+/// # Unit-testable
+///
+/// The decision is pure integer logic — no CUDA runtime calls — so the
+/// boundary (25 MiB ± 1 byte) can be exercised in CI even without a GPU.
+#[inline]
+const fn should_pin(is_cuda: bool, size: usize) -> bool {
+    !is_cuda && size > DMA_PIN_THRESHOLD_BYTES
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    #[test]
+    fn pin_cpu_source_above_threshold() {
+        // CPU source, 25 MiB + 1 byte → should pin
+        assert!(should_pin(false, 25 * 1024 * 1024 + 1));
+        // CPU source, 100 MiB → should pin
+        assert!(should_pin(false, 100 * 1024 * 1024));
+    }
+
+    #[test]
+    fn pin_cpu_source_below_threshold() {
+        // CPU source, exactly at threshold → should NOT pin (> not >=)
+        assert!(!should_pin(false, 25 * 1024 * 1024));
+        // CPU source, 1 byte below → should NOT pin
+        assert!(!should_pin(false, 25 * 1024 * 1024 - 1));
+        // CPU source, tiny → should NOT pin
+        assert!(!should_pin(false, 1));
+    }
+
+    #[test]
+    fn pin_cuda_source_never_pins() {
+        // CUDA source regardless of size → never pin
+        assert!(!should_pin(true, 0));
+        assert!(!should_pin(true, 25 * 1024 * 1024));
+        assert!(!should_pin(true, 100 * 1024 * 1024));
+        assert!(!should_pin(true, 1024 * 1024 * 1024));
+    }
+
+    #[test]
+    fn pin_zero_size_cpu() {
+        // Zero-size CPU tensor → below threshold, don't pin
+        assert!(!should_pin(false, 0));
+    }
+}
 
 /// Crossover where pinned-DMA bandwidth overtakes pageable copy +
 /// cudaHostRegister/unregister fixed cost (~100 µs).  Determined by
@@ -1963,7 +2014,6 @@ impl Node {
                             cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
                                 _shmem: shmem,
                                 base,
-                                generation: 0,
                             });
                         }
                     }
@@ -2427,7 +2477,6 @@ impl Node {
                                 gpu_va: 0,
                                 gpu_buf: gpu_ptr,
                                 host_base: shmem_ptr as u64,
-                                generation: read_gen,
                             },
                         );
                         gpu_ptr
@@ -2464,7 +2513,6 @@ impl Node {
                                 gpu_va: va,
                                 gpu_buf: 0,
                                 host_base: shmem_ptr as u64,
-                                generation: read_gen,
                             },
                         );
                         va + data_offset as u64
@@ -2485,7 +2533,6 @@ impl Node {
                         RecvCpuSlot {
                             _shmem: shmem,
                             base,
-                            generation: read_gen,
                         },
                     );
                     base + data_offset as u64
