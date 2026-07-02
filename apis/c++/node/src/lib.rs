@@ -902,6 +902,10 @@ fn create_safe_output_sender(sender: Box<OutputSender>) -> Box<SafeOutputSender>
 /// Locks the `Mutex`, calls `send_output_raw` on the inner `DoraNode`,
 /// then releases the lock. Other threads block on the `Mutex` while
 /// this call is in progress.
+///
+/// If the `Mutex` is poisoned (a previous send panicked), this returns
+/// an error instead of reusing the sender: the underlying daemon
+/// connection may be desynchronized, so all further sends fail-stop.
 #[allow(clippy::boxed_local)] // metadata signature dictated by cxx::bridge
 fn safe_send_output(
     sender: &SafeOutputSender,
@@ -911,9 +915,18 @@ fn safe_send_output(
 ) -> ffi::DoraResult {
     let metadata = *metadata;
     let parameters = metadata.into_parameters();
-    // Recover from a poisoned lock rather than cascading the panic: a prior
-    // panicking send must not permanently wedge every other worker thread.
-    let mut guard = sender.inner.lock().unwrap_or_else(|e| e.into_inner());
+    let mut guard = match sender.inner.lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            return ffi::DoraResult {
+                error: format!(
+                    "safe_send_output: output sender is poisoned because a previous \
+                     send panicked; the daemon connection may be in an inconsistent \
+                     state, refusing to send output `{id}`"
+                ),
+            };
+        }
+    };
     send_output_internal(&mut guard, id, data, parameters)
 }
 
