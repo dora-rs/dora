@@ -5,6 +5,21 @@ use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
+/// Derive a fallback filename from a URL's last path segment.
+///
+/// Uses the parsed path segments rather than the raw URL string: a query
+/// string is not a path separator, so running `Path::file_name` over the full
+/// URL would fold it into the name (e.g. a presigned/CDN URL like
+/// `https://host/model.bin?X-Amz-Signature=...` would yield
+/// `model.bin?X-Amz-Signature=...`). Returns `None` for URLs whose last
+/// segment is empty (e.g. a trailing slash).
+fn filename_from_url(url: &reqwest::Url) -> Option<String> {
+    url.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
 fn get_filename(response: &reqwest::Response) -> Option<String> {
     let raw_name = if let Some(content_disposition) = response.headers().get("content-disposition")
     {
@@ -20,13 +35,8 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
         None
     };
 
-    // If Content-Disposition header is not available, extract from URL
-    let raw_name = raw_name.or_else(|| {
-        Path::new(response.url().as_str())
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-    });
+    // If Content-Disposition header is not available, extract from the URL path.
+    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
 
     // Sanitize: strip path components to prevent traversal,
     // reject null bytes and overly long names
@@ -105,4 +115,42 @@ where
         .wrap_err("failed to make downloaded file executable")?;
 
     Ok(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::filename_from_url;
+    use reqwest::Url;
+
+    fn name(url: &str) -> Option<String> {
+        filename_from_url(&Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn plain_url() {
+        assert_eq!(name("https://host/model.bin").as_deref(), Some("model.bin"));
+    }
+
+    #[test]
+    fn query_string_is_not_part_of_filename() {
+        // Regression: presigned/CDN URLs carry a query string that must not
+        // leak into the saved filename.
+        assert_eq!(
+            name("https://host/path/model.bin?X-Amz-Signature=abc123&x=1").as_deref(),
+            Some("model.bin"),
+        );
+    }
+
+    #[test]
+    fn trailing_slash_yields_none() {
+        assert_eq!(name("https://host/path/"), None);
+    }
+
+    #[test]
+    fn fragment_is_not_part_of_filename() {
+        assert_eq!(
+            name("https://host/model.bin#section").as_deref(),
+            Some("model.bin"),
+        );
+    }
 }
