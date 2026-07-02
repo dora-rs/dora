@@ -10,10 +10,20 @@ pub const MAX_PARAM_KEY_BYTES: usize = 256;
 /// Maximum allowed size for a serialized param value (bytes).
 pub const MAX_PARAM_VALUE_BYTES: usize = 65_536;
 
-/// Validate param key and value size limits.
+/// Validate param key and value limits.
+///
+/// This is the single source of truth shared by every [`CoordinatorStore`]
+/// backend, so all backends accept or reject identical input. In particular
+/// the null byte is rejected here because the redb backend uses it as an
+/// internal composite-key separator (see `redb_store::KEY_SEPARATOR`); without
+/// this check `put_node_param` with a `\0`-containing key would succeed on the
+/// in-memory backend but fail on redb.
 pub fn validate_param_limits(key: &str, value: &[u8]) -> Result<()> {
     if key.len() > MAX_PARAM_KEY_BYTES {
         eyre::bail!("param key too long (max {MAX_PARAM_KEY_BYTES} bytes)");
+    }
+    if key.contains('\0') {
+        eyre::bail!("param key must not contain null bytes");
     }
     if value.len() > MAX_PARAM_VALUE_BYTES {
         eyre::bail!("param value too large (max {MAX_PARAM_VALUE_BYTES} bytes)");
