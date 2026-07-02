@@ -11,6 +11,7 @@
 //!   - Multiple `dora run` calls can execute in parallel.
 
 use super::Executable;
+use crate::common::parse_duration;
 use crate::{
     BuildConfig, build as build_dataflow,
     common::{handle_dataflow_result, resolve_dataflow, write_events_to},
@@ -21,7 +22,6 @@ use crate::{
 };
 use dora_core::build::LogLevelOrStdout;
 use dora_daemon::{Daemon, LogDestination, flume};
-use duration_str::parse as parse_duration_str;
 use eyre::Context;
 use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Builder;
@@ -51,7 +51,7 @@ pub struct Run {
     ///   --stop-after 30s     # 30 seconds
     ///   --stop-after 5m      # 5 minutes
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
-    #[arg(value_parser = parse_duration_str)]
+    #[arg(value_parser = parse_duration)]
     pub stop_after: Option<Duration>,
     /// Minimum log level to display
     ///
