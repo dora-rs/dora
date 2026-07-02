@@ -504,6 +504,95 @@ fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
     );
 }
 
+/// Closes a memory-pool seqlock write (header offset 96) started at
+/// `pre_write_gen` — the generation value read just before the "begin
+/// write" increment, i.e. the last known-good, even generation.
+///
+/// On success this publishes the new frame by advancing to
+/// `pre_write_gen + 2` (restoring even parity). On failure the generation
+/// is rolled back to `pre_write_gen` instead of being advanced: from a
+/// consumer's point of view the write never happened, so readers keep
+/// observing the previous, still-valid frame rather than an falsely
+/// "complete" generation over data that was never actually written (see
+/// dora-rs/dora#2436).
+unsafe fn seqlock_end_write(
+    node_id: &NodeId,
+    context: &str,
+    gen_ptr: *mut u64,
+    pre_write_gen: u64,
+    copy_ok: bool,
+) {
+    unsafe {
+        if copy_ok {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
+        } else {
+            tracing::error!(
+                "[{}] memory-pool {} copy failed; keeping the previous frame visible instead of publishing a corrupt one",
+                node_id,
+                context
+            );
+            std::ptr::write_volatile(gen_ptr, pre_write_gen);
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod seqlock_end_write_tests {
+    use super::*;
+
+    fn node_id() -> NodeId {
+        "test-node".parse().unwrap()
+    }
+
+    /// Regression test for #2436: a successful copy must publish the new
+    /// frame by advancing the generation by 2 (odd -> even, next cycle).
+    #[test]
+    fn success_advances_generation_and_stays_even() {
+        let mut generation: u64 = 5; // pre_write_gen(4) + 1 (the "begin write" step)
+        let pre_write_gen = 4;
+        unsafe {
+            seqlock_end_write(&node_id(), "test", &mut generation, pre_write_gen, true);
+        }
+        assert_eq!(generation, pre_write_gen + 2);
+        assert_eq!(
+            generation % 2,
+            0,
+            "generation must be even (complete) on success"
+        );
+    }
+
+    /// Regression test for #2436: on a failed copy, the generation must be
+    /// rolled back to `pre_write_gen` (not left odd, not advanced) so a
+    /// consumer sees the same, still-valid previous frame instead of a
+    /// "complete" generation over data that was never written.
+    #[test]
+    fn failure_rolls_back_to_pre_write_generation() {
+        let mut generation: u64 = 9; // pre_write_gen(8) + 1
+        let pre_write_gen = 8;
+        unsafe {
+            seqlock_end_write(&node_id(), "test", &mut generation, pre_write_gen, false);
+        }
+        assert_eq!(generation, pre_write_gen);
+        assert_eq!(
+            generation % 2,
+            0,
+            "rolled-back generation must be even (complete)"
+        );
+    }
+
+    /// The very first write of a pool starts `pre_write_gen == 0`; a
+    /// failure must roll back to 0, not underflow.
+    #[test]
+    fn failure_on_first_write_rolls_back_to_zero() {
+        let mut generation: u64 = 1;
+        unsafe {
+            seqlock_end_write(&node_id(), "test", &mut generation, 0, false);
+        }
+        assert_eq!(generation, 0);
+    }
+}
+
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
 ///
@@ -1319,11 +1408,31 @@ impl Node {
 
         // Copy tensor data to shmem
         if is_cuda {
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1(
-                    "_cuda_memcpy",
-                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+            let copy_ok = match get_cuda_helpers(py) {
+                Ok(helpers) => {
+                    let bound = helpers.bind(py);
+                    bound
+                        .call_method1(
+                            "_cuda_memcpy",
+                            (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                        )
+                        .is_ok()
+                }
+                Err(_) => false,
+            };
+            if !copy_ok {
+                // This is the pool's first (registering) write — there is no
+                // previous valid frame to fall back to, so unlike
+                // `write_memory_pool` the only safe option is to abort the
+                // registration entirely rather than publish a pool whose
+                // backing memory was never actually written (see #2436).
+                // Restore ownership so `shmem`'s `Drop` unlinks the segment
+                // instead of leaking it.
+                shmem.set_owner(true);
+                eyre::bail!(
+                    "[{}] memory-pool registration: initial GPU copy failed; \
+                     aborting before the pool is published to any consumer",
+                    self.node_id
                 );
             }
         } else {
@@ -1590,49 +1699,74 @@ impl Node {
 
                         if ipc_present == 1 && !is_cuda {
                             // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe {
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
+                                old_gen
+                            };
                             // DMA: source CPU data -> GPU pool buffer via DMA engine.
                             // When is_pinned=false, dma_copy skips cudaHostRegister/
                             // cudaHostUnregister — pageable cudaMemcpy is faster for
                             // small tensors where pin overhead dominates.
-                            if let Ok(helpers) = get_cuda_helpers(py) {
-                                let bound = helpers.bind(py);
-                                let _ = bound
-                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned));
-                            }
+                            let copy_ok = match get_cuda_helpers(py) {
+                                Ok(helpers) => {
+                                    let bound = helpers.bind(py);
+                                    bound
+                                        .call_method1(
+                                            "dma_copy",
+                                            (ptr_val, size, counter, !is_pinned),
+                                        )
+                                        .is_ok()
+                                }
+                                Err(_) => false,
+                            };
                             // Seqlock: end write
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end_write(
+                                    &self.node_id,
+                                    "dma_copy",
+                                    gen_ptr,
+                                    pre_write_gen,
+                                    copy_ok,
+                                );
                             }
                         } else if is_cuda {
                             // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe {
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
-                            if let Ok(helpers) = get_cuda_helpers(py) {
-                                let bound = helpers.bind(py);
-                                let _ = bound.call_method1(
-                                    "_cuda_memcpy",
-                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                                );
-                            }
+                                old_gen
+                            };
+                            let copy_ok = match get_cuda_helpers(py) {
+                                Ok(helpers) => {
+                                    let bound = helpers.bind(py);
+                                    bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                ptr_val,
+                                                size,
+                                                2u32,
+                                            ),
+                                        )
+                                        .is_ok()
+                                }
+                                Err(_) => false,
+                            };
                             // Seqlock: end write
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end_write(
+                                    &self.node_id,
+                                    "_cuda_memcpy",
+                                    gen_ptr,
+                                    pre_write_gen,
+                                    copy_ok,
+                                );
                             }
                         } else {
                             // Seqlock: begin write
@@ -1724,51 +1858,73 @@ impl Node {
                                 .rsplit_once('_')
                                 .and_then(|(_, c)| c.parse::<u64>().ok());
                             // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe {
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
+                                old_gen
+                            };
                             // Slow path: daemon-mediated fallback (rare).
                             // Respect the same 25 MiB auto-pin threshold as the
                             // fast path and register_memory_pool.  no_dma=true
                             // skips cudaHostRegister for small pageable tensors
                             // where pin overhead dominates DMA gain.
                             let slow_no_dma = !auto_pin;
-                            if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
-                                let bound = helpers.bind(py);
-                                let _ =
-                                    bound.call_method1("dma_copy", (ptr_val, size, c, slow_no_dma));
-                            }
+                            let copy_ok = match (get_cuda_helpers(py), slow_counter) {
+                                (Ok(helpers), Some(c)) => {
+                                    let bound = helpers.bind(py);
+                                    bound
+                                        .call_method1("dma_copy", (ptr_val, size, c, slow_no_dma))
+                                        .is_ok()
+                                }
+                                _ => false,
+                            };
                             // Seqlock: end write
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end_write(
+                                    &self.node_id,
+                                    "dma_copy",
+                                    gen_ptr,
+                                    pre_write_gen,
+                                    copy_ok,
+                                );
                             }
                         } else if is_cuda {
                             // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe {
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
-                            if let Ok(helpers) = get_cuda_helpers(py) {
-                                let bound = helpers.bind(py);
-                                let _ = bound.call_method1(
-                                    "_cuda_memcpy",
-                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                                );
-                            }
+                                old_gen
+                            };
+                            let copy_ok = match get_cuda_helpers(py) {
+                                Ok(helpers) => {
+                                    let bound = helpers.bind(py);
+                                    bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                ptr_val,
+                                                size,
+                                                2u32,
+                                            ),
+                                        )
+                                        .is_ok()
+                                }
+                                Err(_) => false,
+                            };
                             // Seqlock: end write
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end_write(
+                                    &self.node_id,
+                                    "_cuda_memcpy",
+                                    gen_ptr,
+                                    pre_write_gen,
+                                    copy_ok,
+                                );
                             }
                         } else {
                             // Seqlock: begin write
