@@ -140,6 +140,7 @@ impl Executable for LogsArgs {
                 stream_logs_from_coordinator(
                     &session,
                     uuid,
+                    None,
                     &self.level,
                     self.since,
                     self.until,
@@ -569,10 +570,27 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     false
 }
 
-/// Subscribe to coordinator log stream with time/grep filtering.
+/// Returns whether a log message should be kept given an optional node filter.
+/// `None` means no filtering (messages from every node pass); `Some(want)`
+/// keeps only messages whose node id equals `want`.
+fn matches_node_filter(msg_node: Option<&str>, want: Option<&str>) -> bool {
+    match want {
+        None => true,
+        Some(want) => msg_node == Some(want),
+    }
+}
+
+/// Subscribe to coordinator log stream with time/grep/node filtering.
+///
+/// `node`, when set, restricts the stream to messages from that single node —
+/// mirroring the node scoping already applied to the historical fetch in
+/// [`logs`]. Without this, `--node <N> --follow` would show history for `N`
+/// but then stream live logs from every node once following began.
+#[allow(clippy::too_many_arguments)]
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
+    node: Option<&NodeId>,
     level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
@@ -589,6 +607,7 @@ fn stream_logs_from_coordinator(
         since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
     let until_threshold =
         until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let want_node = node.map(|n| n.as_ref());
 
     let log_rx = session.subscribe_logs(
         &serde_json::to_vec(&ControlRequest::LogSubscribe {
@@ -610,6 +629,10 @@ fn stream_logs_from_coordinator(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
+                if !matches_node_filter(log_message.node_id.as_ref().map(|n| n.as_ref()), want_node)
+                {
+                    continue;
+                }
                 if let Some(threshold) = since_threshold
                     && log_message.timestamp < threshold
                 {
@@ -679,7 +702,16 @@ pub fn logs(
         return Ok(());
     }
 
-    stream_logs_from_coordinator(session, uuid, level, since, until, grep, config)
+    stream_logs_from_coordinator(
+        session,
+        uuid,
+        Some(&node),
+        level,
+        since,
+        until,
+        grep,
+        config,
+    )
 }
 
 #[cfg(test)]
@@ -902,6 +934,30 @@ mod tests {
         let now = Utc::now();
         let msg = make_msg("hello", Some("sensor"), Some("target"), now);
         assert!(!matches_grep(&msg, Some("zzz_missing")));
+    }
+
+    // --- matches_node_filter ---
+
+    #[test]
+    fn node_filter_none_passes_everything() {
+        assert!(matches_node_filter(Some("sensor"), None));
+        assert!(matches_node_filter(None, None));
+    }
+
+    #[test]
+    fn node_filter_matching_node_passes() {
+        assert!(matches_node_filter(Some("sensor"), Some("sensor")));
+    }
+
+    #[test]
+    fn node_filter_other_node_is_dropped() {
+        assert!(!matches_node_filter(Some("processor"), Some("sensor")));
+    }
+
+    #[test]
+    fn node_filter_system_message_is_dropped_when_node_requested() {
+        // System messages (no node_id) should not leak through a --node filter.
+        assert!(!matches_node_filter(None, Some("sensor")));
     }
 
     #[test]
