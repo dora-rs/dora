@@ -833,6 +833,13 @@ pub fn check_type_annotations_full(
 
     // Map of (source_node_id, output_ref) -> type_urn for cross-edge checking.
     let mut output_type_map: BTreeMap<(String, String), String> = BTreeMap::new();
+    // Map of single-operator (`operator:`) node id -> operator id. Consumers
+    // in the *unresolved* descriptor still address these nodes by their bare
+    // output name (e.g. `source: A, output: out`); the `{op_id}/{output}`
+    // prefix used as the `output_type_map` key is only added later by
+    // `resolve_aliases_and_set_defaults()`. This map lets the cross-edge
+    // lookup apply that same prefixing up front (see #2461).
+    let mut single_operator_nodes: BTreeMap<String, String> = BTreeMap::new();
 
     for node in &dataflow.nodes {
         let nid = node.id.to_string();
@@ -879,6 +886,7 @@ pub fn check_type_annotations_full(
                 .as_ref()
                 .map(|id| id.to_string())
                 .unwrap_or_else(|| super::SINGLE_OPERATOR_DEFAULT_ID.to_string());
+            single_operator_nodes.insert(nid.clone(), op_id.clone());
             check_port_types(
                 &nid,
                 &op.config.output_types,
@@ -955,6 +963,7 @@ pub fn check_type_annotations_full(
             &node.input_types,
             &node.inputs,
             &output_type_map,
+            &single_operator_nodes,
             &timer_types,
             &compat,
             registry,
@@ -970,6 +979,7 @@ pub fn check_type_annotations_full(
                 &op.config.input_types,
                 &op.config.inputs,
                 &output_type_map,
+                &single_operator_nodes,
                 &op_timer,
                 &compat,
                 registry,
@@ -987,6 +997,7 @@ pub fn check_type_annotations_full(
                     &op.config.input_types,
                     &op.config.inputs,
                     &output_type_map,
+                    &single_operator_nodes,
                     &op_timer,
                     &compat,
                     registry,
@@ -1089,12 +1100,20 @@ fn check_metadata_annotations(
 ///
 /// Also performs type inference (Phase 3) and strict-mode unannotated checks.
 /// `timer_types` maps input IDs to auto-injected timer type URNs.
+///
+/// `single_operator_nodes` maps single-operator (`operator:`) node ids to
+/// their operator id. `output_type_map` is keyed by the *resolved* output
+/// reference (`{op_id}/{output}` for single-operator nodes), but at this
+/// point the descriptor hasn't been resolved yet, so `mapping.output` is
+/// still the bare output name. Apply the same prefixing here so the lookup
+/// key matches (see #2461).
 #[allow(clippy::too_many_arguments)]
 fn check_edge_mismatches_with_compat(
     node_id: &str,
     input_types: &BTreeMap<DataId, String>,
     inputs: &BTreeMap<DataId, Input>,
     output_type_map: &BTreeMap<(String, String), String>,
+    single_operator_nodes: &BTreeMap<String, String>,
     timer_types: &BTreeMap<DataId, String>,
     compat: &crate::types::CompatibilityGraph,
     registry: &crate::types::TypeRegistry,
@@ -1105,7 +1124,11 @@ fn check_edge_mismatches_with_compat(
     for (input_id, input) in inputs {
         match &input.mapping {
             InputMapping::User(mapping) => {
-                let key = (mapping.source.to_string(), mapping.output.to_string());
+                let output_ref = match single_operator_nodes.get(mapping.source.as_ref()) {
+                    Some(op_id) => format!("{op_id}/{}", mapping.output),
+                    None => mapping.output.to_string(),
+                };
+                let key = (mapping.source.to_string(), output_ref);
                 let upstream_urn = output_type_map.get(&key);
                 let downstream_urn = input_types.get(input_id);
 
@@ -1828,6 +1851,135 @@ nodes:
         assert!(warnings[0].message.contains("type mismatch"));
         assert!(warnings[0].message.contains("Float32"));
         assert!(warnings[0].message.contains("Image"));
+    }
+
+    // Regression tests for #2461: cross-edge type checking was silently
+    // skipped for edges sourced from single-operator (`operator:`) nodes,
+    // because the producer side registers `output_type_map` keys prefixed
+    // with the operator id (`{op_id}/{output}`) while the unresolved
+    // descriptor's consumer mapping still uses the bare output name. The
+    // lookup key never matched, so mismatch detection and inference were
+    // both skipped (and strict mode emitted a misleading "no type
+    // annotation" warning instead).
+
+    #[test]
+    fn type_check_mismatched_edge_types_single_operator_source() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    operator:
+      shared-library: op
+      outputs:
+        - data
+      output_types:
+        data: std/core/v1/Float32
+  - id: receiver
+    operator:
+      shared-library: op
+      inputs:
+        data: sender/data
+      input_types:
+        data: std/media/v1/Image
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert!(warnings[0].message.contains("type mismatch"));
+        assert!(warnings[0].message.contains("Float32"));
+        assert!(warnings[0].message.contains("Image"));
+    }
+
+    #[test]
+    fn inference_from_annotated_upstream_single_operator_source() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sensor
+    operator:
+      shared-library: op
+      outputs:
+        - reading
+      output_types:
+        reading: std/core/v1/Float64
+  - id: processor
+    operator:
+      shared-library: op
+      inputs:
+        reading: sensor/reading
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result.warnings.is_empty(),
+            "warnings: {:?}",
+            result.warnings
+        );
+        assert_eq!(result.inferences.len(), 1);
+        assert_eq!(result.inferences[0].inferred_urn, "std/core/v1/Float64");
+        assert_eq!(result.inferences[0].port_id, "reading");
+    }
+
+    #[test]
+    fn type_check_mismatched_edge_types_single_operator_source_explicit_id() {
+        // Same as above, but with an explicit (non-default) operator id, to
+        // make sure the fix prefixes with the *actual* op id rather than
+        // just the "op" default.
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    operator:
+      id: custom-op
+      shared-library: op
+      outputs:
+        - data
+      output_types:
+        data: std/core/v1/Float32
+  - id: receiver
+    operator:
+      shared-library: op
+      inputs:
+        data: sender/data
+      input_types:
+        data: std/media/v1/Image
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations_full(&dataflow, &reg, false).warnings;
+        assert_eq!(warnings.len(), 1, "warnings: {warnings:?}");
+        assert!(warnings[0].message.contains("type mismatch"));
+    }
+
+    #[test]
+    fn strict_mode_no_false_positive_for_single_operator_source() {
+        // Before the fix, strict mode incorrectly reported "no type
+        // annotation" for this edge even though the upstream operator does
+        // declare `output_types` for the port.
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: sender
+    operator:
+      shared-library: op
+      outputs:
+        - data
+      output_types:
+        data: std/core/v1/Float32
+  - id: receiver
+    operator:
+      shared-library: op
+      inputs:
+        data: sender/data
+      input_types:
+        data: std/core/v1/Float32
+",
+        );
+        let reg = TypeRegistry::new();
+        let warnings = check_type_annotations_full(&dataflow, &reg, true).warnings;
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
     }
 
     // --- Phase 1: strict mode tests ---
