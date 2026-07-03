@@ -63,6 +63,15 @@ where
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
 
+    // `reqwest::get` resolves to `Ok` for any completed HTTP exchange, including
+    // 4xx/5xx responses. Without this check a 404/500 error page (HTML/JSON)
+    // would be hashed, written to the build directory, and — on Unix — marked
+    // executable, then handed to `libloading`/Python, masking the real "bad URL
+    // / server error" behind a confusing downstream load failure.
+    let response = response
+        .error_for_status()
+        .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
+
     let filename = get_filename(&response).context("Could not find a filename")?;
     let bytes = response
         .bytes()
@@ -105,4 +114,47 @@ where
         .wrap_err("failed to make downloaded file executable")?;
 
     Ok(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    /// A 404 (or any error status) must fail the download instead of writing
+    /// the server's error page to disk as the artifact.
+    #[tokio::test]
+    async fn rejects_http_error_status() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                // Consume the request line/headers, then reply with a 404.
+                let mut buf = [0u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let body = "not found";
+                let resp = format!(
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+
+        let dir = std::env::temp_dir().join(format!("dora-download-test-{}", addr.port()));
+        let url = format!("http://{addr}/model.bin");
+        let result = download_file(url.as_str(), &dir, None).await;
+
+        assert!(result.is_err(), "expected an error for a 404 response");
+        assert!(
+            !dir.join("model.bin").exists(),
+            "the error page must not be written as the artifact"
+        );
+
+        let _ = server.await;
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
 }

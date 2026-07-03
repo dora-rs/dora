@@ -19,3 +19,6 @@ reqwest = { version = "0.12.4", default-features = false, features = [
 sha2 = "0.10"
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
