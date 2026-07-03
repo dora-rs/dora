@@ -532,19 +532,19 @@ impl EventStream {
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
-            loop {
-                if self.scheduler.is_empty() {
-                    if let Some(event) = self.receiver.recv().await {
-                        self.add_event(event);
-                    } else {
-                        break;
-                    }
-                } else {
-                    match self.receiver.try_recv() {
-                        Ok(event) => self.add_event(event),
-                        Err(_) => break, // empty or disconnected
-                    };
-                }
+            // Block for the first event only when the scheduler is empty.
+            // `Scheduler::is_empty()` scans every input queue (O(#inputs)), and
+            // inside this drain the scheduler only ever grows (we exclusively
+            // `add_event`), so once it is non-empty it stays non-empty — the old
+            // `loop { if is_empty() ... }` re-scanned all queues on every
+            // iteration for no reason. Check once, then drain non-blocking.
+            if self.scheduler.is_empty()
+                && let Some(event) = self.receiver.recv().await
+            {
+                self.add_event(event);
+            }
+            while let Ok(event) = self.receiver.try_recv() {
+                self.add_event(event);
             }
             self.scheduler.next().map(Self::convert_event_item)
         };
