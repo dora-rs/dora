@@ -3668,9 +3668,13 @@ impl Daemon {
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
+        // `node_id`/`output_id` are not read past this call — the later
+        // inter-daemon path uses `output_id_key` (cloned just above) instead —
+        // so move them in rather than adding a second per-message clone of the
+        // `NodeId`/`DataId` on this output-dispatch hot path.
         let data_bytes = send_output_to_local_receivers(
-            node_id.clone(),
-            output_id.clone(),
+            node_id,
+            output_id,
             dataflow,
             &metadata,
             data,
