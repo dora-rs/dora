@@ -1,8 +1,16 @@
 //! MAVLink 2 ↔ Apache Arrow bridge for the dora dataflow runtime.
 //!
-//! This crate is the scaffold for a MAVLink 2 bridge that mirrors the
-//! `dora-ros2-bridge` extension. Subsequent PRs add Arrow conversion,
-//! transport adapters, and the daemon-spawnable bridge node.
+//! This crate mirrors the `dora-ros2-bridge` extension for MAVLink 2. It
+//! provides:
+//!
+//! - Arrow conversion for common-dialect messages via the [`MavlinkArrow`]
+//!   trait.
+//! - Transport builders for TCP, UDP, and serial links (see [`transport`]).
+//! - [`MAVLINK_VERSION`], a compile-time guarantee that the bridge targets
+//!   MAVLink 2.
+//!
+//! The daemon-spawnable bridge node built on top of this crate lives in the
+//! `dora-mavlink2-bridge-node` binary.
 //!
 //! See <https://github.com/dora-rs/dora/issues/1786> for the design RFC.
 
