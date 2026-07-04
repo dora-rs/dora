@@ -366,6 +366,17 @@ impl RunningDataflow {
             self._timer_handles.insert(interval, handle);
         }
 
+        // Record that the dataflow has been started. This must hold on *every*
+        // start path — the single-daemon `Subscribe`-readiness path and the
+        // distributed coordinator `AllNodesReady` path both funnel through
+        // here — so the flag lives in `start()` rather than at the call sites.
+        // The `AddNode` handler relies on it to tell "already running, spawn a
+        // task for a freshly-added interval" apart from "still bringing up, let
+        // the readiness path spawn the tasks". Setting it at only one call site
+        // (as before) left it `false` for the entire life of a distributed
+        // dataflow, silently starving timer inputs on nodes added later.
+        self.dataflow_started = true;
+
         Ok(())
     }
 
