@@ -17,7 +17,17 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
-const SCHEMA_VERSION: u32 = 2; // Sprint 9: added node_to_daemon, uv, Recovering status
+///
+/// bincode is not self-describing, so `#[serde(default)]` on a struct/enum
+/// field does NOT make old persisted bytes decodable -- it only fills in the
+/// field when the deserializer already knows the field is absent, which for
+/// bincode's positional encoding never happens (a missing trailing field
+/// reads past the end of the buffer and fails). Any change to a persisted
+/// type's shape -- including adding a `#[serde(default)]` field -- MUST bump
+/// this constant, so `open()` rejects old-format databases up front instead
+/// of decoding old rows into errors that get silently dropped by the
+/// `list_*` methods below.
+const SCHEMA_VERSION: u32 = 3; // v3: added `terminal` to DataflowStatus::Failed
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -538,6 +548,49 @@ mod tests {
             "corrupt row must be skipped and the healthy row returned"
         );
         assert_eq!(flows[0].uuid, uuid);
+    }
+
+    /// #2471: `#[serde(default)]` on `DataflowStatus::Failed::terminal` does NOT
+    /// make bincode-encoded bytes from before the field existed decodable --
+    /// bincode is positional, not self-describing, so a missing trailing field
+    /// fails to decode instead of falling back to `Default`. This pins down
+    /// that underlying fact, and confirms the real safety net is the
+    /// `SCHEMA_VERSION` bump: a database written before `terminal` existed
+    /// carries the pre-bump version and is rejected at `open()` (see
+    /// `older_schema_version_is_rejected`), so `list_dataflows`/`get_dataflow`
+    /// never reach the undecodable row in the first place.
+    #[test]
+    fn old_failed_record_without_terminal_field_fails_to_decode() {
+        // Mirrors `DataflowStatus` variant-for-variant, except `Failed` has no
+        // `terminal` field -- i.e. the exact byte layout written by a
+        // pre-#1854 coordinator.
+        #[derive(serde::Serialize)]
+        #[allow(dead_code)]
+        enum OldDataflowStatus {
+            Pending,
+            Running,
+            Recovering,
+            Stopping,
+            Succeeded,
+            Failed { error: String },
+        }
+
+        let old_bytes = bincode::serde::encode_to_vec(
+            OldDataflowStatus::Failed {
+                error: "boom".into(),
+            },
+            bincode::config::standard(),
+        )
+        .unwrap();
+
+        let result = decode::<crate::DataflowStatus>(&old_bytes);
+        assert!(
+            result.is_err(),
+            "old pre-terminal bytes must NOT silently decode with terminal: false \
+             -- if this starts passing, bincode's behavior has changed and the \
+             SCHEMA_VERSION-bump safety net documented on `terminal` and \
+             `SCHEMA_VERSION` is no longer needed for this field"
+        );
     }
 
     #[test]

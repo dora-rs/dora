@@ -87,10 +87,14 @@ pub enum DataflowStatus {
         /// and resurrection would create an inconsistent
         /// store-vs-CLI view across coordinator restarts.
         ///
-        /// `#[serde(default)]` so persisted records written by older
-        /// coordinators (which never set this field) deserialize with
-        /// `terminal: false` -- preserving the pre-#1854 behaviour
-        /// where a daemon report could promote Failed -> Running.
+        /// `#[serde(default)]` documents the intended semantics for a
+        /// missing value, but with the bincode encoding used by
+        /// `RedbStore` it does NOT make old bytes decodable on its own
+        /// (bincode is not self-describing, so a missing trailing field
+        /// fails to decode rather than falling back to `Default`). Records
+        /// written before this field existed require a `SCHEMA_VERSION`
+        /// bump (see `redb_store.rs`) so old databases are rejected at
+        /// `open()` instead of silently losing rows at decode time.
         /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593).
         #[serde(default)]
         terminal: bool,
