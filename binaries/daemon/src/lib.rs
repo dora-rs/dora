@@ -4210,6 +4210,11 @@ impl Daemon {
             let _ = df.listener_shutdown_tx.send(true);
         }
         self.running.remove(&dataflow_id);
+        // Reclaim the per-node result entries for this dataflow. They were
+        // already consumed into `result` above and have no reader once the
+        // dataflow is no longer running, so keeping them would leak one entry
+        // per node for every dataflow a long-lived daemon ever runs.
+        self.dataflow_node_results.remove(&dataflow_id);
 
         Ok(())
     }
