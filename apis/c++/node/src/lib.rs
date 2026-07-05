@@ -8,6 +8,8 @@ use std::{
 use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
+#[cfg(any(feature = "ros2-bridge", test))]
+use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
@@ -365,6 +367,8 @@ fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(events)),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
         }),
     }
 }
@@ -373,6 +377,8 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(stream::empty())),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
         }),
     }
 }
@@ -902,6 +908,8 @@ fn send_output_internal(
 
 pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
+    #[cfg(any(feature = "ros2-bridge", test))]
+    next_id: u32,
 }
 
 fn new_metadata() -> Box<Metadata> {
@@ -974,6 +982,23 @@ unsafe fn send_arrow_output_impl(
 }
 
 impl MergedEvents {
+    #[cfg(any(feature = "ros2-bridge", test))]
+    fn merge(&mut self, events: impl Stream<Item = Box<dyn Any>> + Unpin + 'static) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let events = Box::pin(events.map(move |event| ExternalEvent { event, id }));
+
+        let inner = self.events.take().unwrap();
+        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
+            Box::new(inner.merge_external(events).map(|event| match event {
+                MergedEvent::Dora(event) => MergedEvent::Dora(event),
+                MergedEvent::External(event) => MergedEvent::External(event.flatten()),
+            }));
+        self.events = Some(merged);
+
+        id
+    }
+
     fn next(&mut self) -> MergedDoraEvent {
         let event = futures_lite::future::block_on(self.events.as_mut().unwrap().next());
         MergedDoraEvent(event)
@@ -1054,5 +1079,29 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    #[test]
+    fn merged_events_assigns_ids_to_external_streams() {
+        let mut events = MergedEvents {
+            events: Some(Box::new(stream::empty())),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
+        };
+
+        let first_id = events.merge(stream::once(Box::new("first") as Box<dyn Any>));
+        let second_id = events.merge(stream::once(Box::new("second") as Box<dyn Any>));
+
+        assert_eq!(first_id, 1);
+        assert_eq!(second_id, 2);
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            if let Some(MergedEvent::External(event)) = events.next().0 {
+                seen.push(event.id);
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, vec![1, 2]);
     }
 }
