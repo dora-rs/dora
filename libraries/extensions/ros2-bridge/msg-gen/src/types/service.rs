@@ -216,7 +216,7 @@ impl Service {
                 #[allow(non_snake_case)]
                 fn #wait_for_service(self: &mut #client_name, node: &Box<Ros2Node>) -> eyre::Result<()> {
                     let service_ready = async {
-                        for _ in 0..10 {
+                        for _ in 0..30 {
                             let ready = self.client.wait_for_service(&node.node);
                             futures::pin_mut!(ready);
                             let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
