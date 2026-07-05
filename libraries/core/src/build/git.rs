@@ -61,6 +61,7 @@ impl GitManager {
             // operations.
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
+                commit_hash,
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
@@ -278,7 +279,46 @@ impl GitFolder {
                     }
                 }
             }
-            ReuseOptions::Reuse { dir } => {
+            ReuseOptions::Reuse { dir, commit_hash } => {
+                // Belt and braces for #2480: even with the cleanup above, a stale
+                // dir could still slip through if remove_dir_all itself failed or
+                // we got killed mid-checkout. So before I trust a clone that's
+                // pinned to a full commit hash, I check that HEAD actually points
+                // there. Branch and tag pins I can't verify offline, and I only
+                // look when the dir is really on disk, so parallel builds that have
+                // merely planned this dir (not created it yet) are left alone.
+                if dir.exists() && is_full_commit_hash(&commit_hash) {
+                    let repo_dir = dir.clone();
+                    let head = tokio::task::spawn_blocking(move || -> eyre::Result<String> {
+                        let repo =
+                            git2::Repository::open(&repo_dir).context("failed to open git repo")?;
+                        let id = repo
+                            .head()
+                            .context("failed to read HEAD")?
+                            .peel_to_commit()
+                            .context("failed to resolve HEAD commit")?
+                            .id()
+                            .to_string();
+                        Ok(id)
+                    })
+                    .await
+                    .unwrap();
+
+                    let on_right_commit =
+                        matches!(&head, Ok(h) if h.eq_ignore_ascii_case(&commit_hash));
+                    if !on_right_commit {
+                        // Drop the stale clone so the next build re-clones from
+                        // scratch, then fail loudly instead of quietly building the
+                        // old source.
+                        cleanup_failed_clone(logger, &dir).await;
+                        bail!(
+                            "clone dir {} is not on the requested commit {commit_hash} \
+                             (found {head:?}); I removed it, please rebuild",
+                            dir.display()
+                        );
+                    }
+                }
+
                 logger
                     .log_message(
                         LogLevel::Info,
@@ -301,7 +341,7 @@ enum ReuseOptions {
         commit_hash: String,
     },
     /// Reuse an existing up-to-date clone of the repository.
-    Reuse { dir: PathBuf },
+    Reuse { dir: PathBuf, commit_hash: String },
     /// Copy an older clone of the repository and fetch changes, then reuse it.
     CopyAndFetch {
         from: PathBuf,
@@ -336,6 +376,13 @@ async fn cleanup_failed_clone(logger: &mut impl BuildLogger, dir: &Path) {
                 .await;
         }
     }
+}
+
+/// True for a full-length hex commit id (40 chars for SHA-1, 64 for SHA-256).
+/// Branch and tag names are shorter or non-hex, and I can't resolve those to a
+/// commit without hitting the network, so those pins skip the HEAD check.
+fn is_full_commit_hash(s: &str) -> bool {
+    matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository> {
@@ -495,5 +542,57 @@ mod tests {
             !target.exists(),
             "a failed copy+fetch must not leave the dir behind"
         );
+    }
+
+    #[tokio::test]
+    async fn reuse_bails_and_removes_dir_on_head_mismatch() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        init_repo_with_commit(&dir); // HEAD sits at commit A
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                // Well-formed full hash that is definitely not commit A.
+                commit_hash: "0".repeat(40),
+            },
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !dir.exists(),
+            "a clone on the wrong commit must be removed so the next build re-clones"
+        );
+    }
+
+    #[tokio::test]
+    async fn reuse_ok_when_head_matches() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        let oid = init_repo_with_commit(&dir);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                commit_hash: oid,
+            },
+        };
+        assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
+        assert!(dir.exists());
+    }
+
+    #[tokio::test]
+    async fn reuse_skips_verification_for_branch_ref() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        init_repo_with_commit(&dir);
+
+        // "main" isn't a full hash, so I skip the HEAD check and just reuse.
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                commit_hash: "main".into(),
+            },
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_ok());
     }
 }
