@@ -59,9 +59,22 @@ impl GitManager {
             // The directory already contains a checkout of the commit we're interested in.
             // So we can simply reuse the directory without doing any additional git
             // operations.
+            //
+            // Only hand down a commit to verify (see the Reuse arm) when the dir was
+            // left by a prior, finished build: it's on disk but this session didn't
+            // plan it. A dir this session *did* plan is about to be filled in by a
+            // sibling node's NewClone, which may be running right now on another
+            // thread (parallel builds share one JoinSet with no per-dir lock). If I
+            // checked HEAD on that I could delete a clone that's still being written,
+            // so I skip verification and just reuse it, same as before this change.
+            let planned_this_session = self
+                .prepared_builds
+                .get(&session_id)
+                .map(|p| p.planned_clone_dirs.contains(&clone_dir))
+                .unwrap_or(false);
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
-                commit_hash,
+                verify_commit: (!planned_this_session).then_some(commit_hash),
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
@@ -279,15 +292,19 @@ impl GitFolder {
                     }
                 }
             }
-            ReuseOptions::Reuse { dir, commit_hash } => {
+            ReuseOptions::Reuse { dir, verify_commit } => {
                 // Belt and braces for #2480: even with the cleanup above, a stale
                 // dir could still slip through if remove_dir_all itself failed or
-                // we got killed mid-checkout. So before I trust a clone that's
-                // pinned to a full commit hash, I check that HEAD actually points
-                // there. Branch and tag pins I can't verify offline, and I only
-                // look when the dir is really on disk, so parallel builds that have
-                // merely planned this dir (not created it yet) are left alone.
-                if dir.exists() && is_full_commit_hash(&commit_hash) {
+                // we got killed mid-checkout. So for a clone left by a prior build
+                // (verify_commit is Some) that's pinned to a full commit hash, I
+                // check that HEAD actually points there. verify_commit is None when
+                // a sibling node in this build owns the dir and may still be cloning
+                // into it, so I leave those completely untouched. Branch and tag
+                // pins I can't verify offline, so those pass through too.
+                if let Some(commit_hash) = verify_commit
+                    && dir.exists()
+                    && is_full_commit_hash(&commit_hash)
+                {
                     let repo_dir = dir.clone();
                     let head = tokio::task::spawn_blocking(move || -> eyre::Result<String> {
                         let repo =
@@ -302,7 +319,7 @@ impl GitFolder {
                         Ok(id)
                     })
                     .await
-                    .unwrap();
+                    .context("HEAD read task panicked")?;
 
                     let on_right_commit =
                         matches!(&head, Ok(h) if h.eq_ignore_ascii_case(&commit_hash));
@@ -341,7 +358,15 @@ enum ReuseOptions {
         commit_hash: String,
     },
     /// Reuse an existing up-to-date clone of the repository.
-    Reuse { dir: PathBuf, commit_hash: String },
+    ///
+    /// `verify_commit` is `Some(hash)` only for a clone left by a prior build,
+    /// where it's safe to check HEAD against `hash`. It's `None` when a sibling
+    /// node in this same build owns the dir (it may still be cloning into it),
+    /// in which case the reuse is a plain read with no HEAD check.
+    Reuse {
+        dir: PathBuf,
+        verify_commit: Option<String>,
+    },
     /// Copy an older clone of the repository and fetch changes, then reuse it.
     CopyAndFetch {
         from: PathBuf,
@@ -361,7 +386,7 @@ enum ReuseOptions {
 /// it was meant to become (#2480). A dir that was never created is fine, I only
 /// grumble if a real directory refuses to go away.
 async fn cleanup_failed_clone(logger: &mut impl BuildLogger, dir: &Path) {
-    match std::fs::remove_dir_all(dir) {
+    match tokio::fs::remove_dir_all(dir).await {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
@@ -554,7 +579,7 @@ mod tests {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
                 // Well-formed full hash that is definitely not commit A.
-                commit_hash: "0".repeat(40),
+                verify_commit: Some("0".repeat(40)),
             },
         };
         assert!(folder.prepare(&mut TestLogger).await.is_err());
@@ -573,7 +598,7 @@ mod tests {
         let folder = GitFolder {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
-                commit_hash: oid,
+                verify_commit: Some(oid),
             },
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
@@ -590,9 +615,30 @@ mod tests {
         let folder = GitFolder {
             reuse: ReuseOptions::Reuse {
                 dir: dir.clone(),
-                commit_hash: "main".into(),
+                verify_commit: Some("main".into()),
             },
         };
         assert!(folder.prepare(&mut TestLogger).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reuse_without_verify_leaves_a_sibling_clone_alone() {
+        // verify_commit = None models the case where a sibling node in this same
+        // build owns the dir and might still be cloning into it. Even though HEAD
+        // sits at commit A and not whatever the pin is, I must not read or delete
+        // it — deleting a clone another thread is writing is exactly the race the
+        // dir.exists() guard alone didn't cover.
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        init_repo_with_commit(&dir);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                verify_commit: None,
+            },
+        };
+        assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
+        assert!(dir.exists(), "a sibling-owned clone must never be deleted");
     }
 }
