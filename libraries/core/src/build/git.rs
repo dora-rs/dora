@@ -187,18 +187,7 @@ impl GitFolder {
                         logger
                             .log_message(LogLevel::Error, format!("{err:?}"))
                             .await;
-                        // remove erroneous clone again
-                        if let Err(err) = std::fs::remove_dir_all(target_dir) {
-                            logger
-                                .log_message(
-                                    LogLevel::Error,
-                                    format!(
-                                        "failed to remove clone dir after clone/checkout error: {}",
-                                        err.kind()
-                                    ),
-                                )
-                                .await;
-                        }
+                        cleanup_failed_clone(logger, &target_dir).await;
                         bail!(err)
                     }
                 }
@@ -210,34 +199,50 @@ impl GitFolder {
             } => {
                 let from_clone = from.clone();
                 let to = target_dir.clone();
-                tokio::task::spawn_blocking(move || {
-                    std::fs::create_dir_all(&to)
-                        .context("failed to create directory for copying git repo")?;
-                    fs_extra::dir::copy(
-                        &from_clone,
-                        &to,
-                        &fs_extra::dir::CopyOptions::new().content_only(true),
-                    )
-                    .with_context(|| {
-                        format!(
-                            "failed to copy repo clone from `{}` to `{}`",
-                            from_clone.display(),
-                            to.display()
+
+                // I want the whole copy + fetch + checkout to be all-or-nothing.
+                // If any step dies partway we're left with a half-copied dir on
+                // disk, and I don't want the next build mistaking it for a good
+                // clone and building the wrong commit (#2480).
+                let result: eyre::Result<()> = async {
+                    tokio::task::spawn_blocking(move || {
+                        std::fs::create_dir_all(&to)
+                            .context("failed to create directory for copying git repo")?;
+                        fs_extra::dir::copy(
+                            &from_clone,
+                            &to,
+                            &fs_extra::dir::CopyOptions::new().content_only(true),
                         )
+                        .with_context(|| {
+                            format!(
+                                "failed to copy repo clone from `{}` to `{}`",
+                                from_clone.display(),
+                                to.display()
+                            )
+                        })
                     })
-                })
-                .await??;
+                    .await??;
 
-                logger
-                    .log_message(
-                        LogLevel::Info,
-                        format!("fetching changes after copying {}", from.display()),
-                    )
-                    .await;
+                    logger
+                        .log_message(
+                            LogLevel::Info,
+                            format!("fetching changes after copying {}", from.display()),
+                        )
+                        .await;
 
-                let repository = fetch_changes(&target_dir, None).await?;
-                checkout_tree(&repository, &commit_hash)?;
-                target_dir
+                    let repository = fetch_changes(&target_dir, None).await?;
+                    checkout_tree(&repository, &commit_hash)?;
+                    Ok(())
+                }
+                .await;
+
+                match result {
+                    Ok(()) => target_dir,
+                    Err(err) => {
+                        cleanup_failed_clone(logger, &target_dir).await;
+                        bail!(err)
+                    }
+                }
             }
             ReuseOptions::RenameAndFetch {
                 from,
@@ -255,9 +260,23 @@ impl GitFolder {
                     )
                     .await;
 
-                let repository = fetch_changes(&target_dir, None).await?;
-                checkout_tree(&repository, &commit_hash)?;
-                target_dir
+                // The old clone now lives at target_dir. If the fetch or checkout
+                // fails from here, that dir is left sitting at the old commit, so
+                // I clean it up instead of letting a later build reuse it (#2480).
+                let result: eyre::Result<()> = async {
+                    let repository = fetch_changes(&target_dir, None).await?;
+                    checkout_tree(&repository, &commit_hash)?;
+                    Ok(())
+                }
+                .await;
+
+                match result {
+                    Ok(()) => target_dir,
+                    Err(err) => {
+                        cleanup_failed_clone(logger, &target_dir).await;
+                        bail!(err)
+                    }
+                }
             }
             ReuseOptions::Reuse { dir } => {
                 logger
@@ -295,6 +314,28 @@ enum ReuseOptions {
         target_dir: PathBuf,
         commit_hash: String,
     },
+}
+
+/// Wipe a half-prepared clone dir after a failed clone/fetch/checkout so a
+/// later build doesn't pick it up and treat it as a good clone of the commit
+/// it was meant to become (#2480). A dir that was never created is fine, I only
+/// grumble if a real directory refuses to go away.
+async fn cleanup_failed_clone(logger: &mut impl BuildLogger, dir: &Path) {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            logger
+                .log_message(
+                    LogLevel::Error,
+                    format!(
+                        "couldn't remove clone dir after a failed build: {}",
+                        err.kind()
+                    ),
+                )
+                .await;
+        }
+    }
 }
 
 fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository> {
@@ -373,4 +414,86 @@ fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_message::common::LogLevelOrStdout;
+
+    // A logger that throws everything away. I don't care what gets logged in
+    // these tests, only what happens to the files on disk.
+    struct TestLogger;
+    impl BuildLogger for TestLogger {
+        type Clone = TestLogger;
+        async fn log_message(
+            &mut self,
+            _level: impl Into<LogLevelOrStdout> + Send,
+            _message: impl Into<String> + Send,
+        ) {
+        }
+        async fn try_clone(&self) -> eyre::Result<Self::Clone> {
+            Ok(TestLogger)
+        }
+    }
+
+    // Spin up a real local git repo with a single commit and hand back the
+    // commit id. There's deliberately no `origin` remote, so any fetch against
+    // it fails right away and I can exercise the failure path without a network.
+    fn init_repo_with_commit(path: &Path) -> String {
+        let repo = git2::Repository::init(path).unwrap();
+        std::fs::write(path.join("file.txt"), b"A").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "A", &tree, &[])
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn rename_and_fetch_removes_dir_when_fetch_fails() {
+        let base = tempfile::tempdir().unwrap();
+        let from = base.path().join("from");
+        let target = base.path().join("target");
+        init_repo_with_commit(&from);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::RenameAndFetch {
+                from,
+                target_dir: target.clone(),
+                // 40 hex chars, but we never get that far: the fetch blows up first.
+                commit_hash: "deadbeef".repeat(5),
+            },
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !target.exists(),
+            "a failed rename+fetch must not leave the dir behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_and_fetch_removes_dir_when_fetch_fails() {
+        let base = tempfile::tempdir().unwrap();
+        let from = base.path().join("from");
+        let target = base.path().join("target");
+        init_repo_with_commit(&from);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::CopyAndFetch {
+                from,
+                target_dir: target.clone(),
+                commit_hash: "deadbeef".repeat(5),
+            },
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !target.exists(),
+            "a failed copy+fetch must not leave the dir behind"
+        );
+    }
 }
