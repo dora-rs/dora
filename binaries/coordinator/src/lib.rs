@@ -893,7 +893,17 @@ async fn start_inner(
                             grace_duration,
                             force,
                         } => {
-                            if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                            // Only short-circuit with the cached result once the
+                            // dataflow has fully finished (no longer in
+                            // `running_dataflows`). `dataflow_results` accumulates
+                            // one entry per daemon *while the dataflow is still
+                            // running* (see `DataflowFinishedOnDaemon` /
+                            // `cap_dataflow_results`), so keying off it alone would
+                            // report a partially-finished multi-daemon dataflow as
+                            // stopped and skip stopping the still-running daemons.
+                            if !running_dataflows.contains_key(&dataflow_uuid)
+                                && let Some(result) = dataflow_results.get(&dataflow_uuid)
+                            {
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
                                     result: dataflow_result(result, dataflow_uuid, &clock),
@@ -935,7 +945,14 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
-                                if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                                // See the `Stop` handler above: only use the cached
+                                // result when the dataflow has fully finished, so a
+                                // partially-finished multi-daemon dataflow is still
+                                // actually stopped instead of being reported as
+                                // stopped while some daemons keep running.
+                                if !running_dataflows.contains_key(&dataflow_uuid)
+                                    && let Some(result) = dataflow_results.get(&dataflow_uuid)
+                                {
                                     let reply = ControlRequestReply::DataflowStopped {
                                         uuid: dataflow_uuid,
                                         result: dataflow_result(result, dataflow_uuid, &clock),
