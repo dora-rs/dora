@@ -281,66 +281,6 @@ mod pin_tests {
     }
 }
 
-/// Crossover where pinned-DMA bandwidth overtakes pageable copy +
-/// cudaHostRegister/unregister fixed cost (~100 µs).  Determined by
-/// ablation study (2026-06-27): pageable faster below, pinned faster
-/// above.  Shared by `register_memory_pool` and `write_memory_pool`.
-const DMA_PIN_THRESHOLD_BYTES: usize = 25 * 1024 * 1024;
-
-/// Returns `true` when the source tensor should be pinned before DMA.
-///
-/// Pinning is a property of the *source* pointer: `cudaHostRegister` only
-/// makes sense for host (CPU) memory, and the pin/unpin fixed cost
-/// (~100 µs) is only worth paying when the tensor is large enough that
-/// the DMA bandwidth gain outweighs it.
-///
-/// # Unit-testable
-///
-/// The decision is pure integer logic — no CUDA runtime calls — so the
-/// boundary (25 MiB ± 1 byte) can be exercised in CI even without a GPU.
-#[inline]
-const fn should_pin(is_cuda: bool, size: usize) -> bool {
-    !is_cuda && size > DMA_PIN_THRESHOLD_BYTES
-}
-
-#[cfg(test)]
-mod pin_tests {
-    use super::*;
-
-    #[test]
-    fn pin_cpu_source_above_threshold() {
-        // CPU source, 25 MiB + 1 byte → should pin
-        assert!(should_pin(false, 25 * 1024 * 1024 + 1));
-        // CPU source, 100 MiB → should pin
-        assert!(should_pin(false, 100 * 1024 * 1024));
-    }
-
-    #[test]
-    fn pin_cpu_source_below_threshold() {
-        // CPU source, exactly at threshold → should NOT pin (> not >=)
-        assert!(!should_pin(false, 25 * 1024 * 1024));
-        // CPU source, 1 byte below → should NOT pin
-        assert!(!should_pin(false, 25 * 1024 * 1024 - 1));
-        // CPU source, tiny → should NOT pin
-        assert!(!should_pin(false, 1));
-    }
-
-    #[test]
-    fn pin_cuda_source_never_pins() {
-        // CUDA source regardless of size → never pin
-        assert!(!should_pin(true, 0));
-        assert!(!should_pin(true, 25 * 1024 * 1024));
-        assert!(!should_pin(true, 100 * 1024 * 1024));
-        assert!(!should_pin(true, 1024 * 1024 * 1024));
-    }
-
-    #[test]
-    fn pin_zero_size_cpu() {
-        // Zero-size CPU tensor → below threshold, don't pin
-        assert!(!should_pin(false, 0));
-    }
-}
-
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -1525,12 +1465,13 @@ impl Node {
     /// The bundled `examples/memory-pool/` dataflows demonstrate correct
     /// turn-based usage: the sender writes, outputs the pool ID, and waits
     /// for the next input event before writing again.
-    #[pyo3(signature = (memory_pool_id, tensor_info))]
+    #[pyo3(signature = (memory_pool_id, tensor_info, *, mode="auto"))]
     pub fn write_memory_pool(
         &self,
         memory_pool_id: Py<PyAny>,
         tensor_info: &Bound<'_, PyDict>,
         py: Python,
+        mode: &str,
     ) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
@@ -1558,7 +1499,14 @@ impl Node {
 
         // Pin-decision guard shared by cache-miss PoolSlot construction and
         // slow-path dma_copy (cache-hit reuses the slot's stored is_pinned).
-        let auto_pin = should_pin(is_cuda, size);
+        // mode="pinned"  → always use cudaHostRegister + DMA (ablation baseline)
+        // mode="pageable"→ skip cudaHostRegister, use pageable cudaMemcpy
+        // mode="auto"    → auto-select based on 25 MiB threshold (production default)
+        let auto_pin = match mode {
+            "pinned" => true,
+            "pageable" => false,
+            _ => should_pin(is_cuda, size), // "auto" or unrecognised → auto-select
+        };
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
@@ -1581,10 +1529,16 @@ impl Node {
                 // stored back into PINNED_POOL after the write — this keeps
                 // the shmem mapping alive for the duration of the data copy.
                 let (shmem_ptr, shmem_capacity, store_back, is_pinned) =
-                    if let Some(slot_data) = pool_slot {
-                        // Cache hit: reuse the persistent mapping (no mmap)
+                    if let Some(mut slot_data) = pool_slot {
+                        // Cache hit: reuse the persistent mapping (no mmap).
+                        // Override is_pinned with the caller's mode choice so
+                        // ablation experiments (pinned/pageable/auto) actually
+                        // take effect — register_memory_pool always sets the
+                        // slot to auto-select, which would silently mask the
+                        // mode on every subsequent cache hit.
                         let cap = slot_data.size;
-                        let pinned = slot_data.is_pinned;
+                        slot_data.is_pinned = auto_pin;
+                        let pinned = auto_pin;
                         (slot_data.base as *mut u8, cap, Some(slot_data), pinned)
                     } else {
                         // Cache miss: open via ShmemConf, wrap immediately
@@ -1886,16 +1840,19 @@ impl Node {
     /// the dataflow graph's `next_require` round-trip) that it is safe to
     /// write the next frame. The bundled `examples/memory-pool/` dataflows
     /// demonstrate this pattern.
-    #[pyo3(signature = (memory_pool_id))]
+    #[pyo3(signature = (memory_pool_id, *, if_fast=true))]
     pub fn read_memory_pool(
         &self,
         memory_pool_id: Py<PyAny>,
         py: Python,
+        if_fast: bool,
     ) -> eyre::Result<Py<PyAny>> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
-        // Fast path: DORADMA header read
-        if buffer_id.starts_with("pool_") {
+        // Fast path: DORADMA header read.
+        // When if_fast=false (ablation: HETEROPOOL_NO_FASTPATH=1), bypass
+        // the fast path and query the daemon on every read.
+        if if_fast && buffer_id.starts_with("pool_") {
             if let Some(result) = self.try_doradma_read(&buffer_id, py)? {
                 return Ok(result);
             }
