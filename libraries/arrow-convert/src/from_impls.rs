@@ -113,20 +113,13 @@ impl<'a> TryFrom<&'a ArrowData> for &'a str {
     }
 }
 
-impl<'a> TryFrom<&'a ArrowData> for String {
+impl TryFrom<&ArrowData> for String {
     type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &StringArray = value.as_string_opt().wrap_err("not a string array")?;
-        if array.is_empty() {
-            eyre::bail!("empty array");
-        }
-        if array.len() != 1 {
-            eyre::bail!("expected length 1");
-        }
-        if array.null_count() != 0 {
-            eyre::bail!("array has nulls");
-        }
-        Ok(array.value(0).to_string())
+    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+        // Delegate to the `&str` impl so the single-element validation lives in
+        // one place and the two conversions can never drift apart.
+        let s: &str = value.try_into()?;
+        Ok(s.to_string())
     }
 }
 
