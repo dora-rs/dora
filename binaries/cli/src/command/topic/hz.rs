@@ -185,7 +185,15 @@ impl HzStats {
     fn record(&self, now: Instant) {
         let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         timestamps.push_back(now);
-        let cutoff = now - self.window_duration;
+        // `now - self.window_duration` panics ("overflow when subtracting
+        // duration from instant") when the window exceeds the monotonic clock
+        // value -- reachable via a large `--window` (the flag accepts any
+        // `usize`) on a freshly booted machine. When the cutoff would predate
+        // the monotonic epoch, every recorded timestamp is within the window,
+        // so nothing is evicted. Mirrors the guard in `topic/info.rs`.
+        let Some(cutoff) = now.checked_sub(self.window_duration) else {
+            return;
+        };
         while let Some(&first) = timestamps.front() {
             if first < cutoff {
                 timestamps.pop_front();
@@ -332,12 +340,15 @@ fn run_hz(
 
     loop {
         let now = Instant::now();
+        // Same overflow guard as `HzStats::record`: within the first second of
+        // uptime `now - sub_window` would panic. If the cutoff predates the
+        // monotonic epoch, count every recorded timestamp.
+        let cutoff = now.checked_sub(sub_window);
         for (i, (_topic, s)) in stats.iter().enumerate() {
-            let cutoff = now - sub_window;
             let mut count = 0usize;
             let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
             for &t in ts.iter().rev() {
-                if t < cutoff {
+                if cutoff.is_some_and(|cutoff| t < cutoff) {
                     break;
                 }
                 count += 1;
@@ -600,5 +611,25 @@ mod tests {
     #[test]
     fn parse_window_non_numeric() {
         assert!(parse_window("abc").is_err());
+    }
+
+    /// `--window` accepts any `usize`, so a large window makes
+    /// `now - window_duration` overflow the monotonic `Instant` and panic
+    /// ("overflow when subtracting duration from instant"). `record` must
+    /// tolerate a window larger than the current monotonic clock value
+    /// instead of aborting. Reachable via `dora topic hz --window <huge>`.
+    #[test]
+    fn record_does_not_overflow_on_huge_window() {
+        let stats = HzStats::new(usize::MAX);
+        // Would panic before the `checked_sub` guard.
+        stats.record(Instant::now());
+        stats.record(Instant::now());
+        // With a window that predates the monotonic epoch, nothing is evicted.
+        let len = stats
+            .timestamps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        assert_eq!(len, 2);
     }
 }
