@@ -529,12 +529,15 @@ mod tests {
     }
 
     #[test]
-    fn raw_roundtrip_empty_primitive_uses_empty_buffer_path() {
+    fn raw_roundtrip_empty_primitive_via_general_path() {
         let data = UInt64Array::from(Vec::<u64>::new()).into_data();
         let mut sample = vec![0; required_data_size(&data)];
         let type_info = copy_array_into_sample(&mut sample, &data);
-        // An empty array yields a zero-length payload, exercising the
-        // `raw_buffer.is_empty()` early-return in `buffer_into_arrow_array`.
+        // An empty array yields a zero-length payload. There is deliberately no
+        // `raw_buffer.is_empty()` early-return (see the NOTE in
+        // `buffer_into_arrow_array`, dora-rs/dora#2083); this goes through the
+        // general `ArrayData::try_new` path, which happens to also produce a
+        // length-0 array here because `type_info.len` is 0.
         let decoded =
             buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
         assert_eq!(decoded.len(), 0);

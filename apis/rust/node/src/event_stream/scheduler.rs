@@ -311,7 +311,10 @@ impl Scheduler {
             return Some(event);
         }
 
-        // Process the ID with the oldest timestamp using BTreeMap Ordering
+        // Return the next event from the least-recently-used input queue:
+        // scan `last_used` (a `VecDeque` in LRU order), pop from the first
+        // non-empty queue, and move that id to the back so other inputs get a
+        // turn. There is no timestamp comparison or `BTreeMap` involved.
         for index in 0..self.last_used.len() {
             let id = &self.last_used[index];
             if let Some((_size, queue)) = self.event_queues.get_mut(id)
