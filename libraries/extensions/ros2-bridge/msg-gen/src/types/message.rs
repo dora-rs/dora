@@ -103,7 +103,6 @@ impl Message {
     ) -> (impl ToTokens, impl ToTokens) {
         let cxx_name = format_ident!("{}", self.name);
         let struct_raw_name = format_ident!("{package_name}__{}", self.name);
-        let struct_raw_vec_name = format_ident!("{package_name}_Vec_{}", self.name);
 
         let rust_type_def_inner = self.members.iter().map(|m| m.rust_type_def(&self.package));
         let constants_def_inner = self.constants.iter().map(|c| c.token_stream());
@@ -244,12 +243,6 @@ impl Message {
                 #attributes
                 pub struct #struct_raw_name {
                     #(#rust_type_def_inner)*
-                }
-
-                #[allow(non_camel_case_types)]
-                #[allow(dead_code)]
-                pub struct #struct_raw_vec_name {
-                    data: Vec<#struct_raw_name>
                 }
 
                 #cxx_consts
