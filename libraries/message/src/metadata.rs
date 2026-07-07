@@ -153,6 +153,35 @@ pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 /// stream (large/SHM and daemon-path payloads).
 pub const SCHEMA_HASH: &str = "_schema_hash";
 
+/// Returns `true` if the given parameters carry any pattern-correlation key
+/// ([`REQUEST_ID`], [`GOAL_ID`], or [`GOAL_STATUS`]).
+///
+/// Messages marked with these keys belong to a service or action pattern where
+/// multiple Arrow schemas can legitimately flow through a single output/input,
+/// distinguished by metadata rather than a fixed Arrow type. Runtime type
+/// checks skip such messages (dora-rs/adora#150), and the schema-once zenoh
+/// optimization excludes them — on the send side (they always travel as full
+/// self-describing streams), on the node receive side (their schemas must not
+/// churn the per-input decoder), and on the daemon's `dora topic` debug path
+/// (same, for its schema cache). Keep this the single definition so those
+/// layers can never disagree on what "pattern-correlated" means.
+pub fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
+    params.contains_key(REQUEST_ID)
+        || params.contains_key(GOAL_ID)
+        || params.contains_key(GOAL_STATUS)
+}
+
+/// Remove internal wire-protocol keys ([`SCHEMA_HASH`], [`FRAMING`]) from a
+/// parameter map. Call this at every wire→user boundary: the keys are
+/// meaningless after decode, and a stale [`SCHEMA_HASH`] forwarded from an
+/// input's metadata into `send_output` parameters (a standard pattern, e.g.
+/// replay) would ride onto outputs that don't overwrite it, making receivers
+/// hash-mismatch and silently drop them (dora-rs/dora#2366 review).
+pub fn strip_internal_parameters(params: &mut MetadataParameters) {
+    params.remove(SCHEMA_HASH);
+    params.remove(FRAMING);
+}
+
 /// FNV-1a-64 hash with a fixed seed (cross-process deterministic). Used to
 /// fingerprint an Arrow IPC schema block so a schema-less batch can be matched
 /// to the schema it was encoded against (see [`SCHEMA_HASH`]). The producer
