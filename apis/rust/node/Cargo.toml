@@ -28,10 +28,10 @@ dora-metrics = { workspace = true, optional = true }
 opentelemetry = { version = "0.31.0", optional = true }
 arrow = { workspace = true, features = ["ipc"] }
 futures = { workspace = true }
-futures-concurrency = "7.3.0"
-futures-timer = "3.0.2"
+futures-concurrency = "7.7.1"
+futures-timer = "3.0.4"
 dora-arrow-convert = { workspace = true }
-aligned-vec = "0.5.0"
+aligned-vec = "0.6.4"
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 inquire = { workspace = true, features = ["console"] }
@@ -39,6 +39,6 @@ arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 colored = { workspace = true }
-is-terminal = "0.4.16"
+is-terminal = "0.4.17"
 thiserror = { workspace = true }
 uuid = { workspace = true }

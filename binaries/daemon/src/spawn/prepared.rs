@@ -24,7 +24,7 @@ use dora_node_api::{
     arrow_utils::{copy_array_into_sample, required_data_size},
 };
 use eyre::{ContextCompat, WrapErr};
-use process_wrap::tokio::TokioCommandWrap;
+use process_wrap::tokio::CommandWrap;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -491,8 +491,7 @@ impl PreparedNode {
                     }
                 }
 
-                let mut command =
-                    TokioCommandWrap::from(tokio::process::Command::from(std_command));
+                let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
                 {
@@ -672,7 +671,7 @@ impl PreparedNode {
         tokio::spawn(async move {
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
-                    status = Box::into_pin(child.wait()) => {
+                    status = child.wait() => {
                         break status.into();
                     }
                     result = op_rx.recv_async() => {
@@ -680,7 +679,7 @@ impl PreparedNode {
                             Ok(op) => op.execute(child.as_mut()),
                             Err(_) => {
                                 // Sender dropped
-                                break Box::into_pin(child.wait()).await.into();
+                                break child.wait().await.into();
                             }
                         }
                     }
