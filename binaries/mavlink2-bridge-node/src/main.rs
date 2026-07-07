@@ -73,7 +73,7 @@ use serde::Deserialize;
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -359,12 +359,27 @@ fn decode_input<T: MavlinkArrow>(data: &ArrayRef, input: &str) -> Result<T> {
     T::from_record_batch(&batch).with_context(|| format!("decoding {input} from incoming Arrow"))
 }
 
+/// Build the header for the next outbound frame, stamping it with the next
+/// MAVLink sequence number.
+///
+/// The sequence field must increment per transmitted frame (wrapping at 255)
+/// so receivers can detect dropped packets (e.g. radio-link statistics /
+/// `SYS_STATUS.drop_rate_comm`). A constant `0` — as every send used before —
+/// makes loss detection impossible and is non-conformant with the protocol.
+fn next_header(base: &MavHeader, sequence: &AtomicU8) -> MavHeader {
+    MavHeader {
+        sequence: sequence.fetch_add(1, Ordering::Relaxed),
+        ..*base
+    }
+}
+
 /// Forward one incoming dora `Event::Input` as a MAVLink frame on
 /// `conn`. Unknown input ids are silently ignored — the bridge does
 /// not abort the whole node on misrouted inputs.
 fn handle_input(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
+    sequence: &AtomicU8,
     id: &DataId,
     data: &ArrayRef,
 ) -> Result<()> {
@@ -399,7 +414,7 @@ fn handle_input(
         _ => return Ok(()), // unknown input id, ignore
     };
     let sent = conn
-        .send(header, &outgoing)
+        .send(&next_header(header, sequence), &outgoing)
         .map_err(|e| eyre!("mavlink send: {e}"))?;
     if sent == 0 {
         // UDP server mode (`udpin:`) reports a successful 0-byte send until a
@@ -425,6 +440,7 @@ fn handle_input(
 fn attempt_data_stream_request(
     conn: &(dyn MavConnection<MavMessage> + Send + Sync),
     header: &MavHeader,
+    sequence: &AtomicU8,
 ) -> bool {
     let req = mavlink::dialects::common::REQUEST_DATA_STREAM_DATA {
         req_message_rate: 5,
@@ -433,7 +449,10 @@ fn attempt_data_stream_request(
         req_stream_id: 0, // MAV_DATA_STREAM_ALL
         start_stop: 1,
     };
-    match conn.send(header, &MavMessage::REQUEST_DATA_STREAM(req)) {
+    match conn.send(
+        &next_header(header, sequence),
+        &MavMessage::REQUEST_DATA_STREAM(req),
+    ) {
         Ok(0) => false, // no UDP peer yet — retry once one connects
         Ok(_) => {
             tracing::info!("requested all data streams at 5 Hz");
@@ -487,6 +506,10 @@ fn main() -> Result<()> {
         component_id: cfg.component_id,
         sequence: 0,
     };
+    // Per-frame MAVLink sequence counter. `next_header` stamps each outbound
+    // frame with the next value (wrapping at 255) so receivers can detect
+    // dropped packets; a constant sequence would make that impossible.
+    let sequence = AtomicU8::new(0);
 
     // Request all data streams from the autopilot at 5 Hz so HEARTBEAT,
     // GLOBAL_POSITION_INT, GPS_RAW_INT, COMMAND_ACK, etc. start flowing
@@ -494,7 +517,7 @@ fn main() -> Result<()> {
     // until a GCS asks. In UDP server mode this first attempt is dropped
     // (no client yet), so it is retried in the event loop below until a peer
     // connects (dora-rs/dora#2027).
-    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
+    let mut data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
 
     let (mut node, mut events) =
         DoraNode::init_from_env().map_err(|e| eyre!("DoraNode init: {e}"))?;
@@ -535,7 +558,7 @@ fn main() -> Result<()> {
         // connected; once the reader receives a packet the shared connection
         // learns the peer and this send goes out (dora-rs/dora#2027).
         if !data_stream_requested {
-            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header);
+            data_stream_requested = attempt_data_stream_request(conn.as_ref(), &header, &sequence);
         }
 
         let next = match events.recv_timeout(POLL_INTERVAL) {
@@ -556,7 +579,8 @@ fn main() -> Result<()> {
             match event {
                 Event::Input { id, data, .. } => {
                     let array_ref: ArrayRef = data.into();
-                    if let Err(e) = handle_input(conn.as_ref(), &header, &id, &array_ref) {
+                    if let Err(e) = handle_input(conn.as_ref(), &header, &sequence, &id, &array_ref)
+                    {
                         // Writer errors mean the dora node's command did NOT reach the
                         // autopilot. Surface at error level so users debugging missions see
                         // it in default log filters rather than treating it as routine noise.
@@ -745,6 +769,32 @@ mod tests {
         handle.join().expect("panic").expect("err");
     }
 
+    /// Every outbound frame must carry a monotonically increasing sequence
+    /// number (wrapping at 255), not a constant 0, so receivers can detect
+    /// dropped packets. The system/component id are preserved.
+    #[test]
+    fn next_header_increments_and_wraps_sequence() {
+        let base = MavHeader {
+            system_id: 42,
+            component_id: 7,
+            sequence: 0,
+        };
+        let seq = AtomicU8::new(0);
+
+        let h0 = next_header(&base, &seq);
+        let h1 = next_header(&base, &seq);
+        let h2 = next_header(&base, &seq);
+        assert_eq!((h0.sequence, h1.sequence, h2.sequence), (0, 1, 2));
+        // Base identity fields are carried through unchanged.
+        assert_eq!(h0.system_id, 42);
+        assert_eq!(h0.component_id, 7);
+
+        // Wraps at 255 -> 0 rather than panicking on overflow.
+        let seq = AtomicU8::new(255);
+        assert_eq!(next_header(&base, &seq).sequence, 255);
+        assert_eq!(next_header(&base, &seq).sequence, 0);
+    }
+
     // ---- #2034: recv-error classification ----------------------------
     //
     // The reader must tell a transient "no data yet" read timeout apart
@@ -916,8 +966,9 @@ mod tests {
             sequence: 0,
         };
 
+        let sequence = AtomicU8::new(0);
         assert!(
-            !attempt_data_stream_request(conn.as_ref(), &header),
+            !attempt_data_stream_request(conn.as_ref(), &header, &sequence),
             "with no UDP peer connected the request is dropped (0 bytes) and must be retried"
         );
     }
