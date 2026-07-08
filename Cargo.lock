@@ -1231,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1799,6 +1799,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "1.0.0-rc1"
 dependencies = [
+ "arrow",
  "axum",
  "bincode 1.3.3",
  "ctrlc",
@@ -1921,6 +1922,7 @@ dependencies = [
  "which",
  "windows 0.61.3",
  "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]
@@ -2077,12 +2079,14 @@ dependencies = [
  "bincode 1.3.3",
  "chrono",
  "colored",
+ "criterion",
  "dora-arrow-convert",
  "dora-core",
  "dora-message",
  "dora-metrics",
  "dora-tracing",
  "eyre",
+ "flatbuffers",
  "flume 0.10.14",
  "futures",
  "futures-concurrency",
@@ -2097,6 +2101,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]
@@ -3873,6 +3878,12 @@ name = "lazycell"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
+
+[[package]]
+name = "leb128"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
 
 [[package]]
 name = "lexical-core"
@@ -9076,6 +9087,26 @@ dependencies = [
  "rand_chacha 0.3.1",
  "sha3",
  "zenoh-result",
+]
+
+[[package]]
+name = "zenoh-ext"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ba3e818887ffe081162471b46e77e9a188a2223ab78c59c72f3473397516375c"
+dependencies = [
+ "async-trait",
+ "bincode 1.3.3",
+ "flume 0.11.1",
+ "futures",
+ "leb128",
+ "serde",
+ "tokio",
+ "tracing",
+ "uhlc 0.8.2",
+ "zenoh",
+ "zenoh-macros",
+ "zenoh-util",
 ]
 
 [[package]]
