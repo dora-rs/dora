@@ -32,6 +32,22 @@ pub(crate) fn error_indicates_dataflow_finished(msg: &str) -> bool {
     msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
 }
 
+/// Parses a grace period given either as a duration string (`30s`, `500ms`)
+/// or as a bare number of seconds (`2`, `1.5`).
+pub(crate) fn parse_grace_period(value: &str) -> Result<std::time::Duration, String> {
+    if let Ok(duration) = duration_str::parse(value) {
+        return Ok(duration);
+    }
+    if let Ok(secs) = value.parse::<f64>()
+        && let Ok(duration) = std::time::Duration::try_from_secs_f64(secs)
+    {
+        return Ok(duration);
+    }
+    Err(format!(
+        "expected a duration like `30s`/`500ms` or a number of seconds, got `{value}`"
+    ))
+}
+
 pub(crate) fn handle_dataflow_result(
     result: DataflowResult,
     uuid: Option<Uuid>,

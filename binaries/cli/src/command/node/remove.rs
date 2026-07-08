@@ -16,9 +16,9 @@ pub struct Remove {
     #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     dataflow: Option<String>,
     node: String,
-    /// Grace period in seconds before force-killing the node.
-    #[clap(long)]
-    grace: Option<f64>,
+    /// Grace period before force-killing the node (e.g. "30s" or seconds)
+    #[clap(long, value_name = "DURATION", value_parser = crate::common::parse_grace_period)]
+    grace: Option<std::time::Duration>,
 }
 
 impl Executable for Remove {
@@ -37,7 +37,7 @@ impl Executable for Remove {
             &ControlRequest::RemoveNode {
                 dataflow_id,
                 node_id: node_id.clone(),
-                grace_duration: self.grace.map(std::time::Duration::from_secs_f64),
+                grace_duration: self.grace,
             },
         )?;
 
