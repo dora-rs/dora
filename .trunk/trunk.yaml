@@ -14,6 +14,12 @@ version: 0.1
 #   - Cheap checks run on every PR (gate queue entry via branch protection).
 #   - Expensive checks are guarded by `if: ... startsWith(github.head_ref,
 #     'trunk-merge/')` and run only on the batch branch.
+#
+# A required check must be produced on *every* batch branch, or the queue
+# waits forever on a name that never reports. That rules out workflow-level
+# `paths:` filters (a path-filtered workflow emits no check run), which is
+# why `pip-release all green` and `find_package smoke all green` are
+# `if: always()` aggregator jobs in workflows with no `paths:` filter.
 merge:
   required_statuses:
     # Cheap (always run)
@@ -30,3 +36,4 @@ merge:
     - Semantic contract tests
     - Benchmark regression check
     - pip-release all green
+    - find_package smoke all green
