@@ -173,25 +173,14 @@ mod tests {
     use super::*;
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType;
-    use dora_message::metadata::{ArrowTypeInfo, Metadata};
+    use dora_message::metadata::Metadata;
 
     fn empty_data() -> ArrowData {
         ArrowData(new_empty_array(&DataType::Null))
     }
 
     fn test_metadata() -> Metadata {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
+        Metadata::new(dora_core::uhlc::HLC::default().new_timestamp())
     }
 
     fn make_input(id: &str, data: ArrowData) -> Event {
