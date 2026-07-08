@@ -8,23 +8,20 @@ use std::{
 use arrow::array::{Array, RecordBatch, StructArray};
 use arrow_schema::{DataType, Field, Schema};
 use colored::Colorize;
-use dora_core::{
-    metadata::ArrowTypeInfoExt,
-    uhlc::{self, HLC, NTP64, Timestamp},
-};
+use dora_core::uhlc::{self, HLC, NTP64, Timestamp};
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
     integration_testing_format::{
         IncomingEvent, InputData, IntegrationTestInput, RecordingStatus, TimedIncomingEvent,
     },
-    metadata::{ArrowTypeInfo, Metadata},
+    metadata::Metadata,
     node_to_daemon::DaemonRequest,
 };
 use eyre::{Context, ContextCompat};
 
 use crate::{
-    arrow_utils::{copy_array_into_sample, required_data_size},
+    arrow_utils::encode_arrow_ipc,
     daemon_connection::json_to_arrow::read_json_value_as_arrow,
     event_stream::data_to_arrow_array,
     integration_testing::{TestingInput, TestingOptions, TestingOutput},
@@ -200,20 +197,22 @@ impl IntegrationTestingEvents {
         let converted = match event {
             IncomingEvent::Stop => NodeEvent::Stop,
             IncomingEvent::Input { id, metadata, data } => {
-                let (data, type_info) = if let Some(data) = data {
+                let data = if let Some(data) = data {
                     let array = read_input_data(*data).with_context(|| {
                         format!("failed to read input event at offset {time_offset_secs}s ")
                     })?;
 
-                    let total_len = required_data_size(&array);
-                    let mut buf = vec![0; total_len];
-                    let type_info = copy_array_into_sample(buf.as_mut_slice(), &array);
+                    // The receive side decodes a self-describing Arrow IPC
+                    // stream, so encode the array into one here.
+                    let buf = encode_arrow_ipc(&array).with_context(|| {
+                        format!("failed to IPC-encode input event at offset {time_offset_secs}s ")
+                    })?;
 
-                    (Some(buf), type_info)
+                    Some(buf)
                 } else {
-                    (None, ArrowTypeInfo::empty())
+                    None
                 };
-                let mut meta = Metadata::new(timestamp, type_info);
+                let mut meta = Metadata::new(timestamp);
                 meta.parameters = metadata.unwrap_or_default();
                 NodeEvent::Input {
                     id,
@@ -252,9 +251,8 @@ pub fn convert_output_to_json(
         output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
     }
     if data.is_some() {
-        let data_array =
-            data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone), metadata)
-                .context("failed to convert output to arrow array")?;
+        let data_array = data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone))
+            .context("failed to convert output to arrow array")?;
 
         let data_type_json = serde_json::to_value(data_array.data_type())
             .context("failed to serialize data type as JSON")?;

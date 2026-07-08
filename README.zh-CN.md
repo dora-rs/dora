@@ -347,7 +347,6 @@ binaries/
 libraries/
   core/                 # 描述符解析、构建工具
   message/              # 组件间消息类型
-  shared-memory-server/ # 零拷贝 IPC
   arrow-convert/        # Arrow 数据转换
   recording/            # .drec 录制格式
   log-utils/            # 日志解析、合并、格式化
