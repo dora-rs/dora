@@ -132,9 +132,10 @@ impl IndexFetcher {
             // to self-heal) from a sound clone whose repository simply does not
             // contain the catalog subpath (a real configuration/bootstrap error
             // — must NOT be re-cloned on every invocation).
-            let incomplete = !clone_dir.join(CLONE_COMPLETE_MARKER).exists();
+            let mut incomplete = !clone_dir.join(CLONE_COMPLETE_MARKER).exists();
             if incomplete && !self.offline {
                 self.reclone(index, git_url, &clone_dir, catalog_subpath)?;
+                incomplete = false; // reclone() writes CLONE_COMPLETE_MARKER on success
             }
             if !catalog.is_dir() {
                 if incomplete {
@@ -556,6 +557,57 @@ source:
             !fetcher.warnings.iter().any(|w| w.contains("re-cloning")),
             "a valid clone must not be re-cloned: {:?}",
             fetcher.warnings
+        );
+    }
+
+    #[test]
+    fn stale_incomplete_flag_not_reused_after_successful_reclone() {
+        // an "incomplete" clone (no completion marker) whose repo genuinely
+        // lacks the catalog subpath must, after a successful *online*
+        // reclone, report the config error — not the stale "interrupted
+        // clone / --offline" message (which implies offline is set and the
+        // clone is still broken, neither of which is true here).
+        let remote_dir = tempfile::tempdir().unwrap();
+        let cache_dir = tempfile::tempdir().unwrap();
+        // remote has content, but under a different dir than the index `path`
+        std::fs::create_dir_all(remote_dir.path().join("node-hub")).unwrap();
+        std::fs::write(remote_dir.path().join("node-hub/readme"), "x").unwrap();
+        run_git(remote_dir.path(), &["init", "--quiet", "-b", "main"]);
+        commit_all(remote_dir.path(), "init");
+        run_git(
+            remote_dir.path(),
+            &["config", "uploadpack.allowFilter", "true"],
+        );
+        let index = remote_index(remote_dir.path()); // path = node-index (absent upstream)
+
+        // manually seed a clone that mimics an interrupted first run: cloned
+        // and its source recorded, but the completion marker never written
+        let clone_dir = cache_dir.path().join(&index.alias);
+        git(
+            None,
+            &[
+                "clone",
+                "--quiet",
+                "--",
+                remote_dir.path().to_str().unwrap(),
+                clone_dir.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        std::fs::write(
+            clone_dir.join(SOURCE_MARKER),
+            format!("{}\nnode-index", remote_dir.path().to_str().unwrap()),
+        )
+        .unwrap();
+
+        let mut fetcher = IndexFetcher::with_cache_root(cache_dir.path().into(), false);
+        let err = fetcher.catalog_dir(&index, Path::new(".")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("node-index"), "{msg}");
+        assert!(
+            !msg.contains("interrupted clone") && !msg.contains("--offline"),
+            "stale `incomplete` flag misreported a real config error as an \
+             interrupted-clone/offline issue: {msg}"
         );
     }
 
