@@ -25,6 +25,7 @@ use crate::{
     DaemonCommunicationWrapper, PatternError,
     daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
     event_stream::data_conversion::RawData,
+    node::{ZENOH_TEARDOWN_TIMEOUT, teardown_with_timeout},
 };
 use dora_arrow_convert::IntoArrow;
 use dora_core::{
@@ -73,9 +74,11 @@ pub struct EventStream {
     receiver: tokio::sync::mpsc::Receiver<EventItem>,
     _thread_handle: EventStreamThreadHandle,
     /// Callback subscribers — kept alive for the lifetime of the
-    /// EventStream. Dropping a subscriber stops further callbacks; the
-    /// callback itself will see `blocking_send` return Err once the
-    /// `receiver` (declared above) is dropped.
+    /// EventStream. Dropping a subscriber undeclares it and stops further
+    /// callbacks. The callbacks use `try_send` (never block), so undeclaring
+    /// does not depend on `receiver` being dropped first. `EventStream::drop`
+    /// explicitly tears these down under a deadline (see there); by the time
+    /// this field drops it is already empty.
     _zenoh_subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
@@ -1527,6 +1530,30 @@ impl Stream for EventStream {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
+        // Tear down the per-input zenoh callback subscribers under a deadline.
+        // `Subscriber::drop` undeclares the subscription on the shared zenoh
+        // session, which blocks indefinitely when zenoh's net runtime is
+        // wedged (e.g. stuck retrying an unreachable scouted peer). Left
+        // unbounded, that hangs the whole node in `EventStream`'s field-drop
+        // sequence — before `DoraNode::Drop` (which already bounds its own
+        // session teardown) even runs — so the daemon never sees the node
+        // finish and the dataflow stalls until an outer timeout (dora-rs/dora#2425).
+        // The callbacks use `try_send`, so undeclaring before `receiver` drops
+        // cannot deadlock on a blocked callback.
+        let subscribers = std::mem::take(&mut self._zenoh_subscribers);
+        if !subscribers.is_empty() {
+            let completed =
+                teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
+                    drop(subscribers);
+                });
+            if !completed {
+                tracing::warn!(
+                    "zenoh subscriber teardown timed out after {}s; continuing node shutdown",
+                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
+                );
+            }
+        }
+
         let request = Timestamped {
             inner: DaemonRequest::EventStreamDropped,
             timestamp: self.clock.new_timestamp(),
