@@ -6,49 +6,158 @@ name: Test C/C++ find_package
 # dora-operator-api-cxx. Each crate path: cargo build → xtask stage →
 # cmake configure → cmake build of a checked-in smoke fixture.
 # Guards #1756's find_package contract.
+#
+# Tiering, mirroring .github/workflows/ci.yml:
+#
+#   The smoke matrix is expensive (3 OSes × 2 release cargo builds ×
+#   4 cmake builds; macOS bills at 10x, Windows at 2x). It is skipped on
+#   regular PRs, and on Trunk merge-queue batches / pushes to main it runs
+#   only when the changed files touch the find_package surface — so one run
+#   covers a batch of up to 5 PRs, and quiet batches cost one short runner.
+#   Manual dispatch always runs it.
+#
+#   `find_package smoke all green` is a merge-queue required status
+#   (.trunk/trunk.yaml). That is why there is no workflow-level `paths:`
+#   filter: a workflow skipped by path filtering emits *no* check run at
+#   all, so the required name would stay Pending and stall the batch.
+#   (A job skipped by `if:` does emit a check run, which is why the `if:`
+#   gating below is safe.) The path filter therefore lives inside the
+#   workflow, in the `changes` job, and the aggregator runs
+#   unconditionally. Same reasoning as pip-release.yml.
 
 on:
   push:
     branches: [main]
-    paths:
-      - "apis/c/**"
-      - 'apis/c\+\+/**'
-      # Transitive Rust deps — the C/C++ surfaces wrap these, so an
-      # ABI-breaking change here can silently regress find_package
-      # consumers without touching apis/c{,++}/.
-      - "apis/rust/node/**"
-      - "apis/rust/operator/**"
-      - "libraries/core/**"
-      - "libraries/message/**"
-      - "xtask/**"
-      - "tests/cmake-find-package-c/**"
-      - "tests/cmake-find-package-cxx/**"
-      - "tests/cmake-find-package-operator-c/**"
-      - "tests/cmake-find-package-operator-cxx/**"
-      - ".github/workflows/test-c-cpp-libraries.yml"
   pull_request:
-    paths:
-      - "apis/c/**"
-      - 'apis/c\+\+/**'
-      # Transitive Rust deps — the C/C++ surfaces wrap these, so an
-      # ABI-breaking change here can silently regress find_package
-      # consumers without touching apis/c{,++}/.
-      - "apis/rust/node/**"
-      - "apis/rust/operator/**"
-      - "libraries/core/**"
-      - "libraries/message/**"
-      - "xtask/**"
-      - "tests/cmake-find-package-c/**"
-      - "tests/cmake-find-package-cxx/**"
-      - "tests/cmake-find-package-operator-c/**"
-      - "tests/cmake-find-package-operator-cxx/**"
-      - ".github/workflows/test-c-cpp-libraries.yml"
+    branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # The `changes` job lists the PR's changed files via the REST API.
+  pull-requests: read
+
 jobs:
+  changes:
+    name: Detect relevant changes
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.decide.outputs.relevant }}
+    steps:
+      - name: Decide whether the find_package surface is affected
+        id: decide
+        shell: bash
+        # `gh` is preinstalled on GitHub-hosted runners, so this needs no
+        # third-party action and no checkout. Interpolations go through
+        # `env:` rather than into the script body, so nothing attacker-
+        # controlled is ever spliced into bash.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Every entry below is a directory prefix or one exact path, so
+          # plain string matching is exact. Deliberately no globbing: the
+          # `apis/c++/` entry is what broke GitHub's `paths:` filter in
+          # #1918, and `+` is a metacharacter in both ERE and picomatch.
+          PREFIXES=(
+            "apis/c/"
+            "apis/c++/"
+            # Transitive Rust deps — the C/C++ surfaces wrap these, so an
+            # ABI-breaking change here can silently regress find_package
+            # consumers without touching apis/c{,++}/. The fixtures link an
+            # executable, so symbol-level breaks surface at link time.
+            "apis/rust/node/"
+            "apis/rust/operator/"
+            "libraries/core/"
+            "libraries/message/"
+            "xtask/"
+            "tests/cmake-find-package-c/"
+            "tests/cmake-find-package-cxx/"
+            "tests/cmake-find-package-operator-c/"
+            "tests/cmake-find-package-operator-cxx/"
+          )
+          EXACT=(
+            ".github/workflows/test-c-cpp-libraries.yml"
+          )
+
+          # Fail open everywhere: if we cannot determine what changed, run
+          # the matrix rather than silently skip a check the queue gates on.
+          decided() {
+            echo "$2"
+            echo "relevant=$1" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # Both events have a base to diff against, so both get filtered.
+          # Each endpoint truncates its file list at a different size, and a
+          # truncated list makes a "no match" answer unsound — hence $CAP.
+          case "$EVENT_NAME" in
+            pull_request)
+              CAP=3000  # pulls/files truncates here; --paginate up to it.
+              gh api "repos/$REPO/pulls/$PR_NUMBER/files" \
+                --paginate --jq '.[].filename' > changed.txt \
+                || decided true "::warning::Could not list PR files; running the smoke matrix."
+              ;;
+            push)
+              CAP=300  # compare caps .files at 300 and will not paginate it.
+              # All-zero SHA => branch creation, nothing to compare against.
+              if [ -z "${BEFORE//0/}" ]; then
+                decided true "No base commit for this push; running the smoke matrix."
+              fi
+              # No --paginate: it pages .commits and would re-emit .files.
+              gh api "repos/$REPO/compare/$BEFORE...$SHA" \
+                --jq '.files[].filename' > changed.txt \
+                || decided true "::warning::Could not compare $BEFORE...$SHA; running the smoke matrix."
+              ;;
+            *)
+              decided true "Event is $EVENT_NAME; running the smoke matrix."
+              ;;
+          esac
+
+          if [ "$(wc -l < changed.txt)" -ge "$CAP" ]; then
+            decided true "::warning::Changed-file list hit the $CAP-entry API cap; running the smoke matrix."
+          fi
+
+          relevant=false
+          # `|| [ -n "$file" ]` so a final line without a trailing newline
+          # is still processed rather than silently dropped.
+          while IFS= read -r file || [ -n "$file" ]; do
+            for prefix in "${PREFIXES[@]}"; do
+              # Quoted expansion => prefix strip, never a glob match.
+              if [ "${file#"$prefix"}" != "$file" ]; then
+                echo "Relevant: $file (matched prefix $prefix)"
+                relevant=true
+                break 2
+              fi
+            done
+            for exact in "${EXACT[@]}"; do
+              if [ "$file" = "$exact" ]; then
+                echo "Relevant: $file (exact match)"
+                relevant=true
+                break 2
+              fi
+            done
+          done < changed.txt
+
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
   find-package-smoke:
     name: find_package smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: changes
+    if: >-
+      needs.changes.outputs.relevant == 'true' &&
+      (github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/'))
     strategy:
       fail-fast: false
       matrix:
@@ -147,3 +256,22 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$GITHUB_WORKSPACE/dora-cpp-prefix"
           cmake --build build-operator-cxx --config Release
+
+  # Single aggregator check the merge queue gates on. Listing each matrix
+  # expansion in the queue's required-checks config is fragile (names carry
+  # generated `(os)` suffixes); this job fails if any upstream job failed
+  # and succeeds when they all succeeded *or were skipped*. `if: always()`
+  # guarantees the check is always produced, so the queue never waits on a
+  # name that will not report.
+  find-package-all-green:
+    name: find_package smoke all green
+    runs-on: ubuntu-latest
+    needs: [changes, find-package-smoke]
+    if: always()
+    steps:
+      - name: Verify no find_package smoke job failed
+        run: |
+          if [ "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo "One or more find_package smoke jobs failed or were cancelled."
+            exit 1
+          fi
