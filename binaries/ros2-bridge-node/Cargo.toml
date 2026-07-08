@@ -17,7 +17,7 @@ dora-ros2-bridge-msg-gen = { workspace = true }
 dora-message = { workspace = true }
 arrow = { workspace = true }
 eyre = { workspace = true }
-flume = "0.11"
+flume = "0.12"
 futures = { workspace = true }
 futures-timer = "3"
 serde = { workspace = true }

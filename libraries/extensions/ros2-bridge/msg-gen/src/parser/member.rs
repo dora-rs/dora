@@ -1,10 +1,11 @@
 use anyhow::{Result, ensure};
 use nom::{
+    Parser,
     bytes::complete::is_not,
     character::complete::{space0, space1},
     combinator::{eof, opt, recognize},
     multi::separated_list1,
-    sequence::{preceded, tuple},
+    sequence::preceded,
 };
 
 use super::{error::RclMsgError, ident, literal, types};
@@ -70,7 +71,7 @@ fn validate_default(r#type: MemberType, default: &str) -> Result<Vec<String>> {
 }
 
 pub fn member_def(line: &str) -> Result<Member> {
-    let (_, (r#type, _, name, default, _, _)) = tuple((
+    let (_, (r#type, _, name, default, _, _)) = (
         types::parse_member_type,
         space1,
         ident::member_name,
@@ -80,11 +81,12 @@ pub fn member_def(line: &str) -> Result<Member> {
         )),
         space0,
         eof,
-    ))(line)
-    .map_err(|e| RclMsgError::ParseMemberError {
-        input: line.into(),
-        reason: e.to_string(),
-    })?;
+    )
+        .parse(line)
+        .map_err(|e| RclMsgError::ParseMemberError {
+            input: line.into(),
+            reason: e.to_string(),
+        })?;
 
     Ok(Member {
         name: name.into(),

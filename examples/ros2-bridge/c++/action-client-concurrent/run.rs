@@ -1,9 +1,7 @@
 use eyre::{Context, bail};
 use std::{env::consts::EXE_SUFFIX, path::Path};
 
-use process_wrap::std::{
-    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
-};
+use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
 
 fn main() -> eyre::Result<()> {
     if cfg!(windows) {
