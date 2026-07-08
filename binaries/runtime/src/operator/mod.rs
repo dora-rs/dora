@@ -2,8 +2,7 @@ use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
 };
-use dora_message::metadata::ArrowTypeInfo;
-use dora_node_api::{DataSample, Event, MetadataParameters};
+use dora_node_api::{DataSample, Event, MetadataParameters, arrow::array::ArrayData};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -78,9 +77,11 @@ pub enum OperatorEvent {
     },
     Output {
         output_id: DataId,
-        type_info: ArrowTypeInfo,
         parameters: MetadataParameters,
-        data: Option<DataSample>,
+        /// The output payload as an Arrow array. The runtime IPC-encodes it via
+        /// [`DoraNode::send_output`] (every data-plane payload is an Arrow IPC
+        /// stream).
+        arrow_array: ArrayData,
     },
     Error(eyre::Error),
     Panic(Box<dyn Any + Send>),
