@@ -11,9 +11,9 @@ dora-ros2-bridge-msg-gen = { path = "../msg-gen" }
 dora-ros2-bridge-arrow = { path = "../arrow" }
 pyo3 = { workspace = true, features = ["eyre", "abi3-py311", "serde"] }
 eyre = "0.6"
-serde = "1.0.166"
+serde = "1.0.228"
 arrow = { workspace = true, features = ["pyarrow"] }
-futures = "0.3.28"
+futures = "0.3.32"
 futures-timer = "3"
 
 [build-dependencies]
@@ -21,4 +21,4 @@ pyo3-build-config = { workspace = true }
 
 [dev-dependencies]
 pyo3 = { workspace = true, features = ["auto-initialize"] }
-serde_assert = "0.7.1"
+serde_assert = "0.8.0"
