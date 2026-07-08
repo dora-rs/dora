@@ -441,25 +441,24 @@ mod tests {
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::arrow_utils::{
-        buffer_into_arrow_array, copy_array_into_sample, required_data_size,
-    };
+    use dora_node_api::arrow_utils::{decode_arrow_ipc_zero_copy, encode_arrow_ipc};
     use eyre::{Context, Result};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
-        let size = required_data_size(arrow_array);
-        let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, size);
-
-        let info = copy_array_into_sample(&mut sample, arrow_array);
+        // The data plane is Arrow-IPC-only: encode to a self-describing IPC
+        // stream, then decode it back from a 128-byte-aligned buffer (as the
+        // receive path does).
+        let ipc_bytes = encode_arrow_ipc(arrow_array)?;
+        let mut sample: AVec<u8, ConstAlign<128>> = AVec::from_slice(128, &ipc_bytes);
 
         let serialized_deserialized_arrow_array = {
-            let ptr = NonNull::new(sample.as_ptr() as *mut _).unwrap();
+            let ptr = NonNull::new(sample.as_mut_ptr() as *mut _).unwrap();
             let len = sample.len();
 
             let raw_buffer = unsafe {
                 arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(sample))
             };
-            buffer_into_arrow_array(&raw_buffer, &info)?
+            decode_arrow_ipc_zero_copy(raw_buffer)?
         };
 
         assert_eq!(arrow_array, &serialized_deserialized_arrow_array);

@@ -25,6 +25,8 @@ ignore = [
     # --- Temporary vulnerability waivers ---
     "RUSTSEC-2026-0176",  # pyo3 0.28 OOB read in PyList/PyTuple iterator nth/nth_back. Affected APIs unused in this workspace; upgrade to 0.29 tracked in #2157. Review: 2026-07.
     "RUSTSEC-2026-0177",  # pyo3 0.28 missing Sync bound on PyCFunction::new_closure. API unused in this workspace; upgrade to 0.29 tracked in #2157. Review: 2026-07.
+    "RUSTSEC-2026-0194",  # quick-xml < 0.41 quadratic duplicate-attribute check (DoS only). Consumers parse trusted build-time/first-party XML; no parent releases pull >= 0.41 yet. Review: 2026-08.
+    "RUSTSEC-2026-0195",  # quick-xml < 0.41 unbounded namespace allocation (DoS only). Same consumers/rationale as above. Review: 2026-08.
 ]
 
 # ----- Licenses -----
