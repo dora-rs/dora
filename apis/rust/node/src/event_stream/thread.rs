@@ -27,17 +27,19 @@ pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
     },
-    /// Zenoh-received input carrying the raw `ZBytes` payload.
+    /// Zenoh-received input carrying the already-decoded Arrow array.
     ///
-    /// Unlike `NodeEvent::Input` which wraps data in `DataMessage::Vec`
-    /// (requiring a copy for SHM payloads), this variant holds the
-    /// original zenoh buffer so the Arrow conversion can use
-    /// `Buffer::from_custom_allocation` for zero-copy
+    /// The decode happens in the subscriber callback (in zenoh *receipt* order)
+    /// rather than lazily downstream, because the per-input persistent
+    /// `StreamDecoder` of the schema-once path must be fed in order — the
+    /// scheduler reorders/drops events. For SHM payloads the decoded array still
+    /// aliases the zenoh buffer (the decoder wraps it via
+    /// `Buffer::from_custom_allocation`), so this stays zero-copy
     /// (dora-rs/adora#132).
     ZenohInput {
         id: dora_core::config::DataId,
         metadata: std::sync::Arc<dora_message::metadata::Metadata>,
-        payload: zenoh::bytes::ZBytes,
+        data: arrow::array::ArrayData,
     },
     FatalError(eyre::Report),
     TimeoutError(eyre::Report),
