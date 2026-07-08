@@ -21,4 +21,4 @@ tracing = { workspace = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ]}
-quick-xml = "0.38.3"
+quick-xml = "0.41"
