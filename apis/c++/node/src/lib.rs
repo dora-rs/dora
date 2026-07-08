@@ -417,11 +417,16 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
     }
 }
 
+// `Box<DoraEvent>` is mandated by the cxx bridge signature (ownership transfer
+// across the FFI boundary), so the `boxed_local` lint is a false positive.
+#[allow(clippy::boxed_local)]
 fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
-    let EventOrReason::Event(Event::Input { id, metadata, data }) = event.0 else {
+    let EventOrReason::Event(Event::Input { id, data, .. }) = event.0 else {
         bail!("not an input event");
     };
-    let data = match metadata.type_info.data_type {
+    // The payload is decoded from a self-describing Arrow IPC stream, so read
+    // the type from the array itself.
+    let data = match data.data_type() {
         dora_node_api::arrow::datatypes::DataType::UInt8 => {
             let array: &UInt8Array = data.as_primitive();
             array.values().to_vec()
@@ -443,6 +448,7 @@ fn event_as_input(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraInput> {
     })
 }
 
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
 fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFailed> {
     let EventOrReason::Event(Event::NodeFailed {
         affected_input_ids,
@@ -506,6 +512,7 @@ fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<S
     serde_json::to_string(desc).map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
 }
 
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
 unsafe fn event_as_arrow_input(
     event: Box<DoraEvent>,
     out_array: *mut u8,
@@ -798,6 +805,7 @@ impl Metadata {
     }
 }
 
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
 unsafe fn event_as_arrow_input_with_info(
     event: Box<DoraEvent>,
     out_array: *mut u8,
@@ -1017,28 +1025,10 @@ mod tests {
     use super::*;
     use dora_node_api::{
         ArrowData,
-        arrow::{
-            array::{ArrayRef, Int32Array},
-            datatypes::DataType,
-        },
-        metadata::ArrowTypeInfo,
+        arrow::array::{ArrayRef, Int32Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
-
-    fn type_info(data_type: DataType) -> ArrowTypeInfo {
-        ArrowTypeInfo {
-            data_type,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        }
-    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must return an `Err` from `event_as_input` instead of aborting
@@ -1048,7 +1038,7 @@ mod tests {
         let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
         let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
             id: "my_input".into(),
-            metadata: DoraMetadata::new(HLC::default().new_timestamp(), type_info(DataType::Int32)),
+            metadata: DoraMetadata::new(HLC::default().new_timestamp()),
             data: ArrowData(array),
         })));
 
