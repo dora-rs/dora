@@ -1,9 +1,9 @@
 use super::{Executable, default_tracing};
+use crate::common::parse_duration;
 use crate::common::{CoordinatorOptions, query_running_dataflows};
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
 use dora_message::coordinator_to_cli::ControlRequestReply;
-use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -27,7 +27,7 @@ pub struct Restart {
         group = "strategy",
         verbatim_doc_comment
     )]
-    #[arg(value_parser = parse)]
+    #[arg(value_parser = parse_duration)]
     grace_duration: Option<Duration>,
     /// Force stop the dataflow before restarting
     #[clap(short, long, action, group = "strategy")]
