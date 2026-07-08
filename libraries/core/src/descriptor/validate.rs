@@ -105,6 +105,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                             let path = &python_source.source;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else if !working_dir.join(path).exists() {
                                 bail!("no Python library at `{path}`");
                             }
@@ -112,6 +114,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else if !working_dir.join(path).exists() {
                                 bail!("no WASM library at `{path}`");
                             }
@@ -1352,6 +1356,50 @@ operators:
         assert!(
             err.contains("runtime-node/<operator_id>/<output_id>"),
             "error should explain the expected format, got: {err}"
+        );
+    }
+
+    // A runtime operator whose artifact is produced by a `build:` command must
+    // not fail the on-disk source check before the build has run — mirroring the
+    // custom-node and shared-library behavior. Exercised via the WASM arm so the
+    // test does not require a Python `dora-rs` runtime (the Python arm carries an
+    // identical guard).
+    #[test]
+    fn operator_with_build_command_skips_missing_source_check() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        wasm: does/not/exist.wasm
+        build: cargo build
+        outputs:
+          - out
+",
+        );
+        check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
+    }
+
+    #[test]
+    fn operator_without_build_command_rejects_missing_source() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        wasm: does/not/exist.wasm
+        outputs:
+          - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no WASM library"),
+            "missing source without a build command should still be rejected, got: {err}"
         );
     }
 
