@@ -1,36 +1,47 @@
 use std::collections::BTreeMap;
 
-use arrow_schema::DataType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Additional data that is sent as part of output messages.
 ///
-/// Includes a timestamp, type information, and additional user-provided parameters.
+/// Includes a timestamp and additional user-provided parameters. The payload is
+/// a self-describing Arrow IPC stream, so the message carries no separate type
+/// descriptor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
-    pub type_info: ArrowTypeInfo,
     pub parameters: MetadataParameters,
 }
 
 impl Metadata {
-    pub fn new(timestamp: uhlc::Timestamp, type_info: ArrowTypeInfo) -> Self {
-        Self::from_parameters(timestamp, type_info, Default::default())
+    /// Current metadata wire-format version, stamped on every outgoing message.
+    ///
+    /// Bumped from 0 to 1 when the `ArrowTypeInfo` sidecar was dropped and the
+    /// wire format became Arrow-IPC-only. A receiver can compare
+    /// [`metadata_version`](Self::metadata_version) against this to detect a peer
+    /// speaking an incompatible format and report it clearly instead of failing
+    /// with a cryptic positional-deserialization error.
+    pub const CURRENT_VERSION: u16 = 1;
+
+    pub fn new(timestamp: uhlc::Timestamp) -> Self {
+        Self::from_parameters(timestamp, Default::default())
     }
 
-    pub fn from_parameters(
-        timestamp: uhlc::Timestamp,
-        type_info: ArrowTypeInfo,
-        parameters: MetadataParameters,
-    ) -> Self {
+    pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
-            metadata_version: 0,
+            metadata_version: Self::CURRENT_VERSION,
             timestamp,
             parameters,
-            type_info,
         }
+    }
+
+    /// The wire-format version stamped on this metadata. Compare against
+    /// [`CURRENT_VERSION`](Self::CURRENT_VERSION) on receive to reject peers
+    /// using an incompatible format.
+    pub fn metadata_version(&self) -> u16 {
+        self.metadata_version
     }
 
     pub fn timestamp(&self) -> uhlc::Timestamp {
@@ -46,30 +57,6 @@ impl Metadata {
 
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArrowTypeInfo {
-    pub data_type: DataType,
-    pub len: usize,
-    pub null_count: usize,
-    pub validity: Option<Vec<u8>>,
-    pub offset: usize,
-    pub buffer_offsets: Vec<BufferOffset>,
-    pub child_data: Vec<ArrowTypeInfo>,
-    /// Optional field names for struct types (enables schema introspection
-    /// without full Arrow IPC framing).
-    ///
-    /// NOTE: must not use `#[serde(skip_serializing_if)]`. The wire format
-    /// is bincode, which is positional and non-self-describing; skipping a
-    /// field at serialize time desyncs the deserializer (dora-rs/adora#135).
-    pub field_names: Option<Vec<String>>,
-    /// Hash of the full Arrow schema for fast type matching.
-    /// Populated when data is sent via the raw buffer path or Arrow IPC framing.
-    /// Receivers can compare this O(1) value before doing a full type check.
-    ///
-    /// NOTE: see `field_names` above — no `skip_serializing_if`.
-    pub schema_hash: Option<u64>,
-}
 
 /// A metadata parameter that can be sent as part of output messages.
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -159,15 +146,68 @@ pub const FRAMING: &str = "_framing";
 /// Value for [`FRAMING`] indicating Arrow IPC stream framing.
 pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BufferOffset {
-    pub offset: usize,
-    pub len: usize,
+/// Metadata key carrying the FNV-1a hash (as an `i64`) of the Arrow IPC schema
+/// for a zenoh data message. Present on schema-once messages so a receiver can
+/// tell which primed decoder a schema-less batch belongs to and detect schema
+/// changes. Absent on messages a receiver should decode as a standalone full
+/// stream (large/SHM and daemon-path payloads).
+pub const SCHEMA_HASH: &str = "_schema_hash";
+
+/// Returns `true` if the given parameters carry any pattern-correlation key
+/// ([`REQUEST_ID`], [`GOAL_ID`], or [`GOAL_STATUS`]).
+///
+/// Messages marked with these keys belong to a service or action pattern where
+/// multiple Arrow schemas can legitimately flow through a single output/input,
+/// distinguished by metadata rather than a fixed Arrow type. Runtime type
+/// checks skip such messages (dora-rs/adora#150), and the schema-once zenoh
+/// optimization excludes them — on the send side (they always travel as full
+/// self-describing streams), on the node receive side (their schemas must not
+/// churn the per-input decoder), and on the daemon's `dora topic` debug path
+/// (same, for its schema cache). Keep this the single definition so those
+/// layers can never disagree on what "pattern-correlated" means.
+pub fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
+    params.contains_key(REQUEST_ID)
+        || params.contains_key(GOAL_ID)
+        || params.contains_key(GOAL_STATUS)
+}
+
+/// Remove internal wire-protocol keys ([`SCHEMA_HASH`], [`FRAMING`]) from a
+/// parameter map. Call this at every wire→user boundary: the keys are
+/// meaningless after decode, and a stale [`SCHEMA_HASH`] forwarded from an
+/// input's metadata into `send_output` parameters (a standard pattern, e.g.
+/// replay) would ride onto outputs that don't overwrite it, making receivers
+/// hash-mismatch and silently drop them (dora-rs/dora#2366 review).
+pub fn strip_internal_parameters(params: &mut MetadataParameters) {
+    params.remove(SCHEMA_HASH);
+    params.remove(FRAMING);
+}
+
+/// FNV-1a-64 hash with a fixed seed (cross-process deterministic). Used to
+/// fingerprint an Arrow IPC schema block so a schema-less batch can be matched
+/// to the schema it was encoded against (see [`SCHEMA_HASH`]). The producer
+/// node, the consumer node, and the daemon's `dora topic` debug path all hash
+/// the same schema-block bytes with this function, so the value must stay
+/// identical across crates — keep this the single source of truth.
+pub fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fnv1a_matches_standard_vectors() {
+        // Canonical FNV-1a-64 vectors — pin the algorithm so the producer and
+        // consumers (across crates/processes) never disagree on a schema hash.
+        assert_eq!(fnv1a(b""), 0xcbf29ce484222325);
+        assert_eq!(fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+    }
 
     #[test]
     fn well_known_keys_have_stable_values() {
@@ -220,6 +260,23 @@ mod tests {
     }
 
     #[test]
+    fn outgoing_metadata_is_stamped_with_current_version() {
+        // The wire format is positional (bincode) and carries no separate type
+        // descriptor, so `metadata_version` is the only in-band signal of an
+        // incompatible layout. Every constructor must stamp `CURRENT_VERSION`.
+        assert_eq!(Metadata::CURRENT_VERSION, 1);
+        let ts = uhlc::HLC::default().new_timestamp();
+        assert_eq!(
+            Metadata::new(ts).metadata_version(),
+            Metadata::CURRENT_VERSION
+        );
+        assert_eq!(
+            Metadata::from_parameters(ts, Default::default()).metadata_version(),
+            Metadata::CURRENT_VERSION
+        );
+    }
+
+    #[test]
     fn get_string_param_extracts_string() {
         let mut params = MetadataParameters::default();
         params.insert("key".to_string(), Parameter::String("value".to_string()));
@@ -262,30 +319,5 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert("n".to_string(), Parameter::Integer(1));
         assert_eq!(get_bool_param(&params, "n"), None);
-    }
-
-    /// Regression test for dora-rs/adora#135: `ArrowTypeInfo` must survive a
-    /// bincode roundtrip even when the optional fields `field_names` and
-    /// `schema_hash` are mixed (one `None`, one `Some`). bincode is a
-    /// positional format, so `#[serde(skip_serializing_if)]` desyncs the
-    /// wire and the deserializer reads misaligned bytes.
-    #[test]
-    fn arrow_type_info_bincode_roundtrip() {
-        let value = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: Vec::new(),
-            child_data: Vec::new(),
-            field_names: None,
-            schema_hash: Some(0xdead_beef_cafe_1234),
-        };
-
-        let bytes = bincode::serialize(&value).expect("serialize");
-        let decoded: ArrowTypeInfo = bincode::deserialize(&bytes).expect("deserialize");
-        assert_eq!(decoded.schema_hash, value.schema_hash);
-        assert_eq!(decoded.field_names, value.field_names);
     }
 }
