@@ -28,7 +28,6 @@ CRITICAL_CRATES=(
   --package dora-coordinator
   --package dora-message
   --package dora-coordinator-store
-  --package shared-memory-server
 )
 
 TIMEOUT=45
