@@ -72,6 +72,12 @@ dependencies = [
 
 [[package]]
 name = "aligned-vec"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4aa90d7ce82d4be67b64039a3d588d38dbcc6736577de4a847025ce5b0c468d1"
+
+[[package]]
+name = "aligned-vec"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc890384c8602f339876ded803c97ad529f3842aba97f6392b3dba0dd171769b"
@@ -1291,6 +1297,32 @@ dependencies = [
 
 [[package]]
 name = "criterion"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b12d017a929603d80db1831cd3a24082f8137ce19c69e6447f54f5fc8d692f"
+dependencies = [
+ "anes",
+ "cast",
+ "ciborium",
+ "clap",
+ "criterion-plot 0.5.0",
+ "is-terminal",
+ "itertools 0.10.5",
+ "num-traits",
+ "once_cell",
+ "oorandom",
+ "plotters",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "tinytemplate",
+ "walkdir",
+]
+
+[[package]]
+name = "criterion"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "950046b2aa2492f9a536f5f4f9a3de7b9e2476e575e05bd6c333371add4d98f3"
@@ -1300,7 +1332,7 @@ dependencies = [
  "cast",
  "ciborium",
  "clap",
- "criterion-plot",
+ "criterion-plot 0.8.2",
  "itertools 0.13.0",
  "num-traits",
  "oorandom",
@@ -1312,6 +1344,16 @@ dependencies = [
  "serde_json",
  "tinytemplate",
  "walkdir",
+]
+
+[[package]]
+name = "criterion-plot"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
+dependencies = [
+ "cast",
+ "itertools 0.10.5",
 ]
 
 [[package]]
@@ -1982,6 +2024,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "1.0.0-rc1"
 dependencies = [
+ "arrow",
  "axum",
  "bincode 1.3.3",
  "ctrlc",
@@ -2061,11 +2104,11 @@ dependencies = [
 name = "dora-daemon"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.6.4",
  "bincode 1.3.3",
  "chrono",
  "clonable-command",
- "criterion",
+ "criterion 0.8.2",
  "crossbeam",
  "crossbeam-skiplist",
  "ctrlc",
@@ -2104,6 +2147,7 @@ dependencies = [
  "which",
  "windows 0.62.2",
  "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]
@@ -2214,12 +2258,12 @@ dependencies = [
 name = "dora-message"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.6.4",
  "arrow-data",
  "arrow-schema",
  "bincode 1.3.3",
  "chrono",
- "criterion",
+ "criterion 0.8.2",
  "dirs 6.0.0",
  "eyre",
  "getrandom 0.4.3",
@@ -2253,19 +2297,22 @@ dependencies = [
 name = "dora-node-api"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.5.0",
+ "aligned-vec 0.6.4",
  "arrow",
  "arrow-json",
  "arrow-schema",
  "bincode 1.3.3",
  "chrono",
  "colored",
+ "criterion 0.5.1",
  "dora-arrow-convert",
  "dora-core",
  "dora-message",
  "dora-metrics",
  "dora-tracing",
  "eyre",
+ "flatbuffers",
  "flume 0.12.0",
  "futures",
  "futures-concurrency",
@@ -2280,6 +2327,7 @@ dependencies = [
  "tracing",
  "uuid",
  "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]
@@ -2376,7 +2424,7 @@ dependencies = [
 name = "dora-operator-api-python"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.6.4",
  "arrow",
  "arrow-schema",
  "chrono",
@@ -2406,7 +2454,7 @@ dependencies = [
 name = "dora-record-node"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.6.4",
  "dora-message",
  "dora-node-api",
  "dora-recording",
@@ -2533,7 +2581,7 @@ dependencies = [
 name = "dora-runtime"
 version = "1.0.0-rc1"
 dependencies = [
- "aligned-vec",
+ "aligned-vec 0.6.4",
  "arrow",
  "dora-core",
  "dora-download",
@@ -3858,6 +3906,15 @@ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
 name = "itertools"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
+]
+
+[[package]]
+name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -4111,6 +4168,12 @@ name = "lazycell"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
+
+[[package]]
+name = "leb128"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c83bff1d572d6b9aeef67ddfc8448e4a3737909cb28e81f97c791b9018703e52"
 
 [[package]]
 name = "lexical-core"
@@ -9627,6 +9690,26 @@ dependencies = [
  "rand_chacha 0.3.1",
  "sha3",
  "zenoh-result",
+]
+
+[[package]]
+name = "zenoh-ext"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4e4de171bff459816b1ca9e6657c4ae9783d2c1fc569e1721a380521425e897d"
+dependencies = [
+ "async-trait",
+ "bincode 1.3.3",
+ "flume 0.11.1",
+ "futures",
+ "leb128",
+ "serde",
+ "tokio",
+ "tracing",
+ "uhlc 0.8.2",
+ "zenoh",
+ "zenoh-macros",
+ "zenoh-util",
 ]
 
 [[package]]

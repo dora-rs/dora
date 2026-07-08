@@ -11,7 +11,6 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
-# Registers `cfg(kani)` for the formal-verification harnesses (`make qa-kani`).
 [lints]
 workspace = true
 

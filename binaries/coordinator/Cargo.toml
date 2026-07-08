@@ -40,6 +40,7 @@ indexmap = "2"
 itertools = "0.15.0"
 zenoh = { workspace = true }
 bincode = { workspace = true }
+arrow = { workspace = true, features = ["ipc"] }
 opentelemetry = { version = "0.31", features = ["metrics"], optional = true }
 dora-metrics = { workspace = true, optional = true }
 

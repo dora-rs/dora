@@ -6,9 +6,7 @@ use std::{
 use arrow_schema::DataType;
 use clap::Args;
 use dora_core::config::InputMapping;
-use dora_message::{
-    common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::ArrowTypeInfo,
-};
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -59,14 +57,14 @@ struct TopicStats {
     message_count: Arc<Mutex<u64>>,
     total_bytes: Arc<Mutex<u64>>,
     timestamps: Arc<Mutex<Vec<Instant>>>,
-    data_type: Arc<Mutex<Option<ArrowTypeInfo>>>,
+    data_type: Arc<Mutex<Option<DataType>>>,
 }
 
 /// Maximum timestamps to keep for frequency calculation.
 const MAX_TIMESTAMPS: usize = 10_000;
 
 impl TopicStats {
-    fn record(&self, data_size: usize, type_info: &ArrowTypeInfo, now: Instant) {
+    fn record(&self, data_size: usize, data_type: Option<DataType>, now: Instant) {
         *self.message_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
         *self.total_bytes.lock().unwrap_or_else(|e| e.into_inner()) += data_size as u64;
         let mut ts = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
@@ -77,7 +75,9 @@ impl TopicStats {
         }
         ts.push(now);
         drop(ts);
-        *self.data_type.lock().unwrap_or_else(|e| e.into_inner()) = Some(type_info.clone());
+        if let Some(data_type) = data_type {
+            *self.data_type.lock().unwrap_or_else(|e| e.into_inner()) = Some(data_type);
+        }
     }
 
     fn calculate_hz(&self, window: Duration) -> Option<f64> {
@@ -177,9 +177,14 @@ fn info(
                         }
                     };
                     match event.inner {
-                        InterDaemonEvent::Output { metadata, data, .. } => {
+                        InterDaemonEvent::Output { data, .. } => {
                             let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                            stats_clone.record(data_size, &metadata.type_info, Instant::now());
+                            // The payload is a self-describing Arrow IPC stream;
+                            // read its data type from the decoded array (best
+                            // effort — a malformed stream just leaves it unknown).
+                            let data_type =
+                                data.as_ref().and_then(|bytes| decode_ipc_data_type(bytes));
+                            stats_clone.record(data_size, data_type, Instant::now());
                         }
                         InterDaemonEvent::OutputClosed { .. } => break,
                     }
@@ -216,8 +221,8 @@ fn info(
     println!();
 
     // Type
-    if let Some(type_info) = &data_type {
-        println!("Type: {}", format_arrow_type(&type_info.data_type));
+    if let Some(data_type) = &data_type {
+        println!("Type: {}", format_arrow_type(data_type));
     } else {
         println!("Type: <unknown> (no messages received)");
     }
@@ -252,6 +257,20 @@ fn info(
     }
 
     Ok(())
+}
+
+/// Decode just the schema/data type from a self-describing Arrow IPC stream.
+/// Returns `None` for a malformed or empty stream (the type is left unknown).
+fn decode_ipc_data_type(bytes: &[u8]) -> Option<DataType> {
+    use arrow::ipc::reader::StreamReader;
+    use std::io::Cursor;
+
+    let mut reader = StreamReader::try_new(Cursor::new(bytes), None).ok()?;
+    let batch = reader.next()?.ok()?;
+    if batch.num_columns() != 1 {
+        return None;
+    }
+    Some(batch.column(0).data_type().clone())
 }
 
 /// Compute the average bandwidth in Mbps over the actual collection window.
