@@ -1,10 +1,10 @@
 use anyhow::{Result, ensure};
 use nom::{
+    Parser,
     bytes::complete::is_not,
     character::complete::{char, space0, space1},
     combinator::{eof, recognize},
     multi::separated_list1,
-    sequence::tuple,
 };
 
 use super::{error::RclMsgError, ident, literal, types};
@@ -46,7 +46,7 @@ fn validate_value(r#type: ConstantType, value: &str) -> Result<Vec<String>> {
 }
 
 pub fn constant_def(line: &str) -> Result<Constant> {
-    let (_, (r#type, _, name, _, _, _, value, _, _)) = tuple((
+    let (_, (r#type, _, name, _, _, _, value, _, _)) = (
         types::parse_constant_type,
         space1,
         ident::constant_name,
@@ -56,11 +56,12 @@ pub fn constant_def(line: &str) -> Result<Constant> {
         recognize(separated_list1(space1, is_not(" \t"))),
         space0,
         eof,
-    ))(line)
-    .map_err(|e| RclMsgError::ParseConstantError {
-        reason: e.to_string(),
-        input: line.into(),
-    })?;
+    )
+        .parse(line)
+        .map_err(|e| RclMsgError::ParseConstantError {
+            reason: e.to_string(),
+            input: line.into(),
+        })?;
 
     Ok(Constant {
         name: name.into(),
