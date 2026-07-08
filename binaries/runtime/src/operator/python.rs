@@ -299,13 +299,9 @@ mod callback_impl {
     use crate::operator::OperatorEvent;
 
     use super::SendOutputCallback;
-    use aligned_vec::{AVec, ConstAlign};
-    use arrow::{array::ArrayData, pyarrow::FromPyArrow};
-    use dora_core::metadata::ArrowTypeInfoExt;
-    use dora_message::metadata::ArrowTypeInfo;
-    use dora_node_api::{
-        ZERO_COPY_THRESHOLD,
-        arrow_utils::{copy_array_into_sample, required_data_size},
+    use arrow::{
+        array::{ArrayData, UInt8Array},
+        pyarrow::FromPyArrow,
     };
     use dora_operator_api_python::pydict_to_metadata;
     #[cfg(feature = "telemetry")]
@@ -315,7 +311,6 @@ mod callback_impl {
         Bound, Py, PyAny, Python, pymethods,
         types::{PyBytes, PyBytesMethods, PyDict},
     };
-    use tokio::sync::oneshot;
     use tracing::{field, span};
     #[cfg(feature = "telemetry")]
     use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -358,37 +353,13 @@ mod callback_impl {
             }
             let _enter = span.enter();
 
-            let allocate_sample = |data_len| {
-                if data_len > ZERO_COPY_THRESHOLD {
-                    let (tx, rx) = oneshot::channel();
-                    self.events_tx
-                        .blocking_send(OperatorEvent::AllocateOutputSample {
-                            len: data_len,
-                            sample: tx,
-                        })
-                        .map_err(|_| eyre!("failed to send output to runtime"))?;
-                    rx.blocking_recv()
-                        .wrap_err("failed to request output sample")?
-                        .wrap_err("failed to allocate output sample")
-                } else {
-                    let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-
-                    Ok(avec.into())
-                }
-            };
-
-            let (sample, type_info) = if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
-                let data = py_bytes.as_bytes();
-                let mut sample = allocate_sample(data.len())?;
-                sample.copy_from_slice(data);
-                (sample, ArrowTypeInfo::byte_array(data.len()))
+            // Build the output as an Arrow array. The runtime IPC-encodes it
+            // (every data-plane payload is a self-describing Arrow IPC stream).
+            // Raw `bytes` map to a `UInt8Array`.
+            let arrow_array: ArrayData = if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
+                UInt8Array::from(py_bytes.as_bytes().to_vec()).into()
             } else if let Ok(arrow_array) = ArrayData::from_pyarrow_bound(data.bind(py)) {
-                let total_len = required_data_size(&arrow_array);
-                let mut sample = allocate_sample(total_len)?;
-
-                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
-
-                (sample, type_info)
+                arrow_array
             } else {
                 eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
             };
@@ -396,9 +367,8 @@ mod callback_impl {
             py.detach(|| {
                 let event = OperatorEvent::Output {
                     output_id: output.to_owned().into(),
-                    type_info,
                     parameters,
-                    data: Some(sample),
+                    arrow_array,
                 };
                 self.events_tx
                     .blocking_send(event)
