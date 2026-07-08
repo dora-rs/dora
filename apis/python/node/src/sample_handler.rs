@@ -46,8 +46,6 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 
-use dora_message::metadata::ArrowTypeInfo;
-use dora_node_api::dora_core::metadata::ArrowTypeInfoExt;
 use dora_node_api::{DataSample, DoraNode, MetadataParameters, dora_core::config::DataId};
 use dora_operator_api_python::DelayedCleanup;
 #[cfg(Py_3_11)]
@@ -264,7 +262,6 @@ impl SampleBuffer {
 /// Per-send metadata. Lives in `SampleHandler.meta` until `send()` takes it.
 struct SampleMeta {
     data_id: DataId,
-    type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
 }
 
@@ -298,6 +295,13 @@ pub struct SampleHandler {
     node: DelayedCleanup<DoraNode>,
     /// Per-send metadata. Taken by `send()`.
     meta: Option<SampleMeta>,
+    /// The `DataSample` holds a complete `UInt8` Arrow IPC stream with its
+    /// header pre-written; the user-writable data region is
+    /// `sample[data_offset..data_offset + data_length]`. The buffer protocol
+    /// exposes exactly that region so Python constructs the message in place
+    /// (zero payload copies), and `send()` publishes the whole sample as-is.
+    data_offset: usize,
+    data_length: usize,
     /// Shared state that owns the `DataSample`. Survives `SampleHandler::drop()`
     /// iff any `SampleBuffer` (and thus any memoryview chain) keeps it alive.
     state: Arc<SampleBufferState>,
@@ -314,15 +318,22 @@ impl SampleHandler {
         parameters: MetadataParameters,
         node: DelayedCleanup<DoraNode>,
     ) -> eyre::Result<Self> {
-        let sample = node.get_mut().allocate_data_sample(data_length)?;
-        let type_info = ArrowTypeInfo::byte_array(data_length);
+        // Build the UInt8 Arrow IPC stream in place: allocate an IPC-framed
+        // sample (shared-memory-backed when large), pre-write everything except
+        // the data region, and expose only that region to Python — so the user
+        // writes their bytes straight into the wire payload with zero copies.
+        use dora_node_api::arrow_utils::ipc_encode;
+        let total = ipc_encode::uint8_ipc_len(data_length)?;
+        let mut sample = node.get_mut().allocate_data_sample(total)?;
+        let data_offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_length)?;
         Ok(Self {
             node,
             meta: Some(SampleMeta {
                 data_id,
-                type_info,
                 parameters,
             }),
+            data_offset,
+            data_length,
             state: SampleBufferState::new(sample),
             #[cfg(Py_3_11)]
             buffer: None,
@@ -393,10 +404,18 @@ impl SampleHandler {
 
         let sample = sample.ok_or_else(|| eyre::eyre!("DataSample missing (concurrent send?)"))?;
 
-        // 3. Send (zero additional copies).
+        // 3. Send. The sample already holds the complete UInt8 Arrow IPC stream
+        //    (header pre-written at construction; Python filled the data region
+        //    in place), so publish it directly — no copy, no re-encode. For a
+        //    shared-memory sample this moves the buffer into zenoh's `put`.
+        let mut parameters = meta.parameters;
+        parameters.insert(
+            dora_message::metadata::FRAMING.to_string(),
+            dora_node_api::Parameter::String(dora_message::metadata::FRAMING_ARROW_IPC.to_string()),
+        );
         self.node
             .get_mut()
-            .send_output_sample(meta.data_id, meta.type_info, meta.parameters, Some(sample))
+            .send_output_sample(meta.data_id, parameters, Some(sample))
             .map_err(|e| eyre::eyre!("failed to send sample: {e}"))?;
         Ok(())
     }
@@ -429,13 +448,14 @@ impl SampleHandler {
             return Ok(buf.clone_ref(py));
         }
 
-        // Extract a stable raw pointer to the DataSample's bytes. The
-        // `DataSample` is heap-allocated via `AVec`, so its buffer address
-        // does not move; the pointer is valid as long as the `DataSample`
-        // remains inside `state.sample`. `send()` is the only path that
-        // takes the sample out, and it requires `view_count == 0` first —
-        // so any view we hand out via this `ptr` will be released before
-        // the memory can be reclaimed.
+        // Extract a stable raw pointer to the DataSample's bytes. A
+        // `DataSample` is backed by either a heap `AVec` or a zenoh SHM buffer
+        // (`ZShmMut`); in both cases the byte address is fixed for the lifetime
+        // of the `DataSample` (neither relocates in place), so the pointer is
+        // valid as long as the `DataSample` remains inside `state.sample`.
+        // `send()` is the only path that takes the sample out, and it requires
+        // `view_count == 0` first — so any view we hand out via this `ptr` will
+        // be released before the memory can be reclaimed.
         let (ptr, len) = {
             let sample_lock = self.state.sample.lock().map_err(|_| {
                 pyo3::exceptions::PyRuntimeError::new_err("DataSample lock poisoned")
@@ -445,8 +465,11 @@ impl SampleHandler {
                     "DataSample missing in state (concurrent send?)",
                 )
             })?;
+            // Expose only the IPC stream's data region, not the whole framed
+            // sample — Python writes its `data_length` bytes there in place.
             let slice: &[u8] = sample.deref();
-            (slice.as_ptr() as *mut u8, slice.len())
+            let region = &slice[self.data_offset..self.data_offset + self.data_length];
+            (region.as_ptr() as *mut u8, region.len())
         };
 
         let py_buf = Py::new(
