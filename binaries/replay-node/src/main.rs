@@ -1,7 +1,11 @@
 use std::{fs::File, thread, time::Duration};
 
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
-use dora_node_api::DoraNode;
+use dora_node_api::{
+    DoraNode,
+    arrow::array::{NullArray, make_array},
+    arrow_utils::decode_arrow_ipc,
+};
 use dora_recording::RecordingReader;
 use eyre::Context;
 
@@ -65,19 +69,17 @@ fn main() -> eyre::Result<()> {
                     data,
                     ..
                 } => {
-                    let data_len = data.as_ref().map(|d| d.len()).unwrap_or(0);
-                    node.send_typed_output(
-                        output_id,
-                        metadata.type_info,
-                        metadata.parameters,
-                        data_len,
-                        |sample| {
-                            if let Some(data) = &data {
-                                sample.copy_from_slice(data);
-                            }
-                        },
-                    )
-                    .wrap_err("failed to send replay output")?;
+                    // The recorded payload is a self-describing Arrow IPC
+                    // stream (or absent for metadata-only messages). Decode it
+                    // back to an array and re-send; `send_output` re-encodes it
+                    // into a fresh IPC stream on the wire.
+                    let array = match &data {
+                        Some(bytes) => decode_arrow_ipc(bytes)
+                            .wrap_err("failed to decode recorded Arrow IPC payload")?,
+                        None => NullArray::new(0).into(),
+                    };
+                    node.send_output(output_id, metadata.parameters, make_array(array))
+                        .wrap_err("failed to send replay output")?;
                     replayed += 1;
                 }
                 InterDaemonEvent::OutputClosed { .. } => {

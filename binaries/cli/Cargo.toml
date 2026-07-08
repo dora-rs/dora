@@ -27,7 +27,7 @@ python-extension-module = ["python", "pyo3/extension-module"]
 redb-backend = ["dora-coordinator/redb-backend", "dep:libc"]
 
 [dependencies]
-arrow = { workspace = true }
+arrow = { workspace = true, features = ["ipc"] }
 arrow-schema = { workspace = true }
 clap = { version = "4.0.3", features = ["derive", "string", "env"] }
 clap_complete = "4.5.61"
