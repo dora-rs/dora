@@ -286,10 +286,25 @@ where
     S: serde::Serializer,
     O: OffsetSizeTrait,
 {
-    let mut seq = serializer.serialize_seq(Some(binary.len()))?;
+    // `binary` is always a 1-row array (sliced in `SequenceSerializeWrapper`),
+    // so the CDR sequence is the *bytes of that single row*, not the rows. The
+    // previous `binary.iter()` iterated rows (`binary.len()` == 1) and handed
+    // each row `&[u8]` to `serialize_element`, which routes through serde's
+    // `impl Serialize for [u8]` and emits *another* `serialize_seq`. Net wire
+    // output for a byte field of length N was `[u32 1][u32 N][N bytes]` instead
+    // of `[u32 N][N bytes]` — an extra length prefix and one nesting level too
+    // deep, so a real ROS2 peer reads the length as 1 and misaligns every
+    // field after the sequence. Serialize the row's bytes directly instead.
+    let bytes: &[u8] = if binary.is_empty() {
+        &[]
+    } else {
+        binary.value(0)
+    };
 
-    for value in binary.iter() {
-        seq.serialize_element(value.unwrap_or_default())?;
+    let mut seq = serializer.serialize_seq(Some(bytes.len()))?;
+
+    for b in bytes {
+        seq.serialize_element(b)?;
     }
 
     seq.end()
@@ -327,7 +342,9 @@ mod tests {
     use std::collections::HashMap;
 
     use arrow::{
-        array::{ArrayRef, BooleanArray, Int32Array, ListArray, StructArray},
+        array::{
+            ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StructArray, UInt8Array,
+        },
         buffer::OffsetBuffer,
         datatypes::{DataType, Field},
     };
@@ -436,6 +453,135 @@ mod tests {
         assert_eq!(
             decoded.1, tail,
             "trailing field after bool sequence corrupted"
+        );
+    }
+
+    /// Builds a message type with a `sequence<uint8>` (`uint8[]`) field
+    /// followed by an `int32` field, so we can verify the trailing field
+    /// survives the byte-sequence encoding.
+    fn byte_seq_then_int32_message() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "ByteSeqMsg".to_string(),
+            members: vec![
+                Member {
+                    name: "data".to_string(),
+                    r#type: MemberType::Sequence(Sequence {
+                        value_type: NestableType::BasicType(BasicType::U8),
+                    }),
+                    default: None,
+                },
+                Member {
+                    name: "tail".to_string(),
+                    r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                    default: None,
+                },
+            ],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("ByteSeqMsg".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    /// The `data` field as an Arrow `List<UInt8>` (the representation the
+    /// deserializer emits).
+    fn build_byte_value_list(data: &[u8], tail: i32) -> ArrayRef {
+        let values = UInt8Array::from(data.to_vec());
+        let list = ListArray::new(
+            Arc::new(Field::new("item", DataType::UInt8, true)),
+            OffsetBuffer::from_lengths([data.len()]),
+            Arc::new(values),
+            None,
+        );
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new(
+                    "data",
+                    DataType::List(Arc::new(Field::new("item", DataType::UInt8, true))),
+                    false,
+                )),
+                Arc::new(list) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("tail", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![tail])) as ArrayRef,
+            ),
+        ]);
+        Arc::new(struct_array) as ArrayRef
+    }
+
+    /// The same `data` field as an Arrow `Binary` array (the idiomatic Arrow
+    /// encoding for a bytes field, e.g. what a `pyarrow` producer yields).
+    fn build_byte_value_binary(data: &[u8], tail: i32) -> ArrayRef {
+        let binary = BinaryArray::from_vec(vec![data]);
+        let struct_array = StructArray::from(vec![
+            (
+                Arc::new(Field::new("data", DataType::Binary, false)),
+                Arc::new(binary) as ArrayRef,
+            ),
+            (
+                Arc::new(Field::new("tail", DataType::Int32, false)),
+                Arc::new(Int32Array::from(vec![tail])) as ArrayRef,
+            ),
+        ]);
+        Arc::new(struct_array) as ArrayRef
+    }
+
+    /// Regression test for #2507: a byte sequence supplied as an Arrow `Binary`
+    /// column must CDR-encode identically to the same value supplied as a
+    /// `List<UInt8>`. The buggy encoder emitted an extra outer `u32` length
+    /// prefix (`[u32 1][u32 N][N bytes]`), so a real ROS2 peer read the length
+    /// as 1 and misaligned every following field.
+    #[test]
+    fn byte_sequence_binary_matches_list_through_real_cdr() {
+        let data = vec![10u8, 20, 30];
+        let tail = 0x1234_5678_i32;
+
+        let messages = byte_seq_then_int32_message();
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ByteSeqMsg"),
+            messages,
+        };
+
+        let list_value = build_byte_value_list(&data, tail);
+        let list_bytes = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &list_value,
+            type_info: &type_info,
+        })
+        .expect("serialize List<UInt8> to CDR");
+
+        let binary_value = build_byte_value_binary(&data, tail);
+        let binary_bytes = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &binary_value,
+            type_info: &type_info,
+        })
+        .expect("serialize Binary to CDR");
+
+        assert_eq!(
+            binary_bytes, list_bytes,
+            "Binary byte-sequence encoding diverges from List<UInt8>"
+        );
+
+        // The length prefix must be the byte count, not the row count (1).
+        let prefix = u32::from_le_bytes(binary_bytes[..4].try_into().unwrap());
+        assert_eq!(
+            prefix,
+            data.len() as u32,
+            "missing/incorrect CDR length prefix for byte sequence"
+        );
+
+        // Decode with a real CDR reader and confirm the trailing field aligns.
+        let (decoded, _consumed): ((Vec<u8>, i32), _) =
+            cdr_encoding::from_bytes::<(Vec<u8>, i32), LittleEndian>(&binary_bytes)
+                .expect("deserialize from CDR");
+        assert_eq!(decoded.0, data, "byte sequence values corrupted");
+        assert_eq!(
+            decoded.1, tail,
+            "trailing field after byte sequence corrupted"
         );
     }
 }
