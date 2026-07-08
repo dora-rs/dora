@@ -242,15 +242,14 @@ async fn run(
                 }
                 OperatorEvent::Output {
                     output_id,
-                    type_info,
                     parameters,
-                    data,
+                    arrow_array,
                 } => {
                     let output_id = operator_output_id(&operator_id, &output_id);
                     let result;
                     (node, result) = tokio::task::spawn_blocking(move || {
-                        let result =
-                            node.send_output_sample(output_id, type_info, parameters, data);
+                        let array = dora_node_api::arrow::array::make_array(arrow_array);
+                        let result = node.send_output(output_id, parameters, array);
                         (node, result)
                     })
                     .await
