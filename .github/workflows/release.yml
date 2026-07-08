@@ -160,21 +160,26 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
       - name: Package binary (unix)
         if: runner.os != 'Windows'
+        # Asset name and nested layout must match what install.sh expects
+        # (dora-cli-<target>.tar.gz containing dora-cli-<target>/dora), which
+        # is also the layout of previously published releases.
         run: |
-          mkdir -p artifacts
-          cp target/${{ matrix.target }}/release/dora artifacts/dora
-          tar czf artifacts/dora-${{ matrix.target }}.tar.gz -C artifacts dora
+          mkdir -p artifacts/dora-cli-${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/dora artifacts/dora-cli-${{ matrix.target }}/dora
+          tar czf artifacts/dora-cli-${{ matrix.target }}.tar.gz -C artifacts dora-cli-${{ matrix.target }}
       - name: Package binary (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts
           Copy-Item "target/${{ matrix.target }}/release/dora.exe" "artifacts/dora.exe"
-          Compress-Archive -Path "artifacts/dora.exe" -DestinationPath "artifacts/dora-${{ matrix.target }}.zip"
+          # Flat zip (dora.exe at archive root) named dora-cli-<target>.zip,
+          # matching install.ps1 and previously published releases.
+          Compress-Archive -Path "artifacts/dora.exe" -DestinationPath "artifacts/dora-cli-${{ matrix.target }}.zip"
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ matrix.target }}
-          path: artifacts/dora-*.*
+          path: artifacts/dora-cli-*.*
 
   # ── 5. Create GitHub Release with changelog ───────────────────────────────
   github-release:
