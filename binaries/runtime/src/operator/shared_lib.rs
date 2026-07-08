@@ -1,15 +1,11 @@
 use super::{OperatorEvent, StopReason};
-use aligned_vec::{AVec, ConstAlign};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
     descriptor::source_is_url,
 };
 use dora_download::download_file;
-use dora_node_api::{
-    Event, Parameter,
-    arrow_utils::{copy_array_into_sample, required_data_size},
-};
+use dora_node_api::{Event, Parameter};
 use dora_operator_api_types::{
     DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent, DoraResult, DoraStatus,
     Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
@@ -138,16 +134,10 @@ impl SharedLibraryOperator<'_> {
                 Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
-            let total_len = required_data_size(&arrow_array);
-            let mut sample: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, total_len);
-
-            let type_info = copy_array_into_sample(&mut sample, &arrow_array);
-
             let event = OperatorEvent::Output {
                 output_id: DataId::from(String::from(output_id)),
-                type_info,
                 parameters,
-                data: Some(sample.into()),
+                arrow_array,
             };
 
             let result = self
