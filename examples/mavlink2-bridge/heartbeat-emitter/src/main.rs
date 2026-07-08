@@ -12,7 +12,7 @@ use std::sync::Arc;
 use arrow::array::StructArray;
 use dora_mavlink2_bridge::{
     MavlinkArrow,
-    mavlink::common::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType},
+    mavlink::dialects::common::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType},
 };
 use dora_node_api::{
     DoraNode, Event, MetadataParameters, arrow::array::ArrayRef, dora_core::config::DataId,

@@ -29,8 +29,8 @@ redb-backend = ["dora-coordinator/redb-backend", "dep:libc"]
 [dependencies]
 arrow = { workspace = true, features = ["ipc"] }
 arrow-schema = { workspace = true }
-clap = { version = "4.0.3", features = ["derive", "string", "env"] }
-clap_complete = "4.5.61"
+clap = { version = "4.6.1", features = ["derive", "string", "env"] }
+clap_complete = "4.6.7"
 eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
 dora-core = { workspace = true, features = ["zenoh"] }
@@ -41,16 +41,16 @@ dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
-toml = "0.9"
-webbrowser = "0.8.3"
+toml = "1.1"
+webbrowser = "1.2.1"
 serde_json = { workspace = true }
-sha2 = "0.10"
-termcolor = "1.1.3"
+sha2 = "0.11"
+termcolor = "1.4.1"
 uuid = { workspace = true }
 inquire = { workspace = true }
-tokio-tungstenite = "0.28"
-notify = "5.1.0"
-ctrlc = "3.2.5"
+tokio-tungstenite = "0.29"
+notify = "8.2.0"
+ctrlc = "3.5.2"
 tracing = { workspace = true }
 tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
@@ -58,19 +58,22 @@ dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-runtime = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-stream = { version = "0.1.8", features = ["io-util", "net"] }
+tokio-stream = { version = "0.1.18", features = ["io-util", "net"] }
 futures = { workspace = true }
-duration-str = "0.5"
-tabwriter = "1.4.0"
-log = { version = "0.4.21", features = ["serde"] }
+duration-str = "0.21"
+tabwriter = "1.4.1"
+log = { version = "0.4.33", features = ["serde"] }
 colored = { workspace = true }
 crossterm = "0.29.0"
-ratatui = "0.30.0"
-itertools = "0.14"
-sysinfo = "0.36.1"
+ratatui = "0.30.2"
+itertools = "0.15"
+sysinfo = "0.38.4"
 
-env_logger = "0.11.3"
-self_update = { version = "0.42.0", features = [
+env_logger = "0.11.11"
+# self_update 0.44 made the HTTP backend an explicit feature; without
+# `reqwest` (or `ureq`) it fails to compile under default-features = false.
+self_update = { version = "0.44.0", features = [
+    "reqwest",
     "rustls",
     "archive-zip",
     "archive-tar",
@@ -84,9 +87,9 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
-chrono = "0.4.42"
+chrono = "0.4.45"
 dora-recording = { workspace = true }
-which = "7"
+which = "8"
 tempfile = { workspace = true }
 
 [build-dependencies]
