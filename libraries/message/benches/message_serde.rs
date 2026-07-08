@@ -1,28 +1,13 @@
 use aligned_vec::AVec;
-use arrow_schema::DataType;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 
 use dora_message::{
-    common::DataMessage,
-    id::DataId,
-    metadata::{ArrowTypeInfo, Metadata},
-    node_to_daemon::DaemonRequest,
+    common::DataMessage, id::DataId, metadata::Metadata, node_to_daemon::DaemonRequest,
 };
 
-fn make_metadata(payload_size: usize) -> Metadata {
+fn make_metadata(_payload_size: usize) -> Metadata {
     let clock = uhlc::HLC::default();
-    let type_info = ArrowTypeInfo {
-        data_type: DataType::UInt8,
-        len: payload_size,
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: vec![],
-        child_data: vec![],
-        field_names: None,
-        schema_hash: None,
-    };
-    Metadata::new(clock.new_timestamp(), type_info)
+    Metadata::new(clock.new_timestamp())
 }
 
 fn make_send_message(payload_size: usize) -> DaemonRequest {

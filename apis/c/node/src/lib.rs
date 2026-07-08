@@ -176,12 +176,13 @@ pub unsafe extern "C" fn read_dora_input_data(
 ) {
     let event: &Event = unsafe { &*event.cast() };
     match event {
-        Event::Input { data, metadata, .. } => match metadata.type_info.data_type {
+        // The payload is decoded from a self-describing Arrow IPC stream, so the
+        // type is read from the array itself.
+        Event::Input { data, .. } => match data.data_type() {
             dora_node_api::arrow::datatypes::DataType::UInt8 => {
                 let array: &UInt8Array = data.as_primitive();
                 let ptr = array.values().as_ptr();
-                // Use the actual buffer length, not metadata.type_info.len
-                // which comes from remote nodes and could exceed the buffer.
+                // Use the actual buffer length (the decoded array's own length).
                 let len = array.values().len();
                 unsafe {
                     *out_ptr = ptr;
@@ -192,7 +193,7 @@ pub unsafe extern "C" fn read_dora_input_data(
                 *out_ptr = ptr::null();
                 *out_len = 0;
             },
-            ref other => {
+            other => {
                 // The raw-byte C API only supports UInt8 payloads. For any
                 // other Arrow type (a routine cross-language case, e.g. an
                 // Int32/Float payload from another node) we cannot expose a
@@ -351,28 +352,10 @@ mod tests {
     use super::*;
     use dora_node_api::{
         ArrowData, Metadata,
-        arrow::{
-            array::{ArrayRef, Int32Array},
-            datatypes::DataType,
-        },
-        metadata::ArrowTypeInfo,
+        arrow::array::{ArrayRef, Int32Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
-
-    fn type_info(data_type: DataType) -> ArrowTypeInfo {
-        ArrowTypeInfo {
-            data_type,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        }
-    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must not abort the process. The caller should instead observe
@@ -382,7 +365,7 @@ mod tests {
         let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
         let event = Event::Input {
             id: "my_input".into(),
-            metadata: Metadata::new(HLC::default().new_timestamp(), type_info(DataType::Int32)),
+            metadata: Metadata::new(HLC::default().new_timestamp()),
             data: ArrowData(array),
         };
         let event_ptr: *const () = (&event as *const Event).cast();
