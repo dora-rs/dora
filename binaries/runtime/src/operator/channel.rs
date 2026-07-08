@@ -138,7 +138,69 @@ impl InputBuffer {
         }
 
         if dropped > 0 {
+            // Compact away the `None` tombstones left by the drop loop. Without
+            // this, a stalled operator (slow `on_event`) makes the deque grow by
+            // one `Option::None` slot per received input forever — the number of
+            // live `Some` events stays capped, but the tombstones are only ever
+            // cleared by `pop_front` in `send_next_queued`, which never runs
+            // while the outgoing send is pending. That defeats the bounded-memory
+            // guarantee of the drop-oldest policy and leaks until OOM.
+            self.queue.retain(Option::is_some);
             tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_core::uhlc::HLC;
+    use dora_message::metadata::{ArrowTypeInfo, Metadata};
+    use dora_node_api::ArrowData;
+    use dora_node_api::arrow::array::new_empty_array;
+    use dora_node_api::arrow::datatypes::DataType;
+
+    fn input_event(id: &str) -> Event {
+        let type_info = ArrowTypeInfo {
+            data_type: DataType::Null,
+            len: 0,
+            null_count: 0,
+            validity: None,
+            offset: 0,
+            buffer_offsets: vec![],
+            child_data: vec![],
+            field_names: None,
+            schema_hash: None,
+        };
+        Event::Input {
+            id: DataId::from(id.to_string()),
+            metadata: Metadata::new(HLC::default().new_timestamp(), type_info),
+            data: ArrowData(new_empty_array(&DataType::Null)),
+        }
+    }
+
+    // A stalled consumer must not leak: with `drop_oldest`, the queue length
+    // stays bounded by the cap no matter how many inputs pile up, because the
+    // dropped entries are compacted away rather than left as `None` tombstones.
+    #[test]
+    fn drop_oldest_keeps_queue_bounded() {
+        let cap = 3;
+        let mut caps = BTreeMap::new();
+        caps.insert(
+            DataId::from("x".to_string()),
+            (cap, QueuePolicy::DropOldest),
+        );
+        let mut buffer = InputBuffer::new(caps);
+
+        for _ in 0..1000 {
+            buffer.add_event(input_event("x"));
+        }
+
+        assert_eq!(
+            buffer.queue.len(),
+            cap,
+            "queue must stay bounded by the effective cap, with no tombstone buildup"
+        );
+        assert!(buffer.queue.iter().all(Option::is_some));
     }
 }
