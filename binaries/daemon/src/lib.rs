@@ -30,10 +30,9 @@ use dora_message::{
     },
     daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
     descriptor::{NodeSource, RestartPolicy},
-    metadata::{self, ArrowTypeInfo, MetadataParameters},
+    metadata::{self, MetadataParameters},
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use dora_node_api::arrow::datatypes::DataType;
 use eyre::{Context, ContextCompat, Result, bail, eyre};
 use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
@@ -133,22 +132,11 @@ pub mod bench_support {
     /// Create a reusable fixture for the routing hot path (call once per config).
     pub fn make_fixture(clock: &HLC, payload_size: usize) -> RoutingFixture {
         let data = vec![0u8; payload_size];
-        let type_info = ArrowTypeInfo {
-            data_type: dora_node_api::arrow::datatypes::DataType::UInt8,
-            len: payload_size,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         RoutingFixture {
             sender_id: "sender".to_string().into(),
             output_id: "output".to_string().into(),
             data_msg: DataMessage::Vec(AVec::from_slice(128, &data)),
-            metadata: metadata::Metadata::new(clock.new_timestamp(), type_info),
+            metadata: metadata::Metadata::new(clock.new_timestamp()),
         }
     }
 
@@ -2903,6 +2891,7 @@ impl Daemon {
         // watchers — never re-delivered to local receivers (the publishing
         // node already delivered the payload via Zenoh).
         if dataflow.enable_debug_inspection {
+            use zenoh_ext::{AdvancedSubscriberBuilderExt, HistoryConfig};
             for node in nodes.values().filter(|n| spawn_nodes.contains(&n.id)) {
                 for output_id in node.kind.run_config().outputs {
                     let topic = zenoh_output_publish_topic(dataflow_id, &node.id, &output_id);
@@ -2915,11 +2904,59 @@ impl Daemon {
                         .wrap_err_with(|| {
                             format!("failed to declare debug subscriber on {topic}")
                         })?;
+
+                    // Small node→node outputs use the schema-once path: the
+                    // schema is published once on the `@schema` subtopic and each
+                    // data sample carries only the schema-less record batch (see
+                    // `DoraNode::publish_schema_once`). `dora topic` expects a
+                    // full self-describing stream, so cache the schema here and
+                    // rebuild it before forwarding. An `AdvancedSubscriber`
+                    // (history + late-publisher detection) mirrors the node
+                    // receive path so the (single, stable) schema is fetched even
+                    // when the producer starts after this subscriber.
+                    let schema_cache: DebugSchemaCache =
+                        Arc::new(std::sync::Mutex::new(Vec::new()));
+                    let schema_topic = dora_core::topics::zenoh_output_schema_topic(
+                        dataflow_id,
+                        &node.id,
+                        &output_id,
+                    );
+                    let schema_subscriber = {
+                        let cache = schema_cache.clone();
+                        match self
+                            .zenoh_session
+                            .declare_subscriber(schema_topic.clone())
+                            .history(HistoryConfig::default().detect_late_publishers())
+                            .callback(move |sample| {
+                                let bytes = sample.payload().to_bytes();
+                                let hash = dora_message::metadata::fnv1a(&bytes);
+                                retain_debug_schema(
+                                    &mut cache.lock().unwrap_or_else(|e| e.into_inner()),
+                                    hash,
+                                    &bytes,
+                                );
+                            })
+                            .await
+                        {
+                            Ok(s) => Some(s),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "failed to declare @schema debug subscriber on \
+                                     {schema_topic} ({e}); schema-once outputs may render as \
+                                     undecodable in `dora topic`"
+                                );
+                                None
+                            }
+                        }
+                    };
+
                     let events_tx = self.events_tx.clone();
                     let clock = self.clock.clone();
                     let node_id = node.id.clone();
                     let mut finished_rx = dataflow.finished_tx.subscribe();
                     tokio::spawn(async move {
+                        // Keep the `@schema` subscriber alive for the task's life.
+                        let _schema_subscriber = schema_subscriber;
                         let mut finished = pin!(finished_rx.recv());
                         loop {
                             match future::select(finished, subscriber.recv_async()).await {
@@ -2929,7 +2966,7 @@ impl Daemon {
                                     let Ok(sample) = sample else { break };
                                     // Node publishes raw payload + bincode metadata
                                     // attachment (see `DoraNode::zenoh_publish`).
-                                    let Some(metadata) = sample.attachment().and_then(|a| {
+                                    let Some(mut metadata) = sample.attachment().and_then(|a| {
                                         bincode::deserialize::<dora_message::metadata::Metadata>(
                                             &a.to_bytes(),
                                         )
@@ -2937,11 +2974,36 @@ impl Daemon {
                                     }) else {
                                         continue;
                                     };
+                                    let payload = sample.payload().to_bytes();
+                                    let data = {
+                                        let mut cached =
+                                            schema_cache.lock().unwrap_or_else(|e| e.into_inner());
+                                        rebuild_debug_topic_stream(
+                                            &mut cached,
+                                            &metadata.parameters,
+                                            &payload[..],
+                                        )
+                                    };
+                                    let Some(data) = data else {
+                                        // schema-once batch whose schema hasn't been
+                                        // cached yet — drop this inspection frame
+                                        // (transient, recovers once `@schema` or the
+                                        // producer's next full-stream refresh arrives).
+                                        continue;
+                                    };
+                                    // `data` is now always a full self-describing
+                                    // stream, so drop the internal wire keys — a
+                                    // `_schema_hash` here would contradict the
+                                    // rebuilt payload for any consumer applying the
+                                    // wire rule "hash present => schema-less batch".
+                                    dora_message::metadata::strip_internal_parameters(
+                                        &mut metadata.parameters,
+                                    );
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
                                         metadata,
-                                        data: Some(sample.payload().to_bytes().to_vec()),
+                                        data: Some(data),
                                     };
                                     if events_tx
                                         .send(Timestamped {
@@ -3585,20 +3647,8 @@ impl Daemon {
                     }
 
                     let timestamp = self.clock.new_timestamp();
-                    let type_info = dora_message::metadata::ArrowTypeInfo {
-                        data_type: DataType::Null,
-                        len: 0,
-                        null_count: 0,
-                        validity: None,
-                        offset: 0,
-                        buffer_offsets: vec![],
-                        child_data: vec![],
-                        field_names: None,
-                        schema_hash: None,
-                    };
-
                     Ok(dora_message::metadata::Metadata::from_parameters(
-                        timestamp, type_info, parameters,
+                        timestamp, parameters,
                     ))
                 })();
 
@@ -4333,15 +4383,21 @@ impl Daemon {
                     }
                 };
 
-                // Convert to Arrow once, share the sample across subscribers
+                // Convert to a self-describing Arrow IPC stream once, share the
+                // sample across subscribers. The node-side receive path decodes
+                // the IPC stream, so set the `arrow-ipc` framing parameter.
                 use dora_arrow_convert::IntoArrow;
                 let array = json.as_str().into_arrow();
                 let array: dora_node_api::arrow::array::ArrayData = array.into();
-                let total_len = dora_node_api::arrow_utils::required_data_size(&array);
-                let mut sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
-                    aligned_vec::AVec::__from_elem(128, 0, total_len);
-                let type_info =
-                    dora_node_api::arrow_utils::copy_array_into_sample(&mut sample, &array);
+                let ipc_bytes = match dora_node_api::arrow_utils::encode_arrow_ipc(&array) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("failed to Arrow-IPC-encode LogMessage: {e}");
+                        return Ok(());
+                    }
+                };
+                let sample: aligned_vec::AVec<u8, aligned_vec::ConstAlign<128>> =
+                    aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
                 let mut closed = Vec::new();
@@ -4367,8 +4423,15 @@ impl Daemon {
                         continue;
                     };
 
+                    let mut params = MetadataParameters::new();
+                    params.insert(
+                        dora_message::metadata::FRAMING.to_string(),
+                        dora_message::metadata::Parameter::String(
+                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                        ),
+                    );
                     let metadata =
-                        metadata::Metadata::new(self.clock.new_timestamp(), type_info.clone());
+                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
 
                     let send_result = send_with_timestamp(
                         channel,
@@ -5442,20 +5505,6 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 // RunningDataflow and related types are in running_dataflow.rs
 // FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
 
-pub(crate) fn empty_type_info() -> ArrowTypeInfo {
-    ArrowTypeInfo {
-        data_type: DataType::Null,
-        len: 0,
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: Vec::new(),
-        child_data: Vec::new(),
-        field_names: None,
-        schema_hash: None,
-    }
-}
-
 fn set_up_ctrlc_handler(
     clock: Arc<HLC>,
 ) -> eyre::Result<tokio::sync::mpsc::Receiver<Timestamped<Event>>> {
@@ -5551,6 +5600,233 @@ impl CoreNodeKindExt for CoreNodeKind {
                 matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
             }
         }
+    }
+}
+
+/// Cached `@schema` bytes (keyed by their FNV-1a hash, most-recent last) for
+/// one debug-watched output, shared between the `@schema` subscriber callback
+/// and the data task. Retains several schemas — mirroring the node receive
+/// path's `InputDecoder` retention — so an output that interleaves schemas
+/// (e.g. schema-once batches of schema A between large full streams of schema
+/// B) doesn't have its schema-once schema clobbered, and a stale `@schema`
+/// history-query result arriving after an in-band prime can't evict the
+/// fresher schema (both stay retained).
+type DebugSchemaCache = Arc<std::sync::Mutex<Vec<(u64, Vec<u8>)>>>;
+
+/// Retention bound for [`DebugSchemaCache`], matching the node receive path's
+/// `InputDecoder` (see `MAX_RETAINED_SCHEMAS` in dora-node-api's `ipc_encode`).
+const MAX_DEBUG_SCHEMAS: usize = 8;
+
+/// Remember `schema` for `hash` in the debug cache (most-recent last), evicting
+/// the oldest entry beyond [`MAX_DEBUG_SCHEMAS`]. An already-retained hash is
+/// moved to the back without re-copying its bytes.
+fn retain_debug_schema(cache: &mut Vec<(u64, Vec<u8>)>, hash: u64, schema: &[u8]) {
+    if let Some(pos) = cache.iter().position(|(h, _)| *h == hash) {
+        let entry = cache.remove(pos);
+        cache.push(entry);
+        return;
+    }
+    cache.push((hash, schema.to_vec()));
+    if cache.len() > MAX_DEBUG_SCHEMAS {
+        cache.remove(0);
+    }
+}
+
+/// Rebuild a self-describing Arrow IPC stream for a `dora topic` debug frame.
+///
+/// Small node→node outputs travel as schema-once batches: the schema is
+/// published once on the `@schema` subtopic and each data sample carries only
+/// the schema-less record batch (`DoraNode::publish_schema_once`). The
+/// `dora topic` decoder expects a full self-describing stream, so for such a
+/// batch we prepend the retained schema block — concatenation reconstructs the
+/// exact original stream (`schema_block ++ batch_slice == full_stream`).
+///
+/// Returns `None` (drop the inspection frame) when the batch is schema-once but
+/// no schema matching its `SCHEMA_HASH` has been retained yet — a transient,
+/// inspection-only gap. A full self-describing payload (no `SCHEMA_HASH`) is
+/// forwarded as-is.
+fn rebuild_debug_topic_stream(
+    cache: &mut Vec<(u64, Vec<u8>)>,
+    parameters: &dora_message::metadata::MetadataParameters,
+    payload: &[u8],
+) -> Option<Vec<u8>> {
+    use dora_message::metadata::{SCHEMA_HASH, carries_pattern_correlation, get_integer_param};
+
+    match get_integer_param(parameters, SCHEMA_HASH) {
+        Some(hash) => {
+            // Only rebuild with the schema matching this batch's hash —
+            // otherwise wait for the right `@schema` rather than emit a stream
+            // the CLI would decode against the wrong (stale/future) schema.
+            let (_, schema) = cache.iter().find(|(h, _)| *h == hash as u64)?;
+            let mut full = Vec::with_capacity(schema.len() + payload.len());
+            full.extend_from_slice(schema);
+            full.extend_from_slice(payload);
+            Some(full)
+        }
+        None => {
+            // In-band priming, mirroring the node receive path: a full
+            // self-describing stream carries the same schema block the producer
+            // publishes on `@schema`, so retain it here — then the schema-less
+            // batches that follow rebuild even if the `@schema` subscription
+            // missed the (single) schema emission. The producer guarantees such
+            // a full stream for the first message of every output and
+            // periodically thereafter (`DoraNode::publish_schema_once`).
+            // Service/action messages (pattern correlation) are excluded from
+            // schema-once; don't let their per-request schemas churn the cache.
+            if !carries_pattern_correlation(parameters)
+                && let Some((hash, schema)) =
+                    dora_node_api::arrow_utils::ipc_encode::schema_block_and_hash(payload)
+            {
+                retain_debug_schema(cache, hash, schema);
+            }
+            Some(payload.to_vec())
+        }
+    }
+}
+
+#[cfg(test)]
+mod debug_topic_tests {
+    use super::rebuild_debug_topic_stream;
+    use dora_message::metadata::{MetadataParameters, Parameter, SCHEMA_HASH, fnv1a};
+
+    fn params_with_schema_hash(hash: u64) -> MetadataParameters {
+        let mut params = MetadataParameters::default();
+        params.insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
+        params
+    }
+
+    /// Wrap `msg` in an IPC message frame (continuation marker + length prefix)
+    /// so `schema_block_len` parses it like a real schema block.
+    fn framed(msg: &[u8]) -> Vec<u8> {
+        let mut out = vec![0xff, 0xff, 0xff, 0xff];
+        out.extend_from_slice(&(msg.len() as i32).to_le_bytes());
+        out.extend_from_slice(msg);
+        out
+    }
+
+    #[test]
+    fn full_stream_payload_is_forwarded_verbatim() {
+        // No SCHEMA_HASH ⇒ already a self-describing stream (large/SHM or
+        // service/action output); forward the bytes unchanged.
+        let payload = b"self-describing-stream".to_vec();
+        let mut cache = Vec::new();
+        let out = rebuild_debug_topic_stream(&mut cache, &MetadataParameters::default(), &payload);
+        assert_eq!(out, Some(payload));
+        assert!(
+            cache.is_empty(),
+            "an unframed payload must not prime the cache"
+        );
+    }
+
+    #[test]
+    fn schema_once_batch_is_prepended_with_cached_schema() {
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let mut cache = vec![(hash, schema.clone())];
+        let out = rebuild_debug_topic_stream(&mut cache, &params_with_schema_hash(hash), &batch);
+        let mut expected = schema;
+        expected.extend_from_slice(&batch);
+        assert_eq!(out, Some(expected));
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_when_schema_not_cached() {
+        let batch = b"schema-less-batch".to_vec();
+        let out = rebuild_debug_topic_stream(&mut Vec::new(), &params_with_schema_hash(42), &batch);
+        assert_eq!(out, None);
+    }
+
+    #[test]
+    fn schema_once_batch_dropped_on_hash_mismatch() {
+        // Retained schema is for a different hash (e.g. a stale schema
+        // mid-change): drop rather than emit a stream the CLI would decode
+        // incorrectly.
+        let schema = b"OTHER-SCHEMA".to_vec();
+        let out = rebuild_debug_topic_stream(
+            &mut vec![(999, schema)],
+            &params_with_schema_hash(42),
+            b"batch",
+        );
+        assert_eq!(out, None);
+    }
+
+    /// A full self-describing stream must prime the debug schema cache in-band
+    /// (mirroring the node receive path), so `dora topic` can rebuild the
+    /// schema-less batches that follow even when the `@schema` subscription
+    /// missed the (single) schema emission — the producer guarantees a full
+    /// stream for the first message of every output and periodically
+    /// thereafter (dora-rs/dora#2366 review).
+    #[test]
+    fn full_stream_primes_debug_schema_cache_in_band() {
+        let schema_block = framed(b"SCHEMA-FLATBUFFER");
+        let hash = fnv1a(&schema_block);
+        let batch = framed(b"BATCH-FLATBUFFER");
+        let mut full = schema_block.clone();
+        full.extend_from_slice(&batch);
+
+        // The full stream is forwarded verbatim AND primes the cache.
+        let mut cache = Vec::new();
+        let out = rebuild_debug_topic_stream(&mut cache, &MetadataParameters::default(), &full);
+        assert_eq!(out, Some(full.clone()));
+        assert_eq!(cache, vec![(hash, schema_block)]);
+
+        // A schema-less batch tagged with that hash now rebuilds, without any
+        // `@schema` sample ever having been received.
+        let out = rebuild_debug_topic_stream(&mut cache, &params_with_schema_hash(hash), &batch);
+        assert_eq!(out, Some(full));
+    }
+
+    /// The cache retains multiple schemas: a full stream of a different schema
+    /// (e.g. a large message interleaved with schema-once batches on the same
+    /// output) must not clobber the schema those batches reference — the node
+    /// receive path retains 8 schemas for exactly this interleave, and the
+    /// `dora topic` mirror must not silently diverge from what nodes decode.
+    #[test]
+    fn interleaved_full_stream_does_not_clobber_schema_once_schema() {
+        let schema_a = framed(b"SCHEMA-A");
+        let hash_a = fnv1a(&schema_a);
+        let batch_a = framed(b"BATCH-A");
+
+        // Prime A (as the @schema subscriber or an earlier full stream would).
+        let mut cache = vec![(hash_a, schema_a.clone())];
+
+        // A large full stream of schema B passes through on the same output...
+        let mut full_b = framed(b"SCHEMA-B");
+        full_b.extend_from_slice(&framed(b"BATCH-B"));
+        let out = rebuild_debug_topic_stream(&mut cache, &MetadataParameters::default(), &full_b);
+        assert_eq!(out, Some(full_b));
+
+        // ...and the next A-tagged schema-once batch still rebuilds.
+        let out =
+            rebuild_debug_topic_stream(&mut cache, &params_with_schema_hash(hash_a), &batch_a);
+        let mut expected = schema_a;
+        expected.extend_from_slice(&batch_a);
+        assert_eq!(out, Some(expected));
+    }
+
+    /// Service/action full streams (pattern-correlated) are excluded from
+    /// schema-once and must not churn the debug schema cache.
+    #[test]
+    fn pattern_correlated_stream_does_not_prime_debug_cache() {
+        let schema_block = framed(b"SCHEMA-FLATBUFFER");
+        let hash = fnv1a(&schema_block);
+
+        let mut cache = vec![(hash, schema_block.clone())];
+        let mut params = MetadataParameters::default();
+        params.insert(
+            dora_message::metadata::REQUEST_ID.to_string(),
+            Parameter::String("req-1".into()),
+        );
+        let mut service_full = framed(b"OTHER-SCHEMA");
+        service_full.extend_from_slice(&framed(b"OTHER-BATCH"));
+        let out = rebuild_debug_topic_stream(&mut cache, &params, &service_full);
+        assert_eq!(out, Some(service_full));
+        assert_eq!(
+            cache,
+            vec![(hash, schema_block)],
+            "a service reply must not churn the schema-once cache"
+        );
     }
 }
 
@@ -6139,20 +6415,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Send data from upstream
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,
@@ -6190,17 +6453,6 @@ mod fault_tolerance_tests {
     async fn data_bytes_returned_with_and_without_local_receivers() {
         let clock = test_clock();
         let payload = [1u8, 2, 3, 4];
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::UInt8,
-            len: payload.len(),
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let sender: NodeId = "sender".to_string().into();
         let output: DataId = "output".to_string().into();
 
@@ -6208,7 +6460,7 @@ mod fault_tolerance_tests {
         // is moved out (no copy) but must still be returned for the remote
         // forwarding path.
         let mut df = test_dataflow();
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info.clone());
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender.clone(),
@@ -6235,7 +6487,7 @@ mod fault_tolerance_tests {
             .insert((receiver.clone(), input.clone()));
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
-        let metadata = metadata::Metadata::new(clock.new_timestamp(), type_info);
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
         let result = send_output_to_local_receivers(
             sender,
@@ -6313,20 +6565,7 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
 
         // Step 2: Upstream sends data again — recovery
-        let metadata = metadata::Metadata::new(
-            clock.new_timestamp(),
-            ArrowTypeInfo {
-                data_type: DataType::UInt8,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            },
-        );
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
 
         let result = send_output_to_local_receivers(
             sender, output, &mut df, &metadata, None, &clock, None, false,
