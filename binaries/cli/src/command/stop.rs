@@ -1,11 +1,11 @@
 use super::{Executable, default_tracing};
+use crate::common::parse_duration;
 use crate::common::{
     CoordinatorOptions, expect_reply, handle_dataflow_result, query_running_dataflows,
     send_control_request,
 };
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
-use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -37,7 +37,7 @@ pub struct Stop {
         group = "strategy",
         verbatim_doc_comment
     )]
-    #[arg(value_parser = parse)]
+    #[arg(value_parser = parse_duration)]
     grace_duration: Option<Duration>,
     /// Force stop the dataflow by immediately terminating all its processes
     #[clap(short, long, action, group = "strategy")]

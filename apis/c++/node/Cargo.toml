@@ -26,11 +26,11 @@ ros2-bridge = [
 ]
 
 [dependencies]
-cxx = "1.0.73"
+cxx = "1.0.194"
 dora-node-api = { workspace = true }
 eyre = { workspace = true }
 dora-ros2-bridge = { workspace = true, optional = true }
-futures-lite = { version = "2.2" }
+futures-lite = { version = "2.6" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-big-array = { version = "0.5.1", optional = true }
@@ -38,9 +38,13 @@ arrow = { workspace = true, features = ["ffi"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
-cxx-build = "1.0.73"
+cxx-build = "1.0.194"
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ], optional = true }
+# Deliberately 0.1, NOT the latest 0.2: this dep exists only to enable the
+# `verbatim` feature on the prettyplease 0.1 copy that `rust-format` uses
+# internally (version unification). Bumping to 0.2 would make it inert and
+# silently drop `verbatim` from rust-format's formatter.
 prettyplease = { version = "0.1", features = ["verbatim"], optional = true }
