@@ -6,7 +6,7 @@ use dora_message::{
     coordinator_to_cli::ControlRequestReply,
     current_crate_version,
     daemon_to_daemon::InterDaemonEvent,
-    metadata::{ArrowTypeInfo, BufferOffset, Metadata},
+    metadata::{FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter},
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
@@ -423,27 +423,22 @@ async fn publish_topic(
 ) -> Result<(), String> {
     let topic = dora_core::topics::zenoh_daemon_control_topic(dataflow_id, node_id, output_id);
 
-    // Store JSON as raw UTF-8 bytes in a UInt8 array
-    let data_bytes = data_json.as_bytes();
-    let data = dora_message::aligned_vec::AVec::from_slice(128, data_bytes);
+    // Encode the JSON (as a UInt8 array) into a self-describing Arrow IPC
+    // stream — the framing every data-plane payload now uses, so the receiving
+    // node's IPC decode reconstructs it.
+    let array = arrow::array::UInt8Array::from(data_json.as_bytes().to_vec());
+    let ipc_bytes = encode_topic_ipc(&array)
+        .map_err(|e| format!("failed to Arrow-IPC-encode topic data: {e}"))?;
+    let data = dora_message::aligned_vec::AVec::from_slice(128, &ipc_bytes);
 
-    let type_info = ArrowTypeInfo {
-        data_type: dora_message::arrow_schema::DataType::UInt8,
-        len: data_bytes.len(),
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: vec![BufferOffset {
-            offset: 0,
-            len: data_bytes.len(),
-        }],
-        child_data: vec![],
-        field_names: None,
-        schema_hash: None,
-    };
+    let mut params = MetadataParameters::new();
+    params.insert(
+        FRAMING.to_string(),
+        Parameter::String(FRAMING_ARROW_IPC.to_string()),
+    );
 
     let timestamp = clock.new_timestamp();
-    let metadata = Metadata::new(timestamp, type_info);
+    let metadata = Metadata::from_parameters(timestamp, params);
 
     let event = Timestamped {
         inner: InterDaemonEvent::Output {
@@ -476,4 +471,32 @@ async fn publish_topic(
         .map_err(|e| format!("failed to publish to zenoh: {e}"))?;
 
     Ok(())
+}
+
+/// Encode `array` into a single-column Arrow IPC stream (column named `data`),
+/// matching the framing produced by `dora_node_api::arrow_utils::encode_arrow_ipc`
+/// so the node-side IPC decode reconstructs it.
+fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::StreamWriter;
+    use arrow::record_batch::RecordBatch;
+    use eyre::Context;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![Field::new("data", DataType::UInt8, true)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array.clone())])
+        .context("failed to create RecordBatch for topic IPC encoding")?;
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buf, &schema)
+            .context("failed to create Arrow IPC StreamWriter")?;
+        writer
+            .write(&batch)
+            .context("failed to write RecordBatch to IPC stream")?;
+        writer
+            .finish()
+            .context("failed to finish Arrow IPC stream")?;
+    }
+    Ok(buf)
 }
