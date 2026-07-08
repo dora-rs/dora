@@ -423,7 +423,6 @@ binaries/
 libraries/
   core/                 # Descriptor parsing, build utilities
   message/              # Inter-component message types
-  shared-memory-server/ # Zero-copy IPC
   arrow-convert/        # Arrow data conversion
   recording/            # .drec recording format
   log-utils/            # Log parsing, merging, formatting

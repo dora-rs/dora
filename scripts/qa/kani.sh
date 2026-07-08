@@ -11,9 +11,6 @@
 #
 #   dora-message   libraries/message/src/auth.rs
 #                  constant_time_eq == slice equality (bounded length)
-#   dora-core      libraries/core/src/metadata.rs
-#                  shared-memory buffer containment: soundness,
-#                  completeness, panic/overflow freedom (exhaustive)
 #
 # Install: cargo install kani-verifier && cargo kani setup
 #          (the setup step downloads the CBMC backend, ~couple hundred MB)
