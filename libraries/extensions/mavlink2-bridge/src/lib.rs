@@ -20,6 +20,9 @@ pub mod transport;
 
 pub use arrow_convert::MavlinkArrow;
 pub use error::{BridgeError, BridgeResult};
+// mavlink 0.18 moved the generated dialect modules under
+// `mavlink::dialects`, so the common dialect is at
+// `dora_mavlink2_bridge::mavlink::dialects::common`.
 pub use mavlink::{self, MavlinkVersion};
 
 /// Compile-time guarantee that this bridge targets MAVLink 2.
