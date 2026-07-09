@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::{Executable, default_tracing};
+use crate::common::parse_duration;
 use crate::{
     common::{
         CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
@@ -19,7 +20,6 @@ use crate::{
 use chrono::{DateTime, Utc};
 use clap::Args;
 use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, id::NodeId};
-use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
@@ -50,11 +50,11 @@ pub struct LogsArgs {
     pub local: bool,
     /// Only show logs newer than this duration ago (e.g. "5m", "1h")
     #[clap(long, value_name = "DURATION")]
-    #[arg(value_parser = parse_duration_str)]
+    #[arg(value_parser = parse_duration)]
     pub since: Option<std::time::Duration>,
     /// Only show logs older than this duration ago (e.g. "5m", "1h")
     #[clap(long, value_name = "DURATION")]
-    #[arg(value_parser = parse_duration_str)]
+    #[arg(value_parser = parse_duration)]
     pub until: Option<std::time::Duration>,
     /// Minimum log level to display (error, warn, info, debug, trace, stdout)
     #[clap(

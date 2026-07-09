@@ -1397,8 +1397,12 @@ fn decode_zenoh_sample(
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
-        Some(hash) => decoder.decode_batch(buffer, hash as u64),
+        Some(hash) => {
+            tracing::debug!("received schema-less batch with SCHEMA_HASH={}", hash);
+            decoder.decode_batch(buffer, hash as u64)
+        }
         None => {
+            tracing::debug!("received full IPC stream (no SCHEMA_HASH)");
             // Service/action messages are excluded from schema-once (a server
             // multiplexes per-request schemas through one output); don't let
             // them churn the retained schema set.
