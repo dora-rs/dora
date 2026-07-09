@@ -280,9 +280,22 @@ impl FromStr for InputMapping {
                                     "hz must be a positive finite number (got `{value}`)"
                                 ));
                             }
-                            Duration::try_from_secs_f64(1.0 / hz).map_err(|e| {
+                            let interval = Duration::try_from_secs_f64(1.0 / hz).map_err(|e| {
                                 format!("hz `{value}` produces an out-of-range interval: {e}")
-                            })?
+                            })?;
+                            // A very large hz makes `1/hz` round below 1ns, so
+                            // `try_from_secs_f64` returns `Ok(Duration::ZERO)`
+                            // rather than an error. A zero-length interval means
+                            // the timer fires continuously (busy loop), so reject
+                            // it explicitly -- mirroring the tiny-hz overflow guard
+                            // above.
+                            if interval.is_zero() {
+                                return Err(format!(
+                                    "hz `{value}` is too large: it produces a zero-length \
+                                     timer interval"
+                                ));
+                            }
+                            interval
                         }
                         other => {
                             return Err(format!(
@@ -746,6 +759,23 @@ mod tests {
             .parse::<InputMapping>()
             .unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    #[test]
+    fn parse_timer_hz_rejects_zero_interval() {
+        // A pathologically large hz makes 1/hz round below 1ns, so
+        // `try_from_secs_f64` returns `Ok(Duration::ZERO)` instead of an
+        // error. That would be a zero-length (busy-loop) timer, so parsing
+        // must reject it rather than silently accept it.
+        let err = "dora/timer/hz/1000000000000"
+            .parse::<InputMapping>()
+            .unwrap_err();
+        assert!(err.contains("hz"), "error should mention hz: {err}");
+        // Sanity check: the raw conversion really does round to zero here.
+        assert_eq!(
+            Duration::try_from_secs_f64(1.0 / 1_000_000_000_000.0),
+            Ok(Duration::ZERO)
+        );
     }
 
     /// Regression test for dora-rs#2031: the `Display` impl previously emitted
