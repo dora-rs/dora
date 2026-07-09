@@ -9,16 +9,16 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
-heck = "0.3"
-nom = "7"
+heck = "0.5"
+nom = "8"
 proc-macro2 = "1.0"
 quote = "1.0"
 regex = "1"
-syn = "1.0"
-thiserror = "1.0"
-glob = "0.3.1"
+syn = "2.0"
+thiserror = "2.0"
+glob = "0.3.3"
 tracing = { workspace = true }
 rust-format = { version = "0.3.4", features = [
     "pretty_please",
 ]}
-quick-xml = "0.38.3"
+quick-xml = "0.41.0"

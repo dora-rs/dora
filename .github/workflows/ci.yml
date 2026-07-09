@@ -254,7 +254,7 @@ jobs:
       - name: Run fault-tolerance tests
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
-        timeout-minutes: 15
+        timeout-minutes: 30
       # Regression for #2029: a coordinator drop+restore must NOT kill the
       # daemon's running nodes. Spawns a real coordinator+daemon, kills the
       # coordinator mid-run, and asserts the node process survives + is

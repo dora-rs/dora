@@ -20,7 +20,7 @@ use dora_node_api::{DoraNode, Event};
 use eyre::{Result, bail, eyre};
 use mavlink::{
     MavConnection, MavHeader, MavlinkVersion,
-    common::{HEARTBEAT_DATA, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType},
+    dialects::common::{HEARTBEAT_DATA, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType},
 };
 
 const DEFAULT_PEER: &str = "127.0.0.1:14550";
@@ -34,7 +34,7 @@ fn open_sender(peer: &str) -> Result<Box<dyn MavConnection<MavMessage> + Send + 
         match mavlink::connect::<MavMessage>(&format!("udpout:{peer}")) {
             Ok(mut conn) => {
                 conn.set_protocol_version(MavlinkVersion::V2);
-                return Ok(conn);
+                return Ok(Box::new(conn));
             }
             Err(e) => {
                 if Instant::now() >= deadline {
