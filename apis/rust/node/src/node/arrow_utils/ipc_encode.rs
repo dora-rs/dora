@@ -661,6 +661,9 @@ impl InputDecoder {
     /// Prime a fresh `StreamDecoder` with `schema` and record it as the current
     /// and retained schema for `hash`.
     fn prime(&mut self, hash: u64, schema: ArrowBuffer) -> eyre::Result<()> {
+        // Create a fresh decoder before priming. In Arrow 59+, even consuming a
+        // schema message can leave the decoder close to terminal state when the
+        // EOS marker is encountered. A fresh decoder ensures we start clean.
         let mut decoder = arrow::ipc::reader::StreamDecoder::new();
         prime_with_schema(&mut decoder, schema.clone())?;
         self.decoder = decoder;
@@ -699,7 +702,16 @@ impl InputDecoder {
             }
         }
         match decode_one_batch(&mut self.decoder, buffer) {
-            Ok(array) => Ok(Some(array)),
+            Ok(array) => {
+                // Arrow 59+ reaches a terminal state after decoding each message's
+                // EOS marker, rejecting further input. Reset the decoder so the next
+                // batch (another independent IPC stream) can be decoded against the
+                // same schema. Clearing schema_hash forces the next batch to re-prime
+                // from the retained schemas (instant lookup, no network round-trip).
+                self.decoder = arrow::ipc::reader::StreamDecoder::new();
+                self.schema_hash = None;
+                Ok(Some(array))
+            }
             Err(e) => {
                 // A failed batch decode (truncated/corrupt payload — zenoh
                 // tail-loss or a malicious peer) leaves the persistent decoder
@@ -942,6 +954,45 @@ mod tests {
 
     /// The retained-schema set is bounded: schemas beyond the cap evict the
     /// oldest, whose batches then drop until it is re-installed.
+    /// Test that schema-less batches can be decoded repeatedly after the
+    /// decoder is soft-reset between batches (Arrow 59+ terminal state fix).
+    /// This is the regression test for PR #2445/#2366 interaction with Arrow 59.
+    #[test]
+    fn input_decoder_handles_sequential_batches_arrow_59_terminal_state() {
+        let f32_schema = || Buffer::from_vec(encode_schema_message(&DataType::Float32).unwrap());
+
+        let mut dec = InputDecoder::new();
+        // Prime with a schema.
+        dec.set_schema(7, f32_schema()).unwrap();
+
+        // Decode 5 schema-less batches sequentially. Each one should decode
+        // correctly despite the decoder being reset between batches (soft-reset
+        // for Arrow 59 terminal state handling).
+        let batches = vec![
+            Float32Array::from(vec![1.0, 2.0]).into_data(),
+            Float32Array::from(vec![3.0]).into_data(),
+            Float32Array::from(vec![4.0, 5.0, 6.0]).into_data(),
+            Float32Array::from(vec![7.0, 8.0]).into_data(),
+            Float32Array::from(vec![9.0, 10.0, 11.0, 12.0]).into_data(),
+        ];
+
+        for (i, batch) in batches.iter().enumerate() {
+            let result = dec.decode_batch(batch_buf(batch), 7);
+            assert!(
+                result.is_ok(),
+                "batch {} decode failed: {:?}",
+                i,
+                result.err()
+            );
+            let decoded = result.unwrap().unwrap();
+            assert_eq!(
+                &decoded, batch,
+                "batch {} mismatch: expected {:?}, got {:?}",
+                i, batch, decoded
+            );
+        }
+    }
+
     #[test]
     fn input_decoder_evicts_oldest_schema_beyond_cap() {
         let f32_schema = || Buffer::from_vec(encode_schema_message(&DataType::Float32).unwrap());

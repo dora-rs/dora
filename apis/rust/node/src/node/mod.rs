@@ -1999,6 +1999,7 @@ struct SchemaOnceState {
 }
 
 /// What `publish_schema_once` should do for the current message.
+#[derive(Debug)]
 enum SchemaOnceDecision {
     /// The schema for this hash is not confirmed published (first message,
     /// schema change, or an earlier `@schema` publish failed): publish it and
@@ -2058,7 +2059,10 @@ fn publish_schema_once(
     let (hash, schema_bytes) = arrow_utils::ipc_encode::schema_block_and_hash(full_stream)?;
 
     let now = Instant::now();
-    match schema_once_decision(schema_state.get(output_id), hash, now) {
+    let decision = schema_once_decision(schema_state.get(output_id), hash, now);
+    tracing::debug!(output = %output_id, decision = ?decision, "schema-once decision");
+
+    match decision {
         SchemaOnceDecision::PublishSchemaAndSendFullStream => {
             if let Some(publisher) =
                 schema_publisher(schema_publishers, session, dataflow_id, node_id, output_id)
@@ -2069,6 +2073,7 @@ fn publish_schema_once(
                     // emission is retried on the next message rather than
                     // silently skipped.
                     Ok(()) => {
+                        tracing::debug!(output = %output_id, hash, "schema published on @schema subtopic");
                         schema_state.insert(
                             output_id.clone(),
                             SchemaOnceState {
@@ -2085,12 +2090,14 @@ fn publish_schema_once(
             None
         }
         SchemaOnceDecision::SendFullStreamRefresh => {
+            tracing::debug!(output = %output_id, hash, "sending full-stream refresh");
             if let Some(state) = schema_state.get_mut(output_id) {
                 state.last_full_stream = now;
             }
             None
         }
         SchemaOnceDecision::SendSchemaLessBatch => {
+            tracing::debug!(output = %output_id, hash, "sending schema-less batch with SCHEMA_HASH");
             // Every batch carries the schema hash so the receiver can match it
             // to the primed decoder (and detect a schema change).
             let mut metadata = base_metadata.clone();

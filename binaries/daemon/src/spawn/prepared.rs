@@ -457,7 +457,10 @@ impl PreparedNode {
                 // restart_count=0 (pre-existing bug, first caught by
                 // the restart_recovers_from_failure E2E test).
                 if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
-                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
+                    // Clone and update the command with the new env var
+                    let mut updated_command = command.clone();
+                    updated_command = updated_command.env("DORA_NODE_CONFIG", config_yaml);
+                    *command = updated_command;
                 }
 
                 #[allow(unused_mut)]
