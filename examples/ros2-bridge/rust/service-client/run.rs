@@ -2,7 +2,7 @@ use dora_cli::{BuildConfig, build, run};
 use eyre::Context;
 use std::path::Path;
 
-use process_wrap::std::{StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap};
+use process_wrap::std::{ChildWrapper, CommandWrap};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));

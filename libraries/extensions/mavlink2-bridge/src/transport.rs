@@ -27,7 +27,7 @@
 //! * **Serial** baud defaults to `115_200` when `?baud=` is omitted.
 
 use crate::{BridgeError, BridgeResult};
-use mavlink::{MavConnection, MavlinkVersion, common::MavMessage};
+use mavlink::{MavConnection, MavlinkVersion, dialects::common::MavMessage};
 use url::Url;
 
 /// Default MAVLink TCP port used when the URL omits one.
@@ -105,7 +105,7 @@ fn open_mavlink_versioned(
     let mut conn = mavlink::connect::<MavMessage>(addr)
         .map_err(|e| BridgeError::Config(format!("failed to connect mavlink to '{addr}': {e}")))?;
     conn.set_protocol_version(version);
-    Ok(conn)
+    Ok(Box::new(conn))
 }
 
 fn parse_proto_query(url: &Url) -> Option<MavlinkVersion> {
