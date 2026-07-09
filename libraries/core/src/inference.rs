@@ -19,25 +19,15 @@ pub struct TypeSuggestion {
     pub suggested_urn: String,
     /// Source file path
     pub file: String,
-    /// Line number in source (None if unavailable)
-    pub line: Option<usize>,
 }
 
 impl std::fmt::Display for TypeSuggestion {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(line) = self.line {
-            write!(
-                f,
-                "suggest: node \"{}\" output \"{}\" -> {} (from {}:{})",
-                self.node_id, self.output_id, self.suggested_urn, self.file, line,
-            )
-        } else {
-            write!(
-                f,
-                "suggest: node \"{}\" output \"{}\" -> {} (from {})",
-                self.node_id, self.output_id, self.suggested_urn, self.file,
-            )
-        }
+        write!(
+            f,
+            "suggest: node \"{}\" output \"{}\" -> {} (from {})",
+            self.node_id, self.output_id, self.suggested_urn, self.file,
+        )
     }
 }
 
@@ -80,7 +70,6 @@ impl<'ast> Visit<'ast> for TypeInferenceVisitor {
                         output_id,
                         suggested_urn: urn,
                         file: self.file_name.clone(),
-                        line: None,
                     });
                 }
             }
