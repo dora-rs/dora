@@ -350,9 +350,31 @@ async fn fetch_changes(
     Ok(repository)
 }
 
+/// Returns `true` if `commit_hash` contains git rev-spec *navigation* syntax.
+///
+/// A pinned commit reference is only meant to be a hex commit hash or a plain
+/// branch/tag name. Rev-spec operators instead resolve to a *different* commit
+/// than any literal ref, defeating the reproducibility of the pin:
+///
+/// * `a..b` / `a...b` — commit range
+/// * `ref:path`       — `<tree-ish>:<path>` blob/tree lookup
+/// * `ref^`, `ref^2`  — parent navigation
+/// * `ref~5`          — ancestor navigation
+/// * `ref@{...}`      — reflog / date lookup (e.g. `HEAD@{yesterday}`)
+///
+/// A legitimate git ref name can never contain `~`, `^`, `:`, `..`, or `@{`
+/// (see `git-check-ref-format`), so rejecting them cannot block a valid pin.
+fn contains_revspec_navigation(commit_hash: &str) -> bool {
+    commit_hash.contains("..")
+        || commit_hash.contains(':')
+        || commit_hash.contains('^')
+        || commit_hash.contains('~')
+        || commit_hash.contains("@{")
+}
+
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
     // Reject arbitrary rev-spec expressions; only allow hex commit hashes and branch/tag names.
-    if commit_hash.contains("..") || commit_hash.contains(':') || commit_hash.contains('^') {
+    if contains_revspec_navigation(commit_hash) {
         eyre::bail!(
             "invalid commit reference '{commit_hash}': rev-spec expressions are not allowed"
         );
@@ -373,4 +395,44 @@ fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Resu
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_revspec_navigation;
+
+    #[test]
+    fn plain_refs_and_hashes_are_allowed() {
+        for ok in [
+            "main",
+            "release-1.2",
+            "v1.0.0",
+            "feature/foo",
+            "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
+            "HEAD",
+        ] {
+            assert!(
+                !contains_revspec_navigation(ok),
+                "`{ok}` should be accepted as a plain ref/hash"
+            );
+        }
+    }
+
+    #[test]
+    fn revspec_navigation_is_rejected() {
+        for bad in [
+            "main~5",           // ancestor navigation
+            "HEAD@{yesterday}", // reflog / date lookup
+            "HEAD@{1}",
+            "v1.0..v2.0", // commit range
+            "tag^2",      // parent navigation
+            "main^",
+            "HEAD:src/main.rs", // <tree-ish>:<path>
+        ] {
+            assert!(
+                contains_revspec_navigation(bad),
+                "`{bad}` should be rejected as a rev-spec expression"
+            );
+        }
+    }
 }
