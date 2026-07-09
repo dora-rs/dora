@@ -74,7 +74,11 @@ where
     // since the downloaded binary may be executed or dlopen-ed.
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if let Some(expected) = expected_sha256 {
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
