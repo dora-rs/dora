@@ -243,6 +243,18 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+      # Now that this job runs in parallel with `test` (#2524) it no longer
+      # inherits `test`'s freed disk, and it builds the CLI + all E2E test
+      # binaries itself. Reclaim the ~25 GB of preinstalled toolchains the
+      # runner ships so the build doesn't hit "no space left on device".
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
       - name: Build CLI
         run: cargo build -p dora-cli --release
       - name: Install CLI
@@ -254,7 +266,7 @@ jobs:
       - name: Run fault-tolerance tests
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
-        timeout-minutes: 15
+        timeout-minutes: 30
       # Regression for #2029: a coordinator drop+restore must NOT kill the
       # daemon's running nodes. Spawns a real coordinator+daemon, kills the
       # coordinator mid-run, and asserts the node process survives + is
@@ -321,6 +333,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+      # Runs in parallel with `test` (#2524), so it can't rely on `test`
+      # having freed disk. It builds the dora-examples test binary and
+      # compiles the PyO3 node extension via `uv pip install -e` below —
+      # both large. Free the preinstalled toolchains first to avoid
+      # "no space left on device".
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -370,6 +395,17 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+      # Runs in parallel with `test` (#2524); compiles the criterion
+      # benchmark binaries for dora-message + dora-daemon itself. Free the
+      # preinstalled toolchains first to avoid "no space left on device".
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -eux
+          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker system prune -af || true
+          df -h
 
       # Restore baseline from the most recent main-branch run.
       # The key uses a fixed prefix; restore-keys enables prefix matching

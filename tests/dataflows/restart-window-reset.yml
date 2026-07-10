@@ -14,5 +14,6 @@ nodes:
     env:
       DORA_TEST_MARKER_FILE: /tmp/dora-restart-window-reset.log
       DORA_TEST_CRASH_AFTER_MS: "500"
+      DORA_TEST_EXIT_ON_INCARCATION: "3"
     inputs:
       tick: dora/timer/millis/100

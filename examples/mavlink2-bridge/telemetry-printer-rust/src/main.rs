@@ -6,7 +6,7 @@
 //! bridge node to round-trip without an autopilot.
 
 use arrow::array::{AsArray, RecordBatch};
-use dora_mavlink2_bridge::{MavlinkArrow, mavlink::common::HEARTBEAT_DATA};
+use dora_mavlink2_bridge::{MavlinkArrow, mavlink::dialects::common::HEARTBEAT_DATA};
 use dora_node_api::{DoraNode, Event, arrow::array::ArrayRef};
 use eyre::{Result, bail, eyre};
 use std::time::{Duration, Instant};

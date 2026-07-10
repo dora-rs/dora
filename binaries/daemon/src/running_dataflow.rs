@@ -42,7 +42,7 @@ use tracing::warn;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::Event;
-use process_wrap::tokio::TokioChildWrapper;
+use process_wrap::tokio::ChildWrapper;
 
 pub(crate) struct InputDeadline {
     pub timeout: Duration,
@@ -112,7 +112,7 @@ pub(crate) enum ProcessOperation {
 }
 
 impl ProcessOperation {
-    pub fn execute(&self, child: &mut dyn TokioChildWrapper) {
+    pub fn execute(&self, child: &mut dyn ChildWrapper) {
         match self {
             Self::SoftKill => {
                 #[cfg(unix)]
