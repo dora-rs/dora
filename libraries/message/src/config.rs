@@ -38,11 +38,17 @@ pub enum QueuePolicy {
 impl QueuePolicy {
     /// Returns the effective capacity for a given configured queue size.
     ///
-    /// - `DropOldest`: returns `queue_size` as-is.
+    /// - `DropOldest`: returns `queue_size`, but never less than 1.
     /// - `Backpressure`: returns `10 * queue_size` (min 100) as a hard safety cap.
+    ///
+    /// A `DropOldest` cap of 0 would drop 100% of the input's events — the
+    /// runtime operator channel sets the just-queued event to `None` on every
+    /// `add_event`, so the operator never receives a single message and the
+    /// dataflow silently hangs. Clamp `queue_size: 0` to 1 (latest-only)
+    /// instead of turning the input into a dead port.
     pub fn effective_cap(&self, queue_size: usize) -> usize {
         match self {
-            Self::DropOldest => queue_size,
+            Self::DropOldest => queue_size.max(1),
             Self::Backpressure => queue_size.saturating_mul(10).max(100),
         }
     }
@@ -637,6 +643,23 @@ mod tests {
         let input: Input = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(input.queue_size, Some(5));
         assert_eq!(input.queue_policy, None);
+    }
+
+    #[test]
+    fn drop_oldest_cap_is_never_zero() {
+        // A `queue_size: 0` DropOldest input must keep at least the latest
+        // message; a cap of 0 would starve the operator entirely.
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(0), 1);
+        // Non-zero sizes are unchanged.
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(1), 1);
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(5), 5);
+    }
+
+    #[test]
+    fn backpressure_cap_has_floor() {
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(0), 100);
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(5), 100);
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(20), 200);
     }
 
     #[test]
