@@ -21,7 +21,7 @@ use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Field, Float32Type, Int8Type, Int16Type, Int32Type, Schema,
     UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
-use mavlink::common;
+use mavlink::dialects::common;
 use num_traits::FromPrimitive;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ use std::sync::Arc;
 ///
 /// ```
 /// use dora_mavlink2_bridge::MavlinkArrow;
-/// use dora_mavlink2_bridge::mavlink::common::{
+/// use dora_mavlink2_bridge::mavlink::dialects::common::{
 ///     HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType,
 /// };
 ///
@@ -823,7 +823,7 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
 // that don't accept MAV_CMD_DO_SET_MODE via COMMAND_LONG (e.g. legacy
 // ArduCopter <= 3.5).
 //
-// Known limitation (mavlink-rust 0.13): the spec defines `base_mode` as a
+// Known limitation (mavlink-rust 0.18): the spec defines `base_mode` as a
 // uint8 bitfield, but mavlink-rust generates `MavMode` as a strict enum with
 // only 11 named variants {0, 64, 66, 80, 88, 92, 192, 194, 208, 216, 220}.
 // None has bit 0x01 (CUSTOM_MODE_ENABLED) set, so any ArduPilot custom-mode
@@ -835,6 +835,9 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
 // raw u8 (tracked at https://github.com/mavlink/rust-mavlink).
 // -----------------------------------------------------------------------------
 
+// SET_MODE is deprecated upstream (superseded by MAV_CMD_DO_SET_MODE) but
+// deliberately supported by the bridge for the legacy autopilots above.
+#[allow(deprecated)]
 impl MavlinkArrow for common::SET_MODE_DATA {
     fn schema() -> Schema {
         Schema::new(vec![
@@ -857,14 +860,14 @@ impl MavlinkArrow for common::SET_MODE_DATA {
 
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self> {
         let raw_base_mode = read_u8(batch, "base_mode")?;
-        // Surface the mavlink-rust 0.13 enum-vs-bitfield mismatch with a
+        // Surface the mavlink-rust 0.18 enum-vs-bitfield mismatch with a
         // pointer to the workaround instead of the bare "invalid base_mode
         // discriminant" that decode_enum would produce, since this hits any
         // user trying to enter an ArduPilot custom mode.
         let base_mode = decode_enum(raw_base_mode as u32, "base_mode").map_err(|_| {
             BridgeError::Mavlink(format!(
                 "SET_MODE base_mode={raw_base_mode} (0x{raw_base_mode:02x}) is a valid \
-                 uint8 per MAVLink spec but not representable as mavlink-rust 0.13's \
+                 uint8 per MAVLink spec but not representable as mavlink-rust 0.18's \
                  strict MavMode enum (variants: 0, 64, 66, 80, 88, 92, 192, 194, 208, \
                  216, 220). For ArduPilot custom-mode entry (base_mode=0x01 + \
                  custom_mode=N), use MAV_CMD_DO_SET_MODE via the `command_long_cmd` \

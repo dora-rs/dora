@@ -20,7 +20,7 @@ use dora_message::{
 };
 use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
-use process_wrap::tokio::TokioCommandWrap;
+use process_wrap::tokio::CommandWrap;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -457,7 +457,10 @@ impl PreparedNode {
                 // restart_count=0 (pre-existing bug, first caught by
                 // the restart_recovers_from_failure E2E test).
                 if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
-                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
+                    // Clone and update the command with the new env var
+                    let mut updated_command = command.clone();
+                    updated_command = updated_command.env("DORA_NODE_CONFIG", config_yaml);
+                    *command = updated_command;
                 }
 
                 #[allow(unused_mut)]
@@ -510,8 +513,7 @@ impl PreparedNode {
                     }
                 }
 
-                let mut command =
-                    TokioCommandWrap::from(tokio::process::Command::from(std_command));
+                let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
                 {
@@ -691,7 +693,7 @@ impl PreparedNode {
         tokio::spawn(async move {
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
-                    status = Box::into_pin(child.wait()) => {
+                    status = child.wait() => {
                         break status.into();
                     }
                     result = op_rx.recv_async() => {
@@ -699,7 +701,7 @@ impl PreparedNode {
                             Ok(op) => op.execute(child.as_mut()),
                             Err(_) => {
                                 // Sender dropped
-                                break Box::into_pin(child.wait()).await.into();
+                                break child.wait().await.into();
                             }
                         }
                     }
