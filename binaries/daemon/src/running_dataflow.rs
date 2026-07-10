@@ -403,7 +403,7 @@ impl RunningDataflow {
         } else {
             let grace_duration_kills = self.grace_duration_kills.clone();
             tokio::spawn(async move {
-                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
+                let duration = grace_duration.unwrap_or(DEFAULT_STOP_GRACE);
                 tokio::time::sleep(duration).await;
 
                 for (node, proc) in &running_processes {

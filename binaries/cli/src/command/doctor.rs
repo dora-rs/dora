@@ -161,24 +161,15 @@ fn doctor(args: Doctor) -> eyre::Result<()> {
     // 6. Per-node health
     if let Some(ref session) = session {
         match check_node_health(session) {
-            Ok((total, healthy, degraded, failed_nodes)) => {
-                if failed_nodes > 0 {
-                    fail(
-                        &mut stdout,
-                        &format!(
-                            "Nodes: {total} total, {healthy} healthy, {degraded} degraded, {failed_nodes} failed"
-                        ),
-                    )?;
+            Ok(counts) => match node_health_report(counts) {
+                NodeHealthReport::Fail(msg) => {
+                    fail(&mut stdout, &msg)?;
                     failures += 1;
-                } else if degraded > 0 {
-                    warn(
-                        &mut stdout,
-                        &format!("Nodes: {total} total, {healthy} healthy, {degraded} degraded"),
-                    )?;
-                } else if total > 0 {
-                    pass(&mut stdout, &format!("Nodes: {total} total, all healthy"))?;
                 }
-            }
+                NodeHealthReport::Warn(msg) => warn(&mut stdout, &msg)?,
+                NodeHealthReport::Pass(msg) => pass(&mut stdout, &msg)?,
+                NodeHealthReport::Nothing => {}
+            },
             Err(e) => {
                 fail(&mut stdout, &format!("Nodes: check failed ({e})"))?;
                 failures += 1;
@@ -347,6 +338,90 @@ fn check_uv(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod node_health_tests {
+    use super::{NodeHealthCounts, NodeHealthReport, node_health_report};
+
+    #[test]
+    fn all_stopped_is_not_reported_as_healthy() {
+        let counts = NodeHealthCounts {
+            total: 3,
+            stopped: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            node_health_report(counts),
+            NodeHealthReport::Pass("Nodes: 3 total, all stopped".to_string())
+        );
+    }
+
+    #[test]
+    fn healthy_with_some_stopped_reports_both() {
+        let counts = NodeHealthCounts {
+            total: 5,
+            healthy: 2,
+            stopped: 3,
+            ..Default::default()
+        };
+        assert_eq!(
+            node_health_report(counts),
+            NodeHealthReport::Pass("Nodes: 5 total, 2 healthy, 3 stopped".to_string())
+        );
+    }
+
+    #[test]
+    fn all_healthy_has_no_stopped_suffix() {
+        let counts = NodeHealthCounts {
+            total: 2,
+            healthy: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            node_health_report(counts),
+            NodeHealthReport::Pass("Nodes: 2 total, 2 healthy".to_string())
+        );
+    }
+
+    #[test]
+    fn failed_takes_precedence_and_counts_reconcile() {
+        let counts = NodeHealthCounts {
+            total: 4,
+            healthy: 1,
+            degraded: 1,
+            failed: 1,
+            stopped: 1,
+        };
+        assert_eq!(
+            node_health_report(counts),
+            NodeHealthReport::Fail(
+                "Nodes: 4 total, 1 healthy, 1 degraded, 1 failed, 1 stopped".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn degraded_reports_warn() {
+        let counts = NodeHealthCounts {
+            total: 2,
+            healthy: 1,
+            degraded: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            node_health_report(counts),
+            NodeHealthReport::Warn("Nodes: 2 total, 1 healthy, 1 degraded".to_string())
+        );
+    }
+
+    #[test]
+    fn no_nodes_reports_nothing() {
+        assert_eq!(
+            node_health_report(NodeHealthCounts::default()),
+            NodeHealthReport::Nothing
+        );
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod shm_tests {
     use super::{ShmState, evaluate_shm};
@@ -406,33 +481,90 @@ fn check_connected_machines(
     Ok(expect_reply!(reply, ConnectedDaemons(daemons))?)
 }
 
-fn check_node_health(session: &WsSession) -> eyre::Result<(usize, usize, usize, usize)> {
+/// Per-node health counts. `total` is every known node; the rest partition it
+/// by status, with `stopped` holding cleanly-stopped nodes (which are neither
+/// healthy nor faults).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct NodeHealthCounts {
+    total: usize,
+    healthy: usize,
+    degraded: usize,
+    failed: usize,
+    stopped: usize,
+}
+
+/// The verdict `dora doctor` renders for the per-node health check. Kept as a
+/// pure function of the counts so the message selection is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum NodeHealthReport {
+    Fail(String),
+    Warn(String),
+    Pass(String),
+    /// No nodes are known — nothing to report.
+    Nothing,
+}
+
+fn node_health_report(counts: NodeHealthCounts) -> NodeHealthReport {
+    let NodeHealthCounts {
+        total,
+        healthy,
+        degraded,
+        failed,
+        stopped,
+    } = counts;
+    // Fold the stopped count into every message so the numbers reconcile with
+    // `total` (which includes stopped nodes).
+    let stopped_suffix = if stopped > 0 {
+        format!(", {stopped} stopped")
+    } else {
+        String::new()
+    };
+    if failed > 0 {
+        NodeHealthReport::Fail(format!(
+            "Nodes: {total} total, {healthy} healthy, {degraded} degraded, {failed} failed{stopped_suffix}"
+        ))
+    } else if degraded > 0 {
+        NodeHealthReport::Warn(format!(
+            "Nodes: {total} total, {healthy} healthy, {degraded} degraded{stopped_suffix}"
+        ))
+    } else if healthy > 0 {
+        NodeHealthReport::Pass(format!(
+            "Nodes: {total} total, {healthy} healthy{stopped_suffix}"
+        ))
+    } else if total > 0 {
+        // Every known node has stopped. Don't claim "all healthy" when nothing
+        // is actually running.
+        NodeHealthReport::Pass(format!("Nodes: {total} total, all stopped"))
+    } else {
+        NodeHealthReport::Nothing
+    }
+}
+
+fn check_node_health(session: &WsSession) -> eyre::Result<NodeHealthCounts> {
     let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
     let nodes = expect_reply!(reply, NodeInfoList(infos))?;
 
-    let total = nodes.len();
-    let mut healthy = 0usize;
-    let mut degraded = 0usize;
-    let mut failed = 0usize;
+    let mut counts = NodeHealthCounts {
+        total: nodes.len(),
+        ..Default::default()
+    };
 
     for node in &nodes {
         if let Some(metrics) = &node.metrics {
             use dora_message::daemon_to_coordinator::NodeStatus;
             match metrics.status {
-                NodeStatus::Running => healthy += 1,
-                NodeStatus::Restarting => healthy += 1,
-                NodeStatus::Degraded => degraded += 1,
-                NodeStatus::Failed => failed += 1,
-                // A cleanly-stopped node is neither healthy nor a fault:
-                // skip it so doctor counts reflect the live surface.
-                NodeStatus::Stopped => {}
+                NodeStatus::Running => counts.healthy += 1,
+                NodeStatus::Restarting => counts.healthy += 1,
+                NodeStatus::Degraded => counts.degraded += 1,
+                NodeStatus::Failed => counts.failed += 1,
+                NodeStatus::Stopped => counts.stopped += 1,
             }
         } else {
-            healthy += 1; // No metrics yet = assumed healthy
+            counts.healthy += 1; // No metrics yet = assumed healthy
         }
     }
 
-    Ok((total, healthy, degraded, failed))
+    Ok(counts)
 }
 
 fn validate_dataflow(path: &std::path::Path) -> eyre::Result<()> {
