@@ -177,8 +177,20 @@ fn info(
                         }
                     };
                     match event.inner {
-                        InterDaemonEvent::Output { data, .. } => {
-                            let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
+                        InterDaemonEvent::Output { data, metadata, .. } => {
+                            // Prefer the daemon-stamped on-wire size: the debug
+                            // frame's `data` is a rebuilt self-describing stream
+                            // with the schema prepended to every frame, but a
+                            // schema-once output ships that schema only once, so
+                            // `data.len()` over-reports bandwidth. Fall back to the
+                            // buffer length when the size isn't present (#2584).
+                            let data_size = dora_message::metadata::get_integer_param(
+                                &metadata.parameters,
+                                dora_message::metadata::WIRE_SIZE,
+                            )
+                            .and_then(|n| usize::try_from(n).ok())
+                            .or_else(|| data.as_ref().map(|d| d.len()))
+                            .unwrap_or(0);
                             // The payload is a self-describing Arrow IPC stream;
                             // read its data type from the decoded array (best
                             // effort — a malformed stream just leaves it unknown).

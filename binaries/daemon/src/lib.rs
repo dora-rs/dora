@@ -2999,6 +2999,20 @@ impl Daemon {
                                     dora_message::metadata::strip_internal_parameters(
                                         &mut metadata.parameters,
                                     );
+                                    // Record the true on-wire size so `dora topic
+                                    // info` measures the schema-less batch that
+                                    // actually travelled, not the rebuilt stream
+                                    // (which prepends the schema to every frame even
+                                    // though it ships once). For a full
+                                    // self-describing frame this equals `data.len()`;
+                                    // for a schema-once batch it excludes the
+                                    // prepended schema block (dora-rs/dora#2584).
+                                    metadata.parameters.insert(
+                                        dora_message::metadata::WIRE_SIZE.to_string(),
+                                        dora_message::metadata::Parameter::Integer(
+                                            payload.len() as i64
+                                        ),
+                                    );
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
@@ -5724,6 +5738,38 @@ mod debug_topic_tests {
         let mut expected = schema;
         expected.extend_from_slice(&batch);
         assert_eq!(out, Some(expected));
+    }
+
+    /// The true on-wire size stamped for `dora topic info` (the data-sample
+    /// `payload.len()`) must exclude the schema block that `rebuild_*` prepends
+    /// for inspection — otherwise bandwidth is over-reported by the schema size
+    /// on every schema-once frame, and by the most for the small/frequent
+    /// primitive outputs the schema-once optimization targets (#2584). For a
+    /// full self-describing frame the wire size equals the rebuilt length.
+    #[test]
+    fn on_wire_size_excludes_prepended_schema() {
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let mut cache = vec![(hash, schema.clone())];
+
+        // schema-once: rebuilt = schema ++ batch, but only `batch` is on-wire.
+        let rebuilt =
+            rebuild_debug_topic_stream(&mut cache, &params_with_schema_hash(hash), &batch)
+                .expect("schema cached");
+        let wire_size = batch.len();
+        assert_eq!(rebuilt.len(), schema.len() + wire_size);
+        assert!(
+            wire_size < rebuilt.len(),
+            "schema-once wire size must exclude the prepended schema"
+        );
+
+        // full stream: rebuilt == payload, so the wire size is the full length.
+        let full = b"self-describing-stream".to_vec();
+        let out =
+            rebuild_debug_topic_stream(&mut Vec::new(), &MetadataParameters::default(), &full)
+                .expect("full stream forwarded");
+        assert_eq!(out.len(), full.len());
     }
 
     #[test]

@@ -153,6 +153,20 @@ pub const FRAMING_ARROW_IPC: &str = "arrow-ipc";
 /// stream (large/SHM and daemon-path payloads).
 pub const SCHEMA_HASH: &str = "_schema_hash";
 
+/// Metadata key carrying the true on-wire byte size (as an `i64`) of a
+/// `dora topic` debug frame's data sample.
+///
+/// The daemon rebuilds a self-describing Arrow IPC stream for inspection by
+/// prepending the retained schema block to each schema-once batch, so the
+/// rebuilt stream the CLI receives is larger than what actually travelled on
+/// the wire (the schema-less batch — the schema is published only once on the
+/// `@schema` subtopic). To keep `dora topic info`'s bandwidth accounting
+/// accurate, the daemon stamps the original data-sample length here; the CLI
+/// measures this instead of the rebuilt stream length (dora-rs/dora#2584).
+///
+/// Debug/inspection path only — never set on real node→node outputs.
+pub const WIRE_SIZE: &str = "_wire_size";
+
 /// Returns `true` if the given parameters carry any pattern-correlation key
 /// ([`REQUEST_ID`], [`GOAL_ID`], or [`GOAL_STATUS`]).
 ///
