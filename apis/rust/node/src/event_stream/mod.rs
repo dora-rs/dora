@@ -1540,11 +1540,20 @@ impl Drop for EventStream {
         // finish and the dataflow stalls until an outer timeout (dora-rs/dora#2425).
         // The callbacks use `try_send`, so undeclaring before `receiver` drops
         // cannot deadlock on a blocked callback.
+        //
+        // The `@schema` `AdvancedSubscriber`s (added with the Arrow IPC data
+        // plane in #2366) undeclare on the same shared session and can wedge
+        // the same way, so they must be torn down under the same deadline —
+        // mirroring `DoraNode::Drop`, which drops both publisher maps inside
+        // one guard. Left out, they would otherwise drop unbounded in the
+        // implicit field-drop phase after this `Drop` body returns (#2583).
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
-        if !subscribers.is_empty() {
+        let schema_subscribers = std::mem::take(&mut self._zenoh_schema_subscribers);
+        if !subscribers.is_empty() || !schema_subscribers.is_empty() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
+                    drop(schema_subscribers);
                 });
             if !completed {
                 tracing::warn!(
