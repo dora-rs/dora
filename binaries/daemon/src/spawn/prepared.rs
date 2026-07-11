@@ -329,18 +329,28 @@ impl PreparedNode {
                         )
                         .await;
                     tokio::time::sleep(backoff).await;
+                }
 
-                    // Re-check disable_restart after sleep (may have changed)
-                    if disable_restart.load(atomic::Ordering::Acquire) {
-                        logger
-                            .log(
-                                LogLevel::Info,
-                                Some("daemon".into()),
-                                "restart cancelled: inputs closed during backoff wait".to_string(),
-                            )
-                            .await;
-                        break;
-                    }
+                // Re-check `disable_restart` before committing to a respawn. It
+                // may have flipped to `true` after the `load` at the top of this
+                // iteration: emitting the `SpawnedNodeResult` event and any
+                // backoff sleep above are `.await` points, and a concurrent
+                // `StopDataflow` (`RunningDataflow::stop_all`) sets
+                // `disable_restart` on every node. Keeping this gate inside the
+                // `restart_delay.is_some()` branch above meant that a node with
+                // the default (unset) `restart_delay` had no final check, so a
+                // stop racing an in-progress restart was ignored and the node
+                // respawned *after* the stop — an orphan process that `stop_all`
+                // has already passed over.
+                if disable_restart.load(atomic::Ordering::Acquire) {
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            "restart cancelled: inputs closed before respawn".to_string(),
+                        )
+                        .await;
+                    break;
                 }
 
                 restart_count += 1;
