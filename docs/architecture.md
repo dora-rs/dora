@@ -27,7 +27,7 @@ flowchart TB
 
     subgraph L2[Layer 2: Core Libraries]
         Core[dora-core]
-        Shmem[shared-memory-server]
+        Shmem[zenoh SHM<br/>zero-copy IPC]
         NodeApi[Node API]
     end
 
@@ -61,13 +61,12 @@ independently.
 | `binaries/record-node` | dora-record-node | Records dataflow messages to `.drec` format |
 | `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.drec` files |
 
-### Core Libraries (6)
+### Core Libraries (5)
 
 | Path | Crate | Role |
 |------|-------|------|
 | `libraries/message` | dora-message | All inter-component message types, protocol definitions, Arrow metadata |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
-| `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for messages >= 4 KiB |
 | `libraries/recording` | dora-recording | Recording format (.drec): bincode header + entries + footer |
 | `libraries/arrow-convert` | dora-arrow-convert | Arrow type conversions (numeric, datetime) |
 | `libraries/coordinator-store` | dora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |

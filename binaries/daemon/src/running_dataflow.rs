@@ -1,8 +1,8 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator, empty_type_info, fault_tolerance::CascadingErrorCauses,
-    pending::PendingNodes, send_with_timestamp,
+    DoraEvent, OutputId, coordinator, fault_tolerance::CascadingErrorCauses, pending::PendingNodes,
+    send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId},
@@ -42,7 +42,7 @@ use tracing::warn;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::Event;
-use process_wrap::tokio::TokioChildWrapper;
+use process_wrap::tokio::ChildWrapper;
 
 pub(crate) struct InputDeadline {
     pub timeout: Duration,
@@ -112,7 +112,7 @@ pub(crate) enum ProcessOperation {
 }
 
 impl ProcessOperation {
-    pub fn execute(&self, child: &mut dyn TokioChildWrapper) {
+    pub fn execute(&self, child: &mut dyn ChildWrapper) {
         match self {
             Self::SoftKill => {
                 #[cfg(unix)]
@@ -334,11 +334,8 @@ impl RunningDataflow {
                     #[cfg(not(feature = "telemetry"))]
                     let parameters = BTreeMap::new();
 
-                    let metadata = metadata::Metadata::from_parameters(
-                        clock.new_timestamp(),
-                        empty_type_info(),
-                        parameters,
-                    );
+                    let metadata =
+                        metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
 
                     let event = Timestamped {
                         inner: DoraEvent::Timer {
@@ -406,7 +403,7 @@ impl RunningDataflow {
         } else {
             let grace_duration_kills = self.grace_duration_kills.clone();
             tokio::spawn(async move {
-                let duration = grace_duration.unwrap_or(Duration::from_millis(10000));
+                let duration = grace_duration.unwrap_or(DEFAULT_STOP_GRACE);
                 tokio::time::sleep(duration).await;
 
                 for (node, proc) in &running_processes {

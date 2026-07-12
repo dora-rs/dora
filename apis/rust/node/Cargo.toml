@@ -23,15 +23,21 @@ tracing = { workspace = true }
 flume = { workspace = true }
 bincode = { workspace = true }
 zenoh = { workspace = true }
+zenoh-ext = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-metrics = { workspace = true, optional = true }
 opentelemetry = { version = "0.31.0", optional = true }
 arrow = { workspace = true, features = ["ipc"] }
+# Needed to hand-build the Arrow IPC RecordBatch flatbuffer header in
+# `arrow_utils::ipc_encode` (the 1-copy fast-path encoder). Must stay compatible
+# with the `flatbuffers` version arrow-ipc's generated `gen` types are built
+# against (currently 25.x); cargo unifies them to a single resolved version.
+flatbuffers = "25"
 futures = { workspace = true }
-futures-concurrency = "7.3.0"
-futures-timer = "3.0.2"
+futures-concurrency = "7.7.1"
+futures-timer = "3.0.4"
 dora-arrow-convert = { workspace = true }
-aligned-vec = "0.5.0"
+aligned-vec = "0.6.4"
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros", "sync"] }
 inquire = { workspace = true, features = ["console"] }
@@ -39,6 +45,13 @@ arrow-json = { workspace = true }
 arrow-schema = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 colored = { workspace = true }
-is-terminal = "0.4.16"
+is-terminal = "0.4.17"
 thiserror = { workspace = true }
 uuid = { workspace = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "arrow_framing"
+harness = false

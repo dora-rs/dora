@@ -18,13 +18,9 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{
-    Metadata,
-    arrow::array::ArrayData,
-    arrow_utils::{copy_array_into_sample, required_data_size},
-};
+use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
-use process_wrap::tokio::TokioCommandWrap;
+use process_wrap::tokio::CommandWrap;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -38,6 +34,29 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+
+/// Encode `array` as a self-describing Arrow IPC stream into a 128-byte-aligned
+/// daemon `DataMessage`, paired with metadata carrying the `arrow-ipc` framing
+/// parameter (so the node-side receive path decodes it). Returns `None` if
+/// encoding fails (logged by the caller).
+fn ipc_log_payload(
+    array: &ArrayData,
+    clock: &dora_core::uhlc::HLC,
+) -> Option<(DataMessage, Metadata)> {
+    let ipc_bytes = encode_arrow_ipc(array)
+        .map_err(|e| tracing::warn!("failed to Arrow-IPC-encode log output: {e}"))
+        .ok()?;
+    let sample: AVec<u8, ConstAlign<128>> = AVec::from_slice(128, &ipc_bytes);
+    let mut params = dora_message::metadata::MetadataParameters::new();
+    params.insert(
+        dora_message::metadata::FRAMING.to_string(),
+        dora_message::metadata::Parameter::String(
+            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+        ),
+    );
+    let metadata = Metadata::from_parameters(clock.new_timestamp(), params);
+    Some((DataMessage::Vec(sample), metadata))
+}
 
 #[derive(Clone, Copy)]
 enum LogStream {
@@ -438,7 +457,10 @@ impl PreparedNode {
                 // restart_count=0 (pre-existing bug, first caught by
                 // the restart_recovers_from_failure E2E test).
                 if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
-                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
+                    // Clone and update the command with the new env var
+                    let mut updated_command = command.clone();
+                    updated_command = updated_command.env("DORA_NODE_CONFIG", config_yaml);
+                    *command = updated_command;
                 }
 
                 #[allow(unused_mut)]
@@ -491,8 +513,7 @@ impl PreparedNode {
                     }
                 }
 
-                let mut command =
-                    TokioCommandWrap::from(tokio::process::Command::from(std_command));
+                let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
                 {
@@ -672,7 +693,7 @@ impl PreparedNode {
         tokio::spawn(async move {
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
-                    status = Box::into_pin(child.wait()) => {
+                    status = child.wait() => {
                         break status.into();
                     }
                     result = op_rx.recv_async() => {
@@ -680,7 +701,7 @@ impl PreparedNode {
                             Ok(op) => op.execute(child.as_mut()),
                             Err(_) => {
                                 // Sender dropped
-                                break Box::into_pin(child.wait()).await.into();
+                                break child.wait().await.into();
                             }
                         }
                     }
@@ -748,36 +769,30 @@ impl PreparedNode {
 
                 // If log is an output, we're sending the logs to the dataflow
                 if let Some(stdout_output_name) = &send_stdout_to {
-                    // Convert logs to DataMessage
+                    // Convert logs to a self-describing Arrow IPC DataMessage.
                     let array = content.as_str().into_arrow();
-
                     let array: ArrayData = array.into();
-                    let total_len = required_data_size(&array);
-                    let mut sample: AVec<u8, ConstAlign<128>> =
-                        AVec::__from_elem(128, 0, total_len);
-
-                    let type_info = copy_array_into_sample(&mut sample, &array);
-
-                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                    let output_id = OutputId(
-                        node_id.clone(),
-                        DataId::from(stdout_output_name.to_string()),
-                    );
-                    let event = DoraEvent::Logs {
-                        dataflow_id,
-                        output_id,
-                        metadata,
-                        message: DataMessage::Vec(sample),
+                    if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
+                        let output_id = OutputId(
+                            node_id.clone(),
+                            DataId::from(stdout_output_name.to_string()),
+                        );
+                        let event = DoraEvent::Logs {
+                            dataflow_id,
+                            output_id,
+                            metadata,
+                            message,
+                        }
+                        .into();
+                        let event = Timestamped {
+                            inner: event,
+                            timestamp: uhlc.new_timestamp(),
+                        };
+                        // Use try_send to avoid blocking the log task when the
+                        // daemon event loop is busy (prevents deadlock chain:
+                        // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
+                        let _ = daemon_tx_log.try_send(event);
                     }
-                    .into();
-                    let event = Timestamped {
-                        inner: event,
-                        timestamp: uhlc.new_timestamp(),
-                    };
-                    // Use try_send to avoid blocking the log task when the
-                    // daemon event loop is busy (prevents deadlock chain:
-                    // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
-                    let _ = daemon_tx_log.try_send(event);
                 }
 
                 let formatted = content.lines().fold(String::default(), |mut output, line| {
@@ -841,25 +856,22 @@ impl PreparedNode {
                 {
                     let array = json.as_str().into_arrow();
                     let array: ArrayData = array.into();
-                    let total_len = required_data_size(&array);
-                    let mut sample: AVec<u8, ConstAlign<128>> =
-                        AVec::__from_elem(128, 0, total_len);
-                    let type_info = copy_array_into_sample(&mut sample, &array);
-                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                    let output_id =
-                        OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
-                    let event = DoraEvent::Logs {
-                        dataflow_id,
-                        output_id,
-                        metadata,
-                        message: DataMessage::Vec(sample),
+                    if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
+                        let output_id =
+                            OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
+                        let event = DoraEvent::Logs {
+                            dataflow_id,
+                            output_id,
+                            metadata,
+                            message,
+                        }
+                        .into();
+                        let event = Timestamped {
+                            inner: event,
+                            timestamp: uhlc.new_timestamp(),
+                        };
+                        let _ = daemon_tx.try_send(event);
                     }
-                    .into();
-                    let event = Timestamped {
-                        inner: event,
-                        timestamp: uhlc.new_timestamp(),
-                    };
-                    let _ = daemon_tx.try_send(event);
                 }
 
                 // Write JSONL to log file

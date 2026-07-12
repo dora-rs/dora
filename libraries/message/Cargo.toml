@@ -22,17 +22,17 @@ eyre = { workspace = true }
 arrow-schema = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["sync"] }
 uuid = { workspace = true }
-log = { version = "0.4.21", features = ["serde"] }
-aligned-vec = { version = "0.5.0", features = ["serde"] }
+log = { version = "0.4.33", features = ["serde"] }
+aligned-vec = { version = "0.6.4", features = ["serde"] }
 semver = { workspace = true }
-schemars = "1.0.4"
+schemars = "1.2.1"
 uhlc = "0.5.1"
 serde_yaml = { workspace = true }
 serde-with-expand-env = "1.1.0"
 bincode = { workspace = true }
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
-getrandom = "0.2"
+getrandom = "0.4"
 dirs = "6"
 
 [target.'cfg(unix)'.dependencies]
@@ -40,7 +40,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 proptest = { workspace = true }
 
 [[bench]]
