@@ -432,6 +432,18 @@ def _cuda_memcpy(dst, src, size, kind):
         raise RuntimeError(f"cudaMemcpy(0x{dst:x}, 0x{src:x}, {size}, {kind}) failed: {err}")
     _lib.cudaDeviceSynchronize()
 
+def _cuda_memcpy_gpu_buf(slot, src_ptr, size):
+    """Copy *size* bytes from *src_ptr* (GPU) into the pool's pinned GPU buffer
+    identified by *slot*.  Used by write_memory_pool when both source and pool
+    buffer are GPU-resident (same-device DtoD copy)."""
+    if slot not in _gpu_bufs:
+        return  # pool buffer not initialised; nothing to copy to
+    dst = _gpu_bufs[slot][0]
+    err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src_ptr), size, 3)
+    if err != 0:
+        raise RuntimeError(f"cudaMemcpy GPU buf DtoD (slot={slot}, 0x{dst:x}←0x{src_ptr:x}, {size}B) failed: {err}")
+    _lib.cudaDeviceSynchronize()
+
 def _get_gpu_buf(slot, size):
     """Get or allocate a GPU buffer for the given slot. Reuses when size matches."""
     if slot in _gpu_bufs and _gpu_bufs[slot][1] >= size:
@@ -1719,6 +1731,18 @@ impl Node {
                                     "_cuda_memcpy",
                                     (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                                 );
+                                // When IPC is active, mirror the write to the GPU
+                                // pool buffer so the receiver sees fresh data through
+                                // the imported IPC handle.
+                                if ipc_present == 1
+                                    && let Some((_, counter_str)) = buffer_id.rsplit_once('_')
+                                    && let Ok(c) = counter_str.parse::<u64>()
+                                {
+                                    let _ = bound.call_method1(
+                                        "_cuda_memcpy_gpu_buf",
+                                        (c, ptr_val, size),
+                                    );
+                                }
                             }
                             // Seqlock: end write
                             unsafe {
@@ -1855,6 +1879,18 @@ impl Node {
                                     "_cuda_memcpy",
                                     (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                                 );
+                                // When IPC is active, mirror the write to the GPU
+                                // pool buffer so the receiver sees fresh data through
+                                // the imported IPC handle.
+                                if ipc_present == 1
+                                    && let Some((_, counter_str)) = buffer_id.rsplit_once('_')
+                                    && let Ok(c) = counter_str.parse::<u64>()
+                                {
+                                    let _ = bound.call_method1(
+                                        "_cuda_memcpy_gpu_buf",
+                                        (c, ptr_val, size),
+                                    );
+                                }
                             }
                             // Seqlock: end write
                             unsafe {

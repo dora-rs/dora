@@ -230,3 +230,4 @@ yolo.yml
 # upstream PR drafts). Not part of the source.
 .project_notes/
 .idea/
+examples/memory-pool/results/
