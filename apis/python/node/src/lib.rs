@@ -356,6 +356,75 @@ def _get_device_ptr(host_ptr):
     return d_ptr.value
 
 
+# P2P and device query bindings (CUDA runtime).
+_lib.cudaGetDevice.restype = ctypes.c_int
+_lib.cudaGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
+_lib.cudaMemcpyPeer.restype = ctypes.c_int
+_lib.cudaMemcpyPeer.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
+_lib.cudaDeviceCanAccessPeer.restype = ctypes.c_int
+_lib.cudaDeviceCanAccessPeer.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int]
+_lib.cudaSetDevice.restype = ctypes.c_int
+_lib.cudaSetDevice.argtypes = [ctypes.c_int]
+
+def _gpu_transfer(dst_ptr, src_device, src_ptr, size):
+    """Copy *size* bytes from *src_ptr* (owned by *src_device*) to
+    *dst_ptr* (on the caller's current CUDA device).  Auto-selects the
+    fastest available path:
+      Path 1 – same device: plain cudaMemcpy.
+      Path 2 – P2P available: cudaMemcpyPeer.
+      Path 3 – fallback: host staging (DtoH → HtoD).
+    Returns True on success, False on failure.
+    """
+    # Get current (destination) device.
+    dst_dev = ctypes.c_int()
+    _lib.cudaGetDevice(ctypes.byref(dst_dev))
+    dst_device = dst_dev.value
+
+    # Source device < 0 → CPU/unified; always use plain copy.
+    if src_device < 0:
+        err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(src_ptr), size, 3)
+        if err != 0:
+            return False
+        _lib.cudaDeviceSynchronize()
+        return True
+
+    # Path 1 – same device.
+    if src_device == dst_device:
+        err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(src_ptr), size, 3)
+        if err != 0:
+            return False
+        _lib.cudaDeviceSynchronize()
+        return True
+
+    # Path 2 – P2P.
+    can_access = ctypes.c_int(0)
+    r = _lib.cudaDeviceCanAccessPeer(ctypes.byref(can_access), src_device, dst_device)
+    if r == 0 and can_access.value:
+        err = _lib.cudaMemcpyPeer(
+            ctypes.c_void_p(dst_ptr), dst_device,
+            ctypes.c_void_p(src_ptr), src_device,
+            size,
+        )
+        if err == 0:
+            _lib.cudaDeviceSynchronize()
+            return True
+
+    # Path 3 – host staging.
+    staging = ctypes.create_string_buffer(size)
+    # GPU→CPU: switch to source device, DtoH copy.
+    _lib.cudaSetDevice(src_device)
+    err = _lib.cudaMemcpy(staging, ctypes.c_void_p(src_ptr), size, 2)
+    if err != 0:
+        _lib.cudaSetDevice(dst_device)
+        return False
+    _lib.cudaDeviceSynchronize()
+    # CPU→GPU: switch to destination device, HtoD copy.
+    _lib.cudaSetDevice(dst_device)
+    err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), staging, size, 1)
+    _lib.cudaDeviceSynchronize()
+    return err == 0
+
+
 def _cuda_memcpy(dst, src, size, kind):
     """cudaMemcpy wrapper. kind: 1=H2D, 2=D2H, 3=D2D."""
     err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src), size, kind)
@@ -1336,14 +1405,36 @@ impl Node {
             }
         }
 
-        // GPU pool: DMA data into pooled GPU buffer + IPC export.
-        // Receiver imports the handle once (cudaIpcOpenMemHandle) and
-        // reads from GPU DRAM with zero copy thereafter.
+        // GPU pool: allocate GPU buffer on current device, copy data, export
+        // IPC handle for cross-process zero-copy access.  When the source
+        // tensor is also on CUDA (GPU→GPU), the source and pool buffer are on
+        // the same device (sender's current CUDA device), so a plain DtoD
+        // memcpy suffices.  When the source is CPU, `dma_copy` does a pinned
+        // host→device DMA copy (existing path).
         if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
             let bound = helpers.bind(py);
-            if let Ok(gpu_ptr) = bound
-                .call_method1("dma_copy", (ptr_val, size, pool_counter, !is_pinned))
-                .and_then(|r| r.extract::<u64>())
+            let gpu_ptr: Option<u64> = if is_cuda {
+                // GPU source: allocate on current device, DtoD copy.
+                let dst: u64 = bound
+                    .call_method1("_get_gpu_buf", (pool_counter, size))
+                    .and_then(|r| r.extract::<u64>())
+                    .unwrap_or(0);
+                if dst != 0 {
+                    bound
+                        .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
+                        .ok();
+                    Some(dst)
+                } else {
+                    None
+                }
+            } else {
+                // CPU source → GPU pool: use pinned DMA (existing path).
+                bound
+                    .call_method1("dma_copy", (ptr_val, size, pool_counter, !is_pinned))
+                    .and_then(|r| r.extract::<u64>())
+                    .ok()
+            };
+            if let Some(gpu_ptr) = gpu_ptr
                 && let Ok(handle) = bound
                     .call_method1("_ipc_export", (gpu_ptr,))
                     .and_then(|r| r.extract::<Vec<u8>>())
