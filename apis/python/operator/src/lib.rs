@@ -291,7 +291,7 @@ pub fn pydict_to_metadata(dict: Option<Bound<'_, PyDict>>) -> Result<MetadataPar
             {
                 let list: Vec<f64> = value.extract()?;
                 parameters.insert(key, Parameter::ListFloat(list))
-            } else if value.is_instance_of::<PyList>()
+            } else if (value.is_instance_of::<PyTuple>() || value.is_instance_of::<PyList>())
                 && value.len()? > 0
                 && value.get_item(0)?.is_exact_instance_of::<PyString>()
             {
