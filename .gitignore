@@ -230,9 +230,3 @@ yolo.yml
 # upstream PR drafts). Not part of the source.
 .project_notes/
 .idea/
-examples/memory-pool/results/
-examples/memory-pool/run_ablation.py
-examples/memory-pool/run_ablation.sh
-examples/memory-pool/merge_exp2.py
-examples/memory-pool/merge_results.py
-examples/memory-pool/regen_report.py
