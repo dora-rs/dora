@@ -475,6 +475,36 @@ mod tests {
         assert_eq!(DaemonId::from_display_str(""), None);
     }
 
+    /// `NodeExitStatus::Signal` is populated from the real POSIX signal
+    /// number that killed the node. Signal 22 is `SIGTTOU` and 23 is `SIGURG`
+    /// on Linux; they were previously mislabeled `SIGABRT` (a copy of the
+    /// entry for signal 6) and `NSIG` (the signal *count*, never delivered),
+    /// which pointed debugging at the wrong failure.
+    #[test]
+    fn signal_exit_status_uses_correct_signal_names() {
+        let timestamp = uhlc::HLC::default().new_timestamp();
+        let display_for = |signal: i32| {
+            NodeError {
+                timestamp,
+                cause: NodeErrorCause::Other {
+                    stderr: String::new(),
+                },
+                exit_status: NodeExitStatus::Signal(signal),
+            }
+            .to_string()
+        };
+
+        assert!(display_for(15).contains("SIGTERM"));
+        assert!(display_for(6).contains("SIGABRT"));
+        assert!(display_for(22).contains("SIGTTOU"));
+        assert!(display_for(23).contains("SIGURG"));
+        // No longer mislabeled.
+        assert!(!display_for(22).contains("SIGABRT"));
+        assert!(!display_for(23).contains("NSIG"));
+        // Unmapped signals fall back to the raw number.
+        assert!(display_for(99).contains("99"));
+    }
+
     #[test]
     fn stdout_fails_non_stdout_filters() {
         let stdout = LogLevelOrStdout::Stdout;
