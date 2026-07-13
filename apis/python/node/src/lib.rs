@@ -1587,13 +1587,12 @@ impl Node {
     /// The bundled `examples/memory-pool/` dataflows demonstrate correct
     /// turn-based usage: the sender writes, outputs the pool ID, and waits
     /// for the next input event before writing again.
-    #[pyo3(signature = (memory_pool_id, tensor_info, *, mode="auto"))]
+    #[pyo3(signature = (memory_pool_id, tensor_info))]
     pub fn write_memory_pool(
         &self,
         memory_pool_id: Py<PyAny>,
         tensor_info: &Bound<'_, PyDict>,
         py: Python,
-        mode: &str,
     ) -> eyre::Result<()> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
@@ -1619,16 +1618,10 @@ impl Node {
             }
         }
 
-        // Pin-decision guard shared by cache-miss PoolSlot construction and
-        // slow-path dma_copy (cache-hit reuses the slot's stored is_pinned).
-        // mode="pinned"  → always use cudaHostRegister + DMA (ablation baseline)
-        // mode="pageable"→ skip cudaHostRegister, use pageable cudaMemcpy
-        // mode="auto"    → auto-select based on 25 MiB threshold (production default)
-        let auto_pin = match mode {
-            "pinned" => true,
-            "pageable" => false,
-            _ => should_pin(is_cuda, size), // "auto" or unrecognised → auto-select
-        };
+        // Auto-select pinning based on tensor size (25 MiB threshold).
+        // Shared by cache-miss PoolSlot construction and slow-path dma_copy;
+        // cache-hit reuses the slot's stored is_pinned.
+        let auto_pin = should_pin(is_cuda, size);
 
         // Fast path: pool_ format -> DORADMA
         if buffer_id.starts_with("pool_") {
@@ -1653,11 +1646,8 @@ impl Node {
                 let (shmem_ptr, shmem_capacity, store_back, is_pinned) =
                     if let Some(mut slot_data) = pool_slot {
                         // Cache hit: reuse the persistent mapping (no mmap).
-                        // Override is_pinned with the caller's mode choice so
-                        // ablation experiments (pinned/pageable/auto) actually
-                        // take effect — register_memory_pool always sets the
-                        // slot to auto-select, which would silently mask the
-                        // mode on every subsequent cache hit.
+                        // Recompute is_pinned from the current tensor size
+                        // so the auto-selection reflects each write's payload.
                         let cap = slot_data.size;
                         slot_data.is_pinned = auto_pin;
                         let pinned = auto_pin;
@@ -2014,8 +2004,7 @@ impl Node {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         // Fast path: DORADMA header read.
-        // When if_fast=false (ablation: HETEROPOOL_NO_FASTPATH=1), bypass
-        // the fast path and query the daemon on every read.
+        // When if_fast=false, bypass the fast path and query the daemon.
         if if_fast && buffer_id.starts_with("pool_") {
             if let Some(result) = self.try_doradma_read(&buffer_id, py)? {
                 return Ok(result);
