@@ -1727,20 +1727,24 @@ impl Node {
                             }
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let _ = bound.call_method1(
-                                    "_cuda_memcpy",
-                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                                );
-                                // When IPC is active, mirror the write to the GPU
-                                // pool buffer so the receiver sees fresh data through
-                                // the imported IPC handle.
-                                if ipc_present == 1
-                                    && let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                                    && let Ok(c) = counter_str.parse::<u64>()
-                                {
+                                if ipc_present == 1 {
+                                    // GPU pool: write directly to the GPU buffer via DtoD.
+                                    // The receiver reads through the imported IPC handle,
+                                    // so the shmem DtoH copy is wasteful here.
+                                    if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
+                                        && let Ok(c) = counter_str.parse::<u64>()
+                                    {
+                                        let _ = bound.call_method1(
+                                            "_cuda_memcpy_gpu_buf",
+                                            (c, ptr_val, size),
+                                        );
+                                    }
+                                } else {
+                                    // CPU pool: copy GPU source → shmem via DtoH so the
+                                    // receiver can read the data through /dev/shm.
                                     let _ = bound.call_method1(
-                                        "_cuda_memcpy_gpu_buf",
-                                        (c, ptr_val, size),
+                                        "_cuda_memcpy",
+                                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                                     );
                                 }
                             }
@@ -1875,20 +1879,24 @@ impl Node {
                             }
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let _ = bound.call_method1(
-                                    "_cuda_memcpy",
-                                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                                );
-                                // When IPC is active, mirror the write to the GPU
-                                // pool buffer so the receiver sees fresh data through
-                                // the imported IPC handle.
-                                if ipc_present == 1
-                                    && let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                                    && let Ok(c) = counter_str.parse::<u64>()
-                                {
+                                if ipc_present == 1 {
+                                    // GPU pool: write directly to the GPU buffer via DtoD.
+                                    // The receiver reads through the imported IPC handle,
+                                    // so the shmem DtoH copy is wasteful here.
+                                    if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
+                                        && let Ok(c) = counter_str.parse::<u64>()
+                                    {
+                                        let _ = bound.call_method1(
+                                            "_cuda_memcpy_gpu_buf",
+                                            (c, ptr_val, size),
+                                        );
+                                    }
+                                } else {
+                                    // CPU pool: copy GPU source → shmem via DtoH so the
+                                    // receiver can read the data through /dev/shm.
                                     let _ = bound.call_method1(
-                                        "_cuda_memcpy_gpu_buf",
-                                        (c, ptr_val, size),
+                                        "_cuda_memcpy",
+                                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                                     );
                                 }
                             }
