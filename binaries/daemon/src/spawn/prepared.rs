@@ -588,10 +588,15 @@ impl PreparedNode {
                     Ok(0) => true,
                     Ok(_) => false,
                     Err(err) => {
+                        // Terminate the reader on a persistent read error
+                        // instead of re-entering the loop: a broken stdout fd
+                        // keeps returning the same (non-`WouldBlock`) error, so
+                        // `finished = false` would busy-spin at 100% CPU while
+                        // flooding logs. Mirrors the stderr reader below.
                         logger_c
                             .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
                             .await;
-                        false
+                        true
                     }
                 };
 
@@ -671,7 +676,14 @@ impl PreparedNode {
 
                 buffer.push_str(&new);
 
-                self.node_stderr_most_recent.force_push(new);
+                // Truncate before retaining: `node_stderr_most_recent` keeps up
+                // to `STDERR_LOG_LINES_MAX` lines alive (drained on node
+                // failure), so pushing the untruncated line here would bypass
+                // the per-line `MAX_LOG_LINE_BYTES` heap-exhaustion guard that
+                // `truncate_log_line` exists to enforce.
+                let mut recent = new;
+                truncate_log_line(&mut recent);
+                self.node_stderr_most_recent.force_push(recent);
 
                 let mut content = std::mem::take(&mut buffer);
                 truncate_log_line(&mut content);
