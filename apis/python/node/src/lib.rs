@@ -34,6 +34,21 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
         .expect("Failed to create Tokio runtime")
 });
 
+/// Convert a user-supplied timeout in seconds into a [`Duration`], rejecting
+/// negative, NaN, or infinite values with a clean `ValueError` instead of the
+/// panic that [`Duration::from_secs_f32`] raises on such inputs.
+fn timeout_to_duration(timeout: Option<f32>) -> PyResult<Option<Duration>> {
+    timeout
+        .map(|secs| {
+            Duration::try_from_secs_f32(secs).map_err(|err| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid timeout of {secs} seconds: {err}"
+                ))
+            })
+        })
+        .transpose()
+}
+
 fn runtime() -> PyResult<&'static Runtime> {
     // Access the LazyLock; if the builder panicked, this will propagate.
     // In normal operation the expect above fires only if thread/memory
@@ -604,7 +619,8 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.detach(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let timeout = timeout_to_duration(timeout)?;
+        let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -690,10 +706,8 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = self
-            .events
-            .recv_async_timeout(timeout.map(Duration::from_secs_f32))
-            .await;
+        let timeout = timeout_to_duration(timeout)?;
+        let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
             // Get python
             Python::attach(|py| {
@@ -2556,7 +2570,10 @@ pub fn build(
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
     use dora_cli::Executable;
 
-    let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
+    let stop_after_duration = stop_after
+        .map(std::time::Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|err| eyre::eyre!("invalid stop_after of {stop_after:?} seconds: {err}"))?;
     let mut cmd = dora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         cmd.uv = uv;
