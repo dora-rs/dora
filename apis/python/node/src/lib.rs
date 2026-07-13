@@ -1994,18 +1994,15 @@ impl Node {
     /// the dataflow graph's `next_require` round-trip) that it is safe to
     /// write the next frame. The bundled `examples/memory-pool/` dataflows
     /// demonstrate this pattern.
-    #[pyo3(signature = (memory_pool_id, *, if_fast=true))]
     pub fn read_memory_pool(
         &self,
         memory_pool_id: Py<PyAny>,
         py: Python,
-        if_fast: bool,
     ) -> eyre::Result<Py<PyAny>> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
         // Fast path: DORADMA header read.
-        // When if_fast=false, bypass the fast path and query the daemon.
-        if if_fast && buffer_id.starts_with("pool_") {
+        if buffer_id.starts_with("pool_") {
             if let Some(result) = self.try_doradma_read(&buffer_id, py)? {
                 return Ok(result);
             }
