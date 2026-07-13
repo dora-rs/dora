@@ -1775,7 +1775,12 @@ impl Node {
                                     // receiver can read the data through /dev/shm.
                                     let _ = bound.call_method1(
                                         "_cuda_memcpy",
-                                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                                        (
+                                            shmem_ptr as u64 + data_offset as u64,
+                                            ptr_val,
+                                            size,
+                                            2u32,
+                                        ),
                                     );
                                 }
                             }
@@ -1927,7 +1932,12 @@ impl Node {
                                     // receiver can read the data through /dev/shm.
                                     let _ = bound.call_method1(
                                         "_cuda_memcpy",
-                                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                                        (
+                                            shmem_ptr as u64 + data_offset as u64,
+                                            ptr_val,
+                                            size,
+                                            2u32,
+                                        ),
                                     );
                                 }
                             }
