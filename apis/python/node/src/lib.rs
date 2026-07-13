@@ -363,8 +363,36 @@ _lib.cudaMemcpyPeer.restype = ctypes.c_int
 _lib.cudaMemcpyPeer.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
 _lib.cudaDeviceCanAccessPeer.restype = ctypes.c_int
 _lib.cudaDeviceCanAccessPeer.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int]
+_lib.cudaDeviceEnablePeerAccess.restype = ctypes.c_int
+_lib.cudaDeviceEnablePeerAccess.argtypes = [ctypes.c_int, ctypes.c_uint]
 _lib.cudaSetDevice.restype = ctypes.c_int
 _lib.cudaSetDevice.argtypes = [ctypes.c_int]
+
+_p2p_initialised = False
+
+def _ensure_p2p_enabled():
+    """Enable P2P between all GPU pairs once per process.
+    Idempotent — subsequent calls are no-ops.
+    """
+    global _p2p_initialised
+    if _p2p_initialised:
+        return
+    count = ctypes.c_int()
+    if _lib.cudaGetDeviceCount(ctypes.byref(count)) != 0:
+        return
+    n = count.value
+    if n < 2:
+        _p2p_initialised = True
+        return
+    for src in range(n):
+        for dst in range(n):
+            if src == dst:
+                continue
+            can = ctypes.c_int(0)
+            if _lib.cudaDeviceCanAccessPeer(ctypes.byref(can), src, dst) == 0 and can.value:
+                _lib.cudaSetDevice(src)
+                _lib.cudaDeviceEnablePeerAccess(dst, 0)
+    _p2p_initialised = True
 
 def _gpu_transfer(dst_ptr, src_device, src_ptr, size):
     """Copy *size* bytes from *src_ptr* (owned by *src_device*) to
@@ -1446,6 +1474,9 @@ impl Node {
                     .and_then(|r| r.extract::<u64>())
                     .ok()
             };
+            // Enable P2P so the receiver can access this buffer via IPC
+            // without host staging on multi-GPU nodes.
+            let _ = bound.call_method0("_ensure_p2p_enabled");
             if let Some(gpu_ptr) = gpu_ptr
                 && let Ok(handle) = bound
                     .call_method1("_ipc_export", (gpu_ptr,))
@@ -2543,6 +2574,10 @@ impl Node {
                         let helpers = get_cuda_helpers(py)
                             .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
                         let bound = helpers.bind(py);
+                        // Enable P2P between all GPU pairs before importing
+                        // the IPC handle, so cross-device accesses go through
+                        // NVLink/PCIe-P2P instead of host staging.
+                        let _ = bound.call_method0("_ensure_p2p_enabled");
                         let handle_py = PyBytes::new(py, handle_bytes);
                         let gpu_ptr: u64 = bound
                             .call_method1("_ipc_import", (handle_py,))
