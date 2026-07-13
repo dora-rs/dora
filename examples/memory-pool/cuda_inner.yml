@@ -1,22 +1,22 @@
 nodes:
   - id: sender_node
     inputs:
-      next: receiver_node/next
+      next_require: receiver_node/next_require
     outputs:
       - data
-    path: sender_gpu.py
+    path: sender.py
     env:
       sender_device: cuda:0
-      receiver_device: cuda:1
+      receiver_device: cuda:0
       message_num: 100
 
   - id: receiver_node
-    path: receiver_gpu.py
+    path: receiver.py
     inputs:
       data: sender_node/data
     outputs:
-      - next
+      - next_require
     env:
       sender_device: cuda:0
-      receiver_device: cuda:1
+      receiver_device: cuda:0
       message_num: 100
