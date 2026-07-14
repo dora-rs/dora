@@ -1485,15 +1485,13 @@ impl Node {
                 if use_transit {
                     // Allocate pool buffer on receiver's GPU so the
                     // receiver can import the IPC handle on its own device.
-                    let _ = bound
-                        .call_method1("_set_cuda_device", (receiver_device_idx,));
+                    let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
                     let dst: u64 = bound
                         .call_method1("_get_gpu_buf", (pool_counter, size))
                         .and_then(|r| r.extract::<u64>())
                         .unwrap_or(0);
                     // Switch back to sender device.
-                    let _ = bound
-                        .call_method1("_set_cuda_device", (sender_device_idx,));
+                    let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
                     if dst != 0 {
                         // Allocate CPU page-locked transit buffer.
                         let tp: u64 = bound
@@ -1505,7 +1503,14 @@ impl Node {
                             let ok: bool = bound
                                 .call_method1(
                                     "_transit_copy",
-                                    (ptr_val, sender_device_idx, tp, dst, receiver_device_idx, size),
+                                    (
+                                        ptr_val,
+                                        sender_device_idx,
+                                        tp,
+                                        dst,
+                                        receiver_device_idx,
+                                        size,
+                                    ),
                                 )
                                 .and_then(|r| r.extract::<bool>())
                                 .unwrap_or(false);
@@ -1828,7 +1833,8 @@ impl Node {
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
                                         let transit = {
-                                            PINNED_POOL.lock()
+                                            PINNED_POOL
+                                                .lock()
                                                 .unwrap_or_else(|e| e.into_inner())
                                                 .get(&c)
                                                 .map(|s| (s.transit_ptr, s.pool_device))
@@ -2006,7 +2012,8 @@ impl Node {
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
                                         let transit = {
-                                            PINNED_POOL.lock()
+                                            PINNED_POOL
+                                                .lock()
                                                 .unwrap_or_else(|e| e.into_inner())
                                                 .get(&c)
                                                 .map(|s| (s.transit_ptr, s.pool_device))
