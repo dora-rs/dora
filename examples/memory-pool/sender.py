@@ -17,7 +17,8 @@ RECEIVER_DEVICE = os.getenv("receiver_device", "cpu")
 SCENARIO = os.getenv("memory_pool_scenario", "throughput")
 
 if SENDER_DEVICE.startswith("cuda"):
-    torch.cuda.set_device(int(SENDER_DEVICE.split(":")[1]))
+    idx = int(SENDER_DEVICE.split(":")[1]) if ":" in SENDER_DEVICE else 0
+    torch.cuda.set_device(idx)
 
 node = Node("sender_node")
 data_generation = np.random.default_rng()
