@@ -402,17 +402,21 @@ def _set_cuda_device(idx):
 
 def _transit_copy(src_ptr, src_dev, transit_ptr, dst_ptr, dst_dev, size):
     """Copy via CPU transit: src(GPU) → DtoH → transit → HtoD → dst(GPU).
-    Returns True on success."""
+    Returns True on success.  Restores the caller's current CUDA device on exit."""
+    saved = ctypes.c_int()
+    _lib.cudaGetDevice(ctypes.byref(saved))
     # GPU src → CPU transit
     _lib.cudaSetDevice(src_dev)
     err = _lib.cudaMemcpy(ctypes.c_void_p(transit_ptr), ctypes.c_void_p(src_ptr), size, 2)
     if err != 0:
+        _lib.cudaSetDevice(saved.value)
         return False
     _lib.cudaDeviceSynchronize()
     # CPU transit → GPU dst
     _lib.cudaSetDevice(dst_dev)
     err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(transit_ptr), size, 1)
     _lib.cudaDeviceSynchronize()
+    _lib.cudaSetDevice(saved.value)
     return err == 0
 
 def _transit_copy_gpu_buf(slot, src_ptr, src_dev, transit_ptr, dst_dev, size):
@@ -1519,9 +1523,14 @@ impl Node {
                                 pool_device = receiver_device_idx;
                                 Some(dst)
                             } else {
+                                // _transit_copy failed: free both buffers
+                                let _ = bound.call_method1("_free_transit", (tp,));
+                                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
                                 None
                             }
                         } else {
+                            // transit alloc failed: free GPU buffer
+                            let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
                             None
                         }
                     } else {
