@@ -140,8 +140,8 @@ impl std::fmt::Display for NodeError {
                     13 => "SIGPIPE".into(),
                     14 => "SIGALRM".into(),
                     15 => "SIGTERM".into(),
-                    22 => "SIGABRT".into(),
-                    23 => "NSIG".into(),
+                    22 => "SIGTTOU".into(),
+                    23 => "SIGURG".into(),
                     other => other.to_string().into(),
                 };
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
@@ -387,6 +387,35 @@ pub struct BinaryPin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node_error_with_signal(signal: i32) -> NodeError {
+        NodeError {
+            timestamp: uhlc::HLC::default().new_timestamp(),
+            cause: NodeErrorCause::Other {
+                stderr: String::new(),
+            },
+            exit_status: NodeExitStatus::Signal(signal),
+        }
+    }
+
+    #[test]
+    fn node_error_signal_display_uses_linux_signal_names() {
+        for (signal, name) in [(6, "SIGABRT"), (22, "SIGTTOU"), (23, "SIGURG")] {
+            assert_eq!(
+                node_error_with_signal(signal).to_string(),
+                format!("exited because of signal {name}")
+            );
+        }
+    }
+
+    #[test]
+    fn node_error_signal_display_falls_back_to_signal_number() {
+        assert_eq!(
+            node_error_with_signal(40).to_string(),
+            "exited because of signal 40"
+        );
+    }
+
     #[test]
     fn test_log_message_serialization() {
         let log_message = LogMessage {
