@@ -360,7 +360,7 @@ mod tests {
         );
         // rand == 2*range maps to the maximum (backoff + range).
         assert_eq!(
-            jittered_backoff(backoff, (range_ms * 2)),
+            jittered_backoff(backoff, range_ms * 2),
             Duration::from_millis(base_ms + range_ms)
         );
         // rand == range maps to exactly backoff.
