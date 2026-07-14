@@ -359,8 +359,6 @@ def _get_device_ptr(host_ptr):
 # P2P and device query bindings (CUDA runtime).
 _lib.cudaGetDevice.restype = ctypes.c_int
 _lib.cudaGetDevice.argtypes = [ctypes.POINTER(ctypes.c_int)]
-_lib.cudaMemcpyPeer.restype = ctypes.c_int
-_lib.cudaMemcpyPeer.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
 _lib.cudaDeviceCanAccessPeer.restype = ctypes.c_int
 _lib.cudaDeviceCanAccessPeer.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int, ctypes.c_int]
 _lib.cudaDeviceEnablePeerAccess.restype = ctypes.c_int
@@ -384,6 +382,12 @@ def _ensure_p2p_enabled():
     if n < 2:
         _p2p_initialised = True
         return
+    # Save the current device so we can restore it after
+    # enabling peer access — otherwise later CUDA operations
+    # (cudaMalloc, cudaIpcOpenMemHandle) would run on the
+    # last enabled src device instead of the caller's device.
+    saved = ctypes.c_int()
+    _lib.cudaGetDevice(ctypes.byref(saved))
     for src in range(n):
         for dst in range(n):
             if src == dst:
@@ -392,66 +396,8 @@ def _ensure_p2p_enabled():
             if _lib.cudaDeviceCanAccessPeer(ctypes.byref(can), src, dst) == 0 and can.value:
                 _lib.cudaSetDevice(src)
                 _lib.cudaDeviceEnablePeerAccess(dst, 0)
+    _lib.cudaSetDevice(saved.value)
     _p2p_initialised = True
-
-def _gpu_transfer(dst_ptr, src_device, src_ptr, size):
-    """Copy *size* bytes from *src_ptr* (owned by *src_device*) to
-    *dst_ptr* (on the caller's current CUDA device).  Auto-selects the
-    fastest available path:
-      Path 1 – same device: plain cudaMemcpy.
-      Path 2 – P2P available: cudaMemcpyPeer.
-      Path 3 – fallback: host staging (DtoH → HtoD).
-    Returns True on success, False on failure.
-    """
-    # Get current (destination) device.
-    dst_dev = ctypes.c_int()
-    _lib.cudaGetDevice(ctypes.byref(dst_dev))
-    dst_device = dst_dev.value
-
-    # Source device < 0 → CPU/unified; always use plain copy.
-    if src_device < 0:
-        err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(src_ptr), size, 3)
-        if err != 0:
-            return False
-        _lib.cudaDeviceSynchronize()
-        return True
-
-    # Path 1 – same device.
-    if src_device == dst_device:
-        err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(src_ptr), size, 3)
-        if err != 0:
-            return False
-        _lib.cudaDeviceSynchronize()
-        return True
-
-    # Path 2 – P2P.
-    can_access = ctypes.c_int(0)
-    r = _lib.cudaDeviceCanAccessPeer(ctypes.byref(can_access), src_device, dst_device)
-    if r == 0 and can_access.value:
-        err = _lib.cudaMemcpyPeer(
-            ctypes.c_void_p(dst_ptr), dst_device,
-            ctypes.c_void_p(src_ptr), src_device,
-            size,
-        )
-        if err == 0:
-            _lib.cudaDeviceSynchronize()
-            return True
-
-    # Path 3 – host staging.
-    staging = ctypes.create_string_buffer(size)
-    # GPU→CPU: switch to source device, DtoH copy.
-    _lib.cudaSetDevice(src_device)
-    err = _lib.cudaMemcpy(staging, ctypes.c_void_p(src_ptr), size, 2)
-    if err != 0:
-        _lib.cudaSetDevice(dst_device)
-        return False
-    _lib.cudaDeviceSynchronize()
-    # CPU→GPU: switch to destination device, HtoD copy.
-    _lib.cudaSetDevice(dst_device)
-    err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), staging, size, 1)
-    _lib.cudaDeviceSynchronize()
-    return err == 0
-
 
 def _cuda_memcpy(dst, src, size, kind):
     """cudaMemcpy wrapper. kind: 1=H2D, 2=D2H, 3=D2D."""
