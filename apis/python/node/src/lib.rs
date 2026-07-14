@@ -1430,22 +1430,29 @@ impl Node {
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
 
-        // Copy tensor data to shmem
-        if is_cuda {
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1(
-                    "_cuda_memcpy",
-                    (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                );
-            }
-        } else {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    ptr_val as *const u8,
-                    shmem_ptr.add(data_offset),
-                    size,
-                );
+        // Copy tensor data to shmem — only when the receiver will
+        // actually read it.  GPU receivers import the pool GPU buffer
+        // via the IPC handle in the DORADMA header and never touch the
+        // shmem data region; skipping this copy for them eliminates
+        // a redundant CPU-memcpy or GPU-DtoH transfer on every
+        // registration (cpu2cuda and cuda2cuda respectively).
+        if !receiver_is_cuda {
+            if is_cuda {
+                if let Ok(helpers) = get_cuda_helpers(py) {
+                    let bound = helpers.bind(py);
+                    let _ = bound.call_method1(
+                        "_cuda_memcpy",
+                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                    );
+                }
+            } else {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        ptr_val as *const u8,
+                        shmem_ptr.add(data_offset),
+                        size,
+                    );
+                }
             }
         }
 
