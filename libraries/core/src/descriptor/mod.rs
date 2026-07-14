@@ -31,7 +31,6 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    fn visualize_as_mermaid(&self) -> eyre::Result<String>;
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
@@ -215,12 +214,6 @@ impl DescriptorExt for Descriptor {
         }
 
         Ok(resolved)
-    }
-
-    fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases_and_set_defaults()?;
-        let flowchart = visualize::visualize_nodes(&resolved);
-        Ok(flowchart)
     }
 
     fn visualize_as_mermaid_with_boundaries(
