@@ -1,0 +1,44 @@
+# Delete a PR's Actions caches when the PR closes.
+#
+# GitHub's Actions cache is capped at 10 GB per repo and LRU-evicts once
+# full. Caches created on a PR branch (`refs/pull/<n>/merge`) are scoped
+# to that PR and unusable by anyone else, so once the PR closes they are
+# pure dead weight competing with the shared `main` caches. The main
+# workflows already gate their saves to `main` (see ci.yml), so most PR
+# runs no longer create large caches — but anything that slips through
+# (a step without the gate, a fork's own runs) is reclaimed here.
+#
+# Companion to delete-buildjet-cache.yml, which only handles the manual
+# BuildJet path.
+name: Cleanup PR caches
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete caches for the closed PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          set -euo pipefail
+          gh extension install actions/gh-actions-cache || true
+          echo "Reclaiming caches scoped to $BRANCH"
+          # Loop because `gh actions-cache list` pages at 100 entries.
+          while :; do
+            keys=$(gh actions-cache list -R "$REPO" -B "$BRANCH" -L 100 | cut -f1)
+            [ -z "$keys" ] && break
+            for k in $keys; do
+              gh actions-cache delete "$k" -R "$REPO" -B "$BRANCH" --confirm || true
+            done
+          done
+          echo "Done."

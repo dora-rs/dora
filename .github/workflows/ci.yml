@@ -31,6 +31,18 @@
 # nightly schedule to surface platform-specific regressions.
 #
 # Repo-wide workflows: all upstream workflows present plus guide.yml.
+#
+# Caching: every `Swatinem/rust-cache` step below sets
+# `save-if: github.ref == 'refs/heads/main'`. GitHub's Actions cache is
+# capped at 10 GB per repo and LRU-evicts once full. Without the gate,
+# each PR run *saved* a fresh ~800 MB workspace cache scoped to its own
+# ref (unusable by other PRs) and pushed the shared `main` caches out of
+# the budget — so `check`/`clippy`/`test` kept starting cold and
+# recompiling the whole dependency graph. With the gate, only `main`
+# refreshes the shared caches and every PR restores from them. Keep new
+# cache steps gated the same way, and do NOT enable the sccache backend
+# in any workflow (it writes one cache entry per object and floods the
+# same 10 GB budget — see pip-release.yml).
 name: CI
 
 on:
@@ -76,6 +88,11 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Only `main` refreshes the shared cache. PRs restore it but
+          # never save, so per-PR runs don't churn the 10 GB repo budget
+          # and evict each other's caches (see header note on caching).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: >
           cargo clippy --all
           --exclude dora-node-api-python
@@ -97,6 +114,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-check
+          # Save only on `main`; PRs restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -123,6 +142,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+          # Save only on `main`; PRs restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Free disk space
         shell: bash
         run: |
@@ -243,6 +264,9 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Now that this job runs in parallel with `test` (#2524) it no longer
       # inherits `test`'s freed disk, and it builds the CLI + all E2E test
       # binaries itself. Reclaim the ~25 GB of preinstalled toolchains the
@@ -333,6 +357,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
+          # Save only on `main`; PRs restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Runs in parallel with `test` (#2524), so it can't rely on `test`
       # having freed disk. It builds the dora-examples test binary and
       # compiles the PyO3 node extension via `uv pip install -e` below —
@@ -395,6 +421,9 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Runs in parallel with `test` (#2524); compiles the criterion
       # benchmark binaries for dora-message + dora-daemon itself. Free the
       # preinstalled toolchains first to avoid "no space left on device".
@@ -496,6 +525,9 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-lichking
       - name: Check dependency licenses
         run: cargo lichking check
