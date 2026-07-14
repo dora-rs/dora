@@ -156,11 +156,12 @@ struct PoolSlot {
     _shmem: shared_memory_extended::Shmem,
     base: u64,
     size: usize,
-    /// Whether the source tensor should be pinned (cudaHostRegister)
-    /// before DMA transfer.  Auto-set in register_memory_pool based on
-    /// tensor size: true for >25 MiB (where pinned bandwidth wins),
-    /// false for smaller (where pin overhead dominates DMA gain).
     is_pinned: bool,
+    /// CPU page-locked transit buffer for cross-device GPU transfers
+    /// without P2P (e.g. RTX 5090).  0 means no transit path.
+    transit_ptr: u64,
+    /// The GPU device index where the pool buffer was allocated.
+    pool_device: i32,
 }
 
 unsafe impl Send for PoolSlot {}
@@ -366,7 +367,60 @@ _lib.cudaDeviceEnablePeerAccess.argtypes = [ctypes.c_int, ctypes.c_uint]
 _lib.cudaSetDevice.restype = ctypes.c_int
 _lib.cudaSetDevice.argtypes = [ctypes.c_int]
 
+# Page-locked host allocation for cross-device staging buffers.
+_lib.cudaHostAlloc.restype = ctypes.c_int
+_lib.cudaHostAlloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.c_uint]
+_lib.cudaFreeHost.restype = ctypes.c_int
+_lib.cudaFreeHost.argtypes = [ctypes.c_void_p]
+
 _p2p_initialised = False
+
+def _alloc_transit(size):
+    """Allocate a page-locked CPU buffer for cross-device staging.
+    Returns the pointer (as int), or 0 on failure."""
+    ptr = ctypes.c_void_p()
+    if _lib.cudaHostAlloc(ctypes.byref(ptr), size, 0) == 0:
+        return ptr.value
+    return 0
+
+def _free_transit(ptr):
+    """Free a page-locked CPU transit buffer."""
+    if ptr:
+        _lib.cudaFreeHost(ctypes.c_void_p(ptr))
+
+def _can_access_peer(src, dst):
+    """Check if src GPU can P2P-access dst GPU. Returns bool."""
+    can = ctypes.c_int(0)
+    if _lib.cudaDeviceCanAccessPeer(ctypes.byref(can), src, dst) == 0:
+        return can.value != 0
+    return False
+
+def _set_cuda_device(idx):
+    """Set the current CUDA device.  No-op if *idx* < 0."""
+    if idx >= 0:
+        _lib.cudaSetDevice(idx)
+
+def _transit_copy(src_ptr, src_dev, transit_ptr, dst_ptr, dst_dev, size):
+    """Copy via CPU transit: src(GPU) → DtoH → transit → HtoD → dst(GPU).
+    Returns True on success."""
+    # GPU src → CPU transit
+    _lib.cudaSetDevice(src_dev)
+    err = _lib.cudaMemcpy(ctypes.c_void_p(transit_ptr), ctypes.c_void_p(src_ptr), size, 2)
+    if err != 0:
+        return False
+    _lib.cudaDeviceSynchronize()
+    # CPU transit → GPU dst
+    _lib.cudaSetDevice(dst_dev)
+    err = _lib.cudaMemcpy(ctypes.c_void_p(dst_ptr), ctypes.c_void_p(transit_ptr), size, 1)
+    _lib.cudaDeviceSynchronize()
+    return err == 0
+
+def _transit_copy_gpu_buf(slot, src_ptr, src_dev, transit_ptr, dst_dev, size):
+    """Same as _transit_copy but looks up the pool's GPU buffer by slot."""
+    if slot not in _gpu_bufs:
+        return
+    dst = _gpu_bufs[slot][0]
+    _transit_copy(src_ptr, src_dev, transit_ptr, dst, dst_dev, size)
 
 def _ensure_p2p_enabled():
     """Enable P2P between all GPU pairs once per process.
@@ -1397,21 +1451,91 @@ impl Node {
         // the same device (sender's current CUDA device), so a plain DtoD
         // memcpy suffices.  When the source is CPU, `dma_copy` does a pinned
         // host→device DMA copy (existing path).
+        // Resolve sender and receiver device indices for cross-device detection.
+        let sender_device_idx = tensor_device
+            .strip_prefix("cuda")
+            .and_then(|s| s.strip_prefix(':'))
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0);
+        let receiver_device_idx = device
+            .strip_prefix("cuda")
+            .and_then(|s| s.strip_prefix(':'))
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(0);
+        let cross_device = sender_device_idx != receiver_device_idx;
+        let mut transit_ptr: u64 = 0;
+        let mut pool_device = sender_device_idx;
+
         if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
             let bound = helpers.bind(py);
+
+            // Enable P2P before any IPC operations.
+            let _ = bound.call_method0("_ensure_p2p_enabled");
+
+            // Cross-device without P2P needs CPU transit (e.g. RTX 5090).
+            // Check P2P availability via the Python helper.
+            let p2p_available: bool = cross_device
+                && bound
+                    .call_method1("_can_access_peer", (sender_device_idx, receiver_device_idx))
+                    .and_then(|r| r.extract::<bool>())
+                    .unwrap_or(false);
+            let use_transit = cross_device && !p2p_available;
+
             let gpu_ptr: Option<u64> = if is_cuda {
-                // GPU source: allocate on current device, DtoD copy.
-                let dst: u64 = bound
-                    .call_method1("_get_gpu_buf", (pool_counter, size))
-                    .and_then(|r| r.extract::<u64>())
-                    .unwrap_or(0);
-                if dst != 0 {
-                    bound
-                        .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
-                        .ok();
-                    Some(dst)
+                if use_transit {
+                    // Allocate pool buffer on receiver's GPU so the
+                    // receiver can import the IPC handle on its own device.
+                    let _ = bound
+                        .call_method1("_set_cuda_device", (receiver_device_idx,));
+                    let dst: u64 = bound
+                        .call_method1("_get_gpu_buf", (pool_counter, size))
+                        .and_then(|r| r.extract::<u64>())
+                        .unwrap_or(0);
+                    // Switch back to sender device.
+                    let _ = bound
+                        .call_method1("_set_cuda_device", (sender_device_idx,));
+                    if dst != 0 {
+                        // Allocate CPU page-locked transit buffer.
+                        let tp: u64 = bound
+                            .call_method1("_alloc_transit", (size,))
+                            .and_then(|r| r.extract::<u64>())
+                            .unwrap_or(0);
+                        if tp != 0 {
+                            // Copy via transit: sender GPU → CPU → receiver GPU.
+                            let ok: bool = bound
+                                .call_method1(
+                                    "_transit_copy",
+                                    (ptr_val, sender_device_idx, tp, dst, receiver_device_idx, size),
+                                )
+                                .and_then(|r| r.extract::<bool>())
+                                .unwrap_or(false);
+                            if ok {
+                                transit_ptr = tp;
+                                pool_device = receiver_device_idx;
+                                Some(dst)
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
                 } else {
-                    None
+                    // Same-device or P2P available: allocate on sender device.
+                    let dst: u64 = bound
+                        .call_method1("_get_gpu_buf", (pool_counter, size))
+                        .and_then(|r| r.extract::<u64>())
+                        .unwrap_or(0);
+                    if dst != 0 {
+                        bound
+                            .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
+                            .ok();
+                        Some(dst)
+                    } else {
+                        None
+                    }
                 }
             } else {
                 // CPU source → GPU pool: use pinned DMA (existing path).
@@ -1420,9 +1544,7 @@ impl Node {
                     .and_then(|r| r.extract::<u64>())
                     .ok()
             };
-            // Enable P2P so the receiver can access this buffer via IPC
-            // without host staging on multi-GPU nodes.
-            let _ = bound.call_method0("_ensure_p2p_enabled");
+
             if let Some(gpu_ptr) = gpu_ptr
                 && let Ok(handle) = bound
                     .call_method1("_ipc_export", (gpu_ptr,))
@@ -1456,6 +1578,8 @@ impl Node {
                     base: shmem_ptr as u64,
                     size: total_size,
                     is_pinned,
+                    transit_ptr,
+                    pool_device,
                 },
             );
         }
@@ -1614,6 +1738,8 @@ impl Node {
                                     base,
                                     size: cap,
                                     is_pinned: auto_pin,
+                                    transit_ptr: 0,
+                                    pool_device: 0,
                                 };
                                 (base as *mut u8, cap, Some(slot), auto_pin)
                             }
@@ -1695,16 +1821,37 @@ impl Node {
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
                                 if ipc_present == 1 {
-                                    // GPU pool: write directly to the GPU buffer via DtoD.
-                                    // The receiver reads through the imported IPC handle,
-                                    // so the shmem DtoH copy is wasteful here.
+                                    // GPU pool: write to the GPU buffer.
+                                    // Use transit path when the pool is on a different
+                                    // device without P2P (e.g. RTX 5090).
                                     if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
-                                        let _ = bound.call_method1(
-                                            "_cuda_memcpy_gpu_buf",
-                                            (c, ptr_val, size),
-                                        );
+                                        let transit = {
+                                            PINNED_POOL.lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .get(&c)
+                                                .map(|s| (s.transit_ptr, s.pool_device))
+                                        };
+                                        if let Some((tp, pool_dev)) = transit
+                                            && tp != 0
+                                        {
+                                            let sender_dev = tensor_device
+                                                .strip_prefix("cuda")
+                                                .and_then(|d| d.strip_prefix(':'))
+                                                .and_then(|d| d.parse::<i32>().ok())
+                                                .unwrap_or(0);
+                                            // Get GPU buffer pointer for the pool.
+                                            let _ = bound.call_method1(
+                                                "_transit_copy_gpu_buf",
+                                                (c, ptr_val, sender_dev, tp, pool_dev, size),
+                                            );
+                                        } else {
+                                            let _ = bound.call_method1(
+                                                "_cuda_memcpy_gpu_buf",
+                                                (c, ptr_val, size),
+                                            );
+                                        }
                                     }
                                 } else {
                                     // CPU pool: copy GPU source → shmem via DtoH so the
@@ -1852,16 +1999,37 @@ impl Node {
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
                                 if ipc_present == 1 {
-                                    // GPU pool: write directly to the GPU buffer via DtoD.
-                                    // The receiver reads through the imported IPC handle,
-                                    // so the shmem DtoH copy is wasteful here.
+                                    // GPU pool: write to the GPU buffer.
+                                    // Use transit path when the pool is on a different
+                                    // device without P2P (e.g. RTX 5090).
                                     if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
-                                        let _ = bound.call_method1(
-                                            "_cuda_memcpy_gpu_buf",
-                                            (c, ptr_val, size),
-                                        );
+                                        let transit = {
+                                            PINNED_POOL.lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .get(&c)
+                                                .map(|s| (s.transit_ptr, s.pool_device))
+                                        };
+                                        if let Some((tp, pool_dev)) = transit
+                                            && tp != 0
+                                        {
+                                            let sender_dev = tensor_device
+                                                .strip_prefix("cuda")
+                                                .and_then(|d| d.strip_prefix(':'))
+                                                .and_then(|d| d.parse::<i32>().ok())
+                                                .unwrap_or(0);
+                                            // Get GPU buffer pointer for the pool.
+                                            let _ = bound.call_method1(
+                                                "_transit_copy_gpu_buf",
+                                                (c, ptr_val, sender_dev, tp, pool_dev, size),
+                                            );
+                                        } else {
+                                            let _ = bound.call_method1(
+                                                "_cuda_memcpy_gpu_buf",
+                                                (c, ptr_val, size),
+                                            );
+                                        }
                                     }
                                 } else {
                                     // CPU pool: copy GPU source → shmem via DtoH so the
@@ -2142,6 +2310,9 @@ impl Node {
                 let bound = helpers.bind(py);
                 let _ = bound.call_method1("_unregister_host", (slot.base,));
                 let _ = bound.call_method1("_free_gpu_buf", (c,));
+                if slot.transit_ptr != 0 {
+                    let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                }
             }
             // PoolSlot dropped here -> Shmem unmapped
         }
