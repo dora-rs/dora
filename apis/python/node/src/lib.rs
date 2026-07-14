@@ -1380,7 +1380,16 @@ impl Node {
         let json_len = json_bytes.len();
         let padded_json_len = json_len.div_ceil(DORADMA_METADATA_ALIGN) * DORADMA_METADATA_ALIGN;
         let data_offset = DORADMA_HEADER_SIZE + padded_json_len;
-        let total_size = data_offset + size;
+        // GPU receivers read tensor data from the IPC-exported GPU buffer,
+        // not from the shmem data region.  Allocate only the header portion
+        // (metadata + IPC handle + seqlock) — a few hundred bytes instead of
+        // 80 MB.  This also lets us skip cudaHostRegister on a useless data
+        // region.
+        let total_size = if receiver_is_cuda {
+            data_offset
+        } else {
+            data_offset + size
+        };
 
         // Create shared memory
         let mut shmem = ShmemConf::new()
@@ -1396,9 +1405,15 @@ impl Node {
             })?;
         let shmem_ptr = unsafe { shmem.as_slice_mut().as_mut_ptr() };
 
-        if let Ok(helpers) = get_cuda_helpers(py) {
-            let bound = helpers.bind(py);
-            let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
+        // Pin the shmem for DMA only when the receiver reads from it
+        // (CPU receivers).  GPU receivers never touch the shmem data
+        // region, and the header-only shmem is too small (< 1 page) to
+        // benefit from pinning.
+        if !receiver_is_cuda {
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
+            }
         }
 
         shmem.set_owner(false);
@@ -1788,8 +1803,14 @@ impl Node {
                         let ipc_present =
                             unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
-                        // Validate write size against pool capacity
-                        if size == 0 || size > shmem_capacity.saturating_sub(data_offset) {
+                        // Validate write size against pool capacity.
+                        // When the data goes to the GPU buffer (ipc_present == 1),
+                        // the shmem data region is not used — skip the capacity
+                        // check so header-only pools (receiver_is_cuda registrations)
+                        // can still be written to.
+                        if ipc_present != 1
+                            && (size == 0 || size > shmem_capacity.saturating_sub(data_offset))
+                        {
                             tracing::warn!(
                                 "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
                                 self.node_id,
@@ -1963,9 +1984,17 @@ impl Node {
                     if magic == DORADMA_MAGIC {
                         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
 
-                        // Validate write size against pool capacity
+                        // Check if this pool has GPU DMA path enabled
+                        let ipc_present =
+                            unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
+
+                        // Validate write size against pool capacity.
+                        // GPU-buffer writes (ipc_present == 1) don't use the
+                        // shmem data region — skip the capacity check.
                         let shmem_len = shmem.len();
-                        if size == 0 || size > shmem_len.saturating_sub(data_offset) {
+                        if ipc_present != 1
+                            && (size == 0 || size > shmem_len.saturating_sub(data_offset))
+                        {
                             tracing::warn!(
                                 "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
                                 self.node_id,
@@ -1975,10 +2004,6 @@ impl Node {
                             );
                             return Ok(());
                         }
-
-                        // Check if this pool has GPU DMA path enabled
-                        let ipc_present =
-                            unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
                         if ipc_present == 1 && !is_cuda {
                             // Extract counter for the DMA slot from buffer_id.
@@ -2656,19 +2681,29 @@ impl Node {
             return Ok(None);
         }
 
+        // Check if this pool uses GPU DMA (IPC handle in header).
+        // Reading ipc_present early lets us skip the shmem data-region
+        // size check for GPU-buffer pools (receiver_is_cuda registrations
+        // allocate header-only shmem).
+        let ipc_present = unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
+
         // Verify data_offset + size fits within shared memory segment.
-        // Use saturating operations to guard against corrupted/hostile
-        // headers with a near-usize::MAX data_offset (overflow-safe,
-        // matching the write-path checks).
-        if data_offset > shmem_size || size > shmem_size.saturating_sub(data_offset) {
-            tracing::warn!(
-                "[{}] try_doradma_read: data_offset {} + size {} exceeds shmem_size {}",
-                self.node_id,
-                data_offset,
-                size,
-                shmem_size,
-            );
-            return Ok(None);
+        // GPU-buffer reads (ipc_present == 1) don't access the shmem data
+        // region, so the size check is only required for CPU-receiver paths.
+        if ipc_present != 1 {
+            // Use saturating operations to guard against corrupted/hostile
+            // headers with a near-usize::MAX data_offset (overflow-safe,
+            // matching the write-path checks).
+            if data_offset > shmem_size || size > shmem_size.saturating_sub(data_offset) {
+                tracing::warn!(
+                    "[{}] try_doradma_read: data_offset {} + size {} exceeds shmem_size {}",
+                    self.node_id,
+                    data_offset,
+                    size,
+                    shmem_size,
+                );
+                return Ok(None);
+            }
         }
 
         // Auto-detect read path from pinned_type
@@ -2677,8 +2712,6 @@ impl Node {
             .ok()
             .flatten()
             .and_then(|v| v.extract::<String>().ok());
-        // Check if this pool uses GPU DMA (IPC handle in header)
-        let ipc_present = unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
         let effective_as_cuda = ipc_present == 1 || pinned_type.as_deref() != Some("cpu");
 
