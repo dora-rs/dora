@@ -28,10 +28,10 @@ fn main() -> eyre::Result<()> {
     let (_node, dora_events) = DoraNode::init_from_env()?;
 
     let merged_events = dora_events.merge_external(Box::pin(subscriber.async_stream()));
-    let mut events = futures::executor::block_on_stream(merged_events);
+    let events = futures::executor::block_on_stream(merged_events);
 
     let mut count = 0usize;
-    while let Some(event) = events.next() {
+    for event in events {
         match event {
             MergedEvent::Dora(event) => match event {
                 Event::Input {
