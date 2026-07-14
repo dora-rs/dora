@@ -83,6 +83,12 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           manylinux: manylinux_2_28
+          # sccache's GitHub-cache backend writes one entry per compiled
+          # object, flooding the 10 GB repo-wide cache with thousands of
+          # micro-entries that evict the workspace caches PR CI relies on.
+          # These release cross-builds don't help the PR loop, so keep it
+          # off. rust-cache above already caches deps (via BuildJet).
+          sccache: "false"
           working-directory: ${{ matrix.repository.path }}
           before-script-linux: |
             sudo apt-get update
@@ -204,7 +210,10 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i ${{ env.PYTHON_VERSION }}
-          sccache: "true"
+          # Was "true" — sccache floods the 10 GB repo cache with
+          # per-object entries that evict PR CI's workspace caches. See
+          # the linux job above for the full rationale.
+          sccache: "false"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'
@@ -236,6 +245,9 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i ${{ env.PYTHON_VERSION }}
+          # Explicit: never enable the sccache GitHub-cache backend here
+          # (floods the 10 GB repo cache). See the linux job for details.
+          sccache: "false"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release'

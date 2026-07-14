@@ -180,6 +180,11 @@ jobs:
 
       - name: Cache cargo target
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main` so PR runs restore the shared cache but
+          # never write their own ~1.2 GB per-target copies, which would
+          # churn the 10 GB repo-wide cache budget. See ci.yml header.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # ============================================================
       # C API: node + operator
