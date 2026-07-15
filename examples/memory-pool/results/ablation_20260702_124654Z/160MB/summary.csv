@@ -1,0 +1,13 @@
+mode,scenario,success,failed,median_mbs,min_mbs,max_mbs,stddev_mbs
+full,cpu2cpu,10,0,7275.6,6965.2,7440.6,136.6
+full,cpu2cuda,10,0,6075.2,5908.5,6193.4,82.8
+full,cuda2cpu,10,0,8519.6,8367.9,8597.9,67.9
+nofastpath,cpu2cpu,10,0,7332.9,7146.9,7445.7,98.0
+nofastpath,cpu2cuda,10,0,6038.3,5673.1,6076.5,124.7
+nofastpath,cuda2cpu,10,0,8607.1,8543.5,8663.4,36.0
+noreuse,cpu2cpu,10,0,1680.3,1664.4,1696.1,9.3
+noreuse,cpu2cuda,10,0,1289.4,1274.8,1294.1,7.0
+noreuse,cuda2cpu,10,0,1774.6,1720.6,1804.5,27.3
+pageable,cpu2cpu,10,0,7431.9,6527.4,7592.4,349.5
+pageable,cpu2cuda,10,0,4512.8,4284.4,4530.4,80.3
+pageable,cuda2cpu,10,0,8667.2,8612.0,8736.8,42.5

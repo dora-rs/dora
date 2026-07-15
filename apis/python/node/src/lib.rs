@@ -373,7 +373,7 @@ _lib.cudaHostAlloc.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t,
 _lib.cudaFreeHost.restype = ctypes.c_int
 _lib.cudaFreeHost.argtypes = [ctypes.c_void_p]
 
-_p2p_initialised = False
+_p2p_enabled_pairs = set()    # {(src, dst)} pairs already peer-enabled
 
 def _alloc_transit(size):
     """Allocate a page-locked CPU buffer for cross-device staging.
@@ -420,42 +420,43 @@ def _transit_copy(src_ptr, src_dev, transit_ptr, dst_ptr, dst_dev, size):
     return err == 0
 
 def _transit_copy_gpu_buf(slot, src_ptr, src_dev, transit_ptr, dst_dev, size):
-    """Same as _transit_copy but looks up the pool's GPU buffer by slot."""
+    """Same as _transit_copy but looks up the pool's GPU buffer by slot.
+    Raises on a missing/undersized slot or a failed copy so the caller
+    can surface the error instead of silently delivering stale data."""
     if slot not in _gpu_bufs:
-        return
-    dst = _gpu_bufs[slot][0]
-    _transit_copy(src_ptr, src_dev, transit_ptr, dst, dst_dev, size)
+        raise RuntimeError(f"GPU pool buffer for slot {slot} not initialised")
+    dst, capacity = _gpu_bufs[slot]
+    if size > capacity:
+        raise RuntimeError(
+            f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
+        )
+    if not _transit_copy(src_ptr, src_dev, transit_ptr, dst, dst_dev, size):
+        raise RuntimeError(f"transit copy into GPU pool buffer failed (slot={slot})")
 
-def _ensure_p2p_enabled():
-    """Enable P2P between all GPU pairs once per process.
-    Idempotent — subsequent calls are no-ops.
+def _ensure_p2p_pair(a, b):
+    """Enable bidirectional P2P access for the (a, b) GPU pair only.
+
+    Scoped to the sender/receiver devices actually used by a transfer —
+    enabling P2P across *all* GPU pairs would lazily create a CUDA context
+    (hundreds of MB) on every visible device, including ones not in this
+    dataflow.  Idempotent per pair.
     """
-    global _p2p_initialised
-    if _p2p_initialised:
+    if a == b or a < 0 or b < 0:
         return
-    count = ctypes.c_int()
-    if _lib.cudaGetDeviceCount(ctypes.byref(count)) != 0:
+    if (a, b) in _p2p_enabled_pairs:
         return
-    n = count.value
-    if n < 2:
-        _p2p_initialised = True
-        return
-    # Save the current device so we can restore it after
-    # enabling peer access — otherwise later CUDA operations
-    # (cudaMalloc, cudaIpcOpenMemHandle) would run on the
-    # last enabled src device instead of the caller's device.
+    # Save the current device so we can restore it after enabling peer
+    # access — otherwise later CUDA operations (cudaMalloc,
+    # cudaIpcOpenMemHandle) would run on the last enabled src device.
     saved = ctypes.c_int()
     _lib.cudaGetDevice(ctypes.byref(saved))
-    for src in range(n):
-        for dst in range(n):
-            if src == dst:
-                continue
-            can = ctypes.c_int(0)
-            if _lib.cudaDeviceCanAccessPeer(ctypes.byref(can), src, dst) == 0 and can.value:
-                _lib.cudaSetDevice(src)
-                _lib.cudaDeviceEnablePeerAccess(dst, 0)
+    for src, dst in ((a, b), (b, a)):
+        can = ctypes.c_int(0)
+        if _lib.cudaDeviceCanAccessPeer(ctypes.byref(can), src, dst) == 0 and can.value:
+            _lib.cudaSetDevice(src)
+            _lib.cudaDeviceEnablePeerAccess(dst, 0)
+        _p2p_enabled_pairs.add((src, dst))
     _lib.cudaSetDevice(saved.value)
-    _p2p_initialised = True
 
 def _cuda_memcpy(dst, src, size, kind):
     """cudaMemcpy wrapper. kind: 1=H2D, 2=D2H, 3=D2D."""
@@ -469,8 +470,15 @@ def _cuda_memcpy_gpu_buf(slot, src_ptr, size):
     identified by *slot*.  Used by write_memory_pool when both source and pool
     buffer are GPU-resident (same-device DtoD copy)."""
     if slot not in _gpu_bufs:
-        return  # pool buffer not initialised; nothing to copy to
-    dst = _gpu_bufs[slot][0]
+        raise RuntimeError(f"GPU pool buffer for slot {slot} not initialised")
+    dst, capacity = _gpu_bufs[slot]
+    if size > capacity:
+        # The GPU buffer was sized at registration and its IPC handle is
+        # already exported; growing it would invalidate the receiver's
+        # imported handle.  Reject rather than overflow the allocation.
+        raise RuntimeError(
+            f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
+        )
     err = _lib.cudaMemcpy(ctypes.c_void_p(dst), ctypes.c_void_p(src_ptr), size, 3)
     if err != 0:
         raise RuntimeError(f"cudaMemcpy GPU buf DtoD (slot={slot}, 0x{dst:x}←0x{src_ptr:x}, {size}B) failed: {err}")
@@ -1492,11 +1500,18 @@ impl Node {
         let mut transit_ptr: u64 = 0;
         let mut pool_device = sender_device_idx;
 
+        // Tracks whether the GPU pool buffer + IPC handle were successfully set
+        // up.  A CUDA receiver's shmem is header-only, so without the handle the
+        // pool is unusable — we fail registration rather than hand back a
+        // permanently-broken pool.
+        let mut ipc_written = false;
+
         if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
             let bound = helpers.bind(py);
 
-            // Enable P2P before any IPC operations.
-            let _ = bound.call_method0("_ensure_p2p_enabled");
+            // Enable P2P for the sender/receiver pair before any IPC operations.
+            let _ =
+                bound.call_method1("_ensure_p2p_pair", (sender_device_idx, receiver_device_idx));
 
             // Cross-device without P2P needs CPU transit (e.g. RTX 5090).
             // Check P2P availability via the Python helper.
@@ -1565,10 +1580,17 @@ impl Node {
                         .and_then(|r| r.extract::<u64>())
                         .unwrap_or(0);
                     if dst != 0 {
-                        bound
+                        // Only export a handle if the DtoD copy succeeded —
+                        // otherwise the receiver would import uninitialised memory.
+                        if bound
                             .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
-                            .ok();
-                        Some(dst)
+                            .is_ok()
+                        {
+                            Some(dst)
+                        } else {
+                            let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                            None
+                        }
                     } else {
                         None
                     }
@@ -1593,7 +1615,22 @@ impl Node {
                     // ipc_present flag at byte 24
                     std::ptr::write(shmem_ptr.add(24) as *mut u64, 1u64);
                 }
+                ipc_written = true;
             }
+        }
+
+        // A CUDA receiver's shmem is header-only and useless without the IPC
+        // handle.  If GPU-pool setup failed (or the CUDA helpers were
+        // unavailable), fail registration instead of returning a pool that
+        // every later write/read would silently reject.  Reclaim the shmem
+        // segment on the way out (it was created with owner=false).
+        if receiver_is_cuda && !ipc_written {
+            shmem.set_owner(true);
+            eyre::bail!(
+                "[{}] register_memory_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
+                self.node_id,
+                tensor_device
+            );
         }
 
         // Seqlock: increment gen to even (write-complete)
@@ -1749,7 +1786,7 @@ impl Node {
                 // Both cache-hit and cache-miss produce a PoolSlot that is
                 // stored back into PINNED_POOL after the write — this keeps
                 // the shmem mapping alive for the duration of the data copy.
-                let (shmem_ptr, shmem_capacity, store_back, is_pinned) =
+                let (shmem_ptr, shmem_capacity, mut store_back, is_pinned) =
                     if let Some(mut slot_data) = pool_slot {
                         // Cache hit: reuse the persistent mapping (no mmap).
                         // Recompute is_pinned from the current tensor size
@@ -1803,13 +1840,14 @@ impl Node {
                         let ipc_present =
                             unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
-                        // Validate write size against pool capacity.
-                        // When the data goes to the GPU buffer (ipc_present == 1),
-                        // the shmem data region is not used — skip the capacity
-                        // check so header-only pools (receiver_is_cuda registrations)
-                        // can still be written to.
-                        if ipc_present != 1
-                            && (size == 0 || size > shmem_capacity.saturating_sub(data_offset))
+                        // Validate write size against pool capacity.  The
+                        // `size == 0` guard always applies.  For GPU-buffer pools
+                        // (ipc_present == 1) the shmem data region is unused, so
+                        // its capacity is irrelevant — the GPU-buffer helpers
+                        // validate `size` against the actual GPU allocation.
+                        if size == 0
+                            || (ipc_present != 1
+                                && size > shmem_capacity.saturating_sub(data_offset))
                         {
                             tracing::warn!(
                                 "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
@@ -1860,62 +1898,81 @@ impl Node {
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
-                            if let Ok(helpers) = get_cuda_helpers(py) {
+                            let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
                                 if ipc_present == 1 {
-                                    // GPU pool: write to the GPU buffer.
-                                    // Use transit path when the pool is on a different
-                                    // device without P2P (e.g. RTX 5090).
-                                    if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                                        && let Ok(c) = counter_str.parse::<u64>()
+                                    // GPU pool: write to the GPU buffer.  Read the
+                                    // transit info from the slot we already hold
+                                    // (store_back) — re-querying PINNED_POOL here
+                                    // would always miss, since the slot was removed
+                                    // from the map at the top of the fast path.
+                                    let transit =
+                                        store_back.as_ref().map(|s| (s.transit_ptr, s.pool_device));
+                                    if let Some((tp, pool_dev)) = transit
+                                        && tp != 0
                                     {
-                                        let transit = {
-                                            PINNED_POOL
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner())
-                                                .get(&c)
-                                                .map(|s| (s.transit_ptr, s.pool_device))
-                                        };
-                                        if let Some((tp, pool_dev)) = transit
-                                            && tp != 0
-                                        {
-                                            let sender_dev = tensor_device
-                                                .strip_prefix("cuda")
-                                                .and_then(|d| d.strip_prefix(':'))
-                                                .and_then(|d| d.parse::<i32>().ok())
-                                                .unwrap_or(0);
-                                            // Get GPU buffer pointer for the pool.
-                                            let _ = bound.call_method1(
+                                        // Cross-device without P2P: stage through the
+                                        // CPU page-locked transit buffer.
+                                        let sender_dev = tensor_device
+                                            .strip_prefix("cuda")
+                                            .and_then(|d| d.strip_prefix(':'))
+                                            .and_then(|d| d.parse::<i32>().ok())
+                                            .unwrap_or(0);
+                                        bound
+                                            .call_method1(
                                                 "_transit_copy_gpu_buf",
-                                                (c, ptr_val, sender_dev, tp, pool_dev, size),
-                                            );
-                                        } else {
-                                            let _ = bound.call_method1(
+                                                (counter, ptr_val, sender_dev, tp, pool_dev, size),
+                                            )
+                                            .map(|_| ())
+                                    } else {
+                                        bound
+                                            .call_method1(
                                                 "_cuda_memcpy_gpu_buf",
-                                                (c, ptr_val, size),
-                                            );
-                                        }
+                                                (counter, ptr_val, size),
+                                            )
+                                            .map(|_| ())
                                     }
                                 } else {
                                     // CPU pool: copy GPU source → shmem via DtoH so the
                                     // receiver can read the data through /dev/shm.
-                                    let _ = bound.call_method1(
-                                        "_cuda_memcpy",
-                                        (
-                                            shmem_ptr as u64 + data_offset as u64,
-                                            ptr_val,
-                                            size,
-                                            2u32,
-                                        ),
-                                    );
+                                    bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                ptr_val,
+                                                size,
+                                                2u32,
+                                            ),
+                                        )
+                                        .map(|_| ())
                                 }
-                            }
+                            } else {
+                                Ok(())
+                            };
                             // Seqlock: end write
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+
+                            // Surface a failed copy after closing the seqlock (so the
+                            // reader sees a consistent, even generation).  Re-insert
+                            // the slot first so the pool survives for later frames.
+                            if let Err(e) = write_result {
+                                if let Some(slot_data) = store_back.take() {
+                                    PINNED_POOL
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(counter, slot_data);
+                                }
+                                return Err(eyre::eyre!(
+                                    "[{}] write_memory_pool: GPU pool copy failed: {}",
+                                    self.node_id,
+                                    e
+                                ));
                             }
                         } else {
                             // Seqlock: begin write
@@ -1988,12 +2045,13 @@ impl Node {
                         let ipc_present =
                             unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
 
-                        // Validate write size against pool capacity.
-                        // GPU-buffer writes (ipc_present == 1) don't use the
-                        // shmem data region — skip the capacity check.
+                        // Validate write size against pool capacity.  The
+                        // `size == 0` guard always applies; the shmem-region
+                        // capacity check is skipped for GPU-buffer pools
+                        // (ipc_present == 1), which the GPU helpers validate.
                         let shmem_len = shmem.len();
-                        if ipc_present != 1
-                            && (size == 0 || size > shmem_len.saturating_sub(data_offset))
+                        if size == 0
+                            || (ipc_present != 1 && size > shmem_len.saturating_sub(data_offset))
                         {
                             tracing::warn!(
                                 "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
@@ -2043,12 +2101,14 @@ impl Node {
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
-                            if let Ok(helpers) = get_cuda_helpers(py) {
+                            let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
                                 if ipc_present == 1 {
-                                    // GPU pool: write to the GPU buffer.
-                                    // Use transit path when the pool is on a different
-                                    // device without P2P (e.g. RTX 5090).
+                                    // GPU pool: write to the GPU buffer.  Use the
+                                    // transit path when the pool is on a different
+                                    // device without P2P (e.g. RTX 5090).  This slow
+                                    // path does not hold the slot, so PINNED_POOL is
+                                    // the correct source for the transit info.
                                     if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
@@ -2067,38 +2127,55 @@ impl Node {
                                                 .and_then(|d| d.strip_prefix(':'))
                                                 .and_then(|d| d.parse::<i32>().ok())
                                                 .unwrap_or(0);
-                                            // Get GPU buffer pointer for the pool.
-                                            let _ = bound.call_method1(
-                                                "_transit_copy_gpu_buf",
-                                                (c, ptr_val, sender_dev, tp, pool_dev, size),
-                                            );
+                                            bound
+                                                .call_method1(
+                                                    "_transit_copy_gpu_buf",
+                                                    (c, ptr_val, sender_dev, tp, pool_dev, size),
+                                                )
+                                                .map(|_| ())
                                         } else {
-                                            let _ = bound.call_method1(
-                                                "_cuda_memcpy_gpu_buf",
-                                                (c, ptr_val, size),
-                                            );
+                                            bound
+                                                .call_method1(
+                                                    "_cuda_memcpy_gpu_buf",
+                                                    (c, ptr_val, size),
+                                                )
+                                                .map(|_| ())
                                         }
+                                    } else {
+                                        Ok(())
                                     }
                                 } else {
                                     // CPU pool: copy GPU source → shmem via DtoH so the
                                     // receiver can read the data through /dev/shm.
-                                    let _ = bound.call_method1(
-                                        "_cuda_memcpy",
-                                        (
-                                            shmem_ptr as u64 + data_offset as u64,
-                                            ptr_val,
-                                            size,
-                                            2u32,
-                                        ),
-                                    );
+                                    bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                ptr_val,
+                                                size,
+                                                2u32,
+                                            ),
+                                        )
+                                        .map(|_| ())
                                 }
-                            }
+                            } else {
+                                Ok(())
+                            };
                             // Seqlock: end write
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
                                 std::ptr::write_volatile(gen_ptr, old_gen + 1);
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            }
+                            // Surface a failed copy after closing the seqlock.
+                            if let Err(e) = write_result {
+                                return Err(eyre::eyre!(
+                                    "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
+                                    self.node_id,
+                                    e
+                                ));
                             }
                         } else {
                             // Seqlock: begin write
@@ -2743,10 +2820,12 @@ impl Node {
                         let helpers = get_cuda_helpers(py)
                             .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
                         let bound = helpers.bind(py);
-                        // Enable P2P between all GPU pairs before importing
-                        // the IPC handle, so cross-device accesses go through
-                        // NVLink/PCIe-P2P instead of host staging.
-                        let _ = bound.call_method0("_ensure_p2p_enabled");
+                        // No explicit P2P enablement needed here: _ipc_import
+                        // opens the handle with cudaIpcMemLazyEnablePeerAccess,
+                        // which lazily routes cross-device access through
+                        // NVLink/PCIe-P2P on first touch.  The receiver also
+                        // does not know the sender's device index to scope a
+                        // pairwise enable.
                         let handle_py = PyBytes::new(py, handle_bytes);
                         let gpu_ptr: u64 = bound
                             .call_method1("_ipc_import", (handle_py,))
