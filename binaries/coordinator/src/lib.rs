@@ -5017,6 +5017,66 @@ mod tests {
         );
     }
 
+    // Regression test for #2131 (Problem 1): if a daemon disconnects while a
+    // two-phase restart is parked in `pending_restarts`, that daemon will never
+    // send `DataflowFinishedOnDaemon`, so the deferred restart can never
+    // complete. The disconnect cleanup must evict the stale entry and reply
+    // `Err` so the restart caller (CLI) gets a clear error instead of hanging
+    // forever. This locks in the cleanup path added for the inline TODO.
+    #[test]
+    fn disconnect_drains_pending_restart_and_replies_err() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("gone".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id);
+        df.spawn_result
+            .set_result(Ok(ControlRequestReply::DataflowSpawned {
+                uuid: dataflow_id,
+            }));
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+
+        // Park a deferred restart with the caller's reply channel.
+        let descriptor: Descriptor =
+            serde_json::from_value(serde_json::json!({"nodes": [{"id": "sender"}]}))
+                .expect("valid descriptor");
+        let (reply_tx, mut reply_rx) = tokio::sync::oneshot::channel();
+        let mut pending_restarts = HashMap::new();
+        pending_restarts.insert(
+            dataflow_id,
+            PendingRestart {
+                descriptor,
+                name: None,
+                uv: false,
+                reply_sender: reply_tx,
+            },
+        );
+
+        let disconnected = BTreeSet::from([daemon_id]);
+        cleanup_disconnected_daemons_from_running_dataflows(
+            &mut running_dataflows,
+            &disconnected,
+            &mut pending_restarts,
+        );
+
+        // The stale entry must be evicted so it cannot leak/hang.
+        assert!(
+            pending_restarts.is_empty(),
+            "pending restart for the disconnected daemon must be drained"
+        );
+        // The caller must be woken with an error, not left hanging.
+        let reply = reply_rx
+            .try_recv()
+            .expect("restart caller must receive a reply (not be left hanging)");
+        let err = reply.expect_err("restart must be reported as failed on disconnect");
+        assert!(
+            format!("{err:?}").contains("daemon disconnected while restart was pending"),
+            "error must explain the restart was cancelled by a disconnect, got: {err:?}"
+        );
+    }
+
     #[test]
     fn resolve_param_target_returns_running_daemon_for_active_node() {
         let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
