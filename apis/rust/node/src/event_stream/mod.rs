@@ -83,6 +83,12 @@ pub struct EventStream {
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
+    /// Per-input liveliness tokens announcing "my data subscriber is declared"
+    /// so producers can count subscribers and only switch an output to the direct
+    /// zenoh data plane once every subscriber is wired (startup no-loss barrier;
+    /// see [`dora_core::topics::zenoh_input_ready_liveliness_topic`]). Kept alive
+    /// for the EventStream's lifetime; dropping a token undeclares it.
+    _zenoh_liveliness_tokens: Vec<zenoh::liveliness::LivelinessToken>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -119,6 +125,7 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
+        dynamic: bool,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -263,6 +270,7 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
+            dynamic,
         )
     }
 
@@ -279,6 +287,7 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
+        dynamic: bool,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -300,6 +309,7 @@ impl EventStream {
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
         let mut zenoh_schema_subscribers = Vec::new();
+        let mut zenoh_liveliness_tokens = Vec::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -559,6 +569,37 @@ impl EventStream {
                         Ok(s) => {
                             tracing::debug!(input = %input_id, %topic, "zenoh subscriber declared (callback)");
                             zenoh_subscribers.push(s);
+
+                            // Announce readiness for this link so the producer
+                            // counts us before switching the output to the direct
+                            // zenoh data plane. Declared only after a *successful*
+                            // data subscriber (so a counted token always implies
+                            // the subscription is in flight) and never for dynamic
+                            // nodes — they connect at arbitrary times and are not
+                            // part of the startup barrier (the producer reaches
+                            // them via normal matching once they join). A failure
+                            // here is non-fatal: the producer just keeps this
+                            // output on the reliable daemon path.
+                            if !dynamic {
+                                let ready_key =
+                                    dora_core::topics::zenoh_input_ready_liveliness_topic(
+                                        dataflow_id,
+                                        source_node,
+                                        source_output,
+                                        node_id,
+                                        input_id,
+                                    );
+                                match session.liveliness().declare_token(ready_key).wait() {
+                                    Ok(token) => zenoh_liveliness_tokens.push(token),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            input = %input_id,
+                                            "failed to declare zenoh readiness token ({e}); \
+                                             producer will keep this output on the daemon path"
+                                        );
+                                    }
+                                }
+                            }
                         }
                         Err(e) => {
                             tracing::warn!(
@@ -597,6 +638,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
             _zenoh_schema_subscribers: zenoh_schema_subscribers,
+            _zenoh_liveliness_tokens: zenoh_liveliness_tokens,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -1553,6 +1595,26 @@ impl Drop for EventStream {
             if !completed {
                 tracing::warn!(
                     "zenoh subscriber teardown timed out after {}s; continuing node shutdown",
+                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
+                );
+            }
+        }
+
+        // Undeclare readiness tokens under the same deadline: like subscriber
+        // teardown, `LivelinessToken::drop` undeclares on the shared session and
+        // can block if zenoh's net runtime is wedged (dora-rs/dora#2425).
+        let tokens = std::mem::take(&mut self._zenoh_liveliness_tokens);
+        if !tokens.is_empty() {
+            let completed = teardown_with_timeout(
+                "zenoh-liveliness-tokens",
+                ZENOH_TEARDOWN_TIMEOUT,
+                move || {
+                    drop(tokens);
+                },
+            );
+            if !completed {
+                tracing::warn!(
+                    "zenoh readiness-token teardown timed out after {}s; continuing node shutdown",
                     ZENOH_TEARDOWN_TIMEOUT.as_secs()
                 );
             }
