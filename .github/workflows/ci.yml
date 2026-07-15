@@ -154,6 +154,16 @@ jobs:
     name: Test (ubuntu-latest)
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    env:
+      # Debug info is ~78% of every compiled artifact in this large
+      # workspace; full-debuginfo builds overrun the runner disk during
+      # `cargo test` ("No space left on device"). `line-tables-only`
+      # keeps file:line in test backtraces but drops the bulk. Set on
+      # both main (cache save) and PRs (restore) so the shared
+      # workspace-test rust-cache fingerprint stays coherent — this MUST
+      # match the contract-tests job, which reuses the same cache key.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -175,7 +185,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build (excluding Python packages)
@@ -284,6 +299,11 @@ jobs:
     name: E2E Tests
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    env:
+      # Shrink target/ to fit the runner disk — see the `test` job note.
+      # (Release CLI build below is unaffected; only dev/test profiles.)
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -308,7 +328,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build CLI
@@ -381,6 +406,12 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
     timeout-minutes: 30
+    env:
+      # Reuses the workspace-test cache with `test`; the debuginfo
+      # settings MUST stay identical or the two jobs invalidate each
+      # other's shared cache. See the `test` job note.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -407,7 +438,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - uses: actions/setup-python@v6
@@ -476,7 +512,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
 
