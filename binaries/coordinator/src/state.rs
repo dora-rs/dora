@@ -379,10 +379,19 @@ impl RunningDataflow {
 
     /// Prune log entries that all daemons have acknowledged.
     pub(crate) fn prune_state_log(&mut self) {
+        // Gate pruning on the acks of *live* daemons only. A daemon that
+        // disconnects is removed from `self.daemons`, but its (now frozen)
+        // `daemon_ack_sequence` entry is deliberately retained for a possible
+        // reclaim. Counting that stale entry here would pin `min_ack` at the
+        // disconnected daemon's last ack forever, so the log could never shrink
+        // — it would grow until the `MAX_STATE_LOG_ENTRIES` hard cap, forcing a
+        // full param replay for *every* daemon (including healthy ones). If a
+        // disconnected daemon reconnects after its missed entries were pruned,
+        // `state_log_delta` already falls back to a full replay for it.
         let min_ack = self
-            .daemon_ack_sequence
-            .values()
-            .copied()
+            .daemons
+            .iter()
+            .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
