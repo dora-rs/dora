@@ -1959,6 +1959,31 @@ fn smoke_local_memory_pool_write_after_free() {
     );
 }
 
+// GPU memory-pool tests: require CUDA-capable GPU(s).
+// cuda_inner needs at least 1 GPU; cuda2cuda needs ≥2 distinct GPUs.
+// Both are `#[ignore]`-gated because standard CI runners lack GPUs.
+// Run locally:
+//   cargo test --test example-smoke -- --ignored cuda
+#[test]
+#[ignore = "requires CUDA GPU(s)"]
+fn smoke_memory_pool_cuda_inner() {
+    run_smoke_test(
+        "memory-pool-cuda-inner",
+        "examples/memory-pool/cuda_inner.yml",
+        Duration::from_secs(60),
+    );
+}
+
+#[test]
+#[ignore = "requires CUDA GPU(s) — ≥2 GPUs"]
+fn smoke_memory_pool_cuda2cuda() {
+    run_smoke_test(
+        "memory-pool-cuda2cuda",
+        "examples/memory-pool/cuda2cuda.yml",
+        Duration::from_secs(60),
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
