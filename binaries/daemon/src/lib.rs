@@ -4035,13 +4035,12 @@ impl Daemon {
             .get_mut(&dataflow_id)
             .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
 
-        let outputs = dataflow
-            .mappings
-            .keys()
-            .filter(|m| &m.0 == node_id)
-            .map(|m| &m.1)
-            .cloned()
-            .collect();
+        // Include outputs consumed only by nodes on other daemons
+        // (`open_external_mappings`), not just those with a local consumer
+        // (`mappings`). Otherwise a remote-only output never triggers an
+        // `OutputClosed` event when the producing node finishes, leaving the
+        // remote consumer's input open until it is force-killed.
+        let outputs = dataflow.node_output_ids(node_id).into_iter().collect();
 
         if might_restart {
             self.logger
