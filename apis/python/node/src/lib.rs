@@ -2308,6 +2308,21 @@ impl Node {
                     })
                     .unwrap_or("cpu");
 
+                // Read the trusted ipc_present from the daemon before
+                // touching the (world-writable) shmem, so the size gate
+                // mirrors try_doradma_read and both write paths.
+                let ipc_present_trusted = metadata
+                    .parameters
+                    .get("ipc_present")
+                    .and_then(|p| {
+                        if let Parameter::Bool(v) = p {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+
                 // Resolve the actual data pointer from shared memory.
                 // The `ptr` in the daemon metadata is the registering node's
                 // process-local address — meaningless in a different process.
@@ -2339,8 +2354,12 @@ impl Node {
                     let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                     if magic == DORADMA_MAGIC {
                         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                        if data_offset > shmem.len()
-                            || (size as usize) > shmem.len().saturating_sub(data_offset)
+                        // Gate the capacity check on ipc_present — the same
+                        // pattern as try_doradma_read and both write paths.
+                        // GPU pools are header-only and the data region is unused.
+                        if !ipc_present_trusted
+                            && (data_offset > shmem.len()
+                                || (size as usize) > shmem.len().saturating_sub(data_offset))
                         {
                             warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                             return Err(eyre::eyre!(
@@ -2369,31 +2388,13 @@ impl Node {
                     }
                 }
 
-                if read_ptr == 0 {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!("memory pool {} not found or has invalid pointer", buffer_id);
-                }
-
-                // The daemon fallback always derives read_ptr from a host
-                // mmap address (shmem_ptr + data_offset).  For a CUDA pool,
-                // re-import the IPC handle from the shmem header using the
-                // daemon's trusted `ipc_present` flag — the shmem data region
-                // is untrusted, but the IPC handle in the header region is
-                // stable once exported.  This avoids trusting the world-writable
-                // shmem for size/ipc_present decisions.
-                let ipc_present_trusted = metadata
-                    .parameters
-                    .get("ipc_present")
-                    .and_then(|p| {
-                        if let Parameter::Bool(v) = p {
-                            Some(*v)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-
+                // The daemon-fallback shmem block above sets read_ptr to a
+                // host mmap address (shmem_ptr + data_offset).  For GPU pools
+                // that is invalid — reset it before the CUDA re-import so a
+                // failed IPC import doesn't silently label host memory as
+                // device=cuda (phil-opp's contingent finding).
                 let device = if pinned_type.starts_with("cuda") {
+                    read_ptr = 0;
                     if ipc_present_trusted
                         && let Some(ref name) = shmem_name
                         && let Ok(shmem) = ShmemConf::new().os_id(name).open()
