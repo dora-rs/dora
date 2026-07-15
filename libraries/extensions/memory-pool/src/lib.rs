@@ -38,6 +38,9 @@ pub struct MemoryPoolMetadata {
     pub buffer_id: Option<String>,
     /// Pool type: "cpu" or "cuda", indicating whether the receiver is a CUDA device.
     pub pinned_type: Option<String>,
+    /// Whether an IPC handle was exported by the sender at registration.
+    /// When true, the receiver reads from the GPU buffer via IPC, not from /dev/shm.
+    pub ipc_present: bool,
 }
 
 /// Entry in the memory pool table.
@@ -308,6 +311,7 @@ mod tests {
             shared_memory_name: None,
             buffer_id: None,
             pinned_type: None,
+            ipc_present: false,
         }
     }
 

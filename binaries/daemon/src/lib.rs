@@ -581,6 +581,7 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
         shared_memory_name: get_str("shared_memory_name"),
         buffer_id: get_str("buffer_id"),
         pinned_type: get_str("pinned_type"),
+        ipc_present: get_bool("ipc_present").unwrap_or(false),
     }
 }
 

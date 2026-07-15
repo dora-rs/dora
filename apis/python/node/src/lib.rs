@@ -1693,6 +1693,10 @@ impl Node {
                 "buffer_id".to_string(),
                 dora_node_api::Parameter::String(buffer_id.clone()),
             );
+            params.insert(
+                "ipc_present".to_string(),
+                dora_node_api::Parameter::Bool(ipc_written),
+            );
 
             let meta = dora_node_api::Metadata::from_parameters(ts, params);
             if let Err(e) = self
@@ -2371,19 +2375,61 @@ impl Node {
                 }
 
                 // The daemon fallback always derives read_ptr from a host
-                // mmap address (shmem_ptr + data_offset).  For a CUDA pool
-                // this is not a valid device pointer — the fast path
-                // (try_doradma_read) must be used instead.  Reject to
-                // prevent tensor_from_info from receiving a host pointer
-                // labelled as device=cuda.
+                // mmap address (shmem_ptr + data_offset).  For a CUDA pool,
+                // re-import the IPC handle from the shmem header using the
+                // daemon's trusted `ipc_present` flag — the shmem data region
+                // is untrusted, but the IPC handle in the header region is
+                // stable once exported.  This avoids trusting the world-writable
+                // shmem for size/ipc_present decisions.
+                let ipc_present_trusted = metadata
+                    .parameters
+                    .get("ipc_present")
+                    .and_then(|p| {
+                        if let Parameter::Bool(v) = p {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+
                 let device = if pinned_type.starts_with("cuda") {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!(
-                        "memory pool {}: daemon fallback cannot provide a CUDA pointer \
-                         (fast path returned None); check that the pool was registered \
-                         with the correct receiver device",
-                        buffer_id,
-                    );
+                    if ipc_present_trusted
+                        && let Some(ref name) = shmem_name
+                        && let Ok(shmem) = ShmemConf::new().os_id(name).open()
+                    {
+                        let shmem_ptr = shmem.as_ptr();
+                        let handle_bytes =
+                            unsafe { std::slice::from_raw_parts(shmem_ptr.add(32), 64) };
+                        if let Ok(helpers) = get_cuda_helpers(py) {
+                            let bound = helpers.bind(py);
+                            let handle_py = PyBytes::new(py, handle_bytes);
+                            if let Ok(gpu_ptr) = bound
+                                .call_method1("_ipc_import", (handle_py,))
+                                .and_then(|r| r.extract::<u64>())
+                            {
+                                let mut gpu_cache =
+                                    RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
+                                gpu_cache.entry(buffer_id.clone()).or_insert(RecvGpuSlot {
+                                    _shmem: shmem,
+                                    gpu_va: 0,
+                                    gpu_buf: gpu_ptr,
+                                    host_base: shmem_ptr as u64,
+                                });
+                                read_ptr = gpu_ptr as i64;
+                            }
+                        }
+                    }
+                    if read_ptr == 0 {
+                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                        eyre::bail!(
+                            "memory pool {}: daemon fallback cannot provide a CUDA pointer \
+                             (fast path returned None); check that the pool was registered \
+                             with the correct receiver device",
+                            buffer_id,
+                        );
+                    }
+                    "cuda"
                 } else {
                     "cpu"
                 };
