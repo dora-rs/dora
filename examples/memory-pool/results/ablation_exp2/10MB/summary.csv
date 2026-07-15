@@ -1,7 +1,0 @@
-mode,scenario,success,failed,median_mbs,min_mbs,max_mbs,stddev_mbs
-auto,cpu2cpu,10,0,5250.3,4633.3,5437.5,282.4
-auto,cpu2cuda,10,0,4297.3,3915.3,4568.2,212.1
-auto,cuda2cpu,10,0,6893.5,5995.9,7426.6,521.4
-nofastpath,cpu2cpu,10,0,4441.0,3681.4,4971.1,429.4
-nofastpath,cpu2cuda,10,0,3774.6,3425.6,4252.4,242.7
-nofastpath,cuda2cpu,10,0,6752.9,5494.1,7227.2,597.3
