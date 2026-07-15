@@ -5304,6 +5304,19 @@ fn note_output_sent_to_local_receivers(
             deadline.last_received = Some(now);
         }
 
+        // Circuit-breaker recovery must be gated on the same backpressure
+        // signal as the deadline refresh above. A bare `OutputSent` is not a
+        // delivery confirmation (see the comment above), so re-opening a broken
+        // input while the receiver is still saturated only makes it flap
+        // `broken ↔ recovered` every `input_timeout` without any data actually
+        // getting through (#2627). Leave the `broken_inputs` entry in place
+        // until the receiver drains enough to keep up — matching the recovery
+        // in `send_output_to_local_receivers`, which only fires inside the
+        // successful `try_send` arm.
+        if !receiver_keeping_up {
+            continue;
+        }
+
         let Some(timeout) = dataflow
             .broken_inputs
             .remove(&(receiver_id.clone(), input_id.clone()))
@@ -6513,6 +6526,104 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Circuit-breaker recovery must be gated on receiver backpressure (#2627) --
+
+    /// Helper: wire `sender/output -> receiver/input` and mark the input broken.
+    /// `channel_capacity` controls whether the receiver counts as "keeping up"
+    /// (>= CONTROL_EVENT_HEADROOM) or "saturated" (< CONTROL_EVENT_HEADROOM).
+    fn broken_input_dataflow(
+        channel_capacity: usize,
+    ) -> (
+        RunningDataflow,
+        NodeId,
+        DataId,
+        NodeId,
+        DataId,
+        mpsc::Receiver<Timestamped<NodeEvent>>,
+    ) {
+        let mut df = test_dataflow();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        let mut mapping = BTreeSet::new();
+        mapping.insert((receiver.clone(), input.clone()));
+        df.mappings
+            .insert(OutputId(sender.clone(), output.clone()), mapping);
+
+        let (tx, rx) = mpsc::channel(channel_capacity);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        // Input is currently broken (circuit breaker open).
+        df.broken_inputs
+            .insert((receiver.clone(), input.clone()), Duration::from_secs(5));
+
+        (df, sender, output, receiver, input, rx)
+    }
+
+    /// A bare `OutputSent` is not a delivery confirmation. When the receiver's
+    /// event channel is still saturated (`capacity() < CONTROL_EVENT_HEADROOM`),
+    /// recovery must NOT fire — otherwise the circuit breaker flaps
+    /// `broken ↔ recovered` every `input_timeout` for a persistently-slow
+    /// consumer without any data actually getting through.
+    #[test]
+    fn output_sent_does_not_recover_broken_input_when_receiver_saturated() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // capacity 1 < CONTROL_EVENT_HEADROOM (50) => not keeping up
+        let (mut df, sender, output, receiver, input, mut rx) = broken_input_dataflow(1);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must stay broken while the receiver is saturated"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            0,
+            "no recovery may be counted for a saturated receiver"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "no InputRecovered may be emitted while the receiver is saturated"
+        );
+    }
+
+    /// Companion case: once the receiver has channel headroom (is keeping up),
+    /// the same `OutputSent` recovers the broken input exactly as before.
+    #[test]
+    fn output_sent_recovers_broken_input_when_receiver_keeping_up() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // an empty NODE_EVENT_CHANNEL_CAPACITY channel has ample headroom
+        let (mut df, sender, output, receiver, input, mut rx) =
+            broken_input_dataflow(NODE_EVENT_CHANNEL_CAPACITY);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            !df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must recover once the receiver is keeping up"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "recovery must be counted once the receiver is keeping up"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "InputRecovered must be emitted on recovery"
+        );
     }
 
     // -- Test 5: break_input sends InputClosed --
