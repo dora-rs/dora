@@ -13,6 +13,17 @@ name: Nightly Regression
 # block PRs. If a failure reproduces for 3 consecutive nightly runs,
 # promote it to the fast CI gate.
 #
+# Caching: every `Swatinem/rust-cache` step here sets `save-if: false`
+# (restore-only). Nightly's Windows/macOS/examples/cli-tests caches are
+# 1-2.7 GB each; a single run's saves total 15-25 GB and would blow the
+# shared 10 GB repo cache cap, LRU-evicting the Linux caches the
+# high-frequency PR loop (ci.yml) depends on. Nightly is a non-blocking
+# once-daily job, so it restores where it can but never saves — trading
+# a slower nightly for a warm PR loop. Do NOT drop these `save-if:
+# false` gates. If nightly build time becomes a problem, move these to a
+# separate cache backend (e.g. `cache-provider: buildjet`, as
+# pip-release.yml does) rather than saving into the GitHub budget.
+#
 # Triggers:
 #   - schedule: daily at 06:00 UTC
 #   - workflow_dispatch: manual run from Actions UI
@@ -63,6 +74,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -117,6 +130,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -165,6 +180,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Run hub smoke suite
         # --test-threads=1: the run sub-tests share coordinator ports.
         run: cargo test -p dora-examples --test hub-smoke -- --test-threads=1
@@ -181,6 +198,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install dora CLI to ./dist
         run: cargo install --path binaries/cli --locked --root ./dist
       - name: Upload CLI artifact
@@ -201,6 +220,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -245,6 +266,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -314,6 +337,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -384,6 +409,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -472,6 +499,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
         # `apt-get install` is harmless if it's already present and brings
@@ -512,6 +541,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
         # `apt-get install` is harmless if it's already present and brings
@@ -555,6 +586,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -763,6 +796,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -815,6 +850,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -912,6 +949,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -1004,6 +1043,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -1085,6 +1126,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install Kani
         run: |
           cargo install kani-verifier --locked
@@ -1111,6 +1154,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: false
           shared-key: workspace-test
       - name: Check
         run: cargo check --all
@@ -1228,6 +1272,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'
@@ -1324,6 +1370,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'
@@ -1581,6 +1629,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Benchmark example
         timeout-minutes: 45
         run: cargo run --example benchmark --release
@@ -1641,6 +1691,8 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install cross-compilation toolchain
         if: matrix.gcc
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }}
@@ -1682,6 +1734,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -1743,6 +1797,8 @@ jobs:
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack

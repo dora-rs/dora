@@ -43,6 +43,14 @@
 # cache steps gated the same way, and do NOT enable the sccache backend
 # in any workflow (it writes one cache entry per object and floods the
 # same 10 GB budget — see pip-release.yml).
+#
+# Cache-key stability: rust-cache folds *every* installed rustup
+# toolchain into its cache key. The GitHub runner image ships a default
+# stable toolchain (e.g. 1.97.0) alongside our pinned RUST_VERSION, so
+# when GitHub bumps the image's Rust the key silently changes and every
+# cache misses at once. Each cached job therefore runs a "Pin toolchain
+# set" step that uninstalls all but RUST_VERSION before rust-cache, so
+# the key only moves when we intentionally bump RUST_VERSION.
 name: CI
 
 on:
@@ -87,6 +95,12 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           # Only `main` refreshes the shared cache. PRs restore it but
@@ -111,6 +125,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-check
@@ -139,6 +159,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
@@ -263,6 +289,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
@@ -354,6 +386,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: workspace-test
@@ -420,6 +458,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
@@ -524,6 +568,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
           # Save only on `main`; PRs restore-only (see clippy job note).
