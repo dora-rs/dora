@@ -159,7 +159,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build (excluding Python packages)
@@ -291,7 +296,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build CLI
@@ -390,7 +400,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - uses: actions/setup-python@v6
@@ -453,7 +468,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
 
