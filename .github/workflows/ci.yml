@@ -32,17 +32,24 @@
 #
 # Repo-wide workflows: all upstream workflows present plus guide.yml.
 #
-# Caching: every `Swatinem/rust-cache` step below sets
-# `save-if: github.ref == 'refs/heads/main'`. GitHub's Actions cache is
-# capped at 10 GB per repo and LRU-evicts once full. Without the gate,
-# each PR run *saved* a fresh ~800 MB workspace cache scoped to its own
-# ref (unusable by other PRs) and pushed the shared `main` caches out of
-# the budget — so `check`/`clippy`/`test` kept starting cold and
-# recompiling the whole dependency graph. With the gate, only `main`
-# refreshes the shared caches and every PR restores from them. Keep new
-# cache steps gated the same way, and do NOT enable the sccache backend
-# in any workflow (it writes one cache entry per object and floods the
-# same 10 GB budget — see pip-release.yml).
+# Caching: rust-cache saves are gated to `main` (PRs restore-only) so a
+# PR run can't churn the 10 GB per-repo Actions cache and evict the
+# shared caches other PRs restore from. GitHub LRU-evicts once the repo
+# hits 10 GB, so keeping the write set small matters.
+#
+# The dev-profile jobs — clippy, check, test, contract-tests — all
+# compile the same dependency graph on Linux, so they share ONE
+# `shared-key: workspace` cache. Only `test` writes it (`save-if: main`);
+# the others are `save-if: false`. `test` runs the full `cargo
+# build`/`test`, so its cache holds dependency codegen (.rlib) that a
+# `cargo check` cache would omit — and since GitHub caches are immutable
+# per key (first-writer-wins), letting only `test` save stops the faster
+# check/clippy jobs from racing in a .rmeta-only subset. e2e (release
+# profile) and bench (bench feature) build different artifacts, so they
+# keep their own keys, each `save-if: main`.
+#
+# Do NOT enable the sccache backend in any workflow (it writes one cache
+# entry per object and floods the same 10 GB budget — see pip-release.yml).
 #
 # Cache-key stability: rust-cache folds *every* installed rustup
 # toolchain into its cache key. The GitHub runner image ships a default
@@ -103,10 +110,11 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          # Only `main` refreshes the shared cache. PRs restore it but
-          # never save, so per-PR runs don't churn the 10 GB repo budget
-          # and evict each other's caches (see header note on caching).
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Shared dev-profile cache, written only by `test` (the fullest
+          # builder). clippy/check/contract-tests restore it but never
+          # save, so the race can't cache a check-only (.rmeta) subset.
+          shared-key: workspace
+          save-if: false
       - run: >
           cargo clippy --all
           --exclude dora-node-api-python
@@ -133,9 +141,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-check
-          # Save only on `main`; PRs restore-only (see clippy job note).
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Restore the shared dev-profile cache; only `test` writes it.
+          shared-key: workspace
+          save-if: false
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -167,8 +175,10 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-test
-          # Save only on `main`; PRs restore-only (see clippy job note).
+          # `test` is the SOLE writer of the shared dev-profile cache: it
+          # runs the full `cargo build`/`test`, so its cache captures the
+          # dependency codegen (.rlib) that a check/clippy cache omits.
+          shared-key: workspace
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Free disk space
         shell: bash
@@ -394,9 +404,9 @@ jobs:
           for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-test
-          # Save only on `main`; PRs restore-only (see clippy job note).
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Restore the shared dev-profile cache; only `test` writes it.
+          shared-key: workspace
+          save-if: false
       # Runs in parallel with `test` (#2524), so it can't rely on `test`
       # having freed disk. It builds the dora-examples test binary and
       # compiles the PyO3 node extension via `uv pip install -e` below —
