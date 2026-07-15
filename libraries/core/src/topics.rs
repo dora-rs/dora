@@ -369,6 +369,80 @@ pub fn zenoh_daemon_control_topic(
     format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
+/// Hex-encode a `DataId` so it occupies exactly one zenoh key chunk.
+///
+/// A `DataId` may legally contain `/` (unlike a `NodeId`), so embedding one
+/// verbatim as a key segment would spill into extra chunks and let a producer's
+/// wildcard readiness subscription collide across outputs whose names nest —
+/// e.g. output `cmd` would over-count tokens belonging to output `cmd/vel`,
+/// which in the startup barrier could switch `cmd` to the direct path before all
+/// of *its* subscribers are wired and drop messages. Hex is unambiguous
+/// (`[0-9a-f]`, never `/`), collision-free, and computed identically by the
+/// subscriber (declaring the token) and the producer (matching it).
+#[cfg(feature = "zenoh")]
+fn hex_key_segment(id: &dora_message::id::DataId) -> String {
+    use std::fmt::Write;
+    let s: &str = id.as_ref();
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Zenoh **liveliness** key a subscriber declares once it has wired up its
+/// data-plane subscriber for `source_node`'s `source_output`.
+///
+/// The data plane is direct node-to-node zenoh pub/sub, so a producer that
+/// starts publishing before a consumer's subscription has propagated would drop
+/// those early samples (zenoh does not buffer for not-yet-declared subscribers).
+/// Each subscriber therefore declares a liveliness token here right after
+/// declaring its data subscriber; the producer counts these tokens (via
+/// [`zenoh_output_ready_liveliness_prefix`]) and keeps delivering over the
+/// reliable daemon path until every expected subscriber is present, only then
+/// switching to the fast zenoh path. This gives startup a lossless barrier that
+/// the daemon control-plane "all nodes ready" gate cannot (it does not observe
+/// the zenoh data plane). The `<subscriber_node>/<subscriber_input>` suffix makes
+/// each link's token unique so producers can count distinct subscribers.
+///
+/// `source_output` is [hex-encoded](hex_key_segment) into a single chunk so it
+/// cannot collide with a differently-named output whose key would nest under the
+/// producer's wildcard subscription.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_input_ready_liveliness_topic(
+    dataflow_id: uuid::Uuid,
+    source_node: &dora_message::id::NodeId,
+    source_output: &dora_message::id::DataId,
+    subscriber_node: &dora_message::id::NodeId,
+    subscriber_input: &dora_message::id::DataId,
+) -> String {
+    let network_id = "default";
+    let output = hex_key_segment(source_output);
+    let input = hex_key_segment(subscriber_input);
+    format!(
+        "dora/{network_id}/{dataflow_id}/ready/{source_node}/{output}/{subscriber_node}/{input}"
+    )
+}
+
+/// Wildcard liveliness key matching every subscriber-ready token for
+/// `source_node`'s `source_output` (see [`zenoh_input_ready_liveliness_topic`]).
+/// The producer subscribes to / queries this to count how many subscribers have
+/// wired up their data-plane subscription.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_output_ready_liveliness_prefix(
+    dataflow_id: uuid::Uuid,
+    source_node: &dora_message::id::NodeId,
+    source_output: &dora_message::id::DataId,
+) -> String {
+    let network_id = "default";
+    let output = hex_key_segment(source_output);
+    // `source_output` is hex-encoded to a single chunk (see
+    // `zenoh_input_ready_liveliness_topic`), so `**` matches exactly the
+    // `<subscriber_node>/<subscriber_input>` suffix of tokens for *this* output
+    // and nothing from a nested-named output.
+    format!("dora/{network_id}/{dataflow_id}/ready/{source_node}/{output}/**")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +488,49 @@ mod tests {
         assert_ne!(
             output_topic, control_topic,
             "node output and daemon control must not share a Zenoh key (dora #1992/#2008)"
+        );
+    }
+
+    // The readiness barrier counts a producer's subscriber tokens via a wildcard
+    // key. Because a `DataId` may contain `/`, a naive `.../{output}/**` prefix
+    // would also match tokens of a nested-named output (`cmd` matching
+    // `cmd/vel`), over-counting and letting the producer switch `cmd` to the
+    // direct path before all of *its* subscribers are wired — dropping startup
+    // messages. Hex-encoding the output segment must prevent that collision while
+    // still matching the output's own tokens (incl. slash-containing inputs).
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn ready_prefix_isolates_nested_output_names() {
+        use dora_message::id::{DataId, NodeId};
+        use zenoh::key_expr::KeyExpr;
+
+        let df = uuid::Uuid::nil();
+        let source = NodeId::from("source".to_string());
+        let sub_node = NodeId::from("sink".to_string());
+        let cmd = DataId::from("cmd".to_string());
+        let cmd_vel = DataId::from("cmd/vel".to_string());
+        // A namespaced runtime-node input (`operator/input`) exercises a
+        // slash-containing subscriber input on the token side.
+        let sub_input = DataId::from("op/in".to_string());
+
+        let cmd_prefix =
+            KeyExpr::new(zenoh_output_ready_liveliness_prefix(df, &source, &cmd)).unwrap();
+        let cmd_token = KeyExpr::new(zenoh_input_ready_liveliness_topic(
+            df, &source, &cmd, &sub_node, &sub_input,
+        ))
+        .unwrap();
+        let cmd_vel_token = KeyExpr::new(zenoh_input_ready_liveliness_topic(
+            df, &source, &cmd_vel, &sub_node, &sub_input,
+        ))
+        .unwrap();
+
+        assert!(
+            cmd_prefix.intersects(&cmd_token),
+            "producer of `cmd` must count its own subscriber's token (even with a `/`-containing input)"
+        );
+        assert!(
+            !cmd_prefix.intersects(&cmd_vel_token),
+            "producer of `cmd` must NOT count a token of the nested output `cmd/vel`"
         );
     }
 }
