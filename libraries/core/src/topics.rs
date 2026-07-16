@@ -7,8 +7,13 @@ pub const DORA_DAEMON_LOCAL_LISTEN_PORT_ENV: &str = "DORA_DAEMON_LOCAL_LISTEN_PO
 pub const DORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 
 /// Comma-separated zenoh endpoints a spawned node should connect to, injected by
-/// the daemon: the daemon's own loopback listener plus the listeners of the nodes
-/// this one consumes from (see [`DORA_ZENOH_LISTEN_ENV`]).
+/// the daemon: the daemon's own listener plus the listeners of the nodes this one
+/// consumes from (see [`DORA_ZENOH_LISTEN_ENV`]).
+///
+/// The daemon's listener is loopback for a single-machine deployment, but may be
+/// a routable address when the daemon is part of a cluster (see
+/// [`zenoh_bind_address_for`]). Either way it is on this node's own host, so the
+/// node can always reach it.
 ///
 /// Lets nodes bootstrap zenoh peer discovery without multicast (dev containers,
 /// locked-down hosts, many CI runners), and — since zenoh 1.9 removed peer
@@ -43,9 +48,10 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 }
 
 /// Like [`open_zenoh_session`], but also configures the session to listen on
-/// the given loopback endpoint (e.g. `tcp/127.0.0.1:43217`). The daemon uses
-/// this so spawned nodes can connect via `DORA_ZENOH_CONNECT` without
-/// multicast scouting.
+/// the given endpoint (e.g. `tcp/127.0.0.1:43217`, or a routable address such as
+/// `tcp/10.0.2.100:43217` for a daemon in a cluster). The daemon uses this so
+/// spawned nodes can connect via `DORA_ZENOH_CONNECT` without multicast
+/// scouting, and so that other daemons can dial it.
 ///
 /// `inter_daemon_peer` is an optional shared endpoint used as the
 /// rendezvous for daemon-to-daemon discovery when multicast isn't
@@ -199,7 +205,7 @@ pub async fn open_zenoh_session_with_listen(
             // We don't promote it to `effective_listen_endpoint` until the
             // configured open succeeds — the fallback default-config path
             // below has no listener and must not advertise one (#1856).
-            // We only track `listen_endpoint` (the per-daemon loopback that
+            // We only track `listen_endpoint` (the per-daemon listener that
             // gets advertised to spawned nodes), NOT `inter_daemon_peer`
             // which is cluster-wide config — daemons that bind it act as
             // the rendezvous, but advertising it back to nodes would be
@@ -436,6 +442,43 @@ pub fn zenoh_bind_address_for(coordinator_addr: SocketAddr) -> IpAddr {
     local_address_toward(coordinator_addr).unwrap_or(LOCALHOST)
 }
 
+/// Reject a zenoh listen address that cannot be advertised to peers.
+///
+/// Only the wildcard is rejected here, and only because it is *structurally*
+/// unadvertisable: zenoh would bind every interface but report a concrete
+/// locator, so the listener verification in [`open_zenoh_session_with_listen`]
+/// could never match it, and the daemon would silently stop advertising an
+/// endpoint to its nodes. Whether a concrete address actually exists on this
+/// host is not knowable here — that surfaces as a bind error from
+/// [`reserve_zenoh_endpoint`], which callers must treat as fatal when the
+/// operator named the address explicitly.
+pub fn validate_zenoh_listen(bind: IpAddr) -> eyre::Result<()> {
+    if bind.is_unspecified() {
+        eyre::bail!(
+            "zenoh listen address must be concrete, not the wildcard `{bind}`. \
+             Zenoh advertises the address it binds and remote daemons dial exactly \
+             that, so a wildcard has nothing to advertise. Pass the address other \
+             daemons should use to reach this host (e.g. its LAN or VPN address)."
+        );
+    }
+    Ok(())
+}
+
+/// Whether a source address the routing table handed back can be advertised to
+/// peers as a locator.
+///
+/// The unspecified address is not a real source, and a loopback source for a
+/// *remote* target means the routing table told us nothing usable (there is no
+/// route, or the target resolved back to this host). Advertising either would
+/// point peers at nothing, so both mean "we learned nothing" and the caller
+/// should fall back rather than guess.
+fn usable_source(local: IpAddr) -> Option<IpAddr> {
+    if local.is_unspecified() || local.is_loopback() {
+        return None;
+    }
+    Some(local)
+}
+
 fn local_address_toward(target: SocketAddr) -> Option<IpAddr> {
     // Bind the wildcard of the same family as the target, then `connect` to
     // consult the routing table. UDP `connect` is local-only: no traffic.
@@ -446,13 +489,7 @@ fn local_address_toward(target: SocketAddr) -> Option<IpAddr> {
     };
     let socket = std::net::UdpSocket::bind(bind).ok()?;
     socket.connect(target).ok()?;
-    let local = socket.local_addr().ok()?.ip();
-    // A routing table that hands back an unspecified or loopback source for a
-    // remote target tells us nothing usable; treat it as "no route".
-    if local.is_unspecified() || local.is_loopback() {
-        return None;
-    }
-    Some(local)
+    usable_source(socket.local_addr().ok()?.ip())
 }
 
 /// Zenoh key for node output data.
@@ -600,18 +637,6 @@ mod tests {
         assert!(port > 0, "kernel must hand out a non-zero ephemeral port");
     }
 
-    // `reserve_loopback_zenoh_endpoint` must stay exactly the loopback case of
-    // the generalized helper: single-machine deployments keep binding loopback
-    // only, so this change adds no network exposure for them.
-    #[test]
-    fn reserve_loopback_is_the_loopback_case_of_reserve() {
-        let endpoint = reserve_zenoh_endpoint(LOCALHOST).expect("reservation succeeds");
-        assert!(
-            endpoint.starts_with("tcp/127.0.0.1:"),
-            "expected loopback tcp endpoint, got {endpoint}"
-        );
-    }
-
     // A local coordinator means every zenoh peer is on this host, so we must
     // keep binding loopback — a single-machine daemon should not start
     // listening on the network just because this code path exists.
@@ -639,20 +664,61 @@ mod tests {
         );
     }
 
-    // The routing lookup is best-effort: it must never panic, and must never
-    // hand back an address that cannot be advertised (unspecified/loopback for
-    // a remote target both mean "we learned nothing").
+    // The filter behind the routing lookup, tested directly rather than through
+    // the runner's routing table (which would make the assertion depend on the
+    // machine and, for a remote target, be satisfiable by either branch).
     #[test]
-    fn bind_address_for_remote_coordinator_is_advertisable_or_loopback() {
-        let addr: SocketAddr = "203.0.113.1:6013".parse().unwrap();
-        let picked = zenoh_bind_address_for(addr);
-        assert!(
-            !picked.is_unspecified(),
-            "never advertise a wildcard as a locator, got {picked}"
-        );
-        // Either the host has a route to the outside (any concrete address), or
-        // it does not and we fall back to loopback. Both are acceptable; a
-        // wildcard or a panic are not.
+    fn only_concrete_routable_sources_are_advertisable() {
+        // Real interface addresses are what we want to advertise.
+        for ok in ["10.0.2.100", "192.168.1.7", "100.64.0.3"] {
+            let addr: IpAddr = ok.parse().unwrap();
+            assert_eq!(
+                usable_source(addr),
+                Some(addr),
+                "{ok} is a concrete routable address and must be advertisable"
+            );
+        }
+        // A wildcard is not a source at all, and a loopback source for a remote
+        // target means the routing table told us nothing — advertising either
+        // points peers at nothing.
+        for rejected in ["0.0.0.0", "127.0.0.1", "::", "::1"] {
+            let addr: IpAddr = rejected.parse().unwrap();
+            assert_eq!(
+                usable_source(addr),
+                None,
+                "{rejected} must never be advertised to peers as a locator"
+            );
+        }
+    }
+
+    // The wildcard cannot be advertised: zenoh binds every interface but reports
+    // a concrete locator, so the listener check can never match it and the
+    // daemon would silently stop advertising an endpoint to its nodes —
+    // reintroducing the gossip race #2716 removed. Reject it up front instead.
+    #[test]
+    fn wildcard_zenoh_listen_is_rejected() {
+        for wildcard in ["0.0.0.0", "::"] {
+            let addr: IpAddr = wildcard.parse().unwrap();
+            let err = validate_zenoh_listen(addr)
+                .expect_err("wildcard listen address must be rejected, not accepted");
+            assert!(
+                err.to_string().contains("concrete"),
+                "error should tell the operator to pass a concrete address, got: {err}"
+            );
+        }
+    }
+
+    // Concrete addresses pass validation whether or not they exist on this host:
+    // existence is not knowable here and surfaces as a bind error instead.
+    #[test]
+    fn concrete_zenoh_listen_addresses_are_accepted() {
+        for ok in ["127.0.0.1", "10.0.2.100", "::1"] {
+            let addr: IpAddr = ok.parse().unwrap();
+            assert!(
+                validate_zenoh_listen(addr).is_ok(),
+                "{ok} is concrete and must pass validation"
+            );
+        }
     }
 
     // Node raw output and daemon control frames MUST live on distinct Zenoh

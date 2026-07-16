@@ -252,7 +252,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen).await
+                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen).await
                     }
                 }
             })
