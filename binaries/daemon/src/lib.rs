@@ -10,7 +10,8 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
-        reserve_loopback_zenoh_endpoint, zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        reserve_zenoh_endpoint, zenoh_bind_address_for, zenoh_daemon_control_topic,
+        zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -44,7 +45,7 @@ use std::{
     env::current_dir,
     future::Future,
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::pin,
     sync::{
@@ -591,6 +592,7 @@ impl Daemon {
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
+        zenoh_listen_addr: Option<IpAddr>,
     ) -> eyre::Result<()> {
         Self::run_with_builds(
             coordinator_ws_addr,
@@ -598,19 +600,64 @@ impl Daemon {
             labels,
             local_listen_port,
             inter_daemon_peer,
+            zenoh_listen_addr,
             Default::default(),
         )
         .await
     }
 
+    /// `zenoh_listen_addr` overrides the address this daemon's zenoh listener
+    /// binds, and therefore the locator its peers are told to dial. Leave it
+    /// `None` to derive it from `coordinator_ws_addr`, which is correct
+    /// whenever the daemons reach each other over the same network they reach
+    /// the coordinator over — a LAN, or a mesh VPN. Set it explicitly on a
+    /// multi-homed host that would otherwise advertise the wrong interface.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_with_builds(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
+        zenoh_listen_addr: Option<IpAddr>,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
+        // A wildcard cannot be advertised: zenoh would bind every interface but
+        // report a concrete address, which then fails the listener verification
+        // in `open_zenoh_session_with_listen` and silently drops the
+        // `DORA_ZENOH_CONNECT` injection that local nodes rely on. Reject it
+        // loudly instead of degrading quietly.
+        if let Some(addr) = zenoh_listen_addr
+            && addr.is_unspecified()
+        {
+            eyre::bail!(
+                "--zenoh-listen must be a concrete address, not the wildcard `{addr}`. \
+                 Zenoh advertises the address it binds and remote daemons dial exactly \
+                 that, so a wildcard has nothing to advertise. Pass the address other \
+                 daemons should use to reach this host (e.g. its LAN or VPN address), \
+                 or omit the flag to derive it from --coordinator-addr."
+            );
+        }
+        let zenoh_bind =
+            zenoh_listen_addr.unwrap_or_else(|| zenoh_bind_address_for(coordinator_ws_addr));
+        if zenoh_bind.is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
+            // The coordinator is remote, so other daemons are expected, but we
+            // have no address to offer them. Binding loopback anyway means
+            // advertising `127.0.0.1` to peers, who dial their own loopback and
+            // reach nothing — and since zenoh 1.9 peers do not relay, that pair
+            // is dead with no fallback. Say so: this is the silent failure the
+            // routable bind exists to prevent.
+            tracing::warn!(
+                "coordinator at {coordinator_ws_addr} is remote, but no routable local \
+                 address toward it was found; zenoh will bind loopback and other daemons \
+                 will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
+            );
+        } else if !zenoh_bind.is_loopback() {
+            tracing::info!(
+                "zenoh listener binding {zenoh_bind} (derived from coordinator address \
+                 {coordinator_ws_addr}); this port accepts connections from other hosts"
+            );
+        }
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -722,6 +769,7 @@ impl Daemon {
                                 initial_builds.clone(),
                                 log_destination,
                                 inter_daemon_peer.clone(),
+                                zenoh_bind,
                             )
                             .await?;
                             daemon = Some(built);
@@ -1020,6 +1068,9 @@ impl Daemon {
         // loop. The reconnecting daemon binary instead builds the daemon once
         // and reuses it across reconnects (see `run_with_builds`), so that node
         // processes are not killed when the coordinator connection drops.
+        // `dora run` is single-machine by construction: the daemon, its nodes
+        // and the in-process coordinator all live on this host, so loopback is
+        // both sufficient and the least exposed choice.
         let (mut daemon, mut dora_events_rx) = Self::build_daemon(
             coordinator_sender,
             daemon_id,
@@ -1029,6 +1080,7 @@ impl Daemon {
             builds,
             log_destination,
             inter_daemon_peer,
+            LOCALHOST,
         )
         .await?;
         daemon
@@ -1059,15 +1111,25 @@ impl Daemon {
         builds: BTreeMap<BuildId, BuildInfo>,
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
+        zenoh_bind: IpAddr,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
-        // Reserve a loopback port and have zenoh listen on it. The endpoint is
-        // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
-        // discovery works without multicast (#1778).
-        let requested_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
+        // Reserve a port and have zenoh listen on it. The endpoint is injected
+        // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
+        // without multicast (#1778).
+        //
+        // `zenoh_bind` is loopback for single-machine deployments and an
+        // address on the coordinator's network otherwise. It is not merely a
+        // question of which interface accepts connections: zenoh advertises the
+        // address it bound as its locator, and remote daemons dial exactly
+        // that. A daemon bound to loopback therefore tells its peers to dial
+        // `127.0.0.1` — their own loopback — where they reach nothing. Since
+        // zenoh 1.9 peers do not relay for each other, such a pair has no
+        // fallback path and simply never exchanges data.
+        let requested_listen_endpoint = match reserve_zenoh_endpoint(zenoh_bind) {
             Ok(ep) => Some(ep),
             Err(err) => {
                 tracing::warn!(
-                    "failed to reserve loopback zenoh listen endpoint: {err}; \
+                    "failed to reserve zenoh listen endpoint on {zenoh_bind}: {err}; \
                      falling back to multicast scouting only"
                 );
                 None

@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 pub const LOCALHOST: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 pub const DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
@@ -307,12 +307,18 @@ pub async fn open_zenoh_session_with_listen(
                         // false-positive on port-prefix collisions (e.g.
                         // requested `:5000` matching bound `:50000`), which
                         // is exactly the mismatch this check exists to
-                        // catch. NOTE: the comparison is by canonical
-                        // `tcp/127.0.0.1:<port>` form; callers passing
-                        // non-canonical loopback forms (`localhost`, IPv6
-                        // mapped) won't match — `reserve_loopback_zenoh_
-                        // endpoint` only emits the canonical form, so this
-                        // is fine for the daemon's only call site.
+                        // catch. NOTE: the comparison is against the
+                        // requested string verbatim, so a caller must request
+                        // the same canonical `tcp/<addr>:<port>` form that
+                        // zenoh reports back. `reserve_zenoh_endpoint` emits
+                        // that form, but only for a *concrete* address: a
+                        // wildcard request (`tcp/0.0.0.0:<port>`) can never
+                        // match, because zenoh binds every interface and
+                        // reports the concrete one. Callers must therefore
+                        // reject wildcards up front (the daemon does) rather
+                        // than reach this check, which would read the mismatch
+                        // as "the listener did not bind" and silently fall back
+                        // to multicast scouting.
                         let bound = bound_locators
                             .iter()
                             .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
@@ -351,9 +357,20 @@ pub async fn open_zenoh_session_with_listen(
     Ok((zenoh_session, effective_listen_endpoint))
 }
 
-/// Reserve an unused TCP port on `127.0.0.1` for use as a zenoh listen
-/// endpoint. Returns a string suitable for the zenoh `listen/endpoints`
-/// config (e.g. `tcp/127.0.0.1:43217`).
+/// Reserve an unused TCP port on `bind` for use as a zenoh listen endpoint.
+/// Returns a string suitable for the zenoh `listen/endpoints` config
+/// (e.g. `tcp/127.0.0.1:43217`, or `tcp/[::1]:43217` for IPv6).
+///
+/// The bind address matters beyond which interface accepts connections:
+/// zenoh advertises the address it bound as its locator, and remote peers
+/// dial exactly that. A daemon that binds loopback is therefore not merely
+/// unreachable from another machine — it actively tells remote daemons to
+/// dial `127.0.0.1`, i.e. their own loopback, where they find nothing (or an
+/// unrelated local process). Since zenoh 1.9 peers do not relay for each
+/// other, such a pair has no fallback path and is silently dead. Multi-machine
+/// deployments must therefore reserve on an address the other machines can
+/// actually reach; see [`reserve_loopback_zenoh_endpoint`] for the
+/// single-machine case.
 ///
 /// There is a small race window between dropping the reservation socket
 /// and zenoh's own bind. `open_zenoh_session_with_listen` defends against
@@ -370,11 +387,72 @@ pub async fn open_zenoh_session_with_listen(
 ///
 /// In practice the OS keeps allocating fresh ephemeral ports each call,
 /// so collisions remain vanishingly rare.
-pub fn reserve_loopback_zenoh_endpoint() -> std::io::Result<String> {
-    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+///
+/// Note that the locator check in (2) compares the requested `addr:port`
+/// literally, so reserving on the unspecified address (`0.0.0.0`) will not
+/// match the concrete interface address zenoh reports back. Pass the address
+/// you want advertised, not a wildcard.
+pub fn reserve_zenoh_endpoint(bind: IpAddr) -> std::io::Result<String> {
+    let listener = std::net::TcpListener::bind((bind, 0))?;
     let port = listener.local_addr()?.port();
     drop(listener);
-    Ok(format!("tcp/127.0.0.1:{port}"))
+    // `SocketAddr`'s Display brackets IPv6 for us, which is also zenoh's
+    // endpoint syntax (`tcp/[::1]:7447`).
+    Ok(format!("tcp/{}", SocketAddr::new(bind, port)))
+}
+
+/// Loopback case of [`reserve_zenoh_endpoint`] — the right choice when every
+/// zenoh peer that needs this listener is on the same host, which is what a
+/// single-machine deployment looks like.
+pub fn reserve_loopback_zenoh_endpoint() -> std::io::Result<String> {
+    reserve_zenoh_endpoint(LOCALHOST)
+}
+
+/// Pick the address a daemon's zenoh listener should bind so that the other
+/// daemons in the deployment can dial it.
+///
+/// Returns [`LOCALHOST`] when the coordinator is itself local: everything that
+/// needs this listener is then on this host, and binding loopback keeps the
+/// daemon's zenoh unreachable from the network — which is the status quo for
+/// single-machine users, and worth preserving.
+///
+/// Otherwise the daemon is part of a multi-machine deployment, and we return
+/// the local address the kernel would use to reach `coordinator_addr`. That is
+/// the correct choice without anyone configuring anything: on a LAN it is the
+/// LAN address, and on a mesh VPN (Tailscale/WireGuard) — where the
+/// coordinator is reached over the tunnel — it is the tunnel address, which is
+/// exactly the one remote daemons can dial. A multi-homed host that picks the
+/// wrong interface can be overridden explicitly by the caller.
+///
+/// The lookup `connect()`s a UDP socket, which sends no packets: it only asks
+/// the routing table which source address applies. If there is no route (or
+/// the lookup otherwise fails) we fall back to [`LOCALHOST`] rather than
+/// guessing, since a wrong address is advertised to peers and fails silently,
+/// whereas loopback at least keeps same-host behavior working.
+pub fn zenoh_bind_address_for(coordinator_addr: SocketAddr) -> IpAddr {
+    if coordinator_addr.ip().is_loopback() {
+        return LOCALHOST;
+    }
+    local_address_toward(coordinator_addr).unwrap_or(LOCALHOST)
+}
+
+fn local_address_toward(target: SocketAddr) -> Option<IpAddr> {
+    // Bind the wildcard of the same family as the target, then `connect` to
+    // consult the routing table. UDP `connect` is local-only: no traffic.
+    let bind: SocketAddr = if target.is_ipv4() {
+        (Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let socket = std::net::UdpSocket::bind(bind).ok()?;
+    socket.connect(target).ok()?;
+    let local = socket.local_addr().ok()?.ip();
+    // A routing table that hands back an unspecified or loopback source for a
+    // remote target tells us nothing usable; treat it as "no route".
+    if local.is_unspecified() || local.is_loopback() {
+        return None;
+    }
+    Some(local)
 }
 
 /// Zenoh key for node output data.
@@ -520,6 +598,61 @@ mod tests {
             .and_then(|p| p.parse().ok())
             .expect("endpoint has a numeric port");
         assert!(port > 0, "kernel must hand out a non-zero ephemeral port");
+    }
+
+    // `reserve_loopback_zenoh_endpoint` must stay exactly the loopback case of
+    // the generalized helper: single-machine deployments keep binding loopback
+    // only, so this change adds no network exposure for them.
+    #[test]
+    fn reserve_loopback_is_the_loopback_case_of_reserve() {
+        let endpoint = reserve_zenoh_endpoint(LOCALHOST).expect("reservation succeeds");
+        assert!(
+            endpoint.starts_with("tcp/127.0.0.1:"),
+            "expected loopback tcp endpoint, got {endpoint}"
+        );
+    }
+
+    // A local coordinator means every zenoh peer is on this host, so we must
+    // keep binding loopback — a single-machine daemon should not start
+    // listening on the network just because this code path exists.
+    #[test]
+    fn local_coordinator_keeps_the_listener_on_loopback() {
+        for addr in ["127.0.0.1:6013", "[::1]:6013"] {
+            let addr: SocketAddr = addr.parse().unwrap();
+            assert_eq!(
+                zenoh_bind_address_for(addr),
+                LOCALHOST,
+                "a loopback coordinator at {addr} must not move the listener off loopback"
+            );
+        }
+    }
+
+    // IPv6 endpoints must be bracketed or zenoh cannot parse the port back off
+    // (`tcp/::1:7447` is ambiguous).
+    #[test]
+    fn ipv6_endpoints_are_bracketed() {
+        let endpoint = reserve_zenoh_endpoint(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
+            .expect("reservation on ::1 succeeds");
+        assert!(
+            endpoint.starts_with("tcp/[::1]:"),
+            "expected a bracketed IPv6 endpoint, got {endpoint}"
+        );
+    }
+
+    // The routing lookup is best-effort: it must never panic, and must never
+    // hand back an address that cannot be advertised (unspecified/loopback for
+    // a remote target both mean "we learned nothing").
+    #[test]
+    fn bind_address_for_remote_coordinator_is_advertisable_or_loopback() {
+        let addr: SocketAddr = "203.0.113.1:6013".parse().unwrap();
+        let picked = zenoh_bind_address_for(addr);
+        assert!(
+            !picked.is_unspecified(),
+            "never advertise a wildcard as a locator, got {picked}"
+        );
+        // Either the host has a route to the outside (any concrete address), or
+        // it does not and we fall back to loopback. Both are acceptable; a
+        // wildcard or a panic are not.
     }
 
     // Node raw output and daemon control frames MUST live on distinct Zenoh
