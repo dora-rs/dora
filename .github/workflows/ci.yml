@@ -426,6 +426,18 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     timeout-minutes: 30
+    env:
+      # maturin's PEP 517 backend forces `--profile release` unless told
+      # otherwise (`ensure_release_profile` in maturin's commands/pep517.rs),
+      # so the `uv pip install -e apis/python/node` step below release-built
+      # dora-node-api-python's whole dep closure — arrow, tokio, zenoh,
+      # dora-cli — with thin LTO: 15m21s, sharing nothing with the
+      # dev-profile `shared-key: workspace` cache this job restores. Dev
+      # profile reuses that cache, and inherits the workflow-level
+      # CARGO_PROFILE_DEV_DEBUG so the fingerprints match (#2710).
+      # Caching target/release instead would cost ~1 GB against the 10 GB
+      # per-repo Actions cache cap (see the caching note in the header).
+      MATURIN_PEP517_ARGS: "--profile dev"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
