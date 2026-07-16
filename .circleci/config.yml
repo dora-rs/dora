@@ -24,7 +24,7 @@ commands:
     parameters:
       version:
         type: string
-        default: "1.92.0"
+        default: "1.97.1"
       components:
         type: string
         default: ""
@@ -55,7 +55,7 @@ commands:
     parameters:
       version:
         type: string
-        default: "1.92.0"
+        default: "1.97.1"
     steps:
       - run:
           name: Install Rust << parameters.version >>
@@ -130,7 +130,7 @@ executors:
   # Note: upgrade to xlarge if your plan supports it for faster builds.
   linux:
     docker:
-      - image: cimg/rust:1.92.0
+      - image: cimg/rust:1.97.1
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
@@ -138,7 +138,7 @@ executors:
   # Moderate compilation (clippy, bench, cross-check)
   linux-large:
     docker:
-      - image: cimg/rust:1.92.0
+      - image: cimg/rust:1.97.1
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
@@ -146,7 +146,7 @@ executors:
   # Light compilation or tool-only jobs
   linux-medium:
     docker:
-      - image: cimg/rust:1.92.0
+      - image: cimg/rust:1.97.1
     resource_class: medium
     environment:
       CARGO_TERM_COLOR: always
@@ -166,7 +166,7 @@ executors:
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
-      RUST_VERSION: "1.92.0"
+      RUST_VERSION: "1.97.1"
 
 # ────────────────────────────────────────────────────────────────────
 # Jobs
@@ -378,7 +378,7 @@ jobs:
     steps:
       - checkout
       - install-rust:
-          version: "1.92.0"
+          version: "1.97.1"
       - cargo-cache-restore:
           prefix: cargo-macos
       - run:
@@ -471,7 +471,7 @@ jobs:
     steps:
       - checkout
       - install-rust:
-          version: "1.92.0"
+          version: "1.97.1"
       - cargo-cache-restore:
           prefix: cargo-macos-examples
       - run:
@@ -519,7 +519,7 @@ jobs:
     steps:
       - checkout
       - install-rust-windows:
-          version: "1.92.0"
+          version: "1.97.1"
       - cargo-cache-restore:
           prefix: cargo-win-examples-heavy
       - run:
@@ -737,7 +737,7 @@ jobs:
     steps:
       - checkout
       - install-rust:
-          version: "1.92.0"
+          version: "1.97.1"
       - cargo-cache-restore:
           prefix: cargo-macos-cli
       - run:
@@ -952,11 +952,11 @@ jobs:
         type: string
         default: ""
     docker:
-      - image: cimg/rust:1.92.0
+      - image: cimg/rust:1.97.1
     resource_class: << parameters.resource >>
     environment:
       CARGO_TERM_COLOR: always
-      # Mirror the GHA nightly env at nightly.yml:1335. cimg/rust:1.92.0
+      # Mirror the GHA nightly env at nightly.yml:1335. cimg/rust:1.97.1
       # ships Python < 3.11, which fails pyo3-build-config 0.28+'s
       # interpreter-vs-abi3-minimum check. abi3 metadata is already
       # baked in via the workspace `abi3-py311` feature.
@@ -1000,7 +1000,7 @@ jobs:
     steps:
       - checkout
       - install-rust:
-          version: "1.92.0"
+          version: "1.97.1"
           targets: << parameters.target >>
       - cargo-cache-restore:
           prefix: cross-macos-<< parameters.target >>
@@ -1024,7 +1024,7 @@ jobs:
     resource_class: large
     environment:
       CARGO_TERM_COLOR: always
-      RUST_VERSION: "1.92.0"
+      RUST_VERSION: "1.97.1"
       # cross-rs Docker images ship Python 3.10, below our abi3-py311
       # minimum. Disable the interpreter probe (same as the GHA nightly
       # at nightly.yml:1335) AND pass the env through to the container
@@ -1035,7 +1035,7 @@ jobs:
     steps:
       - checkout
       - install-rust:
-          version: "1.92.0"
+          version: "1.97.1"
       - cargo-cache-restore:
           prefix: cross-<< parameters.target >>
       - run:

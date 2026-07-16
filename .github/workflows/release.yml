@@ -14,8 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
-  RUST_VERSION: "1.92.0"
+  RUST_VERSION: "1.97.1"
 
 jobs:
   # ── 1. Publish Rust crates to crates.io ──────────────────────────────────
