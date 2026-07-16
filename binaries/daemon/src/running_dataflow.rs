@@ -183,6 +183,10 @@ pub struct LogSubscriber {
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
+    /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
+    /// needs are established deterministically rather than left to gossip.
+    /// Populated when the dataflow is spawned; see `plan_zenoh_peering`.
+    pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
@@ -257,6 +261,7 @@ impl RunningDataflow {
         let (listener_shutdown_tx, listener_shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             id: dataflow_id,
+            zenoh_peering: Arc::new(BTreeMap::new()),
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),

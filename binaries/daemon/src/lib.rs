@@ -1941,6 +1941,7 @@ impl Daemon {
                         ft_stats: self.ft_stats.clone(),
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+                        zenoh_peering: dataflow.zenoh_peering.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -2780,11 +2781,20 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let dataflow = RunningDataflow::new(
+        let mut dataflow = RunningDataflow::new(
             dataflow_id,
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        // Decide who dials whom before anything spawns: zenoh 1.9 peers do not
+        // relay, so a producer/consumer pair that never forms a direct link can
+        // never exchange data. Assign the links explicitly instead of leaving
+        // them to gossip's best-effort autoconnect.
+        dataflow.zenoh_peering = Arc::new(crate::spawn::plan_zenoh_peering(
+            &nodes,
+            &spawn_nodes,
+            self.zenoh_listen_endpoint.as_deref(),
+        ));
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
@@ -3032,6 +3042,7 @@ impl Daemon {
             ft_stats: self.ft_stats.clone(),
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+            zenoh_peering: dataflow.zenoh_peering.clone(),
         };
 
         let mut tasks = Vec::new();

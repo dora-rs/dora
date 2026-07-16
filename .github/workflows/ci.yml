@@ -13,9 +13,16 @@
 #     These gate the merge itself. Running them only on Trunk's
 #     batched queue branch means 5 PRs share one expensive CI run.
 #
-# Detection of merge-queue runs relies on Trunk's draft-PR queue
-# mode: the queue branch is named `trunk-merge/...` and the
-# `pull_request` event fires with `github.head_ref` pointing at it.
+# Merge-queue runs are push-triggered: Trunk pushes a `trunk-merge/...`
+# batch branch and the `push` trigger below picks it up, so the expensive
+# tier gates on `github.event_name != 'pull_request'` alone. Checks attach
+# to the batch head SHA, which is what Trunk reads — pip-release.yml has
+# relied on exactly this since it went push-only, and `pip-release all
+# green` is a required status today.
+#
+# This reports correctly whether or not Trunk also opens a draft PR per
+# batch, so the two can overlap during a cutover — see .trunk/trunk.yaml
+# for that setting and why it stays off.
 #
 # Moved to .github/workflows/nightly.yml (runs once daily, ~3-4h):
 #   - test on macos + windows
@@ -62,7 +69,8 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # Do not add a `paths:` filter — see .trunk/trunk.yaml.
+    branches: [main, "trunk-merge/**"]
   pull_request:
     branches: [main]
     # GitHub's default `pull_request` activity types are
@@ -80,6 +88,23 @@ env:
   CARGO_TERM_COLOR: always
   # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
   RUST_VERSION: "1.92.0"
+  # Drop full debuginfo from dev/test builds. Debug info is ~78% of every
+  # compiled artifact in this large workspace; full-debuginfo builds overrun
+  # the runner disk during `cargo test` ("No space left on device").
+  # `line-tables-only` keeps file:line in backtraces but drops the bulk.
+  #
+  # Set at the WORKFLOW level (not per-job) so the profile is identical for
+  # EVERY job that shares `shared-key: workspace` — clippy, check, test,
+  # contract-tests (#2710). Cargo's per-unit fingerprint folds the profile's
+  # debuginfo level in, so if the cache writer (`test`) and a restore-only
+  # consumer (`clippy`/`check`) disagreed, every cached dependency would be
+  # rebuilt from scratch. rust-cache also folds CARGO_*/RUST_* env vars into
+  # its key, so a shared value keeps the exact-key restore hitting too.
+  #
+  # Only affects the dev and test profiles; the release builds in e2e/bench
+  # are unaffected (their caches use separate keys).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   fmt:
@@ -161,17 +186,7 @@ jobs:
     # Trunk merge-queue batches, and manual workflow_dispatch.
     name: Test (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
-    env:
-      # Debug info is ~78% of every compiled artifact in this large
-      # workspace; full-debuginfo builds overrun the runner disk during
-      # `cargo test` ("No space left on device"). `line-tables-only`
-      # keeps file:line in test backtraces but drops the bulk. Set on
-      # both main (cache save) and PRs (restore) so the shared
-      # workspace-test rust-cache fingerprint stays coherent — this MUST
-      # match the contract-tests job, which reuses the same cache key.
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -308,12 +323,7 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
-    env:
-      # Shrink target/ to fit the runner disk — see the `test` job note.
-      # (Release CLI build below is unaffected; only dev/test profiles.)
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -414,14 +424,8 @@ jobs:
   contract-tests:
     name: Semantic contract tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     timeout-minutes: 30
-    env:
-      # Reuses the workspace-test cache with `test`; the debuginfo
-      # settings MUST stay identical or the two jobs invalidate each
-      # other's shared cache. See the `test` job note.
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -497,7 +501,7 @@ jobs:
   bench:
     name: Benchmark regression check
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
