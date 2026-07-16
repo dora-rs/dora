@@ -8,9 +8,12 @@ use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::{managed_python_bin_dir, managed_python_interpreter},
-    descriptor::{Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode},
+    config::{Input, InputMapping, NodeId},
+    descriptor::{
+        CoreNodeKind, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
+    },
     get_python_path,
-    topics::DORA_ZENOH_CONNECT_ENV,
+    topics::{DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV},
     uhlc::HLC,
 };
 use dora_message::{
@@ -22,7 +25,7 @@ use dora_message::{
 };
 use eyre::{ContextCompat, WrapErr, bail};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     future::Future,
     path::{Path, PathBuf},
@@ -100,6 +103,129 @@ fn apply_managed_python_runtime_env(
         .env("PATH", new_path))
 }
 
+/// Where a single node's zenoh session should listen, and which peers it must
+/// dial. See [`plan_zenoh_peering`].
+#[derive(Clone, Debug)]
+pub struct NodeZenohPeering {
+    /// Loopback endpoint this node listens on, so its consumers can dial it.
+    pub listen: String,
+    /// Endpoints this node dials: the daemon, plus each node it consumes from.
+    pub connect: Vec<String>,
+}
+
+/// Assign every node a loopback listener and dial-list so the links the dataflow
+/// needs are established *by construction*.
+///
+/// Zenoh 1.9's `peer` hat hardcodes `full_linkstate: false` (its release notes
+/// list "Disable `full_linkstate` in `peer::Hat::Network`" under Bug fixes),
+/// where 1.8's `linkstate_peer` hat still honored `routing.peer.mode`. So peers
+/// no longer relay for each other: a producer/consumer pair that never forms a
+/// direct link cannot exchange data at all — there is no relay to fall back on
+/// and no amount of waiting helps. Leaving those links to gossip's best-effort
+/// autoconnect made them racy, measuring 5 failures in 20 runs of
+/// `examples/rust-dataflow`; with this planning it is 0 in 20.
+///
+/// The nodes this daemon spawns are all on this machine, hence all
+/// loopback-addressable, so we can just say who dials whom. Each node dials only
+/// the nodes it *consumes from*: a zenoh transport is bidirectional, so the
+/// consumer's dial is what carries the producer's data back. That is `|edges|`
+/// links rather than `N^2`, and it is
+/// exactly the set the dataflow requires.
+///
+/// Dynamic nodes are omitted: they are not in the descriptor's spawn set and join
+/// at arbitrary times, so they keep the daemon-endpoint-only behavior.
+///
+/// Only *local* nodes are planned. `nodes` spans the whole dataflow including
+/// nodes on other daemons, whose endpoints are not on this host's loopback, so a
+/// local consumer of a remote producer gets no dial for it and keeps the existing
+/// cross-machine behavior. Multi-machine/NAT deployments supply their own zenoh
+/// config via `ZENOH_CONFIG_PATH`, which bypasses this path entirely and can put
+/// a real router (which *does* still relay) in between.
+pub fn plan_zenoh_peering(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+    daemon_endpoint: Option<&str>,
+) -> BTreeMap<NodeId, NodeZenohPeering> {
+    // Reserve a listener per node first, so the dial-lists below can reference
+    // every node regardless of spawn order.
+    //
+    // Only nodes this daemon spawns get one: the endpoints are *loopback*, so
+    // handing a local consumer the "endpoint" of a node running on another
+    // machine would point it at this host's 127.0.0.1 — either a failed dial or,
+    // worse, an unrelated local process. A local consumer of a remote producer
+    // therefore gets no dial for it and keeps the existing cross-machine
+    // behavior (see the `ZENOH_CONFIG_PATH` note above).
+    let mut listeners: BTreeMap<NodeId, String> = BTreeMap::new();
+    for (node_id, node) in nodes {
+        if node.kind.dynamic() || !local_nodes.contains(node_id) {
+            continue;
+        }
+        match dora_core::topics::reserve_loopback_zenoh_endpoint() {
+            Ok(ep) => {
+                listeners.insert(node_id.clone(), ep);
+            }
+            Err(err) => {
+                // Fall back to gossip for this node rather than failing the
+                // dataflow; it just loses the determinism guarantee.
+                tracing::warn!(
+                    node = %node_id,
+                    "failed to reserve a zenoh listen endpoint ({err}); \
+                     falling back to gossip discovery for this node"
+                );
+            }
+        }
+    }
+
+    let mut plan = BTreeMap::new();
+    for (node_id, node) in nodes {
+        let Some(listen) = listeners.get(node_id) else {
+            continue;
+        };
+        let mut connect: Vec<String> = Vec::new();
+        if let Some(ep) = daemon_endpoint {
+            connect.push(ep.to_string());
+        }
+        for source in input_sources(node) {
+            // A node may consume from itself only via a timer/log mapping, which
+            // `input_sources` already filters out.
+            if &source == node_id {
+                continue;
+            }
+            if let Some(ep) = listeners.get(&source) {
+                connect.push(ep.clone());
+            }
+        }
+        connect.dedup();
+        plan.insert(
+            node_id.clone(),
+            NodeZenohPeering {
+                listen: listen.clone(),
+                connect,
+            },
+        );
+    }
+    plan
+}
+
+/// The nodes whose outputs `node` subscribes to (deduplicated).
+fn input_sources(node: &ResolvedNode) -> BTreeSet<NodeId> {
+    let inputs: Vec<&Input> = match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+        CoreNodeKind::Runtime(n) => n
+            .operators
+            .iter()
+            .flat_map(|op| op.config.inputs.values())
+            .collect(),
+    };
+    inputs
+        .iter()
+        .filter_map(|input| match &input.mapping {
+            InputMapping::User(mapping) => Some(mapping.source.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Clone)]
 pub struct Spawner {
     pub dataflow_id: DataflowId,
@@ -115,13 +241,29 @@ pub struct Spawner {
     /// nodes via `DORA_ZENOH_CONNECT` so the >=4 KiB zenoh data path works
     /// without multicast scouting (#1778).
     pub zenoh_connect_endpoint: Option<String>,
+    /// Per-node listener + dial-list, so the node↔node links the dataflow needs
+    /// are established deterministically. See [`plan_zenoh_peering`].
+    pub zenoh_peering: Arc<BTreeMap<NodeId, NodeZenohPeering>>,
 }
 
 impl Spawner {
-    fn maybe_inject_zenoh_connect(&self, command: Command) -> Command {
-        match &self.zenoh_connect_endpoint {
-            Some(ep) => command.env(DORA_ZENOH_CONNECT_ENV, ep),
-            None => command,
+    fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
+        match self.zenoh_peering.get(node_id) {
+            Some(peering) => {
+                let command = command.env(DORA_ZENOH_LISTEN_ENV, &peering.listen);
+                if peering.connect.is_empty() {
+                    command
+                } else {
+                    command.env(DORA_ZENOH_CONNECT_ENV, peering.connect.join(","))
+                }
+            }
+            // No plan for this node (dynamic node, or endpoint reservation
+            // failed): fall back to dialing just the daemon and letting gossip
+            // discover the rest.
+            None => match &self.zenoh_connect_endpoint {
+                Some(ep) => command.env(DORA_ZENOH_CONNECT_ENV, ep),
+                None => command,
+            },
         }
     }
 
@@ -229,7 +371,7 @@ impl Spawner {
                         serde_yaml::to_string(&node_config.clone())
                             .wrap_err("failed to serialize node config")?,
                     );
-                    command = self.maybe_inject_zenoh_connect(command);
+                    command = self.maybe_inject_zenoh_connect(command, &node.id);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
@@ -436,7 +578,7 @@ impl Spawner {
                         serde_yaml::to_string(&runtime_config)
                             .wrap_err("failed to serialize runtime config")?,
                     );
-                    command = self.maybe_inject_zenoh_connect(command);
+                    command = self.maybe_inject_zenoh_connect(command, &node.id);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
@@ -485,5 +627,181 @@ impl Spawner {
             last_activity,
             ft_stats: self.ft_stats,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_core::descriptor::DescriptorExt;
+
+    fn plan_for(yaml: &str, daemon: Option<&str>) -> BTreeMap<NodeId, NodeZenohPeering> {
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve nodes");
+        // Default: every node is local to this daemon.
+        let local: BTreeSet<NodeId> = nodes.keys().cloned().collect();
+        plan_zenoh_peering(&nodes, &local, daemon)
+    }
+
+    fn plan_for_local(
+        yaml: &str,
+        local: &[&str],
+        daemon: Option<&str>,
+    ) -> BTreeMap<NodeId, NodeZenohPeering> {
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve nodes");
+        let local: BTreeSet<NodeId> = local.iter().map(|id| node(id)).collect();
+        plan_zenoh_peering(&nodes, &local, daemon)
+    }
+
+    fn node(id: &str) -> NodeId {
+        NodeId::from(id.to_string())
+    }
+
+    /// Since zenoh 1.9 peers don't relay, a consumer that never dials its
+    /// producer can never receive its data. So every consumer must dial exactly
+    /// its producers — that link set is the whole point of the plan.
+    #[test]
+    fn each_consumer_dials_its_producers_and_nothing_else() {
+        let plan = plan_for(
+            r#"
+nodes:
+  - id: source
+    path: source
+    inputs:
+      tick: dora/timer/millis/10
+    outputs:
+      - value
+  - id: transform
+    path: transform
+    inputs:
+      value: source/value
+    outputs:
+      - doubled
+  - id: sink
+    path: sink
+    inputs:
+      doubled: transform/doubled
+"#,
+            Some("tcp/127.0.0.1:1"),
+        );
+
+        let listen_of = |id: &str| plan[&node(id)].listen.clone();
+
+        // A pure source has no `User` inputs, so it dials only the daemon: a
+        // timer mapping is not a peer.
+        assert_eq!(plan[&node("source")].connect, vec!["tcp/127.0.0.1:1"]);
+
+        // Each consumer dials the daemon plus its own producer's listener.
+        assert_eq!(
+            plan[&node("transform")].connect,
+            vec!["tcp/127.0.0.1:1".to_string(), listen_of("source")]
+        );
+        assert_eq!(
+            plan[&node("sink")].connect,
+            vec!["tcp/127.0.0.1:1".to_string(), listen_of("transform")]
+        );
+
+        // `sink` does not consume from `source`, so it must not dial it —
+        // otherwise the plan degenerates toward N^2.
+        assert!(!plan[&node("sink")].connect.contains(&listen_of("source")));
+
+        // Listeners must be distinct, or two nodes would fight for a port.
+        let listeners: BTreeSet<_> = plan.values().map(|p| p.listen.clone()).collect();
+        assert_eq!(listeners.len(), 3, "each node needs its own listener");
+    }
+
+    /// A cycle must still produce a plan: every node is assigned a listener
+    /// before any dial-list is built, so `a -> b -> a` resolves rather than
+    /// leaving one side unable to reference the other.
+    #[test]
+    fn cyclic_dataflow_links_both_directions() {
+        let plan = plan_for(
+            r#"
+nodes:
+  - id: a
+    path: a
+    inputs:
+      from_b: b/out_b
+    outputs:
+      - out_a
+  - id: b
+    path: b
+    inputs:
+      from_a: a/out_a
+    outputs:
+      - out_b
+"#,
+            None,
+        );
+        assert_eq!(
+            plan[&node("a")].connect,
+            vec![plan[&node("b")].listen.clone()]
+        );
+        assert_eq!(
+            plan[&node("b")].connect,
+            vec![plan[&node("a")].listen.clone()]
+        );
+    }
+
+    /// `nodes` spans the whole dataflow, including nodes owned by other daemons.
+    /// Their listeners would be on *this* host's loopback, so dialing one would hit
+    /// nothing (or an unrelated local process). A local consumer of a remote
+    /// producer must therefore get no dial for it.
+    #[test]
+    fn remote_nodes_are_never_dialled_on_local_loopback() {
+        let yaml = r#"
+nodes:
+  - id: remote_source
+    path: remote_source
+    outputs:
+      - value
+  - id: local_sink
+    path: local_sink
+    inputs:
+      v: remote_source/value
+"#;
+        // Only `local_sink` runs on this daemon.
+        let plan = plan_for_local(yaml, &["local_sink"], Some("tcp/127.0.0.1:1"));
+
+        assert!(
+            !plan.contains_key(&node("remote_source")),
+            "a node on another daemon must not be assigned a local loopback listener"
+        );
+        // The local consumer dials only the daemon: there is no local endpoint
+        // for its remote producer, and inventing one would be worse than none.
+        assert_eq!(plan[&node("local_sink")].connect, vec!["tcp/127.0.0.1:1"]);
+    }
+
+    /// Dynamic nodes join at arbitrary times and aren't part of the spawn set,
+    /// so they get no plan (and fall back to daemon-only + gossip). A static
+    /// consumer of a dynamic node must not end up with a dangling dial.
+    #[test]
+    fn dynamic_nodes_are_excluded_from_the_plan() {
+        let plan = plan_for(
+            r#"
+nodes:
+  - id: dyn_source
+    path: dynamic
+    outputs:
+      - value
+  - id: static_sink
+    path: static_sink
+    inputs:
+      v: dyn_source/value
+"#,
+            Some("tcp/127.0.0.1:1"),
+        );
+        assert!(
+            !plan.contains_key(&node("dyn_source")),
+            "dynamic node must not be assigned a listener"
+        );
+        // The static consumer still gets a plan, but only dials the daemon:
+        // there is no endpoint to dial for a node that hasn't joined yet.
+        assert_eq!(plan[&node("static_sink")].connect, vec!["tcp/127.0.0.1:1"]);
     }
 }

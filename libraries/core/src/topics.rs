@@ -6,10 +6,35 @@ pub const DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
 pub const DORA_DAEMON_LOCAL_LISTEN_PORT_ENV: &str = "DORA_DAEMON_LOCAL_LISTEN_PORT";
 pub const DORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 
-/// Env var injected by the daemon into spawned nodes that points at the
-/// daemon's loopback zenoh listener. Lets nodes bootstrap zenoh peer discovery
-/// without multicast (dev containers, locked-down hosts, many CI runners).
+/// Comma-separated zenoh endpoints a spawned node should connect to, injected by
+/// the daemon: the daemon's own loopback listener plus the listeners of the nodes
+/// this one consumes from (see [`DORA_ZENOH_LISTEN_ENV`]).
+///
+/// Lets nodes bootstrap zenoh peer discovery without multicast (dev containers,
+/// locked-down hosts, many CI runners), and — since zenoh 1.9 removed peer
+/// relaying — establishes the node↔node links the dataflow needs *explicitly*
+/// rather than leaving them to gossip's best-effort autoconnect.
 pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
+
+/// Loopback zenoh endpoint a spawned node should listen on, injected by the
+/// daemon so this node's consumers can dial it directly (they receive it via
+/// their [`DORA_ZENOH_CONNECT_ENV`]).
+///
+/// Peers in zenoh 1.9 do not relay for each other, so a producer and consumer
+/// that never form a direct link simply cannot exchange data — no amount of
+/// waiting fixes it. Assigning each node a known listener makes those links
+/// deterministic instead of racy.
+pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
+
+/// Split a comma-separated endpoint list env var, ignoring empty entries.
+#[cfg(feature = "zenoh")]
+fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
@@ -71,32 +96,59 @@ pub async fn open_zenoh_session_with_listen(
         }
         Err(std::env::VarError::NotPresent) => {
             let mut zenoh_config = zenoh::Config::default();
-            // Linkstate make it possible to connect two daemons on different network through a public daemon
-            // TODO: There is currently a CI/CD Error in windows linkstate.
-            if cfg!(not(target_os = "windows"))
-                && let Err(err) =
-                    zenoh_config.insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-            {
-                warn!("failed to set zenoh routing/peer to linkstate: {err}");
-            }
-
-            // Dora's data plane favors per-message latency over Zenoh's
-            // default adaptive batching path. Publishers also set
-            // `express(true)`, but low-latency unicast lets peer transports
-            // skip the universal batching/priority queues entirely when both
-            // ends use Dora's default config. Zenoh's low-latency transport is
-            // negotiated without QoS, so disable QoS together with it instead
-            // of falling back during session open. We deliberately do NOT enable
-            // Zenoh's inter-peer SHM transport (`transport/shared_memory/enabled`):
-            // Dora nodes select Zenoh SHM per payload, while small payloads
-            // stay heap-buffered because page-aligned SHM setup does not pay
-            // off below the zero-copy threshold.
-            zenoh_config
-                .insert_json5("transport/unicast/lowlatency", "true")
-                .unwrap();
-            zenoh_config
-                .insert_json5("transport/unicast/qos/enabled", "false")
-                .unwrap();
+            // NOTE: we used to set `routing/peer: { mode: "linkstate" }` here so
+            // that peers would relay for each other (e.g. two daemons on separate
+            // networks reaching each other through a public one). In zenoh 1.8 that
+            // worked: its `linkstate_peer` hat derived
+            // `peer_full_linkstate = routing.peer.mode == "linkstate"`. Zenoh 1.9
+            // dropped that hat; its `peer` hat hardcodes `full_linkstate: false`
+            // (release notes, under Bug fixes: "Disable `full_linkstate` in
+            // `peer::Hat::Network`"), so peers no longer relay. The setting became a
+            // silent no-op — `insert_json5` still returns `Ok`, so our own error
+            // branch never fired, and only zenoh's deprecation log hinted at it.
+            // Deleted rather than ported: there is no peer-side equivalent in 1.9.
+            //
+            // Consequences, and why this is not a regression here:
+            //   * Same-machine nodes are all loopback-addressable, so the links
+            //     the dataflow needs are established explicitly via
+            //     `connect/endpoints` below (see `DORA_ZENOH_CONNECT`) instead of
+            //     being left to gossip's best-effort autoconnect.
+            //   * Multi-machine/NAT setups, which is what linkstate was meant to
+            //     serve, supply their own config via `ZENOH_CONFIG_PATH` (handled
+            //     in the branch above) and can put a real router in the path.
+            //
+            // NOTE: we used to set `transport/unicast/lowlatency: true` here (and
+            // `qos/enabled: false` with it, since the low-latency transport is
+            // negotiated without QoS) to skip zenoh's batching/priority queues.
+            // Both are gone, because low-latency cannot fragment: a message has to
+            // fit one batch, and `batch_size` is capped at 64 KiB
+            // (`pub type BatchSize = u16`, so 65535 is the max, not just the
+            // default). Shared memory hid that — an SHM payload travels as a
+            // ~16-byte descriptor and never fragments — but SHM is per-host, so it
+            // cannot negotiate between machines. A >64 KiB message to another host
+            // therefore had *no* working path: the sender writes it with a 4-byte
+            // length prefix and no size check, `put()` returns `Ok`, and the peer
+            // rejects the frame ("Batch len is invalid") — silent loss, with the
+            // publisher believing it succeeded.
+            //
+            // Dropping both is not a latency regression — measured against the old
+            // config (release, `examples/benchmark`), p50 is neutral-to-better
+            // (64 B 65->55 µs, 512 B 66->58 µs, 16 KB 73->63 µs; only 8 B is ~7 µs
+            // worse) and throughput is up (4 KB +51%, 16 KB +41%), since bypassing
+            // batching cost a syscall per message.
+            //
+            // The two settings must be removed *together*: dropping `lowlatency`
+            // while leaving `qos/enabled: false` did cost ~25 µs p50 on small
+            // messages. Restoring QoS recovers it, because the publishers'
+            // `Priority::RealTime` finally takes effect — it was silently inert
+            // while QoS was off. Publishers also still set `express(true)`, which is
+            // what actually carries small-message latency here.
+            //
+            // We rely on zenoh's SHM transport (`transport/shared_memory/enabled`)
+            // being enabled, which is its default — do NOT set it to `false`: the
+            // API keeps working, but SHM buffers silently get serialized as plain
+            // bytes onto the wire (i.e. copied) instead of sent as a ~16-byte
+            // descriptor.
 
             // Build the connect-endpoint list from two sources:
             //   1. DORA_ZENOH_CONNECT env var — daemon-bootstrapped local
@@ -109,8 +161,8 @@ pub async fn open_zenoh_session_with_listen(
             // disable multicast scouting so we don't end up with mixed
             // discovery modes.
             let mut connect_eps: Vec<String> = Vec::new();
-            if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
-                connect_eps.push(ep);
+            if let Ok(eps) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
+                connect_eps.extend(split_endpoints(&eps));
             }
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
@@ -162,6 +214,14 @@ pub async fn open_zenoh_session_with_listen(
             // daemon proceed even if some don't bind — e.g. the second
             // daemon to start on the same host with the same rendezvous
             // port falls through to connect-only.
+            // A spawned node gets its listener from the daemon via
+            // `DORA_ZENOH_LISTEN` (the daemon itself passes `listen_endpoint`
+            // directly). Without a known listener a node cannot be dialled, and
+            // since zenoh 1.9 peers do not relay, a consumer that cannot dial its
+            // producer never receives its data at all.
+            let env_listen_endpoint = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
+            let listen_endpoint = listen_endpoint.or(env_listen_endpoint.as_deref());
+
             let mut listen_eps: Vec<String> = Vec::new();
             if let Some(ep) = listen_endpoint {
                 listen_eps.push(ep.to_string());
