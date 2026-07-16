@@ -6,10 +6,35 @@ pub const DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT: u16 = 53291;
 pub const DORA_DAEMON_LOCAL_LISTEN_PORT_ENV: &str = "DORA_DAEMON_LOCAL_LISTEN_PORT";
 pub const DORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 
-/// Env var injected by the daemon into spawned nodes that points at the
-/// daemon's loopback zenoh listener. Lets nodes bootstrap zenoh peer discovery
-/// without multicast (dev containers, locked-down hosts, many CI runners).
+/// Comma-separated zenoh endpoints a spawned node should connect to, injected by
+/// the daemon: the daemon's own loopback listener plus the listeners of the nodes
+/// this one consumes from (see [`DORA_ZENOH_LISTEN_ENV`]).
+///
+/// Lets nodes bootstrap zenoh peer discovery without multicast (dev containers,
+/// locked-down hosts, many CI runners), and — since zenoh 1.9 removed peer
+/// relaying — establishes the node↔node links the dataflow needs *explicitly*
+/// rather than leaving them to gossip's best-effort autoconnect.
 pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
+
+/// Loopback zenoh endpoint a spawned node should listen on, injected by the
+/// daemon so this node's consumers can dial it directly (they receive it via
+/// their [`DORA_ZENOH_CONNECT_ENV`]).
+///
+/// Peers in zenoh 1.9 do not relay for each other, so a producer and consumer
+/// that never form a direct link simply cannot exchange data — no amount of
+/// waiting fixes it. Assigning each node a known listener makes those links
+/// deterministic instead of racy.
+pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
+
+/// Split a comma-separated endpoint list env var, ignoring empty entries.
+#[cfg(feature = "zenoh")]
+fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
@@ -125,8 +150,8 @@ pub async fn open_zenoh_session_with_listen(
             // disable multicast scouting so we don't end up with mixed
             // discovery modes.
             let mut connect_eps: Vec<String> = Vec::new();
-            if let Ok(ep) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
-                connect_eps.push(ep);
+            if let Ok(eps) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
+                connect_eps.extend(split_endpoints(&eps));
             }
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
@@ -178,6 +203,14 @@ pub async fn open_zenoh_session_with_listen(
             // daemon proceed even if some don't bind — e.g. the second
             // daemon to start on the same host with the same rendezvous
             // port falls through to connect-only.
+            // A spawned node gets its listener from the daemon via
+            // `DORA_ZENOH_LISTEN` (the daemon itself passes `listen_endpoint`
+            // directly). Without a known listener a node cannot be dialled, and
+            // since zenoh 1.9 peers do not relay, a consumer that cannot dial its
+            // producer never receives its data at all.
+            let env_listen_endpoint = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
+            let listen_endpoint = listen_endpoint.or(env_listen_endpoint.as_deref());
+
             let mut listen_eps: Vec<String> = Vec::new();
             if let Some(ep) = listen_endpoint {
                 listen_eps.push(ep.to_string());
