@@ -43,13 +43,13 @@ fn create_custom_node(
     let root = path.unwrap_or_else(|| PathBuf::from(name.replace(" ", "-")));
     let module_path = root.join(name.replace(" ", "_").replace("-", "_"));
     fs::create_dir(&root)
-        .with_context(|| format!("failed to create root directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create root directory `{}`", root.display()))?;
 
     fs::create_dir(&module_path)
-        .with_context(|| format!("failed to create module directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create module directory `{}`", root.display()))?;
 
     fs::create_dir(root.join("tests"))
-        .with_context(|| format!("failed to create tests directory `{}`", &root.display()))?;
+        .with_context(|| format!("failed to create tests directory `{}`", root.display()))?;
 
     // PYPROJECT.toml
     let node_path = root.join("pyproject.toml");

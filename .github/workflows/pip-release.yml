@@ -29,8 +29,8 @@ on:
       - "trunk-merge/**"
 
 env:
-  RUST_VERSION: "1.92.0"
-  RUST_TOOLCHAIN_DIR: "1.92.0-x86_64-unknown-linux-gnu"
+  RUST_VERSION: "1.97.1"
+  RUST_TOOLCHAIN_DIR: "1.97.1-x86_64-unknown-linux-gnu"
   # The workspace pins PyO3's abi3 floor to Python 3.11.
   PYTHON_VERSION: "3.11"
 

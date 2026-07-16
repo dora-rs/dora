@@ -51,7 +51,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_VERSION: "1.92.0"
+  RUST_VERSION: "1.97.1"
   # The finish-straggler watchdog (dora-rs/dora#2270) is now on by default, so
   # the explicit DORA_FINISH_DRAIN_GRACE_SECS override added for the step-2
   # nightly bake is no longer needed — nightly now exercises the default-on
