@@ -399,8 +399,9 @@ job_record_replay() {
     -p dora-replay-node
 
   # Write the .drec next to its dataflow (not at the workspace root) so
-  # replay's working_dir is examples/rust-dataflow/ -- avoids picking up
-  # $WORKSPACE/types/std/* as "user types" (build/mod.rs rejects those).
+  # replay's working_dir is examples/rust-dataflow/. (Historically the
+  # workspace root also had a types/ dir that replay mis-loaded as user
+  # types; it moved to libraries/core/types/ but the placement stands.)
   local DREC=examples/rust-dataflow/run.drec
   rm -f "$DREC"
 

@@ -379,10 +379,9 @@ jobs:
           # Write the .drec next to its dataflow, not at the workspace
           # root: `dora replay` uses the .drec's parent as working_dir
           # for the embedded build directives (mirrors the fix from
-          # #1674 for record). With the .drec at workspace root, replay
-          # would pick up $WORKSPACE/types/std/* and fail type-loading
-          # ("user types cannot use the 'std/' prefix" -- those are the
-          # workspace's own stdlib types, not user types).
+          # #1674 for record). (Historically the workspace root also had
+          # a types/ dir that replay mis-loaded as user types; it moved
+          # to libraries/core/types/ but the placement rule stands.)
           timeout 300s dora record examples/rust-dataflow/dataflow.yml \
             -o examples/rust-dataflow/run.drec
           test -f examples/rust-dataflow/run.drec || { echo "record did not produce run.drec"; exit 1; }
