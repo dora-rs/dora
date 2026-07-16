@@ -71,26 +71,42 @@ pub async fn open_zenoh_session_with_listen(
         }
         Err(std::env::VarError::NotPresent) => {
             let mut zenoh_config = zenoh::Config::default();
-            // Linkstate make it possible to connect two daemons on different network through a public daemon
-            // TODO: There is currently a CI/CD Error in windows linkstate.
-            if cfg!(not(target_os = "windows"))
-                && let Err(err) =
-                    zenoh_config.insert_json5("routing/peer", r#"{ mode: "linkstate" }"#)
-            {
-                warn!("failed to set zenoh routing/peer to linkstate: {err}");
-            }
-
+            // NOTE: we used to set `routing/peer: { mode: "linkstate" }` here so
+            // that peers would relay for each other (e.g. two daemons on separate
+            // networks reaching each other through a public one). Zenoh 1.9
+            // *removed* peer routing modes — "routing.peer is removed, all peers
+            // now operate in peer-to-peer mode" — so the setting became a silent
+            // no-op (`insert_json5` still returns `Ok`, and only zenoh logs a
+            // deprecation warning). It is deleted rather than ported because
+            // there is no 1.9 equivalent for peers: peer regions must now form a
+            // clique, and `peers_failover_brokering` was removed too. Only
+            // *routers* still do linkstate routing.
+            //
+            // Consequences, and why this is not a regression here:
+            //   * Same-machine nodes are all loopback-addressable, so the links
+            //     the dataflow needs are established explicitly via
+            //     `connect/endpoints` below (see `DORA_ZENOH_CONNECT`) instead of
+            //     being left to gossip's best-effort autoconnect.
+            //   * Multi-machine/NAT setups, which is what linkstate was meant to
+            //     serve, supply their own config via `ZENOH_CONFIG_PATH` (handled
+            //     in the branch above) and can put a real router in the path.
+            //
             // Dora's data plane favors per-message latency over Zenoh's
             // default adaptive batching path. Publishers also set
             // `express(true)`, but low-latency unicast lets peer transports
             // skip the universal batching/priority queues entirely when both
             // ends use Dora's default config. Zenoh's low-latency transport is
             // negotiated without QoS, so disable QoS together with it instead
-            // of falling back during session open. We deliberately do NOT enable
-            // Zenoh's inter-peer SHM transport (`transport/shared_memory/enabled`):
-            // Dora nodes select Zenoh SHM per payload, while small payloads
-            // stay heap-buffered because page-aligned SHM setup does not pay
-            // off below the zero-copy threshold.
+            // of falling back during session open.
+            //
+            // We rely on zenoh's SHM transport (`transport/shared_memory/enabled`)
+            // being enabled, which is its default — do NOT set it to `false`: the
+            // API keeps working, but SHM buffers silently get serialized as plain
+            // bytes onto the wire (i.e. copied) instead of sent as a ~16-byte
+            // descriptor. Worse, `lowlatency` cannot fragment (message must stay
+            // under `batch_size`, 64 KiB), so without SHM a payload above that has
+            // no working path at all — zenoh's "fallback to network mode" is not
+            // transparent under this config.
             zenoh_config
                 .insert_json5("transport/unicast/lowlatency", "true")
                 .unwrap();
