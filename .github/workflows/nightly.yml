@@ -380,7 +380,7 @@ jobs:
           # root: `dora replay` uses the .drec's parent as working_dir
           # for the embedded build directives (mirrors the fix from
           # #1674 for record). (Historically the workspace root also had
-          # a types/ dir that replay mis-loaded as user types; it moved
+          # a types/ dir that replay wrongly loaded as user types; it moved
           # to libraries/core/types/ but the placement rule stands.)
           timeout 300s dora record examples/rust-dataflow/dataflow.yml \
             -o examples/rust-dataflow/run.drec
