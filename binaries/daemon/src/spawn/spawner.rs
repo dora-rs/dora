@@ -116,17 +116,20 @@ pub struct NodeZenohPeering {
 /// Assign every node a loopback listener and dial-list so the links the dataflow
 /// needs are established *by construction*.
 ///
-/// Since zenoh 1.9 peers no longer relay for each other (`routing.peer` and
-/// `peers_failover_brokering` were both removed): a peer-to-peer region has to be
-/// a clique, and a producer/consumer pair that never forms a direct link simply
-/// cannot exchange data — there is no relay to fall back on and no amount of
-/// waiting helps. Leaving those links to gossip's best-effort autoconnect made
-/// them racy, which measured as a ~25% chance of some route never coming up.
+/// Zenoh 1.9's `peer` hat hardcodes `full_linkstate: false` (its release notes
+/// list "Disable `full_linkstate` in `peer::Hat::Network`" under Bug fixes),
+/// where 1.8's `linkstate_peer` hat still honored `routing.peer.mode`. So peers
+/// no longer relay for each other: a producer/consumer pair that never forms a
+/// direct link cannot exchange data at all — there is no relay to fall back on
+/// and no amount of waiting helps. Leaving those links to gossip's best-effort
+/// autoconnect made them racy, measuring 5 failures in 20 runs of
+/// `examples/rust-dataflow`; with this planning it is 0 in 20.
 ///
 /// The nodes this daemon spawns are all on this machine, hence all
-/// loopback-addressable, so we can just say who dials whom. Each node dials only the nodes it *consumes from*: a zenoh
-/// transport is bidirectional, so the consumer's dial is what carries the
-/// producer's data back. That is `|edges|` links rather than `N^2`, and it is
+/// loopback-addressable, so we can just say who dials whom. Each node dials only
+/// the nodes it *consumes from*: a zenoh transport is bidirectional, so the
+/// consumer's dial is what carries the producer's data back. That is `|edges|`
+/// links rather than `N^2`, and it is
 /// exactly the set the dataflow requires.
 ///
 /// Dynamic nodes are omitted: they are not in the descriptor's spawn set and join

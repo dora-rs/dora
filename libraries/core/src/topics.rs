@@ -98,14 +98,15 @@ pub async fn open_zenoh_session_with_listen(
             let mut zenoh_config = zenoh::Config::default();
             // NOTE: we used to set `routing/peer: { mode: "linkstate" }` here so
             // that peers would relay for each other (e.g. two daemons on separate
-            // networks reaching each other through a public one). Zenoh 1.9
-            // *removed* peer routing modes — "routing.peer is removed, all peers
-            // now operate in peer-to-peer mode" — so the setting became a silent
-            // no-op (`insert_json5` still returns `Ok`, and only zenoh logs a
-            // deprecation warning). It is deleted rather than ported because
-            // there is no 1.9 equivalent for peers: peer regions must now form a
-            // clique, and `peers_failover_brokering` was removed too. Only
-            // *routers* still do linkstate routing.
+            // networks reaching each other through a public one). In zenoh 1.8 that
+            // worked: its `linkstate_peer` hat derived
+            // `peer_full_linkstate = routing.peer.mode == "linkstate"`. Zenoh 1.9
+            // dropped that hat; its `peer` hat hardcodes `full_linkstate: false`
+            // (release notes, under Bug fixes: "Disable `full_linkstate` in
+            // `peer::Hat::Network`"), so peers no longer relay. The setting became a
+            // silent no-op — `insert_json5` still returns `Ok`, so our own error
+            // branch never fired, and only zenoh's deprecation log hinted at it.
+            // Deleted rather than ported: there is no peer-side equivalent in 1.9.
             //
             // Consequences, and why this is not a regression here:
             //   * Same-machine nodes are all loopback-addressable, so the links
@@ -116,28 +117,38 @@ pub async fn open_zenoh_session_with_listen(
             //     serve, supply their own config via `ZENOH_CONFIG_PATH` (handled
             //     in the branch above) and can put a real router in the path.
             //
-            // Dora's data plane favors per-message latency over Zenoh's
-            // default adaptive batching path. Publishers also set
-            // `express(true)`, but low-latency unicast lets peer transports
-            // skip the universal batching/priority queues entirely when both
-            // ends use Dora's default config. Zenoh's low-latency transport is
-            // negotiated without QoS, so disable QoS together with it instead
-            // of falling back during session open.
+            // NOTE: we used to set `transport/unicast/lowlatency: true` here (and
+            // `qos/enabled: false` with it, since the low-latency transport is
+            // negotiated without QoS) to skip zenoh's batching/priority queues.
+            // Both are gone, because low-latency cannot fragment: a message has to
+            // fit one batch, and `batch_size` is capped at 64 KiB
+            // (`pub type BatchSize = u16`, so 65535 is the max, not just the
+            // default). Shared memory hid that — an SHM payload travels as a
+            // ~16-byte descriptor and never fragments — but SHM is per-host, so it
+            // cannot negotiate between machines. A >64 KiB message to another host
+            // therefore had *no* working path: the sender writes it with a 4-byte
+            // length prefix and no size check, `put()` returns `Ok`, and the peer
+            // rejects the frame ("Batch len is invalid") — silent loss, with the
+            // publisher believing it succeeded.
+            //
+            // Dropping both is not a latency regression — measured against the old
+            // config (release, `examples/benchmark`), p50 is neutral-to-better
+            // (64 B 65->55 µs, 512 B 66->58 µs, 16 KB 73->63 µs; only 8 B is ~7 µs
+            // worse) and throughput is up (4 KB +51%, 16 KB +41%), since bypassing
+            // batching cost a syscall per message.
+            //
+            // The two settings must be removed *together*: dropping `lowlatency`
+            // while leaving `qos/enabled: false` did cost ~25 µs p50 on small
+            // messages. Restoring QoS recovers it, because the publishers'
+            // `Priority::RealTime` finally takes effect — it was silently inert
+            // while QoS was off. Publishers also still set `express(true)`, which is
+            // what actually carries small-message latency here.
             //
             // We rely on zenoh's SHM transport (`transport/shared_memory/enabled`)
             // being enabled, which is its default — do NOT set it to `false`: the
             // API keeps working, but SHM buffers silently get serialized as plain
             // bytes onto the wire (i.e. copied) instead of sent as a ~16-byte
-            // descriptor. Worse, `lowlatency` cannot fragment (message must stay
-            // under `batch_size`, 64 KiB), so without SHM a payload above that has
-            // no working path at all — zenoh's "fallback to network mode" is not
-            // transparent under this config.
-            zenoh_config
-                .insert_json5("transport/unicast/lowlatency", "true")
-                .unwrap();
-            zenoh_config
-                .insert_json5("transport/unicast/qos/enabled", "false")
-                .unwrap();
+            // descriptor.
 
             // Build the connect-endpoint list from two sources:
             //   1. DORA_ZENOH_CONNECT env var — daemon-bootstrapped local
