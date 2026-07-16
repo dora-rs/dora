@@ -237,9 +237,14 @@ pub struct Spawner {
     pub ft_stats: Arc<crate::FaultToleranceStats>,
     /// Signals listener loops to shut down when the dataflow finishes.
     pub shutdown: tokio::sync::watch::Receiver<bool>,
-    /// Loopback endpoint of the daemon's zenoh listener. Forwarded to spawned
-    /// nodes via `DORA_ZENOH_CONNECT` so the >=4 KiB zenoh data path works
-    /// without multicast scouting (#1778).
+    /// Endpoint of the daemon's zenoh listener. Forwarded to spawned nodes via
+    /// `DORA_ZENOH_CONNECT` so the >=4 KiB zenoh data path works without
+    /// multicast scouting (#1778).
+    ///
+    /// Loopback for a single-machine deployment, but possibly a routable address
+    /// for a daemon in a cluster. Either way it is on the node's own host, so
+    /// the node can reach it. Node listeners themselves stay on loopback: node
+    /// output crosses machines by daemon-level forwarding, not node-to-node.
     pub zenoh_connect_endpoint: Option<String>,
     /// Per-node listener + dial-list, so the node↔node links the dataflow needs
     /// are established deterministically. See [`plan_zenoh_peering`].
