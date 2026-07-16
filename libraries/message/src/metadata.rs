@@ -29,6 +29,22 @@ impl Metadata {
         Self::from_parameters(timestamp, Default::default())
     }
 
+    /// Metadata for a startup route-probe marker (see [`STARTUP_MARKER_PARAM`]).
+    pub fn startup_marker(timestamp: uhlc::Timestamp) -> Self {
+        Self::from_parameters(
+            timestamp,
+            BTreeMap::from([(STARTUP_MARKER_PARAM.to_owned(), Parameter::Bool(true))]),
+        )
+    }
+
+    /// Whether this message is a startup route-probe marker rather than node
+    /// data. Markers are consumed by the receiving node's startup barrier and
+    /// must never be decoded or surfaced to user code — see
+    /// [`STARTUP_MARKER_PARAM`].
+    pub fn is_startup_marker(&self) -> bool {
+        get_bool_param(&self.parameters, STARTUP_MARKER_PARAM).unwrap_or(false)
+    }
+
     pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
             metadata_version: Self::CURRENT_VERSION,
@@ -54,6 +70,21 @@ impl Metadata {
             .to_string()
     }
 }
+
+/// Reserved [`MetadataParameters`] key marking a message as a **startup
+/// route-probe marker** rather than node data.
+///
+/// The zenoh data plane is direct node-to-node pub/sub, so a producer that
+/// publishes before a consumer's subscription has propagated would drop those
+/// early samples. Rather than infer route-readiness from zenoh declarations,
+/// each producer publishes markers on its real output topic during startup and
+/// each consumer waits until it has actually *received* one per input: an
+/// arrived marker is end-to-end proof that the route carries data. Producers
+/// stop once the daemon's "all nodes ready" barrier releases.
+///
+/// The `__dora_` prefix is reserved; user parameters must not use it. Receivers
+/// filter markers before decoding the payload, so they never reach user code.
+pub const STARTUP_MARKER_PARAM: &str = "__dora_startup_marker";
 
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
@@ -207,6 +238,68 @@ mod tests {
         // consumers (across crates/processes) never disagree on a schema hash.
         assert_eq!(fnv1a(b""), 0xcbf29ce484222325);
         assert_eq!(fnv1a(b"a"), 0xaf63dc4c8601ec8c);
+    }
+
+    fn test_timestamp() -> uhlc::Timestamp {
+        uhlc::HLC::default().new_timestamp()
+    }
+
+    #[test]
+    fn startup_marker_is_detected_and_survives_the_wire() {
+        // A marker is recognized only via the reserved parameter, and the flag
+        // must survive bincode round-tripping — it travels as the zenoh
+        // attachment, and a receiver that failed to recognize it would decode
+        // the marker as node data and surface it to user code.
+        let marker = Metadata::startup_marker(test_timestamp());
+        assert!(marker.is_startup_marker());
+
+        let bytes = bincode::serialize(&marker).expect("serialize");
+        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        assert!(decoded.is_startup_marker());
+    }
+
+    #[test]
+    fn ordinary_metadata_is_not_a_startup_marker() {
+        // Guard the other direction: real data must never be mistaken for a
+        // marker (it would be silently dropped instead of delivered).
+        assert!(!Metadata::new(test_timestamp()).is_startup_marker());
+
+        // Wrong type under the reserved key must not count as a marker.
+        let wrong_type = Metadata::from_parameters(
+            test_timestamp(),
+            BTreeMap::from([(
+                STARTUP_MARKER_PARAM.to_owned(),
+                Parameter::String("true".into()),
+            )]),
+        );
+        assert!(!wrong_type.is_startup_marker());
+
+        // Explicit `false` is not a marker either.
+        let explicit_false = Metadata::from_parameters(
+            test_timestamp(),
+            BTreeMap::from([(STARTUP_MARKER_PARAM.to_owned(), Parameter::Bool(false))]),
+        );
+        assert!(!explicit_false.is_startup_marker());
+    }
+
+    #[test]
+    fn startup_marker_key_is_reserved_and_distinct() {
+        // The `__dora_` prefix keeps it out of the user parameter namespace, and
+        // it must not collide with any well-known protocol key.
+        assert_eq!(STARTUP_MARKER_PARAM, "__dora_startup_marker");
+        assert!(STARTUP_MARKER_PARAM.starts_with("__dora_"));
+        for key in [
+            REQUEST_ID,
+            GOAL_ID,
+            GOAL_STATUS,
+            SESSION_ID,
+            SEGMENT_ID,
+            SEQ,
+            FIN,
+            FLUSH,
+        ] {
+            assert_ne!(STARTUP_MARKER_PARAM, key);
+        }
     }
 
     #[test]

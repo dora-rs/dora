@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -83,12 +86,6 @@ pub struct EventStream {
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
-    /// Per-input liveliness tokens announcing "my data subscriber is declared"
-    /// so producers can count subscribers and only switch an output to the direct
-    /// zenoh data plane once every subscriber is wired (startup no-loss barrier;
-    /// see [`dora_core::topics::zenoh_input_ready_liveliness_topic`]). Kept alive
-    /// for the EventStream's lifetime; dropping a token undeclares it.
-    _zenoh_liveliness_tokens: Vec<zenoh::liveliness::LivelinessToken>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -111,6 +108,70 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+}
+
+/// How long a node waits for each of its inputs' zenoh data routes to prove
+/// themselves before failing init (see [`wait_for_input_routes`]).
+///
+/// Healthy dataflows resolve in milliseconds: the producer starts emitting
+/// markers as soon as it declares its publishers, so this only bounds the
+/// pathological case where the zenoh data plane cannot connect even though the
+/// daemon control plane can.
+const ZENOH_ROUTE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Poll interval while waiting for input routes to prove themselves.
+const ZENOH_ROUTE_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+/// Per-input startup route probe.
+///
+/// `connected` is set by the input's zenoh data callback when the producer's
+/// startup marker arrives — end-to-end proof that this route actually carries
+/// data, as opposed to merely having had its declarations exchanged.
+struct RouteProbe {
+    input: DataId,
+    /// `source_node/source_output` this input maps to, for error messages.
+    source: String,
+    connected: Arc<AtomicBool>,
+}
+
+/// Block until every input's zenoh data route has proven itself by delivering
+/// the producer's startup marker.
+///
+/// Called *before* the node checks in to the daemon's "all nodes ready" barrier,
+/// so that barrier only releases once every node's inputs are wired — which is
+/// what stops a producer from publishing real data into a route that hasn't been
+/// established yet (zenoh drops samples for a not-yet-propagated subscription).
+///
+/// Cannot deadlock: every producer starts emitting markers from a background
+/// thread *before* it blocks here, so markers keep flowing while a node waits.
+/// This holds for cycles (`a -> b -> a`) too.
+fn wait_for_input_routes(probes: &[RouteProbe], timeout: Duration) -> eyre::Result<()> {
+    if probes.is_empty() {
+        return Ok(());
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let pending: Vec<&RouteProbe> = probes
+            .iter()
+            .filter(|p| !p.connected.load(Ordering::Relaxed))
+            .collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            let links: Vec<String> = pending
+                .iter()
+                .map(|p| format!("`{}` (from `{}`)", p.input, p.source))
+                .collect();
+            eyre::bail!(
+                "no zenoh data route established for input(s) {} after {}s: the \
+                 producer's startup markers never arrived. Check zenoh connectivity \
+                 between these nodes.",
+                links.join(", "),
+                timeout.as_secs()
+            );
+        }
+        std::thread::sleep(ZENOH_ROUTE_PROBE_POLL_INTERVAL);
+    }
 }
 
 impl EventStream {
@@ -309,7 +370,7 @@ impl EventStream {
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
         let mut zenoh_schema_subscribers = Vec::new();
-        let mut zenoh_liveliness_tokens = Vec::new();
+        let mut route_probes: Vec<RouteProbe> = Vec::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             for (input_id, input) in input_config {
@@ -368,6 +429,12 @@ impl EventStream {
                         &mut zenoh_schema_subscribers,
                     );
 
+                    // Startup route probe for this input: set by the data callback
+                    // when the producer's marker arrives, proving this route carries
+                    // data. Registered below only if the subscriber actually declares.
+                    let route_probe = Arc::new(AtomicBool::new(false));
+                    let route_probe_cb = route_probe.clone();
+
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
                     let decoder = decoder.clone();
@@ -425,6 +492,15 @@ impl EventStream {
                                             return;
                                         }
                                     };
+                                    // Startup route probe: its arrival is proof that this
+                                    // input's zenoh route now carries data end-to-end.
+                                    // Record it for the startup barrier and stop — a
+                                    // marker has no payload and must never reach the
+                                    // (stateful) decoder or user code.
+                                    if metadata.is_startup_marker() {
+                                        route_probe_cb.store(true, Ordering::Relaxed);
+                                        return;
+                                    }
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
                                     // persistent decoder stays in sync. This runs on
@@ -570,38 +646,23 @@ impl EventStream {
                             tracing::debug!(input = %input_id, %topic, "zenoh subscriber declared (callback)");
                             zenoh_subscribers.push(s);
 
-                            // Announce readiness for this link so the producer
-                            // counts us before switching the output to the direct
-                            // zenoh data plane. Declared only after a *successful*
-                            // data subscriber (so a counted token always implies
-                            // the subscription is in flight) and never for dynamic
-                            // nodes — they connect at arbitrary times and are not
-                            // part of the startup barrier (the producer reaches
-                            // them via normal matching once they join). A failure
-                            // here is non-fatal: the producer just keeps this
-                            // output on the reliable daemon path.
+                            // Wait on this input's route only now that its subscriber
+                            // actually exists. Skipped for dynamic nodes: they join at
+                            // arbitrary times and are not part of the startup barrier,
+                            // so nothing may block on them (their callback still
+                            // filters markers out of the event stream).
                             if !dynamic {
-                                let ready_key =
-                                    dora_core::topics::zenoh_input_ready_liveliness_topic(
-                                        dataflow_id,
-                                        source_node,
-                                        source_output,
-                                        node_id,
-                                        input_id,
-                                    );
-                                match session.liveliness().declare_token(ready_key).wait() {
-                                    Ok(token) => zenoh_liveliness_tokens.push(token),
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            input = %input_id,
-                                            "failed to declare zenoh readiness token ({e}); \
-                                             producer will keep this output on the daemon path"
-                                        );
-                                    }
-                                }
+                                route_probes.push(RouteProbe {
+                                    input: input_id.clone(),
+                                    source: format!("{source_node}/{source_output}"),
+                                    connected: route_probe,
+                                });
                             }
                         }
                         Err(e) => {
+                            // No zenoh subscriber for this input: it is served by the
+                            // reliable daemon path, so there is no route to prove and
+                            // no probe to wait on.
                             tracing::warn!(
                                 input = %input_id,
                                 "failed to declare zenoh subscriber ({e}), using daemon path"
@@ -611,6 +672,14 @@ impl EventStream {
                 }
             }
         }
+
+        // Startup no-loss barrier, part 1: don't check in until every input's zenoh
+        // data route has proven itself by delivering the producer's marker. Because
+        // this runs *before* `Subscribe`, the daemon's "all nodes ready" barrier
+        // cannot release until every node's inputs are wired — so no producer ever
+        // publishes real data into a route that zenoh would still drop.
+        wait_for_input_routes(&route_probes, ZENOH_ROUTE_PROBE_TIMEOUT)
+            .wrap_err_with(|| format!("node `{node_id}` failed to establish its input routes"))?;
 
         let reply = channel
             .request(&Timestamped {
@@ -638,7 +707,6 @@ impl EventStream {
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
             _zenoh_schema_subscribers: zenoh_schema_subscribers,
-            _zenoh_liveliness_tokens: zenoh_liveliness_tokens,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -1600,26 +1668,6 @@ impl Drop for EventStream {
             }
         }
 
-        // Undeclare readiness tokens under the same deadline: like subscriber
-        // teardown, `LivelinessToken::drop` undeclares on the shared session and
-        // can block if zenoh's net runtime is wedged (dora-rs/dora#2425).
-        let tokens = std::mem::take(&mut self._zenoh_liveliness_tokens);
-        if !tokens.is_empty() {
-            let completed = teardown_with_timeout(
-                "zenoh-liveliness-tokens",
-                ZENOH_TEARDOWN_TIMEOUT,
-                move || {
-                    drop(tokens);
-                },
-            );
-            if !completed {
-                tracing::warn!(
-                    "zenoh readiness-token teardown timed out after {}s; continuing node shutdown",
-                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
-                );
-            }
-        }
-
         let request = Timestamped {
             inner: DaemonRequest::EventStreamDropped,
             timestamp: self.clock.new_timestamp(),
@@ -1779,6 +1827,56 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn probe(input: &str, source: &str, connected: bool) -> RouteProbe {
+        RouteProbe {
+            input: DataId::from(input.to_string()),
+            source: source.to_string(),
+            connected: Arc::new(AtomicBool::new(connected)),
+        }
+    }
+
+    #[test]
+    fn route_wait_returns_immediately_when_all_routes_proven() {
+        // Healthy case: every input already saw its producer's marker, so the
+        // node must not stall the daemon's start barrier at all.
+        let probes = [probe("a", "src/one", true), probe("b", "other/two", true)];
+        let start = Instant::now();
+        wait_for_input_routes(&probes, Duration::from_secs(10)).expect("all routes proven");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "proven routes must not delay startup"
+        );
+    }
+
+    #[test]
+    fn route_wait_is_a_noop_without_zenoh_inputs() {
+        // Nodes with no zenoh-backed inputs (pure sources, daemon-path-only
+        // inputs, dynamic nodes) register no probes and must never block.
+        wait_for_input_routes(&[], Duration::from_secs(10)).expect("no probes to wait on");
+    }
+
+    #[test]
+    fn route_wait_fails_naming_only_the_unproven_links() {
+        // The whole point of failing (rather than hanging) is diagnosability, so
+        // the error must name the broken link and not the healthy one.
+        let probes = [
+            probe("good", "src/ok", true),
+            probe("bad", "rust-node/random", false),
+        ];
+        let err = wait_for_input_routes(&probes, Duration::from_millis(20))
+            .expect_err("an unproven route must fail rather than hang");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bad"), "must name the input: {msg}");
+        assert!(
+            msg.contains("rust-node/random"),
+            "must name the source: {msg}"
+        );
+        assert!(
+            !msg.contains("src/ok"),
+            "must not blame a healthy link: {msg}"
+        );
+    }
 
     #[test]
     fn convert_param_update() {
