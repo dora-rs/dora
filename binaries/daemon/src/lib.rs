@@ -484,7 +484,7 @@ async fn collect_and_send_metrics_bg(
                     None
                 }
             };
-            let msg = serde_json::to_vec(&Timestamped {
+            let msg = match serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: daemon_id.clone(),
                     event: DaemonEvent::NodeMetrics {
@@ -494,7 +494,21 @@ async fn collect_and_send_metrics_bg(
                     },
                 },
                 timestamp: clock.new_timestamp(),
-            })?;
+            }) {
+                Ok(msg) => msg,
+                // Skip this dataflow's batch rather than `?`-returning: an early
+                // return here would bypass the `System` restore below, leaving
+                // the shared metrics `System` (moved out via `mem::take`) empty
+                // for the rest of the process and degrading every later CPU
+                // reading. `serde_json` rejects non-finite floats, and
+                // `cpu_usage` is an `f32` from sysinfo, so one NaN must not
+                // poison collection permanently. Matches the `send_event`
+                // failure handling just below.
+                Err(e) => {
+                    tracing::warn!("failed to serialize metrics for dataflow: {e}");
+                    continue;
+                }
+            };
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::warn!("failed to send metrics for dataflow: {e}");
                 continue;
