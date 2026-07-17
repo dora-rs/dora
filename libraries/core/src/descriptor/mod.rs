@@ -106,6 +106,21 @@ fn node_is_dynamic(node: &ResolvedNode) -> bool {
         if matches!(n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE)
 }
 
+/// Build the fully-qualified output id `"{operator}/{output}"` for an input
+/// mapping that references a single-operator node.
+///
+/// `OperatorId` is not charset-validated on construction (unlike `NodeId` and
+/// `DataId`), so an operator `id` may contain characters that are illegal in a
+/// `DataId`. Parsing the concatenation fallibly turns such an id into a clean
+/// validation error instead of a panic — `DataId::from(String)` would
+/// otherwise abort descriptor validation (`dora check`, `dora run`, `dora
+/// graph`, ...) on well-formed-but-invalid YAML.
+fn qualified_operator_output(op_name: &OperatorId, output: &DataId) -> Result<DataId> {
+    format!("{op_name}/{output}").parse::<DataId>().wrap_err_with(|| {
+        format!("operator id `{op_name}` is not a valid data-id component (referenced in an input mapping as `{op_name}/{output}`)")
+    })
+}
+
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
@@ -128,7 +143,7 @@ impl DescriptorExt for Descriptor {
                     if let InputMapping::User(m) = &mut input.mapping
                         && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
                     {
-                        m.output = DataId::from(format!("{op_name}/{}", m.output));
+                        m.output = qualified_operator_output(op_name, &m.output)?;
                     }
                 }
             }
@@ -154,7 +169,7 @@ impl DescriptorExt for Descriptor {
                 })
             {
                 if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
+                    mapping.output = qualified_operator_output(op_name, &mapping.output)?;
                 }
             }
 
@@ -767,6 +782,39 @@ nodes:
         assert_eq!(
             b_env.get("OTEL_ENDPOINT"),
             Some(&EnvValue::String("http://collector:4317".into()))
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_operator_id_that_is_invalid_in_a_data_id() {
+        // Regression: `OperatorId` is not charset-validated, so an operator
+        // `id` may contain characters (e.g. a space) that are illegal in a
+        // `DataId`. When such an operator's output is referenced by another
+        // node, the alias resolver builds `"{op_id}/{output}"` as a `DataId`.
+        // Previously that used the panicking `DataId::from(String)`, so
+        // resolving/validating this (well-formed but invalid) YAML aborted the
+        // process instead of returning a clean error.
+        let yaml = r#"
+nodes:
+  - id: producer
+    operator:
+      id: "bad id"
+      python: op.py
+      outputs:
+        - out
+  - id: consumer
+    path: ./consumer
+    inputs:
+      x: producer/out
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("invalid operator id must be a clean error, not a panic");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("bad id"),
+            "error should name the offending operator id, got: {msg}"
         );
     }
 
