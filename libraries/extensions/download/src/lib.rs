@@ -24,6 +24,18 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Derive a candidate filename from the *last path segment* of a URL.
+///
+/// Uses the parsed URL structure rather than the serialized string, so the
+/// query string and fragment (e.g. the long presigned-URL parameters that S3
+/// and GitHub-release redirects append) never leak into the name. Returns
+/// `None` when the URL has no non-empty path segment.
+fn filename_from_url(url: &reqwest::Url) -> Option<String> {
+    url.path_segments()?
+        .rfind(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
 fn get_filename(response: &reqwest::Response) -> Option<String> {
     let raw_name = response
         .headers()
@@ -31,13 +43,8 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .and_then(parse_content_disposition_filename);
 
-    // If Content-Disposition header is not available, extract from URL
-    let raw_name = raw_name.or_else(|| {
-        Path::new(response.url().as_str())
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-    });
+    // If Content-Disposition header is not available, extract from the URL.
+    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
 
     // Sanitize: strip path components to prevent traversal,
     // reject null bytes and overly long names
@@ -124,7 +131,50 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::parse_content_disposition_filename;
+    use super::{filename_from_url, parse_content_disposition_filename};
+
+    fn name_from(url: &str) -> Option<String> {
+        filename_from_url(&reqwest::Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn url_filename_ignores_query_string() {
+        // Regression: presigned S3/GitHub-release redirects carry a long query
+        // string but no Content-Disposition header. The query must not leak into
+        // the filename (and must not push the name over the 255-char limit).
+        assert_eq!(
+            name_from("https://example.com/path/model.bin?X-Amz-Signature=deadbeef&expires=123"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_ignores_fragment() {
+        assert_eq!(
+            name_from("https://example.com/path/model.bin#section"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_plain() {
+        assert_eq!(
+            name_from("https://example.com/a/b/weights.safetensors"),
+            Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_skips_empty_trailing_segment() {
+        // A trailing slash yields an empty last segment, which is skipped in
+        // favor of the last non-empty one (matching the previous
+        // `Path::file_name` behavior). A bare root has no non-empty segment.
+        assert_eq!(
+            name_from("https://example.com/dir/"),
+            Some("dir".to_string())
+        );
+        assert_eq!(name_from("https://example.com/"), None);
+    }
 
     #[test]
     fn quoted_filename_without_extra_params() {
