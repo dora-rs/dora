@@ -3,10 +3,15 @@
 # without needing a release. Update `rev:` when a message-format-breaking
 # change lands on main — otherwise the CI job catches the mismatch and
 # signals a compatibility break, which is the whole point of this test.
+#
+# Currently pinned past #2366, which dropped the `ArrowTypeInfo` sidecar
+# from `Metadata` and took the payload wire format to v1. The previous pin
+# (1.0.0-rc1) predated that, so its nodes desynced against a current daemon
+# and died with `tag for enum is not valid` (#2742).
 nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: 07ed3be5f0995ace3f455ea8caff060e2f107250
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
@@ -16,7 +21,7 @@ nodes:
 
   - id: rust-status-node
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: 07ed3be5f0995ace3f455ea8caff060e2f107250
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -27,7 +32,7 @@ nodes:
 
   - id: rust-sink
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: 07ed3be5f0995ace3f455ea8caff060e2f107250
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:
