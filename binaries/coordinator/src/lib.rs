@@ -1090,8 +1090,20 @@ async fn start_inner(
                                 },
                                 status: DataflowStatus::Running,
                             });
-                            let finished_failed =
-                                dataflow_results.iter().map(|(&uuid, results)| {
+                            let finished_failed = dataflow_results
+                                .iter()
+                                // A multi-daemon dataflow appears in
+                                // `dataflow_results` as soon as its *first*
+                                // daemon finishes, while it stays in
+                                // `running_dataflows` until the last daemon is
+                                // gone. Skip those still-running entries so a
+                                // partially-finished dataflow isn't listed
+                                // twice (once Running, once Finished/Failed) —
+                                // and isn't reported Finished while other
+                                // daemons are still executing it. Mirrors the
+                                // guard in the `Clean` handler below.
+                                .filter(|(uuid, _)| !running_dataflows.contains_key(*uuid))
+                                .map(|(&uuid, results)| {
                                     let name =
                                         archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
                                     let id = DataflowIdAndName { uuid, name };
