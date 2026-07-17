@@ -707,16 +707,25 @@ impl EventStream {
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
-            // Block for the first event only when the scheduler is empty.
-            // `Scheduler::is_empty()` scans every input queue (O(#inputs)), and
-            // inside this drain the scheduler only ever grows (we exclusively
-            // `add_event`), so once it is non-empty it stays non-empty — the old
-            // `loop { if is_empty() ... }` re-scanned all queues on every
-            // iteration for no reason. Check once, then drain non-blocking.
-            if self.scheduler.is_empty()
-                && let Some(event) = self.receiver.recv().await
-            {
-                self.add_event(event);
+            // Block for the first event while the scheduler is empty, then drain
+            // the rest non-blocking. The old code re-checked `is_empty()` on
+            // every iteration; `Scheduler::is_empty()` scans every input queue
+            // (O(#inputs)), so draining K events cost O(K·#inputs).
+            //
+            // `add_event` usually pushes, but it can also *drop* the event
+            // without retaining it (e.g. `queue_size: 0` -> `DropIncoming`), so
+            // we must keep blocking while the scheduler is still empty rather
+            // than assume a single `recv` made it non-empty — otherwise a
+            // dropped-only event would fall through to `scheduler.next() ==
+            // None` and be misread as a closed stream. This preserves the
+            // previous "block until a retained event arrives" behavior while
+            // checking `is_empty()` only twice in the common case instead of
+            // once per drained event.
+            while self.scheduler.is_empty() {
+                match self.receiver.recv().await {
+                    Some(event) => self.add_event(event),
+                    None => break,
+                }
             }
             while let Ok(event) = self.receiver.try_recv() {
                 self.add_event(event);
