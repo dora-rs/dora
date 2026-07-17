@@ -464,8 +464,19 @@ async fn fetch_changes(
 }
 
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
-    // Reject arbitrary rev-spec expressions; only allow hex commit hashes and branch/tag names.
-    if commit_hash.contains("..") || commit_hash.contains(':') || commit_hash.contains('^') {
+    // Reject arbitrary rev-spec expressions; only allow hex commit hashes and
+    // branch/tag names. `..` (ranges), `:` (`<rev>:<path>`), `^` and `~`
+    // (ancestor navigation, e.g. `HEAD~3`), and `@{` (reflog / date specs,
+    // e.g. `HEAD@{1}`, `main@{yesterday}`) all resolve to a computed commit
+    // other than the one named, defeating the "pin to a reviewed commit"
+    // intent. None of these can appear in a valid git ref name, so blocking
+    // them never rejects a legitimate branch/tag.
+    if commit_hash.contains("..")
+        || commit_hash.contains(':')
+        || commit_hash.contains('^')
+        || commit_hash.contains('~')
+        || commit_hash.contains("@{")
+    {
         eyre::bail!(
             "invalid commit reference '{commit_hash}': rev-spec expressions are not allowed"
         );
@@ -640,5 +651,40 @@ mod tests {
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists(), "a sibling-owned clone must never be deleted");
+    }
+
+    #[test]
+    fn checkout_tree_rejects_revspec_expressions() {
+        let base = tempfile::tempdir().unwrap();
+        init_repo_with_commit(base.path());
+        let repo = git2::Repository::open(base.path()).unwrap();
+
+        // Each of these resolves to a commit *other* than the one named,
+        // defeating commit pinning. The string guard must reject them before
+        // `revparse_ext` ever gets to interpret them.
+        for spec in [
+            "a..b",             // range
+            "HEAD:file.txt",    // <rev>:<path>
+            "HEAD^",            // first parent
+            "HEAD~1",           // ancestor
+            "main~3",           // ancestor of a branch
+            "HEAD@{0}",         // reflog
+            "main@{yesterday}", // date spec
+        ] {
+            let err = checkout_tree(&repo, spec).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("rev-spec expressions are not allowed"),
+                "expected rejection for {spec:?}, got: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn checkout_tree_accepts_plain_commit_hash() {
+        let base = tempfile::tempdir().unwrap();
+        let commit = init_repo_with_commit(base.path());
+        let repo = git2::Repository::open(base.path()).unwrap();
+        checkout_tree(&repo, &commit).expect("a plain commit hash must check out");
     }
 }
