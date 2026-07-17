@@ -4712,12 +4712,16 @@ impl Daemon {
                         // and exit with code 143 (= 128 + 15) instead
                         // of propagating the signal, so `child.wait()`
                         // returns `ExitCode(143)` not `Signal(15)`.
-                        // Same shape for SIGINT (2 / 130). Treat any of
-                        // those as a clean planned stop so `dora run
+                        // Same shape for SIGINT (2 / 130). On Windows the
+                        // daemon's SoftKill sends `CTRL_BREAK_EVENT`, so a
+                        // node without its own console handler reports
+                        // `STATUS_CONTROL_C_EXIT` (`ExitCode(-1073741510)`)
+                        // — the Windows analog (dora-rs/dora#2425). Treat any
+                        // of those as a clean planned stop so `dora run
                         // --stop-after` doesn't report a fake "Node
                         // failed: exited with code 143" when the
                         // dataflow shut down exactly as requested
-                        // (dora-rs/dora#1882).
+                        // (dora-rs/dora#1882). See `is_sigterm_like_exit`.
                         //
                         // `grace_duration_kill` is the right
                         // discriminant — not `restarts_disabled` —
@@ -4746,13 +4750,7 @@ impl Daemon {
                         // collateral, we want to surface the original
                         // failure rather than hide it behind the
                         // shutdown that followed.
-                        let is_sigterm_like = matches!(
-                            exit_status,
-                            NodeExitStatus::Signal(15)
-                                | NodeExitStatus::Signal(2)
-                                | NodeExitStatus::ExitCode(143)
-                                | NodeExitStatus::ExitCode(130)
-                        );
+                        let is_sigterm_like = is_sigterm_like_exit(&exit_status);
                         if caused_by_node.is_none()
                             && grace_duration_kill
                             && is_sigterm_like
@@ -5599,6 +5597,41 @@ fn break_input(
 /// a sink may legitimately keep working for a while after its inputs close
 /// (flushing recordings, final writes).
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
+
+/// Windows `STATUS_CONTROL_C_EXIT`. A process terminated by an unhandled
+/// console `CTRL_C` / `CTRL_BREAK` event exits with this NTSTATUS, which Rust's
+/// [`std::process::ExitStatus::code`] surfaces as this `i32` (`0xC000013A`).
+/// The daemon's Windows `SoftKill` stops nodes with
+/// `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` (see `running_dataflow.rs`), so
+/// a node that doesn't install its own console handler reports this code on a
+/// planned stop — the Windows analog of Unix `Signal(15)` or the `143` wrapper
+/// exit (dora-rs/dora#2425).
+const STATUS_CONTROL_C_EXIT: i32 = -1073741510;
+
+/// Whether `exit_status` has the *shape* of a node that exited because the
+/// daemon asked it to stop (SoftKill), rather than because of an application
+/// error.
+///
+/// Callers must additionally gate on `grace_duration_kills` — this predicate
+/// only recognises the shape of a stop-induced exit, not whether the daemon
+/// actually initiated one. A node that produces one of these codes on its own
+/// (without a preceding daemon SoftKill) is still reported as a failure.
+///
+/// - Unix: `SIGTERM` (15) / `SIGINT` (2) surface as `Signal`.
+/// - Wrappers such as `uv run python` catch the signal and exit `128 + signo`
+///   (143 / 130) instead of propagating it, so the code appears as `ExitCode`.
+/// - Windows: an unhandled `CTRL_BREAK_EVENT` terminates the node with
+///   [`STATUS_CONTROL_C_EXIT`] (dora-rs/dora#2425).
+fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
+    matches!(
+        exit_status,
+        NodeExitStatus::Signal(15)
+            | NodeExitStatus::Signal(2)
+            | NodeExitStatus::ExitCode(143)
+            | NodeExitStatus::ExitCode(130)
+            | NodeExitStatus::ExitCode(STATUS_CONTROL_C_EXIT)
+    )
+}
 
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
 /// `None` if the watchdog has been explicitly **disabled**.
@@ -7190,5 +7223,44 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+}
+
+#[cfg(test)]
+mod planned_stop_exit_tests {
+    use super::{STATUS_CONTROL_C_EXIT, is_sigterm_like_exit};
+    use dora_message::common::NodeExitStatus;
+
+    #[test]
+    fn status_control_c_exit_constant_matches_ntstatus() {
+        // STATUS_CONTROL_C_EXIT = 0xC000013A, surfaced by
+        // `ExitStatus::code()` (u32 -> i32) on Windows.
+        assert_eq!(STATUS_CONTROL_C_EXIT, 0xC000013Au32 as i32);
+        assert_eq!(STATUS_CONTROL_C_EXIT, -1073741510);
+    }
+
+    #[test]
+    fn recognises_planned_stop_exit_shapes() {
+        // Unix SIGTERM / SIGINT.
+        assert!(is_sigterm_like_exit(&NodeExitStatus::Signal(15)));
+        assert!(is_sigterm_like_exit(&NodeExitStatus::Signal(2)));
+        // Wrapper (`uv run python`) that catches the signal and exits 128 + signo.
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(143)));
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(130)));
+        // Windows: unhandled CTRL_BREAK_EVENT -> STATUS_CONTROL_C_EXIT (dora-rs/dora#2425).
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(
+            STATUS_CONTROL_C_EXIT
+        )));
+    }
+
+    #[test]
+    fn does_not_recognise_genuine_failures() {
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Success));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::ExitCode(1)));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::ExitCode(-1)));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Unknown));
+        // SIGKILL is a hard kill (grace exceeded), not a graceful stop —
+        // it must keep flowing through the GraceDuration branch.
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Signal(9)));
     }
 }
