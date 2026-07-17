@@ -11,11 +11,6 @@ pub struct FFISeq<T> {
 }
 
 impl<T> FFISeq<T> {
-    /// Extracts a slice.
-    pub fn as_slice(&self) -> &[T] {
-        self
-    }
-
     /// Returns the length of the sequence.
     pub const fn len(&self) -> usize {
         self.size
@@ -88,11 +83,6 @@ pub struct OwnedFFISeq<T> {
 }
 
 impl<T> OwnedFFISeq<T> {
-    /// Extracts a slice.
-    pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len()) }
-    }
-
     /// Returns the length of the sequence.
     pub const fn len(&self) -> usize {
         self.size
@@ -150,11 +140,6 @@ pub struct RefFFISeq<T> {
 }
 
 impl<T> RefFFISeq<T> {
-    /// Extracts a slice.
-    pub fn as_slice(&self) -> &[T] {
-        unsafe { std::slice::from_raw_parts(self.data, self.len()) }
-    }
-
     /// Returns the length of the sequence.
     pub const fn len(&self) -> usize {
         self.size
