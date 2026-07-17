@@ -615,27 +615,7 @@ impl ZenohBind {
 }
 
 impl Daemon {
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-    ) -> eyre::Result<()> {
-        Self::run_with_zenoh_listen(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-        )
-        .await
-    }
-
-    /// Like [`Daemon::run`], but `zenoh_listen_addr` overrides the address this
+    /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
     /// told to dial.
     ///
@@ -661,28 +641,6 @@ impl Daemon {
             inter_daemon_peer,
             zenoh_listen_addr,
             Default::default(),
-        )
-        .await
-    }
-
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run_with_builds(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-        initial_builds: BTreeMap<BuildId, BuildInfo>,
-    ) -> eyre::Result<()> {
-        Self::run_inner_with_builds(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-            initial_builds,
         )
         .await
     }
@@ -1155,7 +1113,7 @@ impl Daemon {
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
-        // and reuses it across reconnects (see `run_with_builds`), so that node
+        // and reuses it across reconnects (see `run_inner_with_builds`), so that node
         // processes are not killed when the coordinator connection drops.
         // `dora run` is single-machine by construction: the daemon, its nodes
         // and the in-process coordinator all live on this host, so loopback is
@@ -1477,7 +1435,7 @@ impl Daemon {
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                             // Return error to trigger the reconnection loop in
-                            // `run_with_builds`. Because `run_inner` borrows
+                            // `run_inner_with_builds`. Because `run_inner` borrows
                             // `&mut self`, this error does NOT drop the daemon:
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
