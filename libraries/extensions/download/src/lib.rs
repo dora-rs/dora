@@ -88,6 +88,12 @@ where
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
 
+    // Reject 4xx/5xx before reading the body: otherwise the error page is
+    // written out as if it were the requested artifact.
+    let response = response
+        .error_for_status()
+        .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
+
     let filename = get_filename(&response).context("Could not find a filename")?;
     let bytes = response
         .bytes()
@@ -160,6 +166,16 @@ mod tests {
         assert_eq!(
             name_from("https://example.com/path/model.bin#section"),
             Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_normalises_traversal() {
+        // The URL parser resolves `..` segments before we ever see them, so a
+        // traversal attempt cannot escape via the fallback path.
+        assert_eq!(
+            name_from("https://example.com/a/../../etc/passwd"),
+            Some("passwd".to_string())
         );
     }
 
