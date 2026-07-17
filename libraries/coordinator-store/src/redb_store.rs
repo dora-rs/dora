@@ -570,7 +570,7 @@ mod tests {
     /// `older_schema_version_is_rejected`), so `list_dataflows`/`get_dataflow`
     /// never reach this undecodable-or-corrupted row in the first place.
     #[test]
-    fn old_dataflow_record_without_terminal_field_mis_decodes_silently() {
+    fn old_dataflow_record_without_terminal_field_misdecodes_silently() {
         // Mirrors `DataflowStatus` variant-for-variant, except `Failed` has no
         // `terminal` field -- i.e. the exact byte layout written by a
         // pre-#1854 coordinator.
@@ -622,7 +622,7 @@ mod tests {
         // Decoding as the current `DataflowRecord` must NOT reproduce the
         // encoded values: it either errors out (empirically: `InvalidBooleanValue`
         // on the shifted `uv` field, not anything mentioning `terminal`), or --
-        // for other field-value combinations -- silently mis-decodes into a
+        // for other field-value combinations -- silently misdecodes into a
         // structurally valid but wrong record. Either outcome is unsafe to
         // serve from `list_dataflows`/`get_dataflow`, which is exactly why old
         // databases must be rejected at `open()` instead.
