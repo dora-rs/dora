@@ -552,15 +552,25 @@ mod tests {
 
     /// #2471: `#[serde(default)]` on `DataflowStatus::Failed::terminal` does NOT
     /// make bincode-encoded bytes from before the field existed decodable --
-    /// bincode is positional, not self-describing, so a missing trailing field
-    /// fails to decode instead of falling back to `Default`. This pins down
-    /// that underlying fact, and confirms the real safety net is the
-    /// `SCHEMA_VERSION` bump: a database written before `terminal` existed
-    /// carries the pre-bump version and is rejected at `open()` (see
+    /// bincode is positional, not self-describing. `status` is not the last
+    /// field of `DataflowRecord`, so a missing `terminal` byte doesn't reliably
+    /// fail to decode the way a standalone `DataflowStatus` would: the decoder
+    /// instead reads the next record field's first byte as `terminal` and keeps
+    /// going, shifted by one byte, into `daemon_ids`/`node_to_daemon`/`uv`/
+    /// `generation`/timestamps. Depending on the field values that land on
+    /// each shifted position, this either surfaces much later as a confusing,
+    /// unrelated decode error (e.g. `InvalidBooleanValue` on `uv`, as observed
+    /// with the field values below -- nothing about that error points at
+    /// `terminal` or `status`) or -- for other field-value combinations --
+    /// could silently succeed with a structurally valid but corrupted record.
+    /// Neither outcome is the clean, predictable "missing field" failure the
+    /// `terminal` doc comment implies, and both confirm the actual safety net
+    /// is the `SCHEMA_VERSION` bump: a database written before `terminal`
+    /// existed carries the pre-bump version and is rejected at `open()` (see
     /// `older_schema_version_is_rejected`), so `list_dataflows`/`get_dataflow`
-    /// never reach the undecodable row in the first place.
+    /// never reach this undecodable-or-corrupted row in the first place.
     #[test]
-    fn old_failed_record_without_terminal_field_fails_to_decode() {
+    fn old_dataflow_record_without_terminal_field_mis_decodes_silently() {
         // Mirrors `DataflowStatus` variant-for-variant, except `Failed` has no
         // `terminal` field -- i.e. the exact byte layout written by a
         // pre-#1854 coordinator.
@@ -575,22 +585,61 @@ mod tests {
             Failed { error: String },
         }
 
-        let old_bytes = bincode::serde::encode_to_vec(
-            OldDataflowStatus::Failed {
+        // Mirrors `DataflowRecord` field-for-field, using `OldDataflowStatus`
+        // for `status` -- the exact pre-#1854 `DataflowRecord` byte layout.
+        #[derive(serde::Serialize)]
+        struct OldDataflowRecord {
+            uuid: Uuid,
+            name: Option<String>,
+            descriptor_json: String,
+            status: OldDataflowStatus,
+            daemon_ids: Vec<DaemonId>,
+            node_to_daemon: std::collections::BTreeMap<String, String>,
+            uv: bool,
+            generation: u64,
+            created_at: u64,
+            updated_at: u64,
+        }
+
+        let uuid = Uuid::new_v4();
+        let old_record = OldDataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: OldDataflowStatus::Failed {
                 error: "boom".into(),
             },
-            bincode::config::standard(),
-        )
-        .unwrap();
+            daemon_ids: vec![], // empty -> length-prefix byte is 0x00
+            node_to_daemon: Default::default(),
+            uv: false,
+            generation: 42,
+            created_at: 1000,
+            updated_at: 2000,
+        };
+        let old_bytes =
+            bincode::serde::encode_to_vec(&old_record, bincode::config::standard()).unwrap();
 
-        let result = decode::<crate::DataflowStatus>(&old_bytes);
-        assert!(
-            result.is_err(),
-            "old pre-terminal bytes must NOT silently decode with terminal: false \
-             -- if this starts passing, bincode's behavior has changed and the \
-             SCHEMA_VERSION-bump safety net documented on `terminal` and \
-             `SCHEMA_VERSION` is no longer needed for this field"
-        );
+        // Decoding as the current `DataflowRecord` must NOT reproduce the
+        // encoded values: it either errors out (empirically: `InvalidBooleanValue`
+        // on the shifted `uv` field, not anything mentioning `terminal`), or --
+        // for other field-value combinations -- silently mis-decodes into a
+        // structurally valid but wrong record. Either outcome is unsafe to
+        // serve from `list_dataflows`/`get_dataflow`, which is exactly why old
+        // databases must be rejected at `open()` instead.
+        match decode::<crate::DataflowRecord>(&old_bytes) {
+            Err(_) => {} // the common case for these field values; see doc comment above
+            Ok(decoded) => {
+                assert_eq!(decoded.uuid, uuid, "fields before `status` are unaffected");
+                assert!(
+                    decoded.generation != 42
+                        || decoded.created_at != 1000
+                        || decoded.updated_at != 2000,
+                    "decode succeeded AND reproduced the original trailing fields -- \
+                     the byte-shift this test exists to demonstrate did not occur; \
+                     re-check bincode's encoding of an empty Vec/BTreeMap length prefix"
+                );
+            }
+        }
     }
 
     #[test]
