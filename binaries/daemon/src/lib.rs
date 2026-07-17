@@ -4596,6 +4596,23 @@ impl Daemon {
                     aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
+                // Build the metadata once and share the `Arc` across subscribers.
+                // It is identical for every delivery (only the `arrow-ipc`
+                // framing parameter), so rebuilding it (and re-allocating the
+                // `Arc`) per subscriber was wasted work — mirror the Timer/Logs
+                // broadcast loops, which build the `Arc<Metadata>` once.
+                let mut params = MetadataParameters::new();
+                params.insert(
+                    dora_message::metadata::FRAMING.to_string(),
+                    dora_message::metadata::Parameter::String(
+                        dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                    ),
+                );
+                let metadata = Arc::new(metadata::Metadata::from_parameters(
+                    self.clock.new_timestamp(),
+                    params,
+                ));
+
                 let mut closed = Vec::new();
                 for sub in &dataflow.log_subscribers {
                     // Apply level filter
@@ -4619,21 +4636,11 @@ impl Daemon {
                         continue;
                     };
 
-                    let mut params = MetadataParameters::new();
-                    params.insert(
-                        dora_message::metadata::FRAMING.to_string(),
-                        dora_message::metadata::Parameter::String(
-                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
-                        ),
-                    );
-                    let metadata =
-                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
-
                     let send_result = send_with_timestamp(
                         channel,
                         NodeEvent::Input {
                             id: sub.input_id.clone(),
-                            metadata: Arc::new(metadata),
+                            metadata: metadata.clone(),
                             data: Some(data.clone()),
                         },
                         &self.clock,
