@@ -24,6 +24,18 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Derive a fallback filename from the URL's path.
+///
+/// `Url::as_str()` includes the query and fragment, so running
+/// `Path::new(..).file_name()` over the whole URL yields names like
+/// `model.bin?token=abc`. Use the parsed path segments instead.
+fn filename_from_url(url: &reqwest::Url) -> Option<String> {
+    url.path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
 fn get_filename(response: &reqwest::Response) -> Option<String> {
     let raw_name = response
         .headers()
@@ -31,13 +43,8 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .and_then(parse_content_disposition_filename);
 
-    // If Content-Disposition header is not available, extract from URL
-    let raw_name = raw_name.or_else(|| {
-        Path::new(response.url().as_str())
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-    });
+    // If Content-Disposition header is not available, extract from the URL path.
+    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
 
     // Sanitize: strip path components to prevent traversal,
     // reject null bytes and overly long names
@@ -73,6 +80,12 @@ where
     let response = reqwest::get(url)
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
+
+    // Reject 4xx/5xx before reading the body: otherwise the error page is
+    // written out as if it were the requested artifact.
+    let response = response
+        .error_for_status()
+        .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
 
     let filename = get_filename(&response).context("Could not find a filename")?;
     let bytes = response
@@ -171,5 +184,35 @@ mod tests {
             parse_content_disposition_filename("attachment; filename*=UTF-8''model.bin"),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod url_fallback_tests {
+    use super::filename_from_url;
+
+    fn f(u: &str) -> Option<String> {
+        filename_from_url(&reqwest::Url::parse(u).unwrap())
+    }
+
+    #[test]
+    fn strips_query_string() {
+        assert_eq!(f("https://e.com/models/model.bin?token=abc&x=1").as_deref(), Some("model.bin"));
+    }
+    #[test]
+    fn strips_fragment() {
+        assert_eq!(f("https://e.com/a/b.tar.gz#frag").as_deref(), Some("b.tar.gz"));
+    }
+    #[test]
+    fn plain_url_unchanged() {
+        assert_eq!(f("https://e.com/a/b.tar.gz").as_deref(), Some("b.tar.gz"));
+    }
+    #[test]
+    fn trailing_slash_yields_none() {
+        assert_eq!(f("https://e.com/a/"), None);
+    }
+    #[test]
+    fn traversal_is_normalised_by_url_crate() {
+        assert_eq!(f("https://e.com/a/../../etc/passwd").as_deref(), Some("passwd"));
     }
 }
