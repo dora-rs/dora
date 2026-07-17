@@ -1625,6 +1625,17 @@ impl Node {
         // every later write/read would silently reject.  Reclaim the shmem
         // segment on the way out (it was created with owner=false).
         if receiver_is_cuda && !ipc_written {
+            // The GPU pool buffer (and, on the transit path, the page-locked
+            // host transit buffer) were allocated before the IPC export, which
+            // failed.  Free them before bailing — otherwise they leak for the
+            // life of the process since no PoolSlot was stored to track them.
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                if transit_ptr != 0 {
+                    let _ = bound.call_method1("_free_transit", (transit_ptr,));
+                }
+            }
             shmem.set_owner(true);
             eyre::bail!(
                 "[{}] register_memory_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
