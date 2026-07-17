@@ -588,14 +588,6 @@ impl From<&RunningDataflow> for ArchivedDataflow {
     }
 }
 
-impl PartialEq for RunningDataflow {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.uuid == other.uuid && self.daemons == other.daemons
-    }
-}
-
-impl Eq for RunningDataflow {}
-
 #[cfg(test)]
 mod hub_capability_tests {
     use super::*;
