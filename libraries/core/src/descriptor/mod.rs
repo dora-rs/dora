@@ -31,23 +31,35 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    /// Number of subscriber input-links for the output `source_node/source_output`
-    /// across the whole (resolved) dataflow — i.e. how many `(node, input)` pairs
-    /// map to it, counting each operator input of a runtime node separately.
+    /// Number of *co-located* subscriber input-links for the output
+    /// `source_node/source_output` — i.e. how many `(node, input)` pairs on the
+    /// same machine as `source_node` map to it, counting each operator input of a
+    /// runtime node separately.
     ///
     /// This is the count of zenoh data-plane subscribers a producer must see wired
     /// up before it is safe to switch that output from the reliable daemon path to
     /// the direct zenoh path without dropping startup messages (see
-    /// [`crate::topics::zenoh_input_ready_liveliness_topic`]). It is a global
-    /// topology count, so it correctly includes subscribers on other daemons.
+    /// [`crate::topics::zenoh_input_ready_liveliness_topic`]).
+    ///
+    /// Only same-machine subscribers are counted. A subscriber's readiness
+    /// liveliness token is declared on its own daemon's zenoh session, and since
+    /// zenoh 1.9 peers do not relay (and dora only wires loopback, same-machine
+    /// node↔node links), a remote subscriber's token can never reach this
+    /// producer — so waiting for it would stall the producer for the full connect
+    /// timeout and permanently pin the output off the direct-zenoh fast path.
+    /// Cross-machine data is delivered by explicit daemon-to-daemon forwarding
+    /// regardless, so remote subscribers must not gate the local fast-path switch.
+    /// In a single-machine deployment every node shares the same (absent) machine,
+    /// so this is exactly the whole-dataflow count.
     ///
     /// Provided in terms of [`resolve_aliases_and_set_defaults`](Self::resolve_aliases_and_set_defaults).
-    fn output_subscriber_count(
+    fn local_output_subscriber_count(
         &self,
         source_node: &NodeId,
         source_output: &DataId,
     ) -> eyre::Result<usize> {
         let resolved = self.resolve_aliases_and_set_defaults()?;
+        let source_machine = resolved.get(source_node).and_then(node_machine);
         let mut count = 0;
         for node in resolved.values() {
             // Dynamic nodes connect at arbitrary times (or never), so the startup
@@ -55,6 +67,13 @@ pub trait DescriptorExt {
             // publisher/subscriber matching once they connect, and excluding them
             // cannot lose a message to an already-connected static subscriber.
             if node_is_dynamic(node) {
+                continue;
+            }
+            // Subscribers on another machine can never deliver a readiness token
+            // to this producer (see the doc comment), so they must not gate the
+            // barrier. Same-machine nodes (including the single-machine case where
+            // every machine is `None`) still count, preserving #2666's guarantee.
+            if node_machine(node) != source_machine {
                 continue;
             }
             let inputs: Vec<&Input> = match &node.kind {
@@ -104,6 +123,14 @@ pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 fn node_is_dynamic(node: &ResolvedNode) -> bool {
     matches!(&node.kind, CoreNodeKind::Custom(n)
         if matches!(n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE)
+}
+
+/// The machine a resolved node is deployed to, or `None` for the default
+/// (single-machine / unassigned) placement. Two nodes are co-located when this
+/// value is equal for both — used to decide which subscribers can actually
+/// observe a producer's readiness tokens over same-machine zenoh links.
+fn node_machine(node: &ResolvedNode) -> Option<&str> {
+    node.deploy.as_ref().and_then(|d| d.machine.as_deref())
 }
 
 impl DescriptorExt for Descriptor {
@@ -689,15 +716,26 @@ nodes:
         let doubled = DataId::from("doubled".to_string());
         let missing = DataId::from("nonexistent".to_string());
 
-        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 2);
         assert_eq!(
-            desc.output_subscriber_count(&transform, &doubled).unwrap(),
+            desc.local_output_subscriber_count(&source, &value).unwrap(),
+            2
+        );
+        assert_eq!(
+            desc.local_output_subscriber_count(&transform, &doubled)
+                .unwrap(),
             1
         );
         // Output nobody subscribes to.
-        assert_eq!(desc.output_subscriber_count(&source, &missing).unwrap(), 0);
+        assert_eq!(
+            desc.local_output_subscriber_count(&source, &missing)
+                .unwrap(),
+            0
+        );
         // `sink` produces nothing.
-        assert_eq!(desc.output_subscriber_count(&sink, &value).unwrap(), 0);
+        assert_eq!(
+            desc.local_output_subscriber_count(&sink, &value).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -723,7 +761,48 @@ nodes:
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         let source = NodeId::from("source".to_string());
         let value = DataId::from("value".to_string());
-        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 1);
+        assert_eq!(
+            desc.local_output_subscriber_count(&source, &value).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn local_output_subscriber_count_excludes_remote_subscribers() {
+        // `source` (machine `a`) feeds a co-located subscriber `local_sub` (also
+        // machine `a`) and a remote subscriber `remote_sub` (machine `b`). Only
+        // the co-located one can deliver a readiness token to the producer, so the
+        // barrier must count 1, not 2 — counting the remote subscriber would stall
+        // startup for the full connect timeout and pin the output off the direct
+        // zenoh fast path (#2738).
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    _unstable_deploy:
+      machine: a
+    outputs:
+      - value
+  - id: local_sub
+    path: local_sub
+    _unstable_deploy:
+      machine: a
+    inputs:
+      v: source/value
+  - id: remote_sub
+    path: remote_sub
+    _unstable_deploy:
+      machine: b
+    inputs:
+      v: source/value
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let value = DataId::from("value".to_string());
+        assert_eq!(
+            desc.local_output_subscriber_count(&source, &value).unwrap(),
+            1
+        );
     }
 
     #[test]

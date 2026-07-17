@@ -1236,7 +1236,7 @@ impl DoraNode {
         // which just means "no barrier" — the pre-existing behaviour.
         let expected = match &self.dataflow_descriptor {
             Ok(descriptor) => descriptor
-                .output_subscriber_count(&self.id, output_id)
+                .local_output_subscriber_count(&self.id, output_id)
                 .unwrap_or_else(|e| {
                     tracing::warn!(
                         output = %output_id,
@@ -1355,13 +1355,16 @@ impl DoraNode {
     /// declared its data subscriber and readiness token (the barrier releases
     /// only once all nodes have subscribed), so this merely waits out zenoh route
     /// propagation between already-declared endpoints — normally milliseconds.
+    /// The barrier only waits for *same-machine* subscribers, whose readiness
+    /// tokens can actually reach this producer; remote subscribers are served by
+    /// the daemon path and never gate the switch (see
+    /// [`DescriptorExt::local_output_subscriber_count`]).
     ///
     /// Fail-safe: outputs that don't connect within
-    /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (an unreachable remote subscriber, or a
-    /// zenoh data plane that can't connect while the control plane can) are left
-    /// on the reliable daemon path and upgrade to direct zenoh on a later send
-    /// once their subscribers appear. The dataflow is never blocked from starting
-    /// and nothing is dropped.
+    /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (e.g. a local zenoh data plane that can't
+    /// connect while the control plane can) are left on the reliable daemon path
+    /// and upgrade to direct zenoh on a later send once their subscribers appear.
+    /// The dataflow is never blocked from starting and nothing is dropped.
     fn warm_up_direct_outputs(&mut self) {
         if self.zenoh_session.is_none() {
             return;
