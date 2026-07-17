@@ -1130,6 +1130,84 @@ mod tests {
         }
     }
 
+    /// #2471 review follow-up: `older_schema_version_is_rejected` is
+    /// parameterized on `SCHEMA_VERSION - 1`, so it auto-follows the
+    /// constant and would keep passing even if a future bump moved the
+    /// rejected version away from `2` -- it doesn't pin the actual decision
+    /// being made here. That decision is deliberate and literal: schema `2`
+    /// is permanently ambiguous (v1.0.0-rc.1 stamped pre-`terminal` records
+    /// as v2; v1.0.0-rc.2 stamped post-`terminal` records as v2 too, because
+    /// the version bump that should have accompanied #1854 never happened),
+    /// so *every* v2 database is rejected at `open()` -- even one written by
+    /// rc.2 whose stored row would, on its own, decode perfectly fine under
+    /// the current (terminal-carrying) shape. This test locks in that
+    /// blanket-rejection decision with a hardcoded `2u32`, independent of
+    /// whatever `SCHEMA_VERSION` becomes in the future, and independent of
+    /// whether the specific stored row is decodable.
+    #[test]
+    fn schema_v2_is_rejected_even_though_this_particular_row_would_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2-decodable-row.redb");
+
+        let uuid = Uuid::new_v4();
+        // An rc.2-shaped row: current `DataflowRecord`/`DataflowStatus` types,
+        // `terminal` included. This is fully decodable by the current
+        // `decode()` -- the version guard is the only thing standing between
+        // this store and a successful `open()`.
+        let record = DataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: crate::DataflowStatus::Failed {
+                error: "boom".into(),
+                terminal: true,
+            },
+            daemon_ids: vec![],
+            node_to_daemon: Default::default(),
+            uv: false,
+            generation: 1,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let bytes = encode(&record).unwrap();
+
+        // Sanity check: the row really is decodable under the current shape,
+        // so the rejection below (via a real `RedbStore::open`) is caused by
+        // the version guard alone, not by an incidental encoding mismatch.
+        assert!(decode::<DataflowRecord>(&bytes).is_ok());
+
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                // Hardcoded `2`, not `SCHEMA_VERSION - 1`: this is the
+                // specific historical version both rc.1 and rc.2 stamped
+                // their (mutually incompatible) stores with.
+                meta.insert(SCHEMA_VERSION_KEY, 2u32).unwrap();
+
+                let mut table = txn.open_table(DATAFLOWS).unwrap();
+                table
+                    .insert(record.uuid.as_bytes().as_slice(), bytes.as_slice())
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        match RedbStore::open(&path) {
+            Ok(_) => panic!(
+                "a v2-stamped database must be rejected at open() regardless of \
+                 whether this particular row would decode -- v2 is ambiguous \
+                 between the pre-#1854 (rc.1) and post-#1854 (rc.2) shapes, so \
+                 blanket rejection is the only simple, safe option"
+            ),
+            Err(err) => assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected schema version mismatch, got: {err}"
+            ),
+        }
+    }
+
     /// A corrupt bincode blob in the dataflows table surfaces as an error
     /// on the read path, not a panic. This is the file-corruption scenario
     /// from plan-fault-injection.md section 3.3 at the API level.
