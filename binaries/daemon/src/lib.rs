@@ -5193,7 +5193,11 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         }
 
         estimated_line_length = estimated_line_length.max((read_buf.len() + 1).div_ceil(lines));
-        let estimated_buffer_length = estimated_line_length * tail;
+        // `tail` is the client-supplied `--tail N` line count with no upper
+        // bound, so `estimated_line_length * tail` can overflow `usize` (a debug
+        // panic in the log task; a benign wrap in release). It only feeds a
+        // buffer-growth heuristic, so saturate instead of overflowing.
+        let estimated_buffer_length = estimated_line_length.saturating_mul(tail);
         if estimated_buffer_length >= buffer.len() * 2 {
             buffer.resize(buffer.len() * 2, 0);
         }
@@ -7189,5 +7193,27 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+}
+
+#[cfg(test)]
+mod log_tail_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[tokio::test]
+    async fn read_last_n_lines_handles_huge_tail_without_overflow() {
+        // `--tail N` is unbounded client input. A very large `N` used to make
+        // the `estimated_line_length * tail` buffer-growth estimate overflow
+        // `usize` (a debug-mode panic in the log task). With fewer lines than
+        // requested the whole file is returned; the request must not panic.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "line1\nline2\nline3\n").unwrap();
+        tmp.flush().unwrap();
+
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
+
+        assert_eq!(out, b"line1\nline2\nline3");
     }
 }
