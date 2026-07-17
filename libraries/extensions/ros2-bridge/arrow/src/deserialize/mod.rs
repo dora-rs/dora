@@ -5,7 +5,7 @@ use arrow::{
 };
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::Message;
-use std::{borrow::Cow, collections::HashMap, fmt::Display, sync::Arc};
+use std::{borrow::Cow, fmt::Display, sync::Arc};
 
 mod array;
 mod primitive;
@@ -119,30 +119,21 @@ impl<'de> serde::de::DeserializeSeed<'de> for StructDeserializer<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        let empty = HashMap::new();
-        let package_messages = self
-            .type_info
-            .messages
-            .get(self.type_info.package_name.as_ref())
-            .unwrap_or(&empty);
-        let message = package_messages
-            .get(self.type_info.message_name.as_ref())
-            .ok_or_else(|| {
-                error(format!(
-                    "could not find message type {}::{}",
-                    self.type_info.package_name, self.type_info.message_name
-                ))
-            })?;
+        let type_info = self.type_info.as_ref();
+        let message = lookup_message(type_info).map_err(error)?;
 
-        let visitor = StructVisitor {
-            type_info: self.type_info.as_ref(),
-        };
+        let visitor = StructVisitor { type_info, message };
         deserializer.deserialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len(), visitor)
     }
 }
 
 struct StructVisitor<'a> {
     type_info: &'a TypeInfo<'a>,
+    /// Message definition for `type_info`, resolved once in `deserialize` and
+    /// reused here so `visit_seq` does not repeat the `messages` lookup (and the
+    /// throwaway `HashMap` allocation) for every struct — including every
+    /// element of a `sequence<struct>` / `struct[N]`.
+    message: &'a Message,
 }
 
 impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
@@ -156,20 +147,7 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let empty = HashMap::new();
-        let package_messages = self
-            .type_info
-            .messages
-            .get(self.type_info.package_name.as_ref())
-            .unwrap_or(&empty);
-        let message = package_messages
-            .get(self.type_info.message_name.as_ref())
-            .ok_or_else(|| {
-                error(format!(
-                    "could not find message type {}::{}",
-                    self.type_info.package_name, self.type_info.message_name
-                ))
-            })?;
+        let message = self.message;
 
         let mut fields = vec![];
         for member in &message.members {
@@ -263,6 +241,7 @@ mod tests {
         primitives::{BasicType, NamedType, NestableType},
         sequences::Sequence,
     };
+    use std::collections::HashMap;
 
     fn member(name: &str, r#type: MemberType) -> Member {
         Member {
