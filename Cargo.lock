@@ -2083,7 +2083,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "splitty",
- "syn 2.0.118",
  "tempfile",
  "tokio",
  "tokio-stream",
