@@ -142,6 +142,14 @@ where
 
 impl<T> Drop for OwnedFFISeq<T> {
     fn drop(&mut self) {
+        // `from_rust` stores a null `data` pointer for an empty sequence (as
+        // rosidl requires). `Vec::from_raw_parts(null, 0, 0)` is undefined
+        // behavior — it feeds the null pointer to `Unique::new_unchecked`,
+        // which aborts under debug assertions — so skip reconstruction when
+        // there is nothing to free. Mirrors the `as_slice` empty-case guard.
+        if self.data.is_null() {
+            return;
+        }
         unsafe { Vec::from_raw_parts(self.data, self.size, self.capacity) };
     }
 }
@@ -231,9 +239,9 @@ mod tests {
     fn owned_seq_as_slice_empty_is_safe() {
         // Build the empty representation `from_rust` produces (null data,
         // size 0) directly, since `OwnedFFISeq::from_rust` requires
-        // `T: FFIFromRust`. `forget` avoids the unrelated `Drop` path
-        // (`Vec::from_raw_parts` on the null pointer); this test only
-        // covers the `as_slice` empty-guard.
+        // `T: FFIFromRust`. Letting it drop at end of scope also exercises the
+        // `Drop` guard (`Vec::from_raw_parts` must not run on the null
+        // pointer), so no `mem::forget` is needed.
         let seq: OwnedFFISeq<i32> = OwnedFFISeq {
             data: std::ptr::null_mut(),
             size: 0,
@@ -241,6 +249,36 @@ mod tests {
         };
         assert!(seq.is_empty());
         assert_eq!(seq.as_slice(), &[] as &[i32]);
-        std::mem::forget(seq);
+    }
+
+    #[test]
+    fn owned_seq_empty_drop_is_safe() {
+        // `from_rust` stores a null `data` pointer for an empty sequence.
+        // `Drop` must not feed it to `Vec::from_raw_parts`, which reaches
+        // `Unique::new_unchecked(null)` and aborts under debug assertions.
+        // Building the empty representation and dropping it exercises the
+        // guard directly (this is the more reachable case: `OwnedFFISeq` is
+        // what msg-gen emits for every non-primitive sequence field).
+        let seq: OwnedFFISeq<i32> = OwnedFFISeq {
+            data: std::ptr::null_mut(),
+            size: 0,
+            capacity: 0,
+        };
+        drop(seq);
+    }
+
+    #[test]
+    fn owned_seq_non_empty_drop_frees() {
+        // The guard only skips the null/empty case: a non-null sequence must
+        // still be reconstructed and freed. Build one from a leaked `Vec`
+        // (matching what `from_rust` stores) and let it drop; miri/ASan would
+        // flag a leak or double-free if the guard were too broad.
+        let mut v = ManuallyDrop::new(vec![1_i32, 2, 3]);
+        let seq: OwnedFFISeq<i32> = OwnedFFISeq {
+            data: v.as_mut_ptr(),
+            size: v.len(),
+            capacity: v.capacity(),
+        };
+        drop(seq);
     }
 }
