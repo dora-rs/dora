@@ -79,10 +79,34 @@ pub fn deserialize_context(string_context: &str) -> Context {
 pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
     let mut map = HashMap::new();
     for s in string_context.split(';') {
-        let mut values = s.split(':');
+        // Split on the FIRST ':' only. The value (e.g. a W3C `tracestate`
+        // like `vendor=a:b`) may legitimately contain ':', and a plain
+        // `split(':')` would drop everything after the second colon, silently
+        // corrupting the propagated context.
+        let mut values = s.splitn(2, ':');
         let key = values.next().unwrap();
         let value = values.next().unwrap_or("");
         map.insert(key, value);
     }
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::deserialize_to_hashmap;
+
+    #[test]
+    fn deserialize_keeps_colons_in_value() {
+        // A W3C `tracestate` value may contain ':'. It must survive
+        // deserialization intact rather than being truncated at the 2nd colon.
+        let map = deserialize_to_hashmap("tracestate:vendor=a:b:c;");
+        assert_eq!(map.get("tracestate"), Some(&"vendor=a:b:c"));
+    }
+
+    #[test]
+    fn deserialize_plain_traceparent_round_trips() {
+        // The common case: `traceparent` has no ':' in its value.
+        let map = deserialize_to_hashmap("traceparent:00-abc-def-01;");
+        assert_eq!(map.get("traceparent"), Some(&"00-abc-def-01"));
+    }
 }
