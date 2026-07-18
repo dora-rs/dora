@@ -133,6 +133,13 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         return None;
     }
 
+    // Trim surrounding whitespace so a padded field type (e.g. a quoted
+    // `"Float32 "` in YAML) resolves the same way here as in
+    // `TypeRegistry::field_type_resolves`, which already trims. Without this,
+    // the admission gate would accept the type but this materializer would
+    // return `None`, silently skipping the schema-compatibility check.
+    let type_str = type_str.trim();
+
     // 1. Try primitive Arrow type
     if let Some(dt) = arrow_type_from_name(type_str) {
         return Some(dt);
@@ -1363,5 +1370,49 @@ mod tests {
         // rejected (return false), not overflow the stack
         let deep = format!("{}Float32{}", "List<".repeat(100_000), ">".repeat(100_000));
         assert!(!reg.field_type_resolves(&deep));
+    }
+
+    #[test]
+    fn padded_field_type_gate_and_schema_agree() {
+        // Regression: `field_type_resolves` trims but `resolve_field_type` did
+        // not, so a whitespace-padded field type (e.g. a quoted `"Float32 "`
+        // in YAML) passed the admission gate yet failed to materialize into a
+        // schema — silently skipping the schema-compatibility check. Both must
+        // now agree.
+        let reg = TypeRegistry::new();
+
+        // The gate accepts the padded primitive and its padded `List<…>` form.
+        assert!(reg.field_type_resolves("Float32 "));
+        assert!(reg.field_type_resolves(" List<Float32> "));
+
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![
+                FieldDef {
+                    name: "x".to_string(),
+                    r#type: "Float32 ".to_string(),
+                    nullable: true,
+                },
+                FieldDef {
+                    name: "xs".to_string(),
+                    r#type: " List<Float32> ".to_string(),
+                    nullable: true,
+                },
+            ],
+            metadata: vec![],
+        };
+
+        // …and the materializer now builds the same fields rather than None.
+        let schema = def
+            .to_arrow_schema_with_registry(&reg)
+            .expect("padded field types should build a schema, matching the gate");
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.fields()[0].data_type(), &DataType::Float32);
+        assert!(matches!(
+            schema.fields()[1].data_type(),
+            DataType::LargeList(_)
+        ));
     }
 }
