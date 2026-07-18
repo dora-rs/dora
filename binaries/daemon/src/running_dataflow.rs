@@ -299,6 +299,23 @@ impl RunningDataflow {
         }
     }
 
+    /// Drop per-node bookkeeping that is keyed by node id but not covered by
+    /// the routing-table cleanup in the `RemoveNode` handler.
+    ///
+    /// Without this, removing a node (dynamic reconfiguration) leaves stale
+    /// `input_deadlines` / `broken_inputs` entries behind. A never-armed
+    /// `input_deadlines` entry never times out, so `check_input_timeouts`
+    /// re-scans it every tick forever; a `broken_inputs` entry can never
+    /// recover once the node is gone (recovery only happens on message
+    /// receipt, which a removed node never sees). Together with the
+    /// `node_stderr_most_recent` queue this is an unbounded accumulation
+    /// across repeated add/remove cycles.
+    pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
+        self.input_deadlines.retain(|(n, _), _| n != node_id);
+        self.broken_inputs.retain(|(n, _), _| n != node_id);
+        self.node_stderr_most_recent.remove(node_id);
+    }
+
     pub(crate) async fn start(
         &mut self,
         events_tx: &mpsc::Sender<Timestamped<Event>>,
