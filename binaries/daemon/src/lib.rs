@@ -1372,13 +1372,19 @@ impl Daemon {
         });
 
         let health_check_clock = self.clock.clone();
-        let health_check_interval = tokio_stream::wrappers::IntervalStream::new(
-            tokio::time::interval(health_check_interval_duration.unwrap_or(Duration::from_secs(5))),
-        )
-        .map(move |_| Timestamped {
-            inner: Event::NodeHealthCheckInterval,
-            timestamp: health_check_clock.new_timestamp(),
-        });
+        // `tokio::time::interval` panics on a zero period. Descriptor validation
+        // already rejects a zero `health_check_interval` (see `check_dataflow`),
+        // but guard here as well so a stray `Duration::ZERO` falls back to the
+        // default rather than crashing the daemon (defense-in-depth for #2752).
+        let health_check_period = health_check_interval_duration
+            .filter(|d| !d.is_zero())
+            .unwrap_or(Duration::from_secs(5));
+        let health_check_interval =
+            tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(health_check_period))
+                .map(move |_| Timestamped {
+                    inner: Event::NodeHealthCheckInterval,
+                    timestamp: health_check_clock.new_timestamp(),
+                });
 
         let mut events = (
             external_events,
