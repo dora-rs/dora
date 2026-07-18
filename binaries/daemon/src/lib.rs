@@ -5372,8 +5372,15 @@ async fn send_output_to_local_receivers(
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
-    // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
-    let metadata = Arc::new(metadata.clone());
+    // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy.
+    // Only clone the metadata when there is at least one local receiver to hand
+    // it to: for outputs consumed only across daemons — or while debug
+    // inspection forces `need_data_bytes` with no local subscriber — the loop
+    // below never runs, so this per-message `Metadata` deep-clone + allocation
+    // would otherwise be pure waste. (`data` still wraps unconditionally: the
+    // `need_data_bytes` move-out below expects an `Arc`, and a uniquely-owned
+    // one is moved out rather than copied.)
+    let metadata = (!local_receivers.is_empty()).then(|| Arc::new(metadata.clone()));
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
     for (receiver_id, input_id) in local_receivers {
@@ -5390,7 +5397,11 @@ async fn send_output_to_local_receivers(
             }
             let item = NodeEvent::Input {
                 id: input_id.clone(),
-                metadata: metadata.clone(),
+                // `metadata` is `Some` whenever `local_receivers` is non-empty,
+                // which is the only way we reach this loop body.
+                metadata: metadata
+                    .clone()
+                    .expect("metadata is set when there are local receivers"),
                 data: data.clone(),
             };
             match channel.try_send(Timestamped {
@@ -6699,7 +6710,17 @@ mod fault_tolerance_tests {
         assert_eq!(result.as_deref(), Some(&payload[..]));
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
-        assert!(matches_event(&events[0], "Input"));
+        match &events[0] {
+            NodeEvent::Input {
+                metadata: delivered,
+                ..
+            } => {
+                // The metadata is only Arc-wrapped when there is a local
+                // receiver; make sure the receiver still gets the original.
+                assert_eq!(delivered.timestamp(), metadata.timestamp());
+            }
+            other => panic!("expected Input event, got {other:?}"),
+        }
     }
 
     // -- Test 8: Full circuit breaker cycle: open -> break -> recover --
