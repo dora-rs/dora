@@ -400,9 +400,17 @@ impl RunningDataflow {
             .map(|(id, n)| (id.clone(), n.process.take()))
             .collect();
         if force {
-            for (_, proc) in &running_processes {
-                if let Some(proc) = proc {
-                    proc.submit(ProcessOperation::Kill);
+            for (node, proc) in &running_processes {
+                if let Some(proc) = proc
+                    && proc.submit(ProcessOperation::Kill)
+                {
+                    // Record the daemon-initiated kill so a node that ignores
+                    // the pre-kill `Stop` and gets SIGKILLed is classified as
+                    // a planned `GraceDuration` stop rather than a genuine node
+                    // failure. Mirrors the graceful branch below; exit
+                    // classification keys "the daemon asked this node to stop"
+                    // off `grace_duration_kills` (see lib.rs exit handling).
+                    self.grace_duration_kills.insert(node.clone());
                 }
             }
         } else {
