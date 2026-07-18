@@ -700,7 +700,8 @@ impl Daemon {
         let zenoh_bind = match zenoh_listen_addr {
             Some(addr) => {
                 validate_zenoh_listen(addr).wrap_err(
-                    "invalid --zenoh-listen address (omit the flag to derive it                      from --coordinator-addr)",
+                    "invalid --zenoh-listen address (omit the flag to derive it \
+                     from --coordinator-addr)",
                 )?;
                 ZenohBind::Explicit(addr)
             }
