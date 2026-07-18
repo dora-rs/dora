@@ -61,20 +61,24 @@ impl GitManager {
             // operations.
             //
             // Only hand down a commit to verify (see the Reuse arm) when the dir was
-            // left by a prior, finished build: it's on disk but this session didn't
-            // plan it. A dir this session *did* plan is about to be filled in by a
-            // sibling node's NewClone, which may be running right now on another
-            // thread (parallel builds share one JoinSet with no per-dir lock). If I
-            // checked HEAD on that I could delete a clone that's still being written,
-            // so I skip verification and just reuse it, same as before this change.
-            let planned_this_session = self
+            // left by a prior, finished build: it's on disk but no in-flight build
+            // planned it. A dir that *any* still-running build session planned is
+            // about to be filled in by that build's NewClone, which may be running
+            // right now on another thread (parallel builds share one JoinSet, and
+            // the daemon shares a single GitManager across concurrent sessions, both
+            // with no per-dir lock). If I checked HEAD on that I could delete a clone
+            // that's still being written, so I skip verification and just reuse it,
+            // same as before this change. Consulting every session's planned set
+            // (not just this session's) closes the same race across concurrent build
+            // sessions in the daemon (#2711); the per-session guard from #2482 only
+            // covered sibling nodes within one session.
+            let planned_by_in_flight_build = self
                 .prepared_builds
-                .get(&session_id)
-                .map(|p| p.planned_clone_dirs.contains(&clone_dir))
-                .unwrap_or(false);
+                .values()
+                .any(|p| p.planned_clone_dirs.contains(&clone_dir));
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
-                verify_commit: (!planned_this_session).then_some(commit_hash),
+                verify_commit: (!planned_by_in_flight_build).then_some(commit_hash),
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
@@ -321,18 +325,35 @@ impl GitFolder {
                     .await
                     .context("HEAD read task panicked")?;
 
-                    let on_right_commit =
-                        matches!(&head, Ok(h) if h.eq_ignore_ascii_case(&commit_hash));
-                    if !on_right_commit {
-                        // Drop the stale clone so the next build re-clones from
-                        // scratch, then fail loudly instead of quietly building the
-                        // old source.
-                        cleanup_failed_clone(logger, &dir).await;
-                        bail!(
-                            "clone dir {} is not on the requested commit {commit_hash} \
-                             (found {head:?}); I removed it, please rebuild",
-                            dir.display()
-                        );
+                    match head {
+                        // The dir is a valid repo checked out at the commit we want.
+                        Ok(h) if h.eq_ignore_ascii_case(&commit_hash) => {}
+                        // The dir is a valid repo, concretely on a *different*
+                        // commit: a genuine stale leftover from a prior build. Drop
+                        // it so the next build re-clones from scratch, then fail
+                        // loudly instead of quietly building the old source.
+                        Ok(h) => {
+                            cleanup_failed_clone(logger, &dir).await;
+                            bail!(
+                                "clone dir {} is not on the requested commit {commit_hash} \
+                                 (found {h}); I removed it, please rebuild",
+                                dir.display()
+                            );
+                        }
+                        // HEAD didn't resolve: the dir may be mid-clone (a build I
+                        // couldn't see planning it, an empty/partial repo with no
+                        // HEAD yet) or hitting a transient open/lock failure. I must
+                        // not `remove_dir_all` here — deleting a dir another build is
+                        // still writing is exactly the race this guards against
+                        // (#2711). Fail loudly and leave the dir untouched so a retry
+                        // (or the owning build) can recover it.
+                        Err(err) => {
+                            bail!(
+                                "couldn't verify clone dir {} is on commit {commit_hash}: \
+                                 {err:?}; leaving it in place, please retry",
+                                dir.display()
+                            );
+                        }
                     }
                 }
 
@@ -640,5 +661,97 @@ mod tests {
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists(), "a sibling-owned clone must never be deleted");
+    }
+
+    // A dir that exists but whose HEAD can't be resolved (not a valid repo yet)
+    // models a clone that a concurrent build is still writing, or a transient
+    // open failure. The old code treated any HEAD error as "wrong commit" and
+    // deleted it, which could yank a dir out from under an in-flight clone
+    // (#2711). We must now fail loudly *without* removing it.
+    #[tokio::test]
+    async fn reuse_leaves_dir_when_head_unresolvable() {
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        // An empty directory is not a git repo, so `Repository::open` fails.
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                verify_commit: Some("0".repeat(40)),
+            },
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            dir.exists(),
+            "a dir whose HEAD can't be resolved (possibly mid-clone) must not be deleted"
+        );
+    }
+
+    // Cross-session variant of the sibling-clone race (#2711): the daemon shares
+    // one `GitManager` across concurrent build sessions. When session A has
+    // planned a clone dir (and may be actively cloning into it), a *different*
+    // session B choosing the same repo@commit must reuse it without a HEAD check,
+    // so B can never delete a dir A is still writing.
+    #[test]
+    fn choose_clone_dir_skips_verify_for_dir_planned_by_another_session() {
+        let target = tempfile::tempdir().unwrap();
+        let repo = "https://example.com/owner/repo.git".to_string();
+        let commit = "a".repeat(40);
+        let mut mgr = GitManager::default();
+
+        let session_a = SessionId::generate();
+        let session_b = SessionId::generate();
+
+        // Session A plans the clone dir (NewClone registers it in A's planned set).
+        let a = mgr
+            .choose_clone_dir(session_a, repo.clone(), commit.clone(), None, target.path())
+            .unwrap();
+        let clone_dir = match a.reuse {
+            ReuseOptions::NewClone { target_dir, .. } => target_dir,
+            other => panic!("expected NewClone for the first session, got {other:?}"),
+        };
+        // Simulate A's spawned build task having started cloning: the dir now
+        // exists on disk, mid-clone.
+        std::fs::create_dir_all(&clone_dir).unwrap();
+
+        // Session B chooses the same repo@commit while A is in flight.
+        let b = mgr
+            .choose_clone_dir(session_b, repo, commit, None, target.path())
+            .unwrap();
+        match b.reuse {
+            ReuseOptions::Reuse { dir, verify_commit } => {
+                assert_eq!(dir, clone_dir);
+                assert!(
+                    verify_commit.is_none(),
+                    "must not verify (and risk deleting) a dir another in-flight session is cloning"
+                );
+            }
+            other => panic!("expected Reuse for the second session, got {other:?}"),
+        }
+
+        // Once every in-flight build that owns the dir clears its planned set
+        // (both A and B touched it), a later session may again verify a genuinely
+        // stale leftover.
+        mgr.clear_planned_builds(session_a);
+        mgr.clear_planned_builds(session_b);
+        let c = mgr
+            .choose_clone_dir(
+                SessionId::generate(),
+                "https://example.com/owner/repo.git".to_string(),
+                "a".repeat(40),
+                None,
+                target.path(),
+            )
+            .unwrap();
+        match c.reuse {
+            ReuseOptions::Reuse { verify_commit, .. } => {
+                assert!(
+                    verify_commit.is_some(),
+                    "a dir no in-flight build owns should be HEAD-verified again"
+                );
+            }
+            other => panic!("expected Reuse after A cleared, got {other:?}"),
+        }
     }
 }
