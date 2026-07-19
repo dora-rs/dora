@@ -242,7 +242,7 @@ async fn start_with_events(
     // Start WS server
     #[cfg(feature = "metrics")]
     let _meter_provider = {
-        let provider = dora_metrics::init_metrics();
+        let provider = dora_metrics::init_metrics()?;
         opentelemetry::global::set_meter_provider(provider.clone());
         provider
     };
