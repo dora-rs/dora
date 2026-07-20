@@ -1570,6 +1570,8 @@ impl Node {
                             let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
                             None
                         }
+                    } else {
+                        None
                     }
                 } else {
                     // Same-device or P2P available: allocate on sender device.
