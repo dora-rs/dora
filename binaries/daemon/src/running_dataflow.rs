@@ -16,7 +16,12 @@ use dora_message::{
     metadata::{self},
     node_to_daemon::Timestamped,
 };
-/// Default grace period before force-killing a stopped node.
+/// Default grace period before force-killing a stopped node. A stopped node is
+/// hard-killed at `DEFAULT_STOP_GRACE + DEFAULT_STOP_GRACE/2` (= 15s), so a node's own
+/// zenoh teardown deadline must stay under that or it gets force-killed mid-teardown
+/// (`ExitCode(1)` on Windows — dora-rs/dora#2742). Kept in sync by
+/// `ZENOH_TEARDOWN_TIMEOUT` in `apis/rust/node/src/node/mod.rs` and its
+/// `zenoh_teardown_fits_within_daemon_force_kill_grace` guard test.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(10_000);
 /// Default grace period before force-killing a restarting node.
 const DEFAULT_RESTART_GRACE: Duration = Duration::from_millis(5_000);
