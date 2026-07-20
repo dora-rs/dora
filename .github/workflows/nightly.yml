@@ -2224,3 +2224,72 @@ jobs:
               --body "$issue_body" \
               --label nightly-regression
           fi
+
+  close-issue-on-success:
+    name: Close regression issue on green nightly
+    runs-on: ubuntu-latest
+    needs:
+      - build-cli
+      - smoke-suite
+      - memory-pool-smoke
+      - log-sinks
+      - service-action
+      - streaming
+      - record-replay
+      - cluster-smoke
+      - cluster-e2e
+      - cluster-record-replay
+      - topic-and-top-smoke
+      - cpu-affinity-smoke
+      - redb-backend-smoke
+      - daemon-reconnect-smoke
+      - state-reconstruction-smoke
+      - kani-proofs
+      - test-cross-platform
+      - examples
+      - cli-tests
+      - bench-example
+      - cross-check
+      - ros2-bridge
+      - msrv
+    # Inverse of `file-issue-on-failure`: on a scheduled run where the suite
+    # actually ran (build-cli succeeded) and nothing failed or was cancelled
+    # (skipped jobs are fine), close the open nightly-regression issue, if any.
+    # `always()` so a skipped job elsewhere can't skip this too; the explicit
+    # negated `contains` checks make "clean" unambiguous rather than leaning on
+    # `success()` semantics for skipped needs.
+    if: always() && needs.build-cli.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'schedule'
+    steps:
+      - name: Close any open nightly-regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          DATE=$(date -u +%Y-%m-%d)
+
+          close_comment="Nightly regression suite passed on $DATE — closing automatically. A future regression will open a fresh issue.
+
+          Run: $RUN_URL"
+
+          # The failure job keeps at most one open, but close every open one to
+          # be safe. `--jq '.[].number'` yields one issue number per line.
+          OPEN=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --label nightly-regression \
+            --json number \
+            --jq '.[].number')
+
+          if [ -z "$OPEN" ]; then
+            echo "No open nightly-regression issue; nothing to close."
+            exit 0
+          fi
+
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            echo "Closing #$n (nightly green on $DATE)"
+            gh issue close "$n" --repo "$REPO" --reason completed --comment "$close_comment"
+          done <<< "$OPEN"
