@@ -1969,17 +1969,13 @@ impl Node {
                             } else {
                                 Ok(())
                             };
-                            // Seqlock: end write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
 
-                            // Surface a failed copy after closing the seqlock (so the
-                            // reader sees a consistent, even generation).  Re-insert
-                            // the slot first so the pool survives for later frames.
+                            // Check copy result before advancing the seqlock.
+                            // On failure, leave gen odd so the reader sees an
+                            // incomplete write and falls back to the daemon path
+                            // rather than silently consuming stale data.
+                            // Re-insert the slot first so the pool survives for
+                            // later frames.
                             if let Err(e) = write_result {
                                 if let Some(slot_data) = store_back.take() {
                                     PINNED_POOL
@@ -1992,6 +1988,14 @@ impl Node {
                                     self.node_id,
                                     e
                                 ));
+                            }
+
+                            // Seqlock: end write (gen → even, only on copy success)
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else {
                             // Seqlock: begin write
@@ -2181,20 +2185,24 @@ impl Node {
                             } else {
                                 Ok(())
                             };
-                            // Seqlock: end write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
-                            // Surface a failed copy after closing the seqlock.
+
+                            // Check copy result before advancing the seqlock.
+                            // On failure, leave gen odd so the reader sees an
+                            // incomplete write and falls back to the daemon path.
                             if let Err(e) = write_result {
                                 return Err(eyre::eyre!(
                                     "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
                                     self.node_id,
                                     e
                                 ));
+                            }
+
+                            // Seqlock: end write (gen → even, only on copy success)
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let old_gen = std::ptr::read_volatile(gen_ptr);
+                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
+                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else {
                             // Seqlock: begin write
