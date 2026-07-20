@@ -12,11 +12,11 @@ publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs-cli`, not crates.io
 
 [features]
 default = ["telemetry"]
-telemetry = ["dora-runtime/telemetry"]
+telemetry = ["dora-runtime-python/telemetry"]
 
 [dependencies]
 dora-cli = { workspace = true, features = ["python"] }
-dora-runtime = { workspace = true, features = ["tracing", "metrics", "python"] }
+dora-runtime-python = { workspace = true, features = ["tracing", "metrics"] }
 dora-download = { workspace = true }
 dora-node-api = { workspace = true }
 eyre = { workspace = true }

@@ -58,7 +58,9 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) - build, run, stop dataflows |
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages local shared-memory/TCP communication |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments |
-| `binaries/runtime` | dora-runtime | In-process operator execution runtime |
+| `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop, node harness, `OperatorRunner` trait) |
+| `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library (C ABI) operator runtime backend; shipped in the `dora` CLI (`dora runtime`) |
+| `binaries/runtime-python` | dora-runtime-python | Python (PyO3) operator runtime backend; shipped in the Python wheel (`dora.start_runtime()`) |
 | `libraries/message` | dora-message | All inter-component message types and protocol definitions |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |

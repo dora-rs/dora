@@ -1051,6 +1051,55 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+/// Built-in runtime name for shared-library operators.
+pub const RUNTIME_SHARED_LIBRARY: &str = "shared-library";
+/// Built-in runtime name for Python operators.
+pub const RUNTIME_PYTHON: &str = "python";
+/// Built-in runtime name for WebAssembly operators.
+pub const RUNTIME_WASM: &str = "wasm";
+
+/// A language/ABI-neutral view of an [`OperatorSource`].
+///
+/// Normalizes the `OperatorSource` variants onto a single shape — a runtime
+/// *name* plus an opaque *source* string — so the daemon spawn logic and the
+/// runtime SDK can key on the runtime name instead of matching each variant.
+/// This mapping is the single source of truth for "which runtime hosts this
+/// operator".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedOperatorSource {
+    /// Runtime name, e.g. [`RUNTIME_SHARED_LIBRARY`], [`RUNTIME_PYTHON`], or
+    /// [`RUNTIME_WASM`].
+    pub runtime: String,
+    /// Opaque source string (path / URL / module) for the operator artifact.
+    pub source: Option<String>,
+}
+
+impl OperatorSource {
+    /// Normalizes this source into a [`ResolvedOperatorSource`] (runtime name +
+    /// opaque source string).
+    pub fn resolve(&self) -> ResolvedOperatorSource {
+        let source = match self {
+            OperatorSource::SharedLibrary(source) | OperatorSource::Wasm(source) => {
+                Some(source.clone())
+            }
+            OperatorSource::Python(python) => Some(python.source.clone()),
+        };
+        ResolvedOperatorSource {
+            runtime: self.runtime_name().to_owned(),
+            source,
+        }
+    }
+
+    /// The name of the runtime that hosts operators declared with this source.
+    pub fn runtime_name(&self) -> &'static str {
+        match self {
+            OperatorSource::SharedLibrary(_) => RUNTIME_SHARED_LIBRARY,
+            OperatorSource::Python(_) => RUNTIME_PYTHON,
+            OperatorSource::Wasm(_) => RUNTIME_WASM,
+        }
+    }
+}
+
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
@@ -1439,5 +1488,55 @@ _unstable_debug:
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
         assert!(desc.debug.enable_debug_inspection);
+    }
+
+    #[test]
+    fn operator_source_shared_library_resolves() {
+        let cfg: OperatorConfig = serde_yaml::from_str("shared-library: build/op").unwrap();
+        let resolved = cfg.source.resolve();
+        assert_eq!(resolved.runtime, RUNTIME_SHARED_LIBRARY);
+        assert_eq!(resolved.source.as_deref(), Some("build/op"));
+        assert_eq!(cfg.source.runtime_name(), "shared-library");
+    }
+
+    #[test]
+    fn operator_source_python_source_only_resolves() {
+        let cfg: OperatorConfig = serde_yaml::from_str("python: op.py").unwrap();
+        assert!(matches!(cfg.source, OperatorSource::Python(_)));
+        let resolved = cfg.source.resolve();
+        assert_eq!(resolved.runtime, RUNTIME_PYTHON);
+        assert_eq!(resolved.source.as_deref(), Some("op.py"));
+    }
+
+    #[test]
+    fn operator_source_python_with_conda_env_resolves() {
+        let cfg: OperatorConfig =
+            serde_yaml::from_str("python:\n  source: op.py\n  conda_env: my-env").unwrap();
+        match &cfg.source {
+            OperatorSource::Python(py) => {
+                assert_eq!(py.source, "op.py");
+                assert_eq!(py.conda_env.as_deref(), Some("my-env"));
+            }
+            other => panic!("expected python source, got {other:?}"),
+        }
+        assert_eq!(cfg.source.resolve().runtime, RUNTIME_PYTHON);
+    }
+
+    #[test]
+    fn operator_source_wasm_resolves() {
+        let cfg: OperatorConfig = serde_yaml::from_str("wasm: op.wasm").unwrap();
+        let resolved = cfg.source.resolve();
+        assert_eq!(resolved.runtime, RUNTIME_WASM);
+        assert_eq!(resolved.source.as_deref(), Some("op.wasm"));
+    }
+
+    #[test]
+    fn operator_source_roundtrips_through_serde() {
+        for yaml in ["shared-library: build/op", "python: op.py", "wasm: op.wasm"] {
+            let cfg: OperatorConfig = serde_yaml::from_str(yaml).unwrap();
+            let serialized = serde_yaml::to_string(&cfg).unwrap();
+            let reparsed: OperatorConfig = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(cfg.source.resolve(), reparsed.source.resolve());
+        }
     }
 }

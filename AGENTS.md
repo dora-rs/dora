@@ -38,7 +38,9 @@ Important packages:
 - `binaries/cli`: `dora` CLI
 - `binaries/daemon`: local process manager and transport bridge
 - `binaries/coordinator`: distributed orchestration
-- `binaries/runtime`: in-process operator runtime
+- `binaries/runtime-api`: language-neutral operator runtime SDK (`OperatorRunner` trait + event loop)
+- `binaries/runtime-shared-lib`: shared-library (C ABI) operator runtime backend (in the `dora` CLI)
+- `binaries/runtime-python`: Python (PyO3) operator runtime backend (in the Python wheel)
 - `libraries/core`: descriptor parsing and shared build/runtime utilities
 - `libraries/message`: protocol and message definitions
 - `apis/rust/node`: Rust node API
