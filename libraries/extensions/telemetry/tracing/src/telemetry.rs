@@ -105,7 +105,71 @@ pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
 
 #[cfg(test)]
 mod tests {
-    use super::deserialize_to_hashmap;
+    use super::{deserialize_context, deserialize_to_hashmap, serialize_context};
+
+    #[test]
+    fn round_trip_context_preserves_multi_member_tracestate_delimiters() {
+        use opentelemetry::Context;
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+        use opentelemetry_sdk::propagation::TraceContextPropagator;
+
+        // `serialize_context`/`deserialize_context` route through the process-global
+        // text-map propagator, exactly as production does; install the same W3C
+        // TraceContext propagator the daemon/runtime rely on.
+        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
+
+        // A realistic multi-member W3C `tracestate`. Members are joined with `,`
+        // and each key/value pair with `=`; the `vendorb` value additionally
+        // embeds `:` and `;`, both legal inside a value (W3C spec) and exactly
+        // the bytes the old `;`-joined / `:`-split codec corrupted.
+        let trace_state = TraceState::from_key_value(vec![
+            ("vendora", "t61rcwkgmze"),
+            ("vendorb", "00f067aa0ba902b7:child;sampled"),
+        ])
+        .expect("valid W3C tracestate members");
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            trace_state.clone(),
+        );
+        let context = Context::new().with_remote_span_context(span_context.clone());
+
+        // Encode (the path no prior test exercised) then decode.
+        let serialized = serialize_context(&context);
+        let map = deserialize_to_hashmap(&serialized);
+
+        // `traceparent` carries the ids; `tracestate` must survive byte-for-byte.
+        assert_eq!(
+            map.get("traceparent").copied(),
+            Some("00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"),
+        );
+        // Derive the expected `tracestate` from the source of truth so the
+        // assertion is independent of member ordering.
+        let expected_tracestate = trace_state.header();
+        assert!(
+            [',', '=', ':', ';']
+                .iter()
+                .all(|d| expected_tracestate.contains(*d)),
+            "fixture must exercise all four delimiters: {expected_tracestate}",
+        );
+        assert_eq!(
+            map.get("tracestate").copied(),
+            Some(expected_tracestate.as_str())
+        );
+        assert_eq!(map.len(), 2, "no spurious entries expected: {map:?}");
+
+        // Full round-trip: decoding the serialized form reconstructs the
+        // original span context, delimiters intact and no truncation.
+        let recovered = deserialize_context(&serialized);
+        let recovered = recovered.span().span_context().clone();
+        assert_eq!(recovered.trace_id(), span_context.trace_id());
+        assert_eq!(recovered.span_id(), span_context.span_id());
+        assert_eq!(recovered.trace_state().header(), trace_state.header());
+    }
 
     #[test]
     fn deserialize_preserves_tracestate_with_colon_and_semicolon() {
