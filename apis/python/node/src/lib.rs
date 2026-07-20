@@ -181,6 +181,15 @@ struct RecvGpuSlot {
     gpu_buf: u64,   // IPC-opened GPU DRAM pointer, 0 if GPU VA path
     host_base: u64, // original host ptr passed to cudaHostRegister
 }
+
+/// Daemon-trusted GPU buffer sizes, keyed by buffer_id.
+/// Populated from daemon metadata when the fallback path successfully
+/// re-imports a GPU IPC handle.  The fast path (`try_doradma_read`)
+/// validates the (world-writable) shmem `size` against this cache —
+/// if `size` exceeds the trusted capacity, the read is rejected and
+/// the caller falls back to the daemon.
+static GPU_BUF_SIZES: LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 unsafe impl Send for RecvGpuSlot {}
 unsafe impl Sync for RecvGpuSlot {}
 
@@ -2429,6 +2438,14 @@ impl Node {
                             .unwrap_or(0);
                         if gpu_ptr != 0 {
                             read_ptr = gpu_ptr as i64;
+                            // Populate the trusted capacity cache so the
+                            // fast path (`try_doradma_read`) can validate
+                            // the world-writable shmem `size` against the
+                            // daemon-trusted registered GPU buffer size.
+                            GPU_BUF_SIZES
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(buffer_id.clone(), size as u64);
                         }
                     }
                 }
@@ -2878,9 +2895,21 @@ impl Node {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(buffer_id) {
                     Some(slot_data) if slot_data.gpu_buf != 0 => {
-                        // GPU IPC handle is stable across data overwrites;
-                        // cache is keyed by full buffer_id (namespaced),
-                        // so cross-pool aliasing is impossible.
+                        // Validate size against the daemon-trusted GPU
+                        // buffer capacity.  GPU_BUF_SIZES is populated
+                        // from daemon metadata — once an entry exists,
+                        // a write-side shmem inflation is rejected before
+                        // any OOB access reaches the GPU driver.
+                        {
+                            let trusted = GPU_BUF_SIZES
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner());
+                            if let Some(&capped_size) = trusted.get(buffer_id) {
+                                if (size as u64) > capped_size {
+                                    return Ok(None);
+                                }
+                            }
+                        }
                         slot_data.gpu_buf
                     }
                     _ => {
