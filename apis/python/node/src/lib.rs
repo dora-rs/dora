@@ -1570,11 +1570,13 @@ impl Node {
                             let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
                             None
                         }
-                    } else {
-                        None
                     }
                 } else {
                     // Same-device or P2P available: allocate on sender device.
+                    // Switch to sender device first — the ambient CUDA device
+                    // may differ from the tensor device, so cudaMalloc would
+                    // land on the wrong GPU.
+                    let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
                     let dst: u64 = bound
                         .call_method1("_get_gpu_buf", (pool_counter, size))
                         .and_then(|r| r.extract::<u64>())
@@ -1625,17 +1627,6 @@ impl Node {
         // every later write/read would silently reject.  Reclaim the shmem
         // segment on the way out (it was created with owner=false).
         if receiver_is_cuda && !ipc_written {
-            // The GPU pool buffer (and, on the transit path, the page-locked
-            // host transit buffer) were allocated before the IPC export, which
-            // failed.  Free them before bailing — otherwise they leak for the
-            // life of the process since no PoolSlot was stored to track them.
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
-                if transit_ptr != 0 {
-                    let _ = bound.call_method1("_free_transit", (transit_ptr,));
-                }
-            }
             shmem.set_owner(true);
             eyre::bail!(
                 "[{}] register_memory_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
@@ -1701,12 +1692,12 @@ impl Node {
                 dora_node_api::Parameter::String(pinned_type.to_string()),
             );
             params.insert(
-                "buffer_id".to_string(),
-                dora_node_api::Parameter::String(buffer_id.clone()),
-            );
-            params.insert(
                 "ipc_present".to_string(),
                 dora_node_api::Parameter::Bool(ipc_written),
+            );
+            params.insert(
+                "buffer_id".to_string(),
+                dora_node_api::Parameter::String(buffer_id.clone()),
             );
 
             let meta = dora_node_api::Metadata::from_parameters(ts, params);
@@ -2319,21 +2310,6 @@ impl Node {
                     })
                     .unwrap_or("cpu");
 
-                // Read the trusted ipc_present from the daemon before
-                // touching the (world-writable) shmem, so the size gate
-                // mirrors try_doradma_read and both write paths.
-                let ipc_present_trusted = metadata
-                    .parameters
-                    .get("ipc_present")
-                    .and_then(|p| {
-                        if let Parameter::Bool(v) = p {
-                            Some(*v)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-
                 // Resolve the actual data pointer from shared memory.
                 // The `ptr` in the daemon metadata is the registering node's
                 // process-local address — meaningless in a different process.
@@ -2347,7 +2323,20 @@ impl Node {
                     }
                 });
 
+                // Trusted ipc_present from daemon metadata — not the
+                // world-writable shmem header.  When true, the shmem is
+                // header-only and the GPU buffer is accessible via IPC import.
+                let ipc_present_trusted = metadata.parameters.get("ipc_present").and_then(|p| {
+                    if let Parameter::Bool(v) = p {
+                        Some(*v)
+                    } else {
+                        None
+                    }
+                });
                 let mut read_ptr: i64 = 0;
+                // IPC handle bytes cached from the shmem header so they
+                // survive the shmem borrow.
+                let mut ipc_handle: Option<Vec<u8>> = None;
                 if let Some(ref name) = shmem_name
                     && let Ok(shmem) = ShmemConf::new().os_id(name).open()
                 {
@@ -2365,10 +2354,9 @@ impl Node {
                     let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                     if magic == DORADMA_MAGIC {
                         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                        // Gate the capacity check on ipc_present — the same
-                        // pattern as try_doradma_read and both write paths.
-                        // GPU pools are header-only and the data region is unused.
-                        if !ipc_present_trusted
+                        // For GPU pools (ipc_present == 1) the shmem is
+                        // header-only — skip the data-region capacity check.
+                        if !matches!(ipc_present_trusted, Some(true))
                             && (data_offset > shmem.len()
                                 || (size as usize) > shmem.len().saturating_sub(data_offset))
                         {
@@ -2380,6 +2368,13 @@ impl Node {
                                 size,
                                 shmem.len()
                             ));
+                        }
+                        // Cache the IPC handle before the shmem borrow ends.
+                        if matches!(ipc_present_trusted, Some(true)) {
+                            ipc_handle = Some(
+                                unsafe { std::slice::from_raw_parts(shmem_ptr.add(32), 64) }
+                                    .to_vec(),
+                            );
                         }
                         // Mirroring try_doradma_read: check cache first,
                         // so on a cache hit we return the cached mapping's
@@ -2399,49 +2394,45 @@ impl Node {
                     }
                 }
 
-                // The daemon-fallback shmem block above sets read_ptr to a
-                // host mmap address (shmem_ptr + data_offset).  For GPU pools
-                // that is invalid — reset it before the CUDA re-import so a
-                // failed IPC import doesn't silently label host memory as
-                // device=cuda (phil-opp's contingent finding).
-                let device = if pinned_type.starts_with("cuda") {
-                    read_ptr = 0;
-                    if ipc_present_trusted
-                        && let Some(ref name) = shmem_name
-                        && let Ok(shmem) = ShmemConf::new().os_id(name).open()
-                    {
-                        let shmem_ptr = shmem.as_ptr();
-                        let handle_bytes =
-                            unsafe { std::slice::from_raw_parts(shmem_ptr.add(32), 64) };
-                        if let Ok(helpers) = get_cuda_helpers(py) {
-                            let bound = helpers.bind(py);
-                            let handle_py = PyBytes::new(py, handle_bytes);
-                            if let Ok(gpu_ptr) = bound
-                                .call_method1("_ipc_import", (handle_py,))
-                                .and_then(|r| r.extract::<u64>())
-                            {
-                                let mut gpu_cache =
-                                    RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
-                                gpu_cache.entry(buffer_id.clone()).or_insert(RecvGpuSlot {
-                                    _shmem: shmem,
-                                    gpu_va: 0,
-                                    gpu_buf: gpu_ptr,
-                                    host_base: shmem_ptr as u64,
-                                });
-                                read_ptr = gpu_ptr as i64;
-                            }
+                // GPU pool with IPC handle: re-import from the trusted
+                // handle cached above.
+                if matches!(ipc_present_trusted, Some(true))
+                    && let Some(ref handle_bytes) = ipc_handle
+                {
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let handle_py = PyBytes::new(py, handle_bytes);
+                        let gpu_ptr: u64 = bound
+                            .call_method1("_ipc_import", (handle_py,))
+                            .and_then(|r| r.extract::<u64>())
+                            .unwrap_or(0);
+                        if gpu_ptr != 0 {
+                            read_ptr = gpu_ptr as i64;
                         }
                     }
-                    if read_ptr == 0 {
-                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                        eyre::bail!(
-                            "memory pool {}: daemon fallback cannot provide a CUDA pointer \
-                             (fast path returned None); check that the pool was registered \
-                             with the correct receiver device",
-                            buffer_id,
-                        );
-                    }
+                }
+
+                if read_ptr == 0 {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!("memory pool {} not found or has invalid pointer", buffer_id);
+                }
+
+                // Trusted ipc_present from the daemon gates device resolution.
+                // For GPU pools the CUDA IPC re-import (above) provides a valid
+                // device pointer; for CPU pools read_ptr is a host mmap.
+                let device = if matches!(ipc_present_trusted, Some(true)) {
                     "cuda"
+                } else if pinned_type.starts_with("cuda") {
+                    // ipc_present_trusted is false but pinned_type=cuda:
+                    // the fast path failed and the daemon cannot provide a
+                    // GPU pointer — reject.
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!(
+                        "memory pool {}: daemon fallback cannot provide a CUDA pointer \
+                         (fast path returned None); check that the pool was registered \
+                         with the correct receiver device",
+                        buffer_id,
+                    );
                 } else {
                     "cpu"
                 };
