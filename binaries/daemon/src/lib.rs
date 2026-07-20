@@ -614,6 +614,59 @@ impl ZenohBind {
     }
 }
 
+/// Report whether `zenoh_bind` can be reached by remote daemons, and reject a
+/// configuration that would run silently undialable.
+///
+/// A loopback listener advertises `127.0.0.1` to peers, who dial their own
+/// loopback and reach nothing — and since zenoh 1.9 peers do not relay, that
+/// pair is dead with no fallback. When the coordinator is remote (so other
+/// daemons are expected):
+///
+/// * an *explicit* loopback address is a hard error — the operator named it, and
+///   the [`ZenohBind::Explicit`] contract is "bind a routable address or exit",
+///   the same "nothing to advertise" reason [`validate_zenoh_listen`] already
+///   rejects the wildcard for;
+/// * a *derived* loopback only warns — it is a best-effort fallback the operator
+///   can override with `--zenoh-listen`.
+///
+/// A routable bind is announced at info level; a single-machine (loopback
+/// coordinator) setup is silent.
+fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -> eyre::Result<()> {
+    if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
+        match zenoh_bind {
+            ZenohBind::Explicit(addr) => {
+                eyre::bail!(
+                    "--zenoh-listen {addr} is a loopback address, but the coordinator \
+                     at {coordinator_ws_addr} is remote, so other daemons must be able \
+                     to reach this one. A loopback listener advertises {addr} to peers, \
+                     who would dial their own loopback and reach nothing. Pass the \
+                     address other daemons should use to reach this host (e.g. its LAN \
+                     or VPN address)."
+                );
+            }
+            ZenohBind::Derived(_) => {
+                tracing::warn!(
+                    "coordinator at {coordinator_ws_addr} is remote, but no routable local \
+                     address toward it was found; zenoh will bind loopback and other daemons \
+                     will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
+                );
+            }
+        }
+    } else if !zenoh_bind.addr().is_loopback() {
+        tracing::info!(
+            "zenoh listener binding {} ({}); this port accepts connections from \
+             other hosts",
+            zenoh_bind.addr(),
+            match zenoh_bind {
+                ZenohBind::Explicit(_) => "given via --zenoh-listen".to_string(),
+                ZenohBind::Derived(_) =>
+                    format!("derived from coordinator address {coordinator_ws_addr}"),
+            }
+        );
+    }
+    Ok(())
+}
+
 impl Daemon {
     /// Derives the zenoh listen address from `coordinator_ws_addr`; see
     /// [`Daemon::run_with_zenoh_listen`] to override it.
@@ -723,30 +776,7 @@ impl Daemon {
                     )
                 })?;
         }
-        if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
-            // The coordinator is remote, so other daemons are expected, but we
-            // have no address to offer them. Binding loopback anyway means
-            // advertising `127.0.0.1` to peers, who dial their own loopback and
-            // reach nothing — and since zenoh 1.9 peers do not relay, that pair
-            // is dead with no fallback. Say so: this is the silent failure the
-            // routable bind exists to prevent.
-            tracing::warn!(
-                "coordinator at {coordinator_ws_addr} is remote, but no routable local \
-                 address toward it was found; zenoh will bind loopback and other daemons \
-                 will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
-            );
-        } else if !zenoh_bind.addr().is_loopback() {
-            tracing::info!(
-                "zenoh listener binding {} ({}); this port accepts connections from \
-                 other hosts",
-                zenoh_bind.addr(),
-                match zenoh_bind {
-                    ZenohBind::Explicit(_) => "given via --zenoh-listen".to_string(),
-                    ZenohBind::Derived(_) =>
-                        format!("derived from coordinator address {coordinator_ws_addr}"),
-                }
-            );
-        }
+        announce_zenoh_bind(zenoh_bind, coordinator_ws_addr)?;
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -7215,5 +7245,54 @@ mod log_tail_tests {
         let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
 
         assert_eq!(out, b"line1\nline2\nline3");
+    }
+}
+
+#[cfg(test)]
+mod announce_zenoh_bind_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const REMOTE_COORDINATOR: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+    const ROUTABLE_LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+    fn sock(ip: IpAddr) -> SocketAddr {
+        SocketAddr::new(ip, 6012)
+    }
+
+    #[test]
+    fn explicit_loopback_under_remote_coordinator_is_rejected() {
+        // #2770: an operator who names a loopback address while the coordinator
+        // is remote gets a silently-undialable daemon. The `Explicit` contract
+        // is "bind a routable address or exit", so this must be a hard error.
+        let err = announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(REMOTE_COORDINATOR))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("loopback"), "unexpected error: {msg}");
+        assert!(msg.contains("--zenoh-listen"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn derived_loopback_under_remote_coordinator_only_warns() {
+        // A derived loopback is a best-effort fallback (no routable address was
+        // found), so the daemon still starts — the operator can override it.
+        announce_zenoh_bind(ZenohBind::Derived(LOOPBACK), sock(REMOTE_COORDINATOR)).unwrap();
+    }
+
+    #[test]
+    fn explicit_loopback_under_local_coordinator_is_allowed() {
+        // Single-machine `dora run`: coordinator and nodes share loopback, so a
+        // loopback listener is both sufficient and correct.
+        announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(LOOPBACK)).unwrap();
+    }
+
+    #[test]
+    fn explicit_routable_address_is_allowed() {
+        announce_zenoh_bind(
+            ZenohBind::Explicit(ROUTABLE_LOCAL),
+            sock(REMOTE_COORDINATOR),
+        )
+        .unwrap();
     }
 }
