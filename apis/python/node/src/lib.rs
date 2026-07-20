@@ -2561,6 +2561,10 @@ impl Node {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&buffer_id);
+        GPU_BUF_SIZES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer_id);
 
         {
             let mut freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
