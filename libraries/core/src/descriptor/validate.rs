@@ -445,7 +445,12 @@ fn check_input(
     match &input.mapping {
         InputMapping::Timer { interval: _ } | InputMapping::Logs(_) => {}
         InputMapping::User(UserInputMapping { source, output }) => {
-            let source_node = nodes.values().find(|n| &n.id == source).ok_or_else(|| {
+            // `nodes` is keyed by each node's own id (see
+            // `resolve_aliases_and_set_defaults`), so look the source up
+            // directly instead of scanning every node — this runs once per
+            // input of every node, so a linear scan makes wiring validation
+            // quadratic in the node count.
+            let source_node = nodes.get(source).ok_or_else(|| {
                 eyre!("source node `{source}` mapped to input `{input_id_str}` does not exist",)
             })?;
             match &source_node.kind {
