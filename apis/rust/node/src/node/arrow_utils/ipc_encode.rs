@@ -968,7 +968,7 @@ mod tests {
         // Decode 5 schema-less batches sequentially. Each one should decode
         // correctly despite the decoder being reset between batches (soft-reset
         // for Arrow 59 terminal state handling).
-        let batches = vec![
+        let batches = [
             Float32Array::from(vec![1.0, 2.0]).into_data(),
             Float32Array::from(vec![3.0]).into_data(),
             Float32Array::from(vec![4.0, 5.0, 6.0]).into_data(),
