@@ -120,10 +120,17 @@ pub fn inject_adjacent_manifests(
         }
     }
     // Register the survivors into the shared registry, skipping URNs already
-    // present so preserved definitions win.
-    for &(urn, def) in &candidates {
-        if scratch.resolve(urn).is_some() && registry.resolve(urn).is_none() {
-            let _ = registry.add_user_type(urn, def.clone());
+    // present so preserved definitions win. Register the *admitted* definition
+    // from `scratch`, not the candidate's own `def`: `candidates` is not
+    // deduplicated by URN, so when two same-namespace manifests ship the same
+    // URN, `scratch.resolve(urn).is_some()` only proves that *some* body-valid
+    // definition was admitted — the first-listed candidate's `def` may be the
+    // body-invalid duplicate, which must not reach the shared registry (#2599).
+    for &(urn, _def) in &candidates {
+        if registry.resolve(urn).is_none()
+            && let Some(admitted) = scratch.resolve(urn)
+        {
+            let _ = registry.add_user_type(urn, admitted.clone());
         }
     }
 
@@ -840,6 +847,93 @@ nodes:
         assert!(registry.resolve("acme/foo/v1/Y").is_none());
         assert!(registry.resolve("acme/foo/v1/X").is_none());
         assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn duplicate_urn_registers_the_body_valid_definition() {
+        // Two same-namespace manifests ship the same URN, the body-invalid one
+        // listed first. The fixpoint admits only the body-valid definition, so
+        // the shared registry must hold *that* one — not the first-listed
+        // (invalid) candidate's body. Regression for #2599.
+        let tmp = tempfile::tempdir().unwrap();
+        // Listed first: body-invalid `X` (its field type doesn't resolve).
+        write_manifest(
+            &tmp.path().join("bad"),
+            r#"
+apiVersion: 1
+name: bad
+namespace: acme
+runtime: rust
+entrypoint: target/release/bad
+types:
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: broken
+        type: NotARealType
+"#,
+        );
+        // Listed second: body-valid `X`, same URN.
+        write_manifest(
+            &tmp.path().join("good"),
+            r#"
+apiVersion: 1
+name: good
+namespace: acme
+runtime: rust
+entrypoint: target/release/good
+types:
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: x
+        type: Float32
+"#,
+        );
+        write_manifest(
+            &tmp.path().join("victim"),
+            r#"
+apiVersion: 1
+name: victim
+namespace: gamma
+runtime: rust
+entrypoint: target/release/victim
+outputs:
+  out:
+    type: acme/foo/v1/X
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: bad
+    path: bad/target/release/bad
+  - id: good
+    path: good/target/release/good
+  - id: victim
+    path: victim/target/release/victim
+    outputs: [out]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        // The registry holds the body-valid definition (field `x`), not the
+        // first-listed invalid one (field `broken: NotARealType`).
+        let resolved = registry
+            .resolve("acme/foo/v1/X")
+            .expect("the body-valid duplicate must register");
+        assert!(
+            resolved.fields.iter().any(|f| f.name == "x"),
+            "registry must hold the body-valid definition, got {:?}",
+            resolved.fields
+        );
+        assert!(
+            !resolved.fields.iter().any(|f| f.r#type == "NotARealType"),
+            "the body-invalid duplicate must not reach the registry, got {:?}",
+            resolved.fields
+        );
+        // The referencing node's output type materializes against the valid body.
+        assert!(!df.nodes[2].output_types.is_empty());
     }
 
     #[test]
