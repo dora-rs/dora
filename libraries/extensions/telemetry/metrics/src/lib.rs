@@ -10,7 +10,7 @@
 //! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use opentelemetry::{InstrumentationScope, global};
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -20,19 +20,19 @@ use opentelemetry_system_metrics::init_process_observer;
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_metrics() -> SdkMeterProvider {
+pub fn init_metrics() -> Result<SdkMeterProvider> {
     let exporter = MetricExporter::builder()
         .with_tonic()
         .build()
-        .expect("Failed to create metric exporter");
+        .wrap_err("failed to create metric exporter")?;
 
-    SdkMeterProvider::builder()
+    Ok(SdkMeterProvider::builder()
         .with_periodic_exporter(exporter)
-        .build()
+        .build())
 }
 
 pub async fn run_metrics_monitor(meter_id: String) -> Result<()> {
-    let meter_provider = init_metrics();
+    let meter_provider = init_metrics()?;
     global::set_meter_provider(meter_provider.clone());
     let scope = InstrumentationScope::builder(meter_id)
         .with_version("1.0")
