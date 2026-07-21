@@ -2317,219 +2317,49 @@ impl Node {
     ) -> eyre::Result<Py<PyAny>> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
-        // Fast path: DORADMA header read.
-        if buffer_id.starts_with("pool_") {
-            if let Some(result) = self.try_doradma_read(&buffer_id, py)? {
-                return Ok(result);
-            }
-            tracing::debug!(
-                "[{}] read_memory_pool: fast path returned None, falling back to daemon",
-                self.node_id
-            );
-        }
-
-        // Slow path: query daemon
-        match self
+        // Query daemon metadata for the trusted GPU buffer size.
+        // GPU_BUF_SIZES is populated before the fast path so both the
+        // cache-hit and cache-miss branches in try_doradma_read can
+        // validate the world-writable shmem `size` against it.
+        if let Ok(metadata) = self
             .node
             .get_mut()
             .read_pinned_memory(buffer_id.clone(), false)
         {
-            Ok(metadata) => {
-                let size = metadata
-                    .parameters
-                    .get("size")
-                    .and_then(|p| {
-                        if let Parameter::Integer(v) = p {
-                            Some(*v)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
-                let dtype = metadata
-                    .parameters
-                    .get("dtype")
-                    .and_then(|p| {
-                        if let Parameter::String(s) = p {
-                            Some(s.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                let shape = metadata
-                    .parameters
-                    .get("shape")
-                    .and_then(|p| {
-                        if let Parameter::ListInt(v) = p {
-                            Some(v.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-
-                let pinned_type = metadata
-                    .parameters
-                    .get("pinned_type")
-                    .and_then(|p| {
-                        if let Parameter::String(s) = p {
-                            Some(s.as_str())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or("cpu");
-
-                // Resolve the actual data pointer from shared memory.
-                // The `ptr` in the daemon metadata is the registering node's
-                // process-local address — meaningless in a different process.
-                // Open the shmem file and read the DORADMA header to obtain
-                // a valid shmem-relative pointer.
-                let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
-                    if let Parameter::String(s) = p {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                });
-
-                // Trusted ipc_present from daemon metadata — not the
-                // world-writable shmem header.  When true, the shmem is
-                // header-only and the GPU buffer is accessible via IPC import.
-                let ipc_present_trusted = metadata.parameters.get("ipc_present").and_then(|p| {
-                    if let Parameter::Bool(v) = p {
-                        Some(*v)
-                    } else {
-                        None
-                    }
-                });
-                let mut read_ptr: i64 = 0;
-                // IPC handle bytes cached from the shmem header so they
-                // survive the shmem borrow.
-                let mut ipc_handle: Option<Vec<u8>> = None;
-                if let Some(ref name) = shmem_name
-                    && let Ok(shmem) = ShmemConf::new().os_id(name).open()
-                {
-                    // Mirror fast-path guard: reject segments smaller
-                    // than the header before any pointer arithmetic.
-                    if shmem.len() < DORADMA_HEADER_SIZE {
-                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                        return Err(eyre::eyre!(
-                            "memory pool {} segment too small ({})",
-                            buffer_id,
-                            shmem.len()
-                        ));
-                    }
-                    let shmem_ptr = shmem.as_ptr();
-                    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
-                    if magic == DORADMA_MAGIC {
-                        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                        // For GPU pools (ipc_present == 1) the shmem is
-                        // header-only — skip the data-region capacity check.
-                        if !matches!(ipc_present_trusted, Some(true))
-                            && (data_offset > shmem.len()
-                                || (size as usize) > shmem.len().saturating_sub(data_offset))
-                        {
-                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                            return Err(eyre::eyre!(
-                                "memory pool {} header bounds exceeded: data_offset {} + size {} > shmem_len {}",
-                                buffer_id,
-                                data_offset,
-                                size,
-                                shmem.len()
-                            ));
-                        }
-                        // Cache the IPC handle before the shmem borrow ends.
-                        if matches!(ipc_present_trusted, Some(true)) {
-                            ipc_handle = Some(
-                                unsafe { std::slice::from_raw_parts(shmem_ptr.add(32), 64) }
-                                    .to_vec(),
-                            );
-                        }
-                        // Mirroring try_doradma_read: check cache first,
-                        // so on a cache hit we return the cached mapping's
-                        // pointer (not the fresh mmap, which will be dropped).
-                        let mut cpu_cache =
-                            RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(cached) = cpu_cache.get(&buffer_id) {
-                            read_ptr = (cached.base + data_offset as u64) as i64;
-                        } else {
-                            let base = shmem_ptr as u64;
-                            read_ptr = (base + data_offset as u64) as i64;
-                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
-                                _shmem: shmem,
-                                base,
-                            });
-                        }
-                    }
-                }
-
-                // GPU pool with IPC handle: re-import from the trusted
-                // handle cached above.
-                if matches!(ipc_present_trusted, Some(true))
-                    && let Some(ref handle_bytes) = ipc_handle
-                {
-                    if let Ok(helpers) = get_cuda_helpers(py) {
-                        let bound = helpers.bind(py);
-                        let handle_py = PyBytes::new(py, handle_bytes);
-                        let gpu_ptr: u64 = bound
-                            .call_method1("_ipc_import", (handle_py,))
-                            .and_then(|r| r.extract::<u64>())
-                            .unwrap_or(0);
-                        if gpu_ptr != 0 {
-                            read_ptr = gpu_ptr as i64;
-                            // Populate the trusted capacity cache so the
-                            // fast path (`try_doradma_read`) can validate
-                            // the world-writable shmem `size` against the
-                            // daemon-trusted registered GPU buffer size.
-                            GPU_BUF_SIZES
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(buffer_id.clone(), size as u64);
-                        }
-                    }
-                }
-
-                if read_ptr == 0 {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!("memory pool {} not found or has invalid pointer", buffer_id);
-                }
-
-                // Trusted ipc_present from the daemon gates device resolution.
-                // For GPU pools the CUDA IPC re-import (above) provides a valid
-                // device pointer; for CPU pools read_ptr is a host mmap.
-                let device = if matches!(ipc_present_trusted, Some(true)) {
-                    "cuda"
-                } else if pinned_type.starts_with("cuda") {
-                    // ipc_present_trusted is false but pinned_type=cuda:
-                    // the fast path failed and the daemon cannot provide a
-                    // GPU pointer — reject.
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!(
-                        "memory pool {}: daemon fallback cannot provide a CUDA pointer \
-                         (fast path returned None); check that the pool was registered \
-                         with the correct receiver device",
-                        buffer_id,
-                    );
+            if let Some(size) = metadata.parameters.get("size").and_then(|p| {
+                if let Parameter::Integer(v) = p {
+                    Some(*v)
                 } else {
-                    "cpu"
-                };
-
-                let dict = PyDict::new(py);
-                dict.set_item("ptr", read_ptr)?;
-                dict.set_item("size", size)?;
-                dict.set_item("dtype", dtype)?;
-                dict.set_item("shape", shape)?;
-                dict.set_item("device", device)?;
-
-                Ok(dict.into())
-            }
-            Err(e) => {
-                warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                eyre::bail!("memory pool {} not found: {:?}", buffer_id, e);
+                    None
+                }
+            }) {
+                GPU_BUF_SIZES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(buffer_id.clone(), size as u64);
             }
         }
+
+        // Fast path: DORADMA header read with daemon-trusted size validation.
+        if buffer_id.starts_with("pool_") {
+            match self.try_doradma_read(&buffer_id, py) {
+                Ok(Some(result)) => return Ok(result),
+                Ok(None) => {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!(
+                        "memory pool {}: fast path returned None — pool may not be ready or shmem is corrupted",
+                        buffer_id
+                    );
+                }
+                Err(e) => {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
+                }
+            }
+        }
+
+        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+        eyre::bail!("memory pool {} not found", buffer_id);
     }
 
     /// Free a memory pool.
@@ -2961,18 +2791,24 @@ impl Node {
                         slot_data.gpu_buf
                     }
                     _ => {
+                        // Validate size against daemon-trusted capacity
+                        // before the first IPC import.  GPU_BUF_SIZES is
+                        // populated from daemon metadata before the fast
+                        // path runs.
+                        {
+                            let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
+                            if let Some(&capped) = trusted.get(buffer_id) {
+                                if capped > 0 && (size as u64) > capped {
+                                    return Ok(None);
+                                }
+                            }
+                        }
                         drop(cache);
                         let handle_bytes =
                             unsafe { std::slice::from_raw_parts(shmem_ptr.add(32), 64) };
                         let helpers = get_cuda_helpers(py)
                             .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
                         let bound = helpers.bind(py);
-                        // No explicit P2P enablement needed here: _ipc_import
-                        // opens the handle with cudaIpcMemLazyEnablePeerAccess,
-                        // which lazily routes cross-device access through
-                        // NVLink/PCIe-P2P on first touch.  The receiver also
-                        // does not know the sender's device index to scope a
-                        // pairwise enable.
                         let handle_py = PyBytes::new(py, handle_bytes);
                         let gpu_ptr: u64 = bound
                             .call_method1("_ipc_import", (handle_py,))
@@ -2987,9 +2823,8 @@ impl Node {
                                 gpu_va: 0,
                                 gpu_buf: gpu_ptr,
                                 host_base: shmem_ptr as u64,
-                                // Baseline size from shmem — the daemon
-                                // fallback will overwrite GPU_BUF_SIZES
-                                // with the trusted value when it runs.
+                                // Baseline from shmem — daemon metadata
+                                // already populated GPU_BUF_SIZES above.
                                 gpu_buf_size: size as u64,
                             },
                         );
