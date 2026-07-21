@@ -39,8 +39,20 @@ struct InProgressClaim {
 
 impl Drop for InProgressClaim {
     fn drop(&mut self) {
-        self.set.lock().unwrap().remove(&self.dir);
+        lock_in_progress(&self.set).remove(&self.dir);
     }
+}
+
+/// Locks `clones_in_progress`, recovering from poisoning instead of
+/// panicking. A panic elsewhere while this lock was held must not leave the
+/// set stuck: `InProgressClaim::drop` runs during unwinding, where a panic
+/// here would abort the process, and any panic-on-poison here would also
+/// leave the dir's claim permanently unreleased, exempting it from
+/// verification forever.
+fn lock_in_progress(
+    set: &Mutex<BTreeSet<PathBuf>>,
+) -> std::sync::MutexGuard<'_, BTreeSet<PathBuf>> {
+    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Default)]
@@ -91,7 +103,7 @@ impl GitManager {
             // different, concurrently-running session sharing this daemon's
             // GitManager -- must never have its HEAD checked or be deleted, so I
             // skip verification and just reuse it, same as before this change.
-            let in_progress = self.clones_in_progress.lock().unwrap().contains(&clone_dir);
+            let in_progress = lock_in_progress(&self.clones_in_progress).contains(&clone_dir);
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
                 verify_commit: (!in_progress).then_some(commit_hash),
@@ -152,10 +164,7 @@ impl GitManager {
                 | ReuseOptions::RenameAndFetch { .. }
         )
         .then(|| {
-            self.clones_in_progress
-                .lock()
-                .unwrap()
-                .insert(clone_dir.clone());
+            lock_in_progress(&self.clones_in_progress).insert(clone_dir.clone());
             InProgressClaim {
                 dir: clone_dir,
                 set: self.clones_in_progress.clone(),
@@ -368,18 +377,32 @@ impl GitFolder {
                     .await
                     .context("HEAD read task panicked")?;
 
-                    let on_right_commit =
-                        matches!(&head, Ok(h) if h.eq_ignore_ascii_case(&commit_hash));
-                    if !on_right_commit {
-                        // Drop the stale clone so the next build re-clones from
-                        // scratch, then fail loudly instead of quietly building the
-                        // old source.
-                        cleanup_failed_clone(logger, &dir).await;
-                        bail!(
-                            "clone dir {} is not on the requested commit {commit_hash} \
-                             (found {head:?}); I removed it, please rebuild",
+                    match head {
+                        // A valid repo sitting on the commit we asked for.
+                        Ok(h) if h.eq_ignore_ascii_case(&commit_hash) => {}
+                        // A valid repo concretely on some *other* commit, so a
+                        // genuine stale leftover. Drop it so the next build
+                        // re-clones from scratch, then fail loudly instead of
+                        // quietly building the old source.
+                        Ok(h) => {
+                            cleanup_failed_clone(logger, &dir).await;
+                            bail!(
+                                "clone dir {} is not on the requested commit {commit_hash} \
+                                 (found {h}); I removed it, please rebuild",
+                                dir.display()
+                            );
+                        }
+                        // HEAD didn't resolve, so I can't tell a broken leftover
+                        // from a clone another process is still writing. My
+                        // in-progress set only covers one GitManager and the CLI
+                        // builds with its own, so deleting here is how #2711
+                        // wipes out a live build. Fail loudly, leave the dir.
+                        Err(err) => bail!(
+                            "couldn't verify clone dir {} is on commit {commit_hash}: {err:?}; \
+                             leaving it in place in case another build is writing it, \
+                             please retry",
                             dir.display()
-                        );
+                        ),
                     }
                 }
 
@@ -654,6 +677,35 @@ mod tests {
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists());
+    }
+
+    #[tokio::test]
+    async fn reuse_leaves_the_dir_alone_when_head_wont_resolve() {
+        // My in-progress set only covers one GitManager, and the CLI builds
+        // with its own, so it can't see a clone another process is writing.
+        // That clone isn't a valid repo yet, so HEAD won't resolve, and if I
+        // treat that as a wrong commit I delete a live build's work all over
+        // again (#2711). Only a HEAD that resolves to a different commit is
+        // safe to delete.
+        let base = tempfile::tempdir().unwrap();
+        let dir = base.path().join("clone");
+        // Exists but isn't a repo, so Repository::open fails the same way it
+        // would against a half-written clone.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("partial.txt"), b"mid-clone").unwrap();
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::Reuse {
+                dir: dir.clone(),
+                verify_commit: Some("0".repeat(40)),
+            },
+            _claim: None,
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            dir.exists(),
+            "an unresolvable HEAD must not delete the dir, another build may be writing it"
+        );
     }
 
     #[tokio::test]
