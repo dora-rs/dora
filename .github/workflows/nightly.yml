@@ -13,6 +13,17 @@ name: Nightly Regression
 # block PRs. If a failure reproduces for 3 consecutive nightly runs,
 # promote it to the fast CI gate.
 #
+# Caching: every `Swatinem/rust-cache` step here sets `save-if: false`
+# (restore-only). Nightly's Windows/macOS/examples/cli-tests caches are
+# 1-2.7 GB each; a single run's saves total 15-25 GB and would blow the
+# shared 10 GB repo cache cap, LRU-evicting the Linux caches the
+# high-frequency PR loop (ci.yml) depends on. Nightly is a non-blocking
+# once-daily job, so it restores where it can but never saves — trading
+# a slower nightly for a warm PR loop. Do NOT drop these `save-if:
+# false` gates. If nightly build time becomes a problem, move these to a
+# separate cache backend (e.g. `cache-provider: buildjet`, as
+# pip-release.yml does) rather than saving into the GitHub budget.
+#
 # Triggers:
 #   - schedule: daily at 06:00 UTC
 #   - workflow_dispatch: manual run from Actions UI
@@ -40,7 +51,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_VERSION: "1.92.0"
+  RUST_VERSION: "1.97.1"
   # The finish-straggler watchdog (dora-rs/dora#2270) is now on by default, so
   # the explicit DORA_FINISH_DRAIN_GRACE_SECS override added for the step-2
   # nightly bake is no longer needed — nightly now exercises the default-on
@@ -63,6 +74,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -117,6 +130,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -165,6 +180,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Run hub smoke suite
         # --test-threads=1: the run sub-tests share coordinator ports.
         run: cargo test -p dora-examples --test hub-smoke -- --test-threads=1
@@ -181,6 +198,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install dora CLI to ./dist
         run: cargo install --path binaries/cli --locked --root ./dist
       - name: Upload CLI artifact
@@ -201,6 +220,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -245,6 +266,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -314,6 +337,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -354,10 +379,9 @@ jobs:
           # Write the .drec next to its dataflow, not at the workspace
           # root: `dora replay` uses the .drec's parent as working_dir
           # for the embedded build directives (mirrors the fix from
-          # #1674 for record). With the .drec at workspace root, replay
-          # would pick up $WORKSPACE/types/std/* and fail type-loading
-          # ("user types cannot use the 'std/' prefix" -- those are the
-          # workspace's own stdlib types, not user types).
+          # #1674 for record). (Historically the workspace root also had
+          # a types/ dir that replay wrongly loaded as user types; it moved
+          # to libraries/core/types/ but the placement rule stands.)
           timeout 300s dora record examples/rust-dataflow/dataflow.yml \
             -o examples/rust-dataflow/run.drec
           test -f examples/rust-dataflow/run.drec || { echo "record did not produce run.drec"; exit 1; }
@@ -384,6 +408,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -472,6 +498,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
         # `apt-get install` is harmless if it's already present and brings
@@ -512,6 +540,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install openssh-server
         # ubuntu-latest typically has sshd preinstalled but it's not started.
         # `apt-get install` is harmless if it's already present and brings
@@ -555,6 +585,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -763,6 +795,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -815,6 +849,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -912,6 +948,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -1004,6 +1042,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -1085,6 +1125,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install Kani
         run: |
           cargo install kani-verifier --locked
@@ -1111,6 +1153,7 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
+          save-if: false
           shared-key: workspace-test
       - name: Check
         run: cargo check --all
@@ -1228,6 +1271,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'
@@ -1324,6 +1369,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space (Ubuntu)
         uses: jlumbroso/free-disk-space@main
         if: runner.os == 'Linux'
@@ -1581,6 +1628,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Benchmark example
         timeout-minutes: 45
         run: cargo run --example benchmark --release
@@ -1641,6 +1690,8 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Install cross-compilation toolchain
         if: matrix.gcc
         run: sudo apt-get update && sudo apt-get install -y ${{ matrix.gcc }}
@@ -1682,6 +1733,8 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - name: Free Disk Space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -1743,6 +1796,8 @@ jobs:
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-hack
@@ -2169,3 +2224,72 @@ jobs:
               --body "$issue_body" \
               --label nightly-regression
           fi
+
+  close-issue-on-success:
+    name: Close regression issue on green nightly
+    runs-on: ubuntu-latest
+    needs:
+      - build-cli
+      - smoke-suite
+      - memory-pool-smoke
+      - log-sinks
+      - service-action
+      - streaming
+      - record-replay
+      - cluster-smoke
+      - cluster-e2e
+      - cluster-record-replay
+      - topic-and-top-smoke
+      - cpu-affinity-smoke
+      - redb-backend-smoke
+      - daemon-reconnect-smoke
+      - state-reconstruction-smoke
+      - kani-proofs
+      - test-cross-platform
+      - examples
+      - cli-tests
+      - bench-example
+      - cross-check
+      - ros2-bridge
+      - msrv
+    # Inverse of `file-issue-on-failure`: on a scheduled run where the suite
+    # actually ran (build-cli succeeded) and nothing failed or was cancelled
+    # (skipped jobs are fine), close the open nightly-regression issue, if any.
+    # `always()` so a skipped job elsewhere can't skip this too; the explicit
+    # negated `contains` checks make "clean" unambiguous rather than leaning on
+    # `success()` semantics for skipped needs.
+    if: always() && needs.build-cli.result == 'success' && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') && github.event_name == 'schedule'
+    steps:
+      - name: Close any open nightly-regression issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          DATE=$(date -u +%Y-%m-%d)
+
+          close_comment="Nightly regression suite passed on $DATE — closing automatically. A future regression will open a fresh issue.
+
+          Run: $RUN_URL"
+
+          # The failure job keeps at most one open, but close every open one to
+          # be safe. `--jq '.[].number'` yields one issue number per line.
+          OPEN=$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --label nightly-regression \
+            --json number \
+            --jq '.[].number')
+
+          if [ -z "$OPEN" ]; then
+            echo "No open nightly-regression issue; nothing to close."
+            exit 0
+          fi
+
+          while IFS= read -r n; do
+            [ -n "$n" ] || continue
+            echo "Closing #$n (nightly green on $DATE)"
+            gh issue close "$n" --repo "$REPO" --reason completed --comment "$close_comment"
+          done <<< "$OPEN"

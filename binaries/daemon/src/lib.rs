@@ -10,7 +10,8 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
-        reserve_loopback_zenoh_endpoint, zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        reserve_zenoh_endpoint, validate_zenoh_listen, zenoh_bind_address_for,
+        zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -44,7 +45,7 @@ use std::{
     env::current_dir,
     future::Future,
     io,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     pin::pin,
     sync::{
@@ -584,7 +585,38 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
     }
 }
 
+/// Where the daemon's zenoh listen address came from, which decides what a bind
+/// failure means.
+///
+/// A derived address is a best guess, so failing to bind it may fall back to
+/// multicast scouting. An address the operator *named* must bind or the daemon
+/// must exit: they are on a network where they had to say the address out loud,
+/// which is precisely a network where multicast is not going to rescue us — and
+/// a daemon with no listener is undialable and silently dead, which is the
+/// failure this whole mechanism exists to prevent.
+#[derive(Debug, Clone, Copy)]
+enum ZenohBind {
+    /// Derived from the coordinator address; a bind failure can fall back.
+    Derived(IpAddr),
+    /// Named via `--zenoh-listen`; a bind failure is fatal.
+    Explicit(IpAddr),
+}
+
+impl ZenohBind {
+    fn addr(self) -> IpAddr {
+        match self {
+            Self::Derived(addr) | Self::Explicit(addr) => addr,
+        }
+    }
+
+    fn is_explicit(self) -> bool {
+        matches!(self, Self::Explicit(_))
+    }
+}
+
 impl Daemon {
+    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
+    /// [`Daemon::run_with_zenoh_listen`] to override it.
     pub async fn run(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
@@ -592,17 +624,49 @@ impl Daemon {
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
     ) -> eyre::Result<()> {
-        Self::run_with_builds(
+        Self::run_with_zenoh_listen(
             coordinator_ws_addr,
             machine_id,
             labels,
             local_listen_port,
             inter_daemon_peer,
+            None,
+        )
+        .await
+    }
+
+    /// Like [`Daemon::run`], but `zenoh_listen_addr` overrides the address this
+    /// daemon's zenoh listener binds, and therefore the locator its peers are
+    /// told to dial.
+    ///
+    /// Leave it `None` to derive it from `coordinator_ws_addr`, which is correct
+    /// whenever the daemons reach each other over the same network they reach
+    /// the coordinator over — a LAN, or a mesh VPN. Set it explicitly on a
+    /// multi-homed host that would otherwise advertise the wrong interface. An
+    /// address given here must bind: unlike the derived one, failing to bind it
+    /// is fatal rather than a fallback.
+    pub async fn run_with_zenoh_listen(
+        coordinator_ws_addr: SocketAddr,
+        machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
+        local_listen_port: u16,
+        inter_daemon_peer: Option<String>,
+        zenoh_listen_addr: Option<IpAddr>,
+    ) -> eyre::Result<()> {
+        Self::run_inner_with_builds(
+            coordinator_ws_addr,
+            machine_id,
+            labels,
+            local_listen_port,
+            inter_daemon_peer,
+            zenoh_listen_addr,
             Default::default(),
         )
         .await
     }
 
+    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
+    /// [`Daemon::run_with_zenoh_listen`] to override it.
     pub async fn run_with_builds(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
@@ -611,6 +675,78 @@ impl Daemon {
         inter_daemon_peer: Option<String>,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
+        Self::run_inner_with_builds(
+            coordinator_ws_addr,
+            machine_id,
+            labels,
+            local_listen_port,
+            inter_daemon_peer,
+            None,
+            initial_builds,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inner_with_builds(
+        coordinator_ws_addr: SocketAddr,
+        machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
+        local_listen_port: u16,
+        inter_daemon_peer: Option<String>,
+        zenoh_listen_addr: Option<IpAddr>,
+        initial_builds: BTreeMap<BuildId, BuildInfo>,
+    ) -> eyre::Result<()> {
+        let zenoh_bind = match zenoh_listen_addr {
+            Some(addr) => {
+                validate_zenoh_listen(addr).wrap_err(
+                    "invalid --zenoh-listen address (omit the flag to derive it                      from --coordinator-addr)",
+                )?;
+                ZenohBind::Explicit(addr)
+            }
+            None => ZenohBind::Derived(zenoh_bind_address_for(coordinator_ws_addr)),
+        };
+        // Fail fast on an address that does not exist on this host (a typo'd
+        // digit gives EADDRNOTAVAIL). The reservation in `build_daemon` is the
+        // real guard, but that only runs once the coordinator connects — which
+        // may be many retries away, or never — so without this probe a typo
+        // looks like a connectivity problem for minutes before it looks like a
+        // typo. Whether the address exists is not racy, so checking it early
+        // costs nothing but a bind and a drop.
+        if let ZenohBind::Explicit(addr) = zenoh_bind {
+            std::net::TcpListener::bind((addr, 0))
+                .map(drop)
+                .wrap_err_with(|| {
+                    format!(
+                        "cannot bind the zenoh listen address {addr} given via \
+                         --zenoh-listen; it does not appear to exist on this host"
+                    )
+                })?;
+        }
+        if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
+            // The coordinator is remote, so other daemons are expected, but we
+            // have no address to offer them. Binding loopback anyway means
+            // advertising `127.0.0.1` to peers, who dial their own loopback and
+            // reach nothing — and since zenoh 1.9 peers do not relay, that pair
+            // is dead with no fallback. Say so: this is the silent failure the
+            // routable bind exists to prevent.
+            tracing::warn!(
+                "coordinator at {coordinator_ws_addr} is remote, but no routable local \
+                 address toward it was found; zenoh will bind loopback and other daemons \
+                 will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
+            );
+        } else if !zenoh_bind.addr().is_loopback() {
+            tracing::info!(
+                "zenoh listener binding {} ({}); this port accepts connections from \
+                 other hosts",
+                zenoh_bind.addr(),
+                match zenoh_bind {
+                    ZenohBind::Explicit(_) => "given via --zenoh-listen".to_string(),
+                    ZenohBind::Derived(_) =>
+                        format!("derived from coordinator address {coordinator_ws_addr}"),
+                }
+            );
+        }
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -722,6 +858,7 @@ impl Daemon {
                                 initial_builds.clone(),
                                 log_destination,
                                 inter_daemon_peer.clone(),
+                                zenoh_bind,
                             )
                             .await?;
                             daemon = Some(built);
@@ -1020,6 +1157,9 @@ impl Daemon {
         // loop. The reconnecting daemon binary instead builds the daemon once
         // and reuses it across reconnects (see `run_with_builds`), so that node
         // processes are not killed when the coordinator connection drops.
+        // `dora run` is single-machine by construction: the daemon, its nodes
+        // and the in-process coordinator all live on this host, so loopback is
+        // both sufficient and the least exposed choice.
         let (mut daemon, mut dora_events_rx) = Self::build_daemon(
             coordinator_sender,
             daemon_id,
@@ -1029,6 +1169,7 @@ impl Daemon {
             builds,
             log_destination,
             inter_daemon_peer,
+            ZenohBind::Derived(LOCALHOST),
         )
         .await?;
         daemon
@@ -1059,16 +1200,46 @@ impl Daemon {
         builds: BTreeMap<BuildId, BuildInfo>,
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
+        zenoh_bind: ZenohBind,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
-        // Reserve a loopback port and have zenoh listen on it. The endpoint is
-        // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
-        // discovery works without multicast (#1778).
-        let requested_listen_endpoint = match reserve_loopback_zenoh_endpoint() {
+        // Reserve a port and have zenoh listen on it. The endpoint is injected
+        // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
+        // without multicast (#1778).
+        //
+        // `zenoh_bind` is loopback for single-machine deployments and an
+        // address on the coordinator's network otherwise. It is not merely a
+        // question of which interface accepts connections: zenoh advertises the
+        // address it bound as its locator, and remote daemons dial exactly
+        // that. A daemon bound to loopback therefore tells its peers to dial
+        // `127.0.0.1` — their own loopback — where they reach nothing. Since
+        // zenoh 1.9 peers do not relay for each other, such a pair has no
+        // fallback path and simply never exchanges data.
+        //
+        // Falling back to multicast when the reservation fails is only defensible
+        // for a *derived* address: loopback always exists, so the error was
+        // effectively unreachable. An operator-supplied address can genuinely
+        // fail — a typo'd digit gives EADDRNOTAVAIL — and continuing would leave
+        // the daemon with no listener at all: undialable, silently dead, which is
+        // the exact failure this code exists to prevent. Someone who named an
+        // address explicitly is also, almost by definition, on a network where
+        // multicast will not save them. So: fatal when explicit.
+        let requested_listen_endpoint = match reserve_zenoh_endpoint(zenoh_bind.addr()) {
             Ok(ep) => Some(ep),
+            Err(err) if zenoh_bind.is_explicit() => {
+                return Err(err).wrap_err_with(|| {
+                    format!(
+                        "failed to bind the zenoh listen address {} given via \
+                         --zenoh-listen; other daemons would have no way to reach this \
+                         one. Check that this address exists on this host",
+                        zenoh_bind.addr()
+                    )
+                });
+            }
             Err(err) => {
                 tracing::warn!(
-                    "failed to reserve loopback zenoh listen endpoint: {err}; \
-                     falling back to multicast scouting only"
+                    "failed to reserve zenoh listen endpoint on {}: {err}; \
+                     falling back to multicast scouting only",
+                    zenoh_bind.addr()
                 );
                 None
             }
@@ -1086,6 +1257,16 @@ impl Daemon {
         .await
         .wrap_err("failed to open zenoh session")?;
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
+            // Same argument as the reservation above: an address the operator
+            // named must actually be listening, or this daemon is unreachable
+            // and nothing will tell them.
+            if zenoh_bind.is_explicit() {
+                eyre::bail!(
+                    "zenoh did not bind the listen address {} given via --zenoh-listen; \
+                     other daemons would have no way to reach this one",
+                    zenoh_bind.addr()
+                );
+            }
             tracing::warn!(
                 "requested zenoh listener but zenoh did not bind it; \
                  spawned nodes will use multicast scouting only"
@@ -1941,6 +2122,7 @@ impl Daemon {
                         ft_stats: self.ft_stats.clone(),
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+                        zenoh_peering: dataflow.zenoh_peering.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -2780,11 +2962,20 @@ impl Daemon {
             .try_clone()
             .await
             .context("failed to clone logger")?;
-        let dataflow = RunningDataflow::new(
+        let mut dataflow = RunningDataflow::new(
             dataflow_id,
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        // Decide who dials whom before anything spawns: zenoh 1.9 peers do not
+        // relay, so a producer/consumer pair that never forms a direct link can
+        // never exchange data. Assign the links explicitly instead of leaving
+        // them to gossip's best-effort autoconnect.
+        dataflow.zenoh_peering = Arc::new(crate::spawn::plan_zenoh_peering(
+            &nodes,
+            &spawn_nodes,
+            self.zenoh_listen_endpoint.as_deref(),
+        ));
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
@@ -3032,6 +3223,7 @@ impl Daemon {
             ft_stats: self.ft_stats.clone(),
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+            zenoh_peering: dataflow.zenoh_peering.clone(),
         };
 
         let mut tasks = Vec::new();
@@ -3718,9 +3910,13 @@ impl Daemon {
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
+        // `node_id`/`output_id` are not read past this call — the later
+        // inter-daemon path uses `output_id_key` (cloned just above) instead —
+        // so move them in rather than adding a second per-message clone of the
+        // `NodeId`/`DataId` on this output-dispatch hot path.
         let data_bytes = send_output_to_local_receivers(
-            node_id.clone(),
-            output_id.clone(),
+            node_id,
+            output_id,
             dataflow,
             &metadata,
             data,
@@ -4031,13 +4227,12 @@ impl Daemon {
             .get_mut(&dataflow_id)
             .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
 
-        let outputs = dataflow
-            .mappings
-            .keys()
-            .filter(|m| &m.0 == node_id)
-            .map(|m| &m.1)
-            .cloned()
-            .collect();
+        // Include outputs consumed only by nodes on other daemons
+        // (`open_external_mappings`), not just those with a local consumer
+        // (`mappings`). Otherwise a remote-only output never triggers an
+        // `OutputClosed` event when the producing node finishes, leaving the
+        // remote consumer's input open until it is force-killed.
+        let outputs = dataflow.node_output_ids(node_id).into_iter().collect();
 
         if might_restart {
             self.logger
@@ -4998,7 +5193,11 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         }
 
         estimated_line_length = estimated_line_length.max((read_buf.len() + 1).div_ceil(lines));
-        let estimated_buffer_length = estimated_line_length * tail;
+        // `tail` is the client-supplied `--tail N` line count with no upper
+        // bound, so `estimated_line_length * tail` can overflow `usize` (a debug
+        // panic in the log task; a benign wrap in release). It only feeds a
+        // buffer-growth heuristic, so saturate instead of overflowing.
+        let estimated_buffer_length = estimated_line_length.saturating_mul(tail);
         if estimated_buffer_length >= buffer.len() * 2 {
             buffer.resize(buffer.len() * 2, 0);
         }
@@ -5320,35 +5519,50 @@ fn close_input(
         return;
     }
 
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if was_open
-            && send_with_timestamp(
-                channel,
-                NodeEvent::InputClosed {
-                    id: input_id.clone(),
-                },
-                clock,
-            )
-            .ok()
-                == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && was_open
+        && send_with_timestamp(
+            channel,
+            NodeEvent::InputClosed {
+                id: input_id.clone(),
+            },
+            clock,
+        )
+        .ok()
+            == Some(true)
+    {
+        dataflow.inc_pending(receiver_id);
+    }
 
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+}
+
+/// If `receiver_id` has no remaining open inputs (and none are circuit-broken),
+/// disable its restart policy and notify it that all inputs are closed.
+///
+/// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
+/// no-op if the node still has open/broken inputs or has no subscribe channel.
+fn signal_all_inputs_closed_if_drained(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    clock: &HLC,
+) {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return;
+    };
+    let has_broken = dataflow
+        .broken_inputs
+        .keys()
+        .any(|(nid, _)| nid == receiver_id);
+    if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
+        if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
+            node.disable_restart();
+        }
+        if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
+            dataflow.inc_pending(receiver_id);
+            dataflow
+                .all_inputs_closed_at
+                .insert(receiver_id.clone(), Instant::now());
         }
     }
 }
@@ -5366,8 +5580,8 @@ fn break_input(
     {
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if send_with_timestamp(
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && send_with_timestamp(
             channel,
             NodeEvent::InputClosed {
                 id: input_id.clone(),
@@ -5376,26 +5590,11 @@ fn break_input(
         )
         .ok()
             == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
-
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
-        }
+    {
+        dataflow.inc_pending(receiver_id);
     }
+
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
 }
 
 /// Grace period used when the finish-straggler watchdog is enabled but
@@ -6994,5 +7193,27 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+}
+
+#[cfg(test)]
+mod log_tail_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[tokio::test]
+    async fn read_last_n_lines_handles_huge_tail_without_overflow() {
+        // `--tail N` is unbounded client input. A very large `N` used to make
+        // the `estimated_line_length * tail` buffer-growth estimate overflow
+        // `usize` (a debug-mode panic in the log task). With fewer lines than
+        // requested the whole file is returned; the request must not panic.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "line1\nline2\nline3\n").unwrap();
+        tmp.flush().unwrap();
+
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
+
+        assert_eq!(out, b"line1\nline2\nline3");
     }
 }

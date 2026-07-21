@@ -13,9 +13,9 @@ repository.workspace = true
 
 [dependencies]
 eyre = { workspace = true }
-reqwest = { version = "0.12.4", default-features = false, features = [
-    "rustls-tls",
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "rustls",
 ] }
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { workspace = true, features = ["fs"] }
 tracing = { workspace = true }

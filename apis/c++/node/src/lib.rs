@@ -770,9 +770,18 @@ impl Metadata {
     }
 
     pub fn set_timestamp(&mut self, key: &str, value: i64) -> EyreResult<()> {
-        // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>
-        let secs = value / 1_000_000_000;
-        let subsec_nanos = (value % 1_000_000_000) as u32;
+        // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>.
+        //
+        // Use Euclidean division so pre-epoch (negative) timestamps split
+        // correctly. Plain `/` and `%` truncate toward zero, yielding a
+        // *negative* remainder for negative inputs; casting that to `u32`
+        // wraps it to a huge value and makes `from_timestamp` reject the
+        // (otherwise valid) instant. `div_euclid`/`rem_euclid` keep the
+        // remainder in `0..1_000_000_000`, matching how `from_timestamp`
+        // interprets `(secs, subsec_nanos)` and round-tripping with
+        // `get_timestamp` for negative values.
+        let secs = value.div_euclid(1_000_000_000);
+        let subsec_nanos = value.rem_euclid(1_000_000_000) as u32;
 
         let dt = DateTime::from_timestamp(secs, subsec_nanos)
             .ok_or_else(|| eyre!("Invalid timestamp: out of range (nanos: {value})"))?;
@@ -1044,5 +1053,32 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    /// Regression test: `set_timestamp` must accept and correctly represent
+    /// pre-epoch (negative) nanosecond timestamps. The previous truncating
+    /// `value % 1_000_000_000` produced a negative remainder that wrapped when
+    /// cast to `u32`, making `from_timestamp` reject valid instants. The value
+    /// must also round-trip through `get_timestamp`.
+    #[test]
+    fn set_timestamp_roundtrips_negative_values() {
+        for value in [
+            -1_i64,
+            -500_000_000,
+            -1_000_000_000,
+            -1_500_000_000,
+            -1_000_000_001,
+            0,
+            1,
+            1_500_000_000,
+        ] {
+            let mut meta = Metadata::empty();
+            meta.set_timestamp("ts", value)
+                .unwrap_or_else(|e| panic!("set_timestamp({value}) failed: {e}"));
+            let got = meta
+                .get_timestamp("ts")
+                .unwrap_or_else(|e| panic!("get_timestamp after set({value}) failed: {e}"));
+            assert_eq!(got, value, "timestamp {value} did not round-trip");
+        }
     }
 }

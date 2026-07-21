@@ -17,18 +17,6 @@ impl Array {
         let size = self.size;
         quote! { [#inner_type; #size] }
     }
-
-    pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_type_tokens(package);
-        let size = self.size;
-        quote! { [#inner_type; #size] }
-    }
-
-    pub fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_ref_type_tokens(package);
-        let size = self.size;
-        quote! { [#inner_type; #size] }
-    }
 }
 
 /// A sequence type with an unlimited number of elements
@@ -42,21 +30,6 @@ impl Sequence {
     pub fn type_tokens(&self, package: &str) -> impl ToTokens {
         let inner_type = self.value_type.type_tokens(package);
         quote! { Vec<#inner_type> }
-    }
-
-    pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_type_tokens(package);
-        quote! { crate::_core::FFISeq<#inner_type> }
-    }
-
-    pub fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_ref_type_tokens(package);
-        match self.value_type {
-            NestableType::BasicType(_) => {
-                quote! { crate::_core::RefFFISeq<#inner_type> }
-            }
-            _ => quote! { crate::_core::OwnedFFISeq<#inner_type> },
-        }
     }
 }
 
@@ -73,21 +46,6 @@ impl BoundedSequence {
     pub fn type_tokens(&self, package: &str) -> impl ToTokens {
         let inner_type = self.value_type.type_tokens(package);
         quote! { Vec<#inner_type> }
-    }
-
-    pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_type_tokens(package);
-        quote! { crate::_core::FFISeq<#inner_type> }
-    }
-
-    pub fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        let inner_type = self.value_type.raw_ref_type_tokens(package);
-        match self.value_type {
-            NestableType::BasicType(_) => {
-                quote! { crate::_core::RefFFISeq<#inner_type> }
-            }
-            _ => quote! { crate::_core::OwnedFFISeq<#inner_type> },
-        }
     }
 }
 

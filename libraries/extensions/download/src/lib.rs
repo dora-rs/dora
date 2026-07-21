@@ -5,20 +5,31 @@ use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
-fn get_filename(response: &reqwest::Response) -> Option<String> {
-    let raw_name = if let Some(content_disposition) = response.headers().get("content-disposition")
-    {
-        if let Ok(filename) = content_disposition.to_str() {
-            filename
-                .split("filename=")
-                .nth(1)
-                .map(|n| n.trim_matches('"').to_string())
-        } else {
-            None
-        }
+/// Extract the `filename` parameter from a `Content-Disposition` header value.
+///
+/// Handles headers that carry additional parameters after the filename, e.g.
+/// `attachment; filename="model.bin"; size=1000`, and both quoted and unquoted
+/// forms. Returns `None` when no non-empty `filename=` value is present (the
+/// RFC 5987 extended `filename*=` form is not decoded and falls through).
+fn parse_content_disposition_filename(header: &str) -> Option<String> {
+    let rest = header.split("filename=").nth(1)?.trim_start();
+    let name = if let Some(after_quote) = rest.strip_prefix('"') {
+        // Quoted form: the value runs up to the closing quote, so a trailing
+        // `; param=...` (or a `;` inside the quotes) is handled correctly.
+        after_quote.split('"').next().unwrap_or(after_quote)
     } else {
-        None
+        // Token form: the value ends at the next parameter separator.
+        rest.split(';').next().unwrap_or(rest).trim()
     };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn get_filename(response: &reqwest::Response) -> Option<String> {
+    let raw_name = response
+        .headers()
+        .get("content-disposition")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_content_disposition_filename);
 
     // If Content-Disposition header is not available, extract from URL
     let raw_name = raw_name.or_else(|| {
@@ -74,7 +85,11 @@ where
     // since the downloaded binary may be executed or dlopen-ed.
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
-    let actual_hash = format!("{:x}", hasher.finalize());
+    let actual_hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     if let Some(expected) = expected_sha256 {
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
@@ -105,4 +120,56 @@ where
         .wrap_err("failed to make downloaded file executable")?;
 
     Ok(path.to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_content_disposition_filename;
+
+    #[test]
+    fn quoted_filename_without_extra_params() {
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"model.bin\""),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn quoted_filename_with_trailing_params() {
+        // Regression: the trailing `; size=1000` must not leak into the name.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"model.bin\"; size=1000"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn unquoted_filename_with_trailing_params() {
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=model.bin; size=1000"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn semicolon_inside_quotes_is_preserved() {
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
+            Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn empty_or_missing_filename_returns_none() {
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"\""),
+            None
+        );
+        assert_eq!(parse_content_disposition_filename("inline"), None);
+        // RFC 5987 extended form is not decoded here; it falls through to None.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename*=UTF-8''model.bin"),
+            None
+        );
+    }
 }

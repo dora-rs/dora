@@ -20,24 +20,24 @@ ros2-examples = []
 array-init = "2.1.0"
 serde = { workspace = true }
 serde-big-array = "0.5.1"
-widestring = "1.0.2"
+widestring = "1.2.1"
 ros2-client = "0.8.0"
 rustdds = "=0.11.4" # pinned because of https://github.com/Atostek/RustDDS/issues/375
 eyre = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = "0.3.20"
-flume = "0.11.0"
+tracing-subscriber = "0.3.23"
+flume = "0.12.0"
 futures = { workspace = true, features = ["thread-pool"] }
-futures-timer = "3.0.3"
+futures-timer = "3.0.4"
 
 [dev-dependencies]
 dora-daemon = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 dora-cli = { workspace = true }
-dunce = "1.0.2"
-rand = "0.8.5"
+dunce = "1.0.5"
+rand = "0.10.2"
 futures = { workspace = true }
-process-wrap = { version = "8.2.1", features = ["std", "tokio1"] }
+process-wrap = { version = "9.1.0", features = ["std", "tokio1"] }
 
 [build-dependencies]
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }

@@ -105,6 +105,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                             let path = &python_source.source;
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else if !working_dir.join(path).exists() {
                                 bail!("no Python library at `{path}`");
                             }
@@ -112,6 +114,8 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                         OperatorSource::Wasm(path) => {
                             if source_is_url(path) {
                                 info!("{path} is a URL."); // TODO: Implement url check.
+                            } else if operator_definition.config.build.is_some() {
+                                info!("skipping path check for operator with build command");
                             } else if !working_dir.join(path).exists() {
                                 bail!("no WASM library at `{path}`");
                             }
@@ -128,7 +132,24 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
             check_timing_fields(&node.id, custom)?;
         }
+        // `input_timeout` is a second-valued `f64` that the daemon also feeds
+        // to `Duration::from_secs_f64`, on both the initial-spawn and the
+        // reconnect paths.
+        for (input_id, input) in node_inputs(node) {
+            check_seconds_field(
+                &format!("input `{input_id}` of node `{}`", node.id),
+                "input_timeout",
+                input.input_timeout,
+            )?;
+        }
     }
+    // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
+    // in the same way (`binaries/daemon/src/lib.rs`).
+    check_seconds_field(
+        "dataflow",
+        "health_check_interval",
+        dataflow.health_check_interval,
+    )?;
 
     // check that all inputs mappings point to an existing output
     check_wiring(dataflow)?;
@@ -163,6 +184,7 @@ fn check_timing_fields(
     node_id: &NodeId,
     custom: &dora_message::descriptor::CustomNode,
 ) -> eyre::Result<()> {
+    let owner = format!("node `{node_id}`");
     for (field, value) in [
         ("finish_grace_secs", custom.finish_grace_secs),
         ("health_check_timeout", custom.health_check_timeout),
@@ -170,16 +192,36 @@ fn check_timing_fields(
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
     ] {
-        if let Some(value) = value
-            && (!value.is_finite() || value < 0.0)
-        {
-            bail!(
-                "node `{node_id}` has invalid `{field}`: {value} \
-                 (must be a finite, non-negative number of seconds)"
-            );
-        }
+        check_seconds_field(&owner, field, value)?;
     }
     Ok(())
+}
+
+/// Reject a negative / non-finite second-valued field before it reaches the
+/// daemon, where `Duration::from_secs_f64` would panic on such input.
+fn check_seconds_field(owner: &str, field: &str, value: Option<f64>) -> eyre::Result<()> {
+    if let Some(value) = value
+        && (!value.is_finite() || value < 0.0)
+    {
+        bail!(
+            "{owner} has invalid `{field}`: {value} \
+             (must be a finite, non-negative number of seconds)"
+        );
+    }
+    Ok(())
+}
+
+/// All `(input_id, input)` pairs declared on a resolved node: a custom node's
+/// own inputs, or the merged inputs of every operator of a runtime node.
+fn node_inputs(node: &ResolvedNode) -> Vec<(&DataId, &Input)> {
+    match &node.kind {
+        CoreNodeKind::Custom(custom) => custom.run_config.inputs.iter().collect(),
+        CoreNodeKind::Runtime(runtime) => runtime
+            .operators
+            .iter()
+            .flat_map(|op| op.config.inputs.iter())
+            .collect(),
+    }
 }
 
 pub trait ResolvedNodeExt {
@@ -889,8 +931,18 @@ pub fn check_type_annotations_full(
             );
             for (output_id, urn) in &op.config.output_types {
                 if registry.resolve(urn).is_some() {
+                    // A consumer of a single-`operator:` node references its
+                    // output in short form (`node/output`) in the source YAML;
+                    // the `op/` prefix is only injected later by
+                    // `resolve_aliases_and_set_defaults`, which this pre-build
+                    // check never runs. Register both the prefixed key and the
+                    // bare `output_id` so short-form edges resolve here too —
+                    // otherwise the upstream type is invisible, silently
+                    // dropping genuine mismatches and, under `strict`, emitting
+                    // a false "upstream has no type annotation" warning.
                     output_type_map
                         .insert((nid.clone(), format!("{op_id}/{output_id}")), urn.clone());
+                    output_type_map.insert((nid.clone(), output_id.to_string()), urn.clone());
                 }
             }
             check_port_types(
@@ -1320,6 +1372,104 @@ operators:
         }
     }
 
+    #[test]
+    fn seconds_field_accepts_none_zero_and_positive() {
+        check_seconds_field("owner", "field", None).unwrap();
+        check_seconds_field("owner", "field", Some(0.0)).unwrap();
+        check_seconds_field("owner", "field", Some(3600.0)).unwrap();
+    }
+
+    #[test]
+    fn seconds_field_rejects_negative_and_non_finite() {
+        for bad in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let err = check_seconds_field("owner", "field", Some(bad))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("field") && err.contains("non-negative"),
+                "{bad} should be rejected with a field/constraint message, got: {err}"
+            );
+        }
+    }
+
+    // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
+    // in the daemon just like the per-node timing fields, so `check_dataflow`
+    // must reject a non-finite / negative value rather than let the daemon panic.
+    #[test]
+    fn check_dataflow_rejects_negative_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: -1.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("non-negative"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // Same guarantee for the per-input `input_timeout`, which the daemon feeds
+    // to `Duration::from_secs_f64` on both the spawn and reconnect paths.
+    #[test]
+    fn check_dataflow_rejects_non_finite_input_timeout() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+  - id: b
+    path: node_b
+    build: cargo build
+    inputs:
+      x:
+        source: a/out
+        input_timeout: .inf
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("input_timeout") && err.contains('x'),
+            "error should name the offending input and field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn check_dataflow_accepts_valid_interval_and_timeout() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 2.5
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+  - id: b
+    path: node_b
+    build: cargo build
+    inputs:
+      x:
+        source: a/out
+        input_timeout: 0.5
+",
+        );
+        check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
+    }
+
     fn user_input(source: &str, output: &str) -> Input {
         Input {
             mapping: InputMapping::User(UserInputMapping {
@@ -1352,6 +1502,50 @@ operators:
         assert!(
             err.contains("runtime-node/<operator_id>/<output_id>"),
             "error should explain the expected format, got: {err}"
+        );
+    }
+
+    // A runtime operator whose artifact is produced by a `build:` command must
+    // not fail the on-disk source check before the build has run — mirroring the
+    // custom-node and shared-library behavior. Exercised via the WASM arm so the
+    // test does not require a Python `dora-rs` runtime (the Python arm carries an
+    // identical guard).
+    #[test]
+    fn operator_with_build_command_skips_missing_source_check() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        wasm: does/not/exist.wasm
+        build: cargo build
+        outputs:
+          - out
+",
+        );
+        check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test")).unwrap();
+    }
+
+    #[test]
+    fn operator_without_build_command_rejects_missing_source() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: runtime-node
+    operators:
+      - id: op1
+        wasm: does/not/exist.wasm
+        outputs:
+          - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no WASM library"),
+            "missing source without a build command should still be rejected, got: {err}"
         );
     }
 
@@ -2198,6 +2392,111 @@ nodes:
         assert!(
             !msg.contains("my-operator/runtime-node/tick"),
             "input id should not use reversed operator/node order, got: {msg}"
+        );
+    }
+
+    // --- Single-`operator:` producer edges (short-form references) ---
+    //
+    // A consumer of a single-`operator:` node references its output in short
+    // form (`node/output`) in the source YAML. The `op/` prefix is only
+    // injected later by `resolve_aliases_and_set_defaults`, which the
+    // pre-build type check does not run. These tests guard that the type
+    // check still sees the upstream type across such an edge.
+
+    #[test]
+    fn infers_type_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result.warnings.is_empty(),
+            "unexpected: {:?}",
+            result.warnings
+        );
+        assert_eq!(
+            result.inferences.len(),
+            1,
+            "should infer from the operator output"
+        );
+        assert_eq!(result.inferences[0].inferred_urn, "std/core/v1/Float64");
+        assert_eq!(result.inferences[0].port_id, "reading");
+    }
+
+    #[test]
+    fn detects_mismatch_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Int32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("type mismatch")),
+            "expected a type mismatch warning, got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn strict_mode_no_false_positive_across_single_operator_edge() {
+        // Upstream single-operator output IS annotated, so strict mode must
+        // not claim it has "no type annotation".
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Float64
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, true);
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("no type annotation")),
+            "annotated upstream must not trigger a strict no-annotation warning, got: {:?}",
+            result.warnings
         );
     }
 
