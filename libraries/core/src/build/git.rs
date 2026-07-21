@@ -6,6 +6,7 @@ use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 use url::Url;
 
@@ -15,7 +16,31 @@ pub struct GitManager {
     pub clones_in_use: BTreeMap<PathBuf, BTreeSet<DataflowId>>,
     /// Builds that are prepared, but not done yet.
     prepared_builds: BTreeMap<SessionId, PreparedBuild>,
+    /// Clone dirs that some `GitFolder` is actively writing into right now,
+    /// process-wide, across every build session. A `NewClone`/`CopyAndFetch`/
+    /// `RenameAndFetch` claims its target dir here as soon as it's chosen and
+    /// releases it once that `GitFolder` is dropped (its clone/fetch task
+    /// finished, failed, or got cancelled). `prepared_builds` alone can't
+    /// answer "is anyone writing to this dir right now": it's scoped by
+    /// SessionId and a session's entries linger until that same session
+    /// happens to build again, which for a one-shot session never happens.
+    /// Gating the Reuse HEAD-check on that instead would let a stale dir shed
+    /// verification forever the moment any session had ever planned it (#2711).
+    clones_in_progress: Arc<Mutex<BTreeSet<PathBuf>>>,
     // reuse_for: BTreeMap<PathBuf, PathBuf>,
+}
+
+/// Releases a `clones_in_progress` claim when the owning `GitFolder` is
+/// dropped, whatever the reason (clone finished, failed, or was cancelled).
+struct InProgressClaim {
+    dir: PathBuf,
+    set: Arc<Mutex<BTreeSet<PathBuf>>>,
+}
+
+impl Drop for InProgressClaim {
+    fn drop(&mut self) {
+        self.set.lock().unwrap().remove(&self.dir);
+    }
 }
 
 #[derive(Default)]
@@ -60,21 +85,16 @@ impl GitManager {
             // So we can simply reuse the directory without doing any additional git
             // operations.
             //
-            // Only hand down a commit to verify (see the Reuse arm) when the dir was
-            // left by a prior, finished build: it's on disk but this session didn't
-            // plan it. A dir this session *did* plan is about to be filled in by a
-            // sibling node's NewClone, which may be running right now on another
-            // thread (parallel builds share one JoinSet with no per-dir lock). If I
-            // checked HEAD on that I could delete a clone that's still being written,
-            // so I skip verification and just reuse it, same as before this change.
-            let planned_this_session = self
-                .prepared_builds
-                .get(&session_id)
-                .map(|p| p.planned_clone_dirs.contains(&clone_dir))
-                .unwrap_or(false);
+            // Only hand down a commit to verify (see the Reuse arm) when nobody is
+            // actively writing to this dir right now. A dir that's still being
+            // cloned into -- by a sibling node in this session, or by an entirely
+            // different, concurrently-running session sharing this daemon's
+            // GitManager -- must never have its HEAD checked or be deleted, so I
+            // skip verification and just reuse it, same as before this change.
+            let in_progress = self.clones_in_progress.lock().unwrap().contains(&clone_dir);
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
-                verify_commit: (!planned_this_session).then_some(commit_hash),
+                verify_commit: (!in_progress).then_some(commit_hash),
             }
         } else if let Some(previous_commit_hash) = prev_commit_hash {
             // we might be able to update a previous clone
@@ -120,9 +140,32 @@ impl GitManager {
                 commit_hash,
             }
         };
-        self.register_ready_clone_dir(session_id, clone_dir);
+        self.register_ready_clone_dir(session_id, clone_dir.clone());
 
-        Ok(GitFolder { reuse })
+        // Claim the dir as in-progress for every arm that's about to write
+        // into it, so a concurrent Reuse elsewhere skips verification instead
+        // of racing the write.
+        let claim = matches!(
+            reuse,
+            ReuseOptions::NewClone { .. }
+                | ReuseOptions::CopyAndFetch { .. }
+                | ReuseOptions::RenameAndFetch { .. }
+        )
+        .then(|| {
+            self.clones_in_progress
+                .lock()
+                .unwrap()
+                .insert(clone_dir.clone());
+            InProgressClaim {
+                dir: clone_dir,
+                set: self.clones_in_progress.clone(),
+            }
+        });
+
+        Ok(GitFolder {
+            reuse,
+            _claim: claim,
+        })
     }
 
     pub fn clone_dir_ready(&self, session_id: SessionId, dir: &Path) -> bool {
@@ -163,11 +206,15 @@ impl GitManager {
 pub struct GitFolder {
     /// Specifies whether an existing repo should be reused.
     reuse: ReuseOptions,
+    /// Held for as long as this `GitFolder` is writing to its clone dir;
+    /// releases the `clones_in_progress` claim on drop. `None` for the Reuse
+    /// arm, which never writes.
+    _claim: Option<InProgressClaim>,
 }
 
 impl GitFolder {
     pub async fn prepare(self, logger: &mut impl BuildLogger) -> eyre::Result<PathBuf> {
-        let GitFolder { reuse } = self;
+        let GitFolder { reuse, _claim } = self;
 
         tracing::info!("reuse: {reuse:?}");
         let clone_dir = match reuse {
@@ -540,6 +587,7 @@ mod tests {
                 // 40 hex chars, but we never get that far: the fetch blows up first.
                 commit_hash: "deadbeef".repeat(5),
             },
+            _claim: None,
         };
         assert!(folder.prepare(&mut TestLogger).await.is_err());
         assert!(
@@ -561,6 +609,7 @@ mod tests {
                 target_dir: target.clone(),
                 commit_hash: "deadbeef".repeat(5),
             },
+            _claim: None,
         };
         assert!(folder.prepare(&mut TestLogger).await.is_err());
         assert!(
@@ -581,6 +630,7 @@ mod tests {
                 // Well-formed full hash that is definitely not commit A.
                 verify_commit: Some("0".repeat(40)),
             },
+            _claim: None,
         };
         assert!(folder.prepare(&mut TestLogger).await.is_err());
         assert!(
@@ -600,6 +650,7 @@ mod tests {
                 dir: dir.clone(),
                 verify_commit: Some(oid),
             },
+            _claim: None,
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists());
@@ -617,8 +668,146 @@ mod tests {
                 dir: dir.clone(),
                 verify_commit: Some("main".into()),
             },
+            _claim: None,
         };
         assert!(folder.prepare(&mut TestLogger).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn reuse_does_not_verify_a_dir_a_concurrent_session_is_cloning_into() {
+        // Regression test for #2711. The daemon shares one GitManager across
+        // concurrently-spawned build sessions (binaries/daemon/src/lib.rs:290,
+        // :1562). The old guard only skipped verification for a dir *this
+        // session's own* planned_clone_dirs contains, so it couldn't see a
+        // different, concurrently-running session's in-flight NewClone. Two
+        // sessions building the same repo@commit at the same time would let
+        // the second session's HEAD check run against a directory the first
+        // is still writing, fail to resolve HEAD, and delete it out from
+        // under the first session's clone.
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo");
+        let commit = init_repo_with_commit(&repo_path);
+        let repo_url_str = format!("file://{}", repo_path.display());
+        let target_dir = tempfile::tempdir().unwrap();
+
+        let mut manager = GitManager::default();
+
+        // Session A picks NewClone for repo@commit; its GitFolder claims the
+        // dir as in-progress even though it hasn't cloned into it yet.
+        let session_a = SessionId::generate();
+        let folder_a = manager
+            .choose_clone_dir(
+                session_a,
+                repo_url_str.clone(),
+                commit.clone(),
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        assert!(matches!(folder_a.reuse, ReuseOptions::NewClone { .. }));
+
+        // The directory now exists on disk mid-clone (libgit2 creates it
+        // before it's a valid, HEAD-resolvable repo). Session B must see
+        // this as owned by an in-flight build, not as a finished clone to
+        // verify.
+        let parsed = Url::parse(&repo_url_str).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        std::fs::create_dir_all(&clone_dir).unwrap();
+
+        let session_b = SessionId::generate();
+        let folder_b = manager
+            .choose_clone_dir(session_b, repo_url_str, commit, None, target_dir.path())
+            .unwrap();
+        assert!(
+            matches!(
+                &folder_b.reuse,
+                ReuseOptions::Reuse {
+                    verify_commit: None,
+                    ..
+                }
+            ),
+            "a dir a concurrent session is still cloning into must be reused without verification"
+        );
+
+        // folder_a is still alive, holding its in-progress claim. Dropping it
+        // now releases the claim, same as when its real clone finishes.
+        drop(folder_a);
+    }
+
+    #[tokio::test]
+    async fn reuse_still_verifies_a_dir_left_by_a_different_finished_session() {
+        // Regression test for #2711. `prepared_builds` entries are keyed by
+        // SessionId and only ever get cleared at the top of *that same
+        // session's* next build (see `clear_planned_builds`). A one-shot
+        // session -- the normal case, one SessionId per `dora start` -- never
+        // calls `build_dataflow` again, so its `planned_clone_dirs` entry
+        // sits in `GitManager` forever. A verify_commit gate keyed on "did
+        // any session ever plan this dir" would then permanently skip the
+        // HEAD check for that dir the moment a second session touches it,
+        // silently reusing a stale wrong-commit clone -- exactly what #2482
+        // was written to stop. The gate has to track dirs that are actually
+        // being written *right now*, not dirs some session once planned.
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo");
+        let old_commit = init_repo_with_commit(&repo_path);
+        let repo_url = format!("file://{}", repo_path.display());
+
+        let target_dir = tempfile::tempdir().unwrap();
+        let mut manager = GitManager::default();
+
+        // Session A clones the repo and finishes. Nobody ever calls
+        // clear_planned_builds(session_a) again, matching a real one-shot
+        // daemon session.
+        let session_a = SessionId::generate();
+        let folder_a = manager
+            .choose_clone_dir(
+                session_a,
+                repo_url.clone(),
+                old_commit.clone(),
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        let clone_dir = folder_a.prepare(&mut TestLogger).await.unwrap();
+
+        // The clone on disk drifts to a different commit -- a stale leftover,
+        // exactly the case the #2482 HEAD check exists to catch.
+        std::fs::write(clone_dir.join("file.txt"), b"B").unwrap();
+        let repo = git2::Repository::open(&clone_dir).unwrap();
+        let parent = repo.head().unwrap().peel_to_commit().unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("file.txt")).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t").unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "B", &tree, &[&parent])
+            .unwrap();
+
+        // Session B (a fresh SessionId -- a second, unrelated `dora start`)
+        // asks for the same old commit and is handed the same dir. Session
+        // A's planned entry is still sitting in `prepared_builds`, but
+        // nothing is actively cloning into this dir right now, so
+        // verification must still run and catch the mismatch.
+        let session_b = SessionId::generate();
+        let folder_b = manager
+            .choose_clone_dir(session_b, repo_url, old_commit, None, target_dir.path())
+            .unwrap();
+        assert!(
+            matches!(
+                &folder_b.reuse,
+                ReuseOptions::Reuse {
+                    verify_commit: Some(_),
+                    ..
+                }
+            ),
+            "a dir left by a different, finished session must still be verified, not silently reused"
+        );
+        assert!(folder_b.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !clone_dir.exists(),
+            "the stale wrong-commit clone must be removed"
+        );
     }
 
     #[tokio::test]
@@ -637,6 +826,7 @@ mod tests {
                 dir: dir.clone(),
                 verify_commit: None,
             },
+            _claim: None,
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists(), "a sibling-owned clone must never be deleted");
