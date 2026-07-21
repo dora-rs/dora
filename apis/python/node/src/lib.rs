@@ -1935,24 +1935,19 @@ impl Node {
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else if is_cuda {
-                            // If the previous GPU copy failed, gen was left
-                            // odd.  Restore even parity before beginning a
-                            // new write so the begin/end increments don't
-                            // invert the seqlock contract.
+                            // If gen is odd, the previous GPU copy failed
+                            // and left it in the "write in progress" state.
+                            // Skip the begin-increment so the reader sees
+                            // "writing" throughout — no window where gen is
+                            // even with stale data.  If gen is even (normal
+                            // case), begin the write as usual.
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 != 0 {
+                                if cur % 2 == 0 {
                                     std::ptr::write_volatile(gen_ptr, cur + 1);
                                     std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                                 }
-                            }
-                            // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                             let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
@@ -2166,24 +2161,19 @@ impl Node {
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else if is_cuda {
-                            // If the previous GPU copy failed, gen was left
-                            // odd.  Restore even parity before beginning a
-                            // new write so the begin/end increments don't
-                            // invert the seqlock contract.
+                            // If gen is odd, the previous GPU copy failed
+                            // and left it in the "write in progress" state.
+                            // Skip the begin-increment so the reader sees
+                            // "writing" throughout — no window where gen is
+                            // even with stale data.  If gen is even (normal
+                            // case), begin the write as usual.
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 != 0 {
+                                if cur % 2 == 0 {
                                     std::ptr::write_volatile(gen_ptr, cur + 1);
                                     std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                                 }
-                            }
-                            // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                             let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
