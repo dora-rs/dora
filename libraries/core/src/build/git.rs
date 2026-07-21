@@ -465,7 +465,19 @@ async fn fetch_changes(
 
 fn checkout_tree(repository: &git2::Repository, commit_hash: &str) -> eyre::Result<()> {
     // Reject arbitrary rev-spec expressions; only allow hex commit hashes and branch/tag names.
-    if commit_hash.contains("..") || commit_hash.contains(':') || commit_hash.contains('^') {
+    // This must stay a denylist of every rev-spec operator `revparse_ext` understands, not just
+    // the ones above: `~`/`@` enable ancestor/reflog/upstream navigation (e.g. `HEAD~3`,
+    // `main@{upstream}`) just as much as `..`, `:`, and `^` do. We reject `@`/`{`/`}` wholesale
+    // rather than only the `@{…}` sequence; that also turns away the rare valid ref name that
+    // embeds one of these characters, but a hard error is the safe failure mode for this guard.
+    if commit_hash.contains("..")
+        || commit_hash.contains(':')
+        || commit_hash.contains('^')
+        || commit_hash.contains('~')
+        || commit_hash.contains('@')
+        || commit_hash.contains('{')
+        || commit_hash.contains('}')
+    {
         eyre::bail!(
             "invalid commit reference '{commit_hash}': rev-spec expressions are not allowed"
         );
@@ -640,5 +652,74 @@ mod tests {
         };
         assert_eq!(folder.prepare(&mut TestLogger).await.unwrap(), dir);
         assert!(dir.exists(), "a sibling-owned clone must never be deleted");
+    }
+
+    /// Repo with two commits, so `HEAD~1` / `HEAD^` resolve to a real (but
+    /// forbidden) ancestor commit.
+    fn repo_with_two_commits() -> (tempfile::TempDir, git2::Repository) {
+        let dir = tempfile::tempdir().unwrap();
+        let repository = git2::Repository::init(dir.path()).unwrap();
+        let signature = git2::Signature::now("test", "test@dora.rs").unwrap();
+        {
+            let tree_id = repository.index().unwrap().write_tree().unwrap();
+            let tree = repository.find_tree(tree_id).unwrap();
+            let first = repository
+                .commit(Some("HEAD"), &signature, &signature, "first", &tree, &[])
+                .unwrap();
+            let first_commit = repository.find_commit(first).unwrap();
+            repository
+                .commit(
+                    Some("HEAD"),
+                    &signature,
+                    &signature,
+                    "second",
+                    &tree,
+                    &[&first_commit],
+                )
+                .unwrap();
+        }
+        (dir, repository)
+    }
+
+    #[test]
+    fn rejects_rev_spec_navigation_operators() {
+        let (_dir, repository) = repo_with_two_commits();
+
+        // These are genuine, resolvable rev-specs, not typos: without the guard
+        // `revparse_ext` would happily walk them to the first commit. The guard
+        // must reject them anyway.
+        for resolvable in ["HEAD~1", "HEAD^"] {
+            assert!(
+                repository.revparse_ext(resolvable).is_ok(),
+                "test setup: `{resolvable}` should resolve in a two-commit repo"
+            );
+        }
+
+        for commit_hash in [
+            "HEAD~1",
+            "main~1",
+            "HEAD@{1}",
+            "main@{upstream}",
+            "@",
+            "HEAD^",
+            "main..HEAD",
+            "HEAD:foo",
+        ] {
+            let err = checkout_tree(&repository, commit_hash).unwrap_err();
+            assert!(
+                format!("{err:#}").contains("rev-spec expressions are not allowed"),
+                "expected `{commit_hash}` to be rejected as a rev-spec, got: {err:#}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_branch_name_and_commit_hash() {
+        let (_dir, repository) = repo_with_two_commits();
+        let head = repository.head().unwrap();
+        let branch_name = head.shorthand().unwrap().to_string();
+        let head_commit = head.peel_to_commit().unwrap().id();
+        checkout_tree(&repository, &branch_name).unwrap();
+        checkout_tree(&repository, &head_commit.to_string()).unwrap();
     }
 }
