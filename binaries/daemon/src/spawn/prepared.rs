@@ -347,7 +347,10 @@ impl PreparedNode {
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
-                exit_status,
+                // Cloned (not moved) so the same status can be re-reported as a
+                // terminal `restart: false` result if the restart is later
+                // abandoned (see `emit_restart_abandoned`).
+                exit_status: exit_status.clone(),
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
                 restart_count,
@@ -387,6 +390,12 @@ impl PreparedNode {
                                 Some("daemon".into()),
                                 "restart cancelled: inputs closed during backoff wait".to_string(),
                             )
+                            .await;
+                        // A `restart: true` result was already reported above, so
+                        // the daemon kept this node in `running_nodes` expecting a
+                        // follow-up. Emit a terminal result so it is cleaned up and
+                        // the dataflow can finish.
+                        self.emit_restart_abandoned(exit_status, restart_count)
                             .await;
                         break;
                     }
@@ -470,6 +479,8 @@ impl PreparedNode {
                                 "cannot restart dynamic node".to_string(),
                             )
                             .await;
+                        self.emit_restart_abandoned(exit_status, restart_count)
+                            .await;
                         break;
                     }
                     Err(err) => {
@@ -480,6 +491,8 @@ impl PreparedNode {
                                 format!("failed to restart node: {err:?}"),
                             )
                             .await;
+                        self.emit_restart_abandoned(exit_status, restart_count)
+                            .await;
                         break;
                     }
                 }
@@ -487,6 +500,41 @@ impl PreparedNode {
                 break;
             }
         }
+    }
+
+    /// Report a terminal `SpawnedNodeResult` (with `restart: false`) after a
+    /// restart was announced but then abandoned.
+    ///
+    /// `restart_loop` emits a `restart: true` result *before* attempting a
+    /// respawn. On that event the daemon deliberately keeps the node in
+    /// `running_nodes` (only notifying downstream of `NodeRestarted`) and waits
+    /// for a follow-up result — node-stop bookkeeping and dataflow
+    /// finish-detection run only on a `restart: false` result. `restart_loop`
+    /// is the sole emitter of `SpawnedNodeResult`, so if it breaks out after a
+    /// failed/abandoned respawn (respawn error, an unexpected dynamic-node
+    /// result, or the restart being cancelled during the backoff wait) without
+    /// this call, the node stays wedged in `running_nodes` forever — its
+    /// channels, memory pools and zenoh publishers leak and the dataflow never
+    /// finishes (`dora list` shows it `Running`, `dora run`/attach never
+    /// returns). Emitting a terminal result closes that gap.
+    async fn emit_restart_abandoned(&self, exit_status: NodeExitStatus, restart_count: u32) {
+        let event = DoraEvent::SpawnedNodeResult {
+            dataflow_id: self.dataflow_id,
+            node_id: self.node.id.clone(),
+            exit_status,
+            dynamic_node: self.node.kind.dynamic(),
+            restart: false,
+            restart_count,
+        }
+        .into();
+        let _ = self
+            .daemon_tx
+            .clone()
+            .send(Timestamped {
+                inner: event,
+                timestamp: self.clock.clone().new_timestamp(),
+            })
+            .await;
     }
 
     async fn spawn_inner(
@@ -1094,5 +1142,131 @@ mod tests {
         // The remainder of the over-long line is discarded, so the next line
         // is read intact rather than being merged with the overflow.
         assert_eq!(lines[1], b"next\n".to_vec());
+    }
+
+    use crossbeam::queue::ArrayQueue;
+    use dora_core::descriptor::{Descriptor, DescriptorExt};
+    use dora_message::{common::DaemonId, daemon_to_node::NodeConfig, id::NodeId};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
+    use uuid::Uuid;
+
+    /// A restart that is announced (`SpawnedNodeResult { restart: true }`) but
+    /// then abandoned — here because the respawn yields an unexpected dynamic
+    /// result — must be followed by a terminal `restart: false` result. The
+    /// daemon keeps the node in `running_nodes` on the `restart: true` event
+    /// and only runs node-stop bookkeeping / dataflow finish-detection on a
+    /// `restart: false` result; without the follow-up the node (and thus the
+    /// whole dataflow) is wedged forever. `restart_loop` is the sole emitter of
+    /// `SpawnedNodeResult`, so nothing else can rescue it.
+    #[tokio::test]
+    async fn abandoned_restart_emits_terminal_result() {
+        // A custom node with `restart_policy: always` so the loop commits to a
+        // restart, and no `restart_delay` so there is no backoff sleep.
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: flaky
+    path: /nonexistent
+    restart_policy: always
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - out
+"#,
+        )
+        .expect("parse descriptor");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve nodes");
+        let node = nodes
+            .into_values()
+            .next()
+            .expect("exactly one resolved node");
+
+        let clock = Arc::new(HLC::default());
+        let (daemon_tx, mut daemon_rx) = mpsc::channel(16);
+
+        let prepared = PreparedNode {
+            // `command: None` makes `spawn_inner` return `Ok(NodeKind::Dynamic)`
+            // — the abandon path under test — without spawning any process.
+            command: None,
+            spawn_error_msg: "spawn failed".to_string(),
+            node_working_dir: std::env::temp_dir(),
+            dataflow_id: Uuid::nil(),
+            node,
+            node_config: NodeConfig {
+                dataflow_id: Uuid::nil(),
+                node_id: NodeId::from("flaky".to_string()),
+                run_config: dora_core::config::NodeRunConfig {
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeSet::new(),
+                    output_types: BTreeMap::new(),
+                    input_types: BTreeMap::new(),
+                    output_framing: BTreeMap::new(),
+                    shared_memory_pool_size: None,
+                },
+                daemon_communication: None,
+                dataflow_descriptor: serde_yaml::Value::Null,
+                dynamic: false,
+                write_events_to: None,
+                restart_count: 0,
+            },
+            clock: clock.clone(),
+            daemon_tx,
+            node_stderr_most_recent: Arc::new(ArrayQueue::new(1)),
+            last_activity: Arc::new(AtomicU64::new(0)),
+            ft_stats: Arc::new(crate::FaultToleranceStats::default()),
+        };
+
+        // Build a `'static` logger backed by the `Tracing` destination.
+        let logger = crate::log::Logger {
+            destination: crate::log::LogDestination::Tracing,
+            daemon_id: DaemonId::new(None),
+            clock: clock.clone(),
+        };
+        let mut daemon_logger = logger.for_daemon(DaemonId::new(None));
+        let node_logger = daemon_logger
+            .for_dataflow(Uuid::nil())
+            .for_node(NodeId::from("flaky".to_string()))
+            .try_clone()
+            .await
+            .expect("clone logger");
+
+        // Deliver a failure exit that warrants a restart under `always`.
+        let (finished_tx, finished_rx) = oneshot::channel();
+        finished_tx
+            .send(NodeProcessFinished {
+                exit_status: NodeExitStatus::ExitCode(1),
+            })
+            .ok()
+            .expect("send finished");
+
+        prepared
+            .restart_loop(
+                node_logger,
+                finished_rx,
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU32::new(0)),
+                Arc::new(AtomicU32::new(0)),
+            )
+            .await;
+
+        // Collect the `restart` flags of every emitted `SpawnedNodeResult`.
+        let mut restart_flags = Vec::new();
+        while let Ok(msg) = daemon_rx.try_recv() {
+            if let Event::Dora(DoraEvent::SpawnedNodeResult { restart, .. }) = msg.inner {
+                restart_flags.push(restart);
+            }
+        }
+
+        // The loop announced the restart (`true`) and, on abandoning it, must
+        // report a terminal `false`. Without the fix only the `true` is sent.
+        assert_eq!(
+            restart_flags,
+            vec![true, false],
+            "abandoned restart must be followed by a terminal restart:false result"
+        );
     }
 }
