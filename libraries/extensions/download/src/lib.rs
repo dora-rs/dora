@@ -9,19 +9,37 @@ use tokio::io::AsyncWriteExt;
 ///
 /// Handles headers that carry additional parameters after the filename, e.g.
 /// `attachment; filename="model.bin"; size=1000`, and both quoted and unquoted
-/// forms. Returns `None` when no non-empty `filename=` value is present (the
-/// RFC 5987 extended `filename*=` form is not decoded and falls through).
+/// forms. Per RFC 6266 the parameter name is matched case-insensitively, so
+/// `Filename=`/`FILENAME=` are accepted too. Returns `None` when no non-empty
+/// `filename=` value is present (the RFC 5987 extended `filename*=` form is not
+/// decoded and falls through — the literal `filename=` substring never matches
+/// the `filename*=` spelling, so it is skipped automatically).
 fn parse_content_disposition_filename(header: &str) -> Option<String> {
-    let rest = header.split("filename=").nth(1)?.trim_start();
+    // RFC 6266: parameter names are case-insensitive. Locate `filename=`
+    // regardless of case without copying the value bytes.
+    let lower = header.to_ascii_lowercase();
+    let value_start = lower.find("filename=")? + "filename=".len();
+    let rest = header[value_start..].trim_start();
+
     let name = if let Some(after_quote) = rest.strip_prefix('"') {
-        // Quoted form: the value runs up to the closing quote, so a trailing
-        // `; param=...` (or a `;` inside the quotes) is handled correctly.
-        after_quote.split('"').next().unwrap_or(after_quote)
+        // Quoted form: read up to the closing quote, honoring RFC 6266
+        // `\`-escapes (`filename="a\"b"` -> `a"b`), so a trailing
+        // `; param=...` (or a `;`/`"` inside the quotes) is handled correctly.
+        let mut name = String::new();
+        let mut chars = after_quote.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' => break,
+                '\\' => name.extend(chars.next()),
+                _ => name.push(c),
+            }
+        }
+        name
     } else {
         // Token form: the value ends at the next parameter separator.
-        rest.split(';').next().unwrap_or(rest).trim()
+        rest.split(';').next().unwrap_or(rest).trim().to_string()
     };
-    (!name.is_empty()).then(|| name.to_string())
+    (!name.is_empty()).then_some(name)
 }
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
@@ -156,6 +174,33 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
             Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn parameter_name_is_case_insensitive() {
+        // RFC 6266 parameter names are case-insensitive; a non-lowercase
+        // `filename` (common from Java/.NET/IIS stacks) must still be honored.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; Filename=\"model.bin\""),
+            Some("model.bin".to_string())
+        );
+        assert_eq!(
+            parse_content_disposition_filename("attachment; FILENAME=model.bin"),
+            Some("model.bin".to_string())
+        );
+        assert_eq!(
+            parse_content_disposition_filename("inline; FileName=node.py"),
+            Some("node.py".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quote_inside_quoted_value() {
+        // RFC 6266 quoted-string: a `\"` is a literal quote, not the terminator.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"a\\\"b.bin\""),
+            Some("a\"b.bin".to_string())
         );
     }
 
