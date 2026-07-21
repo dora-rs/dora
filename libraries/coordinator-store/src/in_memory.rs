@@ -340,6 +340,17 @@ mod tests {
         assert_eq!(store.list_node_params(&df, &node).unwrap().len(), 1);
     }
 
+    /// A `\0`-containing param key must be rejected here just as the redb
+    /// backend rejects it (it reserves `\0` as a composite-key separator), so
+    /// the two backends agree on which input is valid.
+    #[test]
+    fn param_key_with_null_byte_is_rejected() {
+        let store = InMemoryStore::new();
+        let df = Uuid::new_v4();
+        let node: NodeId = "sensor".to_string().into();
+        assert!(store.put_node_param(&df, &node, "a\0b", b"v").is_err());
+    }
+
     /// `delete_dataflow` must remove every node param tied to that
     /// dataflow so `dora clean` doesn't leak orphan rows. Params for
     /// other dataflows must survive untouched.

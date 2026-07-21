@@ -52,13 +52,13 @@ impl serde::Serialize for TypedValue<'_> {
         })?;
         for column_name in input.column_names() {
             if !message.members.iter().any(|m| m.name == column_name) {
-                return Err(error(format!(
+                Err(error(format!(
                     "given struct has unknown field {column_name}"
                 )))?;
             }
         }
         if input.len() > 1 {
-            return Err(error(format!(
+            Err(error(format!(
                 "expected single struct instance, got struct array with {} entries",
                 input.len()
             )))?;

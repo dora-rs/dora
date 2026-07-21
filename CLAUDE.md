@@ -184,7 +184,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)
 - Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
 - License check (`cargo-lichking`)
-- Rust toolchain pinned to 1.92 (see `.github/workflows/ci.yml`)
+- Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 
 **Nightly CI (`.github/workflows/nightly.yml`, ~3-4h, daily 06:40 UTC):** Broader coverage, does NOT block PRs. Auto-files an issue on failure (`nightly-regression` label).
 - Test on macOS + Windows

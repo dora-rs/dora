@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::{Executable, default_tracing};
+use crate::common::parse_duration;
 use crate::{
     common::{
         CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
@@ -19,7 +20,6 @@ use crate::{
 use chrono::{DateTime, Utc};
 use clap::Args;
 use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, id::NodeId};
-use duration_str::parse as parse_duration_str;
 use eyre::{Context, Result, bail};
 use uuid::Uuid;
 
@@ -50,11 +50,11 @@ pub struct LogsArgs {
     pub local: bool,
     /// Only show logs newer than this duration ago (e.g. "5m", "1h")
     #[clap(long, value_name = "DURATION")]
-    #[arg(value_parser = parse_duration_str)]
+    #[arg(value_parser = parse_duration)]
     pub since: Option<std::time::Duration>,
     /// Only show logs older than this duration ago (e.g. "5m", "1h")
     #[clap(long, value_name = "DURATION")]
-    #[arg(value_parser = parse_duration_str)]
+    #[arg(value_parser = parse_duration)]
     pub until: Option<std::time::Duration>,
     /// Minimum log level to display (error, warn, info, debug, trace, stdout)
     #[clap(
@@ -140,6 +140,7 @@ impl Executable for LogsArgs {
                 stream_logs_from_coordinator(
                     &session,
                     uuid,
+                    None,
                     &self.level,
                     self.since,
                     self.until,
@@ -313,16 +314,9 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
             if current_size <= pos {
                 continue;
             }
-            let mut file = std::fs::File::open(path)?;
-            file.seek(std::io::SeekFrom::Start(pos))?;
-            let mut buf = String::new();
-            file.read_to_string(&mut buf)?;
-            for line in buf.lines() {
-                if let Some(msg) = parse_jsonl_line(line) {
-                    new_messages.push(msg);
-                }
-            }
-            file_positions.insert(path.clone(), current_size);
+            let (msgs, new_pos) = read_appended_log_lines(path, pos)?;
+            new_messages.extend(msgs);
+            file_positions.insert(path.clone(), new_pos);
         }
 
         new_messages.sort_by_key(|a| a.timestamp);
@@ -332,6 +326,30 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
             }
         }
     }
+}
+
+/// Read log lines appended to `path` after byte offset `pos`, returning the
+/// parsed messages and the new byte offset.
+///
+/// Only *complete* (newline-terminated) lines are consumed. A trailing partial
+/// line — the daemon may be mid-write — is left unconsumed so it is re-read once
+/// completed, rather than being parsed as a broken JSON line and dropped. The
+/// returned offset advances only past the bytes actually consumed, never past
+/// the (racily larger) file size, so nothing is re-read and duplicated on the
+/// next poll. Bytes are decoded lossily so a read that ends inside a multibyte
+/// UTF-8 sequence cannot abort the follow session.
+fn read_appended_log_lines(path: &Path, pos: u64) -> Result<(Vec<LogMessage>, u64)> {
+    let mut file = std::fs::File::open(path)?;
+    file.seek(std::io::SeekFrom::Start(pos))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf)?;
+    let consumed = match buf.iter().rposition(|&b| b == b'\n') {
+        Some(idx) => idx + 1,
+        None => return Ok((Vec::new(), pos)),
+    };
+    let text = String::from_utf8_lossy(&buf[..consumed]);
+    let messages = text.lines().filter_map(parse_jsonl_line).collect();
+    Ok((messages, pos + consumed as u64))
 }
 
 fn find_dataflow_dir(out_dir: &Path, dataflow_id: Option<&str>) -> Result<PathBuf> {
@@ -569,10 +587,27 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     false
 }
 
-/// Subscribe to coordinator log stream with time/grep filtering.
+/// Returns whether a log message should be kept given an optional node filter.
+/// `None` means no filtering (messages from every node pass); `Some(want)`
+/// keeps only messages whose node id equals `want`.
+fn matches_node_filter(msg_node: Option<&str>, want: Option<&str>) -> bool {
+    match want {
+        None => true,
+        Some(want) => msg_node == Some(want),
+    }
+}
+
+/// Subscribe to coordinator log stream with time/grep/node filtering.
+///
+/// `node`, when set, restricts the stream to messages from that single node —
+/// mirroring the node scoping already applied to the historical fetch in
+/// [`logs`]. Without this, `--node <N> --follow` would show history for `N`
+/// but then stream live logs from every node once following began.
+#[allow(clippy::too_many_arguments)]
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
+    node: Option<&NodeId>,
     level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
@@ -589,6 +624,7 @@ fn stream_logs_from_coordinator(
         since.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
     let until_threshold =
         until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
+    let want_node = node.map(|n| n.as_ref());
 
     let log_rx = session.subscribe_logs(
         &serde_json::to_vec(&ControlRequest::LogSubscribe {
@@ -610,6 +646,10 @@ fn stream_logs_from_coordinator(
             serde_json::from_slice(&raw).context("failed to parse log message");
         match parsed {
             Ok(log_message) => {
+                if !matches_node_filter(log_message.node_id.as_ref().map(|n| n.as_ref()), want_node)
+                {
+                    continue;
+                }
                 if let Some(threshold) = since_threshold
                     && log_message.timestamp < threshold
                 {
@@ -679,7 +719,16 @@ pub fn logs(
         return Ok(());
     }
 
-    stream_logs_from_coordinator(session, uuid, level, since, until, grep, config)
+    stream_logs_from_coordinator(
+        session,
+        uuid,
+        Some(&node),
+        level,
+        since,
+        until,
+        grep,
+        config,
+    )
 }
 
 #[cfg(test)]
@@ -904,6 +953,30 @@ mod tests {
         assert!(!matches_grep(&msg, Some("zzz_missing")));
     }
 
+    // --- matches_node_filter ---
+
+    #[test]
+    fn node_filter_none_passes_everything() {
+        assert!(matches_node_filter(Some("sensor"), None));
+        assert!(matches_node_filter(None, None));
+    }
+
+    #[test]
+    fn node_filter_matching_node_passes() {
+        assert!(matches_node_filter(Some("sensor"), Some("sensor")));
+    }
+
+    #[test]
+    fn node_filter_other_node_is_dropped() {
+        assert!(!matches_node_filter(Some("processor"), Some("sensor")));
+    }
+
+    #[test]
+    fn node_filter_system_message_is_dropped_when_node_requested() {
+        // System messages (no node_id) should not leak through a --node filter.
+        assert!(!matches_node_filter(None, Some("sensor")));
+    }
+
     #[test]
     fn find_node_log_files_does_not_match_prefix_sharing_nodes() {
         use std::fs::File;
@@ -918,5 +991,91 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
+    }
+
+    // --- read_appended_log_lines (follow-mode offset tracking) ---
+
+    fn jsonl(message: &str) -> String {
+        let mut line = serde_json::to_string(&make_msg(message, None, None, Utc::now())).unwrap();
+        line.push('\n');
+        line
+    }
+
+    #[test]
+    fn read_appended_reads_complete_lines_and_advances_to_end() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let content = format!("{}{}", jsonl("a"), jsonl("b"));
+        std::fs::write(&path, &content).unwrap();
+
+        let (msgs, new_pos) = read_appended_log_lines(&path, 0).unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].message, "a");
+        assert_eq!(msgs[1].message, "b");
+        // Offset advances to exactly the bytes consumed (whole file here).
+        assert_eq!(new_pos, content.len() as u64);
+
+        // A follow-up read from the returned offset yields nothing and does not
+        // move the offset (no duplication).
+        let (msgs, pos2) = read_appended_log_lines(&path, new_pos).unwrap();
+        assert!(msgs.is_empty());
+        assert_eq!(pos2, new_pos);
+    }
+
+    #[test]
+    fn read_appended_leaves_trailing_partial_line_for_next_poll() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        // First line complete, second line still being written (no newline).
+        let complete = jsonl("first");
+        let partial = {
+            let mut p = complete.clone();
+            let second =
+                serde_json::to_string(&make_msg("second", None, None, Utc::now())).unwrap();
+            p.push_str(&second); // no trailing '\n' yet
+            p
+        };
+        std::fs::write(&path, &partial).unwrap();
+
+        let (msgs, new_pos) = read_appended_log_lines(&path, 0).unwrap();
+        assert_eq!(msgs.len(), 1, "partial line must not be parsed/emitted");
+        assert_eq!(msgs[0].message, "first");
+        // Offset stops at the last newline, not the (larger) file size.
+        assert_eq!(new_pos, complete.len() as u64);
+
+        // Daemon finishes the second line; re-reading from the saved offset now
+        // yields exactly that line — the first line is not duplicated.
+        std::fs::write(&path, format!("{complete}{}", jsonl("second"))).unwrap();
+        let (msgs, _pos) = read_appended_log_lines(&path, new_pos).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "second");
+    }
+
+    #[test]
+    fn read_appended_does_not_abort_on_split_multibyte_utf8() {
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+
+        // One complete line, then a lone leading byte of a multibyte UTF-8
+        // sequence with no newline (a write caught mid-flush). `read_to_string`
+        // would return an InvalidData error here; the lossy path must not.
+        let complete = jsonl("ok");
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(complete.as_bytes()).unwrap();
+        f.write_all(&[0xE2]).unwrap(); // first byte of a 3-byte char, no newline
+        drop(f);
+
+        let (msgs, new_pos) = read_appended_log_lines(&path, 0).unwrap();
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "ok");
+        // The dangling partial byte is left unconsumed.
+        assert_eq!(new_pos, complete.len() as u64);
     }
 }
