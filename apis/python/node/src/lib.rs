@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use arrow::array::{Array, BinaryArray, StringArray};
 use arrow::pyarrow::{FromPyArrow, ToPyArrow};
-use dora_message::metadata::{ArrowTypeInfo, Parameter};
+use dora_message::metadata::Parameter;
 use dora_node_api::dora_core::config::{DataId, NodeId};
 use dora_node_api::merged::{MergeExternalSend, MergedEvent};
 use dora_node_api::{DataflowId, DoraNode, EventStream, TryRecvError, init_tracing};
@@ -33,6 +33,21 @@ static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
         .build()
         .expect("Failed to create Tokio runtime")
 });
+
+/// Convert a user-supplied timeout in seconds into a [`Duration`], rejecting
+/// negative, NaN, or infinite values with a clean `ValueError` instead of the
+/// panic that [`Duration::from_secs_f32`] raises on such inputs.
+fn timeout_to_duration(timeout: Option<f32>) -> PyResult<Option<Duration>> {
+    timeout
+        .map(|secs| {
+            Duration::try_from_secs_f32(secs).map_err(|err| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid timeout of {secs} seconds: {err}"
+                ))
+            })
+        })
+        .transpose()
+}
 
 fn runtime() -> PyResult<&'static Runtime> {
     // Access the LazyLock; if the builder panicked, this will propagate.
@@ -604,7 +619,8 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.detach(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let timeout = timeout_to_duration(timeout)?;
+        let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -690,10 +706,8 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = self
-            .events
-            .recv_async_timeout(timeout.map(Duration::from_secs_f32))
-            .await;
+        let timeout = timeout_to_duration(timeout)?;
+        let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
             // Get python
             Python::attach(|py| {
@@ -800,7 +814,7 @@ impl Node {
     ///
     /// ## Wire format
     ///
-    /// The buffer is sent as a 1-D Arrow byte array (``ArrowTypeInfo::byte_array``).
+    /// The buffer is sent as a 1-D Arrow ``UInt8`` array inside an Arrow IPC stream.
     /// On the receive side, ``event["value"]`` is a ``pyarrow.UInt8Array`` /
     /// ``LargeBinary`` shape — call ``.to_numpy()`` for a numpy view, then
     /// ``.reshape(...)`` or ``.view(dtype=...)`` to interpret it as a typed
@@ -1384,7 +1398,6 @@ impl Node {
 
         // Register with daemon for lifecycle tracking
         {
-            use arrow::datatypes::DataType;
             let hlc = dora_node_api::dora_core::uhlc::HLC::default();
             let ts = hlc.new_timestamp();
             let mut params = dora_node_api::MetadataParameters::new();
@@ -1418,18 +1431,7 @@ impl Node {
                 dora_node_api::Parameter::String(buffer_id.clone()),
             );
 
-            let type_info = ArrowTypeInfo {
-                data_type: DataType::Null,
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![],
-                field_names: None,
-                schema_hash: None,
-            };
-            let meta = dora_node_api::Metadata::from_parameters(ts, type_info, params);
+            let meta = dora_node_api::Metadata::from_parameters(ts, params);
             if let Err(e) = self
                 .node
                 .get_mut()
@@ -2568,7 +2570,10 @@ pub fn build(
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
     use dora_cli::Executable;
 
-    let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
+    let stop_after_duration = stop_after
+        .map(std::time::Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|err| eyre::eyre!("invalid stop_after of {stop_after:?} seconds: {err}"))?;
     let mut cmd = dora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         cmd.uv = uv;

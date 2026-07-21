@@ -138,7 +138,125 @@ impl InputBuffer {
         }
 
         if dropped > 0 {
+            self.compact();
             tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
         }
+    }
+
+    /// Physically remove the `None` tombstones left by [`Self::drop_oldest_inputs`].
+    ///
+    /// Without this, a stalled operator (slow `on_event`) makes the deque grow
+    /// by one `Option::None` slot per received input forever — the number of
+    /// live `Some` events stays capped, but the tombstones are only ever cleared
+    /// by `pop_front` in `send_next_queued`, which never runs while the outgoing
+    /// send is pending. That defeats the bounded-memory guarantee of the
+    /// drop-oldest policy and leaks until OOM. `retain` preserves the FIFO order
+    /// of the surviving events.
+    fn compact(&mut self) {
+        self.queue.retain(Option::is_some);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::new_empty_array;
+    use arrow::datatypes::DataType;
+    use dora_message::metadata::Metadata;
+    use dora_node_api::ArrowData;
+
+    fn closed_event(id: &str) -> Event {
+        Event::InputClosed {
+            id: DataId::from(id.to_string()),
+        }
+    }
+
+    fn input_event(id: &str) -> Event {
+        Event::Input {
+            id: DataId::from(id.to_string()),
+            metadata: Metadata::new(dora_core::uhlc::HLC::default().new_timestamp()),
+            data: ArrowData(new_empty_array(&DataType::Null)),
+        }
+    }
+
+    // The compaction that `drop_oldest_inputs` runs after evicting over-cap
+    // inputs must *physically* remove the `None` tombstones, not just leave them
+    // in place. Otherwise a stalled consumer accumulates one tombstone per
+    // dropped input without bound (they are only ever cleared by `pop_front` in
+    // `send_next_queued`, which does not run while the outgoing send is pending)
+    // — an unbounded memory leak that defeats the drop-oldest policy. This
+    // exercises the compaction primitive directly with the metadata-free
+    // `Event::InputClosed` stand-in (`compact` only distinguishes `Some`/`None`).
+    #[test]
+    fn compact_removes_tombstones_preserving_order() {
+        let mut buffer = InputBuffer::new(BTreeMap::new());
+        buffer.queue = VecDeque::from([
+            None,
+            Some(closed_event("a")),
+            None,
+            None,
+            Some(closed_event("b")),
+            None,
+        ]);
+
+        buffer.compact();
+
+        assert_eq!(
+            buffer.queue.len(),
+            2,
+            "every `None` tombstone must be removed, not merely nulled out"
+        );
+        let ids: Vec<String> = buffer
+            .queue
+            .iter()
+            .map(|e| match e {
+                Some(Event::InputClosed { id }) => id.to_string(),
+                _ => panic!("unexpected queue entry after compaction"),
+            })
+            .collect();
+        assert_eq!(
+            ids,
+            ["a", "b"],
+            "surviving events must keep their FIFO order"
+        );
+    }
+
+    // Integration-level guard for the fix in #2483: driving the *real* path
+    // (`add_event` -> `drop_oldest_inputs` -> `compact`) under a stalled
+    // consumer must keep the deque physically bounded, not just cap the number
+    // of live `Some` events. The stall is modelled by never draining the queue
+    // (no `send_next_queued`/`pop_front`), which is exactly when the tombstones
+    // would otherwise accumulate. Unlike `compact_removes_tombstones_preserving_order`,
+    // this routes through the fix site, so deleting the `self.compact();` call
+    // in `drop_oldest_inputs` makes the length assertion fail (regression test
+    // for #2680 — the previous test left that call site unguarded/mutable).
+    #[test]
+    fn drop_oldest_inputs_keeps_deque_bounded_under_stall() {
+        let cap = 2usize;
+        let mut caps = BTreeMap::new();
+        caps.insert(
+            DataId::from("x".to_string()),
+            (cap, QueuePolicy::DropOldest),
+        );
+        let mut buffer = InputBuffer::new(caps);
+
+        // Feed far more inputs than the cap without ever draining the queue.
+        let total = 50;
+        for _ in 0..total {
+            buffer.add_event(input_event("x"));
+        }
+
+        // With `compact()`, the deque holds only the `cap` live events and no
+        // tombstones. Without it, every drop past the cap would leave a `None`
+        // behind, growing the deque roughly linearly with `total`.
+        assert_eq!(
+            buffer.queue.len(),
+            cap,
+            "stalled consumer must not accumulate tombstones (deque must stay bounded to the cap)"
+        );
+        assert!(
+            buffer.queue.iter().all(Option::is_some),
+            "no `None` tombstones may remain after compaction"
+        );
     }
 }

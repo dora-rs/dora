@@ -49,6 +49,19 @@ pub struct Daemon {
     /// the `zenoh_peer` field in cluster.yml.
     #[clap(long, value_name = "ENDPOINT")]
     zenoh_peer: Option<String>,
+    /// IP address this daemon's Zenoh listener binds (e.g. `--zenoh-listen
+    /// 100.64.0.3`).
+    ///
+    /// Zenoh advertises the address it binds, and remote daemons dial exactly
+    /// that, so this is the address other daemons will use to reach this one.
+    /// By default it is derived from `--coordinator-addr`: loopback when the
+    /// coordinator is local (single-machine), otherwise the local address that
+    /// routes to the coordinator — which is the LAN address on a LAN and the
+    /// tunnel address on a mesh VPN such as Tailscale. Set this explicitly on a
+    /// multi-homed host that would otherwise advertise an interface the other
+    /// daemons cannot reach.
+    #[clap(long, value_name = "IP")]
+    zenoh_listen: Option<IpAddr>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -239,7 +252,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer).await
+                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen).await
                     }
                 }
             })

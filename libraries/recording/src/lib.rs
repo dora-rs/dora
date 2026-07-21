@@ -1,3 +1,48 @@
+//! Binary `.drec` recording format for dora dataflow message capture and replay.
+//!
+//! A recording is a [`RecordingHeader`], a sequence of [`RecordEntry`] records,
+//! and an optional [`RecordingFooter`]. Capture a stream with
+//! [`RecordingWriter`] and read it back with [`RecordingReader`]. Both are
+//! generic over any [`std::io::Write`] / [`std::io::Read`], so they work with
+//! files as well as in-memory buffers.
+//!
+//! ```
+//! use dora_recording::{RecordEntry, RecordingHeader, RecordingReader, RecordingWriter};
+//! use std::io::Cursor;
+//!
+//! # fn main() -> eyre::Result<()> {
+//! let header = RecordingHeader {
+//!     version: 1,
+//!     start_nanos: 0,
+//!     dataflow_id: uuid::Uuid::nil(),
+//!     descriptor_yaml: b"nodes: []".to_vec(),
+//! };
+//!
+//! // Write one entry into an in-memory buffer.
+//! let mut buf: Vec<u8> = Vec::new();
+//! {
+//!     let mut writer = RecordingWriter::new(&mut buf, &header)?;
+//!     writer.write_entry(&RecordEntry {
+//!         node_id: "camera".to_string(),
+//!         output_id: "image".to_string(),
+//!         timestamp_offset_nanos: 0,
+//!         event_bytes: vec![1, 2, 3],
+//!     })?;
+//!     let footer = writer.finish()?;
+//!     assert_eq!(footer.total_messages, 1);
+//! }
+//!
+//! // Read it back.
+//! let mut reader = RecordingReader::open(Cursor::new(buf))?;
+//! assert_eq!(reader.header().dataflow_id, uuid::Uuid::nil());
+//! let entry = reader.next_entry()?.expect("one entry");
+//! assert_eq!(entry.node_id, "camera");
+//! assert_eq!(entry.event_bytes, vec![1, 2, 3]);
+//! assert!(reader.next_entry()?.is_none());
+//! # Ok(())
+//! # }
+//! ```
+
 use std::io::{self, BufReader, BufWriter, Read, Write};
 
 use eyre::Context;
@@ -43,6 +88,7 @@ pub struct RecordingWriter<W: Write> {
 }
 
 impl<W: Write> RecordingWriter<W> {
+    /// Create a writer over `inner`, immediately writing the recording header.
     pub fn new(inner: W, header: &RecordingHeader) -> eyre::Result<Self> {
         let mut writer = BufWriter::new(inner);
         write_header(&mut writer, header)?;
@@ -53,6 +99,7 @@ impl<W: Write> RecordingWriter<W> {
         })
     }
 
+    /// Append a single message entry to the recording.
     pub fn write_entry(&mut self, entry: &RecordEntry) -> eyre::Result<()> {
         let node_id_bytes = entry.node_id.as_bytes();
         let output_id_bytes = entry.output_id.as_bytes();
@@ -98,6 +145,7 @@ impl<W: Write> RecordingWriter<W> {
         Ok(())
     }
 
+    /// Write the footer (message/byte totals), flush, and consume the writer.
     pub fn finish(mut self) -> eyre::Result<RecordingFooter> {
         let footer = RecordingFooter {
             total_messages: self.total_messages,
@@ -111,6 +159,7 @@ impl<W: Write> RecordingWriter<W> {
         Ok(footer)
     }
 
+    /// Flush buffered bytes to the underlying writer without finishing.
     pub fn flush(&mut self) -> eyre::Result<()> {
         self.writer.flush().wrap_err("flush failed")
     }
@@ -124,12 +173,14 @@ pub struct RecordingReader<R: Read> {
 }
 
 impl<R: Read> RecordingReader<R> {
+    /// Open a reader over `inner`, immediately parsing and validating the header.
     pub fn open(inner: R) -> eyre::Result<Self> {
         let mut reader = BufReader::new(inner);
         let header = read_header(&mut reader)?;
         Ok(Self { reader, header })
     }
 
+    /// The recording header parsed by [`open`](Self::open).
     pub fn header(&self) -> &RecordingHeader {
         &self.header
     }

@@ -2,20 +2,24 @@
 # (cargo-deny enforces the same policy; both run in `make qa-audit`).
 [advisories]
 ignore = [
-    # pyo3 0.28 OOB read in PyList/PyTuple iterator nth/nth_back. The
-    # affected APIs are not used in this workspace; the pyo3 0.29 upgrade
-    # is tracked in https://github.com/dora-rs/dora/issues/2157.
-    # Review: 2026-07.
+    # pyo3 0.28 OOB read in PyList/PyTuple iterator nth/nth_back, and
+    # missing Sync bound on PyCFunction::new_closure. The affected APIs
+    # are not used in this workspace. Patched only in pyo3 0.29, which is
+    # blocked by arrow-pyarrow 59 requiring pyo3 ^0.28 (only one pyo3-ffi
+    # may link against libpython). Upgrade tracked in
+    # https://github.com/dora-rs/dora/issues/2157. Review: 2026-09.
     "RUSTSEC-2026-0176",
-    # pyo3 0.28 missing Sync bound on PyCFunction::new_closure — unused
-    # in this workspace; same upgrade tracked in #2157.
     "RUSTSEC-2026-0177",
-    # quick-xml <0.41 DoS advisories. Our own dora-ros2-bridge-msg-gen is on
-    # 0.41; the remaining <0.41 copies are transitive via mavlink-bindgen
-    # (build-time parsing of vendored MAVLink XML definitions) and self_update
-    # (parses api.github.com release metadata) — neither parses
-    # attacker-controlled XML at runtime. Remove when upstreams bump.
-    # Review: 2026-10.
+    # lz4_flex 0.10 uninitialized-memory leak on invalid input. Transitive
+    # via zenoh-transport (pins ^0.10); dora does not enable zenoh's
+    # compression, so the decompression path is not reachable. Waiting for
+    # upstream zenoh bump. Review: 2026-09.
+    "RUSTSEC-2026-0041",
+    # quick-xml <0.41 quadratic attribute check / NsReader memory-exhaustion
+    # DoS. Our own parser (ros2 msg-gen) is on fixed 0.41; remaining copies
+    # are transitive via self_update (parses release listings during explicit
+    # `dora self update`) and mavlink-bindgen (build-time codegen over local
+    # MAVLink XML). Waiting for upstream bumps. Review: 2026-09.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 ]

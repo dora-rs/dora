@@ -18,6 +18,13 @@ use std::{
 use tokio::runtime::Builder;
 use uuid::Uuid;
 
+/// Monomorphic wrapper around `duration_str::parse` for use as a clap
+/// `value_parser` (the generic signature of `parse` in duration-str 0.21+
+/// cannot be used as a parser function directly).
+pub(crate) fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    duration_str::parse(s)
+}
+
 /// Whether a coordinator error message indicates the dataflow has already
 /// completed and been dropped from the running-dataflows table.
 ///
@@ -30,22 +37,6 @@ use uuid::Uuid;
 /// CLI already received `DataflowStartTriggered`.
 pub(crate) fn error_indicates_dataflow_finished(msg: &str) -> bool {
     msg.contains("no running dataflow with id") || msg.contains("unknown dataflow")
-}
-
-/// Parses a grace period given either as a duration string (`30s`, `500ms`)
-/// or as a bare number of seconds (`2`, `1.5`).
-pub(crate) fn parse_grace_period(value: &str) -> Result<std::time::Duration, String> {
-    if let Ok(duration) = duration_str::parse(value) {
-        return Ok(duration);
-    }
-    if let Ok(secs) = value.parse::<f64>()
-        && let Ok(duration) = std::time::Duration::try_from_secs_f64(secs)
-    {
-        return Ok(duration);
-    }
-    Err(format!(
-        "expected a duration like `30s`/`500ms` or a number of seconds, got `{value}`"
-    ))
 }
 
 pub(crate) fn handle_dataflow_result(
@@ -370,5 +361,26 @@ mod tests {
         let missing = Path::new("/definitely/not/a/real/path/for/tests");
         let dataflow = Path::new("/tmp/does-not-matter.yml");
         assert!(canonicalize_working_dir(Some(missing), dataflow).is_err());
+    }
+
+    /// Pins the duration grammar accepted by `--stop-after`/`--grace`/
+    /// `--since`/`--until` so a future `duration-str` bump can't silently
+    /// change CLI flag behavior.
+    #[test]
+    fn parse_duration_accepts_common_forms() {
+        use std::time::Duration;
+        assert_eq!(parse_duration("10s"), Ok(Duration::from_secs(10)));
+        assert_eq!(parse_duration("500ms"), Ok(Duration::from_millis(500)));
+        assert_eq!(parse_duration("2m"), Ok(Duration::from_secs(120)));
+        assert_eq!(parse_duration("1h30m"), Ok(Duration::from_secs(5400)));
+        // Bare numbers are seconds.
+        assert_eq!(parse_duration("15"), Ok(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn parse_duration_rejects_garbage() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("-5s").is_err());
     }
 }

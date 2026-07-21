@@ -16,8 +16,8 @@ pub struct Remove {
     #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     dataflow: Option<String>,
     node: String,
-    /// Grace period before force-killing the node (e.g. "30s" or seconds)
-    #[clap(long, value_name = "DURATION", value_parser = crate::common::parse_grace_period)]
+    /// Grace period before force-killing the node (e.g. `30s`, `500ms`, `1m`).
+    #[clap(long, value_name = "DURATION", value_parser = crate::common::parse_duration)]
     grace: Option<std::time::Duration>,
 }
 

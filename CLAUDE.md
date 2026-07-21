@@ -61,7 +61,6 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `binaries/runtime` | dora-runtime | In-process operator execution runtime |
 | `libraries/message` | dora-message | All inter-component message types and protocol definitions |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
-| `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for large messages (>4KB) |
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
 | `apis/rust/operator` | dora-operator-api | Rust API for writing in-process operators |
 | `apis/python/node` | dora-node-api-python | Python node API (PyO3) |
@@ -167,7 +166,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
 - `make qa-semver` — breaking-change check. Run before publishing to crates.io.
-- `make qa-kani` — ~5-10 min cold, <1 min warm. Formal verification: runs the `#[kani::proof]` harnesses (Kani/CBMC model checker) in `dora-message` (auth `constant_time_eq`) and `dora-core` (shared-memory buffer containment in `metadata.rs`). A passing proof is exhaustive over the harness state space, not sampled. Run when touching files with `#[cfg(kani)]` proof modules and in pre-release gating; install via `make qa-kani-install`. See [`docs/formal-verification.md`](docs/formal-verification.md).
+- `make qa-kani` — ~5-10 min cold, <1 min warm. Formal verification: runs the `#[kani::proof]` harnesses (Kani/CBMC model checker) in `dora-message` (auth `constant_time_eq`). A passing proof is exhaustive over the harness state space, not sampled. Run when touching files with `#[cfg(kani)]` proof modules and in pre-release gating; install via `make qa-kani-install`. See [`docs/formal-verification.md`](docs/formal-verification.md).
 - `make qa-pgo` — ~30-40 min. Profile-Guided Optimization measurement: builds `dora-cli` with `cargo-pgo` (instrument → train on `examples/benchmark/` → optimize), then runs the benchmark twice (baseline vs PGO) and prints a side-by-side comparison with a +5%-throughput-geomean verdict. Run on your target platform — PGO results don't transfer across OS/arch. macOS-arm64 first-measurement showed +25% throughput geomean, latency unchanged (see [#331](https://github.com/dora-rs/dora/issues/331)). **Do not add to CI** — the build pipeline cost is release-pipeline scope, not per-commit. Install via `make qa-pgo-install`.
 
 **Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
@@ -185,7 +184,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)
 - Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
 - License check (`cargo-lichking`)
-- Rust toolchain pinned to 1.92 (see `.github/workflows/ci.yml`)
+- Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 
 **Nightly CI (`.github/workflows/nightly.yml`, ~3-4h, daily 06:40 UTC):** Broader coverage, does NOT block PRs. Auto-files an issue on failure (`nightly-regression` label).
 - Test on macOS + Windows

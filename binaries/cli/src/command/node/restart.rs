@@ -35,8 +35,8 @@ pub struct Restart {
     #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     pub dataflow: Option<String>,
 
-    /// Grace period before force-killing the node (e.g. "30s" or seconds)
-    #[clap(long, value_name = "DURATION", value_parser = crate::common::parse_grace_period)]
+    /// Grace period before force-killing the node
+    #[clap(long, value_name = "DURATION", value_parser = crate::common::parse_duration)]
     pub grace: Option<std::time::Duration>,
 
     #[clap(flatten)]

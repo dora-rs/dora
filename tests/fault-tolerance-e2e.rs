@@ -302,17 +302,18 @@ async fn restart_policy_always_restarts_on_clean_exit() {
 /// indefinitely, even with a tiny `max_restarts`.
 ///
 /// Fixture: `delayed-crash-node` appends an incarnation marker, sleeps
-/// 500 ms, then panics. With `restart_window: 0.3`, every crash arrives
-/// after the previous window has already expired — the counter resets,
-/// and the node is re-spawned. Without the window reset (or with
-/// `restart_window` misconfigured), `max_restarts: 1` would exhaust
-/// after the second crash and the node would stop at 2 incarnations.
+/// 500 ms, then panics on incarnations 1 and 2. Incarnation 3 exits
+/// cleanly. With `restart_window: 0.3`, every crash arrives after the
+/// previous window has already expired — the counter resets, and the
+/// node is re-spawned for incarnation 3. Without the window reset (or
+/// with `restart_window` misconfigured), `max_restarts: 1` would
+/// exhaust after the second crash and the node would stop at 2
+/// incarnations.
 ///
-/// Expected over a 10 s stop_after window (cycle ≈ 600 ms): ~16–17
-/// incarnations. We assert `>= 3` — the minimum that could *only* be
-/// produced by a window reset (without reset, `max_restarts: 1` caps
-/// incarnations at 2). A regression that disables the reset lands at
-/// exactly 2, which the assertion rejects.
+/// This keeps the proof bounded instead of relying on `stop_after` to
+/// interrupt an otherwise unbounded restart loop. The assertion is now
+/// exact: 3 incarnations means the daemon survived two spaced-apart
+/// crashes and still had budget to spawn the third incarnation.
 #[tokio::test(flavor = "multi_thread")]
 async fn restart_window_resets_restart_counter() {
     let status = std::process::Command::new("cargo")
@@ -338,7 +339,7 @@ async fn restart_window_resets_restart_counter() {
         false,
         LogDestination::Tracing,
         None,
-        Some(Duration::from_secs(10)),
+        Some(Duration::from_secs(5)),
         false,
         None,
         None,
@@ -361,12 +362,12 @@ async fn restart_window_resets_restart_counter() {
     eprintln!("delayed-crash-node incarnations observed: {incarnations}");
 
     // `max_restarts: 1` with no window reset → exactly 2 incarnations.
-    // Anything strictly greater proves the counter reset path fired.
-    assert!(
-        incarnations >= 3,
-        "restart_window: 0.3 with max_restarts: 1 should let the node restart \
-         many times via window reset; got {incarnations} incarnations. Without \
-         reset this would cap at 2. marker contents:\n{contents}"
+    // Reaching incarnation 3 proves the counter reset path fired.
+    assert_eq!(
+        incarnations, 3,
+        "restart_window: 0.3 with max_restarts: 1 should reach exactly 3 \
+         incarnations in this bounded fixture. Without reset this would cap at 2. \
+         marker contents:\n{contents}"
     );
 }
 
