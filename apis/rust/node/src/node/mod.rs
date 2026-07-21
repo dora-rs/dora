@@ -2712,6 +2712,11 @@ impl SampleAllocator {
     pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
         let sample = match ipc_encode::PreparedIpc::new(array) {
             Some(prepared) => {
+                // Reject a stream larger than every receiver will accept before
+                // emitting it, rather than sending an undecodable payload that
+                // is silently dropped on the zenoh path (#2586).
+                ipc_encode::check_ipc_size(prepared.byte_len())
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 // Prepare once: size the sample from the prepared layout, then
                 // encode into it — avoids rebuilding the layout + IPC headers.
                 let mut sample = self.allocate(prepared.byte_len())?;
@@ -2722,6 +2727,8 @@ impl SampleAllocator {
             }
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec(array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                ipc_encode::check_ipc_size(bytes.len())
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut sample = self.allocate(bytes.len())?;
                 sample.copy_from_slice(&bytes);

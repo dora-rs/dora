@@ -853,11 +853,14 @@ impl InputDecoder {
     }
 }
 
-/// Reject an IPC payload larger than [`super::MAX_IPC_BYTES`] before decoding.
-/// Defense-in-depth against an oversized peer-controlled zenoh payload, mirroring
-/// the guard in [`decode_arrow_ipc_zero_copy`](super::decode_arrow_ipc_zero_copy)
-/// (the persistent-decoder paths receive the same untrusted bytes).
-fn check_ipc_size(len: usize) -> eyre::Result<()> {
+/// Reject an IPC stream larger than [`super::MAX_IPC_BYTES`].
+///
+/// Used on both sides so the encode and decode limits agree: as a producer-side
+/// guard (so a stream the producer emits is always decodable by every receiver,
+/// rather than silently dropped — see #2586) and as defense-in-depth on decode
+/// against an oversized peer-controlled zenoh payload, mirroring the guard in
+/// [`decode_arrow_ipc_zero_copy`](super::decode_arrow_ipc_zero_copy).
+pub(crate) fn check_ipc_size(len: usize) -> eyre::Result<()> {
     if len > super::MAX_IPC_BYTES {
         bail!(
             "Arrow IPC payload too large: {len} bytes (max {})",
@@ -1460,6 +1463,24 @@ mod tests {
         let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
         assert_eq!(decoded.data_type(), &DataType::UInt8);
         assert_eq!(decoded.len(), 0);
+    }
+
+    /// A `UInt8` payload whose *encoded stream* would exceed `MAX_IPC_BYTES`
+    /// must be rejected at encode time even though `data_len` itself is within
+    /// the limit: the validity bitmap, alignment padding, and message blocks
+    /// make the stream larger, and every receiver bounds the whole stream. The
+    /// producer must fail loudly rather than emit a stream that is silently
+    /// dropped on the zenoh path. Regression for #2586.
+    #[test]
+    fn uint8_ipc_len_rejects_oversized_stream() {
+        // `data_len == MAX_IPC_BYTES` clears a naive `data_len` check, but the
+        // ~1.125x stream overhead pushes the emitted stream over the cap.
+        let err = uint8_ipc_len(super::super::MAX_IPC_BYTES)
+            .expect_err("stream exceeding MAX_IPC_BYTES must be rejected")
+            .to_string();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+        // A comfortably-small payload still encodes to an in-bounds stream.
+        assert!(uint8_ipc_len(1024).unwrap() <= super::super::MAX_IPC_BYTES);
     }
 
     /// The schema-once receive path must decode a 0-row (empty) batch, not drop
