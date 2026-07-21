@@ -137,6 +137,10 @@ impl Executable for LogsArgs {
                     legacy_positional_node(&self),
                 )?;
                 let config = build_log_config(&self)?;
+                all_nodes_logs_from_coordinator(&session, uuid, &self, &config)?;
+                if !self.follow {
+                    return Ok(());
+                }
                 stream_logs_from_coordinator(
                     &session,
                     uuid,
@@ -585,6 +589,89 @@ fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
         return true;
     }
     false
+}
+
+/// Subscribe to coordinator log stream with time/grep filtering.
+/// Fetches historical logs of every node in the dataflow, merges them by
+/// timestamp, and prints them through the shared filter pipeline.
+fn all_nodes_logs_from_coordinator(
+    session: &WsSession,
+    uuid: Uuid,
+    args: &LogsArgs,
+    config: &LogOutputConfig,
+) -> Result<()> {
+    let reply = send_control_request(session, &ControlRequest::GetNodeInfo)?;
+    let nodes = expect_reply!(reply, NodeInfoList(data))?;
+    let node_ids: Vec<NodeId> = nodes
+        .into_iter()
+        .filter(|info| info.dataflow_id == uuid)
+        .map(|info| info.node_id)
+        .collect();
+
+    // GetNodeInfo only covers *running* dataflows. For a finished/archived
+    // dataflow the node list is empty — try the descriptor of a still-running
+    // dataflow first, otherwise fall back to the local out/ directory (the
+    // same fallback used when no coordinator is reachable) so post-mortem
+    // `dora logs` still shows something instead of silently printing nothing.
+    let node_ids = if node_ids.is_empty() {
+        let info = send_control_request(
+            session,
+            &ControlRequest::Info {
+                dataflow_uuid: uuid,
+            },
+        )
+        .and_then(|reply| expect_reply!(reply, DataflowInfo { descriptor }));
+        match info {
+            Ok(descriptor) => descriptor.nodes.into_iter().map(|node| node.id).collect(),
+            Err(_) => {
+                eprintln!(
+                    "note: dataflow `{uuid}` is not running — reading logs from the local out/ \
+                     directory.\n  hint: the coordinator still serves archived logs per node: \
+                     `dora logs {uuid} --node <NAME>`"
+                );
+                return read_local_logs(args);
+            }
+        }
+    } else {
+        node_ids
+    };
+
+    let mut messages = Vec::new();
+    for node in node_ids {
+        // One unreachable node (e.g. a disconnected daemon in a multi-machine
+        // dataflow) must not discard the logs of the healthy nodes.
+        let logs = send_control_request(
+            session,
+            &ControlRequest::Logs {
+                uuid: Some(uuid),
+                name: None,
+                node: node.to_string(),
+                // Tail must apply to the merged stream, so fetch everything
+                // per node and trim after sorting.
+                tail: None,
+            },
+        )
+        .and_then(|reply| expect_reply!(reply, Logs(data)));
+        match logs {
+            Ok(logs) => {
+                let content = String::from_utf8_lossy(&logs);
+                messages.extend(content.lines().filter_map(parse_jsonl_line));
+            }
+            Err(err) => {
+                eprintln!("warning: could not fetch logs for node `{node}`: {err}");
+            }
+        }
+    }
+    messages.sort_by_key(|msg| msg.timestamp);
+
+    let now = Utc::now();
+    let filtered = apply_time_filters(messages, args.since, args.until, now);
+    let grepped = apply_grep(filtered, args.grep.as_deref());
+    let display = apply_tail(grepped, args.tail);
+    for msg in display {
+        print_log_message(msg, config);
+    }
+    Ok(())
 }
 
 /// Returns whether a log message should be kept given an optional node filter.

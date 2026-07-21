@@ -51,13 +51,69 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
+/// Static (filesystem-independent) descriptor checks: ROS2 bridge configs,
+/// timing fields, input/output wiring, and log-output configuration.
+///
+/// This is the subset of [`check_dataflow`] that `dora validate` can run
+/// before any build has happened. [`check_dataflow`] runs it as its first
+/// step and adds source-path existence and Python runtime checks on top.
+pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     // validate ROS2 bridge configs before resolution
     for node in &dataflow.nodes {
         if let Some(ros2) = &node.ros2 {
             validate_ros2_config(&node.id, ros2, &node.inputs, &node.outputs)?;
         }
     }
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    // reject negative / non-finite / overflowing timing values before they
+    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
+    for node in nodes.values() {
+        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+            check_timing_fields(&node.id, custom)?;
+        }
+        // `input_timeout` is a second-valued `f64` that the daemon also feeds
+        // to `Duration::from_secs_f64`, on both the initial-spawn and the
+        // reconnect paths.
+        for (input_id, input) in node_inputs(node) {
+            check_seconds_field(
+                &format!("input `{input_id}` of node `{}`", node.id),
+                "input_timeout",
+                input.input_timeout,
+            )?;
+        }
+    }
+    // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
+    // in the same way (`binaries/daemon/src/lib.rs`).
+    check_seconds_field(
+        "dataflow",
+        "health_check_interval",
+        dataflow.health_check_interval,
+    )?;
+
+    // check that all inputs mappings point to an existing output
+    check_wiring(dataflow)?;
+
+    // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
+    for node in nodes.values() {
+        node.send_stdout_as()
+            .context("Could not resolve `send_stdout_as` configuration")?;
+        node.send_logs_as()
+            .context("Could not resolve `send_logs_as` configuration")?;
+        node.min_log_level()
+            .context("Could not resolve `min_log_level` configuration")?;
+        node.max_log_size()
+            .context("Could not resolve `max_log_size` configuration")?;
+        node.max_rotated_files()
+            .context("Could not resolve `max_rotated_files` configuration")?;
+    }
+
+    Ok(())
+}
+
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
+    check_dataflow_static(dataflow)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
@@ -124,48 +180,6 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                 }
             }
         }
-    }
-
-    // reject negative / non-finite / overflowing timing values before they
-    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
-    for node in nodes.values() {
-        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
-            check_timing_fields(&node.id, custom)?;
-        }
-        // `input_timeout` is a second-valued `f64` that the daemon also feeds
-        // to `Duration::from_secs_f64`, on both the initial-spawn and the
-        // reconnect paths.
-        for (input_id, input) in node_inputs(node) {
-            check_seconds_field(
-                &format!("input `{input_id}` of node `{}`", node.id),
-                "input_timeout",
-                input.input_timeout,
-            )?;
-        }
-    }
-    // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
-    // in the same way (`binaries/daemon/src/lib.rs`).
-    check_seconds_field(
-        "dataflow",
-        "health_check_interval",
-        dataflow.health_check_interval,
-    )?;
-
-    // check that all inputs mappings point to an existing output
-    check_wiring(dataflow)?;
-
-    // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
-    for node in nodes.values() {
-        node.send_stdout_as()
-            .context("Could not resolve `send_stdout_as` configuration")?;
-        node.send_logs_as()
-            .context("Could not resolve `send_logs_as` configuration")?;
-        node.min_log_level()
-            .context("Could not resolve `min_log_level` configuration")?;
-        node.max_log_size()
-            .context("Could not resolve `max_log_size` configuration")?;
-        node.max_rotated_files()
-            .context("Could not resolve `max_rotated_files` configuration")?;
     }
 
     if has_python_operator {
