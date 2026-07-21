@@ -1911,12 +1911,17 @@ impl Node {
                         }
 
                         if ipc_present == 1 && !is_cuda {
-                            // Seqlock: begin write
+                            // If gen is odd (leftover from a failed GPU copy
+                            // in the is_cuda path), skip the begin-increment
+                            // to avoid parity inversion.  Same pattern as
+                            // the is_cuda branch.
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                let cur = std::ptr::read_volatile(gen_ptr);
+                                if cur % 2 == 0 {
+                                    std::ptr::write_volatile(gen_ptr, cur + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
                             }
                             // DMA: source CPU data -> GPU pool buffer via DMA engine.
                             // When is_pinned=false, dma_copy skips cudaHostRegister/
@@ -2124,23 +2129,16 @@ impl Node {
                             let slow_counter = buffer_id
                                 .rsplit_once('_')
                                 .and_then(|(_, c)| c.parse::<u64>().ok());
-                            // Restore even parity if the previous GPU copy
-                            // failed (gen was left odd).  Without this, the
-                            // begin/end increments invert the seqlock contract.
+                            // If gen is odd (leftover from a failed GPU copy),
+                            // skip the begin-increment.  Same pattern as the
+                            // is_cuda branch.
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 != 0 {
+                                if cur % 2 == 0 {
                                     std::ptr::write_volatile(gen_ptr, cur + 1);
                                     std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                                 }
-                            }
-                            // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                             // Slow path: daemon-mediated fallback (rare).
                             // Respect the same 25 MiB auto-pin threshold as the
