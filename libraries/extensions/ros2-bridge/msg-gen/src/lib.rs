@@ -395,7 +395,13 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                 _ => eyre::bail!("unknown ROS2 transport kind"),
             };
             Ok(Box::new(Ros2Context{
-                context: futures::executor::block_on(dora_ros2_bridge::transport::Context::open(&config))?,
+                context: futures::executor::block_on(dora_ros2_bridge::transport::Context::open(
+                    &config,
+                    std::env::var("ROS_DOMAIN_ID")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(0),
+                ))?,
                 compatibility,
                 executor: std::sync::Arc::new(futures::executor::ThreadPool::new()?),
             }))

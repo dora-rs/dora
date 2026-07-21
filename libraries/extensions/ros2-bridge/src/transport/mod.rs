@@ -22,9 +22,9 @@ pub enum Context {
 
 impl Context {
     /// Create a context for the requested transport.
-    pub fn new(config: &Ros2TransportConfig) -> Result<Self, TransportError> {
+    pub fn new(config: &Ros2TransportConfig, domain_id: u16) -> Result<Self, TransportError> {
         match config {
-            Ros2TransportConfig::Dds => dds::Context::new().map(Self::Dds),
+            Ros2TransportConfig::Dds => dds::Context::new(domain_id).map(Self::Dds),
             Ros2TransportConfig::Zenoh { .. } => {
                 Err(TransportError::UnsupportedTransport { transport: "zenoh" })
             }
@@ -32,15 +32,15 @@ impl Context {
     }
 
     #[cfg(feature = "rmw-zenoh")]
-    pub async fn open(config: &Ros2TransportConfig) -> Result<Self, TransportError> {
+    pub async fn open(
+        config: &Ros2TransportConfig,
+        domain_id: u16,
+    ) -> Result<Self, TransportError> {
         match config {
-            Ros2TransportConfig::Dds => dds::Context::new().map(Self::Dds),
+            Ros2TransportConfig::Dds => dds::Context::new(domain_id).map(Self::Dds),
             Ros2TransportConfig::Zenoh { config_uri, .. } => {
                 zenoh::Context::open(zenoh::ContextOptions {
-                    domain_id: std::env::var("ROS_DOMAIN_ID")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(0),
+                    domain_id: usize::from(domain_id),
                     config_uri: config_uri
                         .as_ref()
                         .map(|path| path.to_string_lossy().into_owned()),
@@ -184,8 +184,12 @@ mod tests {
     }
 
     #[test]
-    fn context_new_dds_creates_dds_variant() {
-        let context = Context::new(&Ros2TransportConfig::Dds).unwrap();
-        assert!(matches!(context, Context::Dds(_)));
+    fn context_new_dds_uses_requested_domain() {
+        let context = Context::new(&Ros2TransportConfig::Dds, 42).unwrap();
+        match context {
+            Context::Dds(context) => assert_eq!(context.as_inner().domain_id(), 42),
+            #[cfg(feature = "rmw-zenoh")]
+            Context::Zenoh(_) => panic!("DDS configuration created a Zenoh context"),
+        };
     }
 }

@@ -251,10 +251,11 @@ impl Ros2Context {
             }
         }
 
-        let _domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
+        let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
         let transport = transport.unwrap_or_else(Ros2Transport::dds);
         let context = futures::executor::block_on(dora_ros2_bridge::transport::Context::open(
             &transport.config,
+            domain_id,
         ))?;
         Ok(Self {
             context,

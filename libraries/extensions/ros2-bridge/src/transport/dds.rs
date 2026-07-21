@@ -43,9 +43,9 @@ pub struct Context {
 }
 
 impl Context {
-    /// Open a DDS ROS2 context with the existing defaults.
-    pub fn new() -> Result<Self, TransportError> {
-        ros2_client::Context::new()
+    /// Open a DDS ROS2 context in the requested ROS domain.
+    pub fn new(domain_id: u16) -> Result<Self, TransportError> {
+        ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
             .map(|inner| Self { inner })
             .map_err(|error| TransportError::DdsContext {
                 message: format!("{error:?}"),

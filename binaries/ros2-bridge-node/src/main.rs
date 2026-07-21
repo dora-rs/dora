@@ -44,6 +44,16 @@ use futures::{StreamExt, task::SpawnExt};
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
 
+fn peer_value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!("{operation}: {error}");
+            None
+        }
+    }
+}
+
 use dora_message::metadata::{
     GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     REQUEST_ID,
@@ -298,14 +308,20 @@ fn run_zenoh_service_mode(
                             value: &data,
                             type_info: &request_info,
                         })?;
-                        let response = futures::executor::block_on(
-                            client.call(request, SERVICE_RESPONSE_TIMEOUT),
-                        )?;
-                        let data = deserialize_raw_cdr(
-                            &response,
-                            response_info.clone(),
-                            64 * 1024 * 1024,
-                        )?;
+                        let Some(response) = peer_value_or_warn(
+                            futures::executor::block_on(
+                                client.call(request, SERVICE_RESPONSE_TIMEOUT),
+                            ),
+                            "Zenoh service call failed",
+                        ) else {
+                            continue;
+                        };
+                        let Some(data) = peer_value_or_warn(
+                            deserialize_raw_cdr(&response, response_info.clone(), 64 * 1024 * 1024),
+                            "invalid Zenoh service response",
+                        ) else {
+                            continue;
+                        };
                         node.send_output(
                             "response".into(),
                             Default::default(),
@@ -347,11 +363,19 @@ fn run_zenoh_service_mode(
                             request.id.sequence_number,
                             hex_gid(&request.id.client_gid)
                         );
-                        let data = deserialize_raw_cdr(
-                            &request.payload,
-                            request_info.clone(),
-                            64 * 1024 * 1024,
-                        )?;
+                        let Some(data) = peer_value_or_warn(
+                            deserialize_raw_cdr(
+                                &request.payload,
+                                request_info.clone(),
+                                64 * 1024 * 1024,
+                            ),
+                            "invalid Zenoh service request",
+                        ) else {
+                            futures::executor::block_on(
+                                server.reject(request.id, "invalid request payload"),
+                            )?;
+                            continue;
+                        };
                         pending.insert(request_key.clone(), request.id);
                         let mut metadata = dora_message::metadata::MetadataParameters::default();
                         metadata.insert(REQUEST_ID.into(), Parameter::String(request_key));
@@ -558,10 +582,20 @@ fn run_zenoh_action_client(
                         goal: BridgeMessage(Some(data.to_data())),
                     })?
                 };
-                let response = futures::executor::block_on(
-                    client.send_goal.call(request, ACTION_GOAL_TIMEOUT),
-                )?;
-                let response: SendGoalResponse = deserialize_cdr(&response)?;
+                let Some(response) = peer_value_or_warn(
+                    futures::executor::block_on(
+                        client.send_goal.call(request, ACTION_GOAL_TIMEOUT),
+                    ),
+                    "Zenoh action send-goal failed",
+                ) else {
+                    continue;
+                };
+                let Some(response): Option<SendGoalResponse> = peer_value_or_warn(
+                    deserialize_cdr(&response),
+                    "invalid Zenoh action send-goal response",
+                ) else {
+                    continue;
+                };
                 if !response.accepted {
                     tracing::warn!("action goal was rejected by server");
                     continue;
@@ -715,7 +749,17 @@ fn run_zenoh_action_server(
                 }
             }
             MergedEvent::External(ZenohActionServerEvent::ResultRequest(request)) => {
-                let decoded: GetResultRequest = deserialize_cdr(&request.payload)?;
+                let Some(decoded): Option<GetResultRequest> = peer_value_or_warn(
+                    deserialize_cdr(&request.payload),
+                    "invalid Zenoh action get-result request",
+                ) else {
+                    futures::executor::block_on(
+                        server
+                            .get_result
+                            .reject(request.id, "invalid request payload"),
+                    )?;
+                    continue;
+                };
                 let key = decoded.goal_id.uuid.to_string();
                 if let Some(goal) = goals.get_mut(&key) {
                     if let Some(response) = goal.result.as_ref() {
@@ -730,7 +774,17 @@ fn run_zenoh_action_server(
                 }
             }
             MergedEvent::External(ZenohActionServerEvent::Cancel(request)) => {
-                let decoded: CancelGoalRequestWire = deserialize_cdr(&request.payload)?;
+                let Some(decoded): Option<CancelGoalRequestWire> = peer_value_or_warn(
+                    deserialize_cdr(&request.payload),
+                    "invalid Zenoh action cancel-goal request",
+                ) else {
+                    futures::executor::block_on(
+                        server
+                            .cancel_goal
+                            .reject(request.id, "invalid request payload"),
+                    )?;
+                    continue;
+                };
                 let requested = decoded.goal_info.goal_id.uuid;
                 let mut canceling = Vec::new();
                 for (_, goal) in goals.iter() {
@@ -1994,5 +2048,18 @@ impl ToNeutralQos for Ros2QosConfig {
                 _ => Liveliness::Automatic { lease_duration },
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod peer_failure_tests {
+    use super::peer_value_or_warn;
+
+    #[test]
+    fn malformed_peer_value_is_dropped_without_poisoning_the_next_value() {
+        let malformed: eyre::Result<u32> = Err(eyre::eyre!("malformed"));
+        assert!(peer_value_or_warn(malformed, "test").is_none());
+        let valid: eyre::Result<u32> = Ok(42);
+        assert_eq!(peer_value_or_warn(valid, "test"), Some(42));
     }
 }
