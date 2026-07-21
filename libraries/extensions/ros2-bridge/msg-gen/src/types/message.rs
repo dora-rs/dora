@@ -3,6 +3,10 @@ use syn::Ident;
 
 use super::{ConstantType, MemberType};
 
+pub fn dds_name(package: &str, name: &str) -> String {
+    format!("{package}::msg::dds_::{name}_")
+}
+
 /// A member of a structure
 #[derive(Debug, Clone)]
 pub struct Member {
@@ -361,43 +365,119 @@ impl Message {
         };
         let imp = quote! {
             #[allow(non_camel_case_types)]
-            pub struct #topic_name(rustdds::Topic);
+            pub enum #topic_name {
+                Dds(rustdds::Topic),
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh {
+                    name: String,
+                    identity: dora_ros2_bridge::transport::zenoh::compatibility::RosTypeIdentity,
+                },
+            }
 
             #[allow(non_snake_case)]
             pub fn #create_topic(node: &Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#topic_name>> {
                 let name = crate::ros2_client::Name::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                 let type_name = crate::ros2_client::MessageTypeName::new(#package_name, #self_name);
-                let topic = node.node.create_topic(&name, type_name, &qos.into())?;
-                Ok(Box::new(#topic_name(topic)))
+                let topic = match &node.node {
+                    GeneratedNode::Dds(node) => #topic_name::Dds(node.create_topic(&name, type_name, &qos.into())?),
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { compatibility, .. } => {
+                        let identity = dora_ros2_bridge::transport::zenoh::compatibility::resolve_message(
+                            *compatibility,
+                            #package_name,
+                            #self_name,
+                            &dora_ros2_bridge::transport::zenoh::compatibility::TypeDescriptionResolver::from_ament_prefix_path(),
+                        )?;
+                        #topic_name::Zenoh { name: name.to_string(), identity }
+                    }
+                };
+                Ok(Box::new(topic))
             }
 
             #[allow(non_snake_case)]
             pub fn #create_publisher(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies) -> eyre::Result<Box<#publisher_name>> {
-                let publisher = node.node.create_publisher(&topic.0, Some(qos.into()))?;
-                Ok(Box::new(#publisher_name(publisher)))
+                let publisher = match (&mut node.node, &**topic) {
+                    (GeneratedNode::Dds(node), #topic_name::Dds(topic)) => {
+                        #publisher_name::Dds(node.create_publisher(topic, Some(qos.into()))?)
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    (GeneratedNode::Zenoh { node, .. }, #topic_name::Zenoh { name, identity }) => {
+                        let neutral = neutral_qos(&qos)?;
+                        let key = dora_ros2_bridge::transport::zenoh::keyexpr::DataKey::new(node.domain(), name, identity)?;
+                        let token = dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken {
+                            name: name.clone(),
+                            type_name: identity.dds_name.clone(),
+                            type_hash: identity.key_hash_component(),
+                            qos: dora_ros2_bridge::transport::zenoh::qos::ZenohQosMapping::from_ros_qos(&neutral).to_string(),
+                        };
+                        #publisher_name::Zenoh(futures::executor::block_on(
+                            dora_ros2_bridge::transport::zenoh::pubsub::NodePublisher::declare(node, key.as_str(), token, &neutral)
+                        )?)
+                    }
+                    _ => eyre::bail!("topic belongs to a different ROS2 transport"),
+                };
+                Ok(Box::new(publisher))
             }
 
             #[allow(non_snake_case)]
             pub fn #create_subscription(node: &mut Ros2Node, topic: &Box<#topic_name>, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#subscription_name>> {
-                let subscription = node.node.create_subscription::<ffi::#struct_raw_name>(&topic.0, Some(qos.into()))?;
-                let stream = futures_lite::stream::unfold(subscription, |sub| async {
-                    let item = sub.async_take().await;
-                    let item_boxed: Box<dyn std::any::Any + 'static> = Box::new(item);
-                    Some((item_boxed, sub))
-                });
+                let stream: std::pin::Pin<Box<dyn futures::Stream<Item = Box<dyn std::any::Any>> + Send>> = match (&mut node.node, &**topic) {
+                    (GeneratedNode::Dds(node), #topic_name::Dds(topic)) => {
+                        let subscription = node.create_subscription::<ffi::#struct_raw_name>(topic, Some(qos.into()))?;
+                        Box::pin(futures_lite::stream::unfold(subscription, |sub| async {
+                            let item: Result<ffi::#struct_raw_name, String> = sub.async_take().await
+                                .map(|(data, _)| data).map_err(|error| format!("{error:?}"));
+                            Some((Box::new(item) as Box<dyn std::any::Any>, sub))
+                        }))
+                    }
+                    #[cfg(feature = "rmw-zenoh")]
+                    (GeneratedNode::Zenoh { node, .. }, #topic_name::Zenoh { name, identity }) => {
+                        let neutral = neutral_qos(&qos)?;
+                        let key = dora_ros2_bridge::transport::zenoh::keyexpr::DataKey::new(node.domain(), name, identity)?;
+                        let token = dora_ros2_bridge::transport::zenoh::keyexpr::TopicToken {
+                            name: name.clone(), type_name: identity.dds_name.clone(),
+                            type_hash: identity.key_hash_component(),
+                            qos: dora_ros2_bridge::transport::zenoh::qos::ZenohQosMapping::from_ros_qos(&neutral).to_string(),
+                        };
+                        let decoder = std::sync::Arc::new(|payload: &[u8]| {
+                            dora_ros2_bridge::transport::zenoh::deserialize_cdr::<ffi::#struct_raw_name>(payload)
+                                .map_err(|error| dora_ros2_bridge::transport::zenoh::pubsub::PubSubError::Decode(error.to_string()))
+                        });
+                        let subscription = futures::executor::block_on(
+                            dora_ros2_bridge::transport::zenoh::pubsub::NodeSubscription::declare(node, key.as_str(), token, &neutral, 32, 16 * 1024 * 1024, decoder)
+                        )?;
+                        Box::pin(futures_lite::stream::unfold(subscription, |sub| async {
+                            let item: Result<ffi::#struct_raw_name, String> = sub.recv_async().await
+                                .map(|(data, _)| data).map_err(|error| error.to_string());
+                            Some((Box::new(item) as Box<dyn std::any::Any>, sub))
+                        }))
+                    }
+                    _ => eyre::bail!("topic belongs to a different ROS2 transport"),
+                };
                 let id = events.events.merge(Box::pin(stream));
 
                 Ok(Box::new(#subscription_name { id }))
             }
 
             #[allow(non_camel_case_types)]
-            pub struct #publisher_name(crate::ros2_client::Publisher<ffi::#struct_raw_name>);
+            pub enum #publisher_name {
+                Dds(crate::ros2_client::Publisher<ffi::#struct_raw_name>),
+                #[cfg(feature = "rmw-zenoh")]
+                Zenoh(dora_ros2_bridge::transport::zenoh::pubsub::NodePublisher),
+            }
 
             impl #publisher_name {
                 #[allow(non_snake_case)]
                 fn #publish(&mut self, message: ffi::#struct_raw_name) -> eyre::Result<()> {
-                    use eyre::Context;
-                    self.0.publish(message).context("publish failed").map_err(|e| eyre::eyre!("{e:?}"))
+                    match self {
+                        Self::Dds(publisher) => publisher.publish(message).map_err(|e| eyre::eyre!("publish failed: {e:?}")),
+                        #[cfg(feature = "rmw-zenoh")]
+                        Self::Zenoh(publisher) => {
+                            let payload = dora_ros2_bridge::transport::zenoh::serialize_cdr(&message)?;
+                            futures::executor::block_on(publisher.publish(&payload))?;
+                            Ok(())
+                        }
+                    }
                 }
             }
 
@@ -416,15 +496,11 @@ impl Message {
                 }
                 #[allow(non_snake_case)]
                 fn #downcast(&self, event: crate::ffi::CombinedEvent) -> eyre::Result<ffi::#struct_raw_name> {
-                    use eyre::WrapErr;
-
                     match (*event.event).0 {
                         Some(crate::MergedEvent::External(event)) if event.id == self.id  => {
-                            let result = event.event.downcast::<rustdds::dds::result::ReadResult<(ffi::#struct_raw_name, crate::ros2_client::MessageInfo)>>()
+                            let result = event.event.downcast::<Result<ffi::#struct_raw_name, String>>()
                                 .map_err(|_| eyre::eyre!("downcast to {} failed", #struct_raw_name_str))?;
-
-                            let (data, _info) = result.with_context(|| format!("failed to receive {} event", #subscription_name_str)).map_err(|e| eyre::eyre!("{e:?}"))?;
-                            Ok(data)
+                            result.map_err(|error| eyre::eyre!("failed to receive {} event: {error}", #subscription_name_str))
                         },
                         _ => eyre::bail!("not a {} event", #subscription_name_str),
                     }

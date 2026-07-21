@@ -3,6 +3,29 @@ use syn::Ident;
 
 use super::Message;
 
+pub fn component_names(name: &str) -> [String; 6] {
+    [
+        "_Goal",
+        "_Result",
+        "_Feedback",
+        "_SendGoal",
+        "_GetResult",
+        "_FeedbackMessage",
+    ]
+    .map(|suffix| format!("{name}{suffix}"))
+}
+
+/// DDS type names of the three services and two topics composing a ROS action.
+pub fn dds_type_names(package: &str, name: &str) -> [String; 5] {
+    [
+        format!("{package}::action::dds_::{name}_SendGoal_"),
+        format!("{package}::action::dds_::{name}_GetResult_"),
+        "action_msgs::srv::dds_::CancelGoal_".into(),
+        format!("{package}::action::dds_::{name}_FeedbackMessage_"),
+        "action_msgs::msg::dds_::GoalStatusArray_".into(),
+    ]
+}
+
 /// An action definition
 #[derive(Debug, Clone)]
 pub struct Action {
@@ -283,7 +306,7 @@ impl Action {
                 use futures::StreamExt as _;
                 use std::sync::Arc;
 
-                let client = node.node.create_action_client::< action :: #self_name >(
+                let client = node.dds_node_mut()?.create_action_client::< action :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                     &crate::ros2_client::Name::new(name_space, base_name)
                         .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
@@ -544,7 +567,7 @@ impl Action {
                     };
                     let service_ready = async {
                         for _ in 0..10 {
-                            let ready = service_client.wait_for_service(&node.node);
+                            let ready = service_client.wait_for_service(node.dds_node()?);
                             futures::pin_mut!(ready);
                             let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
                             match futures::future::select(ready, timeout).await {
@@ -764,7 +787,7 @@ impl Action {
                 // One QoS profile for all five action endpoints (mirrors the
                 // native Rust action-server example).
                 let q: crate::rustdds::QosPolicies = qos.into();
-                let server = node.node.create_action_server::< action :: #self_name >(
+                let server = node.dds_node_mut()?.create_action_server::< action :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                     &crate::ros2_client::Name::new(name_space, base_name)
                         .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,

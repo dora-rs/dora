@@ -1,0 +1,19 @@
+nodes:
+  - id: add_server
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: server
+    inputs:
+      response: handler/response
+    outputs: [request]
+
+  - id: handler
+    build: cargo build -p yaml-bridge-service-handler
+    path: ../../../target/debug/yaml-bridge-service-handler
+    inputs:
+      request: add_server/request
+    outputs: [response]

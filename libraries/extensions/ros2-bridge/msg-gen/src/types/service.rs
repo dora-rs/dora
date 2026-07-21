@@ -3,6 +3,10 @@ use syn::Ident;
 
 use super::Message;
 
+pub fn dds_name(package: &str, name: &str) -> String {
+    format!("{package}::srv::dds_::{name}_")
+}
+
 /// A service definition
 #[derive(Debug, Clone)]
 pub struct Service {
@@ -131,7 +135,7 @@ impl Service {
             pub fn #create_client(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#client_name>> {
                 use futures::StreamExt as _;
 
-                let client = node.node.create_client::< service :: #self_name >(
+                let client = node.dds_node_mut()?.create_client::< service :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                     &crate::ros2_client::Name::new(name_space, base_name)
                         .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,
@@ -216,7 +220,7 @@ impl Service {
                 fn #wait_for_service(self: &mut #client_name, node: &Box<Ros2Node>) -> eyre::Result<()> {
                     let service_ready = async {
                         for _ in 0..30 {
-                            let ready = self.client.wait_for_service(&node.node);
+                            let ready = self.client.wait_for_service(node.dds_node()?);
                             futures::pin_mut!(ready);
                             let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
                             match futures::future::select(ready, timeout).await {
@@ -349,7 +353,7 @@ impl Service {
             pub fn #create_server(node: &mut Ros2Node, name_space: &str, base_name: &str, qos: ffi::Ros2QosPolicies, events: &mut crate::ffi::CombinedEvents) -> eyre::Result<Box<#server_name>> {
                 use futures::StreamExt as _;
 
-                let server = node.node.create_server::< service :: #self_name >(
+                let server = node.dds_node_mut()?.create_server::< service :: #self_name >(
                     crate::ros2_client::ServiceMapping:: #ros_service_mapping,
                     &crate::ros2_client::Name::new(name_space, base_name)
                         .map_err(|e| eyre::eyre!("invalid ROS2 name/namespace: {e:?}"))?,

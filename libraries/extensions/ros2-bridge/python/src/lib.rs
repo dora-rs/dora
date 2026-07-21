@@ -5,10 +5,29 @@ use std::{
     sync::Arc,
 };
 
-use ::dora_ros2_bridge::{ros2_client, rustdds};
+use ::dora_ros2_bridge::transport::zenoh::{
+    compatibility::{TypeDescriptionResolver, resolve_action, resolve_message, resolve_service},
+    keyexpr::{DataKey, TopicToken},
+    pubsub::{NodePublisher, NodeSubscription, PubSubError},
+    qos::ZenohQosMapping,
+    service::{NodeServiceClient, NodeServiceServer, wait_for_service},
+};
+use ::dora_ros2_bridge::{
+    ros2_client, rustdds,
+    transport::action::{
+        GoalSlots, MAX_CONCURRENT_GOALS,
+        zenoh::{
+            ActionClient as ZenohActionClient, ActionKeys, ActionServer as ZenohActionServer,
+            ActionTokens, wait_for_server as wait_for_action_server,
+        },
+    },
+};
 use arrow::{
     array::{ArrayData, make_array},
     pyarrow::{FromPyArrow, ToPyArrow},
+};
+use dora_ros2_bridge_arrow::{
+    deserialize_cdr, deserialize_raw_cdr, serialize_cdr, serialize_raw_cdr,
 };
 use dora_ros2_bridge_msg_gen::types::Message;
 use eyre::{Context, ContextCompat, Result, eyre};
@@ -28,6 +47,58 @@ use typed::{
 
 pub mod qos;
 pub mod typed;
+
+#[derive(Clone)]
+#[pyclass(from_py_object)]
+pub struct Ros2Transport {
+    config: dora_message::descriptor::Ros2TransportConfig,
+}
+
+#[pymethods]
+impl Ros2Transport {
+    #[staticmethod]
+    pub fn dds() -> Self {
+        Self {
+            config: dora_message::descriptor::Ros2TransportConfig::Dds,
+        }
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (compatibility, config_uri=None))]
+    pub fn zenoh(compatibility: &str, config_uri: Option<PathBuf>) -> PyResult<Self> {
+        let compatibility = match compatibility {
+            "humble" => dora_message::descriptor::RmwZenohCompatibility::Humble,
+            "rep2016" => dora_message::descriptor::RmwZenohCompatibility::Rep2016,
+            _ => {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "compatibility must be `humble` or `rep2016`",
+                ));
+            }
+        };
+        if config_uri
+            .as_ref()
+            .is_some_and(|path| path.as_os_str().is_empty())
+        {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Zenoh config_uri must not be empty",
+            ));
+        }
+        Ok(Self {
+            config: dora_message::descriptor::Ros2TransportConfig::Zenoh {
+                compatibility,
+                config_uri,
+            },
+        })
+    }
+
+    #[getter]
+    pub fn kind(&self) -> &'static str {
+        match self.config {
+            dora_message::descriptor::Ros2TransportConfig::Dds => "dds",
+            dora_message::descriptor::Ros2TransportConfig::Zenoh { .. } => "zenoh",
+        }
+    }
+}
 
 /// Drop a taken-but-unanswered service request after this long, so a server
 /// whose handler skips `send_response` can't leak `pending` entries forever.
@@ -65,7 +136,8 @@ const MAX_PENDING_REQUESTS: usize = 64;
 ///
 #[pyclass]
 pub struct Ros2Context {
-    context: ros2_client::Context,
+    context: dora_ros2_bridge::transport::Context,
+    transport: Ros2Transport,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
 }
 
@@ -119,8 +191,12 @@ mod domain_id_tests {
 impl Ros2Context {
     /// Create a new context
     #[new]
-    #[pyo3(signature = (ros_paths=None, domain_id=None))]
-    pub fn new(ros_paths: Option<Vec<PathBuf>>, domain_id: Option<u16>) -> eyre::Result<Self> {
+    #[pyo3(signature = (ros_paths=None, transport=None, domain_id=None))]
+    pub fn new(
+        ros_paths: Option<Vec<PathBuf>>,
+        transport: Option<Ros2Transport>,
+        domain_id: Option<u16>,
+    ) -> eyre::Result<Self> {
         Python::attach(|py| -> Result<()> {
             let warnings = py
                 .import("warnings")
@@ -175,14 +251,21 @@ impl Ros2Context {
             }
         }
 
-        let domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
-
+        let _domain_id = resolve_domain_id(domain_id, std::env::var("ROS_DOMAIN_ID"))?;
+        let transport = transport.unwrap_or_else(Ros2Transport::dds);
+        let context = futures::executor::block_on(dora_ros2_bridge::transport::Context::open(
+            &transport.config,
+        ))?;
         Ok(Self {
-            context: ros2_client::Context::with_options(
-                ros2_client::ContextOptions::new().domain_id(domain_id),
-            )?,
+            context,
+            transport,
             messages: Arc::new(messages),
         })
+    }
+
+    #[getter]
+    pub fn transport_kind(&self) -> &'static str {
+        self.transport.kind()
     }
 
     /// Create a new ROS2 node
@@ -212,6 +295,7 @@ impl Ros2Context {
         options: Ros2NodeOptions,
         parameters: Option<Bound<'_, PyDict>>,
     ) -> eyre::Result<Ros2Node> {
+        let rosout_requested = options.rosout;
         let name = ros2_client::NodeName::new(namespace, name)
             .map_err(|err| eyre!("invalid node name: {err}"))?;
         // ros2-client hosts the ROS2 parameter services natively (driven by the
@@ -259,29 +343,47 @@ impl Ros2Context {
                 _ => Ok(()),
             },
         ));
-        let mut node = self
-            .context
-            .new_node(name, node_options)
-            .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
+        if matches!(self.context, dora_ros2_bridge::transport::Context::Zenoh(_))
+            && !declared_types.is_empty()
+        {
+            eyre::bail!("ROS2 parameters are not yet supported by the native Zenoh transport");
+        }
+        if matches!(self.context, dora_ros2_bridge::transport::Context::Zenoh(_))
+            && rosout_requested
+        {
+            eyre::bail!("ROS2 rosout is not yet supported by the native Zenoh transport");
+        }
+        let mut node = futures::executor::block_on(self.context.new_named_node(
+            namespace,
+            name.base_name(),
+            node_options,
+        ))?;
 
         // Start a spinner so service/discovery status events are processed.
         // One worker thread is enough (the spinner is a single task); this keeps
         // the per-node thread cost at 1 instead of one-per-CPU-core.
-        let spinner_pool = futures::executor::ThreadPool::builder()
-            .pool_size(1)
-            .create()
-            .map_err(|e| eyre!("failed to create ros2 spinner pool: {e}"))?;
-        let spinner = node
-            .spinner()
-            .map_err(|e| eyre!("failed to create ros2 spinner: {e:?}"))?;
-        spinner_pool.spawn_ok(async move {
-            if let Err(err) = spinner.spin().await {
-                eprintln!("ros2 spinner stopped: {err:?}");
-            }
-        });
+        let spinner_pool = if let dora_ros2_bridge::transport::Node::Dds(dds) = &mut node {
+            let spinner_pool = futures::executor::ThreadPool::builder()
+                .pool_size(1)
+                .create()
+                .map_err(|e| eyre!("failed to create ros2 spinner pool: {e}"))?;
+            let spinner = dds
+                .as_inner_mut()
+                .spinner()
+                .map_err(|e| eyre!("failed to create ros2 spinner: {e:?}"))?;
+            spinner_pool.spawn_ok(async move {
+                if let Err(err) = spinner.spin().await {
+                    eprintln!("ros2 spinner stopped: {err:?}");
+                }
+            });
+            Some(spinner_pool)
+        } else {
+            None
+        };
 
         Ok(Ros2Node {
             node,
+            transport: self.transport.clone(),
             messages: self.messages.clone(),
             _spinner_pool: spinner_pool,
         })
@@ -298,12 +400,24 @@ impl Ros2Context {
 ///
 #[pyclass]
 pub struct Ros2Node {
-    node: ros2_client::Node,
+    node: dora_ros2_bridge::transport::Node,
+    transport: Ros2Transport,
     messages: Arc<HashMap<String, HashMap<String, Message>>>,
     // Keeps the ROS2 spinner task alive for the node's lifetime. ros2-client
     // requires a running spinner for service/discovery status events
     // (`wait_for_service` panics otherwise).
-    _spinner_pool: futures::executor::ThreadPool,
+    _spinner_pool: Option<futures::executor::ThreadPool>,
+}
+
+impl Ros2Node {
+    fn dds_node(&self) -> eyre::Result<&ros2_client::Node> {
+        match &self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => Ok(node.as_inner()),
+            dora_ros2_bridge::transport::Node::Zenoh(_) => {
+                eyre::bail!("this ROS2 node feature is not supported by the native Zenoh transport")
+            }
+        }
+    }
 }
 
 #[pymethods]
@@ -338,12 +452,48 @@ impl Ros2Node {
             ),
         };
 
-        let message_type_name = ros2_client::MessageTypeName::new(namespace_name, message_name);
-        let topic_name = ros2_client::Name::parse(name)
-            .map_err(|err| eyre!("failed to parse ROS2 topic name: {err}"))?;
-        let topic = self
-            .node
-            .create_topic(&topic_name, message_type_name, &qos.into())?;
+        let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.clone().into();
+        let topic = match &self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => {
+                let message_type_name =
+                    ros2_client::MessageTypeName::new(namespace_name, message_name);
+                let topic_name = ros2_client::Name::parse(name)
+                    .map_err(|err| eyre!("failed to parse ROS2 topic name: {err}"))?;
+                TopicBackend::Dds(node.as_inner().create_topic(
+                    &topic_name,
+                    message_type_name,
+                    &dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                )?)
+            }
+            dora_ros2_bridge::transport::Node::Zenoh(_) => {
+                let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
+                    self.transport.config
+                else {
+                    unreachable!()
+                };
+                let identity = resolve_message(
+                    compatibility,
+                    namespace_name,
+                    message_name,
+                    &TypeDescriptionResolver::from_ament_prefix_path(),
+                )?;
+                let domain = std::env::var("ROS_DOMAIN_ID")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0);
+                let key = DataKey::new(domain, name, &identity)?.as_str().to_owned();
+                TopicBackend::Zenoh {
+                    key,
+                    token: TopicToken {
+                        name: name.into(),
+                        type_name: identity.dds_name.clone(),
+                        type_hash: identity.key_hash_component(),
+                        qos: ZenohQosMapping::from_ros_qos(&neutral_qos).to_string(),
+                    },
+                    qos: neutral_qos,
+                }
+            }
+        };
         let type_info = TypeInfo {
             package_name: namespace_name.to_owned().into(),
             message_name: message_name.to_owned().into(),
@@ -371,9 +521,31 @@ impl Ros2Node {
         topic: &Ros2Topic,
         qos: Option<qos::Ros2QosPolicies>,
     ) -> eyre::Result<Ros2Publisher> {
-        let publisher = self
-            .node
-            .create_publisher(&topic.topic, qos.map(Into::into))?;
+        let publisher = match (&mut self.node, &topic.topic) {
+            (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
+                PublisherBackend::Dds(
+                    node.as_inner_mut()
+                        .create_publisher(topic, qos.map(Into::into))?,
+                )
+            }
+            (
+                dora_ros2_bridge::transport::Node::Zenoh(node),
+                TopicBackend::Zenoh {
+                    key,
+                    token,
+                    qos: topic_qos,
+                },
+            ) => {
+                let qos = qos.map(Into::into).unwrap_or(*topic_qos);
+                PublisherBackend::Zenoh(futures::executor::block_on(NodePublisher::declare(
+                    node,
+                    key,
+                    token.clone(),
+                    &qos,
+                ))?)
+            }
+            _ => eyre::bail!("topic belongs to a different ROS2 transport"),
+        };
         Ok(Ros2Publisher {
             publisher,
             type_info: topic.type_info.clone(),
@@ -399,11 +571,43 @@ impl Ros2Node {
         topic: &Ros2Topic,
         qos: Option<qos::Ros2QosPolicies>,
     ) -> eyre::Result<Ros2Subscription> {
-        let subscription = self
-            .node
-            .create_subscription(&topic.topic, qos.map(Into::into))?;
+        let subscription = match (&mut self.node, &topic.topic) {
+            (dora_ros2_bridge::transport::Node::Dds(node), TopicBackend::Dds(topic)) => {
+                SubscriptionBackend::Dds(Some(
+                    node.as_inner_mut()
+                        .create_subscription(topic, qos.map(Into::into))?,
+                ))
+            }
+            (
+                dora_ros2_bridge::transport::Node::Zenoh(node),
+                TopicBackend::Zenoh {
+                    key,
+                    token,
+                    qos: topic_qos,
+                },
+            ) => {
+                let qos = qos.map(Into::into).unwrap_or(*topic_qos);
+                let info = topic.type_info.clone();
+                let decoder = Arc::new(move |bytes: &[u8]| {
+                    deserialize_raw_cdr(bytes, info.clone(), 64 * 1024 * 1024)
+                        .map_err(|error| PubSubError::Decode(error.to_string()))
+                });
+                SubscriptionBackend::Zenoh(Some(futures::executor::block_on(
+                    NodeSubscription::declare(
+                        node,
+                        key,
+                        token.clone(),
+                        &qos,
+                        64,
+                        64 * 1024 * 1024,
+                        decoder,
+                    ),
+                )?))
+            }
+            _ => eyre::bail!("topic belongs to a different ROS2 transport"),
+        };
         Ok(Ros2Subscription {
-            subscription: Some(subscription),
+            subscription,
             deserializer: StructDeserializer::new(Cow::Owned(topic.type_info.clone())),
         })
     }
@@ -439,36 +643,82 @@ impl Ros2Node {
         let (package, type_name, request_type_info, response_type_info) =
             service_type_infos(&service_type, &self.messages)?;
 
-        let service_qos: rustdds::QosPolicies = qos.into();
-        let client = self
-            .node
-            .create_client::<BridgeServiceType>(
-                dora_ros2_bridge::detect_service_mapping(),
-                &parse_ros2_name(service_name)?,
-                &ros2_client::ServiceTypeName::new(&package, &type_name),
-                service_qos.clone(),
-                service_qos,
-            )
-            .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
+        let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
+        let client = match &mut self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => ServiceClientBackend::Dds(Box::new(
+                node.as_inner_mut()
+                    .create_client::<BridgeServiceType>(
+                        dora_ros2_bridge::detect_service_mapping(),
+                        &parse_ros2_name(service_name)?,
+                        &ros2_client::ServiceTypeName::new(&package, &type_name),
+                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                    )
+                    .map_err(|e| eyre!("failed to create service client: {e:?}"))?,
+            )),
+            dora_ros2_bridge::transport::Node::Zenoh(node) => {
+                let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
+                    self.transport.config
+                else {
+                    unreachable!()
+                };
+                let identity = resolve_service(
+                    compatibility,
+                    &package,
+                    &type_name,
+                    &TypeDescriptionResolver::from_ament_prefix_path(),
+                )?;
+                let domain = std::env::var("ROS_DOMAIN_ID")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                let key = DataKey::new(domain, service_name, &identity)?;
+                let token = TopicToken {
+                    name: service_name.into(),
+                    type_name: identity.dds_name.clone(),
+                    type_hash: identity.key_hash_component(),
+                    qos: ZenohQosMapping::from_ros_qos(&neutral_qos).to_string(),
+                };
+                let client = futures::executor::block_on(NodeServiceClient::declare(
+                    node,
+                    key.as_str(),
+                    token.clone(),
+                    MAX_PENDING_REQUESTS,
+                ))?;
+                py.detach(|| {
+                    futures::executor::block_on(wait_for_service(
+                        node.graph(),
+                        &token.name,
+                        &token.type_name,
+                        &token.type_hash,
+                        &token.qos,
+                        Instant::now() + Duration::from_secs(20),
+                    ))
+                })?;
+                ServiceClientBackend::Zenoh(client)
+            }
+        };
 
         // Mirror the daemon: wait for the server before returning so the first
         // `call()` does not race service discovery. Release the GIL: this blocks
         // for up to 20s and must not freeze other Python threads.
-        let node = &self.node;
-        py.detach(|| {
-            futures::executor::block_on(async {
-                for _ in 0..10 {
-                    let wait = client.wait_for_service(node);
-                    futures::pin_mut!(wait);
-                    let timeout = futures_timer::Delay::new(Duration::from_secs(2));
-                    match futures::future::select(wait, timeout).await {
-                        futures::future::Either::Left(((), _)) => return Ok(()),
-                        futures::future::Either::Right(_) => {}
+        if let ServiceClientBackend::Dds(client) = &client {
+            let node = self.dds_node()?;
+            py.detach(|| {
+                futures::executor::block_on(async {
+                    for _ in 0..10 {
+                        let wait = client.wait_for_service(node);
+                        futures::pin_mut!(wait);
+                        let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+                        match futures::future::select(wait, timeout).await {
+                            futures::future::Either::Left(((), _)) => return Ok(()),
+                            futures::future::Either::Right(_) => {}
+                        }
                     }
-                }
-                eyre::bail!("service `{service_name}` not available after 10 retries")
-            })
-        })?;
+                    eyre::bail!("service `{service_name}` not available after 10 retries")
+                })
+            })?;
+        }
 
         Ok(Ros2ServiceClient {
             client,
@@ -511,17 +761,53 @@ impl Ros2Node {
         let (package, type_name, request_type_info, response_type_info) =
             service_type_infos(&service_type, &self.messages)?;
 
-        let service_qos: rustdds::QosPolicies = qos.into();
-        let server = self
-            .node
-            .create_server::<BridgeServiceType>(
-                dora_ros2_bridge::detect_service_mapping(),
-                &parse_ros2_name(service_name)?,
-                &ros2_client::ServiceTypeName::new(&package, &type_name),
-                service_qos.clone(),
-                service_qos,
-            )
-            .map_err(|e| eyre!("failed to create service server: {e:?}"))?;
+        let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
+        let server = match &mut self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => ServiceServerBackend::Dds(Box::new(
+                node.as_inner_mut()
+                    .create_server::<BridgeServiceType>(
+                        dora_ros2_bridge::detect_service_mapping(),
+                        &parse_ros2_name(service_name)?,
+                        &ros2_client::ServiceTypeName::new(&package, &type_name),
+                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                        dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                    )
+                    .map_err(|e| eyre!("failed to create service server: {e:?}"))?,
+            )),
+            dora_ros2_bridge::transport::Node::Zenoh(node) => {
+                let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
+                    self.transport.config
+                else {
+                    unreachable!()
+                };
+                let identity = resolve_service(
+                    compatibility,
+                    &package,
+                    &type_name,
+                    &TypeDescriptionResolver::from_ament_prefix_path(),
+                )?;
+                let domain = std::env::var("ROS_DOMAIN_ID")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0);
+                let key = DataKey::new(domain, service_name, &identity)?;
+                let token = TopicToken {
+                    name: service_name.into(),
+                    type_name: identity.dds_name.clone(),
+                    type_hash: identity.key_hash_component(),
+                    qos: ZenohQosMapping::from_ros_qos(&neutral_qos).to_string(),
+                };
+                ServiceServerBackend::Zenoh(futures::executor::block_on(
+                    NodeServiceServer::declare(
+                        node,
+                        key.as_str(),
+                        token,
+                        MAX_PENDING_REQUESTS,
+                        SERVICE_RESPONSE_TIMEOUT,
+                    ),
+                )?)
+            }
+        };
 
         Ok(Ros2ServiceServer {
             server,
@@ -541,29 +827,69 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2ActionClient> {
         let (package, type_name, goal_type_info, result_type_info, feedback_type_info) =
             action_type_infos(&action_type, &self.messages)?;
-        let q: rustdds::QosPolicies = qos.into();
-        let client = self
-            .node
-            .create_action_client::<BridgeActionType>(
-                dora_ros2_bridge::detect_service_mapping(),
-                &parse_ros2_name(action_name)?,
-                &ros2_client::ActionTypeName::new(&package, &type_name),
-                ros2_client::action::ActionClientQosPolicies {
-                    goal_service: q.clone(),
-                    result_service: q.clone(),
-                    cancel_service: q.clone(),
-                    feedback_subscription: q.clone(),
-                    status_subscription: q,
-                },
-            )
-            .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
+        let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
+        let client = match &mut self.node {
+            dora_ros2_bridge::transport::Node::Dds(node) => {
+                ActionClientBackend::Dds(Box::new(
+                    node.as_inner_mut()
+                        .create_action_client::<BridgeActionType>(
+                            dora_ros2_bridge::detect_service_mapping(),
+                            &parse_ros2_name(action_name)?,
+                            &ros2_client::ActionTypeName::new(&package, &type_name),
+                            ros2_client::action::ActionClientQosPolicies {
+                                goal_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                result_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                cancel_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                feedback_subscription:
+                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                                status_subscription:
+                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                            },
+                        )
+                        .map_err(|e| eyre!("failed to create action client: {e:?}"))?,
+                ))
+            }
+            dora_ros2_bridge::transport::Node::Zenoh(node) => {
+                let dora_message::descriptor::Ros2TransportConfig::Zenoh { compatibility, .. } =
+                    self.transport.config
+                else {
+                    unreachable!()
+                };
+                let (keys, tokens) = zenoh_action_entities(
+                    compatibility,
+                    action_name,
+                    &package,
+                    &type_name,
+                    &neutral_qos,
+                )?;
+                let readiness = tokens.clone();
+                let client = futures::executor::block_on(ZenohActionClient::declare(
+                    node,
+                    &keys,
+                    tokens,
+                    &neutral_qos,
+                    64 * 1024 * 1024,
+                ))?;
+                futures::executor::block_on(wait_for_action_server(
+                    node.graph(),
+                    &readiness,
+                    Instant::now() + Duration::from_secs(20),
+                ))?;
+                ActionClientBackend::Zenoh(Box::new(client))
+            }
+        };
         Ok(Ros2ActionClient {
             client,
             goal_type_info,
             result_type_info,
             feedback_type_info,
-            goals: HashMap::new(),
-            in_flight: 0,
+            goals: GoalSlots::new(MAX_CONCURRENT_GOALS),
         })
     }
 
@@ -575,29 +901,80 @@ impl Ros2Node {
     ) -> eyre::Result<Ros2ActionServer> {
         let (package, type_name, goal_type_info, result_type_info, feedback_type_info) =
             action_type_infos(&action_type, &self.messages)?;
-        let q: rustdds::QosPolicies = qos.into();
-        let server = self
-            .node
-            .create_action_server::<BridgeActionType>(
-                dora_ros2_bridge::detect_service_mapping(),
-                &parse_ros2_name(action_name)?,
-                &ros2_client::ActionTypeName::new(&package, &type_name),
-                ros2_client::action::ActionServerQosPolicies {
-                    goal_service: q.clone(),
-                    result_service: q.clone(),
-                    cancel_service: q.clone(),
-                    feedback_publisher: q.clone(),
-                    status_publisher: q,
-                },
-            )
-            .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
-        let server = ros2_client::action::AsyncActionServer::new(server);
+        let neutral_qos: dora_ros2_bridge::transport::Ros2Qos = qos.into();
+        let (server, zenoh_result_requests) =
+            match &mut self.node {
+                dora_ros2_bridge::transport::Node::Dds(node) => {
+                    let server = node
+                        .as_inner_mut()
+                        .create_action_server::<BridgeActionType>(
+                            dora_ros2_bridge::detect_service_mapping(),
+                            &parse_ros2_name(action_name)?,
+                            &ros2_client::ActionTypeName::new(&package, &type_name),
+                            ros2_client::action::ActionServerQosPolicies {
+                                goal_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                result_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                cancel_service: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                                feedback_publisher:
+                                    dora_ros2_bridge::transport::dds::to_rustdds_qos(&neutral_qos),
+                                status_publisher: dora_ros2_bridge::transport::dds::to_rustdds_qos(
+                                    &neutral_qos,
+                                ),
+                            },
+                        )
+                        .map_err(|e| eyre!("failed to create action server: {e:?}"))?;
+                    (
+                        ActionServerBackend::Dds(Box::new(
+                            ros2_client::action::AsyncActionServer::new(server),
+                        )),
+                        None,
+                    )
+                }
+                dora_ros2_bridge::transport::Node::Zenoh(node) => {
+                    let dora_message::descriptor::Ros2TransportConfig::Zenoh {
+                        compatibility, ..
+                    } = self.transport.config
+                    else {
+                        unreachable!()
+                    };
+                    let (keys, tokens) = zenoh_action_entities(
+                        compatibility,
+                        action_name,
+                        &package,
+                        &type_name,
+                        &neutral_qos,
+                    )?;
+                    let server = Arc::new(futures::executor::block_on(
+                        ZenohActionServer::declare(node, &keys, tokens, &neutral_qos),
+                    )?);
+                    let (tx, rx) = flume::bounded(MAX_CONCURRENT_GOALS * 2);
+                    let receiver = server.clone();
+                    std::thread::spawn(move || {
+                        futures::executor::block_on(async move {
+                            while let Ok(request) = receiver.get_result.recv().await {
+                                if tx.send(request).is_err() {
+                                    break;
+                                }
+                            }
+                        })
+                    });
+                    (ActionServerBackend::Zenoh(server), Some(rx))
+                }
+            };
         Ok(Ros2ActionServer {
             server,
             goal_type_info,
             result_type_info,
             feedback_type_info,
-            executing: HashMap::new(),
+            executing: GoalSlots::new(MAX_CONCURRENT_GOALS),
+            zenoh_result_requests,
+            pending_result_requests: HashMap::new(),
         })
     }
     // ---- END SPIKE ----
@@ -613,7 +990,7 @@ impl Ros2Node {
             .wrap_err_with(|| format!("invalid value for parameter `{name}`"))?;
         // Type stability is enforced by the validator registered in `new_node`,
         // which ros2-client also applies to remote `ros2 param set` calls.
-        self.node
+        self.dds_node()?
             .set_parameter(name, value)
             .map_err(|e| eyre!("failed to set parameter `{name}`: {e}"))
     }
@@ -623,7 +1000,7 @@ impl Ros2Node {
     /// :type name: str
     /// :rtype: bool | int | float | str | bytes | list | None
     pub fn get_parameter(&self, py: Python<'_>, name: &str) -> eyre::Result<Py<PyAny>> {
-        match self.node.get_parameter(name) {
+        match self.dds_node()?.get_parameter(name) {
             Some(value) => parameter_value_to_py(py, &value),
             None => Ok(py.None()),
         }
@@ -633,7 +1010,9 @@ impl Ros2Node {
     ///
     /// :rtype: list[str]
     pub fn list_parameters(&self) -> Vec<String> {
-        self.node.list_parameters()
+        self.dds_node()
+            .map(|node| node.list_parameters())
+            .unwrap_or_default()
     }
 
     /// Whether a ROS2 parameter with the given name is declared.
@@ -641,7 +1020,7 @@ impl Ros2Node {
     /// :type name: str
     /// :rtype: bool
     pub fn has_parameter(&self, name: &str) -> bool {
-        self.node.has_parameter(name)
+        self.dds_node().is_ok_and(|node| node.has_parameter(name))
     }
 }
 
@@ -891,8 +1270,17 @@ impl From<Ros2NodeOptions> for ros2_client::NodeOptions {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Topic {
-    topic: rustdds::Topic,
+    topic: TopicBackend,
     type_info: TypeInfo<'static>,
+}
+
+enum TopicBackend {
+    Dds(rustdds::Topic),
+    Zenoh {
+        key: String,
+        token: TopicToken,
+        qos: dora_ros2_bridge::transport::Ros2Qos,
+    },
 }
 
 /// ROS2 Publisher
@@ -903,8 +1291,13 @@ pub struct Ros2Topic {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2Publisher {
-    publisher: ros2_client::Publisher<TypedValue<'static>>,
+    publisher: PublisherBackend,
     type_info: TypeInfo<'static>,
+}
+
+enum PublisherBackend {
+    Dds(ros2_client::Publisher<TypedValue<'static>>),
+    Zenoh(NodePublisher),
 }
 
 #[pymethods]
@@ -939,10 +1332,16 @@ impl Ros2Publisher {
             type_info: &self.type_info,
         };
 
-        self.publisher
-            .publish(typed_value)
-            .map_err(|e| e.forget_data())
-            .context("publish failed")?;
+        match &self.publisher {
+            PublisherBackend::Dds(publisher) => publisher
+                .publish(typed_value)
+                .map_err(|e| e.forget_data())
+                .context("publish failed")?,
+            PublisherBackend::Zenoh(publisher) => {
+                let cdr = serialize_raw_cdr(&typed_value)?;
+                futures::executor::block_on(publisher.publish(&cdr))?;
+            }
+        }
         Ok(())
     }
 }
@@ -957,20 +1356,39 @@ impl Ros2Publisher {
 #[non_exhaustive]
 pub struct Ros2Subscription {
     deserializer: StructDeserializer<'static>,
-    subscription: Option<ros2_client::Subscription<ArrayData>>,
+    subscription: SubscriptionBackend,
+}
+
+enum SubscriptionBackend {
+    Dds(Option<ros2_client::Subscription<ArrayData>>),
+    Zenoh(Option<NodeSubscription<ArrayData>>),
 }
 
 #[pymethods]
 impl Ros2Subscription {
     pub fn next(&self, py: Python) -> eyre::Result<Option<Py<PyAny>>> {
-        let message = self
-            .subscription
-            .as_ref()
-            .context("subscription was already used")?
-            .take_seed(self.deserializer.clone())
-            .context("failed to take next message from subscription")?;
-        let Some((value, _info)) = message else {
-            return Ok(None);
+        let value = match &self.subscription {
+            SubscriptionBackend::Dds(subscription) => {
+                let message = subscription
+                    .as_ref()
+                    .context("subscription was already used")?
+                    .take_seed(self.deserializer.clone())
+                    .context("failed to take next message from subscription")?;
+                let Some((value, _)) = message else {
+                    return Ok(None);
+                };
+                value
+            }
+            SubscriptionBackend::Zenoh(subscription) => {
+                let Some((value, _)) = subscription
+                    .as_ref()
+                    .context("subscription was already used")?
+                    .try_recv()?
+                else {
+                    return Ok(None);
+                };
+                value
+            }
         };
 
         let message = value.to_pyarrow(py)?.unbind();
@@ -982,10 +1400,14 @@ impl Ros2Subscription {
 
 impl Ros2Subscription {
     pub fn into_stream(&mut self) -> eyre::Result<Ros2SubscriptionStream> {
-        let subscription = self
-            .subscription
-            .take()
-            .context("subscription was already used")?;
+        let subscription = match &mut self.subscription {
+            SubscriptionBackend::Dds(value) => Ros2SubscriptionStreamBackend::Dds(
+                value.take().context("subscription was already used")?,
+            ),
+            SubscriptionBackend::Zenoh(value) => Ros2SubscriptionStreamBackend::Zenoh(
+                value.take().context("subscription was already used")?,
+            ),
+        };
 
         Ok(Ros2SubscriptionStream {
             deserializer: self.deserializer.clone(),
@@ -996,21 +1418,40 @@ impl Ros2Subscription {
 
 pub struct Ros2SubscriptionStream {
     deserializer: StructDeserializer<'static>,
-    subscription: ros2_client::Subscription<ArrayData>,
+    subscription: Ros2SubscriptionStreamBackend,
+}
+
+enum Ros2SubscriptionStreamBackend {
+    Dds(ros2_client::Subscription<ArrayData>),
+    Zenoh(NodeSubscription<ArrayData>),
 }
 
 impl Ros2SubscriptionStream {
-    pub fn as_stream(
-        &self,
-    ) -> impl Stream<Item = Result<(ArrayData, ros2_client::MessageInfo), rustdds::dds::ReadError>> + '_
-    {
-        self.subscription
-            .async_stream_seed(self.deserializer.clone())
+    pub fn as_stream(&self) -> std::pin::Pin<Box<dyn Stream<Item = eyre::Result<ArrayData>> + '_>> {
+        match &self.subscription {
+            Ros2SubscriptionStreamBackend::Dds(subscription) => Box::pin(
+                subscription
+                    .async_stream_seed(self.deserializer.clone())
+                    .map(|result| result.map(|(data, _)| data).map_err(Into::into)),
+            ),
+            Ros2SubscriptionStreamBackend::Zenoh(subscription) => Box::pin(
+                futures::stream::unfold(subscription, |subscription| async move {
+                    Some((
+                        subscription
+                            .recv_async()
+                            .await
+                            .map(|(data, _)| data)
+                            .map_err(Into::into),
+                        subscription,
+                    ))
+                }),
+            ),
+        }
     }
 }
 
 impl Stream for Ros2SubscriptionStream {
-    type Item = Result<(ArrayData, ros2_client::MessageInfo), rustdds::dds::ReadError>;
+    type Item = eyre::Result<ArrayData>;
 
     fn poll_next(
         self: std::pin::Pin<&mut Self>,
@@ -1059,33 +1500,120 @@ fn action_type_infos(
     ))
 }
 
+fn zenoh_action_entities(
+    compatibility: dora_message::descriptor::RmwZenohCompatibility,
+    action_name: &str,
+    package: &str,
+    action_type: &str,
+    qos: &dora_ros2_bridge::transport::Ros2Qos,
+) -> eyre::Result<(ActionKeys, ActionTokens)> {
+    let resolver = TypeDescriptionResolver::from_ament_prefix_path();
+    let identities = resolve_action(compatibility, package, action_type, &resolver)?;
+    let find = |suffix: &str| {
+        identities
+            .iter()
+            .find(|identity| identity.ros_name.ends_with(suffix))
+            .cloned()
+            .with_context(|| format!("missing action identity {suffix}"))
+    };
+    let send_goal = find("_SendGoal")?;
+    let get_result = find("_GetResult")?;
+    let feedback = find("_FeedbackMessage")?;
+    let cancel = resolve_service(compatibility, "action_msgs", "CancelGoal", &resolver)?;
+    let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", &resolver)?;
+    let endpoints = dora_ros2_bridge::transport::action::ActionEndpoints::new(
+        action_name,
+        package,
+        action_type,
+    );
+    let domain = std::env::var("ROS_DOMAIN_ID")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    let key = |name: &str, identity| -> eyre::Result<String> {
+        Ok(DataKey::new(domain, name, identity)?.as_str().into())
+    };
+    let qos_string = ZenohQosMapping::from_ros_qos(qos).to_string();
+    let status_qos = dora_ros2_bridge::transport::action::zenoh::action_status_qos(qos);
+    let token =
+        |name: &str,
+         identity: &dora_ros2_bridge::transport::zenoh::compatibility::RosTypeIdentity| {
+            TopicToken {
+                name: name.into(),
+                type_name: identity.dds_name.clone(),
+                type_hash: identity.key_hash_component(),
+                qos: qos_string.clone(),
+            }
+        };
+    Ok((
+        ActionKeys {
+            send_goal: key(&endpoints.send_goal.name, &send_goal)?,
+            get_result: key(&endpoints.get_result.name, &get_result)?,
+            cancel_goal: key(&endpoints.cancel_goal.name, &cancel)?,
+            feedback: key(&endpoints.feedback.name, &feedback)?,
+            status: key(&endpoints.status.name, &status)?,
+        },
+        ActionTokens {
+            send_goal: token(&endpoints.send_goal.name, &send_goal),
+            get_result: token(&endpoints.get_result.name, &get_result),
+            cancel_goal: token(&endpoints.cancel_goal.name, &cancel),
+            feedback: token(&endpoints.feedback.name, &feedback),
+            status: TopicToken {
+                qos: ZenohQosMapping::from_ros_qos(&status_qos).to_string(),
+                ..token(&endpoints.status.name, &status)
+            },
+        },
+    ))
+}
+
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2ActionClient {
-    client: ros2_client::action::ActionClient<BridgeActionType>,
+    client: ActionClientBackend,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
-    goals: HashMap<String, ros2_client::action::GoalId>,
-    in_flight: usize,
+    goals: GoalSlots<String, ros2_client::action::GoalId>,
+}
+
+enum ActionClientBackend {
+    Dds(Box<ros2_client::action::ActionClient<BridgeActionType>>),
+    Zenoh(Box<ZenohActionClient>),
 }
 
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2ActionServer {
-    server: ros2_client::action::AsyncActionServer<BridgeActionType>,
+    server: ActionServerBackend,
     goal_type_info: TypeInfo<'static>,
     result_type_info: TypeInfo<'static>,
     feedback_type_info: TypeInfo<'static>,
-    executing: HashMap<
-        String,
-        (
-            ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
-            Instant,
-        ),
-    >,
+    executing: GoalSlots<String, PythonServerGoal>,
+    zenoh_result_requests:
+        Option<flume::Receiver<dora_ros2_bridge::transport::zenoh::service::ServiceRequest>>,
+    pending_result_requests: HashMap<String, dora_ros2_bridge::transport::RequestId>,
 }
-const MAX_CONCURRENT_GOALS: usize = 8;
+
+enum ActionServerBackend {
+    Dds(Box<ros2_client::action::AsyncActionServer<BridgeActionType>>),
+    Zenoh(Arc<ZenohActionServer>),
+}
+
+enum PythonServerGoal {
+    Dds(
+        ros2_client::action::ExecutingGoalHandle<BridgeMessage>,
+        Instant,
+    ),
+    Zenoh(ros2_client::action::GoalId, Instant),
+}
+
+impl PythonServerGoal {
+    fn created(&self) -> Instant {
+        match self {
+            Self::Dds(_, created) | Self::Zenoh(_, created) => *created,
+        }
+    }
+}
 const ACTION_GOAL_TIMEOUT_S: f64 = 30.0;
 const ACTION_RESULT_TIMEOUT_S: f64 = 300.0;
 
@@ -1099,35 +1627,48 @@ impl Ros2ActionClient {
         goal: Bound<'_, PyAny>,
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<String>> {
-        if self.in_flight >= MAX_CONCURRENT_GOALS {
+        if self.goals.len() >= MAX_CONCURRENT_GOALS {
             eyre::bail!("max concurrent goals ({MAX_CONCURRENT_GOALS}) reached");
         }
         let py = goal.py();
         let array_data = pyarrow_to_array_data(&goal)?;
         let timeout = timeout_or(timeout_s, ACTION_GOAL_TIMEOUT_S);
         let goal_type_info = self.goal_type_info.clone();
-        let (goal_id, resp) = py.detach(|| {
+        let (goal_id, accepted) = py.detach(|| {
             let _guard = TypeInfoGuard::serialize(goal_type_info);
-            futures::executor::block_on(async {
-                let send = self.client.async_send_goal(BridgeMessage(Some(array_data)));
-                futures::pin_mut!(send);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(send, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("failed to send action goal: {e:?}"))
+            match &self.client {
+                ActionClientBackend::Dds(client) => futures::executor::block_on(async {
+                    let send = client.async_send_goal(BridgeMessage(Some(array_data)));
+                    futures::pin_mut!(send);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(send, delay).await {
+                        futures::future::Either::Left((r, _)) => r
+                            .map(|(id, response)| (id, response.accepted))
+                            .map_err(|e| eyre!("failed to send action goal: {e:?}")),
+                        futures::future::Either::Right(_) => {
+                            eyre::bail!("action goal send timed out after {timeout:?}")
+                        }
                     }
-                    futures::future::Either::Right(_) => {
-                        eyre::bail!("action goal send timed out after {timeout:?}")
-                    }
+                }),
+                ActionClientBackend::Zenoh(client) => {
+                    let goal_id = ros2_client::action::GoalId::new_random();
+                    let request = serialize_cdr(&ros2_client::action::SendGoalRequest {
+                        goal_id,
+                        goal: BridgeMessage(Some(array_data)),
+                    })?;
+                    let response =
+                        futures::executor::block_on(client.send_goal.call(request, timeout))?;
+                    let response: ros2_client::action::SendGoalResponse =
+                        deserialize_cdr(&response)?;
+                    Ok((goal_id, response.accepted))
                 }
-            })
+            }
         })?;
-        if !resp.accepted {
+        if !accepted {
             return Ok(None);
         }
         let id = goal_id.uuid.to_string();
-        self.goals.insert(id.clone(), goal_id);
-        self.in_flight += 1;
+        self.goals.insert(id.clone(), goal_id)?;
         Ok(Some(id))
     }
 
@@ -1147,20 +1688,36 @@ impl Ros2ActionClient {
         let feedback_type_info = self.feedback_type_info.clone();
         let msg = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(feedback_type_info);
-            futures::executor::block_on(async {
-                // feedback_stream is !Unpin (a FilterMap over async closures);
-                // pin the STREAM so `.next()` (which requires Self: Unpin) works.
-                let s = self.client.feedback_stream(gid);
-                futures::pin_mut!(s);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(s.next(), delay).await {
-                    futures::future::Either::Left((Some(r), _)) => r
-                        .map(|fb| fb.0)
-                        .map_err(|e| eyre!("feedback read error: {e:?}")),
-                    futures::future::Either::Left((None, _)) => Ok(None),
-                    futures::future::Either::Right(_) => Ok(None),
-                }
-            })
+            match &self.client {
+                ActionClientBackend::Dds(client) => futures::executor::block_on(async {
+                    // feedback_stream is !Unpin (a FilterMap over async closures);
+                    // pin the STREAM so `.next()` (which requires Self: Unpin) works.
+                    let s = client.feedback_stream(gid);
+                    futures::pin_mut!(s);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(s.next(), delay).await {
+                        futures::future::Either::Left((Some(r), _)) => r
+                            .map(|fb| fb.0)
+                            .map_err(|e| eyre!("feedback read error: {e:?}")),
+                        futures::future::Either::Left((None, _)) => Ok(None),
+                        futures::future::Either::Right(_) => Ok(None),
+                    }
+                }),
+                ActionClientBackend::Zenoh(client) => futures::executor::block_on(async {
+                    let recv = client.feedback.recv_async();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => {
+                            let (payload, _) = result?;
+                            let message: ros2_client::action::FeedbackMessage<BridgeMessage> =
+                                deserialize_cdr(&payload)?;
+                            Ok(message.feedback.0.filter(|_| message.goal_id == gid))
+                        }
+                        futures::future::Either::Right(_) => Ok(None),
+                    }
+                }),
+            }
         })?;
         match msg {
             Some(data) => Ok(Some(data.to_pyarrow(py)?.unbind())),
@@ -1185,22 +1742,40 @@ impl Ros2ActionClient {
         let result_type_info = self.result_type_info.clone();
         let out = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(result_type_info);
-            futures::executor::block_on(async {
-                let req = self.client.async_request_result(gid);
-                futures::pin_mut!(req);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(req, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map(Some).map_err(|e| eyre!("result error: {e:?}"))
+            match &self.client {
+                ActionClientBackend::Dds(client) => futures::executor::block_on(async {
+                    let req = client.async_request_result(gid);
+                    futures::pin_mut!(req);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(req, delay).await {
+                        futures::future::Either::Left((r, _)) => {
+                            r.map(Some).map_err(|e| eyre!("result error: {e:?}"))
+                        }
+                        futures::future::Either::Right(_) => Ok(None),
                     }
-                    futures::future::Either::Right(_) => Ok(None),
+                }),
+                ActionClientBackend::Zenoh(client) => {
+                    let request =
+                        serialize_cdr(&ros2_client::action::GetResultRequest { goal_id: gid })?;
+                    let response =
+                        futures::executor::block_on(client.get_result.call(request, timeout));
+                    match response {
+                        Ok(payload) => {
+                            let response: ros2_client::action::GetResultResponse<BridgeMessage> =
+                                deserialize_cdr(&payload)?;
+                            Ok(Some((response.status, response.result)))
+                        }
+                        Err(dora_ros2_bridge::transport::zenoh::service::ServiceError::Timeout) => {
+                            Ok(None)
+                        }
+                        Err(error) => Err(error.into()),
+                    }
                 }
-            })
+            }
         })?;
         match out {
             Some((status, msg)) => {
-                self.goals.remove(goal_id);
-                self.in_flight = self.in_flight.saturating_sub(1);
+                self.goals.remove(&goal_id.to_owned());
                 let status_str = status_enum_to_str(status);
                 let data = msg.0.context("action result contained no data")?;
                 Ok(Some((status_str, data.to_pyarrow(py)?.unbind())))
@@ -1227,9 +1802,9 @@ impl Ros2ActionClient {
             None => ros2_client::action::GoalId::ZERO,
         };
         let stamp = ros2_client::builtin_interfaces::Time::ZERO;
-        let code = py.detach(|| {
-            futures::executor::block_on(async {
-                let fut = self.client.async_cancel_goal(gid, stamp);
+        let code = py.detach(|| match &self.client {
+            ActionClientBackend::Dds(client) => futures::executor::block_on(async {
+                let fut = client.async_cancel_goal(gid, stamp);
                 futures::pin_mut!(fut);
                 let delay = futures_timer::Delay::new(timeout);
                 match futures::future::select(fut, delay).await {
@@ -1238,16 +1813,29 @@ impl Ros2ActionClient {
                         .map_err(|e| eyre!("cancel error: {e:?}")),
                     futures::future::Either::Right(_) => eyre::bail!("cancel timed out"),
                 }
-            })
+            }),
+            ActionClientBackend::Zenoh(client) => {
+                #[derive(serde::Serialize)]
+                struct CancelRequest {
+                    goal_info: ros2_client::action::GoalInfo,
+                }
+                let request = serialize_cdr(&CancelRequest {
+                    goal_info: ros2_client::action::GoalInfo {
+                        goal_id: gid,
+                        stamp,
+                    },
+                })?;
+                let response =
+                    futures::executor::block_on(client.cancel_goal.call(request, timeout))?;
+                let response: ros2_client::action::CancelGoalResponse = deserialize_cdr(&response)?;
+                Ok(response.return_code as i8)
+            }
         })?;
         match goal_id {
             Some(s) => {
-                if self.goals.remove(s).is_some() {
-                    self.in_flight = self.in_flight.saturating_sub(1);
-                }
+                self.goals.remove(&s.to_owned());
             }
             None => {
-                self.in_flight = self.in_flight.saturating_sub(self.goals.len());
                 self.goals.clear();
             }
         }
@@ -1257,9 +1845,6 @@ impl Ros2ActionClient {
 
 #[pymethods]
 impl Ros2ActionServer {
-    // SPIKE: server block_on borrow proof — receive_new_goal/accept_goal/
-    // start_executing_goal all borrow &self.server inside one block_on on a
-    // &mut self method. (Trimmed: abort + cap-eviction tail omitted for the spike.)
     #[pyo3(signature = (timeout_s=None))]
     pub fn take_goal(
         &mut self,
@@ -1268,85 +1853,112 @@ impl Ros2ActionServer {
     ) -> eyre::Result<Option<(String, Py<PyAny>)>> {
         let timeout = timeout_or(timeout_s, 1.0);
         let goal_type_info = self.goal_type_info.clone();
-        let taken = py.detach(|| {
+        let taken: Option<(PythonServerGoal, ArrayData)> = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(goal_type_info);
-            futures::executor::block_on(async {
-                let recv = self.server.receive_new_goal();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                let handle = match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("receive_new_goal: {e:?}"))?
-                    }
-                    futures::future::Either::Right(_) => return Ok(None),
-                };
-                // handles are Clone (not Copy: BridgeMessage isn't Copy) and the
-                // FSM methods consume by value, so clone to read the payload
-                // before accepting consumes the NewGoalHandle.
-                let data = self.server.get_new_goal(handle.clone());
-                let accepted = self
-                    .server
-                    .accept_goal(handle)
-                    .await
-                    .map_err(|e| eyre!("accept_goal: {e:?}"))?;
-                let executing = self
-                    .server
-                    .start_executing_goal(accepted)
-                    .await
-                    .map_err(|e| eyre!("start_executing_goal: {e:?}"))?;
-                Ok::<_, eyre::Report>(Some((executing, data)))
-            })
+            match &self.server {
+                ActionServerBackend::Dds(server) => futures::executor::block_on(async {
+                    let recv = server.receive_new_goal();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let handle = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => {
+                            result.map_err(|error| eyre!("receive_new_goal: {error:?}"))?
+                        }
+                        futures::future::Either::Right(_) => {
+                            return Ok::<_, eyre::Report>(None);
+                        }
+                    };
+                    let data = server.get_new_goal(handle.clone());
+                    let accepted = server
+                        .accept_goal(handle)
+                        .await
+                        .map_err(|error| eyre!("accept_goal: {error:?}"))?;
+                    let executing = server
+                        .start_executing_goal(accepted)
+                        .await
+                        .map_err(|error| eyre!("start_executing_goal: {error:?}"))?;
+                    Ok(data
+                        .and_then(|message| message.0)
+                        .map(|data| (PythonServerGoal::Dds(executing, Instant::now()), data)))
+                }),
+                ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
+                    let recv = server.send_goal.recv();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    let request = match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => result?,
+                        futures::future::Either::Right(_) => {
+                            return Ok::<_, eyre::Report>(None);
+                        }
+                    };
+                    let decoded: ros2_client::action::SendGoalRequest<BridgeMessage> =
+                        deserialize_cdr(&request.payload)?;
+                    let accepted =
+                        self.executing.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
+                    let response = serialize_cdr(&ros2_client::action::SendGoalResponse {
+                        accepted,
+                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
+                    })?;
+                    server.send_goal.reply(request.id, &response).await?;
+                    Ok(decoded.goal.0.filter(|_| accepted).map(|data| {
+                        (
+                            PythonServerGoal::Zenoh(decoded.goal_id, Instant::now()),
+                            data,
+                        )
+                    }))
+                }),
+            }
         })?;
-        let Some((executing, data)) = taken else {
+        let Some((executing, arr)) = taken else {
             return Ok(None);
         };
-        let goal_id = executing.goal_id().uuid.to_string();
-        // No payload: drop the handle (don't track it). The goal dangles on the
-        // wire; we can't send a meaningful terminal result without a payload.
-        let Some(arr) = data.and_then(|m| m.0) else {
-            return Ok(None);
+        let goal_id = match &executing {
+            PythonServerGoal::Dds(handle, _) => handle.goal_id().uuid.to_string(),
+            PythonServerGoal::Zenoh(id, _) => id.uuid.to_string(),
         };
-        // Leak guard: bound the local map by dropping the oldest tracked goal
-        // when at cap. We do NOT send a wire abort — there is no valid empty
-        // result to serialize, and waiting on a client that may never request
-        // the result would stall the node. The dropped goal dangles on the wire
-        // (best effort); single-goal usage never reaches the cap.
-        let now = Instant::now();
         while self.executing.len() >= MAX_CONCURRENT_GOALS {
             let Some(oldest) = self
                 .executing
                 .iter()
-                .min_by_key(|(_, (_, t))| *t)
+                .min_by_key(|(_, goal)| goal.created())
                 .map(|(k, _)| k.clone())
             else {
                 break;
             };
             self.executing.remove(&oldest);
         }
-        self.executing.insert(goal_id.clone(), (executing, now));
+        self.executing.insert(goal_id.clone(), executing)?;
+        publish_python_zenoh_status(&self.server, &self.executing)?;
         Ok(Some((goal_id, arr.to_pyarrow(py)?.unbind())))
     }
 
-    // SPIKE: &self block_on borrow — publish_feedback borrows &self.server.
     pub fn send_feedback(&self, goal_id: &str, feedback: Bound<'_, PyAny>) -> eyre::Result<()> {
         let py = feedback.py();
-        // ExecutingGoalHandle<BridgeMessage> is Clone (not Copy) and
-        // publish_feedback consumes it; clone to keep the goal in the map.
-        let handle = self
+        let goal = self
             .executing
             .get(goal_id)
-            .with_context(|| format!("unknown/finished goal {goal_id}"))?
-            .0
-            .clone();
+            .with_context(|| format!("unknown/finished goal {goal_id}"))?;
         let array_data = pyarrow_to_array_data(&feedback)?;
         let feedback_type_info = self.feedback_type_info.clone();
         py.detach(|| {
             let _guard = TypeInfoGuard::serialize(feedback_type_info);
-            futures::executor::block_on(
-                self.server
-                    .publish_feedback(handle, BridgeMessage(Some(array_data))),
-            )
-            .map_err(|e| eyre!("publish_feedback: {e:?}"))
+            match (&self.server, goal) {
+                (ActionServerBackend::Dds(server), PythonServerGoal::Dds(handle, _)) => {
+                    futures::executor::block_on(
+                        server.publish_feedback(handle.clone(), BridgeMessage(Some(array_data))),
+                    )
+                    .map_err(|error| eyre!("publish_feedback: {error:?}"))
+                }
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                    let payload = serialize_cdr(&ros2_client::action::FeedbackMessage {
+                        goal_id: *id,
+                        feedback: BridgeMessage(Some(array_data)),
+                    })?;
+                    futures::executor::block_on(server.feedback.publish(&payload))?;
+                    Ok(())
+                }
+                _ => eyre::bail!("action goal belongs to a different transport"),
+            }
         })?;
         Ok(())
     }
@@ -1362,41 +1974,69 @@ impl Ros2ActionServer {
         timeout_s: Option<f64>,
     ) -> eyre::Result<()> {
         let py = result.py();
-        // Clone the handle but keep the goal tracked: send_result_response does
-        // not resolve until the client requests the result, so on a timeout (or
-        // serialize/send error) we must leave the goal in `executing` so the
-        // caller can retry. We only retire it after the send succeeds.
-        let handle = self
+        let goal = self
             .executing
             .get(goal_id)
-            .with_context(|| format!("unknown/finished goal {goal_id}"))?
-            .0
-            .clone();
+            .with_context(|| format!("unknown/finished goal {goal_id}"))?;
         let end = map_status(status);
         let array_data = pyarrow_to_array_data(&result)?;
         let timeout = timeout_or(timeout_s, ACTION_RESULT_TIMEOUT_S);
         let result_type_info = self.result_type_info.clone();
         py.detach(|| {
             let _guard = TypeInfoGuard::serialize(result_type_info);
-            futures::executor::block_on(async {
-                let send =
-                    self.server
-                        .send_result_response(handle, end, BridgeMessage(Some(array_data)));
-                futures::pin_mut!(send);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(send, delay).await {
-                    futures::future::Either::Left((r, _)) => {
-                        r.map_err(|e| eyre!("send_result_response: {e:?}"))
-                    }
-                    futures::future::Either::Right(_) => {
-                        eyre::bail!("send_result timed out after {timeout:?}")
-                    }
+            match (&self.server, goal) {
+                (ActionServerBackend::Dds(server), PythonServerGoal::Dds(handle, _)) => {
+                    futures::executor::block_on(async {
+                        let send = server.send_result_response(
+                            handle.clone(),
+                            end,
+                            BridgeMessage(Some(array_data)),
+                        );
+                        futures::pin_mut!(send);
+                        let delay = futures_timer::Delay::new(timeout);
+                        match futures::future::select(send, delay).await {
+                            futures::future::Either::Left((result, _)) => {
+                                result.map_err(|error| eyre!("send_result_response: {error:?}"))
+                            }
+                            futures::future::Either::Right(_) => {
+                                eyre::bail!("send_result timed out after {timeout:?}")
+                            }
+                        }
+                    })
                 }
-            })
+                (ActionServerBackend::Zenoh(server), PythonServerGoal::Zenoh(id, _)) => {
+                    let status = end_status_to_status(end);
+                    let response = serialize_cdr(&ros2_client::action::GetResultResponse {
+                        status,
+                        result: BridgeMessage(Some(array_data)),
+                    })?;
+                    let request_id = self
+                        .pending_result_requests
+                        .remove(goal_id)
+                        .or_else(|| {
+                            let receiver = self.zenoh_result_requests.as_ref()?;
+                            let deadline = Instant::now() + timeout;
+                            loop {
+                                let remaining = deadline.checked_duration_since(Instant::now())?;
+                                let request = receiver.recv_timeout(remaining).ok()?;
+                                let decoded: ros2_client::action::GetResultRequest =
+                                    deserialize_cdr(&request.payload).ok()?;
+                                let key = decoded.goal_id.uuid.to_string();
+                                if decoded.goal_id == *id {
+                                    return Some(request.id);
+                                }
+                                self.pending_result_requests.insert(key, request.id);
+                            }
+                        })
+                        .context("get-result request timed out")?;
+                    futures::executor::block_on(server.get_result.reply(request_id, &response))?;
+                    Ok(())
+                }
+                _ => eyre::bail!("action goal belongs to a different transport"),
+            }
         })?;
-        // Success: retire the goal. On any error/timeout above, the `?` returns
-        // early and the goal stays in `executing` for a retry.
         self.executing.remove(goal_id);
+        publish_python_zenoh_status(&self.server, &self.executing)?;
         Ok(())
     }
 
@@ -1409,9 +2049,9 @@ impl Ros2ActionServer {
         timeout_s: Option<f64>,
     ) -> eyre::Result<Option<Vec<String>>> {
         let timeout = timeout_or(timeout_s, 1.0);
-        py.detach(|| {
-            futures::executor::block_on(async {
-                let recv = self.server.receive_cancel_request();
+        py.detach(|| match &self.server {
+            ActionServerBackend::Dds(server) => futures::executor::block_on(async {
+                let recv = server.receive_cancel_request();
                 futures::pin_mut!(recv);
                 let delay = futures_timer::Delay::new(timeout);
                 let cancel_handle = match futures::future::select(recv, delay).await {
@@ -1421,7 +2061,7 @@ impl Ros2ActionServer {
                     futures::future::Either::Right(_) => return Ok(None),
                 };
                 let goals: Vec<_> = cancel_handle.goals().collect();
-                self.server
+                server
                     .respond_to_cancel_requests(&cancel_handle, goals.iter().copied())
                     .await
                     .map_err(|e| eyre!("respond_to_cancel_requests: {e:?}"))?;
@@ -1431,9 +2071,101 @@ impl Ros2ActionServer {
                     .filter(|s| self.executing.contains_key(s))
                     .collect();
                 Ok(Some(mine))
-            })
+            }),
+            ActionServerBackend::Zenoh(server) => futures::executor::block_on(async {
+                let recv = server.cancel_goal.recv();
+                futures::pin_mut!(recv);
+                let delay = futures_timer::Delay::new(timeout);
+                let request = match futures::future::select(recv, delay).await {
+                    futures::future::Either::Left((result, _)) => result?,
+                    futures::future::Either::Right(_) => return Ok(None),
+                };
+                #[derive(serde::Deserialize)]
+                struct CancelRequest {
+                    goal_info: ros2_client::action::GoalInfo,
+                }
+                let decoded: CancelRequest = deserialize_cdr(&request.payload)?;
+                let requested = decoded.goal_info.goal_id.uuid;
+                let mine: Vec<String> = self
+                    .executing
+                    .iter()
+                    .filter_map(|(key, goal)| match goal {
+                        PythonServerGoal::Zenoh(id, _)
+                            if requested.is_nil() || id.uuid == requested =>
+                        {
+                            Some(key.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let goals_canceling = mine
+                    .iter()
+                    .filter_map(|key| match self.executing.get(key) {
+                        Some(PythonServerGoal::Zenoh(id, _)) => {
+                            Some(ros2_client::action::GoalInfo {
+                                goal_id: *id,
+                                stamp: ros2_client::builtin_interfaces::Time::ZERO,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let response = ros2_client::action::CancelGoalResponse {
+                    return_code: if mine.is_empty() {
+                        ros2_client::action_msgs::CancelGoalResponseEnum::UnknownGoal
+                    } else {
+                        ros2_client::action_msgs::CancelGoalResponseEnum::None
+                    },
+                    goals_canceling,
+                };
+                server
+                    .cancel_goal
+                    .reply(request.id, &serialize_cdr(&response)?)
+                    .await?;
+                Ok(Some(mine))
+            }),
         })
     }
+}
+
+fn end_status_to_status(
+    status: ros2_client::action::GoalEndStatus,
+) -> ros2_client::action::GoalStatusEnum {
+    match status {
+        ros2_client::action::GoalEndStatus::Succeeded => {
+            ros2_client::action::GoalStatusEnum::Succeeded
+        }
+        ros2_client::action::GoalEndStatus::Canceled => {
+            ros2_client::action::GoalStatusEnum::Canceled
+        }
+        ros2_client::action::GoalEndStatus::Aborted => ros2_client::action::GoalStatusEnum::Aborted,
+    }
+}
+
+fn publish_python_zenoh_status(
+    server: &ActionServerBackend,
+    goals: &GoalSlots<String, PythonServerGoal>,
+) -> eyre::Result<()> {
+    let ActionServerBackend::Zenoh(server) = server else {
+        return Ok(());
+    };
+    let status = ros2_client::action_msgs::GoalStatusArray {
+        status_list: goals
+            .iter()
+            .filter_map(|(_, goal)| match goal {
+                PythonServerGoal::Zenoh(id, _) => Some(ros2_client::action_msgs::GoalStatus {
+                    goal_info: ros2_client::action::GoalInfo {
+                        goal_id: *id,
+                        stamp: ros2_client::builtin_interfaces::Time::ZERO,
+                    },
+                    status: ros2_client::action::GoalStatusEnum::Executing,
+                }),
+                _ => None,
+            })
+            .collect(),
+    };
+    futures::executor::block_on(server.status.publish(&serialize_cdr(&status)?))?;
+    Ok(())
 }
 
 /// Convert an optional `timeout_s` (seconds) from Python into a `Duration`,
@@ -1473,9 +2205,14 @@ fn map_status(status: Option<&str>) -> ros2_client::action::GoalEndStatus {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2ServiceClient {
-    client: ros2_client::Client<BridgeServiceType>,
+    client: ServiceClientBackend,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
+}
+
+enum ServiceClientBackend {
+    Dds(Box<ros2_client::Client<BridgeServiceType>>),
+    Zenoh(NodeServiceClient),
 }
 
 #[pymethods]
@@ -1500,9 +2237,25 @@ impl Ros2ServiceClient {
 
         // Serialize the request under the request TypeInfo (guard clears the
         // thread-local on drop).
+        if let ServiceClientBackend::Zenoh(client) = &self.client {
+            let request_value = make_array(array_data.clone());
+            let request = serialize_raw_cdr(&TypedValue {
+                value: &request_value,
+                type_info: &self.request_type_info,
+            })?;
+            let timeout = timeout_or(timeout_s, 30.0);
+            let response =
+                py.detach(|| futures::executor::block_on(client.call(request, timeout)))?;
+            let data =
+                deserialize_raw_cdr(&response, self.response_type_info.clone(), 64 * 1024 * 1024)?;
+            return Ok(data.to_pyarrow(py)?.unbind());
+        }
+        let ServiceClientBackend::Dds(client) = &self.client else {
+            unreachable!()
+        };
         let req_id = {
             let _guard = TypeInfoGuard::serialize(self.request_type_info.clone());
-            self.client
+            client
                 .send_request(BridgeMessage(Some(array_data)))
                 .map_err(|e| eyre!("failed to send service request: {e:?}"))?
         };
@@ -1516,7 +2269,7 @@ impl Ros2ServiceClient {
         let response = py.detach(|| {
             let _guard = TypeInfoGuard::deserialize(response_type_info);
             futures::executor::block_on(async {
-                let recv = self.client.async_receive_response(req_id);
+                let recv = client.async_receive_response(req_id);
                 futures::pin_mut!(recv);
                 let delay = futures_timer::Delay::new(timeout);
                 match futures::future::select(recv, delay).await {
@@ -1543,15 +2296,25 @@ impl Ros2ServiceClient {
 #[pyclass]
 #[non_exhaustive]
 pub struct Ros2ServiceServer {
-    server: ros2_client::Server<BridgeServiceType>,
+    server: ServiceServerBackend,
     request_type_info: TypeInfo<'static>,
     response_type_info: TypeInfo<'static>,
     // Maps the integer id handed to Python back to the ROS2 request id (plus the
     // time it was taken), so `send_response` can reply to the correct (possibly
     // out-of-order) request. The insertion time bounds the map: stale entries
     // from requests that never got a response are evicted in `take_request`.
-    pending: HashMap<u64, (ros2_client::service::RmwRequestId, Instant)>,
+    pending: HashMap<u64, (PendingServiceRequest, Instant)>,
     next_id: u64,
+}
+
+enum ServiceServerBackend {
+    Dds(Box<ros2_client::Server<BridgeServiceType>>),
+    Zenoh(NodeServiceServer),
+}
+
+enum PendingServiceRequest {
+    Dds(ros2_client::service::RmwRequestId),
+    Zenoh(dora_ros2_bridge::transport::RequestId),
 }
 
 #[pymethods]
@@ -1575,25 +2338,48 @@ impl Ros2ServiceServer {
         // thread-local on drop). Mirrors the daemon's `run_service_server`.
         // Release the GIL while waiting so other Python threads can run.
         let request_type_info = self.request_type_info.clone();
-        let received = py.detach(|| {
-            let _guard = TypeInfoGuard::deserialize(request_type_info);
-            futures::executor::block_on(async {
-                let recv = self.server.async_receive_request();
-                futures::pin_mut!(recv);
-                let delay = futures_timer::Delay::new(timeout);
-                match futures::future::select(recv, delay).await {
-                    futures::future::Either::Left((result, _)) => result
-                        .map(Some)
-                        .map_err(|e| eyre!("failed to receive service request: {e:?}")),
-                    futures::future::Either::Right(_) => Ok(None),
-                }
-            })
-        })?;
-
-        let Some((rmw_id, message)) = received else {
-            return Ok(None);
+        let received: Option<(PendingServiceRequest, ArrayData)> = match &self.server {
+            ServiceServerBackend::Dds(server) => py.detach(|| {
+                let _guard = TypeInfoGuard::deserialize(request_type_info);
+                futures::executor::block_on(async {
+                    let recv = server.async_receive_request();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => result
+                            .map(|(id, message)| {
+                                message.0.map(|data| (PendingServiceRequest::Dds(id), data))
+                            })
+                            .map_err(|e| eyre!("failed to receive service request: {e:?}")),
+                        futures::future::Either::Right(_) => Ok(None),
+                    }
+                })
+            })?,
+            ServiceServerBackend::Zenoh(server) => py.detach(|| {
+                futures::executor::block_on(async {
+                    let recv = server.recv();
+                    futures::pin_mut!(recv);
+                    let delay = futures_timer::Delay::new(timeout);
+                    match futures::future::select(recv, delay).await {
+                        futures::future::Either::Left((result, _)) => {
+                            let request = result?;
+                            let data = deserialize_raw_cdr(
+                                &request.payload,
+                                request_type_info,
+                                64 * 1024 * 1024,
+                            )?;
+                            Ok::<_, eyre::Report>(Some((
+                                PendingServiceRequest::Zenoh(request.id),
+                                data,
+                            )))
+                        }
+                        futures::future::Either::Right(_) => Ok(None),
+                    }
+                })
+            })?,
         };
-        let Some(data) = message.0 else {
+
+        let Some((request_id, data)) = received else {
             return Ok(None);
         };
 
@@ -1618,7 +2404,7 @@ impl Ros2ServiceServer {
 
         let id = self.next_id;
         self.next_id = self.next_id.wrapping_add(1);
-        self.pending.insert(id, (rmw_id, now));
+        self.pending.insert(id, (request_id, now));
         Ok(Some((id, data.to_pyarrow(py)?.unbind())))
     }
 
@@ -1633,7 +2419,7 @@ impl Ros2ServiceServer {
         response: Bound<'_, PyAny>,
     ) -> eyre::Result<()> {
         let py = response.py();
-        let (rmw_id, _taken) = self.pending.remove(&request_id).with_context(|| {
+        let (transport_id, _taken) = self.pending.remove(&request_id).with_context(|| {
             format!("unknown request_id {request_id} (already answered or never taken)")
         })?;
         let array_data = pyarrow_to_array_data(&response)?;
@@ -1641,24 +2427,36 @@ impl Ros2ServiceServer {
         // Release the GIL while sending; bound the send with a timeout so a
         // congested transport can't freeze the Python thread indefinitely.
         let response_type_info = self.response_type_info.clone();
-        py.detach(|| {
-            let _guard = TypeInfoGuard::serialize(response_type_info);
-            futures::executor::block_on(async {
-                let send = self
-                    .server
-                    .async_send_response(rmw_id, BridgeMessage(Some(array_data)));
-                futures::pin_mut!(send);
-                let delay = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
-                match futures::future::select(send, delay).await {
-                    futures::future::Either::Left((result, _)) => {
-                        result.map_err(|e| eyre!("failed to send service response: {e:?}"))
-                    }
-                    futures::future::Either::Right(_) => {
-                        eyre::bail!("service response send timed out")
-                    }
-                }
-            })
-        })?;
+        match (&self.server, transport_id) {
+            (ServiceServerBackend::Dds(server), PendingServiceRequest::Dds(rmw_id)) => {
+                py.detach(|| {
+                    let _guard = TypeInfoGuard::serialize(response_type_info);
+                    futures::executor::block_on(async {
+                        let send =
+                            server.async_send_response(rmw_id, BridgeMessage(Some(array_data)));
+                        futures::pin_mut!(send);
+                        let delay = futures_timer::Delay::new(SERVICE_RESPONSE_TIMEOUT);
+                        match futures::future::select(send, delay).await {
+                            futures::future::Either::Left((result, _)) => {
+                                result.map_err(|e| eyre!("failed to send service response: {e:?}"))
+                            }
+                            futures::future::Either::Right(_) => {
+                                eyre::bail!("service response send timed out")
+                            }
+                        }
+                    })
+                })?
+            }
+            (ServiceServerBackend::Zenoh(server), PendingServiceRequest::Zenoh(id)) => {
+                let response_value = make_array(array_data);
+                let payload = serialize_raw_cdr(&TypedValue {
+                    value: &response_value,
+                    type_info: &response_type_info,
+                })?;
+                py.detach(|| futures::executor::block_on(server.reply(id, &payload)))?;
+            }
+            _ => eyre::bail!("service request belongs to a different ROS2 transport"),
+        }
         Ok(())
     }
 }
@@ -1687,6 +2485,7 @@ fn pyarrow_to_array_data(data: &Bound<'_, PyAny>) -> eyre::Result<ArrayData> {
 }
 
 pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<Ros2Transport>()?;
     m.add_class::<Ros2Context>()?;
     m.add_class::<Ros2Node>()?;
     m.add_class::<Ros2NodeOptions>()?;
@@ -1702,4 +2501,34 @@ pub fn create_dora_ros2_bridge_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<qos::Ros2Liveliness>()?;
 
     Ok(())
+}
+
+#[pyo3::pymodule]
+fn dora_ros2_bridge_python(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    create_dora_ros2_bridge_module(m)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::{Ros2NodeOptions, Ros2Transport};
+
+    #[test]
+    fn transport_defaults_and_profiles_are_explicit() {
+        assert_eq!(Ros2Transport::dds().kind(), "dds");
+        assert_eq!(
+            Ros2Transport::zenoh("humble", None).unwrap().kind(),
+            "zenoh"
+        );
+        assert!(Ros2Transport::zenoh("automatic", None).is_err());
+    }
+
+    #[test]
+    fn node_options_do_not_own_transport_configuration() {
+        let options = Ros2NodeOptions::new(Some(true));
+        assert!(options.rosout);
+        assert_eq!(
+            std::mem::size_of::<Ros2NodeOptions>(),
+            std::mem::size_of::<bool>()
+        );
+    }
 }
