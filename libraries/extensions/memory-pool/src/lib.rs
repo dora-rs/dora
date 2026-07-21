@@ -148,11 +148,16 @@ impl MemoryPoolManager {
         id: &MemoryPoolId,
         requested_by: &str,
     ) -> Result<MemoryPoolMetadata, String> {
-        let mut table = self.lock_table();
-
-        let entry = table
-            .remove(id)
-            .ok_or_else(|| "memory pool not found".to_string())?;
+        // Only the table removal needs the lock. Releasing it before the
+        // shared-memory unlink below keeps the `remove_file` syscall out of the
+        // critical section, so concurrent `register`/`read`/`free` calls on
+        // other pools don't serialize behind this pool's filesystem work.
+        let entry = {
+            let mut table = self.lock_table();
+            table
+                .remove(id)
+                .ok_or_else(|| "memory pool not found".to_string())?
+        };
 
         if entry.registered_by != requested_by {
             tracing::debug!(
@@ -263,19 +268,26 @@ impl MemoryPoolManager {
             }
         }
 
-        if unreleased_count > 0 {
-            tracing::info!(
-                "Successfully released {} unreleased memory pools!",
-                unreleased_count
-            );
-        }
+        let released_count = unreleased_count - errors.len();
 
         if errors.is_empty() {
+            if unreleased_count > 0 {
+                tracing::info!(
+                    "Successfully released {} unreleased memory pools!",
+                    released_count
+                );
+            }
             Ok(CleanupSummary {
                 unreleased_count,
-                released_count: unreleased_count,
+                released_count,
             })
         } else {
+            tracing::warn!(
+                "Released {} of {} unreleased memory pools; {} failed",
+                released_count,
+                unreleased_count,
+                errors.len()
+            );
             Err(errors)
         }
     }
@@ -376,6 +388,37 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_frees_across_pools_all_succeed() {
+        // `free_memory_pool` only holds the table lock for the removal, not
+        // across the shared-memory unlink. Frees on distinct pools must proceed
+        // independently and leave the table empty. Metadata carries no backing
+        // segment (`shared_memory_name: None`) so the test stays cross-platform.
+        let mgr = MemoryPoolManager::new();
+        let n = 16;
+        for i in 0..n {
+            mgr.register_memory_pool(
+                make_id(&format!("pool-{i}")),
+                make_metadata(),
+                "node_a".into(),
+            )
+            .unwrap();
+        }
+
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let mgr = mgr.clone();
+                std::thread::spawn(move || {
+                    mgr.free_memory_pool(&make_id(&format!("pool-{i}")), "node_b")
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().expect("free should succeed");
+        }
+        assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
     fn cleanup_all_tracks_counts() {
         let mgr = MemoryPoolManager::new();
 
@@ -390,7 +433,29 @@ mod tests {
 
         let summary = mgr.cleanup_all().unwrap();
         assert_eq!(summary.unreleased_count, 3);
+        assert_eq!(summary.released_count, 3);
         assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn cleanup_all_reports_partial_release_on_failure() {
+        let mgr = MemoryPoolManager::new();
+
+        // One entry frees cleanly (no backing shmem name)...
+        mgr.register_memory_pool(make_id("ok"), make_metadata(), "node_a".into())
+            .unwrap();
+        // ...and one whose shared_memory_name fails the `dora_pool_` validation
+        // in `free_shared_memory`, so its release errors.
+        let mut bad_meta = make_metadata();
+        bad_meta.shared_memory_name = Some("invalid_name".to_string());
+        mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into())
+            .unwrap();
+
+        // cleanup_all must surface the failure (rather than silently claiming
+        // "Successfully released") and still drain every entry from the table.
+        let errors = mgr.cleanup_all().unwrap_err();
+        assert_eq!(errors.len(), 1, "exactly one free should have failed");
+        assert_eq!(mgr.table_size(), 0, "all entries must be removed");
     }
 
     #[test]

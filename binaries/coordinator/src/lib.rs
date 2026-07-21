@@ -2196,32 +2196,47 @@ async fn start_inner(
                         .await;
                 }
             }
-            Event::DaemonExit { daemon_id } => {
-                tracing::info!("Daemon `{daemon_id}` exited");
-                daemon_connections.remove(&daemon_id);
-                if let Err(e) = store.unregister_daemon(&daemon_id) {
-                    tracing::warn!("failed to persist daemon unregistration: {e}");
+            Event::DaemonExit {
+                daemon_id,
+                connection_id,
+            } => {
+                // Only act on the exit if the connection_id matches the
+                // currently-registered connection. A named daemon that
+                // reconnects before the old connection's handler task
+                // delivers its DaemonExit must NOT evict the new connection
+                // or trigger spurious dataflow cleanup (#2392).
+                if daemon_connections.connection_id_of(&daemon_id) == Some(connection_id) {
+                    tracing::info!("Daemon `{daemon_id}` exited");
+                    daemon_connections.remove(&daemon_id);
+                    if let Err(e) = store.unregister_daemon(&daemon_id) {
+                        tracing::warn!("failed to persist daemon unregistration: {e}");
+                    }
+                    let disconnected = BTreeSet::from([daemon_id]);
+                    let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
+                        &mut running_dataflows,
+                        &disconnected,
+                        &mut pending_restarts,
+                    );
+                    apply_disconnect_actions(
+                        disconnect_actions,
+                        &mut running_dataflows,
+                        &mut daemon_connections,
+                        &store,
+                        &clock,
+                    )
+                    .await?;
+                    notify_daemons_about_disconnected_peers(
+                        &disconnected,
+                        &mut daemon_connections,
+                        &clock,
+                    )
+                    .await?;
+                } else {
+                    tracing::debug!(
+                        "ignoring stale DaemonExit for `{daemon_id}` \
+                         (connection replaced by reconnect)"
+                    );
                 }
-                let disconnected = BTreeSet::from([daemon_id]);
-                let disconnect_actions = cleanup_disconnected_daemons_from_running_dataflows(
-                    &mut running_dataflows,
-                    &disconnected,
-                    &mut pending_restarts,
-                );
-                apply_disconnect_actions(
-                    disconnect_actions,
-                    &mut running_dataflows,
-                    &mut daemon_connections,
-                    &store,
-                    &clock,
-                )
-                .await?;
-                notify_daemons_about_disconnected_peers(
-                    &disconnected,
-                    &mut daemon_connections,
-                    &clock,
-                )
-                .await?;
             }
             Event::NodeMetrics {
                 dataflow_id,
@@ -2747,16 +2762,6 @@ async fn start_inner(
                         // isn't swept on the next tick.
                         dataflow.node_stopped_at.remove(&node_id);
                     }
-                }
-            }
-            Event::NodeMetricsExpire {
-                dataflow_id,
-                node_id,
-            } => {
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    dataflow.node_metrics.remove(&node_id);
-                    dataflow.node_stopped_at.remove(&node_id);
-                    dataflow.node_finalized.remove(&node_id);
                 }
             }
         }

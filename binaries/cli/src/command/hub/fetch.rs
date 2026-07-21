@@ -225,7 +225,7 @@ fn clone_pinned(source: &GitSource, target_dir: &std::path::Path) -> eyre::Resul
     run_git_in(&dest, &["checkout", "--quiet", &source.commit_hash])
         .with_context(|| format!("failed to checkout `{}`", source.commit_hash))?;
     let _ = std::fs::write(&marker, b"");
-    println!("  {} @ {}", source.repo, &source.commit_hash);
+    println!("  {} @ {}", source.repo, source.commit_hash);
     Ok(())
 }
 

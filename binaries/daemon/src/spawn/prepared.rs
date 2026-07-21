@@ -18,13 +18,9 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{
-    Metadata,
-    arrow::array::ArrayData,
-    arrow_utils::{copy_array_into_sample, required_data_size},
-};
+use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
-use process_wrap::tokio::TokioCommandWrap;
+use process_wrap::tokio::CommandWrap;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -35,9 +31,32 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
+
+/// Encode `array` as a self-describing Arrow IPC stream into a 128-byte-aligned
+/// daemon `DataMessage`, paired with metadata carrying the `arrow-ipc` framing
+/// parameter (so the node-side receive path decodes it). Returns `None` if
+/// encoding fails (logged by the caller).
+fn ipc_log_payload(
+    array: &ArrayData,
+    clock: &dora_core::uhlc::HLC,
+) -> Option<(DataMessage, Metadata)> {
+    let ipc_bytes = encode_arrow_ipc(array)
+        .map_err(|e| tracing::warn!("failed to Arrow-IPC-encode log output: {e}"))
+        .ok()?;
+    let sample: AVec<u8, ConstAlign<128>> = AVec::from_slice(128, &ipc_bytes);
+    let mut params = dora_message::metadata::MetadataParameters::new();
+    params.insert(
+        dora_message::metadata::FRAMING.to_string(),
+        dora_message::metadata::Parameter::String(
+            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+        ),
+    );
+    let metadata = Metadata::from_parameters(clock.new_timestamp(), params);
+    Some((DataMessage::Vec(sample), metadata))
+}
 
 #[derive(Clone, Copy)]
 enum LogStream {
@@ -67,6 +86,55 @@ fn truncate_log_line(content: &mut String) {
         content.truncate(boundary);
         content.push_str("... [truncated]");
     }
+}
+
+/// Read a single log line from `reader`, buffering at most
+/// `MAX_LOG_LINE_BYTES + 1` bytes into `raw`. Returns `Ok(true)` once the
+/// stream reaches EOF (nothing more to read).
+///
+/// A plain `read_until(b'\n', ..)` is unbounded: a malicious or buggy node
+/// that writes gigabytes without a newline would grow `raw` until the daemon
+/// runs out of memory, defeating [`truncate_log_line`] (which only runs
+/// *after* the whole line is materialized). This caps the read, and if the
+/// line is longer than the cap it discards the remainder (without buffering
+/// it) so the next call starts on a fresh line. The one extra byte lets
+/// `truncate_log_line` observe that truncation happened and append its marker.
+async fn read_capped_line<R>(
+    reader: &mut tokio::io::Take<R>,
+    raw: &mut Vec<u8>,
+) -> std::io::Result<bool>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    const CAP: u64 = MAX_LOG_LINE_BYTES as u64 + 1;
+    reader.set_limit(CAP);
+    let n = reader.read_until(b'\n', raw).await?;
+    if n == 0 {
+        return Ok(true);
+    }
+    // If the cap was reached before a newline, drop the rest of this line so
+    // the daemon never buffers an unbounded amount for a single line. The
+    // remainder is skipped via the reader's own buffer (O(1) extra memory).
+    if reader.limit() == 0 && raw.last() != Some(&b'\n') {
+        reader.set_limit(u64::MAX);
+        loop {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                break; // EOF mid-line
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    reader.consume(pos + 1);
+                    break;
+                }
+                None => {
+                    let len = available.len();
+                    reader.consume(len);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Default)]
@@ -132,6 +200,7 @@ impl PreparedNode {
             },
             last_activity: self.last_activity.clone(),
             health_check_timeout: self.health_check_timeout(),
+            finish_grace_secs: self.finish_grace_secs(),
         };
 
         tokio::spawn(self.restart_loop(
@@ -157,6 +226,15 @@ impl PreparedNode {
         match &self.node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 n.health_check_timeout.map(Duration::from_secs_f64)
+            }
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
+        }
+    }
+
+    fn finish_grace_secs(&self) -> Option<Duration> {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+                n.finish_grace_secs.map(Duration::from_secs_f64)
             }
             dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
@@ -428,7 +506,10 @@ impl PreparedNode {
                 // restart_count=0 (pre-existing bug, first caught by
                 // the restart_recovers_from_failure E2E test).
                 if let Ok(config_yaml) = serde_yaml::to_string(&self.node_config) {
-                    command.set_env("DORA_NODE_CONFIG", &config_yaml);
+                    // Clone and update the command with the new env var
+                    let mut updated_command = command.clone();
+                    updated_command = updated_command.env("DORA_NODE_CONFIG", config_yaml);
+                    *command = updated_command;
                 }
 
                 #[allow(unused_mut)]
@@ -481,8 +562,7 @@ impl PreparedNode {
                     }
                 }
 
-                let mut command =
-                    TokioCommandWrap::from(tokio::process::Command::from(std_command));
+                let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
                 {
@@ -538,34 +618,34 @@ impl PreparedNode {
                 .stdout()
                 .take()
                 .ok_or_else(|| eyre::eyre!("failed to take stdout"))?,
-        );
+        )
+        .take(MAX_LOG_LINE_BYTES as u64);
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         let mut logger_c = logger.try_clone().await?;
         // Stdout listener stream
         tokio::spawn(async move {
-            let mut buffer = String::new();
             let mut finished = false;
             while !finished {
                 let mut raw = Vec::new();
-                finished = match child_stdout
-                    .read_until(b'\n', &mut raw)
+                finished = match read_capped_line(&mut child_stdout, &mut raw)
                     .await
                     .wrap_err_with(|| {
                         format!("failed to read stdout line from spawned node {node_id}")
                     }) {
-                    Ok(0) => true,
-                    Ok(_) => false,
+                    Ok(eof) => eof,
                     Err(err) => {
                         logger_c
                             .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
                             .await;
-                        false
+                        // Stop on a persistent read error instead of looping
+                        // (which would busy-spin and flood the log channel).
+                        true
                     }
                 };
 
-                match String::from_utf8(raw) {
-                    Ok(s) => buffer.push_str(&s),
+                let mut content = match String::from_utf8(raw) {
+                    Ok(s) => s,
                     Err(err) => {
                         let lossy = String::from_utf8_lossy(err.as_bytes());
                         logger_c
@@ -578,11 +658,9 @@ impl PreparedNode {
                                 ),
                             )
                             .await;
-                        buffer.push_str(&lossy)
+                        lossy.into_owned()
                     }
                 };
-
-                let mut content = std::mem::take(&mut buffer);
                 truncate_log_line(&mut content);
                 let sent = stdout_tx
                     .send(LogLine {
@@ -601,32 +679,30 @@ impl PreparedNode {
                 .stderr()
                 .take()
                 .ok_or_else(|| eyre::eyre!("failed to take stderr"))?,
-        );
+        )
+        .take(MAX_LOG_LINE_BYTES as u64);
 
         // Stderr listener stream
         let stderr_tx = tx.clone();
         let node_id = self.node.id.clone();
         let daemon_tx_log = self.daemon_tx.clone();
         tokio::spawn(async move {
-            let mut buffer = String::new();
             let mut finished = false;
             while !finished {
                 let mut raw = Vec::new();
-                finished = match child_stderr
-                    .read_until(b'\n', &mut raw)
+                finished = match read_capped_line(&mut child_stderr, &mut raw)
                     .await
                     .wrap_err_with(|| {
                         format!("failed to read stderr line from spawned node {node_id}")
                     }) {
-                    Ok(0) => true,
-                    Ok(_) => false,
+                    Ok(eof) => eof,
                     Err(err) => {
                         tracing::warn!("{err:?}");
                         true
                     }
                 };
 
-                let new = match String::from_utf8(raw) {
+                let mut content = match String::from_utf8(raw) {
                     Ok(s) => s,
                     Err(err) => {
                         let lossy = String::from_utf8_lossy(err.as_bytes());
@@ -638,12 +714,11 @@ impl PreparedNode {
                     }
                 };
 
-                buffer.push_str(&new);
-
-                self.node_stderr_most_recent.force_push(new);
-
-                let mut content = std::mem::take(&mut buffer);
                 truncate_log_line(&mut content);
+
+                // Store the truncated line in the crash-diagnostics ring buffer
+                // so a single over-long line cannot be retained in full here.
+                self.node_stderr_most_recent.force_push(content.clone());
                 let sent = stderr_tx
                     .send(LogLine {
                         content: content.clone(),
@@ -662,7 +737,7 @@ impl PreparedNode {
         tokio::spawn(async move {
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
-                    status = Box::into_pin(child.wait()) => {
+                    status = child.wait() => {
                         break status.into();
                     }
                     result = op_rx.recv_async() => {
@@ -670,7 +745,7 @@ impl PreparedNode {
                             Ok(op) => op.execute(child.as_mut()),
                             Err(_) => {
                                 // Sender dropped
-                                break Box::into_pin(child.wait()).await.into();
+                                break child.wait().await.into();
                             }
                         }
                     }
@@ -738,36 +813,30 @@ impl PreparedNode {
 
                 // If log is an output, we're sending the logs to the dataflow
                 if let Some(stdout_output_name) = &send_stdout_to {
-                    // Convert logs to DataMessage
+                    // Convert logs to a self-describing Arrow IPC DataMessage.
                     let array = content.as_str().into_arrow();
-
                     let array: ArrayData = array.into();
-                    let total_len = required_data_size(&array);
-                    let mut sample: AVec<u8, ConstAlign<128>> =
-                        AVec::__from_elem(128, 0, total_len);
-
-                    let type_info = copy_array_into_sample(&mut sample, &array);
-
-                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                    let output_id = OutputId(
-                        node_id.clone(),
-                        DataId::from(stdout_output_name.to_string()),
-                    );
-                    let event = DoraEvent::Logs {
-                        dataflow_id,
-                        output_id,
-                        metadata,
-                        message: DataMessage::Vec(sample),
+                    if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
+                        let output_id = OutputId(
+                            node_id.clone(),
+                            DataId::from(stdout_output_name.to_string()),
+                        );
+                        let event = DoraEvent::Logs {
+                            dataflow_id,
+                            output_id,
+                            metadata,
+                            message,
+                        }
+                        .into();
+                        let event = Timestamped {
+                            inner: event,
+                            timestamp: uhlc.new_timestamp(),
+                        };
+                        // Use try_send to avoid blocking the log task when the
+                        // daemon event loop is busy (prevents deadlock chain:
+                        // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
+                        let _ = daemon_tx_log.try_send(event);
                     }
-                    .into();
-                    let event = Timestamped {
-                        inner: event,
-                        timestamp: uhlc.new_timestamp(),
-                    };
-                    // Use try_send to avoid blocking the log task when the
-                    // daemon event loop is busy (prevents deadlock chain:
-                    // daemon_tx full -> log task blocks -> stdout pipe fills -> node blocks).
-                    let _ = daemon_tx_log.try_send(event);
                 }
 
                 let formatted = content.lines().fold(String::default(), |mut output, line| {
@@ -831,25 +900,22 @@ impl PreparedNode {
                 {
                     let array = json.as_str().into_arrow();
                     let array: ArrayData = array.into();
-                    let total_len = required_data_size(&array);
-                    let mut sample: AVec<u8, ConstAlign<128>> =
-                        AVec::__from_elem(128, 0, total_len);
-                    let type_info = copy_array_into_sample(&mut sample, &array);
-                    let metadata = Metadata::new(uhlc.new_timestamp(), type_info);
-                    let output_id =
-                        OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
-                    let event = DoraEvent::Logs {
-                        dataflow_id,
-                        output_id,
-                        metadata,
-                        message: DataMessage::Vec(sample),
+                    if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
+                        let output_id =
+                            OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
+                        let event = DoraEvent::Logs {
+                            dataflow_id,
+                            output_id,
+                            metadata,
+                            message,
+                        }
+                        .into();
+                        let event = Timestamped {
+                            inner: event,
+                            timestamp: uhlc.new_timestamp(),
+                        };
+                        let _ = daemon_tx.try_send(event);
                     }
-                    .into();
-                    let event = Timestamped {
-                        inner: event,
-                        timestamp: uhlc.new_timestamp(),
-                    };
-                    let _ = daemon_tx.try_send(event);
                 }
 
                 // Write JSONL to log file
@@ -970,4 +1036,63 @@ struct NodeProcessFinished {
     // (dora-rs/adora#152). The receiver is now dropped at the end of
     // the spawn_inner task and each restart creates a fresh channel
     // pair.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn read_all_lines(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut reader = tokio::io::BufReader::new(input).take(MAX_LOG_LINE_BYTES as u64);
+        let mut lines = Vec::new();
+        loop {
+            let mut raw = Vec::new();
+            let eof = read_capped_line(&mut reader, &mut raw).await.unwrap();
+            if !raw.is_empty() {
+                lines.push(raw);
+            }
+            if eof {
+                break;
+            }
+        }
+        lines
+    }
+
+    #[tokio::test]
+    async fn reads_plain_lines() {
+        assert_eq!(
+            read_all_lines(b"hello\nworld\n").await,
+            vec![b"hello\n".to_vec(), b"world\n".to_vec()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_final_line_without_newline() {
+        assert_eq!(
+            read_all_lines(b"a\nno-newline").await,
+            vec![b"a\n".to_vec(), b"no-newline".to_vec()]
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_and_discards_overlong_line() {
+        // One line longer than the cap, followed by a normal line.
+        let mut input = vec![b'a'; MAX_LOG_LINE_BYTES + 4096];
+        input.push(b'\n');
+        input.extend_from_slice(b"next\n");
+
+        let lines = read_all_lines(&input).await;
+        assert_eq!(lines.len(), 2, "over-long line must not be split unbounded");
+        // The over-long line is capped: at most MAX_LOG_LINE_BYTES + 1 bytes
+        // are buffered, never the full multi-MB line.
+        assert!(
+            lines[0].len() <= MAX_LOG_LINE_BYTES + 1,
+            "buffered {} bytes, expected <= {}",
+            lines[0].len(),
+            MAX_LOG_LINE_BYTES + 1
+        );
+        // The remainder of the over-long line is discarded, so the next line
+        // is read intact rather than being merged with the overflow.
+        assert_eq!(lines[1], b"next\n".to_vec());
+    }
 }

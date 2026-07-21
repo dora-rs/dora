@@ -71,39 +71,52 @@ jobs:
               fi
           }
 
+          # Topological order: `cargo publish` resolves path deps against
+          # crates.io, so every workspace dep of a crate must be published
+          # before it — including optional deps (dora-ros2-bridge before
+          # dora-node-api-cxx) and dev-deps, which keep their version
+          # requirement when packaged and are resolved by the publish
+          # verify build (dora-daemon and dora-cli before dora-ros2-bridge,
+          # which dev-depends on both). `publish = false` binaries
+          # (dora-record-node, dora-replay-node, dora-ros2-bridge-node —
+          # delivered via the CLI) and the PyPI-only dora-node-api-python
+          # are excluded: `cargo publish` rejects them outright.
+          # Keep in sync with .github/workflows/release.yml.
+
           # the dora-message package is versioned separately, so this publish command might fail if the version is already published
           publish_if_not_exists dora-message
 
           # Publish libraries crates
-          publish_if_not_exists dora-tracing
-          publish_if_not_exists dora-metrics
-          publish_if_not_exists dora-download
-          publish_if_not_exists dora-core
           publish_if_not_exists dora-arrow-convert
           publish_if_not_exists dora-coordinator-store
+          publish_if_not_exists dora-core
           publish_if_not_exists dora-recording
+          publish_if_not_exists dora-download
+          publish_if_not_exists dora-tracing
+          publish_if_not_exists dora-metrics
+          publish_if_not_exists dora-hub-client
+          publish_if_not_exists dora-memory-pool
 
           # Publish rust API
-          publish_if_not_exists dora-operator-api-macros
           publish_if_not_exists dora-operator-api-types
+          publish_if_not_exists dora-operator-api-macros
           publish_if_not_exists dora-operator-api
           publish_if_not_exists dora-node-api
-          publish_if_not_exists dora-node-api-cxx
-          publish_if_not_exists dora-operator-api-cxx
-          publish_if_not_exists dora-operator-api-python
-          publish_if_not_exists dora-operator-api-c
           publish_if_not_exists dora-node-api-c
+          publish_if_not_exists dora-operator-api-c
 
-          # Publish binaries crates
+          # Publish binaries crates (before the ROS2 bridge, whose
+          # dev-deps on dora-daemon/dora-cli must resolve during verify)
           publish_if_not_exists dora-coordinator
-          publish_if_not_exists dora-runtime
           publish_if_not_exists dora-daemon
-          publish_if_not_exists dora-record-node
-          publish_if_not_exists dora-replay-node
+          publish_if_not_exists dora-operator-api-python
+          publish_if_not_exists dora-runtime
           publish_if_not_exists dora-cli
 
-          # Publish ROS2 bridge
+          # Publish ROS2 bridge (before the cxx APIs, which optionally
+          # depend on it via the `ros2-bridge` feature)
           publish_if_not_exists dora-ros2-bridge-msg-gen
           publish_if_not_exists dora-ros2-bridge
+          publish_if_not_exists dora-node-api-cxx
+          publish_if_not_exists dora-operator-api-cxx
           publish_if_not_exists dora-ros2-bridge-arrow
-          publish_if_not_exists dora-ros2-bridge-node

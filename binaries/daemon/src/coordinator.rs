@@ -360,12 +360,12 @@ mod tests {
         );
         // rand == 2*range maps to the maximum (backoff + range).
         assert_eq!(
-            jittered_backoff(backoff, (range_ms * 2) as u64),
+            jittered_backoff(backoff, range_ms * 2),
             Duration::from_millis(base_ms + range_ms)
         );
         // rand == range maps to exactly backoff.
         assert_eq!(
-            jittered_backoff(backoff, range_ms as u64),
+            jittered_backoff(backoff, range_ms),
             Duration::from_millis(base_ms)
         );
     }

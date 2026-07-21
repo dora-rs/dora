@@ -184,7 +184,7 @@ pub(super) async fn path_spawn_command(
                             .log(
                                 LogLevel::Info,
                                 Some("spawner".into()),
-                                format!("spawning: {:?} -u {}", &python, resolved_path.display()),
+                                format!("spawning: {python:?} -u {}", resolved_path.display()),
                             )
                             .await;
 

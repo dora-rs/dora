@@ -5,7 +5,6 @@ use dora_core::{
     descriptor::OperatorConfig,
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_metrics::run_metrics_monitor;
 use dora_node_api::{DoraNode, Event};
 use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
@@ -136,8 +135,28 @@ async fn run(
     mut operator_channels: HashMap<OperatorId, flume::Sender<Event>>,
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
+    // Start the OTLP metrics exporter only when an endpoint is configured, and
+    // spawn it as a background task. `run_metrics_monitor` is an `async fn`, so
+    // its returned future does nothing until polled; previously the future was
+    // bound to a `_meter_provider` local and dropped without ever being awaited
+    // or spawned, so the `metrics` feature silently exported nothing. The future
+    // also never resolves (the process observer runs for the node's lifetime),
+    // so it must be spawned rather than awaited inline. Mirrors the gating and
+    // spawning used by the node API (`apis/rust/node/src/node/mod.rs`).
     #[cfg(feature = "metrics")]
-    let _meter_provider = run_metrics_monitor(config.node_id.to_string());
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+        use dora_metrics::run_metrics_monitor;
+
+        let meter_id = config.node_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = run_metrics_monitor(meter_id)
+                .await
+                .wrap_err("metrics monitor exited unexpectedly")
+            {
+                tracing::warn!("metrics monitor failed: {e:#}");
+            }
+        });
+    }
     init_done
         .await
         .wrap_err("the `init_done` channel was closed unexpectedly")?
@@ -223,15 +242,14 @@ async fn run(
                 }
                 OperatorEvent::Output {
                     output_id,
-                    type_info,
                     parameters,
-                    data,
+                    arrow_array,
                 } => {
                     let output_id = operator_output_id(&operator_id, &output_id);
                     let result;
                     (node, result) = tokio::task::spawn_blocking(move || {
-                        let result =
-                            node.send_output_sample(output_id, type_info, parameters, data);
+                        let array = dora_node_api::arrow::array::make_array(arrow_array);
+                        let result = node.send_output(output_id, parameters, array);
                         (node, result)
                     })
                     .await

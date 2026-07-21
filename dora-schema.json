@@ -150,6 +150,11 @@
           "type": "number",
           "minimum": 0
         },
+        "finish_grace_secs": {
+          "description": "Per-node finish-drain grace period in seconds. Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only. After a node's inputs close, the daemon waits this long for it to finish before the finish-straggler watchdog kills it. Use a larger value for legitimately long-running terminal stages (ML training, large-batch inference, checkpoint writes).",
+          "type": "number",
+          "minimum": 0
+        },
         "operator": {
           "description": "Single operator configuration (shorthand for `operators` with one entry).",
           "$ref": "#/$defs/SingleOperatorDefinition"

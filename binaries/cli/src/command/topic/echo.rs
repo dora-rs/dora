@@ -3,12 +3,8 @@ use std::{ptr::NonNull, sync::Arc, time::SystemTime};
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use dora_message::{
-    common::Timestamped,
-    daemon_to_daemon::InterDaemonEvent,
-    metadata::{ArrowTypeInfo, BufferOffset, Parameter},
-};
-use eyre::eyre;
+use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::Parameter};
+use eyre::{Context, eyre};
 
 use crate::{
     command::{Executable, default_tracing, topic::selector::TopicSelector},
@@ -171,35 +167,17 @@ fn inspect(
                     .as_millis();
 
                 let data_str = if let Some(data) = data {
-                    let ptr = NonNull::new(data.as_ptr() as *mut u8).unwrap();
-                    let len = data.len();
-                    let buffer = unsafe {
-                        arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data))
-                    };
-                    let array = match buffer_into_arrow_array(&buffer, &metadata.type_info) {
-                        Ok(array) => array,
+                    // Every data-plane payload is a self-describing Arrow IPC
+                    // stream; decode and render it (zero-copy when aligned).
+                    match decode_and_render(data, &mut buf) {
+                        // `render_array_json` guarantees the `{"":` prefix and
+                        // `}\n` suffix, so this slice cannot go out of bounds.
+                        Ok(()) => std::str::from_utf8(&buf[4..buf.len() - 2]).ok(),
                         Err(e) => {
                             eprintln!("invalid data on {output_name}: {e}");
                             continue;
                         }
-                    };
-
-                    let offsets = OffsetBuffer::new(vec![0, array.len() as _].into());
-                    let field = Arc::new(Field::new_list_field(array.data_type().clone(), true));
-                    let list_array = arrow::array::ListArray::new(
-                        field,
-                        offsets,
-                        arrow::array::make_array(array),
-                        None,
-                    );
-                    let batch =
-                        arrow::array::RecordBatch::try_from_iter([("", Arc::new(list_array) as _)])
-                            .unwrap();
-                    let mut writer = arrow_json::LineDelimitedWriter::new(&mut buf);
-                    writer.write(&batch).unwrap();
-                    writer.finish().unwrap();
-                    // The output looks like {"":[...]}\n
-                    std::str::from_utf8(&buf[4..buf.len() - 2]).ok()
+                    }
                 } else {
                     None
                 };
@@ -268,121 +246,187 @@ fn inspect(
     Ok(())
 }
 
-fn buffer_into_arrow_array(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
+/// Decode the self-describing Arrow IPC payload and render it into `buf`.
+fn decode_and_render(
+    data: dora_message::aligned_vec::AVec<u8, dora_message::aligned_vec::ConstAlign<128>>,
+    buf: &mut Vec<u8>,
+) -> eyre::Result<()> {
+    let ptr =
+        NonNull::new(data.as_ptr() as *mut u8).ok_or_else(|| eyre!("payload pointer is null"))?;
+    let len = data.len();
+    let buffer = unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data)) };
+    let array = decode_arrow_ipc_zero_copy(buffer)?;
+    render_array_json(array, buf)
+}
+
+/// Render a decoded Arrow array into `buf` as `{"":[...]}\n`.
+///
+/// The payload is peer-controlled, and the Arrow JSON writer does not support
+/// every Arrow type (e.g. `Float16`), so every step must surface an error
+/// instead of panicking the CLI mid-stream.
+///
+/// On success, `buf` is guaranteed to start with `{"":` and end with `}\n`,
+/// so callers can slice off those delimiters to obtain the bare JSON value.
+fn render_array_json(array: arrow::array::ArrayData, buf: &mut Vec<u8>) -> eyre::Result<()> {
+    // The array length is peer-controlled (e.g. a `NullArray` carries an
+    // arbitrary `len` with no backing buffers); a plain `as` cast would wrap
+    // to a negative offset and panic inside `OffsetBuffer::new`.
+    let len = i32::try_from(array.len())
+        .map_err(|_| eyre!("array length {} exceeds i32::MAX", array.len()))?;
+    let offsets = OffsetBuffer::new(vec![0, len].into());
+    let field = Arc::new(Field::new_list_field(array.data_type().clone(), true));
+    let list_array =
+        arrow::array::ListArray::new(field, offsets, arrow::array::make_array(array), None);
+    let batch = arrow::array::RecordBatch::try_from_iter([("", Arc::new(list_array) as _)])
+        .map_err(|e| eyre!("failed to build record batch: {e}"))?;
+    let mut writer = arrow_json::LineDelimitedWriter::new(&mut *buf);
+    writer
+        .write(&batch)
+        .and_then(|()| writer.finish())
+        .map_err(|e| eyre!("cannot encode as JSON: {e}"))?;
+    // The output looks like {"":[...]}\n
+    if buf.len() < 6 || !buf.starts_with(b"{\"\":") || !buf.ends_with(b"}\n") {
+        return Err(eyre!(
+            "unexpected JSON writer output: {:?}",
+            String::from_utf8_lossy(buf)
+        ));
+    }
+    Ok(())
+}
+
+/// Decode an Arrow IPC stream from an Arrow [`Buffer`](arrow::buffer::Buffer)
+/// without copying the body buffers when the input is aligned.
+///
+/// Mirrors `dora_node_api::arrow_utils::decode_arrow_ipc_zero_copy`: the data
+/// plane is Arrow-IPC-only, so `dora topic echo` decodes the same self-describing
+/// stream every node receives. The default `require_alignment = false` decoder
+/// realigns under-aligned input rather than erroring.
+fn decode_arrow_ipc_zero_copy(
+    mut buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
-    // A zero-footprint array (e.g. `NullArray::new(n)`) serializes to an empty
-    // payload but still carries a meaningful `type_info.len`. Reconstructing via
-    // `ArrayData::new_empty` would discard that length and silently truncate the
-    // array to 0; the general path below honors it (dora-rs/dora#2083).
-    let mut buffers = Vec::new();
-    for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        if *len == 0 {
-            // Slicing a zero-length buffer out of an empty payload can yield an
-            // under-aligned pointer that `try_new` rejects; use a freshly
-            // aligned empty buffer instead (dora-rs/dora#2083).
-            buffers.push(arrow::buffer::MutableBuffer::new(0).into());
-            continue;
+    use arrow::ipc::reader::StreamDecoder;
+
+    let mut decoder = StreamDecoder::new();
+    let mut batch = None;
+    while !buffer.is_empty() {
+        let before = buffer.len();
+        if let Some(b) = decoder
+            .decode(&mut buffer)
+            .context("failed to decode Arrow IPC stream")?
+        {
+            batch = Some(b);
+            break;
         }
-        // `type_info` is peer-controlled, so validate the offset before slicing.
-        // `checked_add` guards against an `offset`/`len` that would overflow
-        // `usize` and bypass the bounds check; both prevent a panic inside
-        // `slice_with_length` on a malformed event (dora-rs/dora#2083).
-        let end = offset
-            .checked_add(*len)
-            .ok_or_else(|| eyre!("buffer offset overflow: offset={offset}, len={len}"))?;
-        if end > raw_buffer.len() {
+        // Guard against a crafted/truncated payload that yields no batch without
+        // consuming bytes — otherwise this loop spins forever.
+        if buffer.len() == before {
             return Err(eyre!(
-                "buffer offset out of bounds: offset={offset}, len={len}, buffer_len={}",
-                raw_buffer.len()
+                "Arrow IPC decoder made no progress on a partial/corrupt stream"
             ));
         }
-        buffers.push(raw_buffer.slice_with_length(*offset, *len));
     }
 
-    let mut child_data = Vec::new();
-    for child_type_info in &type_info.child_data {
-        child_data.push(buffer_into_arrow_array(raw_buffer, child_type_info)?)
+    let batch = batch.ok_or_else(|| eyre!("Arrow IPC stream contained no record batches"))?;
+    if batch.num_columns() != 1 {
+        return Err(eyre!(
+            "expected 1 column in IPC record batch, got {}",
+            batch.num_columns()
+        ));
     }
-
-    arrow::array::ArrayData::try_new(
-        type_info.data_type.clone(),
-        type_info.len,
-        type_info
-            .validity
-            .clone()
-            .map(arrow::buffer::Buffer::from_vec),
-        type_info.offset,
-        buffers,
-        child_data,
-    )
-    .map_err(|e| eyre!("Error creating Arrow array: {e}"))
+    Ok(batch.column(0).to_data())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, NullArray};
+    use arrow::array::{Array, Int32Array, NullArray, StringArray};
 
-    fn type_info(
-        data_type: arrow::datatypes::DataType,
-        buffer_offsets: Vec<BufferOffset>,
-    ) -> ArrowTypeInfo {
-        ArrowTypeInfo {
-            data_type,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets,
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
+    /// Encode an array as a single-column IPC stream (matching the wire format),
+    /// then decode it back via the echo path.
+    fn encode_ipc(array: &dyn Array) -> Vec<u8> {
+        use arrow::datatypes::{Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![arrow::array::make_array(array.to_data())],
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
         }
+        buf
     }
 
     #[test]
-    fn empty_payload_preserves_nullarray_length() {
-        // dora-rs/dora#2083: a `NullArray::new(n)` has an empty footprint but a
-        // non-zero length that must survive `dora topic echo`'s decode.
-        let mut info = type_info(arrow::datatypes::DataType::Null, vec![]);
-        info.len = 5;
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(Vec::<u8>::new()), &info).unwrap();
-        assert_eq!(decoded.len(), 5);
-        assert_eq!(decoded.data_type(), &arrow::datatypes::DataType::Null);
-        assert_eq!(NullArray::from(decoded).len(), 5);
+    fn ipc_roundtrip_primitive() {
+        let array = Int32Array::from(vec![10, 20, 30]);
+        let encoded = encode_ipc(&array);
+        let decoded = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap();
+        assert_eq!(decoded, array.to_data());
     }
 
     #[test]
-    fn malformed_offset_is_rejected_not_panicked() {
-        // dora-rs/dora#2083: `type_info` is peer-controlled. An empty payload
-        // with `offset = usize::MAX` would overflow `offset + len` and bypass the
-        // bounds check, panicking inside `slice_with_length`. It must surface as
-        // an error instead.
-        let info = type_info(
-            arrow::datatypes::DataType::UInt8,
-            vec![BufferOffset {
-                offset: usize::MAX,
-                len: 1,
-            }],
+    fn ipc_roundtrip_string() {
+        let array = StringArray::from(vec![Some("a"), None, Some("ccc")]);
+        let encoded = encode_ipc(&array);
+        let decoded = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap();
+        assert_eq!(decoded, array.to_data());
+    }
+
+    #[test]
+    fn render_strips_json_delimiters() {
+        let array = arrow::array::Int64Array::from(vec![1, 2, 3]).into_data();
+        let mut buf = Vec::new();
+        render_array_json(array, &mut buf).unwrap();
+        assert_eq!(
+            std::str::from_utf8(&buf[4..buf.len() - 2]).unwrap(),
+            "[1,2,3]"
         );
-        let err = buffer_into_arrow_array(&arrow::buffer::Buffer::from(Vec::<u8>::new()), &info)
-            .unwrap_err();
-        assert!(err.to_string().contains("overflow"), "got: {err}");
     }
 
     #[test]
-    fn out_of_bounds_offset_is_rejected() {
-        // A non-overflowing but out-of-range offset must also be reported, not
-        // panic in `slice_with_length`.
-        let info = type_info(
-            arrow::datatypes::DataType::UInt8,
-            vec![BufferOffset { offset: 0, len: 8 }],
+    fn unsupported_json_type_is_rejected_not_panicked() {
+        // The Arrow JSON writer cannot encode every Arrow type a node may
+        // legitimately send (e.g. union arrays). That must surface as an
+        // error on the affected message, not panic the whole echo stream.
+        use arrow::datatypes::Int32Type;
+        let mut builder = arrow::array::UnionBuilder::new_dense();
+        builder.append::<Int32Type>("a", 1).unwrap();
+        let array = builder.build().unwrap().into_data();
+        let mut buf = Vec::new();
+        let err = render_array_json(array, &mut buf).unwrap_err();
+        assert!(
+            err.to_string().contains("cannot encode as JSON"),
+            "got: {err}"
         );
+    }
+
+    #[test]
+    fn oversized_array_length_is_rejected_not_panicked() {
+        // `array.len()` is peer-controlled and a `NullArray` carries it
+        // without any backing buffers. A length above `i32::MAX` used to wrap
+        // negative in the `as` cast and panic inside `OffsetBuffer::new`.
+        let array = NullArray::new(i32::MAX as usize + 1).into_data();
+        let mut buf = Vec::new();
+        let err = render_array_json(array, &mut buf).unwrap_err();
+        assert!(err.to_string().contains("exceeds i32::MAX"), "got: {err}");
+    }
+
+    #[test]
+    fn invalid_stream_is_rejected_not_panicked() {
         let err =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(vec![0u8; 4]), &info).unwrap_err();
-        assert!(err.to_string().contains("out of bounds"), "got: {err}");
+            decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(vec![0u8; 16])).unwrap_err();
+        assert!(!err.to_string().is_empty());
     }
 }

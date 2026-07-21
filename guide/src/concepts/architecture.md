@@ -19,7 +19,7 @@ Dora is built on four core principles:
 ├─────────────────────────────────────────────────┤
 │  Daemon (per-machine)    Runtime (operators)     │  Layer 3: Execution
 ├─────────────────────────────────────────────────┤
-│  dora-core    shared-memory-server    Node API  │  Layer 2: Core Libraries
+│  dora-core    zenoh SHM               Node API  │  Layer 2: Core Libraries
 ├─────────────────────────────────────────────────┤
 │  dora-message (protocol + Arrow types)          │  Layer 1: Protocol
 └─────────────────────────────────────────────────┘
@@ -42,13 +42,12 @@ All crates share the workspace version.
 | `binaries/record-node` | dora-record-node | Records dataflow messages to `.drec` format |
 | `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.drec` files |
 
-### Core Libraries (6)
+### Core Libraries (5)
 
 | Path | Crate | Role |
 |------|-------|------|
 | `libraries/message` | dora-message | All inter-component message types, protocol definitions, Arrow metadata |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
-| `libraries/shared-memory-server` | shared-memory-server | Zero-copy IPC for messages >= 4 KiB |
 | `libraries/recording` | dora-recording | Recording format (.drec): bincode header + entries + footer |
 | `libraries/arrow-convert` | dora-arrow-convert | Arrow type conversions (numeric, datetime) |
 | `libraries/coordinator-store` | dora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |
@@ -808,7 +807,7 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `DataflowId` | `uuid::Uuid` | Assigned on dataflow start |
 | `SessionId` | `uuid::Uuid` (v7) | Per CLI session |
 | `BuildId` | `uuid::Uuid` (v7) | Per build operation |
-| `DaemonId` | `{ machine_id: Option<String>, uuid: Uuid (v7) }` | Persisted in `.daemon-id` |
+| `DaemonId` | `{ machine_id: Option<String>, uuid: Uuid (v7) }` | Created fresh on each start via `DaemonId::new(machine_id)` |
 | `NodeId` | `String` | Validated: `[a-zA-Z0-9_.-]`, non-empty |
 | `DataId` | `String` | Same validation as `NodeId` |
 | `OperatorId` | `String` | No validation |

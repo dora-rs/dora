@@ -81,6 +81,8 @@ struct NodeInfoOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     health_check_timeout: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    finish_grace_secs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     metrics: Option<MetricsOutput>,
 }
 
@@ -162,6 +164,7 @@ fn info(
         max_restarts: node_desc.max_restarts,
         restart_delay: node_desc.restart_delay,
         health_check_timeout: node_desc.health_check_timeout,
+        finish_grace_secs: node_desc.finish_grace_secs,
         metrics: metrics.and_then(|m| m.metrics).map(|m| MetricsOutput {
             status: m.status.to_string(),
             pid: m.pid,
@@ -266,6 +269,9 @@ fn print_table(output: &NodeInfoOutput) {
     }
     if let Some(timeout) = output.health_check_timeout {
         println!("  Health check timeout: {timeout}s");
+    }
+    if let Some(grace) = output.finish_grace_secs {
+        println!("  Finish grace: {grace}s");
     }
     println!();
 

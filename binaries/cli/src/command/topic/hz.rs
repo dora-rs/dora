@@ -185,12 +185,19 @@ impl HzStats {
     fn record(&self, now: Instant) {
         let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         timestamps.push_back(now);
-        let cutoff = now - self.window_duration;
-        while let Some(&first) = timestamps.front() {
-            if first < cutoff {
-                timestamps.pop_front();
-            } else {
-                break;
+        // `now - window_duration` panics ("overflow when subtracting duration
+        // from instant") when the window exceeds the monotonic-clock value --
+        // reachable via a large `--window` (which `parse_window` leaves
+        // unbounded) or within `window` seconds of the monotonic epoch. When
+        // the cutoff would predate the epoch, every timestamp is within the
+        // window, so there is nothing to prune. Mirrors `info::calculate_hz`.
+        if let Some(cutoff) = now.checked_sub(self.window_duration) {
+            while let Some(&first) = timestamps.front() {
+                if first < cutoff {
+                    timestamps.pop_front();
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -332,12 +339,14 @@ fn run_hz(
 
     loop {
         let now = Instant::now();
+        // `None` when the 1 s sub-window predates the monotonic epoch (only in
+        // the first second of uptime); then every timestamp counts as recent.
+        let cutoff = now.checked_sub(sub_window);
         for (i, (_topic, s)) in stats.iter().enumerate() {
-            let cutoff = now - sub_window;
             let mut count = 0usize;
             let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
             for &t in ts.iter().rev() {
-                if t < cutoff {
+                if cutoff.is_some_and(|c| t < c) {
                     break;
                 }
                 count += 1;
@@ -600,5 +609,19 @@ mod tests {
     #[test]
     fn parse_window_non_numeric() {
         assert!(parse_window("abc").is_err());
+    }
+
+    // A huge window (`parse_window` imposes no upper bound) must not panic in
+    // `record`: `now - window_duration` would otherwise overflow the monotonic
+    // clock. Regression for the `dora topic hz --window <huge>` panic.
+    #[test]
+    fn record_does_not_underflow_on_huge_window() {
+        let stats = HzStats::new(u32::MAX as usize);
+        // Would panic with "overflow when subtracting duration from instant"
+        // before the `checked_sub` guard.
+        stats.record(Instant::now());
+        stats.record(Instant::now());
+        // Nothing pruned: the cutoff predates the epoch, so both are kept.
+        assert_eq!(stats.timestamps.lock().unwrap().len(), 2);
     }
 }

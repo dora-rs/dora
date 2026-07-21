@@ -1,4 +1,3 @@
-use heck::SnakeCase;
 use quote::{ToTokens, format_ident, quote};
 use syn::Ident;
 
@@ -216,7 +215,7 @@ impl Service {
                 #[allow(non_snake_case)]
                 fn #wait_for_service(self: &mut #client_name, node: &Box<Ros2Node>) -> eyre::Result<()> {
                     let service_ready = async {
-                        for _ in 0..10 {
+                        for _ in 0..30 {
                             let ready = self.client.wait_for_service(&node.node);
                             futures::pin_mut!(ready);
                             let timeout = futures_timer::Delay::new(std::time::Duration::from_secs(2));
@@ -490,63 +489,6 @@ impl Service {
             }
         };
         (def, imp)
-    }
-
-    pub fn token_stream_with_mod(&self) -> impl ToTokens + use<> {
-        let mod_name = format_ident!("_{}", self.name.to_snake_case());
-        let inner = self.token_stream();
-        quote! {
-            pub use #mod_name::*;
-            mod #mod_name {
-                #inner
-            }
-        }
-    }
-
-    pub fn token_stream(&self) -> impl ToTokens + use<> {
-        let srv_type = format_ident!("{}", self.name);
-        let req_type = format_ident!("{}_Request", self.name);
-        let res_type = format_ident!("{}_Response", self.name);
-
-        let request_body = self.request.token_stream();
-        let response_body = self.response.token_stream();
-
-        quote! {
-            use std::os::raw::c_void;
-
-            pub use self::request::*;
-            pub use self::response::*;
-
-            #[allow(non_camel_case_types)]
-            #[derive(std::fmt::Debug)]
-            pub struct #srv_type;
-
-
-            impl crate::_core::ServiceT for #srv_type {
-                type Request = #req_type;
-                type Response = #res_type;
-            }
-
-            mod request {
-                #request_body
-            }  // mod request
-
-            mod response {
-                #response_body
-            }  // mod response
-
-            #[cfg(test)]
-            mod test {
-                use super::*;
-                use crate::_core::ServiceT;
-
-                #[test]
-                fn test_type_support() {
-                    let ptr = #srv_type::type_support();
-                    assert!(!ptr.is_null());
-                }
-            }
-        }
     }
 }
 
