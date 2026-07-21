@@ -945,8 +945,18 @@ pub fn check_type_annotations_full(
             );
             for (output_id, urn) in &op.config.output_types {
                 if registry.resolve(urn).is_some() {
+                    // A consumer of a single-`operator:` node references its
+                    // output in short form (`node/output`) in the source YAML;
+                    // the `op/` prefix is only injected later by
+                    // `resolve_aliases_and_set_defaults`, which this pre-build
+                    // check never runs. Register both the prefixed key and the
+                    // bare `output_id` so short-form edges resolve here too —
+                    // otherwise the upstream type is invisible, silently
+                    // dropping genuine mismatches and, under `strict`, emitting
+                    // a false "upstream has no type annotation" warning.
                     output_type_map
                         .insert((nid.clone(), format!("{op_id}/{output_id}")), urn.clone());
+                    output_type_map.insert((nid.clone(), output_id.to_string()), urn.clone());
                 }
             }
             check_port_types(
@@ -2396,6 +2406,111 @@ nodes:
         assert!(
             !msg.contains("my-operator/runtime-node/tick"),
             "input id should not use reversed operator/node order, got: {msg}"
+        );
+    }
+
+    // --- Single-`operator:` producer edges (short-form references) ---
+    //
+    // A consumer of a single-`operator:` node references its output in short
+    // form (`node/output`) in the source YAML. The `op/` prefix is only
+    // injected later by `resolve_aliases_and_set_defaults`, which the
+    // pre-build type check does not run. These tests guard that the type
+    // check still sees the upstream type across such an edge.
+
+    #[test]
+    fn infers_type_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result.warnings.is_empty(),
+            "unexpected: {:?}",
+            result.warnings
+        );
+        assert_eq!(
+            result.inferences.len(),
+            1,
+            "should infer from the operator output"
+        );
+        assert_eq!(result.inferences[0].inferred_urn, "std/core/v1/Float64");
+        assert_eq!(result.inferences[0].port_id, "reading");
+    }
+
+    #[test]
+    fn detects_mismatch_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Int32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("type mismatch")),
+            "expected a type mismatch warning, got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn strict_mode_no_false_positive_across_single_operator_edge() {
+        // Upstream single-operator output IS annotated, so strict mode must
+        // not claim it has "no type annotation".
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Float64
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, true);
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("no type annotation")),
+            "annotated upstream must not trigger a strict no-annotation warning, got: {:?}",
+            result.warnings
         );
     }
 
