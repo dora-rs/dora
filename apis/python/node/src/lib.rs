@@ -2959,9 +2959,7 @@ impl Node {
                         // If size exceeds the trusted capacity, fall back to
                         // the daemon so the read is re-validated.
                         let capped = {
-                            let trusted = GPU_BUF_SIZES
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner());
+                            let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
                             trusted
                                 .get(buffer_id)
                                 .copied()
