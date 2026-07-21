@@ -14,7 +14,7 @@ use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
     arrow::array::{AsArray, UInt8Array},
-    merged::{MergeExternal, MergedEvent},
+    merged::MergedEvent,
 };
 use eyre::{Result as EyreResult, bail, eyre};
 use serde::Serialize;
@@ -1019,22 +1019,6 @@ impl MergedEvents {
     fn next(&mut self) -> MergedDoraEvent {
         let event = futures_lite::future::block_on(self.events.as_mut().unwrap().next());
         MergedDoraEvent(event)
-    }
-
-    pub fn merge(&mut self, events: impl Stream<Item = Box<dyn Any>> + Unpin + 'static) -> u32 {
-        let id = self.next_id;
-        self.next_id += 1;
-        let events = Box::pin(events.map(move |event| ExternalEvent { event, id }));
-
-        let inner = self.events.take().expect("merged event stream missing");
-        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
-            Box::new(inner.merge_external(events).map(|event| match event {
-                MergedEvent::Dora(event) => MergedEvent::Dora(event),
-                MergedEvent::External(event) => MergedEvent::External(event.flatten()),
-            }));
-        self.events = Some(merged);
-
-        id
     }
 }
 
