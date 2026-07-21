@@ -99,6 +99,26 @@ pub trait DescriptorExt {
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
+/// Prefixes a single-operator node's output id with the operator id
+/// (e.g. `result` -> `op/result`) so downstream references resolve to the
+/// operator-qualified output.
+///
+/// Operator ids are *not* validated against the `DataId` character set when a
+/// descriptor is parsed (`OperatorId` stores its string verbatim), so build the
+/// qualified id fallibly: `DataId::from` panics on characters outside
+/// `[a-zA-Z0-9_./-]`, which would abort `dora check`/`graph`/`build` on an
+/// otherwise-parseable descriptor. Returning an `Err` surfaces it as a clean
+/// descriptor error instead.
+fn prefix_output_with_operator_id(op_name: &OperatorId, output: &DataId) -> eyre::Result<DataId> {
+    format!("{op_name}/{output}")
+        .parse::<DataId>()
+        .map_err(|e| {
+            eyre::eyre!(
+                "operator id `{op_name}` produces an invalid output id `{op_name}/{output}`: {e}"
+            )
+        })
+}
+
 /// Whether a resolved node is a dynamic node (spawned/connected at runtime rather
 /// than at dataflow launch). Mirrors the daemon's classification.
 fn node_is_dynamic(node: &ResolvedNode) -> bool {
@@ -128,7 +148,7 @@ impl DescriptorExt for Descriptor {
                     if let InputMapping::User(m) = &mut input.mapping
                         && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
                     {
-                        m.output = DataId::from(format!("{op_name}/{}", m.output));
+                        m.output = prefix_output_with_operator_id(op_name, &m.output)?;
                     }
                 }
             }
@@ -154,7 +174,7 @@ impl DescriptorExt for Descriptor {
                 })
             {
                 if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
+                    mapping.output = prefix_output_with_operator_id(op_name, &mapping.output)?;
                 }
             }
 
@@ -768,6 +788,32 @@ nodes:
             b_env.get("OTEL_ENDPOINT"),
             Some(&EnvValue::String("http://collector:4317".into()))
         );
+    }
+
+    #[test]
+    fn invalid_operator_id_prefix_errors_instead_of_panicking() {
+        // A single-operator node whose `operator.id` contains a character
+        // outside the `DataId` set (here a space) is accepted at parse time
+        // (`OperatorId` is unvalidated). When another node references its
+        // output, the resolver prefixes the output with the operator id. That
+        // used to build the qualified id via `DataId::from`, which panics on
+        // invalid characters and aborted `dora check`/`graph`/`build`. It must
+        // now surface as a clean `Err` instead.
+        let yaml = r#"
+nodes:
+  - id: producer
+    operator:
+      id: "bad id"
+      python: op.py
+      outputs: [result]
+  - id: consumer
+    path: ./consumer
+    inputs:
+      x: producer/result
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let result = desc.resolve_aliases_and_set_defaults();
+        assert!(result.is_err(), "expected a clean descriptor error, got Ok");
     }
 
     #[test]
