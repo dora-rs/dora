@@ -461,26 +461,14 @@ pub struct TypeRegistry {
 }
 
 const PACKAGES: &[(&str, &str)] = &[
-    (
-        "std/core/v1",
-        include_str!("../../../types/std/core/v1.yml"),
-    ),
-    (
-        "std/math/v1",
-        include_str!("../../../types/std/math/v1.yml"),
-    ),
+    ("std/core/v1", include_str!("../types/std/core/v1.yml")),
+    ("std/math/v1", include_str!("../types/std/math/v1.yml")),
     (
         "std/control/v1",
-        include_str!("../../../types/std/control/v1.yml"),
+        include_str!("../types/std/control/v1.yml"),
     ),
-    (
-        "std/media/v1",
-        include_str!("../../../types/std/media/v1.yml"),
-    ),
-    (
-        "std/vision/v1",
-        include_str!("../../../types/std/vision/v1.yml"),
-    ),
+    ("std/media/v1", include_str!("../types/std/media/v1.yml")),
+    ("std/vision/v1", include_str!("../types/std/vision/v1.yml")),
 ];
 
 impl TypeRegistry {

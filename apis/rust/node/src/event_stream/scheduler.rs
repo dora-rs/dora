@@ -248,17 +248,24 @@ impl Scheduler {
             }
         }
 
-        // Enforce queue size limit
-        let (size, queue) = self
-            .event_queues
-            .entry(event_id.clone())
-            .or_insert_with(|| {
-                tracing::warn!(
-                    "no queue config for input `{event_id}`, using default size {DEFAULT_QUEUE_SIZE}"
-                );
-                self.last_used.push_back(event_id.clone());
-                (DEFAULT_QUEUE_SIZE, Default::default())
-            });
+        // Enforce queue size limit.
+        //
+        // The queue is normally preconfigured for every input at construction
+        // (see `with_policies`), so look it up by reference first to avoid
+        // cloning the `DataId` key on every event. Only the rare unconfigured
+        // input path needs to allocate an owned key for insertion.
+        if !self.event_queues.contains_key(event_id) {
+            tracing::warn!(
+                "no queue config for input `{event_id}`, using default size {DEFAULT_QUEUE_SIZE}"
+            );
+            self.last_used.push_back(event_id.clone());
+            self.event_queues
+                .insert(event_id.clone(), (DEFAULT_QUEUE_SIZE, Default::default()));
+        }
+        let Some((size, queue)) = self.event_queues.get_mut(event_id) else {
+            // Unreachable: the entry was just inserted above when missing.
+            return;
+        };
 
         let policy = self
             .queue_policies
@@ -332,26 +339,14 @@ impl Scheduler {
 mod tests {
     use super::*;
     use crate::uhlc;
-    use arrow_schema::DataType;
     use dora_message::{
         daemon_to_node::NodeEvent,
-        metadata::{ArrowTypeInfo, FLUSH, Metadata, MetadataParameters, Parameter},
+        metadata::{FLUSH, Metadata, MetadataParameters, Parameter},
     };
 
     fn make_input(id: &str, params: MetadataParameters) -> EventItem {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let ts = uhlc::HLC::default().new_timestamp();
-        let metadata = Metadata::from_parameters(ts, type_info, params);
+        let metadata = Metadata::from_parameters(ts, params);
         EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: DataId::from(id.to_string()),
@@ -693,23 +688,13 @@ mod tests {
     // ---- issue #2212: log_correlation_drop must also fire for ZenohInput ----
 
     fn make_zenoh_input(id: &str, params: MetadataParameters) -> EventItem {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
         let ts = uhlc::HLC::default().new_timestamp();
-        let metadata = Metadata::from_parameters(ts, type_info, params);
+        let metadata = Metadata::from_parameters(ts, params);
+        use dora_arrow_convert::IntoArrow;
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),
-            payload: zenoh::bytes::ZBytes::default(),
+            data: ().into_arrow().into(),
         }
     }
 

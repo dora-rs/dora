@@ -1,7 +1,6 @@
 use eyre::{Context, bail, eyre};
 use std::{
     env::consts::{DLL_PREFIX, DLL_SUFFIX},
-    ffi::OsStr,
     path::Path,
 };
 
@@ -10,10 +9,7 @@ pub use dora_message::{config, uhlc};
 #[cfg(feature = "build")]
 pub mod build;
 pub mod descriptor;
-#[cfg(feature = "type-inference")]
-pub mod inference;
 pub mod manifest;
-pub mod metadata;
 pub mod topics;
 pub mod types;
 
@@ -118,21 +114,4 @@ fn is_python2(python_path: &std::path::Path) -> bool {
 pub fn get_uv_path() -> Result<std::path::PathBuf, eyre::ErrReport> {
     which::which("uv")
         .context("failed to find `uv`. Make sure to install it using: https://docs.astral.sh/uv/getting-started/installation/")
-}
-
-// Helper function to run a program
-pub async fn run<S>(program: S, args: &[&str], pwd: Option<&Path>) -> eyre::Result<()>
-where
-    S: AsRef<OsStr>,
-{
-    let mut run = tokio::process::Command::new(program);
-    run.args(args);
-
-    if let Some(pwd) = pwd {
-        run.current_dir(pwd);
-    }
-    if !run.status().await?.success() {
-        eyre::bail!("failed to run {args:?}");
-    };
-    Ok(())
 }

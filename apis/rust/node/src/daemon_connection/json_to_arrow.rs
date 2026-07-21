@@ -41,7 +41,7 @@ fn wrapped(data: impl BufRead) -> impl BufRead {
 
 // wrap data into JSON object to also allow bare JSON values
 fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
-    let quoted = [b'"'].chain(data).chain([b'"'].as_slice());
+    let quoted = "\"".as_bytes().chain(data).chain("\"".as_bytes());
     wrapped(quoted)
 }
 

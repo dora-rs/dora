@@ -88,7 +88,7 @@ members = [
 edition = "2024"
 rust-version = "1.88.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "1.0.0-rc1"
+version = "1.0.0-rc.2"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
 readme = "./README.md"
@@ -96,39 +96,41 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "1.0.0-rc1", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "1.0.0-rc1", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "1.0.0-rc1", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "1.0.0-rc1", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "1.0.0-rc1", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "1.0.0-rc1", path = "apis/python/operator" }
-dora-operator-api-c = { version = "1.0.0-rc1", path = "apis/c/operator" }
-dora-node-api-c = { version = "1.0.0-rc1", path = "apis/c/node" }
-dora-core = { version = "1.0.0-rc1", path = "libraries/core" }
-dora-hub-client = { version = "1.0.0-rc1", path = "libraries/hub-client" }
-dora-recording = { version = "1.0.0-rc1", path = "libraries/recording" }
-dora-arrow-convert = { version = "1.0.0-rc1", path = "libraries/arrow-convert" }
-dora-tracing = { version = "1.0.0-rc1", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "1.0.0-rc1", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "1.0.0-rc1", path = "libraries/extensions/download" }
-dora-log-utils = { version = "1.0.0-rc1", path = "libraries/log-utils" }
-dora-coordinator-store = { version = "1.0.0-rc1", path = "libraries/coordinator-store" }
-dora-cli = { version = "1.0.0-rc1", path = "binaries/cli" }
-dora-runtime = { version = "1.0.0-rc1", path = "binaries/runtime" }
-dora-daemon = { version = "1.0.0-rc1", path = "binaries/daemon" }
-dora-coordinator = { version = "1.0.0-rc1", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "1.0.0-rc1", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "1.0.0-rc1", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "1.0.0-rc.2", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "1.0.0-rc.2", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "1.0.0-rc.2", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "1.0.0-rc.2", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "1.0.0-rc.2", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "1.0.0-rc.2", path = "apis/python/operator" }
+dora-operator-api-c = { version = "1.0.0-rc.2", path = "apis/c/operator" }
+dora-node-api-c = { version = "1.0.0-rc.2", path = "apis/c/node" }
+dora-core = { version = "1.0.0-rc.2", path = "libraries/core" }
+dora-hub-client = { version = "1.0.0-rc.2", path = "libraries/hub-client" }
+dora-recording = { version = "1.0.0-rc.2", path = "libraries/recording" }
+dora-arrow-convert = { version = "1.0.0-rc.2", path = "libraries/arrow-convert" }
+dora-tracing = { version = "1.0.0-rc.2", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "1.0.0-rc.2", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "1.0.0-rc.2", path = "libraries/extensions/download" }
+dora-log-utils = { version = "1.0.0-rc.2", path = "libraries/log-utils" }
+dora-coordinator-store = { version = "1.0.0-rc.2", path = "libraries/coordinator-store" }
+dora-cli = { version = "1.0.0-rc.2", path = "binaries/cli" }
+dora-runtime = { version = "1.0.0-rc.2", path = "binaries/runtime" }
+dora-daemon = { version = "1.0.0-rc.2", path = "binaries/daemon" }
+dora-coordinator = { version = "1.0.0-rc.2", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "1.0.0-rc.2", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.2", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-mavlink2-bridge = { version = "1.0.0-rc1", path = "libraries/extensions/mavlink2-bridge" }
-dora-memory-pool = { version = "1.0.0-rc1", path = "libraries/extensions/memory-pool" }
-dora-message = { version = "1.0.0-rc1", path = "libraries/message" }
-arrow = { version = "58", default-features = false }
-arrow-schema = { version = "58" }
-arrow-data = { version = "58" }
-arrow-array = { version = "58" }
-arrow-json = { version = "58" }
-parquet = { version = "58" }
+dora-mavlink2-bridge = { version = "1.0.0-rc.2", path = "libraries/extensions/mavlink2-bridge" }
+dora-memory-pool = { version = "1.0.0-rc.2", path = "libraries/extensions/memory-pool" }
+dora-message = { version = "1.0.0-rc.2", path = "libraries/message" }
+arrow = { version = "59", default-features = false }
+arrow-schema = { version = "59" }
+arrow-data = { version = "59" }
+arrow-array = { version = "59" }
+arrow-json = { version = "59" }
+parquet = { version = "59" }
+# pyo3 0.29 is blocked by `arrow-pyarrow` 59, which requires pyo3 ^0.28
+# (only one `pyo3-ffi` may link against `python`).
 pyo3 = { version = "0.28", features = [
     "eyre",
     "abi3-py311",
@@ -140,26 +142,30 @@ pyo3-build-config = { version = "0.28", features = ["resolve-config", "abi3-py31
 # `default = ["ssh", "https"]`), so request them explicitly — otherwise
 # libgit2 ships without a TLS transport ("no TLS stream available").
 git2 = { version = "0.21", features = ["vendored-openssl", "https", "ssh"] }
-serde_yaml = "0.9.33"
-zenoh = { version = "~1.8", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
-serde_json = "1.0.145"
-semver = { version = "1.0.23", features = ["serde"] }
+serde_yaml = "0.9.34"
+zenoh = { version = "~1.9", default-features = false, features = ["shared-memory", "unstable", "transport_tcp", "transport_udp", "transport_unixsock-stream"] }
+# Advanced pub/sub (schema-cache subtopic): retain the last schema sample so a
+# late-joining subscriber fetches it via a history query. `unstable` gates the
+# AdvancedPublisher/AdvancedSubscriber API and forwards zenoh's `unstable`.
+zenoh-ext = { version = "~1.9", default-features = false, features = ["unstable"] }
+serde_json = "1.0.150"
+semver = { version = "1.0.28", features = ["serde"] }
 thiserror = "2.0"
-colored = "3.0.0"
-inquire = { version = "0.7.5", default-features = false }
-tokio = { version = "1.28", default-features = false }
-tokio-stream = "0.1.11"
-eyre = "0.6.8"
+colored = "3.1.1"
+inquire = { version = "0.9.4", default-features = false }
+tokio = { version = "1.52", default-features = false }
+tokio-stream = "0.1.18"
+eyre = "0.6.12"
 serde = { version = "1", features = ["derive"] }
-tracing = "0.1.36"
-uuid = { version = "1.7", features = ["serde", "v7"] }
-futures = { version = "0.3.28", default-features = false, features = ["std", "async-await"] }
+tracing = "0.1.44"
+uuid = { version = "1.23", features = ["serde", "v7"] }
+futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 bincode = "1.3.3"
-flume = "0.10.14"
-tempfile = "3.23.0"
-proptest = "1.5"
-mavlink = { version = "0.13", default-features = false, features = ["std", "serde", "common", "tcp", "udp", "direct-serial"] }
-serialport = "4.6"
+flume = "0.12.0"
+tempfile = "3.27.0"
+proptest = "1.11"
+mavlink = { version = "0.18", default-features = false, features = ["std", "serde", "dialect-common", "transport-tcp", "transport-udp", "transport-direct-serial"] }
+serialport = "4.9"
 url = "2.5"
 
 # Opt in per crate via `[lints] workspace = true`. `cfg(kani)` gates the
@@ -188,17 +194,17 @@ dora-daemon = { workspace = true }
 dora-message = { workspace = true }
 dora-tracing = { workspace = true }
 dora-download = { workspace = true }
-dunce = "1.0.2"
+dunce = "1.0.5"
 serde_yaml = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 tracing = { workspace = true }
 futures = { workspace = true }
-tokio-stream = "0.1.11"
+tokio-stream = "0.1.18"
 tempfile = { workspace = true }
-assert2 = "0.3.16"
-tokio-tungstenite = "0.28"
-libloading = "0.8"
+assert2 = "0.4.0"
+tokio-tungstenite = "0.29"
+libloading = "0.9"
 dora-operator-api-types = { workspace = true }
 arrow-array = { workspace = true }
 

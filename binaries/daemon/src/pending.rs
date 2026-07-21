@@ -7,7 +7,7 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, LogMessage, Timestamped},
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, LogLevel, Timestamped},
     daemon_to_node::DaemonReply,
 };
 use eyre::{Context, bail};
@@ -111,7 +111,7 @@ impl PendingNodes {
         cascading_errors: &mut CascadingErrorCauses,
         dynamic_nodes: &BTreeSet<NodeId>,
         logger: &mut DataflowLogger<'_>,
-    ) -> eyre::Result<Vec<LogMessage>> {
+    ) -> eyre::Result<()> {
         // remove all local dynamic nodes that are not yet started
         for node_id in dynamic_nodes {
             if self.local_nodes.remove(node_id) {
@@ -120,7 +120,7 @@ impl PendingNodes {
             }
         }
 
-        Ok(Vec::new())
+        Ok(())
     }
 
     pub async fn handle_external_all_nodes_ready(

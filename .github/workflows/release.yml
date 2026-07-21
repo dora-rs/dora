@@ -4,6 +4,9 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+"
+      # Pre-release tags (e.g. v1.0.0-rc.2). The bare pattern above does not
+      # match a `-rc.N` suffix, which silently skipped the v1.0.0 rc releases.
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
 
 permissions:
   contents: write
@@ -11,8 +14,7 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
-  RUST_VERSION: "1.92.0"
+  RUST_VERSION: "1.97.1"
 
 jobs:
   # ── 1. Publish Rust crates to crates.io ──────────────────────────────────
@@ -29,8 +31,16 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
-          # Topological order: leaves first, binaries last.
-          # Skips Python crates (published to PyPI separately).
+          # Topological order: leaves first, binaries last. `cargo publish`
+          # resolves path deps against crates.io, so every workspace dep of a
+          # crate must be published before it — including optional deps
+          # (dora-ros2-bridge before dora-node-api-cxx) and dev-deps, which
+          # keep their version requirement when packaged (dora-daemon and
+          # dora-cli before dora-ros2-bridge, which dev-depends on both).
+          # Excludes `publish = false` binaries (dora-record-node,
+          # dora-replay-node, dora-ros2-bridge-node — delivered via the CLI)
+          # and the PyPI-only dora-node-api-python.
+          # Keep in sync with .github/workflows/cargo-release.yml.
           CRATES=(
             dora-message
             dora-arrow-convert
@@ -40,30 +50,44 @@ jobs:
             dora-download
             dora-tracing
             dora-metrics
+            dora-hub-client
+            dora-memory-pool
             dora-operator-api-types
             dora-operator-api-macros
             dora-operator-api
             dora-node-api
             dora-node-api-c
             dora-operator-api-c
-            dora-node-api-cxx
-            dora-operator-api-cxx
-            dora-ros2-bridge-msg-gen
-            dora-ros2-bridge
-            dora-ros2-bridge-arrow
-            dora-ros2-bridge-node
-            dora-runtime
             dora-coordinator
             dora-daemon
-            dora-record-node
-            dora-replay-node
+            dora-operator-api-python
+            dora-runtime
             dora-cli
+            dora-ros2-bridge-msg-gen
+            dora-ros2-bridge
+            dora-node-api-cxx
+            dora-operator-api-cxx
+            dora-ros2-bridge-arrow
           )
+          # `cargo publish` blocks until the crate is available in the
+          # index, so no propagation sleep is needed. Tolerate only
+          # already-published versions (idempotent re-runs); any other
+          # failure must fail the job instead of silently producing a
+          # partial release.
           for crate in "${CRATES[@]}"; do
             echo "::group::Publishing $crate"
-            cargo publish -p "$crate" --no-verify || echo "::warning::$crate skipped (already published?)"
+            if ! output=$(cargo publish -p "$crate" --no-verify 2>&1); then
+              echo "$output"
+              if echo "$output" | grep -qi "already uploaded\|is already uploaded\|already exists"; then
+                echo "::warning::$crate already published, skipping"
+              else
+                echo "::error::failed to publish $crate"
+                exit 1
+              fi
+            else
+              echo "$output" | tail -5
+            fi
             echo "::endgroup::"
-            sleep 5  # crates.io index propagation
           done
 
   # ── 2. Build Python wheels ────────────────────────────────────────────────

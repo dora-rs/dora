@@ -16,7 +16,7 @@ use safer_ffi::{
     closure::ArcDynFn1,
     derive_ReprC, ffi_export,
 };
-use std::{ops::Deref, path::Path};
+use std::path::Path;
 
 #[derive_ReprC]
 #[ffi_export]
@@ -55,10 +55,6 @@ impl DoraResult {
         Self {
             error: Some(Box::new(safer_ffi::String::from(error)).into()),
         }
-    }
-
-    pub fn error(&self) -> Option<&str> {
-        self.error.as_deref().map(|s| s.deref())
     }
 
     pub fn into_result(self) -> Result<(), String> {

@@ -31,7 +31,51 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    fn visualize_as_mermaid(&self) -> eyre::Result<String>;
+    /// Number of subscriber input-links for the output `source_node/source_output`
+    /// across the whole (resolved) dataflow — i.e. how many `(node, input)` pairs
+    /// map to it, counting each operator input of a runtime node separately.
+    ///
+    /// This is the count of zenoh data-plane subscribers a producer must see wired
+    /// up before it is safe to switch that output from the reliable daemon path to
+    /// the direct zenoh path without dropping startup messages (see
+    /// [`crate::topics::zenoh_input_ready_liveliness_topic`]). It is a global
+    /// topology count, so it correctly includes subscribers on other daemons.
+    ///
+    /// Provided in terms of [`resolve_aliases_and_set_defaults`](Self::resolve_aliases_and_set_defaults).
+    fn output_subscriber_count(
+        &self,
+        source_node: &NodeId,
+        source_output: &DataId,
+    ) -> eyre::Result<usize> {
+        let resolved = self.resolve_aliases_and_set_defaults()?;
+        let mut count = 0;
+        for node in resolved.values() {
+            // Dynamic nodes connect at arbitrary times (or never), so the startup
+            // barrier must not wait for them: they receive over zenoh via normal
+            // publisher/subscriber matching once they connect, and excluding them
+            // cannot lose a message to an already-connected static subscriber.
+            if node_is_dynamic(node) {
+                continue;
+            }
+            let inputs: Vec<&Input> = match &node.kind {
+                CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+                CoreNodeKind::Runtime(n) => n
+                    .operators
+                    .iter()
+                    .flat_map(|op| op.config.inputs.values())
+                    .collect(),
+            };
+            for input in inputs {
+                if let InputMapping::User(m) = &input.mapping
+                    && &m.source == source_node
+                    && &m.output == source_output
+                {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
@@ -54,6 +98,13 @@ pub trait DescriptorExt {
 }
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
+
+/// Whether a resolved node is a dynamic node (spawned/connected at runtime rather
+/// than at dataflow launch). Mirrors the daemon's classification.
+fn node_is_dynamic(node: &ResolvedNode) -> bool {
+    matches!(&node.kind, CoreNodeKind::Custom(n)
+        if matches!(n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE)
+}
 
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
@@ -139,6 +190,7 @@ impl DescriptorExt for Descriptor {
                     max_restart_delay: node.max_restart_delay,
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
+                    finish_grace_secs: node.finish_grace_secs,
                 }),
                 NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
                 NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
@@ -184,10 +236,17 @@ impl DescriptorExt for Descriptor {
                         max_restart_delay: node.max_restart_delay,
                         restart_window: node.restart_window,
                         health_check_timeout: node.health_check_timeout,
+                        finish_grace_secs: node.finish_grace_secs,
                     })
                 }
             };
 
+            if resolved.contains_key(&node.id) {
+                eyre::bail!(
+                    "duplicate node ID `{}` — each node must have a unique `id`",
+                    node.id
+                );
+            }
             resolved.insert(
                 node.id.clone(),
                 ResolvedNode {
@@ -207,12 +266,6 @@ impl DescriptorExt for Descriptor {
         }
 
         Ok(resolved)
-    }
-
-    fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases_and_set_defaults()?;
-        let flowchart = visualize::visualize_nodes(&resolved);
-        Ok(flowchart)
     }
 
     fn visualize_as_mermaid_with_boundaries(
@@ -342,6 +395,26 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
     }
 }
 
+/// Returns `true` if `source` is an `http://` or `https://` URL.
+///
+/// This is the trust boundary that decides whether a node `path` is fetched as
+/// a remote download (and, for hub artifacts, checksum-verified) versus
+/// resolved as a local filesystem path. The match is on the literal scheme
+/// prefix and is **case-sensitive**: an upper-cased scheme such as `HTTPS://`
+/// is treated as a path, not a URL. Schemes other than HTTP(S) (e.g. `ftp://`,
+/// `s3://`, `file://`) are likewise not considered URLs here.
+///
+/// ```
+/// use dora_core::descriptor::source_is_url;
+///
+/// assert!(source_is_url("https://example.com/node"));
+/// assert!(source_is_url("http://example.com/node"));
+///
+/// assert!(!source_is_url("./build/my_node"));
+/// assert!(!source_is_url("/usr/bin/my_node"));
+/// assert!(!source_is_url("s3://bucket/key"));
+/// assert!(!source_is_url("HTTPS://example.com/node")); // case-sensitive
+/// ```
 pub fn source_is_url(source: &str) -> bool {
     source.starts_with("https://") || source.starts_with("http://")
 }
@@ -579,6 +652,81 @@ mod tests {
     }
 
     #[test]
+    fn output_subscriber_count_counts_fanout_and_ignores_non_subscribers() {
+        // `source/value` fans out to `transform` and `recorder` (2); the
+        // `transform/doubled` output feeds only `sink` (1). Timer inputs and
+        // subscriptions to other outputs must not be counted. This count is what
+        // a producer waits for before switching an output to the direct zenoh
+        // data plane, so an undercount here would drop startup messages.
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - value
+  - id: transform
+    path: transform
+    inputs:
+      value: source/value
+    outputs:
+      - doubled
+  - id: recorder
+    path: recorder
+    inputs:
+      rec_in: source/value
+  - id: sink
+    path: sink
+    inputs:
+      doubled: transform/doubled
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let transform = NodeId::from("transform".to_string());
+        let sink = NodeId::from("sink".to_string());
+        let value = DataId::from("value".to_string());
+        let doubled = DataId::from("doubled".to_string());
+        let missing = DataId::from("nonexistent".to_string());
+
+        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 2);
+        assert_eq!(
+            desc.output_subscriber_count(&transform, &doubled).unwrap(),
+            1
+        );
+        // Output nobody subscribes to.
+        assert_eq!(desc.output_subscriber_count(&source, &missing).unwrap(), 0);
+        // `sink` produces nothing.
+        assert_eq!(desc.output_subscriber_count(&sink, &value).unwrap(), 0);
+    }
+
+    #[test]
+    fn output_subscriber_count_excludes_dynamic_subscribers() {
+        // A dynamic subscriber connects at runtime, so it must not be counted in
+        // the startup barrier — otherwise the producer would stall on the daemon
+        // path waiting for a node that may connect late or never.
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    outputs:
+      - value
+  - id: static_sub
+    path: static_sub
+    inputs:
+      v: source/value
+  - id: dyn_sub
+    path: dynamic
+    inputs:
+      v: source/value
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let value = DataId::from("value".to_string());
+        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 1);
+    }
+
+    #[test]
     fn descriptor_global_env_parses_from_yaml() {
         // Verify the new top-level `env:` field parses and the resolver
         // hands merged envs to every node with per-node keys winning.
@@ -733,5 +881,27 @@ nodes:
         );
         let b = resolved.get(&NodeId::from("b".to_string())).unwrap();
         assert!(b.env.is_none(), "node b has no env anywhere");
+    }
+
+    #[test]
+    fn duplicate_node_id_is_rejected() {
+        // Regression for #2393: a plain dataflow with two nodes sharing the
+        // same `id` must return an error instead of silently discarding one.
+        let yaml = r#"
+nodes:
+  - id: my-node
+    path: ./a
+  - id: my-node
+    path: ./b
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("duplicate node ID must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("duplicate node ID") && msg.contains("my-node"),
+            "unexpected error message: {msg}"
+        );
     }
 }

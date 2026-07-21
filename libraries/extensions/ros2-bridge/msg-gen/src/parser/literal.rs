@@ -1,35 +1,35 @@
 use std::convert::TryFrom;
 
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::{is_not, tag, tag_no_case, take_while},
     character::complete::{anychar, char, digit1, hex_digit1, none_of, oct_digit1, one_of, space0},
     combinator::{eof, map, map_res, opt, recognize, rest, value, verify},
     multi::{many0, separated_list1},
     number::complete::recognize_float,
-    sequence::{delimited, pair, tuple},
+    sequence::{delimited, pair},
 };
 
 use crate::types::primitives::{BasicType, GenericString};
 
 pub fn usize_literal(s: &str) -> IResult<&str, usize> {
-    map_res(dec_literal, usize::try_from)(s)
+    map_res(dec_literal, usize::try_from).parse(s)
 }
 
 fn validate_integer_literal<T>(s: &str) -> IResult<&str, String>
 where
     T: TryFrom<i128> + ToString,
 {
-    map_res(integer_literal, |v| T::try_from(v).map(|v| v.to_string()))(s)
+    map_res(integer_literal, |v| T::try_from(v).map(|v| v.to_string())).parse(s)
 }
 
 fn validate_floating_point_literal(s: &str) -> IResult<&str, String> {
-    map(recognize_float, |v: &str| v.to_string())(s)
+    map(recognize_float, |v: &str| v.to_string()).parse(s)
 }
 
 fn validate_boolean_literal(s: &str) -> IResult<&str, String> {
-    map(bool_literal, |v| v.to_string())(s)
+    map(bool_literal, |v| v.to_string()).parse(s)
 }
 
 pub fn get_basic_type_literal_parser(basic_type: BasicType) -> fn(&str) -> IResult<&str, String> {
@@ -55,56 +55,60 @@ pub fn basic_type_sequence(basic_type: BasicType, s: &str) -> IResult<&str, Vec<
             delimited(space0, get_basic_type_literal_parser(basic_type), space0),
         ),
         pair(space0, char(']')),
-    )(s)
+    )
+    .parse(s)
 }
 
 #[inline]
 fn flag_if_exist(s: &str) -> IResult<&str, char> {
-    map(opt(one_of("+-")), |flag| flag.unwrap_or('+'))(s)
+    map(opt(one_of("+-")), |flag| flag.unwrap_or('+')).parse(s)
 }
 
 fn dec_literal(s: &str) -> IResult<&str, i128> {
     map_res(
-        tuple((flag_if_exist, separated_list1(char('_'), digit1))),
+        (flag_if_exist, separated_list1(char('_'), digit1)),
         |(flag, digits)| format!("{}{}", flag, digits.join("")).parse::<i128>(),
-    )(s)
+    )
+    .parse(s)
 }
 
 fn integer_literal(s: &str) -> IResult<&str, i128> {
     alt((
         map_res(
-            tuple((
+            (
                 flag_if_exist,
                 tag_no_case("0b"),
                 separated_list1(char('_'), take_while(|c| c == '0' || c == '1')),
-            )),
+            ),
             |(flag, _, digits)| i128::from_str_radix(&format!("{}{}", flag, digits.join("")), 2),
         ),
         map_res(
-            tuple((
+            (
                 flag_if_exist,
                 tag_no_case("0o"),
                 separated_list1(char('_'), oct_digit1),
-            )),
+            ),
             |(flag, _, digits)| i128::from_str_radix(&format!("{}{}", flag, digits.join("")), 8),
         ),
         map_res(
-            tuple((
+            (
                 flag_if_exist,
                 tag_no_case("0x"),
                 separated_list1(char('_'), hex_digit1),
-            )),
+            ),
             |(flag, _, digits)| i128::from_str_radix(&format!("{}{}", flag, digits.join("")), 16),
         ),
         dec_literal,
-    ))(s)
+    ))
+    .parse(s)
 }
 
 fn bool_literal(s: &str) -> IResult<&str, bool> {
     alt((
         value(true, alt((tag("true"), tag("1"), tag("True")))),
         value(false, alt((tag("false"), tag("0"), tag("False")))),
-    ))(s)
+    ))
+    .parse(s)
 }
 
 #[allow(clippy::type_complexity)]
@@ -113,9 +117,17 @@ pub fn get_string_literal_parser(
 ) -> Box<dyn FnMut(&str) -> IResult<&str, String>> {
     match string_type {
         GenericString::String | GenericString::WString => Box::new(string_literal),
-        GenericString::BoundedString(max_size) | GenericString::BoundedWString(max_size) => {
-            Box::new(move |s| verify(string_literal, |s: &str| s.len() <= max_size)(s))
+        // ROS 2 spec: string<=N bound is in UTF-8 bytes; wstring<=N bound is in UTF-16 code units.
+        // Keep these separate so the parser metric matches the codegen validator in value_tokens().
+        GenericString::BoundedString(max_size) => {
+            Box::new(move |s| verify(string_literal, move |s: &str| s.len() <= max_size).parse(s))
         }
+        GenericString::BoundedWString(max_size) => Box::new(move |s| {
+            verify(string_literal, move |s: &str| {
+                s.encode_utf16().count() <= max_size
+            })
+            .parse(s)
+        }),
     }
 }
 
@@ -154,11 +166,12 @@ fn string_literal(s: &str) -> IResult<&str, String> {
             }),
             |v: &str| v.trim().to_string(),
         ),
-    ))(s)
+    ))
+    .parse(s)
 }
 
 pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
-    verify(rest, |v: &str| v.starts_with('[') && v.ends_with(']'))(s)?;
+    verify(rest, |v: &str| v.starts_with('[') && v.ends_with(']')).parse(s)?;
 
     delimited(
         space0,
@@ -199,8 +212,9 @@ pub fn string_literal_sequence(s: &str) -> IResult<&str, Vec<String>> {
                 space0,
             ),
         ),
-        tuple((opt(char(',')), space0, eof)),
-    )(s.strip_prefix('[').unwrap().strip_suffix(']').unwrap())
+        (opt(char(',')), space0, eof),
+    )
+    .parse(s.strip_prefix('[').unwrap().strip_suffix(']').unwrap())
 }
 
 #[cfg(test)]
@@ -270,6 +284,56 @@ mod test {
         assert_eq!(string_literal(r#""aaa\"aaa" "#)?.1, r#"aaa"aaa"#);
         assert_eq!(string_literal(r#"'aaa\'aaa' "#)?.1, "aaa'aaa");
         Ok(())
+    }
+
+    #[test]
+    fn bounded_string_enforces_byte_limit_per_ros2_spec() {
+        use crate::types::primitives::GenericString;
+        // ROS 2 spec: string<=N is a byte limit, not a character limit.
+        // "hi" is 2 bytes, accepted under bound 4.
+        let mut p = get_string_literal_parser(GenericString::BoundedString(4));
+        assert!(
+            p("hi").is_ok(),
+            "2-byte string should be accepted by byte bound of 4"
+        );
+        // "hello" is 5 bytes, rejected under bound 4.
+        assert!(
+            p("hello").is_err(),
+            "5-byte string should be rejected by byte bound of 4"
+        );
+        // "€€€" is 9 UTF-8 bytes (3 chars), rejected under bound 4.
+        assert!(
+            p("€€€").is_err(),
+            "9-byte string should be rejected by byte bound of 4"
+        );
+    }
+
+    #[test]
+    fn bounded_wstring_enforces_utf16_code_unit_limit_per_ros2_spec() {
+        use crate::types::primitives::GenericString;
+        // ROS 2 spec: wstring<=N is a UTF-16 code-unit limit.
+        // "hi" is 2 UTF-16 code units, accepted under bound 4.
+        let mut p = get_string_literal_parser(GenericString::BoundedWString(4));
+        assert!(
+            p("hi").is_ok(),
+            "2-code-unit string should be accepted by UTF-16 bound of 4"
+        );
+        // "hello" is 5 UTF-16 code units, rejected under bound 4.
+        assert!(
+            p("hello").is_err(),
+            "5-code-unit string should be rejected by UTF-16 bound of 4"
+        );
+        // "€€€" is 3 UTF-16 code units (U+20AC × 3, all in BMP), accepted under bound 4.
+        assert!(
+            p("€€€").is_ok(),
+            "3-code-unit string should be accepted by UTF-16 bound of 4"
+        );
+        // An astral character like 😀 (U+1F600) takes 2 UTF-16 code units.
+        // "😀😀😀" = 6 code units, rejected under bound 4.
+        assert!(
+            p("😀😀😀").is_err(),
+            "6-code-unit astral string should be rejected by UTF-16 bound of 4"
+        );
     }
 
     #[test]

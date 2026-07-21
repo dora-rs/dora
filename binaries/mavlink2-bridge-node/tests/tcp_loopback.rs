@@ -11,10 +11,12 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 use dora_mavlink2_bridge::{
-    mavlink::common::{HEARTBEAT_DATA, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType},
+    mavlink::dialects::common::{
+        HEARTBEAT_DATA, MavAutopilot, MavMessage, MavModeFlag, MavState, MavType,
+    },
     transport,
 };
-use mavlink::{MavHeader, MavlinkVersion};
+use mavlink::{MavConnection, MavHeader, MavlinkVersion};
 use url::Url;
 
 /// Reserve a free port on 127.0.0.1 and immediately drop the listener so

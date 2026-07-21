@@ -68,21 +68,6 @@ impl Package {
         }
     }
 
-    fn services_block(&self) -> impl ToTokens {
-        if self.services.is_empty() {
-            quote! {
-                // empty srv
-            }
-        } else {
-            let items = self.services.iter().map(|v| v.token_stream_with_mod());
-            quote! {
-                pub mod srv {
-                    #(#items)*
-                }  // srv
-            }
-        }
-    }
-
     fn action_aliases(&self, package_name: &Ident) -> impl ToTokens {
         if self.actions.is_empty() {
             quote! {
@@ -94,21 +79,6 @@ impl Package {
                 .iter()
                 .map(|v| v.alias_token_stream(package_name));
 
-            quote! {
-                pub mod action {
-                    #(#items)*
-                }  // action
-            }
-        }
-    }
-
-    fn actions_block(&self) -> impl ToTokens {
-        if self.actions.is_empty() {
-            quote! {
-                // empty srv
-            }
-        } else {
-            let items = self.actions.iter().map(|v| v.token_stream_with_mod());
             quote! {
                 pub mod action {
                     #(#items)*
@@ -164,19 +134,6 @@ impl Package {
             #aliases
             #service_aliases
             #action_aliases
-        }
-    }
-
-    pub fn token_stream(&self, _gen_cxx_bridge: bool) -> impl ToTokens {
-        let name = Ident::new(&self.name, Span::call_site());
-        let services_block = self.services_block();
-        let actions_block = self.actions_block();
-
-        quote! {
-            pub mod #name {
-                #services_block
-                #actions_block
-            }
         }
     }
 }

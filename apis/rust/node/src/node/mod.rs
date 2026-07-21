@@ -7,19 +7,13 @@ use crate::{
     },
 };
 
-use self::{
-    arrow_utils::{
-        compute_schema_hash, copy_array_into_sample, encode_arrow_ipc, required_data_size,
-    },
-    control_channel::ControlChannel,
-};
+use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
 use aligned_vec::{AVec, ConstAlign};
-use arrow::array::Array;
+use arrow::array::{Array, ArrayData};
 use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    descriptor::Descriptor,
-    metadata::ArrowTypeInfoExt,
+    descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST},
     types::TypeRegistry,
     uhlc,
@@ -27,10 +21,9 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
-    descriptor::OutputFraming,
     metadata::{
-        ArrowTypeInfo, FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters,
-        Parameter, SEGMENT_ID, SEQ, SESSION_ID,
+        FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
+        SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
     node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
 };
@@ -99,12 +92,63 @@ impl RuntimeTypeCheck {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-const ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT: Duration = Duration::from_millis(200);
-const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Per-output data-plane readiness for the startup no-loss barrier.
+///
+/// The zenoh data plane is direct node-to-node pub/sub, so a producer that
+/// starts publishing before a consumer's subscription has propagated drops those
+/// early samples. Until every expected subscriber has announced its subscription
+/// (via a liveliness readiness token — see
+/// [`dora_core::topics::zenoh_input_ready_liveliness_topic`]), the producer keeps
+/// delivering over the reliable daemon path and only switches this output to the
+/// fast zenoh path once all subscribers are confirmed wired. Over-counting keeps
+/// an output on the (lossless) daemon path; it never drops messages.
+struct ZenohOutputReadiness {
+    /// Number of subscriber input-links this output has in the dataflow.
+    expected: usize,
+    /// Latches `true` once all expected subscribers are confirmed wired. Never
+    /// reverts — once switched to the fast path we stay on it.
+    ready: bool,
+    /// Distinct readiness-token key expressions currently seen for this output
+    /// (deduped). Maintained by the liveliness subscriber callback.
+    alive: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Liveliness subscriber counting readiness tokens for this output. Kept
+    /// alive so its callback keeps `alive` current; dropped with the node.
+    _liveliness_sub: zenoh::pubsub::Subscriber<()>,
+}
 
-/// Must exceed zenoh's internal 10s session close timeout, which is not
-/// enforceable when zenoh's net runtime is wedged.
-const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long [`DoraNode::init`] waits for the direct-zenoh routes of this node's
+/// outputs to connect before handing control to user code.
+///
+/// The daemon "all nodes ready" barrier already guarantees every subscriber is
+/// *declared* before any node runs; this only waits out the residual zenoh
+/// propagation between two already-declared endpoints, so it is normally
+/// sub-second. On timeout (e.g. a zenoh data plane that can't connect while the
+/// control plane can) the un-connected outputs simply start on the reliable
+/// daemon path and upgrade to direct zenoh once their subscribers appear — the
+/// dataflow is never blocked, and nothing is dropped.
+const ZENOH_OUTPUT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll interval while waiting for output routes to connect at startup.
+const ZENOH_OUTPUT_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Per-phase deadline for tearing down zenoh state on node shutdown (subscribers,
+/// liveliness tokens, and the session/publishers — see [`DoraNode::drop`] and
+/// `EventStream::drop`). Each `undeclare`/close blocks indefinitely when zenoh's net
+/// runtime is wedged (e.g. retrying an unreachable scouted peer on a headless CI
+/// runner), so it is bounded here and abandoned on timeout.
+///
+/// This MUST stay comfortably below the daemon's force-kill grace
+/// (`DEFAULT_STOP_GRACE (10s) + DEFAULT_STOP_GRACE/2 = 15s`, see
+/// `binaries/daemon/src/running_dataflow.rs`), including the worst case where all
+/// three phases wedge sequentially (`3 *` this value). Otherwise a node with a wedged
+/// net runtime is still tearing down when the daemon `TerminateProcess`es it, which on
+/// Windows surfaces as `ExitCode(1)` and reddens the nightly (dora-rs/dora#2742). The
+/// `zenoh_teardown_fits_within_daemon_force_kill_grace` test guards the invariant.
+///
+/// This deliberately no longer exceeds zenoh's internal 10s session-close timeout: a
+/// semi-wedged close that would settle at ~10s is abandoned instead, and peers fall
+/// back to liveliness expiry. That is the right trade for a *shutting-down* node —
+/// waiting out the 10s only to be force-killed anyway yields a worse (unclean) exit.
+pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -127,8 +171,21 @@ pub struct DoraNode {
     /// so it doesn't borrow from the session field on this struct.
     /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
     zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    /// Per-output schema publishers on the `@schema` subtopic (lazily created on
+    /// the first small message). Their cache retains the last schema so a
+    /// late-joining subscriber fetches it via a history query, letting the data
+    /// topic carry only schema-less batches. Dropped before the session, like
+    /// [`zenoh_publishers`](Self::zenoh_publishers).
+    zenoh_schema_publishers: HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    /// Per-output schema-once state: the confirmed-published schema hash (so
+    /// the schema is only re-published when it changes or a publish failed) and
+    /// the time of the last full-stream send (for the periodic in-band refresh).
+    zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
+    /// Per-output startup readiness for the direct zenoh data plane (lazily
+    /// created on first send). See [`ZenohOutputReadiness`].
+    zenoh_output_readiness: HashMap<DataId, ZenohOutputReadiness>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -561,7 +618,19 @@ impl DoraNode {
                     .ok()
                     .and_then(|s| s.parse::<usize>().ok())
             })
-            .unwrap_or(8 * 1024 * 1024); // 8 MB default
+            // 8 MB default — kept deliberately small so the pool fits a
+            // constrained `/dev/shm` (Docker/Kubernetes commonly cap it at
+            // 64 MB). A pool that doesn't fit backing memory was observed to
+            // break large-output delivery entirely (the segment can't be backed
+            // as it fills), so bumping this default is NOT a safe way to widen
+            // the large-message pipeline. Throughput under large-message bursts
+            // is handled instead by the non-blocking `GarbageCollect` alloc
+            // policy (see `allocate_data_sample` / `zenoh_publish`): the producer
+            // never stalls on a momentarily-full pool, it just copies via the
+            // heap path. Raise this only alongside a matching `/dev/shm` (via
+            // `shared_memory_pool_size` / `DORA_NODE_SHM_POOL_SIZE`) to keep more
+            // large outputs zero-copy.
+            .unwrap_or(8 * 1024 * 1024);
         let zenoh_zero_copy_threshold = std::env::var("DORA_ZERO_COPY_THRESHOLD")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
@@ -645,6 +714,7 @@ impl DoraNode {
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),
+            dynamic,
         )
         .wrap_err("failed to init event stream")?;
         let control_channel =
@@ -677,7 +747,7 @@ impl DoraNode {
             }
         };
 
-        let node = Self {
+        let mut node = Self {
             id: node_id,
             dataflow_id,
             node_config: run_config.clone(),
@@ -686,7 +756,10 @@ impl DoraNode {
             zenoh_session,
             zenoh_shm_provider,
             zenoh_publishers: HashMap::new(),
+            zenoh_schema_publishers: HashMap::new(),
+            zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
+            zenoh_output_readiness: HashMap::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -722,6 +795,14 @@ impl DoraNode {
                 }
             }
         }
+
+        // Warm up the direct-zenoh data plane before handing control to user
+        // code: declare output publishers and wait (bounded) until their
+        // subscribers are wired, so the first `send_output` on a connected output
+        // hits an established route. Fail-safe — un-connected outputs start on the
+        // daemon path and upgrade later (see `warm_up_direct_outputs`).
+        node.warm_up_direct_outputs();
+
         Ok((node, event_stream))
     }
 
@@ -783,12 +864,23 @@ impl DoraNode {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
-        let mut sample = self.allocate_data_sample(data_len)?;
-        data(&mut sample);
+        // The receiver expects a self-describing Arrow IPC stream. Build it in
+        // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
+        // then let the caller write their bytes straight into the data region —
+        // zero payload copies (and the SHM sample is moved into zenoh's `put`).
+        let total = ipc_encode::uint8_ipc_len(data_len)
+            .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+        let mut sample = self.allocate_data_sample(total)?;
+        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+            .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+        data(&mut sample[offset..offset + data_len]);
 
-        let type_info = ArrowTypeInfo::byte_array(data_len);
-
-        self.send_output_sample(output_id, type_info, parameters, Some(sample))
+        let mut parameters = parameters;
+        parameters.insert(
+            FRAMING.to_string(),
+            Parameter::String(FRAMING_ARROW_IPC.to_string()),
+        );
+        self.send_output_sample(output_id, parameters, Some(sample))
     }
 
     /// Sends the give Arrow array as an output message.
@@ -842,51 +934,45 @@ impl DoraNode {
             }
         }
 
-        let framing = self
-            .node_config
-            .output_framing
-            .get(&output_id)
-            .copied()
-            .unwrap_or_default();
+        self.send_output_array(output_id, parameters, arrow_array)
+    }
 
-        match framing {
-            OutputFraming::Raw => {
-                let total_len = required_data_size(&arrow_array);
-                let mut sample = self.allocate_data_sample(total_len)?;
-                let type_info = copy_array_into_sample(&mut sample, &arrow_array);
+    /// IPC-encode `arrow_array` into a (shared-memory) sample and send it.
+    ///
+    /// Every data-plane payload is a self-describing Arrow IPC stream. Uses the
+    /// hand-rolled 1-copy fast path when the array type is eligible, falling
+    /// back to the official writer (one extra copy) otherwise. The shared send
+    /// path for [`send_output`](Self::send_output) and
+    /// [`send_output_raw`](Self::send_output_raw).
+    fn send_output_array(
+        &mut self,
+        output_id: DataId,
+        mut parameters: MetadataParameters,
+        arrow_array: ArrayData,
+    ) -> NodeResult<()> {
+        parameters.insert(
+            FRAMING.to_string(),
+            Parameter::String(FRAMING_ARROW_IPC.to_string()),
+        );
 
-                self.send_output_sample(output_id, type_info, parameters, Some(sample))
-                    .wrap_err("failed to send output")?;
-            }
-            OutputFraming::ArrowIpc => {
-                let ipc_buf = encode_arrow_ipc(&arrow_array)
+        let sample = match ipc_encode::ipc_fast_path_len(&arrow_array) {
+            Some(len) => {
+                let mut s = self.allocate_data_sample(len)?;
+                ipc_encode::encode_ipc_into(&arrow_array, &mut s)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-
-                let mut sample = self.allocate_data_sample(ipc_buf.len())?;
-                sample.copy_from_slice(&ipc_buf);
-
-                let type_info = ArrowTypeInfo {
-                    data_type: arrow_array.data_type().clone(),
-                    len: arrow_array.len(),
-                    null_count: arrow_array.null_count(),
-                    validity: None,
-                    offset: 0,
-                    buffer_offsets: vec![],
-                    child_data: vec![],
-                    field_names: None,
-                    schema_hash: Some(compute_schema_hash(arrow_array.data_type())),
-                };
-
-                let mut parameters = parameters;
-                parameters.insert(
-                    FRAMING.to_string(),
-                    Parameter::String(FRAMING_ARROW_IPC.to_string()),
-                );
-
-                self.send_output_sample(output_id, type_info, parameters, Some(sample))
-                    .wrap_err("failed to send output")?;
+                s
             }
-        }
+            None => {
+                let bytes = ipc_encode::encode_ipc_to_vec(&arrow_array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                let mut s = self.allocate_data_sample(bytes.len())?;
+                s.copy_from_slice(&bytes);
+                s
+            }
+        };
+
+        self.send_output_sample(output_id, parameters, Some(sample))
+            .wrap_err("failed to send output")?;
 
         Ok(())
     }
@@ -922,46 +1008,29 @@ impl DoraNode {
         })
     }
 
-    /// Send the give raw byte data with the provided type information.
+    /// Sends the given [`DataSample`] as output.
     ///
-    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
-    ///
-    /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
-    /// configuration file.
-    pub fn send_typed_output<F>(
-        &mut self,
-        output_id: DataId,
-        type_info: ArrowTypeInfo,
-        parameters: MetadataParameters,
-        data_len: usize,
-        data: F,
-    ) -> NodeResult<()>
-    where
-        F: FnOnce(&mut [u8]),
-    {
-        if !self.validate_output(&output_id) {
-            return Ok(());
-        };
-
-        let mut sample = self.allocate_data_sample(data_len)?;
-        data(&mut sample);
-
-        self.send_output_sample(output_id, type_info, parameters, Some(sample))
-    }
-
-    /// Sends the given [`DataSample`] as output, combined with the given type information.
-    ///
-    /// It is recommended to use a function like [`send_output`][Self::send_output] instead.
+    /// The sample must already be a self-describing Arrow IPC stream (the
+    /// `FRAMING_ARROW_IPC` parameter should be set). It is recommended to use a
+    /// function like [`send_output`][Self::send_output] instead, which handles
+    /// the encoding.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output_sample(
         &mut self,
         output_id: DataId,
-        type_info: ArrowTypeInfo,
-        #[allow(unused_mut)] mut parameters: MetadataParameters,
+        mut parameters: MetadataParameters,
         sample: Option<DataSample>,
     ) -> NodeResult<()> {
+        // `SCHEMA_HASH` is an internal wire-protocol key that only
+        // `publish_schema_once` may set, and only for the schema-less batch it
+        // belongs to. A stale value forwarded from an input's metadata (the
+        // receive path strips it, but a recorded/hand-built parameter map can
+        // still carry one) would make receivers route this output's full
+        // self-describing stream to the schema-once decoder, hash-mismatch, and
+        // silently drop it (dora-rs/dora#2366 review).
+        parameters.remove(SCHEMA_HASH);
         // Auto-inject OpenTelemetry trace context when telemetry is enabled.
         // Uses the ambient OTel context, which is populated when the tracing
         // subscriber has an OpenTelemetry layer (e.g., via with_otlp_tracing).
@@ -980,46 +1049,81 @@ impl DoraNode {
             }
         }
 
-        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), type_info, parameters);
+        let metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
 
-        let data = sample.map(|sample| sample.finalize());
+        let finalized = sample.map(|sample| sample.finalize());
+
+        // How a data-plane message should be delivered.
+        enum Delivery {
+            /// zenoh delivered the payload (or it was consumed by a failed SHM
+            /// put); only the daemon's control-plane state needs syncing.
+            Zenoh,
+            /// Deliver via the daemon control channel. `None` is a metadata-only
+            /// message with no payload.
+            Daemon(Option<DataMessage>),
+        }
 
         // Always publish data-plane messages via zenoh when a session is
-        // available. The control channel is only used as a fallback when the
-        // zenoh session could not be opened (e.g. interactive/testing modes).
-        // Zenoh internally chooses SHM (zero-copy) vs heap based on
-        // `self.zenoh_zero_copy_threshold` (see `zenoh_publish`).
-        let zenoh_published =
-            if let (Some(_), Some(DataMessage::Vec(v))) = (&self.zenoh_session, data.as_ref()) {
-                let raw_bytes = v.as_ref();
+        // available. The daemon control channel is only used as a fallback when
+        // the zenoh session could not be opened (e.g. interactive/testing mode)
+        // or when no subscriber matched in time. An SHM-backed sample is moved
+        // straight into zenoh's `put` (no extra copy); only the daemon fallback
+        // copies it out into a `DataMessage::Vec`.
+        let delivery = match finalized {
+            Some(finalized) if self.zenoh_session.is_some() => {
                 tracing::trace!(
                     output = %output_id,
-                    size = raw_bytes.len(),
+                    size = finalized.byte_len(),
                     "publishing via zenoh"
                 );
-                match self.zenoh_publish(&output_id, &metadata, raw_bytes) {
-                    Ok(published) => published,
+                match self.zenoh_publish(&output_id, &metadata, finalized) {
+                    Ok(PublishOutcome::Published) => Delivery::Zenoh,
+                    Ok(PublishOutcome::NotPublished(sample)) => {
+                        Delivery::Daemon(Some(sample.into_data_message()))
+                    }
                     Err(e) => {
-                        tracing::warn!("zenoh publish failed ({e}), falling back to daemon path");
-                        false
+                        tracing::warn!(
+                            "zenoh publish failed ({e}); message dropped \
+                             (SHM payload consumed, no daemon fallback)"
+                        );
+                        Delivery::Zenoh
                     }
                 }
-            } else {
-                false
-            };
+            }
+            Some(finalized) => Delivery::Daemon(Some(finalized.into_data_message())),
+            None => Delivery::Daemon(None),
+        };
 
-        if zenoh_published {
-            // Keep the daemon's control-plane state in sync (input deadlines,
-            // circuit-breaker recovery) without duplicating the data payload
-            // that Zenoh already delivered.
-            self.control_channel
-                .report_output_sent(output_id.clone(), metadata)
-                .wrap_err_with(|| format!("failed to report output {output_id}"))?;
-        } else {
-            // Fallback: no zenoh session, deliver via daemon.
-            self.control_channel
-                .send_message(output_id.clone(), metadata, data)
-                .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+        match delivery {
+            Delivery::Zenoh => {
+                // Keep the daemon's control-plane state in sync (input
+                // deadlines, circuit-breaker recovery) without duplicating the
+                // data payload that zenoh already delivered.
+                self.control_channel
+                    .report_output_sent(output_id.clone(), metadata)
+                    .wrap_err_with(|| format!("failed to report output {output_id}"))?;
+            }
+            Delivery::Daemon(data) => {
+                // The daemon/TCP path serializes the whole message; an oversized
+                // IPC payload would otherwise fail deep in the transport with a
+                // generic error. Reject it here with a clear, output-specific
+                // message. Large payloads are expected to reach a zenoh
+                // subscriber instead, which has no such limit.
+                if let Some(DataMessage::Vec(v)) = &data
+                    && v.len() > dora_message::MAX_MESSAGE_BYTES
+                {
+                    return Err(NodeError::Output(format!(
+                        "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
+                         the {}-byte daemon transport limit (no matching zenoh subscriber to \
+                         take the large payload)",
+                        v.len(),
+                        dora_message::MAX_MESSAGE_BYTES,
+                    )));
+                }
+                self.control_channel
+                    .send_message(output_id.clone(), metadata, data)
+                    .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+            }
         }
 
         Ok(())
@@ -1052,128 +1156,490 @@ impl DoraNode {
         Ok(())
     }
 
+    /// Whether the direct zenoh data plane is safe to use for `output_id` — i.e.
+    /// every subscriber this output has in the dataflow has announced its
+    /// subscription. Returns `false` while any expected subscriber is still
+    /// missing, so the caller keeps using the reliable daemon path (no message is
+    /// dropped during the startup subscription-establishment window).
+    ///
+    /// Lazily declares the per-output liveliness counter on first use. Once all
+    /// subscribers are confirmed the result latches `true` and later calls are a
+    /// cheap map lookup. If readiness tracking cannot be set up (no zenoh session
+    /// or an invalid key) this returns `true` so the data plane is not stalled.
+    fn ensure_output_ready(&mut self, output_id: &DataId) -> bool {
+        use zenoh::Wait;
+
+        if self
+            .zenoh_output_readiness
+            .get(output_id)
+            .is_some_and(|r| r.ready)
+        {
+            return true;
+        }
+
+        if !self.zenoh_output_readiness.contains_key(output_id) {
+            match self.declare_output_readiness(output_id) {
+                Some(readiness) => {
+                    self.zenoh_output_readiness
+                        .insert(output_id.clone(), readiness);
+                }
+                // Tracking unavailable — don't stall the data plane.
+                None => return true,
+            }
+        }
+
+        let (expected, count) = {
+            let readiness = self
+                .zenoh_output_readiness
+                .get(output_id)
+                .expect("readiness entry just ensured");
+            let count = readiness.alive.lock().map(|alive| alive.len()).unwrap_or(0);
+            (readiness.expected, count)
+        };
+
+        // No subscribers to wait for: nothing can be lost, use the fast path.
+        if expected == 0 {
+            self.mark_output_ready(output_id);
+            return true;
+        }
+
+        if count < expected {
+            return false;
+        }
+
+        // Every readiness token is visible (all subscribers declared their
+        // subscriptions). Confirm zenoh has actually forwarded a matching
+        // subscription to this publisher before switching, so the very first
+        // zenoh sample isn't published into a not-yet-wired route.
+        let matched = self
+            .zenoh_publishers
+            .get(output_id)
+            .and_then(|publisher| publisher.matching_status().wait().ok())
+            .is_some_and(|status| status.matching());
+        if matched {
+            self.mark_output_ready(output_id);
+            return true;
+        }
+
+        false
+    }
+
+    /// Latch the output's data plane as ready (idempotent).
+    fn mark_output_ready(&mut self, output_id: &DataId) {
+        if let Some(readiness) = self.zenoh_output_readiness.get_mut(output_id) {
+            if !readiness.ready {
+                tracing::debug!(
+                    output = %output_id,
+                    subscribers = readiness.expected,
+                    "all subscribers wired; switching output to direct zenoh data plane"
+                );
+            }
+            readiness.ready = true;
+        }
+    }
+
+    /// Build the per-output readiness counter: resolve how many subscribers the
+    /// output has (from the dataflow descriptor) and declare a liveliness
+    /// subscriber that counts their readiness tokens. Returns `None` if there is
+    /// no zenoh session or the counting subscription could not be declared.
+    fn declare_output_readiness(&self, output_id: &DataId) -> Option<ZenohOutputReadiness> {
+        use zenoh::Wait;
+
+        let session = self.zenoh_session.as_ref()?;
+
+        // Expected subscriber count from the global topology. A descriptor that
+        // failed to parse (never the case for a daemon-spawned node) yields 0,
+        // which just means "no barrier" — the pre-existing behaviour.
+        let expected = match &self.dataflow_descriptor {
+            Ok(descriptor) => descriptor
+                .output_subscriber_count(&self.id, output_id)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        output = %output_id,
+                        "failed to count subscribers ({e}); not gating the zenoh data plane"
+                    );
+                    0
+                }),
+            Err(_) => 0,
+        };
+
+        let prefix = dora_core::topics::zenoh_output_ready_liveliness_prefix(
+            self.dataflow_id,
+            &self.id,
+            output_id,
+        );
+        let key_expr = match zenoh::key_expr::KeyExpr::new(prefix) {
+            Ok(key) => key.into_owned(),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "invalid readiness key ({e}); not gating the zenoh data plane");
+                return None;
+            }
+        };
+
+        let alive = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let alive_cb = alive.clone();
+        // `history(true)` replays tokens that were declared before this
+        // subscriber, so subscribers that wired up early are still counted.
+        let subscriber = session
+            .liveliness()
+            .declare_subscriber(key_expr)
+            .history(true)
+            .callback(move |sample| {
+                let key = sample.key_expr().as_str().to_string();
+                if let Ok(mut alive) = alive_cb.lock() {
+                    match sample.kind() {
+                        zenoh::sample::SampleKind::Put => {
+                            alive.insert(key);
+                        }
+                        zenoh::sample::SampleKind::Delete => {
+                            alive.remove(&key);
+                        }
+                    }
+                }
+            })
+            .wait();
+
+        match subscriber {
+            Ok(subscriber) => Some(ZenohOutputReadiness {
+                expected,
+                ready: false,
+                alive,
+                _liveliness_sub: subscriber,
+            }),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare readiness subscriber ({e}); not gating the zenoh data plane");
+                None
+            }
+        }
+    }
+
+    /// Ensure a direct-zenoh data publisher is declared for `output_id`.
+    ///
+    /// Idempotent: returns `true` if a publisher exists after the call (already
+    /// present or freshly declared), `false` if there is no zenoh session or the
+    /// declaration failed (the caller then falls back to the daemon path).
+    ///
+    /// QoS is configured at declare time so it applies to every put:
+    /// `express(true)` bypasses zenoh's adaptive batch timer (the single biggest
+    /// small-message latency win — without it, per-put delivery on the bare local
+    /// config collapses to a few msg/s), `Priority::RealTime` keeps data-plane
+    /// messages off the bulk-data queues, and `CongestionControl::Drop` prevents a
+    /// stalled subscriber from back-pressuring the publishing node.
+    fn ensure_zenoh_publisher(&mut self, output_id: &DataId) -> bool {
+        use zenoh::Wait;
+        use zenoh::qos::{CongestionControl, Priority};
+
+        if self.zenoh_publishers.contains_key(output_id) {
+            return true;
+        }
+        let Some(session) = self.zenoh_session.as_ref() else {
+            return false;
+        };
+        let topic =
+            dora_core::topics::zenoh_output_publish_topic(self.dataflow_id, &self.id, output_id);
+        let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
+            Ok(key) => key.into_owned(),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
+                return false;
+            }
+        };
+        let publisher = match session
+            .declare_publisher(key_expr)
+            .congestion_control(CongestionControl::Drop)
+            .express(true)
+            .priority(Priority::RealTime)
+            .wait()
+        {
+            Ok(publisher) => publisher,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
+                return false;
+            }
+        };
+        self.zenoh_publishers.insert(output_id.clone(), publisher);
+        true
+    }
+
+    /// Eagerly declare this node's direct-zenoh output publishers and readiness
+    /// counters, then wait (bounded) until every output's subscribers are wired
+    /// up — so the user's first `send_output` on a connected output is guaranteed
+    /// to hit an established route rather than dropping startup samples.
+    ///
+    /// Runs once, at the end of [`Self::init`], *after* the daemon "all nodes
+    /// ready" barrier. By then every subscriber in the dataflow has already
+    /// declared its data subscriber and readiness token (the barrier releases
+    /// only once all nodes have subscribed), so this merely waits out zenoh route
+    /// propagation between already-declared endpoints — normally milliseconds.
+    ///
+    /// Fail-safe: outputs that don't connect within
+    /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (an unreachable remote subscriber, or a
+    /// zenoh data plane that can't connect while the control plane can) are left
+    /// on the reliable daemon path and upgrade to direct zenoh on a later send
+    /// once their subscribers appear. The dataflow is never blocked from starting
+    /// and nothing is dropped.
+    fn warm_up_direct_outputs(&mut self) {
+        if self.zenoh_session.is_none() {
+            return;
+        }
+        let outputs: Vec<DataId> = self.node_config.outputs.iter().cloned().collect();
+        if outputs.is_empty() {
+            return;
+        }
+
+        // Declare publishers up front so zenoh starts wiring routes immediately
+        // and `ensure_output_ready` (which reads `matching_status`) can observe
+        // them. `ensure_output_ready` lazily declares the readiness counter.
+        for output_id in &outputs {
+            self.ensure_zenoh_publisher(output_id);
+        }
+
+        let deadline = Instant::now() + ZENOH_OUTPUT_CONNECT_TIMEOUT;
+        loop {
+            let all_ready = outputs
+                .iter()
+                .all(|output_id| self.ensure_output_ready(output_id));
+            if all_ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let pending: Vec<&str> = outputs
+                    .iter()
+                    .filter(|o| !self.ensure_output_ready(o))
+                    .map(|o| o.as_str())
+                    .collect();
+                tracing::debug!(
+                    outputs = ?pending,
+                    "direct-zenoh routes not confirmed within {}s; these outputs start on the daemon path and upgrade when their subscribers connect",
+                    ZENOH_OUTPUT_CONNECT_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            std::thread::sleep(ZENOH_OUTPUT_CONNECT_POLL_INTERVAL);
+        }
+    }
+
     /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
     /// Uses SHM for zero-copy when possible, falls back to heap buffer.
     ///
-    /// The publisher is declared with `express(true)` to bypass zenoh's adaptive
-    /// batch timer (the single biggest small-message latency win — without it,
-    /// per-put delivery on the bare local config collapses to a few msg/s) and
-    /// with `Priority::RealTime` so data-plane messages don't share queues with
-    /// bulk traffic.
+    /// The publisher is declared (see [`Self::ensure_zenoh_publisher`]) with
+    /// `express(true)` to bypass zenoh's adaptive batch timer and with
+    /// `Priority::RealTime` so data-plane messages don't share queues with bulk
+    /// traffic.
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
         metadata: &Metadata,
-        data: &[u8],
-    ) -> eyre::Result<bool> {
+        finalized: FinalizedSample,
+    ) -> eyre::Result<PublishOutcome> {
         use zenoh::Wait;
-        use zenoh::qos::{CongestionControl, Priority};
 
+        // Every failure *before* the payload is moved into `put` returns the
+        // sample as `NotPublished` so the caller can still deliver it via the
+        // daemon. Only a failed `put` of an SHM buffer (which consumes it)
+        // returns `Err` — that is the single non-recoverable case.
+        //
+        // Get or create the publisher for this output. Normally it was already
+        // declared eagerly at startup (see [`Self::warm_up_direct_outputs`]);
+        // this covers outputs sent that weren't declared then. A missing
+        // session or a declaration failure falls back to the daemon path.
+        if !self.ensure_zenoh_publisher(output_id) {
+            return Ok(PublishOutcome::NotPublished(finalized));
+        }
+
+        // Startup no-loss barrier: until every subscriber for this output has
+        // wired up its zenoh subscription, deliver over the reliable daemon path
+        // rather than dropping early samples on the not-yet-established data
+        // plane. Once all subscribers are confirmed this latches ready and every
+        // subsequent send takes the fast zenoh path.
+        if !self.ensure_output_ready(output_id) {
+            return Ok(PublishOutcome::NotPublished(finalized));
+        }
+
+        let Some(publisher) = self.zenoh_publishers.get(output_id) else {
+            tracing::warn!(output = %output_id, "zenoh publisher missing; falling back to daemon path");
+            return Ok(PublishOutcome::NotPublished(finalized));
+        };
         let session = self
             .zenoh_session
             .as_ref()
-            .ok_or_else(|| eyre::eyre!("zenoh session not initialized"))?;
+            .expect("zenoh session presence checked above");
 
-        // Get or create publisher for this output. QoS is configured at
-        // declare time so it applies to every put: `express(true)` bypasses
-        // zenoh's adaptive batch timer (the single biggest small-message
-        // latency win — without it, per-put delivery on the bare local config
-        // collapses to a few msg/s), and `Priority::RealTime` keeps data-plane
-        // messages off the bulk-data queues. `CongestionControl::Drop`
-        // prevents a stalled subscriber from back-pressuring the publishing
-        // node.
-        let declared_publisher = if !self.zenoh_publishers.contains_key(output_id) {
-            let topic = dora_core::topics::zenoh_output_publish_topic(
-                self.dataflow_id,
-                &self.id,
-                output_id,
-            );
-            let key_expr = zenoh::key_expr::KeyExpr::new(topic)
-                .map_err(|e| eyre::eyre!("invalid zenoh key: {e}"))?
-                .into_owned();
-            let publisher = session
-                .declare_publisher(key_expr)
-                .congestion_control(CongestionControl::Drop)
-                .express(true)
-                .priority(Priority::RealTime)
-                .wait()
-                .map_err(|e| eyre::eyre!("failed to declare zenoh publisher: {e}"))?;
-            self.zenoh_publishers.insert(output_id.clone(), publisher);
-            true
-        } else {
-            false
+        // Serialize metadata as zenoh attachment.
+        let metadata_bytes = match bincode::serialize(metadata) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
+                return Ok(PublishOutcome::NotPublished(finalized));
+            }
         };
-        let publisher = self
-            .zenoh_publishers
-            .get(output_id)
-            .ok_or_else(|| eyre::eyre!("zenoh publisher missing for output `{output_id}`"))?;
 
-        if declared_publisher {
-            let wait_until = Instant::now() + ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT;
-            loop {
-                match publisher.matching_status().wait() {
-                    Ok(status) if status.matching() => break,
-                    Ok(_) if Instant::now() < wait_until => {
-                        std::thread::sleep(ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL);
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            output = %output_id,
-                            "no matching zenoh subscriber before first publish timeout"
-                        );
-                        return Ok(false);
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            output = %output_id,
-                            "failed to query zenoh matching status before first publish: {err}"
-                        );
-                        return Ok(false);
-                    }
-                }
+        match finalized {
+            // The producer already wrote into shared memory. Move the SHM
+            // buffer straight into `put` — no realloc, no copy. This is the
+            // path that eliminates the former heap-to-SHM second copy.
+            //
+            // On a put error the buffer has been consumed and cannot be
+            // recovered for the daemon fallback, so this returns an error
+            // (the caller logs and drops the message). This is a deliberate
+            // trade-off for zero-copy on the common matched-subscriber path.
+            // Producer-constructed SHM sample: `put` *moves* (consumes) the SHM
+            // buffer, so — unlike the borrowed-heap `Vec` arm below — there is no
+            // intact payload left to retry on error. A put failure is therefore
+            // best-effort: the message is dropped (the caller logs it). This is
+            // the deliberate, accepted trade-off for the zero-copy large-output
+            // path, not an oversight.
+            FinalizedSample::Shm(sbuf) => {
+                publisher
+                    .put(sbuf)
+                    .attachment(&metadata_bytes[..])
+                    .wait()
+                    .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
+                Ok(PublishOutcome::Published)
             }
-        }
-
-        // Serialize metadata as zenoh attachment
-        let metadata_bytes = bincode::serialize(metadata)
-            .wrap_err("failed to serialize metadata for zenoh attachment")?;
-
-        // Try SHM allocation, fall back to heap. Skip the SHM path entirely
-        // for payloads below `zenoh_zero_copy_threshold` — the SHM provider is
-        // page-aligned (4 KiB on Linux), so allocating a full page for smaller
-        // payloads is pure waste; the heap-buffered zenoh put is faster.
-        if data.len() >= self.zenoh_zero_copy_threshold
-            && let Some(provider) = &self.zenoh_shm_provider
-        {
-            use zenoh::shm::{BlockOn, GarbageCollect};
-            match provider
-                .alloc(data.len())
-                .with_policy::<BlockOn<GarbageCollect>>()
-                .wait()
-            {
-                Ok(mut sbuf) => {
-                    sbuf.as_mut().copy_from_slice(data);
-                    publisher
-                        .put(sbuf)
-                        .attachment(&metadata_bytes[..])
+            // Heap payload. At or above the threshold, copy once into a fresh
+            // SHM buffer so local subscribers still get zero-copy delivery;
+            // below it, a heap-buffered put is cheaper than a full SHM page.
+            // The heap buffer is only borrowed, so any put error can fall back
+            // to the daemon path with the payload intact.
+            FinalizedSample::Vec(avec) => {
+                if avec.len() >= self.zenoh_zero_copy_threshold
+                    && let Some(provider) = &self.zenoh_shm_provider
+                {
+                    use zenoh::shm::GarbageCollect;
+                    // Non-blocking: garbage-collect freed chunks and allocate, but
+                    // do NOT block waiting for the pool to drain. Under a burst of
+                    // large messages the zero-copy receiver pins each segment for
+                    // the whole receive pipeline, so the pool can be momentarily
+                    // exhausted; `BlockOn` would then sleep 1 ms per retry (zenoh
+                    // 1.8 has no alloc signalling yet), throttling throughput to
+                    // ~1k msg/s. Falling back to a heap-buffered put instead keeps
+                    // the producer moving (PR #2366).
+                    match provider
+                        .alloc(avec.len())
+                        .with_policy::<GarbageCollect>()
                         .wait()
-                        .map_err(|e| eyre::eyre!("zenoh SHM publish failed: {e}"))?;
-                    return Ok(true);
+                    {
+                        Ok(mut sbuf) => {
+                            sbuf.as_mut().copy_from_slice(&avec);
+                            return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
+                            {
+                                Ok(()) => Ok(PublishOutcome::Published),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "zenoh SHM publish failed ({e}); \
+                                         falling back to daemon path"
+                                    );
+                                    Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                        }
+                    }
                 }
-                Err(e) => {
-                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+
+                // A large payload that did not make it into SHM (no provider, or
+                // the pool was momentarily full) must NOT be published over the
+                // zenoh data plane: a payload larger than the transport batch
+                // size is fragmented, and the express/`Drop` data publisher
+                // silently drops fragmented messages — `put` reports success but
+                // the subscriber never receives them (PR #2366). Route it via the
+                // reliable daemon path instead (TCP, up to `MAX_MESSAGE_BYTES`).
+                // Only sub-threshold payloads, which fit a single batch and never
+                // fragment, take the zenoh heap put below.
+                if avec.len() >= self.zenoh_zero_copy_threshold {
+                    return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
+                }
+
+                // Only sub-threshold (single-batch, never-fragmented) payloads
+                // reach this point — large payloads were routed to the daemon
+                // path above. Apply the schema-once optimization to small
+                // messages with a stable Arrow schema: publish the schema on the
+                // `@schema` subtopic (only on change) and send just the
+                // schema-less batch on the data topic, tagged with the schema
+                // hash so the receiver matches it to the decoder primed from the
+                // subtopic.
+                //
+                // The message that (re)publishes the schema — the output's first,
+                // every schema change, any message after a failed `@schema` put,
+                // and a periodic refresh — is itself sent as a full
+                // self-describing stream (`publish_schema_once` returns `None`
+                // for it). It decodes standalone and primes receivers in-band,
+                // in data-plane order, so the express batch can never outrun its
+                // own schema (the `@schema` plane's non-express `Block` publish
+                // otherwise loses that race) and a one-shot output cannot lose
+                // its only message.
+                //
+                // Service/action request-reply messages (carrying
+                // `request_id`/`goal_id`/`goal_status`) are excluded: a server
+                // legitimately multiplexes multiple response schemas through one
+                // output, interleaved per request, and each per-message schema
+                // change would force a full stream + `@schema` publish anyway.
+                // Sending them as full self-describing streams (the pre-PR
+                // behavior) makes each message decode standalone regardless of
+                // schema order, at the cost of ~400 B of framing per message —
+                // acceptable for these request/reply-rate patterns.
+                //
+                // Streaming (`session_id`/`segment_id`) is deliberately NOT
+                // excluded: every chunk of a stream shares one schema, so
+                // schema-once primes once and each chunk reuses it — streaming is
+                // the high-rate small-message case schema-once exists for. A
+                // schema change at a segment boundary is just the one-time
+                // re-prime window any schema-once output has, not the per-message
+                // alternation that makes service/action lossy.
+                //
+                // `schema_once` is bound here, not inside the match, so its
+                // attachment bytes outlive the `put` below.
+                let schema_once = if schema_once_eligible(
+                    avec.len(),
+                    self.zenoh_zero_copy_threshold,
+                    &metadata.parameters,
+                ) {
+                    publish_schema_once(
+                        &mut self.zenoh_schema_publishers,
+                        &mut self.zenoh_schema_state,
+                        session,
+                        self.dataflow_id,
+                        &self.id,
+                        output_id,
+                        &avec,
+                        metadata,
+                    )
+                } else {
+                    None
+                };
+                // Fall back to a full standalone stream if the batch slice can't
+                // be taken (a real IPC stream always can — defensive).
+                let (payload, attachment): (&[u8], &[u8]) = match schema_once.as_ref() {
+                    Some(att) => match arrow_utils::ipc_encode::batch_slice(&avec) {
+                        Some(slice) => (slice, att.as_slice()),
+                        None => (&avec[..], &metadata_bytes[..]),
+                    },
+                    None => (&avec[..], &metadata_bytes[..]),
+                };
+                match publisher.put(payload).attachment(attachment).wait() {
+                    Ok(()) => Ok(PublishOutcome::Published),
+                    Err(e) => {
+                        tracing::warn!("zenoh publish failed ({e}); falling back to daemon path");
+                        // The zenoh data plane did not deliver this message. If
+                        // it was the one meant to prime receivers in-band (the
+                        // first message of a schema, or a periodic refresh),
+                        // `publish_schema_once` already recorded its state and
+                        // the following messages would go out schema-less with
+                        // no delivered priming stream. Forget the output's
+                        // schema-once state so the next message sends a full
+                        // stream and re-publishes the schema. (A congestion
+                        // drop reports `Ok` and stays undetectable — inherent
+                        // to `CongestionControl::Drop`; the periodic refresh
+                        // bounds that residual window.)
+                        self.zenoh_schema_state.remove(output_id);
+                        Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                    }
                 }
             }
         }
-
-        // Fallback: publish raw bytes (no SHM)
-        publisher
-            .put(data)
-            .attachment(&metadata_bytes[..])
-            .wait()
-            .map_err(|e| eyre::eyre!("zenoh publish failed: {e}"))?;
-
-        Ok(true)
     }
 
     /// Returns the ID of the node as specified in the dataflow configuration file.
@@ -1393,10 +1859,53 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     ///
-    /// Zero-copy transport for large messages is handled by the zenoh SHM
-    /// provider inside [`send_output`](Self::send_output); this allocation itself is a heap
-    /// buffer.
+    /// For payloads at or above the zero-copy threshold the buffer is allocated
+    /// directly from the zenoh SHM provider (when available), so the producer
+    /// writes straight into shared memory and publishing moves the buffer into
+    /// zenoh's `put` without a further copy. Smaller payloads — or the case
+    /// where no SHM provider exists (interactive/testing mode) — use a
+    /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
+    /// page-aligned, so dedicating a full page to a small message is pure waste.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
+        if data_len >= self.zenoh_zero_copy_threshold
+            && let Some(provider) = &self.zenoh_shm_provider
+        {
+            use zenoh::Wait;
+            use zenoh::shm::GarbageCollect;
+            // Non-blocking (see `zenoh_publish`): GC and allocate, but fall back
+            // to a heap buffer rather than `BlockOn`-sleeping 1 ms when the pool
+            // is momentarily full under a large-message burst. The heap buffer
+            // costs one extra copy on publish but keeps the producer from
+            // stalling, which is what regressed sustained throughput (PR #2366).
+            match provider
+                .alloc(data_len)
+                .with_policy::<GarbageCollect>()
+                .wait()
+            {
+                Ok(sbuf) => {
+                    // Use the SHM buffer only when it is exactly the requested
+                    // size — zenoh 1.8 guarantees this (the logical length
+                    // matches the request even when the backing chunk is
+                    // larger). If a future provider ever over-allocates, fall
+                    // back to heap rather than expose or publish an oversized
+                    // slice (`DataSample` has no length cap of its own).
+                    if sbuf.as_ref().len() == data_len {
+                        return Ok(DataSample {
+                            storage: SampleStorage::Shm(sbuf),
+                        });
+                    }
+                    tracing::debug!(
+                        "zenoh SHM alloc returned {} bytes for a {data_len}-byte \
+                         request; using heap",
+                        sbuf.as_ref().len()
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                }
+            }
+        }
+
         let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
         Ok(avec.into())
     }
@@ -1540,7 +2049,7 @@ impl DoraNodeBuilder {
 /// until process exit. That is acceptable for nodes dropped right before
 /// exit; long-lived hosts (e.g. a Python interpreter dropping a node during
 /// GC) inherit only the bounded delay instead of a permanent hang.
-fn teardown_with_timeout(
+pub(crate) fn teardown_with_timeout(
     label: &str,
     timeout: Duration,
     teardown: impl FnOnce() + Send + 'static,
@@ -1576,6 +2085,10 @@ impl Drop for DoraNode {
         // Tear down zenoh before notifying the daemon below, so that
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
+        let schema_publishers = std::mem::take(&mut self.zenoh_schema_publishers);
+        // Per-output readiness counters hold liveliness subscribers on the shared
+        // session; drop them before the session (same reasoning as publishers).
+        let readiness = std::mem::take(&mut self.zenoh_output_readiness);
         let shm_provider = self.zenoh_shm_provider.take();
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
@@ -1588,9 +2101,12 @@ impl Drop for DoraNode {
             // hang node shutdown (and with it the daemon, which waits for
             // `InputClosed`). Bound the teardown with a deadline instead.
             let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
-                // documented drop order: publishers before the session,
-                // owned runtime last so async cleanup can still run
+                // documented drop order: publishers (data + schema) and readiness
+                // subscribers before the session, owned runtime last so async
+                // cleanup can still run
                 drop(publishers);
+                drop(schema_publishers);
+                drop(readiness);
                 drop(shm_provider);
                 drop(session);
                 drop(runtime);
@@ -1626,14 +2142,36 @@ impl Drop for DoraNode {
 ///
 /// `DataSample` implements the [`Deref`](std::ops::Deref) and
 /// [`DerefMut`](std::ops::DerefMut) traits to read and write the mapped data.
+///
+/// The backing storage is either a heap buffer or — for payloads at or above
+/// the zero-copy threshold when a zenoh SHM provider is available — a
+/// zenoh-shared-memory buffer. Writing into an SHM-backed sample lets the
+/// producer construct the message straight in shared memory, so publishing it
+/// needs no further copy (the SHM buffer is moved directly into zenoh's `put`).
 pub struct DataSample {
-    buffer: AVec<u8, ConstAlign<128>>,
-    len: usize,
+    storage: SampleStorage,
+}
+
+/// Backing storage for a [`DataSample`]. Kept private so the public API never
+/// exposes a zenoh SHM type; callers only ever see the `[u8]` view via
+/// `Deref`/`DerefMut`.
+enum SampleStorage {
+    /// Heap-allocated, 128-byte-aligned buffer (used below the zero-copy
+    /// threshold or when no SHM provider is available).
+    Heap(AVec<u8, ConstAlign<128>>),
+    /// Zenoh shared-memory buffer. The producer writes the payload directly
+    /// into it and the buffer is later moved into the zenoh `put` without
+    /// copying.
+    Shm(zenoh::shm::ZShmMut),
 }
 
 impl DataSample {
-    fn finalize(self) -> DataMessage {
-        DataMessage::Vec(self.buffer)
+    /// Consume the sample into a [`FinalizedSample`] ready for transport.
+    fn finalize(self) -> FinalizedSample {
+        match self.storage {
+            SampleStorage::Heap(buffer) => FinalizedSample::Vec(buffer),
+            SampleStorage::Shm(sbuf) => FinalizedSample::Shm(sbuf),
+        }
     }
 }
 
@@ -1641,21 +2179,26 @@ impl std::ops::Deref for DataSample {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
-        &self.buffer[..self.len]
+        match &self.storage {
+            SampleStorage::Heap(buffer) => buffer,
+            SampleStorage::Shm(sbuf) => sbuf.as_ref(),
+        }
     }
 }
 
 impl std::ops::DerefMut for DataSample {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.buffer[..self.len]
+        match &mut self.storage {
+            SampleStorage::Heap(buffer) => buffer,
+            SampleStorage::Shm(sbuf) => sbuf.as_mut(),
+        }
     }
 }
 
 impl From<AVec<u8, ConstAlign<128>>> for DataSample {
     fn from(value: AVec<u8, ConstAlign<128>>) -> Self {
         Self {
-            len: value.len(),
-            buffer: value,
+            storage: SampleStorage::Heap(value),
         }
     }
 }
@@ -1663,23 +2206,252 @@ impl From<AVec<u8, ConstAlign<128>>> for DataSample {
 impl std::fmt::Debug for DataSample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataSample")
-            .field("len", &self.len)
+            .field("len", &self.len())
             .finish_non_exhaustive()
     }
 }
 
-/// Returns `true` if the given metadata carries any pattern-correlation
-/// key (`request_id`, `goal_id`, or `goal_status`).
+/// A finalized output payload ready for transport.
 ///
-/// Messages marked with these keys belong to a service, action, or
-/// streaming pattern where multiple Arrow schemas can legitimately
-/// flow through a single output/input, distinguished by metadata
-/// rather than a fixed Arrow type. Type checks are skipped for such
-/// messages (dora-rs/adora#150).
-pub(crate) fn carries_pattern_correlation(params: &MetadataParameters) -> bool {
-    params.contains_key(dora_message::metadata::REQUEST_ID)
-        || params.contains_key(dora_message::metadata::GOAL_ID)
-        || params.contains_key(dora_message::metadata::GOAL_STATUS)
+/// Kept separate from [`DataMessage`] so SHM buffers stay out of the
+/// `Serialize`/`Deserialize` TCP path: the zenoh data plane moves an `Shm`
+/// buffer straight into `put` (zero extra copy), while the daemon fallback
+/// converts to [`DataMessage::Vec`], copying out of shared memory only when the
+/// zenoh path could not deliver.
+enum FinalizedSample {
+    Vec(AVec<u8, ConstAlign<128>>),
+    Shm(zenoh::shm::ZShmMut),
+}
+
+impl FinalizedSample {
+    fn byte_len(&self) -> usize {
+        match self {
+            FinalizedSample::Vec(v) => v.len(),
+            FinalizedSample::Shm(sbuf) => sbuf.as_ref().len(),
+        }
+    }
+
+    /// Convert into a TCP-transportable [`DataMessage`]. For the `Shm` arm this
+    /// copies the payload out of shared memory into a heap buffer; it runs only
+    /// on the daemon fallback (no matching zenoh subscriber / no session).
+    fn into_data_message(self) -> DataMessage {
+        match self {
+            FinalizedSample::Vec(v) => DataMessage::Vec(v),
+            FinalizedSample::Shm(sbuf) => {
+                let bytes = sbuf.as_ref();
+                let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
+                avec.copy_from_slice(bytes);
+                DataMessage::Vec(avec)
+            }
+        }
+    }
+}
+
+/// Outcome of a zenoh publish attempt.
+enum PublishOutcome {
+    /// The payload was delivered to zenoh (or, on a rare SHM put error,
+    /// consumed and lost — see [`DoraNode::zenoh_publish`]).
+    Published,
+    /// No matching subscriber, or a transport error before the payload was
+    /// consumed. The sample is returned so the caller can fall back to the
+    /// daemon path.
+    NotPublished(FinalizedSample),
+}
+
+/// FNV-1a hash of `bytes` with a fixed seed (cross-process deterministic).
+/// Delegates to [`dora_message::metadata::fnv1a`] — the single source of truth
+/// shared with the daemon's `dora topic` debug path, so schema hashes match.
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    dora_message::metadata::fnv1a(bytes)
+}
+
+/// How often a schema-once output re-sends a full self-describing stream on the
+/// data topic. Full streams prime receivers in-band, so this bounds how long a
+/// consumer that missed the single `@schema` emission (e.g. a failed zenoh-ext
+/// history query) drops schema-less batches: it re-primes at the next refresh
+/// instead of losing the input permanently. ~400 B of extra framing per output
+/// per interval — negligible.
+pub(crate) const SCHEMA_ONCE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Producer-side schema-once state for one output.
+struct SchemaOnceState {
+    /// Hash of the schema confirmed published on the `@schema` subtopic.
+    published_hash: u64,
+    /// When the last full self-describing stream was sent on the data topic.
+    last_full_stream: Instant,
+}
+
+/// What `publish_schema_once` should do for the current message.
+#[derive(Debug)]
+enum SchemaOnceDecision {
+    /// The schema for this hash is not confirmed published (first message,
+    /// schema change, or an earlier `@schema` publish failed): publish it and
+    /// send this message as a full self-describing stream. The full stream
+    /// decodes standalone and primes receivers in-band — in data-plane order —
+    /// so the first message of an output cannot be lost to the express batch
+    /// racing ahead of the schema on the separate `@schema` plane, and a failed
+    /// schema publish degrades to "full stream every message" (decodable)
+    /// instead of "hash-tagged but undecodable" (dora-rs/dora#2366 review).
+    PublishSchemaAndSendFullStream,
+    /// The periodic full-stream refresh is due (see
+    /// [`SCHEMA_ONCE_REFRESH_INTERVAL`]).
+    SendFullStreamRefresh,
+    /// Schema confirmed published and fresh: send only the schema-less batch,
+    /// tagged with the schema hash.
+    SendSchemaLessBatch,
+}
+
+fn schema_once_decision(
+    state: Option<&SchemaOnceState>,
+    hash: u64,
+    now: Instant,
+) -> SchemaOnceDecision {
+    match state {
+        Some(state) if state.published_hash == hash => {
+            if now.duration_since(state.last_full_stream) >= SCHEMA_ONCE_REFRESH_INTERVAL {
+                SchemaOnceDecision::SendFullStreamRefresh
+            } else {
+                SchemaOnceDecision::SendSchemaLessBatch
+            }
+        }
+        _ => SchemaOnceDecision::PublishSchemaAndSendFullStream,
+    }
+}
+
+/// Publish the Arrow IPC schema for `output_id` on its `@schema` subtopic when
+/// it changes, and return the attachment metadata (carrying the schema hash)
+/// for the schema-less batch the caller sends on the data topic. Returns `None`
+/// when the caller must send the full self-describing stream instead: on the
+/// message that (re)publishes the schema, when the `@schema` publish failed,
+/// for the periodic full-stream refresh, or if `full_stream` is not a parseable
+/// IPC stream (see [`SchemaOnceDecision`]).
+///
+/// Takes the maps by `&mut` (not `&mut self`) so it can run while an immutable
+/// borrow of `self.zenoh_publishers` (the data publisher) is live.
+#[allow(clippy::too_many_arguments)]
+fn publish_schema_once(
+    schema_publishers: &mut HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    schema_state: &mut HashMap<DataId, SchemaOnceState>,
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    output_id: &DataId,
+    full_stream: &[u8],
+    base_metadata: &Metadata,
+) -> Option<Vec<u8>> {
+    let (hash, schema_bytes) = arrow_utils::ipc_encode::schema_block_and_hash(full_stream)?;
+
+    let now = Instant::now();
+    let decision = schema_once_decision(schema_state.get(output_id), hash, now);
+    tracing::debug!(output = %output_id, decision = ?decision, "schema-once decision");
+
+    match decision {
+        SchemaOnceDecision::PublishSchemaAndSendFullStream => {
+            if let Some(publisher) =
+                schema_publisher(schema_publishers, session, dataflow_id, node_id, output_id)
+            {
+                use zenoh::Wait;
+                match publisher.put(schema_bytes).wait() {
+                    // Record the hash only on a successful publish, so a failed
+                    // emission is retried on the next message rather than
+                    // silently skipped.
+                    Ok(()) => {
+                        tracing::debug!(output = %output_id, hash, "schema published on @schema subtopic");
+                        schema_state.insert(
+                            output_id.clone(),
+                            SchemaOnceState {
+                                published_hash: hash,
+                                last_full_stream: now,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(output = %output_id, "failed to publish schema on @schema subtopic ({e})");
+                    }
+                }
+            }
+            None
+        }
+        SchemaOnceDecision::SendFullStreamRefresh => {
+            tracing::debug!(output = %output_id, hash, "sending full-stream refresh");
+            if let Some(state) = schema_state.get_mut(output_id) {
+                state.last_full_stream = now;
+            }
+            None
+        }
+        SchemaOnceDecision::SendSchemaLessBatch => {
+            tracing::debug!(output = %output_id, hash, "sending schema-less batch with SCHEMA_HASH");
+            // Every batch carries the schema hash so the receiver can match it
+            // to the primed decoder (and detect a schema change).
+            let mut metadata = base_metadata.clone();
+            metadata
+                .parameters
+                .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
+            bincode::serialize(&metadata).ok()
+        }
+    }
+}
+
+/// Get or lazily declare the schema `AdvancedPublisher` for `output_id` on its
+/// `@schema` subtopic. The cache (depth 1) retains the last schema so a
+/// late-joining subscriber's history query can fetch it; `publisher_detection`
+/// lets a subscriber that started first discover this publisher and query its
+/// cache. `CongestionControl::Block` keeps the single live schema emission from
+/// being dropped under congestion.
+fn schema_publisher<'a>(
+    schema_publishers: &'a mut HashMap<DataId, zenoh_ext::AdvancedPublisher<'static>>,
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    output_id: &DataId,
+) -> Option<&'a zenoh_ext::AdvancedPublisher<'static>> {
+    if !schema_publishers.contains_key(output_id) {
+        use zenoh::Wait;
+        use zenoh::qos::CongestionControl;
+        use zenoh_ext::{AdvancedPublisherBuilderExt, CacheConfig, MissDetectionConfig};
+
+        let topic = dora_core::topics::zenoh_output_schema_topic(dataflow_id, node_id, output_id);
+        let key = zenoh::key_expr::KeyExpr::new(topic).ok()?.into_owned();
+        let publisher = match session
+            .declare_publisher(key)
+            .congestion_control(CongestionControl::Block)
+            // `sample_miss_detection` selects SequenceNumber sequencing instead of
+            // the cache's default Timestamp sequencing, so the schema publisher
+            // doesn't require session-wide timestamping (which would otherwise add
+            // an HLC timestamp to every data-plane message too). Its default
+            // config adds no heartbeat, so there's no extra periodic traffic.
+            .sample_miss_detection(MissDetectionConfig::default())
+            .cache(CacheConfig::default())
+            .publisher_detection()
+            .wait()
+        {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare schema publisher ({e})");
+                return None;
+            }
+        };
+        schema_publishers.insert(output_id.clone(), publisher);
+    }
+    schema_publishers.get(output_id)
+}
+
+pub(crate) use dora_message::metadata::carries_pattern_correlation;
+
+/// Whether the schema-once optimization may be applied to a data-plane message.
+///
+/// Eligible only when the payload is below the zero-copy threshold *and* the
+/// output does not interleave multiple Arrow schemas. Service/action
+/// request-reply messages (`request_id`/`goal_id`/`goal_status`) multiplex
+/// response schemas per request and must travel as full self-describing streams
+/// so each decodes standalone; streaming chunks share one schema and stay
+/// eligible. See the rationale at the call site in `zenoh_publish`.
+fn schema_once_eligible(
+    payload_len: usize,
+    zero_copy_threshold: usize,
+    params: &MetadataParameters,
+) -> bool {
+    payload_len < zero_copy_threshold && !carries_pattern_correlation(params)
 }
 
 /// Init Opentelemetry Tracing
@@ -1998,6 +2770,73 @@ mod tests {
         drop(events);
     }
 
+    /// A heap-backed `DataSample` is writable through `DerefMut`, readable
+    /// through `Deref`, and `finalize().into_data_message()` preserves the bytes
+    /// as the `DataMessage::Vec` daemon-path payload. (The SHM-backed arm needs
+    /// a live zenoh provider and is covered by the copy-count harness/smoke.)
+    #[test]
+    fn data_sample_heap_roundtrip() {
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, 8);
+        let mut sample: DataSample = avec.into();
+        sample.copy_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        assert_eq!(&sample[..], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(sample.len(), 8);
+
+        match sample.finalize().into_data_message() {
+            DataMessage::Vec(v) => assert_eq!(v.as_slice(), &[1, 2, 3, 4, 5, 6, 7, 8]),
+        }
+    }
+
+    /// End-to-end wire contract: a few representative arrays IPC-encoded (fast
+    /// path) into a sample and decoded back via `decode_arrow_ipc_zero_copy`
+    /// must equal the input. This is the send->receive round-trip the data
+    /// plane relies on (zenoh can't be smoke-tested here, so this stands in).
+    #[test]
+    fn send_output_ipc_roundtrip() {
+        use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use arrow::array::{ArrayRef, Float32Array, StringArray, StructArray, UInt64Array};
+        use arrow_schema::{DataType, Field};
+        use std::ptr::NonNull;
+
+        fn roundtrip(data: ArrayData) {
+            let len = ipc_fast_path_len(&data).expect("array should be fast-path eligible");
+            let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
+            encode_ipc_into(&data, &mut buf).expect("fast-path IPC encode");
+
+            // Wrap the aligned sample as an Arrow Buffer (no copy), mirroring the
+            // receive path, then decode.
+            let ptr = NonNull::new(buf.as_ptr() as *mut u8).unwrap();
+            let blen = buf.len();
+            // SAFETY: ptr/len describe `buf`; the Arc keeps it alive.
+            let buffer =
+                unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, blen, Arc::new(buf)) };
+            let decoded = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy IPC decode");
+            assert_eq!(
+                data, decoded,
+                "IPC send->receive round-trip must preserve the array"
+            );
+        }
+
+        roundtrip(Float32Array::from(vec![1.0, 2.5, -3.0, 4.0]).into_data());
+        roundtrip(UInt64Array::from(vec![Some(1), None, Some(3)]).into_data());
+        roundtrip(StringArray::from(vec![Some("hello"), None, Some("world")]).into_data());
+        roundtrip(
+            StructArray::from(vec![
+                (
+                    Arc::new(Field::new("v", DataType::UInt64, true)),
+                    Arc::new(UInt64Array::from(vec![Some(1), None, Some(3)])) as ArrayRef,
+                ),
+                (
+                    Arc::new(Field::new("s", DataType::Utf8, true)),
+                    Arc::new(StringArray::from(vec![Some("a"), Some("bb"), None])) as ArrayRef,
+                ),
+            ])
+            .into_data(),
+        );
+    }
+
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
     /// call fails *without* removing the valid ids from the local output set.
     /// Otherwise the daemon (never notified, because `report_closed_outputs` is
@@ -2070,6 +2909,98 @@ mod tests {
             dora_message::metadata::Parameter::String("value".into()),
         );
         assert!(!carries_pattern_correlation(&params));
+    }
+
+    #[test]
+    fn schema_once_excludes_pattern_correlation_outputs() {
+        // Regression (dora-rs/dora#2366 review): a small service/action
+        // request-reply message — which multiplexes response schemas per request
+        // — must NOT use schema-once, or a schema-less batch could reach a
+        // consumer primed for a different schema and be silently dropped. It must
+        // travel as a full self-describing stream instead.
+        const THRESHOLD: usize = 4096;
+
+        let plain = MetadataParameters::default();
+        assert!(
+            schema_once_eligible(100, THRESHOLD, &plain),
+            "small message on a stable-schema output is eligible"
+        );
+        assert!(
+            !schema_once_eligible(THRESHOLD, THRESHOLD, &plain),
+            "a message at/above the threshold is not eligible (goes via SHM/full stream)"
+        );
+
+        for key in [
+            dora_message::metadata::REQUEST_ID,
+            dora_message::metadata::GOAL_ID,
+            dora_message::metadata::GOAL_STATUS,
+        ] {
+            let mut params = MetadataParameters::default();
+            params.insert(
+                key.to_string(),
+                dora_message::metadata::Parameter::String("x".into()),
+            );
+            assert!(
+                !schema_once_eligible(100, THRESHOLD, &params),
+                "small pattern-correlation message ({key}) must bypass schema-once"
+            );
+        }
+
+        // Streaming is deliberately NOT excluded: every chunk of a stream shares
+        // one schema, so streaming stays the high-rate beneficiary of
+        // schema-once. Locking this in guards against a well-meaning "also
+        // exclude streaming" change that would defeat the optimization.
+        let mut stream = MetadataParameters::default();
+        stream.insert(
+            dora_message::metadata::SESSION_ID.to_string(),
+            dora_message::metadata::Parameter::String("s1".into()),
+        );
+        stream.insert(
+            dora_message::metadata::SEGMENT_ID.to_string(),
+            dora_message::metadata::Parameter::Integer(0),
+        );
+        assert!(
+            schema_once_eligible(100, THRESHOLD, &stream),
+            "small streaming chunk (stable schema) stays eligible for schema-once"
+        );
+    }
+
+    #[test]
+    fn schema_once_decision_covers_publish_refresh_and_schema_less() {
+        let start = Instant::now();
+        let later = start + SCHEMA_ONCE_REFRESH_INTERVAL;
+        let state = SchemaOnceState {
+            published_hash: 7,
+            last_full_stream: start,
+        };
+
+        // No state yet (first message of this output) → publish the schema and
+        // send THIS message as a full stream: it decodes standalone and primes
+        // receivers in-band, so the first message can never be lost to the
+        // batch racing ahead of the schema on the separate `@schema` plane
+        // (dora-rs/dora#2366 review).
+        assert!(matches!(
+            schema_once_decision(None, 7, start),
+            SchemaOnceDecision::PublishSchemaAndSendFullStream
+        ));
+        // Schema changed (or an earlier `@schema` publish failed, which leaves
+        // the recorded hash stale) → same: publish + full stream.
+        assert!(matches!(
+            schema_once_decision(Some(&state), 8, start),
+            SchemaOnceDecision::PublishSchemaAndSendFullStream
+        ));
+        // Schema confirmed published and refresh not due → schema-less batch.
+        assert!(matches!(
+            schema_once_decision(Some(&state), 7, start),
+            SchemaOnceDecision::SendSchemaLessBatch
+        ));
+        // Refresh due → send a full stream so any consumer that missed the
+        // single `@schema` emission re-primes in-band within the interval
+        // instead of losing the input permanently.
+        assert!(matches!(
+            schema_once_decision(Some(&state), 7, later),
+            SchemaOnceDecision::SendFullStreamRefresh
+        ));
     }
 
     #[test]
@@ -2191,5 +3122,27 @@ mod tests {
             panic!("teardown panicked")
         });
         assert!(completed, "panicking teardown still counts as completed");
+    }
+
+    // Regression guard for dora-rs/dora#2742: the node's worst-case zenoh teardown must
+    // stay under the daemon's force-kill grace (full rationale on `ZENOH_TEARDOWN_TIMEOUT`).
+    //
+    // Teardown runs in sequential bounded phases (two in `EventStream::drop`, one in
+    // `DoraNode::drop`), so the worst case is `TEARDOWN_PHASES * ZENOH_TEARDOWN_TIMEOUT` —
+    // bump `TEARDOWN_PHASES` if you add another. The grace is `DEFAULT_STOP_GRACE +
+    // DEFAULT_STOP_GRACE/2 = 15s` (`binaries/daemon/src/running_dataflow.rs`); it lives in
+    // a binary crate that can't be imported here, hence the hard-coded copy, which the
+    // daemon const back-references so the two can't silently drift apart.
+    #[test]
+    fn zenoh_teardown_fits_within_daemon_force_kill_grace() {
+        const DAEMON_FORCE_KILL_GRACE: Duration = Duration::from_secs(15);
+        const TEARDOWN_PHASES: u32 = 3;
+        let worst_case = ZENOH_TEARDOWN_TIMEOUT * TEARDOWN_PHASES;
+        assert!(
+            worst_case < DAEMON_FORCE_KILL_GRACE,
+            "worst-case zenoh teardown ({worst_case:?}) must stay under the daemon \
+             force-kill grace ({DAEMON_FORCE_KILL_GRACE:?}); raising ZENOH_TEARDOWN_TIMEOUT \
+             reintroduces dora-rs/dora#2742"
+        );
     }
 }

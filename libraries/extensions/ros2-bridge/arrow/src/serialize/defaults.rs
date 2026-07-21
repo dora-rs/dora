@@ -200,7 +200,12 @@ fn preset_default_for_basic_type(t: &NestableType, preset: &str) -> Result<Array
                     .context("Could not parse preset default value")?,
             ])
             .into(),
-            BasicType::Byte => UInt8Array::from(preset.as_bytes().to_owned()).into(),
+            BasicType::Byte => UInt8Array::from(vec![
+                preset
+                    .parse::<u8>()
+                    .context("Could not parse preset default value")?,
+            ])
+            .into(),
             BasicType::Bool => BooleanArray::from(vec![
                 preset
                     .parse::<bool>()

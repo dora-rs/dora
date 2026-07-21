@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, InputMapping, NodeRunConfig},
+    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -791,6 +791,21 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Per-node finish-drain grace period in seconds.
+    ///
+    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
+    /// When all other nodes in a dataflow have finished, the daemon waits this
+    /// long after the node's last input closes before force-stopping it.
+    ///
+    /// Set to a large value (e.g. `3600.0`) for nodes that need significant
+    /// post-input compute time (ML training, large-batch inference, checkpoint
+    /// writes) to prevent premature SIGKILL while the computation is in progress.
+    ///
+    /// When unset, the global grace period applies (default 120s, controlled
+    /// by `DORA_FINISH_DRAIN_GRACE_SECS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_grace_secs: Option<f64>,
+
     /// Path to a module definition file (e.g. `nav_module.yml`).
     ///
     /// A module is a reusable sub-dataflow: a group of nodes with declared
@@ -1037,20 +1052,6 @@ impl From<PythonSourceDef> for PythonSource {
 }
 
 #[allow(missing_docs)]
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
-pub struct PythonOperatorConfig {
-    pub path: PathBuf,
-    #[serde(default)]
-    pub inputs: BTreeMap<DataId, InputMapping>,
-    #[serde(default)]
-    pub outputs: BTreeSet<DataId>,
-    /// Per-output framing overrides (default: Raw for all).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub output_framing: BTreeMap<DataId, OutputFraming>,
-}
-
-#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
     /// Path of the source code
@@ -1122,6 +1123,12 @@ pub struct CustomNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Per-node finish-drain grace period in seconds.
+    ///
+    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_grace_secs: Option<f64>,
+
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
 }
@@ -1141,13 +1148,6 @@ impl NodeSource {
     pub fn is_git(&self) -> bool {
         matches!(self, Self::GitBranch { .. })
     }
-}
-
-#[allow(missing_docs)]
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub enum ResolvedNodeSource {
-    Local,
-    GitCommit { repo: String, commit_hash: String },
 }
 
 #[allow(missing_docs)]

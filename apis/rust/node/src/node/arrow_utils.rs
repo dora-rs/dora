@@ -1,230 +1,22 @@
 //! Utility functions for converting Arrow arrays to/from raw data.
 //!
-use arrow::array::{ArrayData, BufferSpec};
-use arrow_schema::DataType;
-use dora_message::metadata::{ArrowTypeInfo, BufferOffset};
+pub mod ipc_encode;
+
+use arrow::array::ArrayData;
 use eyre::Context;
 
 /// Maximum Arrow IPC payload size (256 MB).
 const MAX_IPC_BYTES: usize = 256 * 1024 * 1024;
 
-/// Maximum recursion depth for nested Arrow types.
-const MAX_TYPE_DEPTH: usize = 32;
-
-/// Maximum number of buffer offsets or child arrays per level.
-const MAX_ENTRIES: usize = 256;
-
 /// Alignment guaranteed for every raw Arrow buffer inside Dora payloads.
 ///
 /// Arrow kernels can issue SIMD loads from buffer bases. Some ARM platforms
-/// fault on under-aligned SIMD loads, so the raw data-plane format keeps every
-/// buffer start at a 64-byte boundary relative to the payload base.
+/// fault on under-aligned SIMD loads, so every body buffer of an Arrow IPC
+/// stream is placed at a 64-byte boundary relative to the payload base.
 pub(crate) const ARROW_BUFFER_ALIGNMENT: usize = 64;
 pub(crate) const ARROW_BUFFER_ALIGNMENT_EXPONENT: u8 =
     ARROW_BUFFER_ALIGNMENT.trailing_zeros() as u8;
 const _: () = assert!(ARROW_BUFFER_ALIGNMENT.is_power_of_two());
-
-fn payload_buffer_alignment(spec: &BufferSpec) -> usize {
-    let arrow_alignment = match *spec {
-        BufferSpec::FixedWidth { alignment, .. } => alignment,
-        BufferSpec::VariableWidth | BufferSpec::BitMap | BufferSpec::AlwaysNull => 1,
-    };
-    arrow_alignment.max(ARROW_BUFFER_ALIGNMENT)
-}
-
-/// Compute a hash of an Arrow [`DataType`] for fast type matching.
-///
-/// Uses the `Debug` representation which is stable for the same type within
-/// a given Arrow version. Receivers can compare this O(1) value before
-/// performing a full structural type comparison.
-///
-/// Uses FNV-1a with a fixed seed for cross-process determinism (unlike
-/// `DefaultHasher` which may be randomized per process).
-pub fn compute_schema_hash(data_type: &DataType) -> u64 {
-    let s = format!("{data_type:?}");
-    let mut hash: u64 = 0xcbf29ce484222325; // FNV offset basis
-    for byte in s.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3); // FNV prime
-    }
-    hash
-}
-
-/// Calculates the data size in bytes required for storing a continuous copy of the given Arrow
-/// array.
-pub fn required_data_size(array: &ArrayData) -> usize {
-    let mut next_offset = 0;
-    required_data_size_inner(array, &mut next_offset);
-    next_offset
-}
-fn required_data_size_inner(array: &ArrayData, next_offset: &mut usize) {
-    let layout = arrow::array::layout(array.data_type());
-    for (buffer, spec) in array.buffers().iter().zip(&layout.buffers) {
-        let alignment = payload_buffer_alignment(spec);
-        *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-        *next_offset += buffer.len();
-    }
-    for child in array.child_data() {
-        required_data_size_inner(child, next_offset);
-    }
-}
-
-/// Copy the given Arrow array into the provided buffer.
-///
-/// If the Arrow array consists of multiple buffers, they are placed continuously in the target
-/// buffer (there might be some padding for alignment)
-///
-/// Panics if the buffer is not large enough.
-pub fn copy_array_into_sample(target_buffer: &mut [u8], arrow_array: &ArrayData) -> ArrowTypeInfo {
-    let mut next_offset = 0;
-    copy_array_into_sample_inner(target_buffer, &mut next_offset, arrow_array)
-}
-
-fn copy_array_into_sample_inner(
-    target_buffer: &mut [u8],
-    next_offset: &mut usize,
-    arrow_array: &ArrayData,
-) -> ArrowTypeInfo {
-    let mut buffer_offsets = Vec::new();
-    let layout = arrow::array::layout(arrow_array.data_type());
-    for (buffer, spec) in arrow_array.buffers().iter().zip(&layout.buffers) {
-        let len = buffer.len();
-        let alignment = payload_buffer_alignment(spec);
-        *next_offset = (*next_offset).div_ceil(alignment) * alignment;
-
-        assert!(
-            target_buffer[*next_offset..].len() >= len,
-            "target buffer too small (total_len: {}, offset: {}, required_len: {len})",
-            target_buffer.len(),
-            *next_offset,
-        );
-
-        target_buffer[*next_offset..][..len].copy_from_slice(buffer.as_slice());
-        buffer_offsets.push(BufferOffset {
-            offset: *next_offset,
-            len,
-        });
-        *next_offset += len;
-    }
-
-    let mut child_data = Vec::new();
-    for child in arrow_array.child_data() {
-        let child_type_info = copy_array_into_sample_inner(target_buffer, next_offset, child);
-        child_data.push(child_type_info);
-    }
-
-    ArrowTypeInfo {
-        data_type: arrow_array.data_type().clone(),
-        len: arrow_array.len(),
-        null_count: arrow_array.null_count(),
-        validity: arrow_array.nulls().map(|b| b.validity().to_owned()),
-        offset: arrow_array.offset(),
-        buffer_offsets,
-        child_data,
-        field_names: None,
-        schema_hash: Some(compute_schema_hash(arrow_array.data_type())),
-    }
-}
-
-/// Tries to convert the given raw Arrow buffer into an Arrow array.
-///
-/// The `type_info` is required for decoding the `raw_buffer` correctly.
-pub fn buffer_into_arrow_array(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
-) -> eyre::Result<arrow::array::ArrayData> {
-    buffer_into_arrow_array_inner(raw_buffer, type_info, 0)
-}
-
-/// A zero-length Arrow buffer that is aligned for any fixed-width type.
-///
-/// `MutableBuffer` allocates with Arrow's 64-byte alignment, so the resulting
-/// (empty) buffer satisfies the alignment checks `ArrayData::try_new` performs
-/// even for length-0 buffers — unlike a buffer sliced out of an empty payload.
-fn aligned_empty_buffer() -> arrow::buffer::Buffer {
-    arrow::buffer::MutableBuffer::new(0).into()
-}
-
-fn buffer_into_arrow_array_inner(
-    raw_buffer: &arrow::buffer::Buffer,
-    type_info: &ArrowTypeInfo,
-    depth: usize,
-) -> eyre::Result<arrow::array::ArrayData> {
-    if depth > MAX_TYPE_DEPTH {
-        eyre::bail!("Arrow type nesting depth exceeds maximum ({MAX_TYPE_DEPTH})");
-    }
-
-    // NOTE: do not special-case an empty `raw_buffer` here. A zero-footprint
-    // array (e.g. `NullArray::new(n)`, a struct whose only fields are
-    // `Null`-typed, or a zero-length typed array) serializes to an empty
-    // payload while still carrying a meaningful `type_info.len`. Falling back
-    // to `ArrayData::new_empty` would discard that length (and `offset`,
-    // `validity`, `child_data`), silently truncating the array to length 0
-    // (dora-rs/dora#2083). The general path below honors all of them by
-    // rebuilding through `ArrayData::try_new`, which keeps the declared length.
-
-    if type_info.buffer_offsets.len() > MAX_ENTRIES {
-        eyre::bail!(
-            "too many buffer offsets: {} (max {MAX_ENTRIES})",
-            type_info.buffer_offsets.len()
-        );
-    }
-    if type_info.child_data.len() > MAX_ENTRIES {
-        eyre::bail!(
-            "too many child arrays: {} (max {MAX_ENTRIES})",
-            type_info.child_data.len()
-        );
-    }
-
-    let mut buffers = Vec::new();
-    for BufferOffset { offset, len } in &type_info.buffer_offsets {
-        if *len == 0 {
-            // A zero-length buffer carries no data; slicing it out of the
-            // payload risks producing an under-aligned pointer (the payload
-            // base may be empty/dangling), which `ArrayData::try_new` rejects
-            // for SIMD-aligned types. Substitute a freshly allocated, properly
-            // aligned empty buffer instead. This is what lets a zero-footprint
-            // array round-trip with its true length (dora-rs/dora#2083).
-            buffers.push(aligned_empty_buffer());
-            continue;
-        }
-        // Use checked_add to guard against malicious/buggy peers sending
-        // `offset` or `len` values that would overflow `usize` on addition
-        // and bypass the bounds check below.
-        let end = offset
-            .checked_add(*len)
-            .ok_or_else(|| eyre::eyre!("buffer offset overflow: offset={offset}, len={len}"))?;
-        if end > raw_buffer.len() {
-            eyre::bail!(
-                "buffer offset out of bounds: offset={offset}, len={len}, buffer_len={}",
-                raw_buffer.len()
-            );
-        }
-        buffers.push(raw_buffer.slice_with_length(*offset, *len));
-    }
-
-    let mut child_data = Vec::new();
-    for child_type_info in &type_info.child_data {
-        child_data.push(buffer_into_arrow_array_inner(
-            raw_buffer,
-            child_type_info,
-            depth + 1,
-        )?)
-    }
-
-    arrow::array::ArrayData::try_new(
-        type_info.data_type.clone(),
-        type_info.len,
-        type_info
-            .validity
-            .clone()
-            .map(arrow::buffer::Buffer::from_vec),
-        type_info.offset,
-        buffers,
-        child_data,
-    )
-    .context("Error creating Arrow array")
-}
 
 /// Encode an Arrow [`ArrayData`] into an Arrow IPC stream byte buffer.
 ///
@@ -296,24 +88,72 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     Ok(batch.column(0).to_data())
 }
 
+/// Decode an Arrow IPC stream from an Arrow [`Buffer`] **without copying** the
+/// payload buffers when they are properly aligned.
+///
+/// Unlike [`decode_arrow_ipc`], which reads from a byte slice through
+/// `StreamReader` (and therefore allocates a fresh buffer and copies every
+/// array buffer out of the stream), this uses
+/// [`arrow::ipc::reader::StreamDecoder`], which slices the array buffers
+/// directly out of the provided [`Buffer`]. When the input buffer is suitably
+/// aligned — as Dora's shared-memory payloads always are (128-byte `AVec` /
+/// page-aligned Zenoh SHM) — the decoded array aliases the input and no payload
+/// copy happens.
+///
+/// The decoder runs with the default `require_alignment = false`, so an
+/// under-aligned input (e.g. an arbitrary heap `Vec`) is handled gracefully by
+/// copying just the misaligned buffers rather than erroring. This keeps the
+/// receive path robust while preserving zero-copy for the common SHM case.
+pub fn decode_arrow_ipc_zero_copy(
+    mut buffer: arrow::buffer::Buffer,
+) -> eyre::Result<arrow::array::ArrayData> {
+    use arrow::ipc::reader::StreamDecoder;
+
+    if buffer.len() > MAX_IPC_BYTES {
+        eyre::bail!(
+            "Arrow IPC payload too large: {} bytes (max {MAX_IPC_BYTES})",
+            buffer.len()
+        );
+    }
+
+    let mut decoder = StreamDecoder::new();
+    let mut batch = None;
+    // `decode` is push-based: it may consume the schema message and return
+    // `None` before yielding the record batch, so loop until we get a batch or
+    // exhaust the input.
+    while !buffer.is_empty() {
+        let before = buffer.len();
+        if let Some(b) = decoder
+            .decode(&mut buffer)
+            .context("failed to decode Arrow IPC stream")?
+        {
+            batch = Some(b);
+            break;
+        }
+        // `decode` must consume bytes when it yields no batch; a crafted or
+        // truncated payload that leaves the buffer unchanged would otherwise
+        // spin this loop forever on the zenoh IO worker. Bail instead.
+        if buffer.len() == before {
+            eyre::bail!("Arrow IPC decoder made no progress on a partial/corrupt stream");
+        }
+    }
+
+    let batch = batch.ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?;
+
+    if batch.num_columns() != 1 {
+        eyre::bail!(
+            "expected 1 column in IPC record batch, got {}",
+            batch.num_columns()
+        );
+    }
+
+    Ok(batch.column(0).to_data())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Array, ArrayRef, StringArray, StructArray, UInt64Array};
-    use std::sync::Arc;
-
-    fn assert_buffer_offsets_are_aligned(type_info: &ArrowTypeInfo) {
-        for offset in &type_info.buffer_offsets {
-            assert_eq!(
-                offset.offset % ARROW_BUFFER_ALIGNMENT,
-                0,
-                "buffer offset {offset:?} is not {ARROW_BUFFER_ALIGNMENT}-byte aligned"
-            );
-        }
-        for child in &type_info.child_data {
-            assert_buffer_offsets_are_aligned(child);
-        }
-    }
+    use arrow::array::{Array, StringArray, UInt64Array};
 
     #[test]
     fn ipc_roundtrip_primitive() {
@@ -321,6 +161,104 @@ mod tests {
         let data = array.into_data();
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    /// Copy `bytes` into a 128-byte-aligned buffer, mirroring how Dora's
+    /// receive path backs IPC payloads (an `AVec<u8, ConstAlign<128>>` for the
+    /// daemon path, page-aligned Zenoh SHM for the zero-copy path). This is the
+    /// precondition under which `decode_arrow_ipc_zero_copy` aliases the input.
+    fn aligned_buffer_from(bytes: &[u8]) -> (arrow::buffer::Buffer, usize, usize) {
+        use aligned_vec::{AVec, ConstAlign};
+        use std::ptr::NonNull;
+
+        let mut aligned: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
+        aligned.copy_from_slice(bytes);
+        let base = aligned.as_ptr() as usize;
+        let len = aligned.len();
+        let ptr = NonNull::new(aligned.as_ptr() as *mut u8).unwrap();
+        // SAFETY: `ptr`/`len` describe `aligned`'s allocation, which the Arc
+        // keeps alive for the Buffer's lifetime.
+        let buffer = unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(ptr, len, std::sync::Arc::new(aligned))
+        };
+        (buffer, base, len)
+    }
+
+    #[test]
+    fn ipc_zero_copy_roundtrip_primitive() {
+        let array = UInt64Array::from((0..1000u64).collect::<Vec<_>>());
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let (buffer, _, _) = aligned_buffer_from(&encoded);
+        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    /// The headline claim: for an aligned input buffer the decoded array's data
+    /// buffer points *into* the input allocation (no payload copy), and the
+    /// strict `require_alignment(true)` decoder accepts it without falling back
+    /// to a realigning copy.
+    #[test]
+    fn ipc_decode_is_zero_copy_for_aligned_buffer() {
+        use arrow::ipc::reader::StreamDecoder;
+
+        // A large primitive array so the data buffer dominates and any copy
+        // would be unmistakable.
+        let array = UInt64Array::from((0..100_000u64).collect::<Vec<_>>());
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+
+        // 1) Proof via the strict decoder: require_alignment(true) errors if any
+        //    buffer would need realigning. A clean decode proves the body
+        //    buffers are used in place.
+        {
+            let (mut buffer, _, _) = aligned_buffer_from(&encoded);
+            let mut decoder = StreamDecoder::new().with_require_alignment(true);
+            let mut got = None;
+            while !buffer.is_empty() {
+                if let Some(b) = decoder
+                    .decode(&mut buffer)
+                    .expect("aligned IPC buffer must decode without realignment")
+                {
+                    got = Some(b);
+                    break;
+                }
+            }
+            assert_eq!(got.unwrap().column(0).to_data(), data);
+        }
+
+        // 2) Proof via pointer aliasing: the decoded data buffer lies within the
+        //    input allocation's address range.
+        {
+            let (buffer, base, len) = aligned_buffer_from(&encoded);
+            let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+            let data_ptr = decoded.buffers()[0].as_ptr() as usize;
+            assert!(
+                data_ptr >= base && data_ptr < base + len,
+                "decoded data buffer at {data_ptr:#x} is outside input \
+                 [{base:#x}, {:#x}) — a copy happened (not zero-copy)",
+                base + len
+            );
+        }
+    }
+
+    /// Production safety: an *under-aligned* input must still decode correctly.
+    /// The default decoder (`require_alignment = false`) falls back to copying
+    /// only the misaligned buffers rather than erroring.
+    #[test]
+    fn ipc_zero_copy_decoder_handles_misaligned_input() {
+        let array = UInt64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let data = array.into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+
+        // Force a 1-byte-offset (deliberately misaligned) backing buffer.
+        let mut shifted = Vec::with_capacity(encoded.len() + 1);
+        shifted.push(0u8);
+        shifted.extend_from_slice(&encoded);
+        let buffer = arrow::buffer::Buffer::from_vec(shifted).slice(1);
+
+        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
         assert_eq!(data, decoded);
     }
 
@@ -334,20 +272,27 @@ mod tests {
     }
 
     #[test]
-    fn schema_hash_is_deterministic() {
-        let dt = DataType::UInt64;
-        let h1 = compute_schema_hash(&dt);
-        let h2 = compute_schema_hash(&dt);
-        assert_eq!(h1, h2);
-    }
-
-    #[test]
     fn ipc_roundtrip_empty_array() {
         let array = UInt64Array::from(Vec::<u64>::new());
         let data = array.into_data();
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
         assert_eq!(data.len(), decoded.len());
+    }
+
+    /// A zero-length *typed* array must encode to a self-describing stream that
+    /// decodes back to the SAME type, not `Null`. record/replay relies on this:
+    /// `record-node` IPC-encodes empty typed arrays (rather than dropping them
+    /// to an absent payload) so replay preserves the type instead of collapsing
+    /// to `NullArray::new(0)` (#2027/#2083).
+    #[test]
+    fn ipc_roundtrip_empty_typed_array_preserves_type() {
+        use arrow::array::Float32Array;
+        let data = Float32Array::from(Vec::<f32>::new()).into_data();
+        let encoded = encode_arrow_ipc(&data).unwrap();
+        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        assert_eq!(decoded.data_type(), &arrow_schema::DataType::Float32);
+        assert_eq!(decoded.len(), 0);
     }
 
     #[test]
@@ -357,184 +302,5 @@ mod tests {
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
         assert_eq!(data, decoded);
-    }
-
-    #[test]
-    fn raw_payload_offsets_are_64_byte_aligned_recursively() {
-        use arrow_schema::{DataType, Field};
-
-        let array = StructArray::from(vec![
-            (
-                Arc::new(Field::new("values", DataType::UInt64, false)),
-                Arc::new(UInt64Array::from(vec![1, 2, 3])) as ArrayRef,
-            ),
-            (
-                Arc::new(Field::new("labels", DataType::Utf8, true)),
-                Arc::new(StringArray::from(vec![Some("a"), None, Some("bbb")])) as ArrayRef,
-            ),
-        ]);
-        let data = array.into_data();
-        let mut sample = vec![0; required_data_size(&data)];
-        let type_info = copy_array_into_sample(&mut sample, &data);
-
-        assert_buffer_offsets_are_aligned(&type_info);
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(data, decoded);
-    }
-
-    #[test]
-    fn buffer_into_arrow_array_rejects_overflow_offset() {
-        // A peer-controlled BufferOffset with offset = usize::MAX would overflow
-        // `offset + len` to a small value and bypass the bounds check, then panic
-        // inside arrow's slice_with_length. We must reject it with an error.
-        let info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::UInt8,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![BufferOffset {
-                offset: usize::MAX,
-                len: 1,
-            }],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        let buf = arrow::buffer::Buffer::from(vec![0u8; 1024]);
-        let err = buffer_into_arrow_array(&buf, &info).unwrap_err();
-        assert!(
-            err.to_string().contains("overflow"),
-            "expected overflow error, got: {err}"
-        );
-    }
-
-    #[test]
-    fn buffer_into_arrow_array_rejects_deep_nesting() {
-        use std::sync::Arc;
-
-        let mut info = ArrowTypeInfo {
-            data_type: arrow_schema::DataType::UInt8,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        // Nest 40 levels deep (exceeds MAX_TYPE_DEPTH of 32)
-        for _ in 0..40 {
-            info = ArrowTypeInfo {
-                data_type: arrow_schema::DataType::List(Arc::new(arrow_schema::Field::new(
-                    "item",
-                    arrow_schema::DataType::UInt8,
-                    true,
-                ))),
-                len: 0,
-                null_count: 0,
-                validity: None,
-                offset: 0,
-                buffer_offsets: vec![],
-                child_data: vec![info],
-                field_names: None,
-                schema_hash: None,
-            };
-        }
-        let buf = arrow::buffer::Buffer::from(vec![0u8; 1024]);
-        let result = buffer_into_arrow_array(&buf, &info);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("depth"));
-    }
-
-    // Raw-buffer round-trip beyond the offset-0 case (dora-rs/dora#2027 verified
-    // test gap): a sliced (non-zero `offset`) array and the empty-buffer
-    // early-return path.
-
-    #[test]
-    fn raw_roundtrip_preserves_nonzero_offset() {
-        // Slice the `ArrayData` so it carries a non-zero logical `offset`.
-        let data = UInt64Array::from(vec![10, 20, 30, 40, 50])
-            .into_data()
-            .slice(2, 2); // offset = 2, len = 2 -> [30, 40]
-        assert_eq!(data.offset(), 2, "precondition: array is sliced");
-
-        let mut sample = vec![0; required_data_size(&data)];
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(data, decoded);
-    }
-
-    #[test]
-    fn raw_roundtrip_empty_primitive_uses_empty_buffer_path() {
-        let data = UInt64Array::from(Vec::<u64>::new()).into_data();
-        let mut sample = vec![0; required_data_size(&data)];
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        // An empty array yields a zero-length payload, exercising the
-        // `raw_buffer.is_empty()` early-return in `buffer_into_arrow_array`.
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(decoded.len(), 0);
-        assert_eq!(decoded.data_type(), &DataType::UInt64);
-    }
-
-    #[test]
-    fn raw_roundtrip_preserves_nullarray_length() {
-        // dora-rs/dora#2083: a `NullArray::new(n>0)` has no data buffers and no
-        // validity, so its serialized footprint is empty — but its logical
-        // length must survive the raw round-trip instead of collapsing to 0.
-        use arrow::array::NullArray;
-        let data = NullArray::new(5).into_data();
-        assert_eq!(data.len(), 5);
-        let mut sample = vec![0; required_data_size(&data)];
-        assert!(sample.is_empty(), "precondition: zero-footprint payload");
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        assert_eq!(type_info.len, 5);
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(decoded.len(), 5, "NullArray length must be preserved");
-        assert_eq!(decoded.data_type(), &DataType::Null);
-    }
-
-    #[test]
-    fn raw_roundtrip_preserves_struct_of_nulls_length() {
-        // dora-rs/dora#2083: a struct whose only field is `Null`-typed also has
-        // a zero-byte footprint while carrying a non-zero length.
-        use arrow::array::NullArray;
-        use arrow_schema::Field;
-        let child = Arc::new(NullArray::new(3)) as ArrayRef;
-        let data = StructArray::from(vec![(
-            Arc::new(Field::new("nulls", DataType::Null, true)),
-            child,
-        )])
-        .into_data();
-        assert_eq!(data.len(), 3);
-        let mut sample = vec![0; required_data_size(&data)];
-        assert!(sample.is_empty(), "precondition: zero-footprint payload");
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(decoded.len(), 3, "struct-of-nulls length must be preserved");
-        assert_eq!(decoded.child_data()[0].len(), 3);
-    }
-
-    #[test]
-    fn raw_roundtrip_empty_nested_struct() {
-        use arrow_schema::Field;
-        let empty_child = Arc::new(UInt64Array::from(Vec::<u64>::new())) as ArrayRef;
-        let data = StructArray::from(vec![(
-            Arc::new(Field::new("values", DataType::UInt64, false)),
-            empty_child,
-        )])
-        .into_data();
-        let mut sample = vec![0; required_data_size(&data)];
-        let type_info = copy_array_into_sample(&mut sample, &data);
-        let decoded =
-            buffer_into_arrow_array(&arrow::buffer::Buffer::from(sample), &type_info).unwrap();
-        assert_eq!(decoded.len(), 0);
-        assert!(matches!(decoded.data_type(), DataType::Struct(_)));
     }
 }

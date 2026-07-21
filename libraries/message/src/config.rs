@@ -7,7 +7,6 @@ use std::{
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
@@ -209,19 +208,6 @@ pub enum InputMapping {
     User(UserInputMapping),
 }
 
-impl InputMapping {
-    pub fn source(&self) -> &NodeId {
-        static DORA_NODE_ID: OnceLock<NodeId> = OnceLock::new();
-
-        match self {
-            InputMapping::User(mapping) => &mapping.source,
-            InputMapping::Timer { .. } | InputMapping::Logs(_) => {
-                DORA_NODE_ID.get_or_init(|| NodeId("dora".to_string()))
-            }
-        }
-    }
-}
-
 impl fmt::Display for InputMapping {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -309,7 +295,17 @@ impl FromStr for InputMapping {
                 Some(("logs", rest)) => {
                     // dora/logs/{level} or dora/logs/{level}/{node_id}
                     let (level_str, node_filter) = match rest.split_once('/') {
-                        Some((level, node)) => (Some(level), Some(NodeId(node.to_owned()))),
+                        Some((level, node)) => {
+                            // Validate the node segment instead of constructing a
+                            // `NodeId` directly: `rest.split_once('/')` keeps every
+                            // slash after the first inside `node`, so an input such
+                            // as `dora/logs/info/a/b` would otherwise build a NodeId
+                            // containing `/` -- a value `validate_node_id` forbids and
+                            // that no real node id can ever equal, silently producing
+                            // a filter that never matches.
+                            let node_id = node.parse::<NodeId>().map_err(|e| e.to_string())?;
+                            (Some(level), Some(node_id))
+                        }
                         None => {
                             if rest.is_empty() {
                                 (None, None)
@@ -334,10 +330,16 @@ impl FromStr for InputMapping {
                 }),
                 None => return Err("dora input has invalid format".into()),
             },
-            _ => Self::User(UserInputMapping {
-                source: source.to_owned().into(),
-                output: output.to_owned().into(),
-            }),
+            _ => {
+                // Validate the source/output segments instead of using the
+                // panicking `From<String>` impls (`.into()`): an input mapping
+                // string comes straight from user-authored descriptor YAML, so an
+                // invalid identifier (e.g. containing a space) must surface as a
+                // clean deserialization error rather than panicking the parser.
+                let source = source.parse::<NodeId>().map_err(|e| e.to_string())?;
+                let output = output.parse::<DataId>().map_err(|e| e.to_string())?;
+                Self::User(UserInputMapping { source, output })
+            }
         };
 
         Ok(mapping)
@@ -638,6 +640,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_user_mapping_rejects_invalid_ids() {
+        // A source node id with a space is not a valid `NodeId` and must be
+        // rejected with a clean error rather than panicking the parser via the
+        // `From<String>` impl.
+        let result: Result<InputMapping, _> = "bad node/output".parse();
+        assert!(result.is_err(), "invalid source node id must be rejected");
+
+        // An output data id with an invalid character must likewise be rejected.
+        let result: Result<InputMapping, _> = "node_a/bad output".parse();
+        assert!(result.is_err(), "invalid output data id must be rejected");
+
+        // A valid mapping still parses successfully.
+        let mapping: InputMapping = "node_a/output_1".parse().unwrap();
+        assert!(matches!(mapping, InputMapping::User(_)));
+    }
+
+    #[test]
     fn parse_input_with_drop_oldest_policy() {
         let yaml = "source: node_a/output_1\nqueue_size: 5\nqueue_policy: drop_oldest\n";
         let input: Input = serde_yaml::from_str(yaml).unwrap();
@@ -881,6 +900,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_logs_rejects_invalid_node_filter() {
+        // A node segment with an extra `/` (kept by `split_once`) is not a valid
+        // NodeId and must be rejected rather than silently yielding a filter that
+        // can never match a real (validated) node id.
+        let result: Result<InputMapping, _> = "dora/logs/info/a/b".parse();
+        assert!(result.is_err(), "node filter `a/b` must be rejected");
+
+        // A node segment containing a space is likewise invalid.
+        let result: Result<InputMapping, _> = "dora/logs/info/bad node".parse();
+        assert!(result.is_err(), "node filter `bad node` must be rejected");
+    }
+
+    #[test]
     fn display_roundtrip_logs_all() {
         let mapping: InputMapping = "dora/logs".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs");
@@ -896,12 +928,6 @@ mod tests {
     fn display_roundtrip_logs_with_level_and_node() {
         let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
-    }
-
-    #[test]
-    fn logs_source_is_dora() {
-        let mapping: InputMapping = "dora/logs".parse().unwrap();
-        assert_eq!(mapping.source().to_string(), "dora");
     }
 
     #[test]
