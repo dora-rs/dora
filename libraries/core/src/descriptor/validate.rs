@@ -140,15 +140,19 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
                 &format!("input `{input_id}` of node `{}`", node.id),
                 "input_timeout",
                 input.input_timeout,
+                true,
             )?;
         }
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
-    // in the same way (`binaries/daemon/src/lib.rs`).
+    // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
+    // be rejected: it is fed to `tokio::time::interval`, which panics on a zero
+    // period.
     check_seconds_field(
         "dataflow",
         "health_check_interval",
         dataflow.health_check_interval,
+        false,
     )?;
 
     // check that all inputs mappings point to an existing output
@@ -192,20 +196,34 @@ fn check_timing_fields(
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
     ] {
-        check_seconds_field(&owner, field, value)?;
+        check_seconds_field(&owner, field, value, true)?;
     }
     Ok(())
 }
 
 /// Reject a negative / non-finite second-valued field before it reaches the
 /// daemon, where `Duration::from_secs_f64` would panic on such input.
-fn check_seconds_field(owner: &str, field: &str, value: Option<f64>) -> eyre::Result<()> {
+///
+/// When `allow_zero` is `false`, `0.0` is also rejected. This is required for
+/// fields that reach `tokio::time::interval` (e.g. `health_check_interval`),
+/// which panics on a zero period.
+fn check_seconds_field(
+    owner: &str,
+    field: &str,
+    value: Option<f64>,
+    allow_zero: bool,
+) -> eyre::Result<()> {
     if let Some(value) = value
-        && (!value.is_finite() || value < 0.0)
+        && (!value.is_finite() || value < 0.0 || (!allow_zero && value == 0.0))
     {
+        let requirement = if allow_zero {
+            "non-negative"
+        } else {
+            "positive"
+        };
         bail!(
             "{owner} has invalid `{field}`: {value} \
-             (must be a finite, non-negative number of seconds)"
+             (must be a finite, {requirement} number of seconds)"
         );
     }
     Ok(())
@@ -1374,15 +1392,15 @@ operators:
 
     #[test]
     fn seconds_field_accepts_none_zero_and_positive() {
-        check_seconds_field("owner", "field", None).unwrap();
-        check_seconds_field("owner", "field", Some(0.0)).unwrap();
-        check_seconds_field("owner", "field", Some(3600.0)).unwrap();
+        check_seconds_field("owner", "field", None, true).unwrap();
+        check_seconds_field("owner", "field", Some(0.0), true).unwrap();
+        check_seconds_field("owner", "field", Some(3600.0), true).unwrap();
     }
 
     #[test]
     fn seconds_field_rejects_negative_and_non_finite() {
         for bad in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let err = check_seconds_field("owner", "field", Some(bad))
+            let err = check_seconds_field("owner", "field", Some(bad), true)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1392,9 +1410,29 @@ operators:
         }
     }
 
+    // With `allow_zero: false`, `0.0` must be rejected (in addition to the
+    // negative / non-finite cases) because such a field reaches
+    // `tokio::time::interval`, which panics on a zero period.
+    #[test]
+    fn seconds_field_rejects_zero_when_positive_required() {
+        check_seconds_field("owner", "field", None, false).unwrap();
+        check_seconds_field("owner", "field", Some(3600.0), false).unwrap();
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = check_seconds_field("owner", "field", Some(bad), false)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("field") && err.contains("positive"),
+                "{bad} should be rejected with a field/constraint message, got: {err}"
+            );
+        }
+    }
+
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
-    // in the daemon just like the per-node timing fields, so `check_dataflow`
-    // must reject a non-finite / negative value rather than let the daemon panic.
+    // and then `tokio::time::interval` in the daemon, so `check_dataflow` must
+    // reject a non-finite / negative / zero value rather than let the daemon
+    // panic. A zero interval additionally panics `tokio::time::interval`, so it
+    // is rejected with a `positive` constraint.
     #[test]
     fn check_dataflow_rejects_negative_health_check_interval() {
         let dataflow = parse_dataflow(
@@ -1412,7 +1450,32 @@ nodes:
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("health_check_interval") && err.contains("non-negative"),
+            err.contains("health_check_interval") && err.contains("positive"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // A zero `health_check_interval` passes `Duration::from_secs_f64` (yielding
+    // `Duration::ZERO`) but then panics `tokio::time::interval`, so it must be
+    // rejected up front (regression test for #2752).
+    #[test]
+    fn check_dataflow_rejects_zero_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 0.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("positive"),
             "error should name the field and constraint, got: {err}"
         );
     }
