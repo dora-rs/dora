@@ -1935,6 +1935,18 @@ impl Node {
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else if is_cuda {
+                            // If the previous GPU copy failed, gen was left
+                            // odd.  Restore even parity before beginning a
+                            // new write so the begin/end increments don't
+                            // invert the seqlock contract.
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let cur = std::ptr::read_volatile(gen_ptr);
+                                if cur % 2 != 0 {
+                                    std::ptr::write_volatile(gen_ptr, cur + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
+                            }
                             // Seqlock: begin write
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
@@ -1996,20 +2008,13 @@ impl Node {
                             };
 
                             // Check copy result before advancing the seqlock.
-                            // On failure, restore gen to even so the
-                            // invariant (even = complete) is preserved for
-                            // subsequent writes — an odd-at-rest gen would
-                            // invert parity on the next successful write.
+                            // On failure, leave gen odd so the reader sees
+                            // an incomplete write and falls back to the
+                            // daemon path.  The next successful write will
+                            // restore even parity before beginning.
                             // Re-insert the slot first so the pool survives
                             // for later frames.
                             if let Err(e) = write_result {
-                                // Restore gen to even.
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let cur_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, cur_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
                                 if let Some(slot_data) = store_back.take() {
                                     PINNED_POOL
                                         .lock()
@@ -2124,6 +2129,17 @@ impl Node {
                             let slow_counter = buffer_id
                                 .rsplit_once('_')
                                 .and_then(|(_, c)| c.parse::<u64>().ok());
+                            // Restore even parity if the previous GPU copy
+                            // failed (gen was left odd).  Without this, the
+                            // begin/end increments invert the seqlock contract.
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let cur = std::ptr::read_volatile(gen_ptr);
+                                if cur % 2 != 0 {
+                                    std::ptr::write_volatile(gen_ptr, cur + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
+                            }
                             // Seqlock: begin write
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
@@ -2150,6 +2166,18 @@ impl Node {
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else if is_cuda {
+                            // If the previous GPU copy failed, gen was left
+                            // odd.  Restore even parity before beginning a
+                            // new write so the begin/end increments don't
+                            // invert the seqlock contract.
+                            unsafe {
+                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                let cur = std::ptr::read_volatile(gen_ptr);
+                                if cur % 2 != 0 {
+                                    std::ptr::write_volatile(gen_ptr, cur + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
+                            }
                             // Seqlock: begin write
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
@@ -2220,17 +2248,10 @@ impl Node {
                             };
 
                             // Check copy result before advancing the seqlock.
-                            // On failure, restore gen to even so the invariant
-                            // (even = complete) is preserved — an odd-at-rest
-                            // gen inverts parity on the next successful write.
+                            // On failure, leave gen odd so the reader falls
+                            // back to the daemon path.  The next successful
+                            // write will restore even parity before beginning.
                             if let Err(e) = write_result {
-                                // Restore gen to even.
-                                unsafe {
-                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                    let cur_gen = std::ptr::read_volatile(gen_ptr);
-                                    std::ptr::write_volatile(gen_ptr, cur_gen + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
                                 return Err(eyre::eyre!(
                                     "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
                                     self.node_id,
