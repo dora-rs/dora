@@ -177,9 +177,10 @@ static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
 /// and valid GPU VAs for zero-copy reads across iterations.
 struct RecvGpuSlot {
     _shmem: shared_memory_extended::Shmem,
-    gpu_va: u64,    // device VA from cudaHostGetDevicePointer, 0 if IPC path
-    gpu_buf: u64,   // IPC-opened GPU DRAM pointer, 0 if GPU VA path
-    host_base: u64, // original host ptr passed to cudaHostRegister
+    gpu_va: u64,       // device VA from cudaHostGetDevicePointer, 0 if IPC path
+    gpu_buf: u64,      // IPC-opened GPU DRAM pointer, 0 if GPU VA path
+    host_base: u64,    // original host ptr passed to cudaHostRegister
+    gpu_buf_size: u64, // GPU buffer byte size from first import (baseline)
 }
 
 /// Daemon-trusted GPU buffer sizes, keyed by buffer_id.
@@ -408,6 +409,13 @@ def _set_cuda_device(idx):
     """Set the current CUDA device.  No-op if *idx* < 0."""
     if idx >= 0:
         _lib.cudaSetDevice(idx)
+
+def _get_cuda_device():
+    """Return the current CUDA device index, or -1 on failure."""
+    dev = ctypes.c_int()
+    if _lib.cudaGetDevice(ctypes.byref(dev)) == 0:
+        return dev.value
+    return -1
 
 def _transit_copy(src_ptr, src_dev, transit_ptr, dst_ptr, dst_dev, size):
     """Copy via CPU transit: src(GPU) → DtoH → transit → HtoD → dst(GPU).
@@ -1584,29 +1592,37 @@ impl Node {
                     }
                 } else {
                     // Same-device or P2P available: allocate on sender device.
-                    // Switch to sender device first — the ambient CUDA device
-                    // may differ from the tensor device, so cudaMalloc would
-                    // land on the wrong GPU.
-                    let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
-                    let dst: u64 = bound
-                        .call_method1("_get_gpu_buf", (pool_counter, size))
-                        .and_then(|r| r.extract::<u64>())
+                    // Save the current device — the ambient CUDA device may
+                    // differ from the tensor device — and restore before
+                    // returning so later cudaMalloc calls land on the right GPU.
+                    let saved_dev: i32 = bound
+                        .call_method0("_get_cuda_device")
+                        .and_then(|r| r.extract::<i32>())
                         .unwrap_or(0);
-                    if dst != 0 {
-                        // Only export a handle if the DtoD copy succeeded —
-                        // otherwise the receiver would import uninitialised memory.
-                        if bound
-                            .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
-                            .is_ok()
-                        {
-                            Some(dst)
+                    let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
+                    let result = {
+                        let dst: u64 = bound
+                            .call_method1("_get_gpu_buf", (pool_counter, size))
+                            .and_then(|r| r.extract::<u64>())
+                            .unwrap_or(0);
+                        if dst != 0 {
+                            // Only export a handle if the DtoD copy succeeded —
+                            // otherwise the receiver would import uninitialised memory.
+                            if bound
+                                .call_method1("_cuda_memcpy", (dst, ptr_val, size, 3u32))
+                                .is_ok()
+                            {
+                                Some(dst)
+                            } else {
+                                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                                None
+                            }
                         } else {
-                            let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
                             None
                         }
-                    } else {
-                        None
-                    }
+                    };
+                    let _ = bound.call_method1("_set_cuda_device", (saved_dev,));
+                    result
                 }
             } else {
                 // CPU source → GPU pool: use pinned DMA (existing path).
@@ -1980,12 +1996,20 @@ impl Node {
                             };
 
                             // Check copy result before advancing the seqlock.
-                            // On failure, leave gen odd so the reader sees an
-                            // incomplete write and falls back to the daemon path
-                            // rather than silently consuming stale data.
-                            // Re-insert the slot first so the pool survives for
-                            // later frames.
+                            // On failure, restore gen to even so the
+                            // invariant (even = complete) is preserved for
+                            // subsequent writes — an odd-at-rest gen would
+                            // invert parity on the next successful write.
+                            // Re-insert the slot first so the pool survives
+                            // for later frames.
                             if let Err(e) = write_result {
+                                // Restore gen to even.
+                                unsafe {
+                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                    let cur_gen = std::ptr::read_volatile(gen_ptr);
+                                    std::ptr::write_volatile(gen_ptr, cur_gen + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
                                 if let Some(slot_data) = store_back.take() {
                                     PINNED_POOL
                                         .lock()
@@ -2196,9 +2220,17 @@ impl Node {
                             };
 
                             // Check copy result before advancing the seqlock.
-                            // On failure, leave gen odd so the reader sees an
-                            // incomplete write and falls back to the daemon path.
+                            // On failure, restore gen to even so the invariant
+                            // (even = complete) is preserved — an odd-at-rest
+                            // gen inverts parity on the next successful write.
                             if let Err(e) = write_result {
+                                // Restore gen to even.
+                                unsafe {
+                                    let gen_ptr = shmem_ptr.add(96) as *mut u64;
+                                    let cur_gen = std::ptr::read_volatile(gen_ptr);
+                                    std::ptr::write_volatile(gen_ptr, cur_gen + 1);
+                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                }
                                 return Err(eyre::eyre!(
                                     "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
                                     self.node_id,
@@ -2899,19 +2931,24 @@ impl Node {
                 let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(buffer_id) {
                     Some(slot_data) if slot_data.gpu_buf != 0 => {
-                        // Validate size against the daemon-trusted GPU
-                        // buffer capacity.  GPU_BUF_SIZES is populated
-                        // from daemon metadata — once an entry exists,
-                        // a write-side shmem inflation is rejected before
-                        // any OOB access reaches the GPU driver.
-                        {
+                        // Validate size against the GPU buffer's registered
+                        // capacity.  GPU_BUF_SIZES (populated from daemon
+                        // metadata) is authoritative; gpu_buf_size (populated
+                        // from shmem at first import) is the baseline.
+                        // If size exceeds the trusted capacity, fall back to
+                        // the daemon so the read is re-validated.
+                        let capped = {
                             let trusted = GPU_BUF_SIZES
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner());
-                            if let Some(&capped_size) = trusted.get(buffer_id) {
-                                if (size as u64) > capped_size {
-                                    return Ok(None);
-                                }
+                            trusted
+                                .get(buffer_id)
+                                .copied()
+                                .or(Some(slot_data.gpu_buf_size))
+                        };
+                        if let Some(max_size) = capped {
+                            if max_size > 0 && (size as u64) > max_size {
+                                return Ok(None);
                             }
                         }
                         slot_data.gpu_buf
@@ -2943,6 +2980,10 @@ impl Node {
                                 gpu_va: 0,
                                 gpu_buf: gpu_ptr,
                                 host_base: shmem_ptr as u64,
+                                // Baseline size from shmem — the daemon
+                                // fallback will overwrite GPU_BUF_SIZES
+                                // with the trusted value when it runs.
+                                gpu_buf_size: size as u64,
                             },
                         );
                         gpu_ptr
@@ -2979,6 +3020,7 @@ impl Node {
                                 gpu_va: va,
                                 gpu_buf: 0,
                                 host_base: shmem_ptr as u64,
+                                gpu_buf_size: 0, // CPU memory, no GPU buffer
                             },
                         );
                         va + data_offset as u64
