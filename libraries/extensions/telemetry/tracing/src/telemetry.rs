@@ -52,10 +52,6 @@ pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTr
         .build())
 }
 
-/// Serialize the trace context (trace ID, span ID) into a compact string.
-/// Only W3C TraceContext keys (`traceparent`, `tracestate`) are included.
-/// OTel Baggage keys are stripped to prevent sensitive data from leaking
-/// across node boundaries in the dataflow.
 /// Separator between entries in the serialized trace context.
 ///
 /// The previous format joined entries with `;` and split key/value on `:`,
@@ -67,6 +63,10 @@ pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTr
 /// safe entry separator; the key/value split uses only the first `:`.
 const CONTEXT_ENTRY_SEP: char = '\n';
 
+/// Serialize the trace context (trace ID, span ID) into a compact string.
+/// Only W3C TraceContext keys (`traceparent`, `tracestate`) are included.
+/// OTel Baggage keys are stripped to prevent sensitive data from leaking
+/// across node boundaries in the dataflow.
 pub fn serialize_context(context: &Context) -> String {
     let mut map = HashMap::new();
     global::get_text_map_propagator(|propagator| propagator.inject_context(context, &mut map));
