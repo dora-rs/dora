@@ -393,7 +393,17 @@ impl RunningDataflow {
     /// should fall back to a full param replay).
     pub(crate) fn state_log_delta(&self, last_ack: u64) -> Option<Vec<StateCatchUpEntry>> {
         if self.state_log.is_empty() {
-            return Some(Vec::new());
+            // An empty log means either nothing was ever logged (the daemon is
+            // up to date) or the log was fully drained by `prune_state_log`. If
+            // the daemon is still behind the current sequence, the entries it
+            // missed were pruned away, so it needs a full replay -- signal that
+            // with `None` rather than a misleading "up to date" `Some([])`,
+            // which would silently skip its catch-up (#2601).
+            return if last_ack < self.state_log_sequence {
+                None
+            } else {
+                Some(Vec::new())
+            };
         }
         let oldest = self.state_log[0].sequence;
         if last_ack.saturating_add(1) < oldest {
