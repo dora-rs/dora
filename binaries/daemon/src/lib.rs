@@ -2265,6 +2265,23 @@ impl Daemon {
                             deploy: None,
                         });
 
+                    // Spawn timer tasks for any interval this node just
+                    // registered. Timer tasks are only ever created in
+                    // `start()`, so a node added to an already-running dataflow
+                    // whose timer input uses an interval no existing node uses
+                    // would otherwise register into `dataflow.timers` but never
+                    // get a tick-emitting task — silently starving that input.
+                    // `start()` is idempotent (it skips intervals that already
+                    // have a handle), so this only spawns tasks for genuinely
+                    // new intervals. Guard on `dataflow_started` so that during
+                    // initial bring-up the readiness path stays the sole
+                    // trigger. Done last, after all state mutations, so a
+                    // spawn/registration failure above never leaves a half-added
+                    // node with live timer tasks.
+                    if dataflow.dataflow_started {
+                        dataflow.start(&self.events_tx, &self.clock).await?;
+                    }
+
                     tracing::info!(
                         %dataflow_id,
                         %node_id,
@@ -3676,8 +3693,9 @@ impl Daemon {
                                         "all nodes are ready, starting dataflow",
                                     )
                                     .await;
+                                // `start()` sets `dataflow_started`; the guard
+                                // above keeps this to a single spawn.
                                 dataflow.start(&self.events_tx, &self.clock).await?;
-                                dataflow.dataflow_started = true;
                             }
                             _ => {}
                         }
@@ -6049,6 +6067,57 @@ mod fault_tolerance_tests {
             env: None,
         };
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+    }
+
+    // dora-rs/dora: a node added to an already-running dataflow (via
+    // `AddNode`) may register a timer input on an interval no existing node
+    // uses. `start()` is the only place timer tasks are spawned, so the
+    // `AddNode` handler re-invokes it. This test locks in the property that
+    // makes that safe: `start()` is idempotent for existing intervals yet
+    // still spawns a task for a newly-added one.
+    #[tokio::test]
+    async fn start_spawns_task_for_interval_added_after_first_start() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        let first = Duration::from_millis(100);
+        df.timers
+            .entry(first)
+            .or_default()
+            .insert((NodeId::from("a".to_string()), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df._timer_handles.contains_key(&first));
+
+        // Simulate a node added later that registers a brand-new interval.
+        let second = Duration::from_millis(250);
+        df.timers
+            .entry(second)
+            .or_default()
+            .insert((NodeId::from("b".to_string()), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+
+        assert!(df._timer_handles.contains_key(&first));
+        assert!(df._timer_handles.contains_key(&second));
+        assert_eq!(df._timer_handles.len(), 2);
+    }
+
+    // dora-rs/dora: the `AddNode` handler guards its re-invocation of
+    // `start()` on `dataflow_started`, so that flag must be set on *every*
+    // start path. It used to be set only at the single-daemon `Subscribe`
+    // readiness call site, leaving it `false` for the whole life of a
+    // distributed dataflow (which starts via the coordinator `AllNodesReady`
+    // path instead) — so a node added later was silently starved of ticks.
+    // `start()` now sets the flag itself; this pins that invariant.
+    #[tokio::test]
+    async fn start_marks_dataflow_started() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        assert!(!df.dataflow_started);
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df.dataflow_started);
     }
 
     fn test_running_node() -> RunningNode {
