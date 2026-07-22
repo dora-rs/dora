@@ -317,6 +317,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_daemon_worker_threads() {
+        parse_ok(&["dora", "daemon", "--worker-threads", "4"]);
+        parse_ok(&["dora", "daemon", "--worker-threads", "1"]);
+    }
+
+    #[test]
+    fn reject_daemon_worker_threads_zero() {
+        // `tokio::runtime::Builder::worker_threads` asserts `val > 0`, so
+        // `--worker-threads 0` used to abort the daemon with a raw panic.
+        // clap must reject it with a normal usage error instead.
+        parse_err(&["dora", "daemon", "--worker-threads", "0"]);
+    }
+
+    #[test]
     fn parse_logs_dataflow_node_flag() {
         parse_ok(&["dora", "logs", "my-dataflow", "--node", "sensor"]);
     }
