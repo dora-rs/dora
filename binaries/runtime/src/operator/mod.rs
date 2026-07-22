@@ -2,7 +2,7 @@ use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
 };
-use dora_node_api::{DataSample, Event, MetadataParameters, arrow::array::ArrayData};
+use dora_node_api::{Event, MetadataParameters, arrow::array::ArrayData};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -74,12 +74,8 @@ pub fn run_operator(
 }
 
 #[derive(Debug)]
-#[allow(dead_code, clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)]
 pub enum OperatorEvent {
-    AllocateOutputSample {
-        len: usize,
-        sample: oneshot::Sender<eyre::Result<DataSample>>,
-    },
     Output {
         output_id: DataId,
         parameters: MetadataParameters,
