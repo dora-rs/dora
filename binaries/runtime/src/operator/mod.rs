@@ -57,12 +57,17 @@ pub fn run_operator(
                 )
             })?;
             #[cfg(not(feature = "python"))]
-            tracing::error!(
-                "Dora runtime tried spawning Python Operator outside of python environment."
+            eyre::bail!(
+                "operator `{}` uses a Python source, but this dora-runtime was \
+                 built without the `python` feature",
+                operator_definition.id
             );
         }
         OperatorSource::Wasm(_) => {
-            tracing::error!("WASM operators are not supported yet");
+            eyre::bail!(
+                "operator `{}` uses a WASM source, which is not supported yet",
+                operator_definition.id
+            );
         }
     }
     Ok(())
@@ -95,4 +100,44 @@ pub enum StopReason {
     InputsClosed,
     ExplicitStop,
     ExplicitStopAll,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An unsupported operator source must surface a descriptive error from
+    /// `run_operator` rather than returning `Ok(())` while silently dropping
+    /// the `init_done` sender — which would leave the runtime task blocked in
+    /// `init_done.await` until it fails with the misleading "the `init_done`
+    /// channel was closed unexpectedly".
+    #[test]
+    fn wasm_source_returns_descriptive_error() {
+        let operator_definition: OperatorDefinition =
+            serde_yaml::from_str("id: op\nwasm: model.wasm\n").expect("operator definition parses");
+        let dataflow: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: a\n").expect("descriptor parses");
+        let (_events_in_tx, incoming_events) = flume::unbounded::<Event>();
+        let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
+        let (init_done_tx, mut init_done_rx) = oneshot::channel();
+
+        let err = run_operator(
+            &NodeId::from("node".to_string()),
+            operator_definition,
+            incoming_events,
+            events_tx,
+            init_done_tx,
+            &dataflow,
+        )
+        .expect_err("WASM operator source must return an error");
+        assert!(
+            err.to_string().contains("WASM"),
+            "expected a descriptive WASM error, got: {err}"
+        );
+        // The init_done sender must not have signalled readiness.
+        assert!(
+            init_done_rx.try_recv().is_err(),
+            "init_done must not receive a value for an unsupported source"
+        );
+    }
 }
