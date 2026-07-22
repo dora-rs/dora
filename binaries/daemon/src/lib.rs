@@ -499,11 +499,11 @@ async fn collect_and_send_metrics_bg(
                 // Skip this dataflow's batch rather than `?`-returning: an early
                 // return here would bypass the `System` restore below, leaving
                 // the shared metrics `System` (moved out via `mem::take`) empty
-                // for the rest of the process and degrading every later CPU
-                // reading. `serde_json` rejects non-finite floats, and
-                // `cpu_usage` is an `f32` from sysinfo, so one NaN must not
-                // poison collection permanently. Matches the `send_event`
-                // failure handling just below.
+                // until the next successful collection repopulates it.
+                // Serialization of this structure is effectively infallible, so
+                // this is defense-in-depth — `continue` just keeps the cleanup
+                // path unconditional against any future error here. Matches the
+                // `send_event` failure handling just below.
                 Err(e) => {
                     tracing::warn!("failed to serialize metrics for dataflow: {e}");
                     continue;
