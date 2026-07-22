@@ -1919,7 +1919,6 @@ async fn start_inner(
                         }
                     }
                 }
-                ControlEvent::Error(err) => tracing::error!("{err:?}"),
                 ControlEvent::LogSubscribe {
                     dataflow_id,
                     level,
