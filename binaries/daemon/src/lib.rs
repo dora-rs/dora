@@ -1561,6 +1561,16 @@ impl Daemon {
                     session_id,
                     result,
                 } => {
+                    // The build future (every clone/checkout task) has finished, so
+                    // this session no longer owns any in-flight clone dir. Drop its
+                    // planned set now that it's done: `choose_clone_dir` consults
+                    // *every* session's planned set to skip the Reuse HEAD check for
+                    // a dir a concurrent build is still writing (#2711), so "planned"
+                    // must mean "in flight". A finished build's dirs left here would
+                    // permanently suppress that check for later reuses (reintroducing
+                    // #2482) and would accumulate for the daemon's whole lifetime.
+                    self.git_manager.clear_planned_builds(session_id);
+
                     let (build_info, result) = match result {
                         Ok(build_info) => (Some(build_info), Ok(())),
                         Err(err) => (None, Err(err)),

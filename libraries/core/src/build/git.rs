@@ -299,12 +299,14 @@ impl GitFolder {
             ReuseOptions::Reuse { dir, verify_commit } => {
                 // Belt and braces for #2480: even with the cleanup above, a stale
                 // dir could still slip through if remove_dir_all itself failed or
-                // we got killed mid-checkout. So for a clone left by a prior build
-                // (verify_commit is Some) that's pinned to a full commit hash, I
-                // check that HEAD actually points there. verify_commit is None when
-                // a sibling node in this build owns the dir and may still be cloning
-                // into it, so I leave those completely untouched. Branch and tag
-                // pins I can't verify offline, so those pass through too.
+                // we got killed mid-checkout. So for a clone that no in-flight build
+                // owns (verify_commit is Some) and that's pinned to a full commit
+                // hash, I check that HEAD actually points there. verify_commit is
+                // None when some running build session has the dir in its planned
+                // set — a sibling node here, or a concurrent build in the daemon's
+                // shared GitManager (#2711) — and may still be cloning into it, so I
+                // leave those completely untouched. Branch and tag pins I can't
+                // verify offline, so those pass through too.
                 if let Some(commit_hash) = verify_commit
                     && dir.exists()
                     && is_full_commit_hash(&commit_hash)
@@ -325,35 +327,37 @@ impl GitFolder {
                     .await
                     .context("HEAD read task panicked")?;
 
-                    match head {
-                        // The dir is a valid repo checked out at the commit we want.
-                        Ok(h) if h.eq_ignore_ascii_case(&commit_hash) => {}
-                        // The dir is a valid repo, concretely on a *different*
-                        // commit: a genuine stale leftover from a prior build. Drop
-                        // it so the next build re-clones from scratch, then fail
-                        // loudly instead of quietly building the old source.
-                        Ok(h) => {
-                            cleanup_failed_clone(logger, &dir).await;
-                            bail!(
-                                "clone dir {} is not on the requested commit {commit_hash} \
-                                 (found {h}); I removed it, please rebuild",
-                                dir.display()
-                            );
-                        }
-                        // HEAD didn't resolve: the dir may be mid-clone (a build I
-                        // couldn't see planning it, an empty/partial repo with no
-                        // HEAD yet) or hitting a transient open/lock failure. I must
-                        // not `remove_dir_all` here — deleting a dir another build is
-                        // still writing is exactly the race this guards against
-                        // (#2711). Fail loudly and leave the dir untouched so a retry
-                        // (or the owning build) can recover it.
-                        Err(err) => {
-                            bail!(
-                                "couldn't verify clone dir {} is on commit {commit_hash}: \
-                                 {err:?}; leaving it in place, please retry",
-                                dir.display()
-                            );
-                        }
+                    // Classify the HEAD state. `None` means "valid repo, already on
+                    // the commit we want" — reuse it. `Some(reason)` covers every
+                    // other outcome: a valid repo on a *different* commit, or a dir
+                    // whose HEAD won't resolve at all (empty/partial/corrupt, or an
+                    // unborn HEAD left by an interrupted clone).
+                    let mismatch = match &head {
+                        Ok(h) if h.eq_ignore_ascii_case(&commit_hash) => None,
+                        Ok(h) => Some(format!("HEAD is at {h}, not {commit_hash}")),
+                        Err(err) => Some(format!(
+                            "couldn't resolve HEAD to check it against {commit_hash}: {err:#}"
+                        )),
+                    };
+                    if let Some(reason) = mismatch {
+                        // A stale or broken leftover. Drop it so the next build
+                        // re-clones from scratch, then fail loudly — instead of
+                        // quietly building the old source (#2480/#2482) or, for an
+                        // unresolvable HEAD, wedging every future build on a dir a
+                        // human would have to delete by hand.
+                        //
+                        // Removing it can't race a live clone, even when HEAD didn't
+                        // resolve: `choose_clone_dir` only hands down a commit to
+                        // verify (making verify_commit `Some` — the sole path into
+                        // this block) for a dir that *no* in-flight build session has
+                        // planned (#2711). A dir another build is still cloning into
+                        // is reused with verify_commit `None` and never reaches here.
+                        cleanup_failed_clone(logger, &dir).await;
+                        bail!(
+                            "clone dir {} can't be reused for commit {commit_hash} \
+                             ({reason}); I removed it, please rebuild",
+                            dir.display()
+                        );
                     }
                 }
 
@@ -380,10 +384,13 @@ enum ReuseOptions {
     },
     /// Reuse an existing up-to-date clone of the repository.
     ///
-    /// `verify_commit` is `Some(hash)` only for a clone left by a prior build,
-    /// where it's safe to check HEAD against `hash`. It's `None` when a sibling
-    /// node in this same build owns the dir (it may still be cloning into it),
-    /// in which case the reuse is a plain read with no HEAD check.
+    /// `verify_commit` is `Some(hash)` only for a clone that no in-flight build
+    /// owns (it was left by a prior, finished build), where it's safe to check
+    /// HEAD against `hash` and remove it if it doesn't match. It's `None` when
+    /// some running build session has the dir in its planned set — a sibling node
+    /// here, or a concurrent build in the daemon's shared GitManager — and may
+    /// still be cloning into it, in which case the reuse is a plain read with no
+    /// HEAD check and no delete.
     Reuse {
         dir: PathBuf,
         verify_commit: Option<String>,
@@ -663,13 +670,14 @@ mod tests {
         assert!(dir.exists(), "a sibling-owned clone must never be deleted");
     }
 
-    // A dir that exists but whose HEAD can't be resolved (not a valid repo yet)
-    // models a clone that a concurrent build is still writing, or a transient
-    // open failure. The old code treated any HEAD error as "wrong commit" and
-    // deleted it, which could yank a dir out from under an in-flight clone
-    // (#2711). We must now fail loudly *without* removing it.
+    // A dir that exists but whose HEAD can't be resolved (empty/partial/corrupt,
+    // or an unborn HEAD from an interrupted clone) is a broken leftover, not a
+    // live clone: `verify_commit` is `Some` only for a dir no in-flight build
+    // session has planned (#2711), so nothing is writing it. We remove it and
+    // fail loudly so the next build re-clones from scratch (#2482), rather than
+    // wedge every future build on a dir a human would have to delete by hand.
     #[tokio::test]
-    async fn reuse_leaves_dir_when_head_unresolvable() {
+    async fn reuse_removes_dir_when_head_unresolvable() {
         let base = tempfile::tempdir().unwrap();
         let dir = base.path().join("clone");
         // An empty directory is not a git repo, so `Repository::open` fails.
@@ -683,8 +691,8 @@ mod tests {
         };
         assert!(folder.prepare(&mut TestLogger).await.is_err());
         assert!(
-            dir.exists(),
-            "a dir whose HEAD can't be resolved (possibly mid-clone) must not be deleted"
+            !dir.exists(),
+            "a broken leftover (unresolvable HEAD, no in-flight owner) must be removed so the next build re-clones"
         );
     }
 
