@@ -5918,6 +5918,40 @@ mod tests {
     }
 
     #[test]
+    fn state_log_delta_returns_none_when_log_fully_drained() {
+        // Regression for #2601: when the log is *fully* drained (every acked
+        // daemon caught past the end) but a lagging daemon is still behind
+        // `state_log_sequence`, the empty-log branch must signal a full replay
+        // (`None`), not a misleading "up to date" `Some([])` that silently
+        // skips catch-up.
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let d1 = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
+        for i in 0..3 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // d1 acked past the end -> prune drains the whole log, but
+        // state_log_sequence stays at 3.
+        df.daemon_ack_sequence.insert(d1, 3);
+        df.prune_state_log();
+        assert!(df.state_log.is_empty());
+        assert_eq!(df.state_log_sequence, 3);
+
+        // A relinked daemon with no ack entry (last_ack defaults to 0) is
+        // behind: it missed seq 1..=3, which were pruned -> full replay.
+        assert!(df.state_log_delta(0).is_none());
+        // A daemon that is genuinely up to date still gets an empty delta.
+        assert!(df.state_log_delta(3).expect("up to date").is_empty());
+    }
+
+    #[test]
     fn set_param_forward_reply_reports_daemon_rejection() {
         let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Err(
             "node `camera` channel full".to_string(),
