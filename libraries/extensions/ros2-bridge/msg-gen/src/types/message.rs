@@ -215,7 +215,16 @@ impl Message {
                             // * -1.0           sec = -1 sec and 0 nanosec
                             // * -1.00000000001 sec = -2 sec and 999_999_999 nanosec
                             Self {
-                                sec: quot_sat - 1, // note -1
+                                // Borrow one second for the negative fractional
+                                // part. Saturate the decrement: when `quot_sat`
+                                // is already `i32::MIN` (either `quot == i32::MIN`
+                                // or the underflow branch above clamped it), a
+                                // plain `- 1` computes `i32::MIN - 1`, which
+                                // panics in debug builds and wraps to `i32::MAX`
+                                // (a sign flip) in release builds. `saturating_sub`
+                                // keeps the value pinned at `i32::MIN`, preserving
+                                // the saturation guarantee.
+                                sec: quot_sat.saturating_sub(1),
                                 nanosec: (1_000_000_000 + rem) as u32,
                             }
                         }
