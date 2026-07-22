@@ -2317,45 +2317,58 @@ impl Node {
     ) -> eyre::Result<Py<PyAny>> {
         let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
 
-        // Query daemon metadata for the trusted GPU buffer size.
-        // GPU_BUF_SIZES is populated before the fast path so both the
-        // cache-hit and cache-miss branches in try_doradma_read can
-        // validate the world-writable shmem `size` against it.
-        if let Ok(metadata) = self
-            .node
-            .get_mut()
-            .read_pinned_memory(buffer_id.clone(), false)
+        // Populate the trusted GPU buffer size from daemon metadata
+        // on the first read.  Subsequent reads (if any) reuse the
+        // cached entry — the daemon query runs at most once per pool.
         {
-            if let Some(size) = metadata.parameters.get("size").and_then(|p| {
-                if let Parameter::Integer(v) = p {
-                    Some(*v)
-                } else {
-                    None
+            let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
+            if !trusted.contains_key(&buffer_id) {
+                drop(trusted);
+                if let Ok(metadata) = self
+                    .node
+                    .get_mut()
+                    .read_pinned_memory(buffer_id.clone(), false)
+                {
+                    if let Some(size) = metadata.parameters.get("size").and_then(|p| {
+                        if let Parameter::Integer(v) = p {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    }) {
+                        GPU_BUF_SIZES
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(buffer_id.clone(), size as u64);
+                    }
                 }
-            }) {
-                GPU_BUF_SIZES
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(buffer_id.clone(), size as u64);
             }
         }
 
         // Fast path: DORADMA header read with daemon-trusted size validation.
         if buffer_id.starts_with("pool_") {
-            match self.try_doradma_read(&buffer_id, py) {
-                Ok(Some(result)) => return Ok(result),
-                Ok(None) => {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!(
-                        "memory pool {}: fast path returned None — pool may not be ready or shmem is corrupted",
-                        buffer_id
-                    );
-                }
-                Err(e) => {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                    eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
+            // Retry on transient failures (odd seqlock, shmem not yet
+            // mapped) so a concurrent writer doesn't cause a hard error.
+            // Bounded to avoid infinite loops on permanent failures.
+            for _ in 0..100 {
+                match self.try_doradma_read(&buffer_id, py) {
+                    Ok(Some(result)) => return Ok(result),
+                    Ok(None) => {
+                        // Transient — writer in progress, shmem not
+                        // ready, etc.  Retry immediately.
+                        continue;
+                    }
+                    Err(e) => {
+                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                        eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
+                    }
                 }
             }
+            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+            eyre::bail!(
+                "memory pool {}: fast path retries exhausted — pool not ready after 100 attempts",
+                buffer_id
+            );
         }
 
         warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
