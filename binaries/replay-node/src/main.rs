@@ -9,6 +9,22 @@ use dora_node_api::{
 use dora_recording::RecordingReader;
 use eyre::Context;
 
+/// Nanoseconds to sleep before emitting an entry, given the previous entry's
+/// recording offset, this entry's offset, and the replay `speed`.
+///
+/// `prev_offset` starts at 0 (recording start), so the very first entry sleeps
+/// for its own `timestamp_offset_nanos` — the delay from recording-start to the
+/// node's first output. Dropping that initial gap (by starting the baseline at
+/// the first entry's own offset) would emit every node's first message at ~t=0
+/// and destroy cross-node alignment on replay (dora-rs/dora#2602).
+fn pacing_sleep_nanos(prev_offset: u64, entry_offset: u64, speed: f64) -> u64 {
+    if speed <= 0.0 {
+        return 0;
+    }
+    let delta_nanos = entry_offset.saturating_sub(prev_offset);
+    (delta_nanos as f64 / speed) as u64
+}
+
 fn main() -> eyre::Result<()> {
     let replay_file =
         std::env::var("DORA_REPLAY_FILE").wrap_err("DORA_REPLAY_FILE env var not set")?;
@@ -29,7 +45,11 @@ fn main() -> eyre::Result<()> {
             File::open(&replay_file).wrap_err_with(|| format!("failed to open {replay_file}"))?;
         let mut reader = RecordingReader::open(file).wrap_err("failed to read recording")?;
 
-        let mut prev_offset: Option<u64> = None;
+        // Baseline for inter-message pacing. Seeded to 0 (recording start)
+        // rather than the first entry's own offset so the initial gap — each
+        // node's `timestamp_offset_nanos` from recording-start to its first
+        // output — is honored, preserving cross-node alignment on replay.
+        let mut prev_offset: u64 = 0;
         let mut replayed = 0u64;
 
         while let Some(entry) = reader.next_entry()? {
@@ -38,16 +58,11 @@ fn main() -> eyre::Result<()> {
             }
 
             // Sleep to maintain timing
-            if speed > 0.0
-                && let Some(prev) = prev_offset
-            {
-                let delta_nanos = entry.timestamp_offset_nanos.saturating_sub(prev);
-                let sleep_nanos = (delta_nanos as f64 / speed) as u64;
-                if sleep_nanos > 0 {
-                    thread::sleep(Duration::from_nanos(sleep_nanos));
-                }
+            let sleep_nanos = pacing_sleep_nanos(prev_offset, entry.timestamp_offset_nanos, speed);
+            if sleep_nanos > 0 {
+                thread::sleep(Duration::from_nanos(sleep_nanos));
             }
-            prev_offset = Some(entry.timestamp_offset_nanos);
+            prev_offset = entry.timestamp_offset_nanos;
 
             // Deserialize the InterDaemonEvent from raw bincode
             let timestamped: Timestamped<InterDaemonEvent> =
@@ -97,4 +112,39 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pacing_sleep_nanos;
+
+    #[test]
+    fn first_entry_honors_its_initial_offset() {
+        // A node whose first output was recorded 1s after recording-start must
+        // sleep ~1s before emitting it, not fire immediately (dora-rs/dora#2602).
+        let one_sec = 1_000_000_000;
+        assert_eq!(pacing_sleep_nanos(0, one_sec, 1.0), one_sec);
+    }
+
+    #[test]
+    fn subsequent_entries_sleep_the_inter_message_delta() {
+        // From offset 1s to offset 1.25s the pacing sleeps only the 250ms gap.
+        assert_eq!(
+            pacing_sleep_nanos(1_000_000_000, 1_250_000_000, 1.0),
+            250_000_000
+        );
+    }
+
+    #[test]
+    fn speed_scales_the_sleep() {
+        // 2x speed halves the sleep; a non-positive speed disables pacing.
+        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 2.0), 500_000_000);
+        assert_eq!(pacing_sleep_nanos(0, 1_000_000_000, 0.0), 0);
+    }
+
+    #[test]
+    fn non_monotonic_offset_saturates_to_zero() {
+        // A later entry with a smaller offset must not underflow into a huge sleep.
+        assert_eq!(pacing_sleep_nanos(1_000_000_000, 500_000_000, 1.0), 0);
+    }
 }

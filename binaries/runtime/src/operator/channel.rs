@@ -160,10 +160,22 @@ impl InputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::new_empty_array;
+    use arrow::datatypes::DataType;
+    use dora_message::metadata::Metadata;
+    use dora_node_api::ArrowData;
 
     fn closed_event(id: &str) -> Event {
         Event::InputClosed {
             id: DataId::from(id.to_string()),
+        }
+    }
+
+    fn input_event(id: &str) -> Event {
+        Event::Input {
+            id: DataId::from(id.to_string()),
+            metadata: Metadata::new(dora_core::uhlc::HLC::default().new_timestamp()),
+            data: ArrowData(new_empty_array(&DataType::Null)),
         }
     }
 
@@ -206,6 +218,45 @@ mod tests {
             ids,
             ["a", "b"],
             "surviving events must keep their FIFO order"
+        );
+    }
+
+    // Integration-level guard for the fix in #2483: driving the *real* path
+    // (`add_event` -> `drop_oldest_inputs` -> `compact`) under a stalled
+    // consumer must keep the deque physically bounded, not just cap the number
+    // of live `Some` events. The stall is modelled by never draining the queue
+    // (no `send_next_queued`/`pop_front`), which is exactly when the tombstones
+    // would otherwise accumulate. Unlike `compact_removes_tombstones_preserving_order`,
+    // this routes through the fix site, so deleting the `self.compact();` call
+    // in `drop_oldest_inputs` makes the length assertion fail (regression test
+    // for #2680 — the previous test left that call site unguarded/mutable).
+    #[test]
+    fn drop_oldest_inputs_keeps_deque_bounded_under_stall() {
+        let cap = 2usize;
+        let mut caps = BTreeMap::new();
+        caps.insert(
+            DataId::from("x".to_string()),
+            (cap, QueuePolicy::DropOldest),
+        );
+        let mut buffer = InputBuffer::new(caps);
+
+        // Feed far more inputs than the cap without ever draining the queue.
+        let total = 50;
+        for _ in 0..total {
+            buffer.add_event(input_event("x"));
+        }
+
+        // With `compact()`, the deque holds only the `cap` live events and no
+        // tombstones. Without it, every drop past the cap would leave a `None`
+        // behind, growing the deque roughly linearly with `total`.
+        assert_eq!(
+            buffer.queue.len(),
+            cap,
+            "stalled consumer must not accumulate tombstones (deque must stay bounded to the cap)"
+        );
+        assert!(
+            buffer.queue.iter().all(Option::is_some),
+            "no `None` tombstones may remain after compaction"
         );
     }
 }

@@ -46,48 +46,6 @@ impl MemberType {
         }
     }
 
-    pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        match self {
-            Self::NestableType(t) => {
-                let token = t.raw_type_tokens(package);
-                quote! { #token }
-            }
-            Self::Array(t) => {
-                let token = t.raw_type_tokens(package);
-                quote! { #token }
-            }
-            Self::Sequence(t) => {
-                let token = t.raw_type_tokens(package);
-                quote! { #token }
-            }
-            Self::BoundedSequence(t) => {
-                let token = t.raw_type_tokens(package);
-                quote! { #token }
-            }
-        }
-    }
-
-    pub fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        match self {
-            Self::NestableType(t) => {
-                let token = t.raw_ref_type_tokens(package);
-                quote! { #token }
-            }
-            Self::Array(t) => {
-                let token = t.raw_ref_type_tokens(package);
-                quote! { #token }
-            }
-            Self::Sequence(t) => {
-                let token = t.raw_ref_type_tokens(package);
-                quote! { #token }
-            }
-            Self::BoundedSequence(t) => {
-                let token = t.raw_ref_type_tokens(package);
-                quote! { #token }
-            }
-        }
-    }
-
     pub fn value_tokens(&self, default: &[String]) -> impl ToTokens {
         match self {
             Self::NestableType(t) => {

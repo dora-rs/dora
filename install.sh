@@ -10,21 +10,22 @@ DEST="$HOME/.dora/bin"
 # Resolve latest tag
 tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | cut -d'"' -f4)
 
-# Detect target triple
+# Detect target triple. Releases ship aarch64/x86_64 Linux and aarch64 macOS
+# only — no x86_64-apple-darwin asset exists, so Intel Macs get the clear
+# unsupported-platform error instead of a confusing download failure.
 case "$(uname -m)-$(uname -s)" in
   aarch64-Linux)  target=aarch64-unknown-linux-gnu ;;
   arm64-Darwin)   target=aarch64-apple-darwin ;;
-  x86_64-Darwin)  target=x86_64-apple-darwin ;;
   x86_64-Linux)   target=x86_64-unknown-linux-gnu ;;
   *) echo "Unsupported platform: $(uname -m)-$(uname -s)" >&2; exit 1 ;;
 esac
 
-archive="https://github.com/$REPO/releases/download/$tag/dora-$target.tar.gz"
+archive="https://github.com/$REPO/releases/download/$tag/dora-cli-$target.tar.gz"
 echo "Installing dora $tag ($target) to $DEST"
 
-# Download, extract, install
+# Download, extract, install (archive nests the binary in a dora-cli-<target>/ dir)
 mkdir -p "$DEST"
-curl -fsSL "$archive" | tar -xz -C "$DEST" dora
+curl -fsSL "$archive" | tar -xz -C "$DEST" --strip-components 1 "dora-cli-$target/dora"
 chmod 755 "$DEST/dora"
 
 # Add to PATH if not already there

@@ -2764,16 +2764,6 @@ async fn start_inner(
                     }
                 }
             }
-            Event::NodeMetricsExpire {
-                dataflow_id,
-                node_id,
-            } => {
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    dataflow.node_metrics.remove(&node_id);
-                    dataflow.node_stopped_at.remove(&node_id);
-                    dataflow.node_finalized.remove(&node_id);
-                }
-            }
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long
@@ -5970,6 +5960,42 @@ mod tests {
         // But a daemon at seq 7 can
         let delta = df.state_log_delta(7).expect("should succeed");
         assert_eq!(delta.len(), 3); // entries 8, 9, 10
+    }
+
+    #[test]
+    fn state_log_delta_returns_none_when_log_fully_drained_but_daemon_behind() {
+        // Regression for #2601: a relinked daemon that was never seeded into
+        // `daemon_ack_sequence` queries with last_ack == 0. If peers have
+        // acked and `prune_state_log` drained the log entirely (while
+        // `state_log_sequence` stays > 0), the empty-log branch must return
+        // `None` (→ full param replay), not `Some([])` ("up to date").
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let d1 = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
+        for i in 0..3 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // d1 (the only member in the ack map) acks all 3 → prune drains the
+        // whole log, but state_log_sequence stays at 3.
+        df.daemon_ack_sequence.insert(d1, 3);
+        df.prune_state_log();
+        assert!(df.state_log.is_empty());
+        assert_eq!(df.state_log_sequence, 3);
+
+        // A relinked daemon not in the ack map is provably behind (0 < 3) yet
+        // sees an empty log → must get the None fallback, not Some([]).
+        assert!(df.state_log_delta(0).is_none());
+
+        // A member already at the head is genuinely up to date → empty, non-None.
+        let delta = df.state_log_delta(3).expect("head daemon is up to date");
+        assert!(delta.is_empty());
     }
 
     #[test]

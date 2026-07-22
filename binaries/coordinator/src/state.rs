@@ -402,18 +402,19 @@ impl RunningDataflow {
     /// should fall back to a full param replay).
     pub(crate) fn state_log_delta(&self, last_ack: u64) -> Option<Vec<StateCatchUpEntry>> {
         if self.state_log.is_empty() {
-            // An empty log means either "nothing was ever logged" or
-            // "everything was pruned". `state_log_sequence` never resets, so a
-            // caller behind the high-water mark missed entries that pruning
-            // already dropped — signal a full replay rather than reporting it
-            // caught up. (Pruning to empty is the steady state once all *live*
-            // daemons have acked, so a lagging disconnected daemon that
-            // reconnects hits exactly this branch — see `prune_state_log`.)
-            return if last_ack < self.state_log_sequence {
-                None
-            } else {
-                Some(Vec::new())
-            };
+            // An empty log only means "up to date" when nothing newer than
+            // `last_ack` ever existed. If `last_ack < state_log_sequence`, the
+            // entries the daemon still needs (`last_ack+1..=state_log_sequence`)
+            // were pruned away — the daemon must fall back to a full replay,
+            // not be told it is current. This happens on relink: a daemon that
+            // was never seeded into `daemon_ack_sequence` queries with
+            // `last_ack == 0` after peers acked and drained the log
+            // (dora-rs/dora#2601). It also covers a disconnected daemon whose
+            // stale ack is now excluded from pruning (see `prune_state_log`).
+            if last_ack < self.state_log_sequence {
+                return None;
+            }
+            return Some(Vec::new());
         }
         let oldest = self.state_log[0].sequence;
         if last_ack.saturating_add(1) < oldest {

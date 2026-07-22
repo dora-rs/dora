@@ -120,7 +120,7 @@ fn start_dataflow(
         .wrap_err_with(|| {
             format!(
                 "failed to read dataflow at `{}`\n\n  \
-                 hint: check the file exists and is valid YAML",
+                 hint: check the file exists, is valid YAML, and matches the dataflow schema (see details below)",
                 dataflow.display()
             )
         })?
