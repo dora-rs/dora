@@ -957,6 +957,11 @@ impl DoraNode {
 
         let sample = match ipc_encode::ipc_fast_path_len(&arrow_array) {
             Some(len) => {
+                // Reject a stream larger than every receiver will accept before
+                // emitting it, rather than sending an undecodable payload that
+                // is silently dropped on the zenoh path (#2586).
+                ipc_encode::check_ipc_size(len)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut s = self.allocate_data_sample(len)?;
                 ipc_encode::encode_ipc_into(&arrow_array, &mut s)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
@@ -964,6 +969,8 @@ impl DoraNode {
             }
             None => {
                 let bytes = ipc_encode::encode_ipc_to_vec(&arrow_array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                ipc_encode::check_ipc_size(bytes.len())
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut s = self.allocate_data_sample(bytes.len())?;
                 s.copy_from_slice(&bytes);
