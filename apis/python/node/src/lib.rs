@@ -562,7 +562,18 @@ def dma_copy(ptr, size, slot, no_dma):
     dominates).
 
     Returns the device pointer of the pooled GPU buffer.
+
+    Raises RuntimeError if *size* exceeds the existing buffer capacity
+    and the buffer cannot be grown (GPU pool buffers are IPC-exported;
+    reallocation would invalidate the receiver's imported handle).
     """
+    if slot in _gpu_bufs:
+        _, capacity = _gpu_bufs[slot]
+        if size > capacity:
+            raise RuntimeError(
+                f"write size {size} exceeds GPU pool buffer capacity {capacity} (slot={slot})"
+                " — GPU buffer cannot be grown (IPC handle already exported)"
+            )
     if not no_dma:
         _register_host(ptr, size)
     try:
@@ -1924,13 +1935,24 @@ impl Node {
                                 }
                             }
                             // DMA: source CPU data -> GPU pool buffer via DMA engine.
-                            // When is_pinned=false, dma_copy skips cudaHostRegister/
-                            // cudaHostUnregister — pageable cudaMemcpy is faster for
-                            // small tensors where pin overhead dominates.
-                            if let Ok(helpers) = get_cuda_helpers(py) {
+                            let dma_result = if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let _ = bound
-                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned));
+                                bound
+                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned))
+                                    .map(|_| ())
+                            } else {
+                                Ok(())
+                            };
+                            // On failure, leave gen odd so the reader falls
+                            // back.  dma_copy already checks size <= capacity
+                            // (realloc would invalidate the IPC-exported
+                            // handle) and raises on cudaMemcpy failure.
+                            if let Err(e) = dma_result {
+                                return Err(eyre::eyre!(
+                                    "[{}] write_memory_pool: DMA copy failed: {}",
+                                    self.node_id,
+                                    e
+                                ));
                             }
                             // Seqlock: end write
                             unsafe {
@@ -2146,10 +2168,22 @@ impl Node {
                             // skips cudaHostRegister for small pageable tensors
                             // where pin overhead dominates DMA gain.
                             let slow_no_dma = !auto_pin;
-                            if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
+                            let dma_result = if let (Ok(helpers), Some(c)) =
+                                (get_cuda_helpers(py), slow_counter)
+                            {
                                 let bound = helpers.bind(py);
-                                let _ =
-                                    bound.call_method1("dma_copy", (ptr_val, size, c, slow_no_dma));
+                                bound
+                                    .call_method1("dma_copy", (ptr_val, size, c, slow_no_dma))
+                                    .map(|_| ())
+                            } else {
+                                Ok(())
+                            };
+                            if let Err(e) = dma_result {
+                                return Err(eyre::eyre!(
+                                    "[{}] write_memory_pool (slow path): DMA copy failed: {}",
+                                    self.node_id,
+                                    e
+                                ));
                             }
                             // Seqlock: end write
                             unsafe {
