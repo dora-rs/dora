@@ -2332,6 +2332,12 @@ impl Daemon {
                     // subscribes and could be selected mid-startup (dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
+                    // Purge per-node bookkeeping keyed by node id that the
+                    // routing cleanup above doesn't touch. Otherwise stale
+                    // input_deadlines/broken_inputs entries are re-scanned
+                    // every tick forever and the stderr queue leaks across
+                    // repeated dynamic add/remove cycles.
+                    dataflow.forget_node_bookkeeping(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
@@ -6576,6 +6582,57 @@ mod fault_tolerance_tests {
         assert!(matches_event(&events[0], "InputClosed"));
         assert!(matches_event(&events[1], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn forget_node_bookkeeping_purges_only_that_node() {
+        // Regression: RemoveNode must drop the removed node's per-node
+        // bookkeeping, otherwise stale input_deadlines/broken_inputs entries
+        // are re-scanned every tick forever and the stderr queue leaks across
+        // repeated dynamic add/remove cycles.
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+        let timeout = Duration::from_secs(1);
+
+        for node in [&node_a, &node_b] {
+            df.input_deadlines.insert(
+                (node.clone(), input_x.clone()),
+                InputDeadline {
+                    timeout,
+                    last_received: None,
+                },
+            );
+            df.broken_inputs
+                .insert((node.clone(), input_x.clone()), timeout);
+            df.node_stderr_most_recent
+                .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
+        }
+
+        df.forget_node_bookkeeping(&node_a);
+
+        // node_a's entries are gone …
+        assert!(
+            !df.input_deadlines
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(!df.node_stderr_most_recent.contains_key(&node_a));
+
+        // … while node_b's are untouched.
+        assert!(
+            df.input_deadlines
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(
+            df.broken_inputs
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(df.node_stderr_most_recent.contains_key(&node_b));
     }
 
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
