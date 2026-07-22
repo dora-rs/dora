@@ -178,19 +178,14 @@ fn info(
                     };
                     match event.inner {
                         InterDaemonEvent::Output { data, metadata, .. } => {
-                            // Prefer the daemon-stamped on-wire size: the debug
-                            // frame's `data` is a rebuilt self-describing stream
-                            // with the schema prepended to every frame, but a
-                            // schema-once output ships that schema only once, so
-                            // `data.len()` over-reports bandwidth. Fall back to the
-                            // buffer length when the size isn't present (#2584).
-                            let data_size = dora_message::metadata::get_integer_param(
+                            // Charge the real on-wire size, not the rebuilt
+                            // self-describing `data` (which re-prepends the schema
+                            // a schema-once output ships only once) — see
+                            // `debug_frame_wire_size` (#2584).
+                            let data_size = dora_message::metadata::debug_frame_wire_size(
                                 &metadata.parameters,
-                                dora_message::metadata::WIRE_SIZE,
-                            )
-                            .and_then(|n| usize::try_from(n).ok())
-                            .or_else(|| data.as_ref().map(|d| d.len()))
-                            .unwrap_or(0);
+                                data.as_deref(),
+                            );
                             // The payload is a self-describing Arrow IPC stream;
                             // read its data type from the decoded array (best
                             // effort — a malformed stream just leaves it unknown).

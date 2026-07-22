@@ -167,6 +167,24 @@ pub const SCHEMA_HASH: &str = "_schema_hash";
 /// Debug/inspection path only — never set on real node→node outputs.
 pub const WIRE_SIZE: &str = "_wire_size";
 
+/// Byte size to charge for a `dora topic` debug frame when accounting bandwidth.
+///
+/// Prefers the daemon-stamped [`WIRE_SIZE`] (the real on-wire data-sample
+/// length): the `data` the CLI receives is a rebuilt self-describing stream
+/// whose schema was re-prepended for inspection, so for a schema-once output
+/// `data.len()` over-reports what actually travelled. Falls back to the buffer
+/// length when the key is absent — an older daemon, or a non-debug frame that
+/// never carried it (dora-rs/dora#2584). A present-but-out-of-range stamp (a
+/// negative `i64` that can't be a byte count) also falls back rather than
+/// silently counting zero. Keep this the single reader of [`WIRE_SIZE`] so the
+/// daemon stamp and the CLI accounting can never disagree on the fallback rule.
+pub fn debug_frame_wire_size(params: &MetadataParameters, data: Option<&[u8]>) -> usize {
+    get_integer_param(params, WIRE_SIZE)
+        .and_then(|n| usize::try_from(n).ok())
+        .or_else(|| data.map(|d| d.len()))
+        .unwrap_or(0)
+}
+
 /// Returns `true` if the given parameters carry any pattern-correlation key
 /// ([`REQUEST_ID`], [`GOAL_ID`], or [`GOAL_STATUS`]).
 ///
@@ -333,5 +351,37 @@ mod tests {
         let mut params = MetadataParameters::default();
         params.insert("n".to_string(), Parameter::Integer(1));
         assert_eq!(get_bool_param(&params, "n"), None);
+    }
+
+    #[test]
+    fn debug_frame_wire_size_prefers_stamped_value() {
+        // The stamped size wins over the (larger, schema-inflated) buffer: a
+        // schema-once frame's rebuilt `data` is bigger than what travelled.
+        let mut params = MetadataParameters::default();
+        params.insert(WIRE_SIZE.to_string(), Parameter::Integer(17));
+        assert_eq!(debug_frame_wire_size(&params, Some(&[0u8; 42])), 17);
+    }
+
+    #[test]
+    fn debug_frame_wire_size_falls_back_to_buffer_len() {
+        // No stamp (older daemon / non-debug frame) ⇒ use the buffer length.
+        let params = MetadataParameters::default();
+        assert_eq!(debug_frame_wire_size(&params, Some(&[0u8; 42])), 42);
+    }
+
+    #[test]
+    fn debug_frame_wire_size_falls_back_on_out_of_range_stamp() {
+        // A negative i64 can't be a byte count; fall back rather than count 0.
+        let mut params = MetadataParameters::default();
+        params.insert(WIRE_SIZE.to_string(), Parameter::Integer(-1));
+        assert_eq!(debug_frame_wire_size(&params, Some(&[0u8; 42])), 42);
+    }
+
+    #[test]
+    fn debug_frame_wire_size_zero_without_stamp_or_buffer() {
+        assert_eq!(
+            debug_frame_wire_size(&MetadataParameters::default(), None),
+            0
+        );
     }
 }
