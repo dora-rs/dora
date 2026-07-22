@@ -47,7 +47,10 @@ pub fn build(
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
     use dora_cli::Executable;
 
-    let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
+    let stop_after_duration = stop_after
+        .map(std::time::Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|err| eyre::eyre!("invalid stop_after of {stop_after:?} seconds: {err}"))?;
     let mut run = dora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         run.uv = uv;

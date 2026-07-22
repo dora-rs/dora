@@ -13,9 +13,16 @@
 #     These gate the merge itself. Running them only on Trunk's
 #     batched queue branch means 5 PRs share one expensive CI run.
 #
-# Detection of merge-queue runs relies on Trunk's draft-PR queue
-# mode: the queue branch is named `trunk-merge/...` and the
-# `pull_request` event fires with `github.head_ref` pointing at it.
+# Merge-queue runs are push-triggered: Trunk pushes a `trunk-merge/...`
+# batch branch and the `push` trigger below picks it up, so the expensive
+# tier gates on `github.event_name != 'pull_request'` alone. Checks attach
+# to the batch head SHA, which is what Trunk reads — pip-release.yml has
+# relied on exactly this since it went push-only, and `pip-release all
+# green` is a required status today.
+#
+# This reports correctly whether or not Trunk also opens a draft PR per
+# batch, so the two can overlap during a cutover — see .trunk/trunk.yaml
+# for that setting and why it stays off.
 #
 # Moved to .github/workflows/nightly.yml (runs once daily, ~3-4h):
 #   - test on macos + windows
@@ -31,11 +38,39 @@
 # nightly schedule to surface platform-specific regressions.
 #
 # Repo-wide workflows: all upstream workflows present plus guide.yml.
+#
+# Caching: rust-cache saves are gated to `main` (PRs restore-only) so a
+# PR run can't churn the 10 GB per-repo Actions cache and evict the
+# shared caches other PRs restore from. GitHub LRU-evicts once the repo
+# hits 10 GB, so keeping the write set small matters.
+#
+# The dev-profile jobs — clippy, check, test, contract-tests — all
+# compile the same dependency graph on Linux, so they share ONE
+# `shared-key: workspace` cache. Only `test` writes it (`save-if: main`);
+# the others are `save-if: false`. `test` runs the full `cargo
+# build`/`test`, so its cache holds dependency codegen (.rlib) that a
+# `cargo check` cache would omit — and since GitHub caches are immutable
+# per key (first-writer-wins), letting only `test` save stops the faster
+# check/clippy jobs from racing in a .rmeta-only subset. e2e (release
+# profile) and bench (bench feature) build different artifacts, so they
+# keep their own keys, each `save-if: main`.
+#
+# Do NOT enable the sccache backend in any workflow (it writes one cache
+# entry per object and floods the same 10 GB budget — see pip-release.yml).
+#
+# Cache-key stability: rust-cache folds *every* installed rustup
+# toolchain into its cache key. The GitHub runner image ships a default
+# stable toolchain (e.g. 1.97.0) alongside our pinned RUST_VERSION, so
+# when GitHub bumps the image's Rust the key silently changes and every
+# cache misses at once. Each cached job therefore runs a "Pin toolchain
+# set" step that uninstalls all but RUST_VERSION before rust-cache, so
+# the key only moves when we intentionally bump RUST_VERSION.
 name: CI
 
 on:
   push:
-    branches: [main]
+    # Do not add a `paths:` filter — see .trunk/trunk.yaml.
+    branches: [main, "trunk-merge/**"]
   pull_request:
     branches: [main]
     # GitHub's default `pull_request` activity types are
@@ -51,8 +86,24 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # Pin Rust to 1.92 until static_init (zenoh-shm dep) is fixed for 1.94+
-  RUST_VERSION: "1.92.0"
+  RUST_VERSION: "1.97.1"
+  # Drop full debuginfo from dev/test builds. Debug info is ~78% of every
+  # compiled artifact in this large workspace; full-debuginfo builds overrun
+  # the runner disk during `cargo test` ("No space left on device").
+  # `line-tables-only` keeps file:line in backtraces but drops the bulk.
+  #
+  # Set at the WORKFLOW level (not per-job) so the profile is identical for
+  # EVERY job that shares `shared-key: workspace` — clippy, check, test,
+  # contract-tests (#2710). Cargo's per-unit fingerprint folds the profile's
+  # debuginfo level in, so if the cache writer (`test`) and a restore-only
+  # consumer (`clippy`/`check`) disagreed, every cached dependency would be
+  # rebuilt from scratch. rust-cache also folds CARGO_*/RUST_* env vars into
+  # its key, so a shared value keeps the exact-key restore hitting too.
+  #
+  # Only affects the dev and test profiles; the release builds in e2e/bench
+  # are unaffected (their caches use separate keys).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   fmt:
@@ -75,7 +126,19 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Shared dev-profile cache, written only by `test` (the fullest
+          # builder). clippy/check/contract-tests restore it but never
+          # save, so the race can't cache a check-only (.rmeta) subset.
+          shared-key: workspace
+          save-if: false
       - run: >
           cargo clippy --all
           --exclude dora-node-api-python
@@ -94,9 +157,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-check
+          # Restore the shared dev-profile cache; only `test` writes it.
+          shared-key: workspace
+          save-if: false
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -114,21 +185,36 @@ jobs:
     # Trunk merge-queue batches, and manual workflow_dispatch.
     name: Test (ubuntu-latest)
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-test
+          # `test` is the SOLE writer of the shared dev-profile cache: it
+          # runs the full `cargo build`/`test`, so its cache captures the
+          # dependency codegen (.rlib) that a check/clippy cache omits.
+          shared-key: workspace
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Free disk space
         shell: bash
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build (excluding Python packages)
@@ -236,13 +322,22 @@ jobs:
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Now that this job runs in parallel with `test` (#2524) it no longer
       # inherits `test`'s freed disk, and it builds the CLI + all E2E test
       # binaries itself. Reclaim the ~25 GB of preinstalled toolchains the
@@ -252,7 +347,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - name: Build CLI
@@ -323,16 +423,36 @@ jobs:
   contract-tests:
     name: Semantic contract tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     timeout-minutes: 30
+    env:
+      # maturin's PEP 517 backend forces `--profile release` unless told
+      # otherwise (`ensure_release_profile` in maturin's commands/pep517.rs),
+      # so the `uv pip install -e apis/python/node` step below release-built
+      # dora-node-api-python's whole dep closure — arrow, tokio, zenoh,
+      # dora-cli — with thin LTO: 15m21s, sharing nothing with the
+      # dev-profile `shared-key: workspace` cache this job restores. Dev
+      # profile reuses that cache, and inherits the workflow-level
+      # CARGO_PROFILE_DEV_DEBUG so the fingerprints match (#2710).
+      # Caching target/release instead would cost ~1 GB against the 10 GB
+      # per-repo Actions cache cap (see the caching note in the header).
+      MATURIN_PEP517_ARGS: "--profile dev"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: workspace-test
+          # Restore the shared dev-profile cache; only `test` writes it.
+          shared-key: workspace
+          save-if: false
       # Runs in parallel with `test` (#2524), so it can't rely on `test`
       # having freed disk. It builds the dora-examples test binary and
       # compiles the PyO3 node extension via `uv pip install -e` below —
@@ -343,7 +463,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
       - uses: actions/setup-python@v6
@@ -387,14 +512,23 @@ jobs:
   bench:
     name: Benchmark regression check
     runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/')
+    if: github.event_name != 'pull_request'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs/merge-queue restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Runs in parallel with `test` (#2524); compiles the criterion
       # benchmark binaries for dora-message + dora-daemon itself. Free the
       # preinstalled toolchains first to avoid "no space left on device".
@@ -403,7 +537,12 @@ jobs:
         run: |
           set -eux
           df -h
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          # None of these toolchains are used by any dora CI job. Not the
+          # whole /opt/hostedtoolcache — contract-tests' setup-python reads
+          # /opt/hostedtoolcache/Python (only the CodeQL bundle is removed).
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /usr/lib/jvm \
+            /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
 
@@ -495,7 +634,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Save only on `main`; PRs restore-only (see clippy job note).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-lichking
       - name: Check dependency licenses
         run: cargo lichking check

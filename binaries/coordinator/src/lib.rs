@@ -2764,16 +2764,6 @@ async fn start_inner(
                     }
                 }
             }
-            Event::NodeMetricsExpire {
-                dataflow_id,
-                node_id,
-            } => {
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    dataflow.node_metrics.remove(&node_id);
-                    dataflow.node_stopped_at.remove(&node_id);
-                    dataflow.node_finalized.remove(&node_id);
-                }
-            }
         }
 
         // warn if event handling took too long -> the main loop should never be blocked for too long

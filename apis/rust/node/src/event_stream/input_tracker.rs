@@ -17,20 +17,29 @@ use super::event::Event;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use dora_node_api::{Event, InputState, InputTracker};
+///
+/// // Create a tracker up front (e.g. during node init).
 /// let mut tracker = InputTracker::new();
-/// while let Some(event) = events.recv().await {
-///     tracker.process_event(&event);
-///     match event {
-///         Event::Input { id, data, .. } => { /* use fresh data */ }
-///         Event::InputClosed { id } => {
-///             if let Some(stale) = tracker.last_value(&id) {
-///                 /* degrade gracefully using cached value */
-///             }
+///
+/// // Freshly created, no input is tracked yet.
+/// assert_eq!(tracker.state(&"camera".into()), None);
+/// assert!(!tracker.any_closed());
+/// assert_ne!(tracker.state(&"camera".into()), Some(InputState::Healthy));
+///
+/// // In your event loop, feed every event through the tracker, then fall
+/// // back to the last cached value for any input that has closed instead of
+/// // crashing. `Event` is `#[non_exhaustive]`, so match with a `_` arm.
+/// fn on_event(tracker: &mut InputTracker, event: &Event) {
+///     tracker.process_event(event);
+///     for id in tracker.closed_inputs() {
+///         if let Some(_stale) = tracker.last_value(id) {
+///             // degrade gracefully using the cached `ArrowData`
 ///         }
-///         _ => {}
 ///     }
 /// }
+/// # let _ = on_event; // used from the real event loop
 /// ```
 pub struct InputTracker {
     states: HashMap<DataId, InputState>,

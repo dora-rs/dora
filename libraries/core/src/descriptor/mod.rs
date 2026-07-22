@@ -31,7 +31,51 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    fn visualize_as_mermaid(&self) -> eyre::Result<String>;
+    /// Number of subscriber input-links for the output `source_node/source_output`
+    /// across the whole (resolved) dataflow — i.e. how many `(node, input)` pairs
+    /// map to it, counting each operator input of a runtime node separately.
+    ///
+    /// This is the count of zenoh data-plane subscribers a producer must see wired
+    /// up before it is safe to switch that output from the reliable daemon path to
+    /// the direct zenoh path without dropping startup messages (see
+    /// [`crate::topics::zenoh_input_ready_liveliness_topic`]). It is a global
+    /// topology count, so it correctly includes subscribers on other daemons.
+    ///
+    /// Provided in terms of [`resolve_aliases_and_set_defaults`](Self::resolve_aliases_and_set_defaults).
+    fn output_subscriber_count(
+        &self,
+        source_node: &NodeId,
+        source_output: &DataId,
+    ) -> eyre::Result<usize> {
+        let resolved = self.resolve_aliases_and_set_defaults()?;
+        let mut count = 0;
+        for node in resolved.values() {
+            // Dynamic nodes connect at arbitrary times (or never), so the startup
+            // barrier must not wait for them: they receive over zenoh via normal
+            // publisher/subscriber matching once they connect, and excluding them
+            // cannot lose a message to an already-connected static subscriber.
+            if node_is_dynamic(node) {
+                continue;
+            }
+            let inputs: Vec<&Input> = match &node.kind {
+                CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+                CoreNodeKind::Runtime(n) => n
+                    .operators
+                    .iter()
+                    .flat_map(|op| op.config.inputs.values())
+                    .collect(),
+            };
+            for input in inputs {
+                if let InputMapping::User(m) = &input.mapping
+                    && &m.source == source_node
+                    && &m.output == source_output
+                {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
@@ -55,6 +99,33 @@ pub trait DescriptorExt {
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
+/// Prefixes a single-operator node's output id with the operator id
+/// (e.g. `result` -> `op/result`) so downstream references resolve to the
+/// operator-qualified output.
+///
+/// Operator ids are *not* validated against the `DataId` character set when a
+/// descriptor is parsed (`OperatorId` stores its string verbatim), so build the
+/// qualified id fallibly: `DataId::from` panics on characters outside
+/// `[a-zA-Z0-9_./-]`, which would abort `dora check`/`graph`/`build` on an
+/// otherwise-parseable descriptor. Returning an `Err` surfaces it as a clean
+/// descriptor error instead.
+fn prefix_output_with_operator_id(op_name: &OperatorId, output: &DataId) -> eyre::Result<DataId> {
+    format!("{op_name}/{output}")
+        .parse::<DataId>()
+        .map_err(|e| {
+            eyre::eyre!(
+                "operator id `{op_name}` produces an invalid output id `{op_name}/{output}`: {e}"
+            )
+        })
+}
+
+/// Whether a resolved node is a dynamic node (spawned/connected at runtime rather
+/// than at dataflow launch). Mirrors the daemon's classification.
+fn node_is_dynamic(node: &ResolvedNode) -> bool {
+    matches!(&node.kind, CoreNodeKind::Custom(n)
+        if matches!(n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE)
+}
+
 impl DescriptorExt for Descriptor {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
         let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
@@ -77,7 +148,7 @@ impl DescriptorExt for Descriptor {
                     if let InputMapping::User(m) = &mut input.mapping
                         && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
                     {
-                        m.output = DataId::from(format!("{op_name}/{}", m.output));
+                        m.output = prefix_output_with_operator_id(op_name, &m.output)?;
                     }
                 }
             }
@@ -103,7 +174,7 @@ impl DescriptorExt for Descriptor {
                 })
             {
                 if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
+                    mapping.output = prefix_output_with_operator_id(op_name, &mapping.output)?;
                 }
             }
 
@@ -215,12 +286,6 @@ impl DescriptorExt for Descriptor {
         }
 
         Ok(resolved)
-    }
-
-    fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases_and_set_defaults()?;
-        let flowchart = visualize::visualize_nodes(&resolved);
-        Ok(flowchart)
     }
 
     fn visualize_as_mermaid_with_boundaries(
@@ -607,6 +672,81 @@ mod tests {
     }
 
     #[test]
+    fn output_subscriber_count_counts_fanout_and_ignores_non_subscribers() {
+        // `source/value` fans out to `transform` and `recorder` (2); the
+        // `transform/doubled` output feeds only `sink` (1). Timer inputs and
+        // subscriptions to other outputs must not be counted. This count is what
+        // a producer waits for before switching an output to the direct zenoh
+        // data plane, so an undercount here would drop startup messages.
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    inputs:
+      tick: dora/timer/millis/50
+    outputs:
+      - value
+  - id: transform
+    path: transform
+    inputs:
+      value: source/value
+    outputs:
+      - doubled
+  - id: recorder
+    path: recorder
+    inputs:
+      rec_in: source/value
+  - id: sink
+    path: sink
+    inputs:
+      doubled: transform/doubled
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let transform = NodeId::from("transform".to_string());
+        let sink = NodeId::from("sink".to_string());
+        let value = DataId::from("value".to_string());
+        let doubled = DataId::from("doubled".to_string());
+        let missing = DataId::from("nonexistent".to_string());
+
+        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 2);
+        assert_eq!(
+            desc.output_subscriber_count(&transform, &doubled).unwrap(),
+            1
+        );
+        // Output nobody subscribes to.
+        assert_eq!(desc.output_subscriber_count(&source, &missing).unwrap(), 0);
+        // `sink` produces nothing.
+        assert_eq!(desc.output_subscriber_count(&sink, &value).unwrap(), 0);
+    }
+
+    #[test]
+    fn output_subscriber_count_excludes_dynamic_subscribers() {
+        // A dynamic subscriber connects at runtime, so it must not be counted in
+        // the startup barrier — otherwise the producer would stall on the daemon
+        // path waiting for a node that may connect late or never.
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    outputs:
+      - value
+  - id: static_sub
+    path: static_sub
+    inputs:
+      v: source/value
+  - id: dyn_sub
+    path: dynamic
+    inputs:
+      v: source/value
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let value = DataId::from("value".to_string());
+        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 1);
+    }
+
+    #[test]
     fn descriptor_global_env_parses_from_yaml() {
         // Verify the new top-level `env:` field parses and the resolver
         // hands merged envs to every node with per-node keys winning.
@@ -648,6 +788,32 @@ nodes:
             b_env.get("OTEL_ENDPOINT"),
             Some(&EnvValue::String("http://collector:4317".into()))
         );
+    }
+
+    #[test]
+    fn invalid_operator_id_prefix_errors_instead_of_panicking() {
+        // A single-operator node whose `operator.id` contains a character
+        // outside the `DataId` set (here a space) is accepted at parse time
+        // (`OperatorId` is unvalidated). When another node references its
+        // output, the resolver prefixes the output with the operator id. That
+        // used to build the qualified id via `DataId::from`, which panics on
+        // invalid characters and aborted `dora check`/`graph`/`build`. It must
+        // now surface as a clean `Err` instead.
+        let yaml = r#"
+nodes:
+  - id: producer
+    operator:
+      id: "bad id"
+      python: op.py
+      outputs: [result]
+  - id: consumer
+    path: ./consumer
+    inputs:
+      x: producer/result
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let result = desc.resolve_aliases_and_set_defaults();
+        assert!(result.is_err(), "expected a clean descriptor error, got Ok");
     }
 
     #[test]

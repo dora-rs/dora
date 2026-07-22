@@ -2,7 +2,7 @@ use super::Executable;
 use dora_core::{
     descriptor::{
         Descriptor, DescriptorExt,
-        validate::{check_type_annotations_full, check_wiring},
+        validate::{check_dataflow_static, check_type_annotations_full, check_wiring},
     },
     manifest::{NodeManifest, inject::inject_adjacent_manifests},
     types::TypeRegistry,
@@ -70,7 +70,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
         .with_context(|| {
             format!(
                 "failed to read dataflow at `{}`\n\n  \
-                     hint: check the file exists and is valid YAML",
+                     hint: check the file exists, is valid YAML, and matches the dataflow schema (see details below)",
                 dataflow.display()
             )
         })?
@@ -142,6 +142,12 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
     // Check input/output wiring (no build required)
     check_wiring(&descriptor).context("wiring check failed")?;
     println!("Input/output wiring OK.");
+
+    // Static whole-descriptor checks (timing fields, log config, ros2 configs) —
+    // the same ones `dora run`/`dora status --dataflow` enforce, minus
+    // source-path existence which needs a build first.
+    check_dataflow_static(&descriptor).context("descriptor check failed")?;
+    println!("Descriptor config OK.");
 
     // Inject contracts from node manifests adjacent to path: nodes (§6.2)
     let injection = inject_adjacent_manifests(&mut descriptor, working_dir, &mut registry);

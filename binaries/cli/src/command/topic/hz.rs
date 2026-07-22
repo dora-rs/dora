@@ -156,7 +156,11 @@ fn run_hz_oneshot(
 
     println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
     for (label, hz_stats) in &stats {
-        let samples = hz_stats.timestamps.lock().unwrap().len();
+        let samples = hz_stats
+            .timestamps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         match hz_stats.calculate() {
             Some(s) => println!(
                 "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
@@ -185,12 +189,19 @@ impl HzStats {
     fn record(&self, now: Instant) {
         let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
         timestamps.push_back(now);
-        let cutoff = now - self.window_duration;
-        while let Some(&first) = timestamps.front() {
-            if first < cutoff {
-                timestamps.pop_front();
-            } else {
-                break;
+        // `now - window_duration` panics ("overflow when subtracting duration
+        // from instant") when the window exceeds the monotonic-clock value --
+        // reachable via a large `--window` (which `parse_window` leaves
+        // unbounded) or within `window` seconds of the monotonic epoch. When
+        // the cutoff would predate the epoch, every timestamp is within the
+        // window, so there is nothing to prune. Mirrors `info::calculate_hz`.
+        if let Some(cutoff) = now.checked_sub(self.window_duration) {
+            while let Some(&first) = timestamps.front() {
+                if first < cutoff {
+                    timestamps.pop_front();
+                } else {
+                    break;
+                }
             }
         }
     }
@@ -198,7 +209,7 @@ impl HzStats {
     fn intervals_ms(&self) -> Vec<f64> {
         self.timestamps
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .tuple_windows()
             .filter_map(|(a, b)| {
@@ -332,12 +343,14 @@ fn run_hz(
 
     loop {
         let now = Instant::now();
+        // `None` when the 1 s sub-window predates the monotonic epoch (only in
+        // the first second of uptime); then every timestamp counts as recent.
+        let cutoff = now.checked_sub(sub_window);
         for (i, (_topic, s)) in stats.iter().enumerate() {
-            let cutoff = now - sub_window;
             let mut count = 0usize;
             let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
             for &t in ts.iter().rev() {
-                if t < cutoff {
+                if cutoff.is_some_and(|c| t < c) {
                     break;
                 }
                 count += 1;
@@ -600,5 +613,40 @@ mod tests {
     #[test]
     fn parse_window_non_numeric() {
         assert!(parse_window("abc").is_err());
+    }
+
+    #[test]
+    fn lock_reads_recover_from_poisoning() {
+        use std::sync::Arc;
+
+        let stats = Arc::new(HzStats::new(1));
+
+        // Poison the timestamps mutex by panicking while holding the lock.
+        let poisoner = Arc::clone(&stats);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.timestamps.lock().unwrap();
+            panic!("poison the timestamps lock");
+        })
+        .join();
+
+        // Writer and reader must still work despite the poisoned lock rather
+        // than panicking on a bare `.unwrap()`.
+        stats.record(Instant::now());
+        stats.record(Instant::now());
+        let _ = stats.intervals_ms();
+    }
+
+    // A huge window (`parse_window` imposes no upper bound) must not panic in
+    // `record`: `now - window_duration` would otherwise overflow the monotonic
+    // clock. Regression for the `dora topic hz --window <huge>` panic.
+    #[test]
+    fn record_does_not_underflow_on_huge_window() {
+        let stats = HzStats::new(u32::MAX as usize);
+        // Would panic with "overflow when subtracting duration from instant"
+        // before the `checked_sub` guard.
+        stats.record(Instant::now());
+        stats.record(Instant::now());
+        // Nothing pruned: the cutoff predates the epoch, so both are kept.
+        assert_eq!(stats.timestamps.lock().unwrap().len(), 2);
     }
 }

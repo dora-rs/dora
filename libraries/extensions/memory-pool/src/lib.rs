@@ -152,11 +152,16 @@ impl MemoryPoolManager {
         id: &MemoryPoolId,
         requested_by: &str,
     ) -> Result<MemoryPoolMetadata, String> {
-        let mut table = self.lock_table();
-
-        let entry = table
-            .remove(id)
-            .ok_or_else(|| "memory pool not found".to_string())?;
+        // Only the table removal needs the lock. Releasing it before the
+        // shared-memory unlink below keeps the `remove_file` syscall out of the
+        // critical section, so concurrent `register`/`read`/`free` calls on
+        // other pools don't serialize behind this pool's filesystem work.
+        let entry = {
+            let mut table = self.lock_table();
+            table
+                .remove(id)
+                .ok_or_else(|| "memory pool not found".to_string())?
+        };
 
         if entry.registered_by != requested_by {
             tracing::debug!(
@@ -385,6 +390,37 @@ mod tests {
 
         let err = mgr.free_memory_pool(&id, "node_a").unwrap_err();
         assert!(err.contains("memory pool not found"));
+    }
+
+    #[test]
+    fn concurrent_frees_across_pools_all_succeed() {
+        // `free_memory_pool` only holds the table lock for the removal, not
+        // across the shared-memory unlink. Frees on distinct pools must proceed
+        // independently and leave the table empty. Metadata carries no backing
+        // segment (`shared_memory_name: None`) so the test stays cross-platform.
+        let mgr = MemoryPoolManager::new();
+        let n = 16;
+        for i in 0..n {
+            mgr.register_memory_pool(
+                make_id(&format!("pool-{i}")),
+                make_metadata(),
+                "node_a".into(),
+            )
+            .unwrap();
+        }
+
+        let handles: Vec<_> = (0..n)
+            .map(|i| {
+                let mgr = mgr.clone();
+                std::thread::spawn(move || {
+                    mgr.free_memory_pool(&make_id(&format!("pool-{i}")), "node_b")
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().expect("free should succeed");
+        }
+        assert_eq!(mgr.table_size(), 0);
     }
 
     #[test]

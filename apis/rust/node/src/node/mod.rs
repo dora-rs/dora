@@ -13,7 +13,7 @@ use arrow::array::{Array, ArrayData};
 use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    descriptor::Descriptor,
+    descriptor::{Descriptor, DescriptorExt},
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST},
     types::TypeRegistry,
     uhlc,
@@ -92,12 +92,63 @@ impl RuntimeTypeCheck {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-const ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT: Duration = Duration::from_millis(200);
-const ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Per-output data-plane readiness for the startup no-loss barrier.
+///
+/// The zenoh data plane is direct node-to-node pub/sub, so a producer that
+/// starts publishing before a consumer's subscription has propagated drops those
+/// early samples. Until every expected subscriber has announced its subscription
+/// (via a liveliness readiness token — see
+/// [`dora_core::topics::zenoh_input_ready_liveliness_topic`]), the producer keeps
+/// delivering over the reliable daemon path and only switches this output to the
+/// fast zenoh path once all subscribers are confirmed wired. Over-counting keeps
+/// an output on the (lossless) daemon path; it never drops messages.
+struct ZenohOutputReadiness {
+    /// Number of subscriber input-links this output has in the dataflow.
+    expected: usize,
+    /// Latches `true` once all expected subscribers are confirmed wired. Never
+    /// reverts — once switched to the fast path we stay on it.
+    ready: bool,
+    /// Distinct readiness-token key expressions currently seen for this output
+    /// (deduped). Maintained by the liveliness subscriber callback.
+    alive: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    /// Liveliness subscriber counting readiness tokens for this output. Kept
+    /// alive so its callback keeps `alive` current; dropped with the node.
+    _liveliness_sub: zenoh::pubsub::Subscriber<()>,
+}
 
-/// Must exceed zenoh's internal 10s session close timeout, which is not
-/// enforceable when zenoh's net runtime is wedged.
-pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long [`DoraNode::init`] waits for the direct-zenoh routes of this node's
+/// outputs to connect before handing control to user code.
+///
+/// The daemon "all nodes ready" barrier already guarantees every subscriber is
+/// *declared* before any node runs; this only waits out the residual zenoh
+/// propagation between two already-declared endpoints, so it is normally
+/// sub-second. On timeout (e.g. a zenoh data plane that can't connect while the
+/// control plane can) the un-connected outputs simply start on the reliable
+/// daemon path and upgrade to direct zenoh once their subscribers appear — the
+/// dataflow is never blocked, and nothing is dropped.
+const ZENOH_OUTPUT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll interval while waiting for output routes to connect at startup.
+const ZENOH_OUTPUT_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Per-phase deadline for tearing down zenoh state on node shutdown (subscribers,
+/// liveliness tokens, and the session/publishers — see [`DoraNode::drop`] and
+/// `EventStream::drop`). Each `undeclare`/close blocks indefinitely when zenoh's net
+/// runtime is wedged (e.g. retrying an unreachable scouted peer on a headless CI
+/// runner), so it is bounded here and abandoned on timeout.
+///
+/// This MUST stay comfortably below the daemon's force-kill grace
+/// (`DEFAULT_STOP_GRACE (10s) + DEFAULT_STOP_GRACE/2 = 15s`, see
+/// `binaries/daemon/src/running_dataflow.rs`), including the worst case where all
+/// three phases wedge sequentially (`3 *` this value). Otherwise a node with a wedged
+/// net runtime is still tearing down when the daemon `TerminateProcess`es it, which on
+/// Windows surfaces as `ExitCode(1)` and reddens the nightly (dora-rs/dora#2742). The
+/// `zenoh_teardown_fits_within_daemon_force_kill_grace` test guards the invariant.
+///
+/// This deliberately no longer exceeds zenoh's internal 10s session-close timeout: a
+/// semi-wedged close that would settle at ~10s is abandoned instead, and peers fall
+/// back to liveliness expiry. That is the right trade for a *shutting-down* node —
+/// waiting out the 10s only to be force-killed anyway yields a worse (unclean) exit.
+pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -132,6 +183,9 @@ pub struct DoraNode {
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
+    /// Per-output startup readiness for the direct zenoh data plane (lazily
+    /// created on first send). See [`ZenohOutputReadiness`].
+    zenoh_output_readiness: HashMap<DataId, ZenohOutputReadiness>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -660,6 +714,7 @@ impl DoraNode {
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),
+            dynamic,
         )
         .wrap_err("failed to init event stream")?;
         let control_channel =
@@ -692,7 +747,7 @@ impl DoraNode {
             }
         };
 
-        let node = Self {
+        let mut node = Self {
             id: node_id,
             dataflow_id,
             node_config: run_config.clone(),
@@ -704,6 +759,7 @@ impl DoraNode {
             zenoh_schema_publishers: HashMap::new(),
             zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
+            zenoh_output_readiness: HashMap::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -739,6 +795,14 @@ impl DoraNode {
                 }
             }
         }
+
+        // Warm up the direct-zenoh data plane before handing control to user
+        // code: declare output publishers and wait (bounded) until their
+        // subscribers are wired, so the first `send_output` on a connected output
+        // hits an established route. Fail-safe — un-connected outputs start on the
+        // daemon path and upgrade later (see `warm_up_direct_outputs`).
+        node.warm_up_direct_outputs();
+
         Ok((node, event_stream))
     }
 
@@ -1092,14 +1156,276 @@ impl DoraNode {
         Ok(())
     }
 
+    /// Whether the direct zenoh data plane is safe to use for `output_id` — i.e.
+    /// every subscriber this output has in the dataflow has announced its
+    /// subscription. Returns `false` while any expected subscriber is still
+    /// missing, so the caller keeps using the reliable daemon path (no message is
+    /// dropped during the startup subscription-establishment window).
+    ///
+    /// Lazily declares the per-output liveliness counter on first use. Once all
+    /// subscribers are confirmed the result latches `true` and later calls are a
+    /// cheap map lookup. If readiness tracking cannot be set up (no zenoh session
+    /// or an invalid key) this returns `true` so the data plane is not stalled.
+    fn ensure_output_ready(&mut self, output_id: &DataId) -> bool {
+        use zenoh::Wait;
+
+        if self
+            .zenoh_output_readiness
+            .get(output_id)
+            .is_some_and(|r| r.ready)
+        {
+            return true;
+        }
+
+        if !self.zenoh_output_readiness.contains_key(output_id) {
+            match self.declare_output_readiness(output_id) {
+                Some(readiness) => {
+                    self.zenoh_output_readiness
+                        .insert(output_id.clone(), readiness);
+                }
+                // Tracking unavailable — don't stall the data plane.
+                None => return true,
+            }
+        }
+
+        let (expected, count) = {
+            let readiness = self
+                .zenoh_output_readiness
+                .get(output_id)
+                .expect("readiness entry just ensured");
+            let count = readiness.alive.lock().map(|alive| alive.len()).unwrap_or(0);
+            (readiness.expected, count)
+        };
+
+        // No subscribers to wait for: nothing can be lost, use the fast path.
+        if expected == 0 {
+            self.mark_output_ready(output_id);
+            return true;
+        }
+
+        if count < expected {
+            return false;
+        }
+
+        // Every readiness token is visible (all subscribers declared their
+        // subscriptions). Confirm zenoh has actually forwarded a matching
+        // subscription to this publisher before switching, so the very first
+        // zenoh sample isn't published into a not-yet-wired route.
+        let matched = self
+            .zenoh_publishers
+            .get(output_id)
+            .and_then(|publisher| publisher.matching_status().wait().ok())
+            .is_some_and(|status| status.matching());
+        if matched {
+            self.mark_output_ready(output_id);
+            return true;
+        }
+
+        false
+    }
+
+    /// Latch the output's data plane as ready (idempotent).
+    fn mark_output_ready(&mut self, output_id: &DataId) {
+        if let Some(readiness) = self.zenoh_output_readiness.get_mut(output_id) {
+            if !readiness.ready {
+                tracing::debug!(
+                    output = %output_id,
+                    subscribers = readiness.expected,
+                    "all subscribers wired; switching output to direct zenoh data plane"
+                );
+            }
+            readiness.ready = true;
+        }
+    }
+
+    /// Build the per-output readiness counter: resolve how many subscribers the
+    /// output has (from the dataflow descriptor) and declare a liveliness
+    /// subscriber that counts their readiness tokens. Returns `None` if there is
+    /// no zenoh session or the counting subscription could not be declared.
+    fn declare_output_readiness(&self, output_id: &DataId) -> Option<ZenohOutputReadiness> {
+        use zenoh::Wait;
+
+        let session = self.zenoh_session.as_ref()?;
+
+        // Expected subscriber count from the global topology. A descriptor that
+        // failed to parse (never the case for a daemon-spawned node) yields 0,
+        // which just means "no barrier" — the pre-existing behaviour.
+        let expected = match &self.dataflow_descriptor {
+            Ok(descriptor) => descriptor
+                .output_subscriber_count(&self.id, output_id)
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        output = %output_id,
+                        "failed to count subscribers ({e}); not gating the zenoh data plane"
+                    );
+                    0
+                }),
+            Err(_) => 0,
+        };
+
+        let prefix = dora_core::topics::zenoh_output_ready_liveliness_prefix(
+            self.dataflow_id,
+            &self.id,
+            output_id,
+        );
+        let key_expr = match zenoh::key_expr::KeyExpr::new(prefix) {
+            Ok(key) => key.into_owned(),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "invalid readiness key ({e}); not gating the zenoh data plane");
+                return None;
+            }
+        };
+
+        let alive = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
+        let alive_cb = alive.clone();
+        // `history(true)` replays tokens that were declared before this
+        // subscriber, so subscribers that wired up early are still counted.
+        let subscriber = session
+            .liveliness()
+            .declare_subscriber(key_expr)
+            .history(true)
+            .callback(move |sample| {
+                let key = sample.key_expr().as_str().to_string();
+                if let Ok(mut alive) = alive_cb.lock() {
+                    match sample.kind() {
+                        zenoh::sample::SampleKind::Put => {
+                            alive.insert(key);
+                        }
+                        zenoh::sample::SampleKind::Delete => {
+                            alive.remove(&key);
+                        }
+                    }
+                }
+            })
+            .wait();
+
+        match subscriber {
+            Ok(subscriber) => Some(ZenohOutputReadiness {
+                expected,
+                ready: false,
+                alive,
+                _liveliness_sub: subscriber,
+            }),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare readiness subscriber ({e}); not gating the zenoh data plane");
+                None
+            }
+        }
+    }
+
+    /// Ensure a direct-zenoh data publisher is declared for `output_id`.
+    ///
+    /// Idempotent: returns `true` if a publisher exists after the call (already
+    /// present or freshly declared), `false` if there is no zenoh session or the
+    /// declaration failed (the caller then falls back to the daemon path).
+    ///
+    /// QoS is configured at declare time so it applies to every put:
+    /// `express(true)` bypasses zenoh's adaptive batch timer (the single biggest
+    /// small-message latency win — without it, per-put delivery on the bare local
+    /// config collapses to a few msg/s), `Priority::RealTime` keeps data-plane
+    /// messages off the bulk-data queues, and `CongestionControl::Drop` prevents a
+    /// stalled subscriber from back-pressuring the publishing node.
+    fn ensure_zenoh_publisher(&mut self, output_id: &DataId) -> bool {
+        use zenoh::Wait;
+        use zenoh::qos::{CongestionControl, Priority};
+
+        if self.zenoh_publishers.contains_key(output_id) {
+            return true;
+        }
+        let Some(session) = self.zenoh_session.as_ref() else {
+            return false;
+        };
+        let topic =
+            dora_core::topics::zenoh_output_publish_topic(self.dataflow_id, &self.id, output_id);
+        let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
+            Ok(key) => key.into_owned(),
+            Err(e) => {
+                tracing::warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
+                return false;
+            }
+        };
+        let publisher = match session
+            .declare_publisher(key_expr)
+            .congestion_control(CongestionControl::Drop)
+            .express(true)
+            .priority(Priority::RealTime)
+            .wait()
+        {
+            Ok(publisher) => publisher,
+            Err(e) => {
+                tracing::warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
+                return false;
+            }
+        };
+        self.zenoh_publishers.insert(output_id.clone(), publisher);
+        true
+    }
+
+    /// Eagerly declare this node's direct-zenoh output publishers and readiness
+    /// counters, then wait (bounded) until every output's subscribers are wired
+    /// up — so the user's first `send_output` on a connected output is guaranteed
+    /// to hit an established route rather than dropping startup samples.
+    ///
+    /// Runs once, at the end of [`Self::init`], *after* the daemon "all nodes
+    /// ready" barrier. By then every subscriber in the dataflow has already
+    /// declared its data subscriber and readiness token (the barrier releases
+    /// only once all nodes have subscribed), so this merely waits out zenoh route
+    /// propagation between already-declared endpoints — normally milliseconds.
+    ///
+    /// Fail-safe: outputs that don't connect within
+    /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (an unreachable remote subscriber, or a
+    /// zenoh data plane that can't connect while the control plane can) are left
+    /// on the reliable daemon path and upgrade to direct zenoh on a later send
+    /// once their subscribers appear. The dataflow is never blocked from starting
+    /// and nothing is dropped.
+    fn warm_up_direct_outputs(&mut self) {
+        if self.zenoh_session.is_none() {
+            return;
+        }
+        let outputs: Vec<DataId> = self.node_config.outputs.iter().cloned().collect();
+        if outputs.is_empty() {
+            return;
+        }
+
+        // Declare publishers up front so zenoh starts wiring routes immediately
+        // and `ensure_output_ready` (which reads `matching_status`) can observe
+        // them. `ensure_output_ready` lazily declares the readiness counter.
+        for output_id in &outputs {
+            self.ensure_zenoh_publisher(output_id);
+        }
+
+        let deadline = Instant::now() + ZENOH_OUTPUT_CONNECT_TIMEOUT;
+        loop {
+            let all_ready = outputs
+                .iter()
+                .all(|output_id| self.ensure_output_ready(output_id));
+            if all_ready {
+                break;
+            }
+            if Instant::now() >= deadline {
+                let pending: Vec<&str> = outputs
+                    .iter()
+                    .filter(|o| !self.ensure_output_ready(o))
+                    .map(|o| o.as_str())
+                    .collect();
+                tracing::debug!(
+                    outputs = ?pending,
+                    "direct-zenoh routes not confirmed within {}s; these outputs start on the daemon path and upgrade when their subscribers connect",
+                    ZENOH_OUTPUT_CONNECT_TIMEOUT.as_secs()
+                );
+                break;
+            }
+            std::thread::sleep(ZENOH_OUTPUT_CONNECT_POLL_INTERVAL);
+        }
+    }
+
     /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
     /// Uses SHM for zero-copy when possible, falls back to heap buffer.
     ///
-    /// The publisher is declared with `express(true)` to bypass zenoh's adaptive
-    /// batch timer (the single biggest small-message latency win — without it,
-    /// per-put delivery on the bare local config collapses to a few msg/s) and
-    /// with `Priority::RealTime` so data-plane messages don't share queues with
-    /// bulk traffic.
+    /// The publisher is declared (see [`Self::ensure_zenoh_publisher`]) with
+    /// `express(true)` to bypass zenoh's adaptive batch timer and with
+    /// `Priority::RealTime` so data-plane messages don't share queues with bulk
+    /// traffic.
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
@@ -1107,85 +1433,37 @@ impl DoraNode {
         finalized: FinalizedSample,
     ) -> eyre::Result<PublishOutcome> {
         use zenoh::Wait;
-        use zenoh::qos::{CongestionControl, Priority};
 
         // Every failure *before* the payload is moved into `put` returns the
         // sample as `NotPublished` so the caller can still deliver it via the
         // daemon. Only a failed `put` of an SHM buffer (which consumes it)
         // returns `Err` — that is the single non-recoverable case.
-        let Some(session) = self.zenoh_session.as_ref() else {
+        //
+        // Get or create the publisher for this output. Normally it was already
+        // declared eagerly at startup (see [`Self::warm_up_direct_outputs`]);
+        // this covers outputs sent that weren't declared then. A missing
+        // session or a declaration failure falls back to the daemon path.
+        if !self.ensure_zenoh_publisher(output_id) {
             return Ok(PublishOutcome::NotPublished(finalized));
-        };
+        }
 
-        // Get or create publisher for this output. QoS is configured at
-        // declare time so it applies to every put: `express(true)` bypasses
-        // zenoh's adaptive batch timer (the single biggest small-message
-        // latency win — without it, per-put delivery on the bare local config
-        // collapses to a few msg/s), and `Priority::RealTime` keeps data-plane
-        // messages off the bulk-data queues. `CongestionControl::Drop`
-        // prevents a stalled subscriber from back-pressuring the publishing
-        // node.
-        let declared_publisher = if !self.zenoh_publishers.contains_key(output_id) {
-            let topic = dora_core::topics::zenoh_output_publish_topic(
-                self.dataflow_id,
-                &self.id,
-                output_id,
-            );
-            let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
-                Ok(key) => key.into_owned(),
-                Err(e) => {
-                    tracing::warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
-                    return Ok(PublishOutcome::NotPublished(finalized));
-                }
-            };
-            let publisher = match session
-                .declare_publisher(key_expr)
-                .congestion_control(CongestionControl::Drop)
-                .express(true)
-                .priority(Priority::RealTime)
-                .wait()
-            {
-                Ok(publisher) => publisher,
-                Err(e) => {
-                    tracing::warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
-                    return Ok(PublishOutcome::NotPublished(finalized));
-                }
-            };
-            self.zenoh_publishers.insert(output_id.clone(), publisher);
-            true
-        } else {
-            false
-        };
+        // Startup no-loss barrier: until every subscriber for this output has
+        // wired up its zenoh subscription, deliver over the reliable daemon path
+        // rather than dropping early samples on the not-yet-established data
+        // plane. Once all subscribers are confirmed this latches ready and every
+        // subsequent send takes the fast zenoh path.
+        if !self.ensure_output_ready(output_id) {
+            return Ok(PublishOutcome::NotPublished(finalized));
+        }
+
         let Some(publisher) = self.zenoh_publishers.get(output_id) else {
             tracing::warn!(output = %output_id, "zenoh publisher missing; falling back to daemon path");
             return Ok(PublishOutcome::NotPublished(finalized));
         };
-
-        if declared_publisher {
-            let wait_until = Instant::now() + ZENOH_FIRST_PUBLISH_MATCH_TIMEOUT;
-            loop {
-                match publisher.matching_status().wait() {
-                    Ok(status) if status.matching() => break,
-                    Ok(_) if Instant::now() < wait_until => {
-                        std::thread::sleep(ZENOH_FIRST_PUBLISH_MATCH_POLL_INTERVAL);
-                    }
-                    Ok(_) => {
-                        tracing::debug!(
-                            output = %output_id,
-                            "no matching zenoh subscriber before first publish timeout"
-                        );
-                        return Ok(PublishOutcome::NotPublished(finalized));
-                    }
-                    Err(err) => {
-                        tracing::warn!(
-                            output = %output_id,
-                            "failed to query zenoh matching status before first publish: {err}"
-                        );
-                        return Ok(PublishOutcome::NotPublished(finalized));
-                    }
-                }
-            }
-        }
+        let session = self
+            .zenoh_session
+            .as_ref()
+            .expect("zenoh session presence checked above");
 
         // Serialize metadata as zenoh attachment.
         let metadata_bytes = match bincode::serialize(metadata) {
@@ -1808,6 +2086,9 @@ impl Drop for DoraNode {
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
         let schema_publishers = std::mem::take(&mut self.zenoh_schema_publishers);
+        // Per-output readiness counters hold liveliness subscribers on the shared
+        // session; drop them before the session (same reasoning as publishers).
+        let readiness = std::mem::take(&mut self.zenoh_output_readiness);
         let shm_provider = self.zenoh_shm_provider.take();
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
@@ -1820,10 +2101,12 @@ impl Drop for DoraNode {
             // hang node shutdown (and with it the daemon, which waits for
             // `InputClosed`). Bound the teardown with a deadline instead.
             let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
-                // documented drop order: publishers (data + schema) before the
-                // session, owned runtime last so async cleanup can still run
+                // documented drop order: publishers (data + schema) and readiness
+                // subscribers before the session, owned runtime last so async
+                // cleanup can still run
                 drop(publishers);
                 drop(schema_publishers);
+                drop(readiness);
                 drop(shm_provider);
                 drop(session);
                 drop(runtime);
@@ -2839,5 +3122,27 @@ mod tests {
             panic!("teardown panicked")
         });
         assert!(completed, "panicking teardown still counts as completed");
+    }
+
+    // Regression guard for dora-rs/dora#2742: the node's worst-case zenoh teardown must
+    // stay under the daemon's force-kill grace (full rationale on `ZENOH_TEARDOWN_TIMEOUT`).
+    //
+    // Teardown runs in sequential bounded phases (two in `EventStream::drop`, one in
+    // `DoraNode::drop`), so the worst case is `TEARDOWN_PHASES * ZENOH_TEARDOWN_TIMEOUT` —
+    // bump `TEARDOWN_PHASES` if you add another. The grace is `DEFAULT_STOP_GRACE +
+    // DEFAULT_STOP_GRACE/2 = 15s` (`binaries/daemon/src/running_dataflow.rs`); it lives in
+    // a binary crate that can't be imported here, hence the hard-coded copy, which the
+    // daemon const back-references so the two can't silently drift apart.
+    #[test]
+    fn zenoh_teardown_fits_within_daemon_force_kill_grace() {
+        const DAEMON_FORCE_KILL_GRACE: Duration = Duration::from_secs(15);
+        const TEARDOWN_PHASES: u32 = 3;
+        let worst_case = ZENOH_TEARDOWN_TIMEOUT * TEARDOWN_PHASES;
+        assert!(
+            worst_case < DAEMON_FORCE_KILL_GRACE,
+            "worst-case zenoh teardown ({worst_case:?}) must stay under the daemon \
+             force-kill grace ({DAEMON_FORCE_KILL_GRACE:?}); raising ZENOH_TEARDOWN_TIMEOUT \
+             reintroduces dora-rs/dora#2742"
+        );
     }
 }
