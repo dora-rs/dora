@@ -411,6 +411,7 @@ fn expand_module_node(
         .collect();
 
     // Validate and collect params
+    let mut seen_upper: BTreeMap<String, &String> = BTreeMap::new();
     for key in node.params.keys() {
         if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || key.is_empty() {
             bail!(
@@ -418,6 +419,22 @@ fn expand_module_node(
                  contain only [A-Za-z0-9_]",
                 key,
                 node.id
+            );
+        }
+        // Params are injected into the node env as `PARAM_<KEY>` with the key
+        // upper-cased (see `substitute_params_in_node`). Two keys that differ
+        // only in case (e.g. `mode` and `Mode`) would both map to `PARAM_MODE`,
+        // so one would silently overwrite the other. Reject the collision
+        // instead of dropping a param.
+        let upper = key.to_uppercase();
+        if let Some(existing) = seen_upper.insert(upper.clone(), key) {
+            bail!(
+                "param keys `{}` and `{}` in node `{}` collide: both map to the \
+                 env var `PARAM_{}`. Param keys must be unique case-insensitively.",
+                existing,
+                key,
+                node.id,
+                upper
             );
         }
     }
@@ -1828,6 +1845,52 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("invalid param key"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_case_colliding_param_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "param_mod.yml",
+            r#"
+module:
+  name: p
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: n
+    path: n.py
+    inputs:
+      x: _mod/x
+    outputs: [y]
+"#,
+        );
+
+        // `mode` and `Mode` are both valid keys but both map to `PARAM_MODE`,
+        // so one would silently overwrite the other in the node env.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: param_mod.yml
+    inputs:
+      x: src/v
+    params:
+      mode: safe
+      Mode: turbo
+"#,
+        );
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("PARAM_MODE"), "got: {msg}");
     }
 
     #[test]
