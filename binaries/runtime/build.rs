@@ -4,8 +4,10 @@ fn main() {
     // without each contributor rediscovering this setup. See
     // apis/python/node/build.rs for context; #1833 hit this issue first.
     //
-    // `pyo3` is an optional dependency on this crate (`python` feature), but
-    // `pyo3-build-config::use_pyo3_cfgs()` is a no-op when there's no Python
-    // discoverable, so it's safe to call unconditionally.
+    // pyo3-build-config is an optional build-dependency tied to the `python`
+    // feature: its own build script probes the Python interpreter and fails
+    // on systems older than the workspace `abi3-py311` floor (e.g. Python
+    // 3.10 on ubuntu-22.04), which broke non-Python `cargo build -p dora-cli`.
+    #[cfg(feature = "python")]
     pyo3_build_config::use_pyo3_cfgs();
 }
