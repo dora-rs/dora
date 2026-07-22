@@ -3207,6 +3207,20 @@ impl Daemon {
                                     dora_message::metadata::strip_internal_parameters(
                                         &mut metadata.parameters,
                                     );
+                                    // Record the true on-wire size so `dora topic
+                                    // info` measures the schema-less batch that
+                                    // actually travelled, not the rebuilt stream
+                                    // (which prepends the schema to every frame even
+                                    // though it ships once). For a full
+                                    // self-describing frame this equals `data.len()`;
+                                    // for a schema-once batch it excludes the
+                                    // prepended schema block (dora-rs/dora#2584).
+                                    metadata.parameters.insert(
+                                        dora_message::metadata::WIRE_SIZE.to_string(),
+                                        dora_message::metadata::Parameter::Integer(
+                                            payload.len() as i64
+                                        ),
+                                    );
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
@@ -5900,7 +5914,10 @@ fn rebuild_debug_topic_stream(
 #[cfg(test)]
 mod debug_topic_tests {
     use super::rebuild_debug_topic_stream;
-    use dora_message::metadata::{MetadataParameters, Parameter, SCHEMA_HASH, fnv1a};
+    use dora_message::metadata::{
+        MetadataParameters, Parameter, SCHEMA_HASH, WIRE_SIZE, debug_frame_wire_size, fnv1a,
+        get_integer_param, strip_internal_parameters,
+    };
 
     fn params_with_schema_hash(hash: u64) -> MetadataParameters {
         let mut params = MetadataParameters::default();
@@ -5941,6 +5958,58 @@ mod debug_topic_tests {
         let mut expected = schema;
         expected.extend_from_slice(&batch);
         assert_eq!(out, Some(expected));
+    }
+
+    /// End-to-end guard for the `dora topic info` bandwidth fix, mirroring the
+    /// daemon debug path (the topic subscriber in `Daemon::spawn_dataflow`):
+    /// rebuild the inspection stream, strip the internal wire keys, then stamp
+    /// the *input* payload length under `WIRE_SIZE`. The CLI reader
+    /// ([`debug_frame_wire_size`]) must then charge the schema-less on-wire
+    /// size, not the rebuilt stream — otherwise bandwidth is over-reported by
+    /// the prepended schema on every schema-once frame, worst for the
+    /// small/frequent primitives the schema-once optimization targets (#2584).
+    /// Keep this in sync with the stamp site in `spawn_dataflow`.
+    #[test]
+    fn on_wire_size_excludes_prepended_schema() {
+        // --- schema-once frame: rebuilt = schema ++ batch, only batch on-wire.
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let mut cache = vec![(hash, schema.clone())];
+        let mut params = params_with_schema_hash(hash);
+
+        let rebuilt =
+            rebuild_debug_topic_stream(&mut cache, &params, &batch).expect("schema cached");
+        assert_eq!(rebuilt.len(), schema.len() + batch.len());
+
+        // Replicate the daemon stamp: strip wire keys, record the input length.
+        strip_internal_parameters(&mut params);
+        assert!(
+            get_integer_param(&params, SCHEMA_HASH).is_none(),
+            "internal wire keys must be stripped before stamping"
+        );
+        params.insert(
+            WIRE_SIZE.to_string(),
+            Parameter::Integer(batch.len() as i64),
+        );
+
+        // The CLI reader charges the schema-less size, not the rebuilt stream.
+        let charged = debug_frame_wire_size(&params, Some(&rebuilt));
+        assert_eq!(charged, batch.len());
+        assert!(
+            charged < rebuilt.len(),
+            "schema-once accounting must exclude the prepended schema"
+        );
+
+        // --- full self-describing frame: rebuilt == payload, charge full len.
+        let full = b"self-describing-stream".to_vec();
+        let mut full_params = MetadataParameters::default();
+        let out = rebuild_debug_topic_stream(&mut Vec::new(), &full_params, &full)
+            .expect("full stream forwarded");
+        assert_eq!(out.len(), full.len());
+        strip_internal_parameters(&mut full_params);
+        full_params.insert(WIRE_SIZE.to_string(), Parameter::Integer(full.len() as i64));
+        assert_eq!(debug_frame_wire_size(&full_params, Some(&out)), full.len());
     }
 
     #[test]

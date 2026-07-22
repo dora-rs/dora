@@ -178,8 +178,15 @@ fn info(
                         }
                     };
                     match event.inner {
-                        InterDaemonEvent::Output { data, .. } => {
-                            let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
+                        InterDaemonEvent::Output { data, metadata, .. } => {
+                            // Charge the real on-wire size, not the rebuilt
+                            // self-describing `data` (which re-prepends the schema
+                            // a schema-once output ships only once) — see
+                            // `debug_frame_wire_size` (#2584).
+                            let data_size = dora_message::metadata::debug_frame_wire_size(
+                                &metadata.parameters,
+                                data.as_deref(),
+                            );
                             // The payload is a self-describing Arrow IPC stream;
                             // read its data type from the decoded array (best
                             // effort — a malformed stream just leaves it unknown).
