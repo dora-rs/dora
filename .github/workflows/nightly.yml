@@ -662,10 +662,11 @@ jobs:
           # command didn't even start the check path.
           echo "$out" | grep -q "Checking for updates" \
             || { echo "ERROR: --check-only didn't enter update-check path"; exit 1; }
-          # One of the two valid outcomes must print. If neither appears,
-          # either GitHub rate-limited us (tolerated) or the output format
-          # regressed (fail).
-          if echo "$out" | grep -qE "latest version|update is available"; then
+          # One of the valid outcomes must print — "up to date" / "update is
+          # available" (#2512 reworded the up-to-date line to "Dora CLI is up to
+          # date (current: X, latest release: Y)"). If none appears, either
+          # GitHub rate-limited us (tolerated) or the output format regressed.
+          if echo "$out" | grep -qE "up to date|latest version|update is available"; then
             echo "OK: check-only produced a valid outcome message"
           elif echo "$out" | grep -qE "rate limit|403|429"; then
             echo "WARN: GitHub API rate-limited on shared runner IP — skipping outcome assertion"
