@@ -653,6 +653,93 @@ fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
     );
 }
 
+/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
+/// **if the generation is even**.  Returns the pre-write generation value.
+///
+/// If the generation is already odd (leftover from a previous failed
+/// write), the begin-increment is skipped and the odd generation is
+/// returned — the caller should proceed with the copy and then call
+/// `seqlock_end` to restore even parity on success.
+unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
+    let cur = std::ptr::read_volatile(gen_ptr);
+    if cur % 2 == 0 {
+        std::ptr::write_volatile(gen_ptr, cur + 1);
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    }
+    cur
+}
+
+/// Closes a memory-pool seqlock write (header offset 96).
+///
+/// On success (`copy_ok == true`) the generation is advanced to
+/// `pre_write_gen + 2` (restoring even parity → "complete").  On
+/// failure the generation is rolled **back** to `pre_write_gen` so a
+/// consumer keeps seeing the previous valid frame (see dora-rs/dora#2436).
+unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
+    if copy_ok {
+        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
+    } else {
+        std::ptr::write_volatile(gen_ptr, pre_write_gen);
+    }
+    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+mod seqlock_tests {
+    #[test]
+    fn begin_if_even_when_even_flips_to_odd() {
+        let mut generation: u64 = 10;
+        unsafe {
+            super::seqlock_begin_if_even(&mut generation);
+        }
+        assert_eq!(generation, 11, "even generation must be flipped to odd");
+    }
+
+    #[test]
+    fn begin_if_even_when_odd_is_noop() {
+        let mut generation: u64 = 11;
+        unsafe {
+            super::seqlock_begin_if_even(&mut generation);
+        }
+        assert_eq!(generation, 11, "odd generation must stay odd (skip begin)");
+    }
+
+    /// Regression test for #2436: a successful copy publishes the new
+    /// frame by advancing the generation to pre+2 (even = complete).
+    #[test]
+    fn end_success_advances_to_even() {
+        let mut generation: u64 = 11; // pre_write(10) + 1
+        unsafe {
+            super::seqlock_end(&mut generation, 10, true);
+        }
+        assert_eq!(generation, 12);
+        assert_eq!(generation % 2, 0, "generation must be even on success");
+    }
+
+    /// Regression test for #2436: on failure the generation is rolled
+    /// back to pre_write_gen (even) so consumers see the previous
+    /// valid frame, not a torn/incomplete one.
+    #[test]
+    fn end_failure_rolls_back_to_even() {
+        let mut generation: u64 = 11; // pre_write(10) + 1
+        unsafe {
+            super::seqlock_end(&mut generation, 10, false);
+        }
+        assert_eq!(generation, 10);
+        assert_eq!(generation % 2, 0, "rolled-back generation must be even");
+    }
+
+    /// The very first write (pre_write == 0) must not underflow.
+    #[test]
+    fn end_first_write_failure_rolls_back_to_zero() {
+        let mut generation: u64 = 1;
+        unsafe {
+            super::seqlock_end(&mut generation, 0, false);
+        }
+        assert_eq!(generation, 0);
+    }
+}
+
 /// The custom node API lets you integrate `dora` into your application.
 /// It allows you to retrieve input and send output in any fashion you want.
 ///
@@ -1486,7 +1573,7 @@ impl Node {
             std::ptr::write(shmem_ptr.add(96) as *mut u64, 0u64);
         }
 
-        // Seqlock: increment gen to odd (write-in-progress)
+        // Seqlock: increment generation to odd (write-in-progress)
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
@@ -1697,7 +1784,7 @@ impl Node {
             );
         }
 
-        // Seqlock: increment gen to even (write-complete)
+        // Seqlock: increment generation to even (write-complete)
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
@@ -1935,121 +2022,88 @@ impl Node {
                         }
 
                         if ipc_present == 1 && !is_cuda {
-                            // If gen is odd (leftover from a failed GPU copy
-                            // in the is_cuda path), skip the begin-increment
-                            // to avoid parity inversion.  Same pattern as
-                            // the is_cuda branch.
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 == 0 {
-                                    std::ptr::write_volatile(gen_ptr, cur + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                            // Seqlock: begin (noop if still odd from a
+                            // previous failed copy).
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
+                            let mut copy_ok = true;
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                if let Err(e) = bound
+                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned))
+                                {
+                                    copy_ok = false;
+                                    tracing::error!(
+                                        "[{}] write_memory_pool: DMA copy failed: {}",
+                                        self.node_id,
+                                        e
+                                    );
                                 }
                             }
-                            // DMA: source CPU data -> GPU pool buffer via DMA engine.
-                            let dma_result = if let Ok(helpers) = get_cuda_helpers(py) {
-                                let bound = helpers.bind(py);
-                                bound
-                                    .call_method1("dma_copy", (ptr_val, size, counter, !is_pinned))
-                                    .map(|_| ())
-                            } else {
-                                Ok(())
-                            };
-                            // On failure, leave gen odd so the reader falls
-                            // back.  dma_copy already checks size <= capacity
-                            // (realloc would invalidate the IPC-exported
-                            // handle) and raises on cudaMemcpy failure.
-                            if let Err(e) = dma_result {
+                            unsafe {
+                                seqlock_end(gen_ptr, pre_write_gen, copy_ok);
+                            }
+                            if !copy_ok {
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool: DMA copy failed: {}",
-                                    self.node_id,
-                                    e
+                                    "[{}] write_memory_pool: DMA copy failed",
+                                    self.node_id
                                 ));
                             }
-                            // Seqlock: end write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
                         } else if is_cuda {
-                            // If gen is odd, the previous GPU copy failed
-                            // and left it in the "write in progress" state.
-                            // Skip the begin-increment so the reader sees
-                            // "writing" throughout — no window where gen is
-                            // even with stale data.  If gen is even (normal
-                            // case), begin the write as usual.
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 == 0 {
-                                    std::ptr::write_volatile(gen_ptr, cur + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            }
-                            let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
+                            // Seqlock: begin (noop if still odd from a
+                            // previous failed copy).
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
+                            let mut copy_ok = true;
+                            if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                if ipc_present == 1 {
-                                    // GPU pool: write to the GPU buffer.  Read the
-                                    // transit info from the slot we already hold
-                                    // (store_back) — re-querying PINNED_POOL here
-                                    // would always miss, since the slot was removed
-                                    // from the map at the top of the fast path.
+                                let res = if ipc_present == 1 {
                                     let transit =
                                         store_back.as_ref().map(|s| (s.transit_ptr, s.pool_device));
                                     if let Some((tp, pool_dev)) = transit
                                         && tp != 0
                                     {
-                                        // Cross-device without P2P: stage through the
-                                        // CPU page-locked transit buffer.
                                         let sender_dev = tensor_device
                                             .strip_prefix("cuda")
                                             .and_then(|d| d.strip_prefix(':'))
                                             .and_then(|d| d.parse::<i32>().ok())
                                             .unwrap_or(0);
-                                        bound
-                                            .call_method1(
-                                                "_transit_copy_gpu_buf",
-                                                (counter, ptr_val, sender_dev, tp, pool_dev, size),
-                                            )
-                                            .map(|_| ())
+                                        bound.call_method1(
+                                            "_transit_copy_gpu_buf",
+                                            (counter, ptr_val, sender_dev, tp, pool_dev, size),
+                                        )
                                     } else {
-                                        bound
-                                            .call_method1(
-                                                "_cuda_memcpy_gpu_buf",
-                                                (counter, ptr_val, size),
-                                            )
-                                            .map(|_| ())
+                                        bound.call_method1(
+                                            "_cuda_memcpy_gpu_buf",
+                                            (counter, ptr_val, size),
+                                        )
                                     }
                                 } else {
-                                    // CPU pool: copy GPU source → shmem via DtoH so the
-                                    // receiver can read the data through /dev/shm.
-                                    bound
-                                        .call_method1(
-                                            "_cuda_memcpy",
-                                            (
-                                                shmem_ptr as u64 + data_offset as u64,
-                                                ptr_val,
-                                                size,
-                                                2u32,
-                                            ),
-                                        )
-                                        .map(|_| ())
+                                    bound.call_method1(
+                                        "_cuda_memcpy",
+                                        (
+                                            shmem_ptr as u64 + data_offset as u64,
+                                            ptr_val,
+                                            size,
+                                            2u32,
+                                        ),
+                                    )
+                                };
+                                if let Err(e) = res {
+                                    copy_ok = false;
+                                    tracing::error!(
+                                        "[{}] write_memory_pool: GPU pool copy failed: {}",
+                                        self.node_id,
+                                        e
+                                    );
                                 }
                             } else {
-                                Ok(())
-                            };
-
-                            // Check copy result before advancing the seqlock.
-                            // On failure, leave gen odd so the reader sees
-                            // an incomplete write and falls back to the
-                            // daemon path.  The next successful write will
-                            // restore even parity before beginning.
-                            // Re-insert the slot first so the pool survives
-                            // for later frames.
-                            if let Err(e) = write_result {
+                                copy_ok = false;
+                            }
+                            unsafe {
+                                seqlock_end(gen_ptr, pre_write_gen, copy_ok);
+                            }
+                            if !copy_ok {
                                 if let Some(slot_data) = store_back.take() {
                                     PINNED_POOL
                                         .lock()
@@ -2057,18 +2111,9 @@ impl Node {
                                         .insert(counter, slot_data);
                                 }
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool: GPU pool copy failed: {}",
-                                    self.node_id,
-                                    e
+                                    "[{}] write_memory_pool: GPU pool copy failed",
+                                    self.node_id
                                 ));
-                            }
-
-                            // Seqlock: end write (gen → even, only on copy success)
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else {
                             // Seqlock: begin write
@@ -2164,7 +2209,7 @@ impl Node {
                             let slow_counter = buffer_id
                                 .rsplit_once('_')
                                 .and_then(|(_, c)| c.parse::<u64>().ok());
-                            // If gen is odd (leftover from a failed GPU copy),
+                            // If generation is odd (leftover from a failed GPU copy),
                             // skip the begin-increment.  Same pattern as the
                             // is_cuda branch.
                             unsafe {
@@ -2206,11 +2251,11 @@ impl Node {
                                 std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                             }
                         } else if is_cuda {
-                            // If gen is odd, the previous GPU copy failed
+                            // If generation is odd, the previous GPU copy failed
                             // and left it in the "write in progress" state.
                             // Skip the begin-increment so the reader sees
-                            // "writing" throughout — no window where gen is
-                            // even with stale data.  If gen is even (normal
+                            // "writing" throughout — no window where generation is
+                            // even with stale data.  If generation is even (normal
                             // case), begin the write as usual.
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
@@ -2283,7 +2328,7 @@ impl Node {
                             };
 
                             // Check copy result before advancing the seqlock.
-                            // On failure, leave gen odd so the reader falls
+                            // On failure, leave generation odd so the reader falls
                             // back to the daemon path.  The next successful
                             // write will restore even parity before beginning.
                             if let Err(e) = write_result {
@@ -2294,7 +2339,7 @@ impl Node {
                                 ));
                             }
 
-                            // Seqlock: end write (gen → even, only on copy success)
+                            // Seqlock: end write (generation → even, only on copy success)
                             unsafe {
                                 let gen_ptr = shmem_ptr.add(96) as *mut u64;
                                 let old_gen = std::ptr::read_volatile(gen_ptr);
