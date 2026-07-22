@@ -197,11 +197,17 @@ mod url_fallback_tests {
 
     #[test]
     fn strips_query_string() {
-        assert_eq!(f("https://e.com/models/model.bin?token=abc&x=1").as_deref(), Some("model.bin"));
+        assert_eq!(
+            f("https://e.com/models/model.bin?token=abc&x=1").as_deref(),
+            Some("model.bin")
+        );
     }
     #[test]
     fn strips_fragment() {
-        assert_eq!(f("https://e.com/a/b.tar.gz#frag").as_deref(), Some("b.tar.gz"));
+        assert_eq!(
+            f("https://e.com/a/b.tar.gz#frag").as_deref(),
+            Some("b.tar.gz")
+        );
     }
     #[test]
     fn plain_url_unchanged() {
@@ -213,6 +219,9 @@ mod url_fallback_tests {
     }
     #[test]
     fn traversal_is_normalised_by_url_crate() {
-        assert_eq!(f("https://e.com/a/../../etc/passwd").as_deref(), Some("passwd"));
+        assert_eq!(
+            f("https://e.com/a/../../etc/passwd").as_deref(),
+            Some("passwd")
+        );
     }
 }
