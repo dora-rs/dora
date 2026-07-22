@@ -757,7 +757,9 @@ impl Node {
             .map(Duration::try_from_secs_f32)
             .transpose()
             .map_err(|err| {
-                PyValueError::new_err(format!("invalid timeout of {timeout:?} seconds: {err}"))
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid timeout of {timeout:?} seconds: {err}"
+                ))
             })?;
         let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
@@ -849,7 +851,9 @@ impl Node {
             .map(Duration::try_from_secs_f32)
             .transpose()
             .map_err(|err| {
-                PyValueError::new_err(format!("invalid timeout of {timeout:?} seconds: {err}"))
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid timeout of {timeout:?} seconds: {err}"
+                ))
             })?;
         let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
