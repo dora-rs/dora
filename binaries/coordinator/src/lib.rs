@@ -5928,6 +5928,18 @@ mod tests {
         // Before the fix, the frozen d2 ack (2) pinned `min_ack` and left 3
         // entries; now only the live d1 ack (5) gates, so all are pruned.
         assert!(df.state_log.is_empty());
+
+        // Pruning to empty must not silently strand d2. When d2 reconnects at
+        // its stale ack (2), the catch-up path calls `state_log_delta(2)`; with
+        // the log emptied it must return `None` so the caller falls back to a
+        // full param replay — not `Some(empty)`, which would report d2 caught
+        // up and lose the mutations at sequences 3..=5 forever.
+        assert!(
+            df.state_log_delta(2).is_none(),
+            "reconnecting daemon behind the pruned log must trigger full replay"
+        );
+        // A caller already at the high-water mark is genuinely caught up.
+        assert!(matches!(df.state_log_delta(5), Some(entries) if entries.is_empty()));
     }
 
     #[test]
