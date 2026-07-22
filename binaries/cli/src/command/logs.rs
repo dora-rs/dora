@@ -315,10 +315,10 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         for path in &files {
             let pos = file_positions.get(path).copied().unwrap_or(0);
             let current_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            if current_size <= pos {
+            let Some(start) = follow_read_offset(pos, current_size) else {
                 continue;
-            }
-            let (msgs, new_pos) = read_appended_log_lines(path, pos)?;
+            };
+            let (msgs, new_pos) = read_appended_log_lines(path, start)?;
             new_messages.extend(msgs);
             file_positions.insert(path.clone(), new_pos);
         }
@@ -329,6 +329,25 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
                 print_log_message(msg, &config);
             }
         }
+    }
+}
+
+/// Decide where to resume reading a followed log file given the last-read
+/// offset `pos` and the file's `current_size`, returning `None` when there is
+/// nothing new to read.
+///
+/// A file whose size shrank below `pos` was rotated or truncated behind its
+/// path (the daemon renames `log_<node>.jsonl` to `log_<node>.1.jsonl` and
+/// re-creates a fresh file at offset 0 when `max_log_size` is configured — see
+/// `binaries/daemon/src/log.rs`). Seeking to the stale `pos` in the fresh file
+/// would silently drop its leading bytes and garble the remainder once it grows
+/// past `pos`, so we resume from offset 0 instead.
+fn follow_read_offset(pos: u64, current_size: u64) -> Option<u64> {
+    let start = if current_size < pos { 0 } else { pos };
+    if current_size <= start {
+        None
+    } else {
+        Some(start)
     }
 }
 
@@ -1078,6 +1097,33 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
+    }
+
+    // --- follow_read_offset (rotation / truncation handling) ---
+
+    #[test]
+    fn follow_read_offset_reads_appended_bytes() {
+        // File grew past the tracked offset: resume from `pos`.
+        assert_eq!(follow_read_offset(10, 25), Some(10));
+    }
+
+    #[test]
+    fn follow_read_offset_skips_when_unchanged() {
+        // No new bytes: nothing to read.
+        assert_eq!(follow_read_offset(25, 25), None);
+    }
+
+    #[test]
+    fn follow_read_offset_resets_after_rotation() {
+        // File shrank (rotated behind the path to a fresh 0-based file): the
+        // stale offset would drop leading bytes, so resume from 0.
+        assert_eq!(follow_read_offset(500, 30), Some(0));
+    }
+
+    #[test]
+    fn follow_read_offset_skips_empty_after_rotation() {
+        // Rotated but the fresh file has no content yet: skip this poll.
+        assert_eq!(follow_read_offset(500, 0), None);
     }
 
     // --- read_appended_log_lines (follow-mode offset tracking) ---
