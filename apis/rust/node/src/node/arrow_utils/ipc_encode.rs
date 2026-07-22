@@ -309,6 +309,15 @@ fn prepare(array: &ArrayData) -> Option<Prepared> {
     let record_batch_block = round_up(PREFIX_LEN + record_batch_message.len(), ALIGN);
     // schema block + record-batch header block + body + end-of-stream (8 bytes).
     let total = schema_block + record_batch_block + layout.body_len + PREFIX_LEN;
+    // `push_buffer` only bounds the running body length; the schema and
+    // record-batch header blocks push `total` slightly higher, so a body just
+    // under MAX_IPC_BYTES can still yield a stream over it. Bound the whole
+    // stream here so the fast path declines (routing to the fallback encoder,
+    // which bails loudly) rather than emitting a stream every receiver rejects
+    // — matching the whole-stream limit the decoders enforce (#2586).
+    if total > super::MAX_IPC_BYTES {
+        return None;
+    }
     Some(Prepared {
         layout,
         schema_message,
@@ -466,6 +475,10 @@ struct Uint8Layout {
 }
 
 fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
+    // Cheap pre-filter: the emitted stream is always >= `data_len`, so anything
+    // over the limit is rejected below regardless, and bounding `data_len` here
+    // keeps the round_up/add arithmetic that computes `total` well within
+    // `usize` range.
     if data_len > super::MAX_IPC_BYTES {
         bail!(
             "UInt8 payload too large: {data_len} bytes (max {})",
@@ -487,6 +500,19 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
     let schema_block = round_up(PREFIX_LEN + schema_message.len(), ALIGN);
     let record_batch_block = round_up(PREFIX_LEN + record_batch_message.len(), ALIGN);
     let total = schema_block + record_batch_block + body_len + PREFIX_LEN;
+    // Bound the *resulting stream* rather than just `data_len`: the emitted IPC
+    // stream is ~1.125x larger (validity bitmap, 64-byte alignment padding,
+    // schema + record-batch message blocks). Every receiver guards the whole
+    // stream against MAX_IPC_BYTES, so a band of `data_len` just under the limit
+    // would otherwise encode and send here yet be rejected — silently dropped on
+    // the zenoh path — by every receiver. Reject at the producer instead (#2586).
+    if total > super::MAX_IPC_BYTES {
+        bail!(
+            "UInt8 payload too large: {data_len} bytes encodes to a {total}-byte \
+             Arrow IPC stream (max {})",
+            super::MAX_IPC_BYTES
+        );
+    }
     let data_offset = schema_block + record_batch_block + validity_padded;
     Ok(Uint8Layout {
         schema_message,
@@ -1206,6 +1232,49 @@ mod tests {
             let array = UInt8Array::from(bytes).into_data();
             assert_eq!(dst, fast_encode(&array), "len {data_len}");
         }
+    }
+
+    /// The UInt8 encode guard must bound the *resulting stream*, not the input
+    /// `data_len`: since receivers reject any stream over `MAX_IPC_BYTES`,
+    /// anything the producer accepts here must decode there. Regression for
+    /// #2586 (a band of `data_len` just under the limit used to encode/send yet
+    /// be rejected — silently dropped on zenoh — by every receiver).
+    #[test]
+    fn uint8_ipc_len_bounds_resulting_stream_not_input() {
+        let max = super::super::MAX_IPC_BYTES;
+
+        // Exactly at the input limit: the stream is ~1.125x larger, so it must
+        // be rejected rather than produce an undecodable stream.
+        let err = uint8_ipc_len(max).unwrap_err().to_string();
+        assert!(
+            err.contains("too large"),
+            "data_len == MAX_IPC_BYTES should be rejected, got: {err}"
+        );
+
+        // The largest accepted payload must encode to a stream within the limit.
+        // Binary-search the boundary so the test tracks the exact layout.
+        let mut lo = 0usize;
+        let mut hi = max;
+        while lo < hi {
+            let mid = lo + (hi - lo).div_ceil(2);
+            match uint8_ipc_len(mid) {
+                Ok(_) => lo = mid,
+                Err(_) => hi = mid - 1,
+            }
+        }
+        let largest_ok = lo;
+        let total = uint8_ipc_len(largest_ok).unwrap();
+        assert!(
+            total <= max,
+            "accepted payload of {largest_ok} bytes encodes to {total} > {max}"
+        );
+        // One byte more must be rejected, and its (hypothetical) stream exceeds
+        // the limit — i.e. the boundary is set by the stream size, not data_len.
+        assert!(uint8_ipc_len(largest_ok + 1).is_err());
+        assert!(
+            largest_ok < max,
+            "boundary should sit below the input limit"
+        );
     }
 
     #[test]
