@@ -90,6 +90,12 @@ pub struct OwnedFFISeq<T> {
 impl<T> OwnedFFISeq<T> {
     /// Extracts a slice.
     pub fn as_slice(&self) -> &[T] {
+        // `from_rust` stores a null `data` pointer for an empty sequence, and
+        // `slice::from_raw_parts` requires a non-null (aligned) pointer even for
+        // a zero length — so guard the empty case, matching `FFISeq::deref`.
+        if self.size == 0 {
+            return &[];
+        }
         unsafe { std::slice::from_raw_parts(self.data, self.len()) }
     }
 
@@ -136,6 +142,15 @@ where
 
 impl<T> Drop for OwnedFFISeq<T> {
     fn drop(&mut self) {
+        // `from_rust` stores a null `data` pointer for an empty input (see the
+        // `vec.is_empty()` branch above). `Vec::from_raw_parts` requires a
+        // pointer that came from a `Vec` allocation, and `Vec`'s internal
+        // pointer is a `NonNull`; passing null is library-level UB (flagged by
+        // Miri) even though a 0-capacity `Vec` performs no deallocation. There
+        // is nothing to free in that case, so skip the reconstruction entirely.
+        if self.capacity == 0 {
+            return;
+        }
         unsafe { Vec::from_raw_parts(self.data, self.size, self.capacity) };
     }
 }
@@ -152,6 +167,12 @@ pub struct RefFFISeq<T> {
 impl<T> RefFFISeq<T> {
     /// Extracts a slice.
     pub fn as_slice(&self) -> &[T] {
+        // `from_rust` stores a null `data` pointer for an empty sequence, and
+        // `slice::from_raw_parts` requires a non-null (aligned) pointer even for
+        // a zero length — so guard the empty case, matching `FFISeq::deref`.
+        if self.size == 0 {
+            return &[];
+        }
         unsafe { std::slice::from_raw_parts(self.data, self.len()) }
     }
 
@@ -183,5 +204,42 @@ impl<T> FFIFromRust for RefFFISeq<T> {
                 capacity: vec.len(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::string::OwnedFFIString;
+    use super::*;
+
+    /// Regression test: `from_rust` stores a null `data` pointer for an empty
+    /// sequence, so neither `as_slice` (`slice::from_raw_parts(null, 0)`) nor
+    /// `Drop` (`Vec::from_raw_parts(null, 0, 0)`) may reconstruct from it —
+    /// both are library-level UB that Miri flags even though a zero-length/
+    /// zero-capacity reconstruction touches no memory. Run under
+    /// `cargo +nightly miri test` to exercise the checks.
+    #[test]
+    fn empty_owned_seq_slice_and_drop_without_ub() {
+        let empty: Vec<String> = Vec::new();
+        // SAFETY: `empty` is a valid `Vec<String>` (the `From` type of
+        // `OwnedFFIString`); the produced sequence borrows nothing from it.
+        let seq: OwnedFFISeq<OwnedFFIString> = unsafe { FFIFromRust::from_rust(&empty) };
+        assert!(seq.is_empty());
+        assert_eq!(seq.len(), 0);
+        // `as_slice` on the empty (null-backed) sequence must not deref null.
+        assert!(seq.as_slice().is_empty());
+        // Dropping here must not hit `Vec::from_raw_parts(null, 0, 0)`.
+        drop(seq);
+    }
+
+    /// `RefFFISeq` shares the null-for-empty representation, so its `as_slice`
+    /// must also guard the empty case rather than deref a null pointer.
+    #[test]
+    fn empty_ref_seq_slice_without_ub() {
+        let empty: Vec<u8> = Vec::new();
+        // SAFETY: `empty` outlives the borrow held by the produced sequence.
+        let seq: RefFFISeq<u8> = unsafe { FFIFromRust::from_rust(&empty) };
+        assert!(seq.is_empty());
+        assert!(seq.as_slice().is_empty());
     }
 }
