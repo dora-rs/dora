@@ -124,6 +124,12 @@ pub trait DoraOperator: Default {
     ) -> Result<DoraStatus, String>;
 }
 
+/// Handle passed to [`DoraOperator::on_event`] for emitting outputs back
+/// into the dataflow.
+///
+/// Call [`DoraOutputSender::send`] with an `output_id` declared in your
+/// dataflow YAML and the data to publish. See the crate-level example for
+/// a full operator implementation.
 pub struct DoraOutputSender<'a>(&'a SendOutput);
 
 impl DoraOutputSender<'_> {
