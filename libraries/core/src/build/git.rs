@@ -17,16 +17,22 @@ pub struct GitManager {
     /// Builds that are prepared, but not done yet.
     prepared_builds: BTreeMap<SessionId, PreparedBuild>,
     /// Clone dirs that some `GitFolder` is actively writing into right now,
-    /// process-wide, across every build session. A `NewClone`/`CopyAndFetch`/
-    /// `RenameAndFetch` claims its target dir here as soon as it's chosen and
-    /// releases it once that `GitFolder` is dropped (its clone/fetch task
-    /// finished, failed, or got cancelled). `prepared_builds` alone can't
-    /// answer "is anyone writing to this dir right now": it's scoped by
-    /// SessionId and a session's entries linger until that same session
-    /// happens to build again, which for a one-shot session never happens.
-    /// Gating the Reuse HEAD-check on that instead would let a stale dir shed
-    /// verification forever the moment any session had ever planned it (#2711).
-    clones_in_progress: Arc<Mutex<BTreeSet<PathBuf>>>,
+    /// process-wide, across every build session, with a count of how many
+    /// writers claimed each dir. A `NewClone`/`CopyAndFetch`/`RenameAndFetch`
+    /// claims its target dir here as soon as it's chosen and releases it once
+    /// that `GitFolder` is dropped (its clone/fetch task finished, failed, or
+    /// got cancelled). `prepared_builds` alone can't answer "is anyone
+    /// writing to this dir right now": it's scoped by SessionId and a
+    /// session's entries linger until that same session happens to build
+    /// again, which for a one-shot session never happens. Gating the Reuse
+    /// HEAD-check on that instead would let a stale dir shed verification
+    /// forever the moment any session had ever planned it (#2711).
+    ///
+    /// This counts instead of tracking membership because two sessions can
+    /// both choose a writing arm for the same dir before it exists on disk;
+    /// with a plain set the first claim to drop would strip the protection
+    /// while the second writer is still going.
+    clones_in_progress: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
     // reuse_for: BTreeMap<PathBuf, PathBuf>,
 }
 
@@ -34,25 +40,33 @@ pub struct GitManager {
 /// dropped, whatever the reason (clone finished, failed, or was cancelled).
 struct InProgressClaim {
     dir: PathBuf,
-    set: Arc<Mutex<BTreeSet<PathBuf>>>,
+    claims: Arc<Mutex<BTreeMap<PathBuf, usize>>>,
 }
 
 impl Drop for InProgressClaim {
     fn drop(&mut self) {
-        lock_in_progress(&self.set).remove(&self.dir);
+        let mut claims = lock_in_progress(&self.claims);
+        if let Some(count) = claims.get_mut(&self.dir) {
+            *count -= 1;
+            if *count == 0 {
+                claims.remove(&self.dir);
+            }
+        }
     }
 }
 
 /// Locks `clones_in_progress`, recovering from poisoning instead of
 /// panicking. A panic elsewhere while this lock was held must not leave the
-/// set stuck: `InProgressClaim::drop` runs during unwinding, where a panic
+/// map stuck: `InProgressClaim::drop` runs during unwinding, where a panic
 /// here would abort the process, and any panic-on-poison here would also
 /// leave the dir's claim permanently unreleased, exempting it from
 /// verification forever.
 fn lock_in_progress(
-    set: &Mutex<BTreeSet<PathBuf>>,
-) -> std::sync::MutexGuard<'_, BTreeSet<PathBuf>> {
-    set.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    claims: &Mutex<BTreeMap<PathBuf, usize>>,
+) -> std::sync::MutexGuard<'_, BTreeMap<PathBuf, usize>> {
+    claims
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[derive(Default)]
@@ -103,7 +117,7 @@ impl GitManager {
             // different, concurrently-running session sharing this daemon's
             // GitManager -- must never have its HEAD checked or be deleted, so I
             // skip verification and just reuse it, same as before this change.
-            let in_progress = lock_in_progress(&self.clones_in_progress).contains(&clone_dir);
+            let in_progress = lock_in_progress(&self.clones_in_progress).contains_key(&clone_dir);
             ReuseOptions::Reuse {
                 dir: clone_dir.clone(),
                 verify_commit: (!in_progress).then_some(commit_hash),
@@ -164,10 +178,12 @@ impl GitManager {
                 | ReuseOptions::RenameAndFetch { .. }
         )
         .then(|| {
-            lock_in_progress(&self.clones_in_progress).insert(clone_dir.clone());
+            *lock_in_progress(&self.clones_in_progress)
+                .entry(clone_dir.clone())
+                .or_insert(0) += 1;
             InProgressClaim {
                 dir: clone_dir,
-                set: self.clones_in_progress.clone(),
+                claims: self.clones_in_progress.clone(),
             }
         });
 
@@ -784,6 +800,98 @@ mod tests {
         // folder_a is still alive, holding its in-progress claim. Dropping it
         // now releases the claim, same as when its real clone finishes.
         drop(folder_a);
+    }
+
+    #[tokio::test]
+    async fn a_dir_stays_protected_while_any_overlapping_claim_is_alive() {
+        // Two sessions can both pick a writing arm for the same dir: the
+        // daemon's choose phase is synchronous in the event loop while the
+        // prepare tasks are spawned, so B's choose can run before A's clone
+        // has created the dir on disk. With plain set membership the two
+        // claims collapse into one entry, and whichever drops first strips
+        // the protection while the other is still writing. The claims have
+        // to count.
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo");
+        let commit = init_repo_with_commit(&repo_path);
+        let repo_url_str = format!("file://{}", repo_path.display());
+        let target_dir = tempfile::tempdir().unwrap();
+
+        let mut manager = GitManager::default();
+
+        // A and B both choose before the dir exists, so both get NewClone
+        // and both claim it.
+        let folder_a = manager
+            .choose_clone_dir(
+                SessionId::generate(),
+                repo_url_str.clone(),
+                commit.clone(),
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        let folder_b = manager
+            .choose_clone_dir(
+                SessionId::generate(),
+                repo_url_str.clone(),
+                commit.clone(),
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        assert!(matches!(folder_a.reuse, ReuseOptions::NewClone { .. }));
+        assert!(matches!(folder_b.reuse, ReuseOptions::NewClone { .. }));
+
+        // The dir shows up on disk, then A finishes and drops its claim.
+        // B is still writing, so a third session must not get a commit to
+        // verify.
+        let parsed = Url::parse(&repo_url_str).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        std::fs::create_dir_all(&clone_dir).unwrap();
+        drop(folder_a);
+
+        let folder_c = manager
+            .choose_clone_dir(
+                SessionId::generate(),
+                repo_url_str.clone(),
+                commit.clone(),
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &folder_c.reuse,
+                ReuseOptions::Reuse {
+                    verify_commit: None,
+                    ..
+                }
+            ),
+            "dropping one of two overlapping claims must not expose the dir to verification"
+        );
+
+        // Once B drops too, the next session verifies again as normal.
+        drop(folder_b);
+        drop(folder_c);
+        let folder_d = manager
+            .choose_clone_dir(
+                SessionId::generate(),
+                repo_url_str,
+                commit,
+                None,
+                target_dir.path(),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                &folder_d.reuse,
+                ReuseOptions::Reuse {
+                    verify_commit: Some(_),
+                    ..
+                }
+            ),
+            "once every claim is gone the dir must be verified again"
+        );
     }
 
     #[tokio::test]
