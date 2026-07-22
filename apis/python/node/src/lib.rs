@@ -2383,15 +2383,23 @@ impl Node {
         if buffer_id.starts_with("pool_") {
             // Retry on transient failures (odd seqlock, shmem not yet
             // mapped) so a concurrent writer doesn't cause a hard error.
-            // Bounded to avoid infinite loops on permanent failures.
-            for _ in 0..100 {
+            // Time-bounded: a GPU copy (cudaMemcpy + synchronize) takes
+            // milliseconds, so we wait up to 500ms total with 1ms sleeps
+            // between attempts.
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(500))
+                .unwrap_or(std::time::Instant::now());
+            loop {
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
-                    Ok(None) => {
+                    Ok(None) if std::time::Instant::now() < deadline => {
                         // Transient — writer in progress, shmem not
-                        // ready, etc.  Retry immediately.
+                        // ready, etc.  Yield the CPU briefly so the
+                        // writer can complete its copy+sync.
+                        std::thread::sleep(std::time::Duration::from_millis(1));
                         continue;
                     }
+                    Ok(None) => break,
                     Err(e) => {
                         warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                         eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
@@ -2400,7 +2408,7 @@ impl Node {
             }
             warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
             eyre::bail!(
-                "memory pool {}: fast path retries exhausted — pool not ready after 100 attempts",
+                "memory pool {}: fast path retries exhausted — pool not ready after 500ms",
                 buffer_id
             );
         }
@@ -3025,7 +3033,10 @@ pub fn build(
 pub fn run(dataflow_path: String, uv: Option<bool>, stop_after: Option<f64>) -> eyre::Result<()> {
     use dora_cli::Executable;
 
-    let stop_after_duration = stop_after.map(std::time::Duration::from_secs_f64);
+    let stop_after_duration = stop_after
+        .map(std::time::Duration::try_from_secs_f64)
+        .transpose()
+        .map_err(|err| eyre::eyre!("invalid stop_after of {stop_after:?} seconds: {err}"))?;
     let mut cmd = dora_cli::RunCommand::new(dataflow_path);
     if let Some(uv) = uv {
         cmd.uv = uv;
