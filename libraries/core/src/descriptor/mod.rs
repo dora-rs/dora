@@ -5,7 +5,7 @@ use dora_message::{
 };
 use eyre::{Context, OptionExt, Result, bail};
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Path, PathBuf},
     process::Command,
@@ -48,7 +48,11 @@ pub trait DescriptorExt {
     /// producer — so waiting for it would stall the producer for the full connect
     /// timeout and permanently pin the output off the direct-zenoh fast path.
     /// Cross-machine data is delivered by explicit daemon-to-daemon forwarding
-    /// regardless, so remote subscribers must not gate the local fast-path switch.
+    /// regardless, so remote subscribers must not gate the local fast-path switch;
+    /// an output that *has* a remote subscriber is instead kept entirely on the
+    /// reliable daemon path (see
+    /// [`outputs_with_remote_subscribers`](Self::outputs_with_remote_subscribers)),
+    /// so this count only governs outputs whose every subscriber is co-located.
     /// In a single-machine deployment every node shares the same (absent) machine,
     /// so this is exactly the whole-dataflow count.
     ///
@@ -76,15 +80,7 @@ pub trait DescriptorExt {
             if node_machine(node) != source_machine {
                 continue;
             }
-            let inputs: Vec<&Input> = match &node.kind {
-                CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
-                CoreNodeKind::Runtime(n) => n
-                    .operators
-                    .iter()
-                    .flat_map(|op| op.config.inputs.values())
-                    .collect(),
-            };
-            for input in inputs {
+            for input in node_input_links(node) {
                 if let InputMapping::User(m) = &input.mapping
                     && &m.source == source_node
                     && &m.output == source_output
@@ -94,6 +90,50 @@ pub trait DescriptorExt {
             }
         }
         Ok(count)
+    }
+    /// The set of `source_node`'s outputs that have at least one subscriber on a
+    /// *different* machine.
+    ///
+    /// Such an output must never switch to the direct node-to-node zenoh path: a
+    /// remote consumer has no zenoh route to this producer, and cross-machine data
+    /// is delivered only by daemon-to-daemon forwarding, which is fed exclusively
+    /// by the producer's *daemon-path* send (`send_out`) — a direct zenoh publish
+    /// bypasses the daemon entirely and is never forwarded. Switching such an
+    /// output to direct zenoh would therefore silently drop every message to its
+    /// remote consumers (dora-rs/dora#2738), even for an output that also has a
+    /// co-located subscriber whose readiness token releases the barrier.
+    ///
+    /// Outputs whose every subscriber is co-located are absent from this set and
+    /// may use the direct zenoh fast path once
+    /// [`local_output_subscriber_count`](Self::local_output_subscriber_count) is
+    /// satisfied. Dynamic subscribers are ignored, mirroring the barrier count.
+    ///
+    /// Provided in terms of [`resolve_aliases_and_set_defaults`](Self::resolve_aliases_and_set_defaults).
+    fn outputs_with_remote_subscribers(
+        &self,
+        source_node: &NodeId,
+    ) -> eyre::Result<BTreeSet<DataId>> {
+        let resolved = self.resolve_aliases_and_set_defaults()?;
+        let source_machine = resolved.get(source_node).and_then(node_machine);
+        let mut remote_outputs = BTreeSet::new();
+        for node in resolved.values() {
+            if node_is_dynamic(node) {
+                continue;
+            }
+            // Only subscribers on another machine keep an output on the daemon
+            // path; co-located subscribers can take the direct zenoh fast path.
+            if node_machine(node) == source_machine {
+                continue;
+            }
+            for input in node_input_links(node) {
+                if let InputMapping::User(m) = &input.mapping
+                    && &m.source == source_node
+                {
+                    remote_outputs.insert(m.output.clone());
+                }
+            }
+        }
+        Ok(remote_outputs)
     }
     fn visualize_as_mermaid_with_boundaries(
         &self,
@@ -131,6 +171,19 @@ fn node_is_dynamic(node: &ResolvedNode) -> bool {
 /// observe a producer's readiness tokens over same-machine zenoh links.
 fn node_machine(node: &ResolvedNode) -> Option<&str> {
     node.deploy.as_ref().and_then(|d| d.machine.as_deref())
+}
+
+/// A resolved node's input-links, flattening a runtime node's per-operator
+/// inputs so each subscriber link is counted separately.
+fn node_input_links(node: &ResolvedNode) -> Vec<&Input> {
+    match &node.kind {
+        CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
+        CoreNodeKind::Runtime(n) => n
+            .operators
+            .iter()
+            .flat_map(|op| op.config.inputs.values())
+            .collect(),
+    }
 }
 
 impl DescriptorExt for Descriptor {
@@ -802,6 +855,76 @@ nodes:
         assert_eq!(
             desc.local_output_subscriber_count(&source, &value).unwrap(),
             1
+        );
+    }
+
+    #[test]
+    fn outputs_with_remote_subscribers_flags_cross_machine_outputs() {
+        // `source` (machine `a`) has three outputs:
+        //   - `mixed`: one co-located subscriber + one remote subscriber → remote,
+        //   - `remote_only`: a single remote subscriber → remote,
+        //   - `local_only`: a single co-located subscriber → NOT remote.
+        // Any output with a remote subscriber must stay on the daemon path; a
+        // local-only output may take the direct zenoh fast path (#2738).
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    _unstable_deploy:
+      machine: a
+    outputs:
+      - mixed
+      - remote_only
+      - local_only
+  - id: local_sub
+    path: local_sub
+    _unstable_deploy:
+      machine: a
+    inputs:
+      m: source/mixed
+      l: source/local_only
+  - id: remote_sub
+    path: remote_sub
+    _unstable_deploy:
+      machine: b
+    inputs:
+      m: source/mixed
+      r: source/remote_only
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        let remote = desc.outputs_with_remote_subscribers(&source).unwrap();
+        assert_eq!(
+            remote,
+            BTreeSet::from([
+                DataId::from("mixed".to_string()),
+                DataId::from("remote_only".to_string()),
+            ]),
+            "mixed and remote-only outputs must be flagged; local_only must not"
+        );
+    }
+
+    #[test]
+    fn outputs_with_remote_subscribers_empty_for_single_machine() {
+        // Single-machine dataflow (every node's machine is the default `None`):
+        // no output has a remote subscriber, so all outputs keep the fast path.
+        let yaml = r#"
+nodes:
+  - id: source
+    path: source
+    outputs:
+      - value
+  - id: sink
+    path: sink
+    inputs:
+      v: source/value
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let source = NodeId::from("source".to_string());
+        assert!(
+            desc.outputs_with_remote_subscribers(&source)
+                .unwrap()
+                .is_empty()
         );
     }
 

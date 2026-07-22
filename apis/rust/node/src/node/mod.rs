@@ -170,6 +170,12 @@ pub struct DoraNode {
     /// Per-output startup readiness for the direct zenoh data plane (lazily
     /// created on first send). See [`ZenohOutputReadiness`].
     zenoh_output_readiness: HashMap<DataId, ZenohOutputReadiness>,
+    /// Outputs with at least one cross-machine subscriber. These are pinned to
+    /// the reliable daemon path (which forwards them to remote daemons) and never
+    /// switch to the direct node-to-node zenoh path, whose publishes the daemon
+    /// does not forward — see [`DoraNode::zenoh_publish`] and
+    /// [`DescriptorExt::outputs_with_remote_subscribers`] (dora-rs/dora#2738).
+    zenoh_daemon_only_outputs: BTreeSet<DataId>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -744,6 +750,7 @@ impl DoraNode {
             zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
             zenoh_output_readiness: HashMap::new(),
+            zenoh_daemon_only_outputs: BTreeSet::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -777,6 +784,23 @@ impl DoraNode {
                         );
                     }
                 }
+            }
+        }
+
+        // Pin any output with a cross-machine subscriber to the reliable daemon
+        // path. Cross-machine data is delivered by daemon-to-daemon forwarding,
+        // which is fed only by the daemon-path send; a direct node-to-node zenoh
+        // publish bypasses the daemon and never reaches a remote consumer. Without
+        // this, an output whose co-located subscriber releases the readiness
+        // barrier would switch to direct zenoh and silently drop every message to
+        // its remote consumers (dora-rs/dora#2738).
+        if let Ok(descriptor) = &node.dataflow_descriptor {
+            match descriptor.outputs_with_remote_subscribers(&node.id) {
+                Ok(remote) => node.zenoh_daemon_only_outputs = remote,
+                Err(e) => tracing::warn!(
+                    "failed to determine cross-machine outputs ({e}); \
+                     outputs feeding remote consumers may use the direct zenoh path"
+                ),
             }
         }
 
@@ -1358,7 +1382,10 @@ impl DoraNode {
     /// The barrier only waits for *same-machine* subscribers, whose readiness
     /// tokens can actually reach this producer; remote subscribers are served by
     /// the daemon path and never gate the switch (see
-    /// [`DescriptorExt::local_output_subscriber_count`]).
+    /// [`DescriptorExt::local_output_subscriber_count`]). Outputs that have any
+    /// cross-machine subscriber are excluded entirely — they stay pinned to the
+    /// daemon path (see [`Self::zenoh_daemon_only_outputs`]), so the barrier
+    /// neither waits for them nor stalls startup on a token that can never arrive.
     ///
     /// Fail-safe: outputs that don't connect within
     /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (e.g. a local zenoh data plane that can't
@@ -1369,7 +1396,16 @@ impl DoraNode {
         if self.zenoh_session.is_none() {
             return;
         }
-        let outputs: Vec<DataId> = self.node_config.outputs.iter().cloned().collect();
+        // Skip outputs pinned to the daemon path: they never switch to direct
+        // zenoh, so declaring publishers or waiting on their (unreachable) remote
+        // readiness tokens would only stall startup for no benefit.
+        let outputs: Vec<DataId> = self
+            .node_config
+            .outputs
+            .iter()
+            .filter(|o| !self.zenoh_daemon_only_outputs.contains(*o))
+            .cloned()
+            .collect();
         if outputs.is_empty() {
             return;
         }
@@ -1420,6 +1456,16 @@ impl DoraNode {
         finalized: FinalizedSample,
     ) -> eyre::Result<PublishOutcome> {
         use zenoh::Wait;
+
+        // Outputs with a cross-machine subscriber must never take the direct
+        // node-to-node zenoh path: a remote consumer is reached only by daemon-to-
+        // daemon forwarding, which the daemon feeds from this daemon-path send. A
+        // direct zenoh publish bypasses the daemon and would be silently dropped
+        // for every remote consumer (dora-rs/dora#2738). Co-located subscribers of
+        // the same output are served correctly by the daemon path too.
+        if self.zenoh_daemon_only_outputs.contains(output_id) {
+            return Ok(PublishOutcome::NotPublished(finalized));
+        }
 
         // Every failure *before* the payload is moved into `put` returns the
         // sample as `NotPublished` so the caller can still deliver it via the
