@@ -37,7 +37,9 @@ All crates share the workspace version.
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) — build, run, stop dataflows |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments; WebSocket server |
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
-| `binaries/runtime` | dora-runtime | In-process operator execution (Python/C/C++ via dlopen/PyO3) |
+| `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop + `OperatorRunner` backend trait) |
+| `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library operator backend (C/C++/Rust via dlopen); shipped in the `dora` CLI |
+| `binaries/runtime-python` | dora-runtime-python | Python operator backend (PyO3); shipped in the Python wheel |
 | `binaries/ros2-bridge-node` | dora-ros2-bridge-node | ROS2 integration node |
 | `binaries/record-node` | dora-record-node | Records dataflow messages to `.drec` format |
 | `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.drec` files |

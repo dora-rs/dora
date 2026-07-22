@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 /// :rtype: None
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
-    dora_runtime::main().wrap_err("Dora Runtime raised an error.")
+    dora_runtime_python::main().wrap_err("Dora Runtime raised an error.")
 }
 
 /// Build a Dataflow, exactly the same way as `dora build` command line tool.

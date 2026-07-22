@@ -1956,7 +1956,7 @@ dependencies = [
  "dora-node-api-c",
  "dora-operator-api-c",
  "dora-recording",
- "dora-runtime",
+ "dora-runtime-shared-lib",
  "dora-tracing",
  "dunce",
  "duration-str",
@@ -2000,7 +2000,7 @@ dependencies = [
  "dora-cli",
  "dora-download",
  "dora-node-api",
- "dora-runtime",
+ "dora-runtime-python",
  "eyre",
  "pyo3",
  "pyo3-build-config",
@@ -2357,7 +2357,7 @@ dependencies = [
  "dora-node-api",
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
- "dora-runtime",
+ "dora-runtime-python",
  "eyre",
  "flume 0.12.0",
  "futures",
@@ -2563,30 +2563,62 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-runtime"
+name = "dora-runtime-api"
 version = "1.0.0-rc.2"
 dependencies = [
- "aligned-vec",
  "arrow",
  "dora-core",
- "dora-download",
  "dora-message",
  "dora-metrics",
  "dora-node-api",
- "dora-operator-api-python",
- "dora-operator-api-types",
  "dora-tracing",
  "eyre",
  "flume 0.12.0",
  "futures",
  "futures-concurrency",
- "libloading 0.9.0",
- "pyo3",
- "pyo3-build-config",
- "pythonize",
  "serde_yaml",
  "tokio",
  "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "dora-runtime-python"
+version = "1.0.0-rc.2"
+dependencies = [
+ "arrow",
+ "dora-core",
+ "dora-download",
+ "dora-node-api",
+ "dora-operator-api-python",
+ "dora-operator-api-types",
+ "dora-runtime-api",
+ "dora-tracing",
+ "eyre",
+ "flume 0.12.0",
+ "pyo3",
+ "pyo3-build-config",
+ "pythonize",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+]
+
+[[package]]
+name = "dora-runtime-shared-lib"
+version = "1.0.0-rc.2"
+dependencies = [
+ "arrow",
+ "dora-core",
+ "dora-download",
+ "dora-node-api",
+ "dora-operator-api-types",
+ "dora-runtime-api",
+ "dora-tracing",
+ "eyre",
+ "flume 0.12.0",
+ "libloading 0.9.0",
+ "tokio",
  "tracing",
  "tracing-opentelemetry",
 ]

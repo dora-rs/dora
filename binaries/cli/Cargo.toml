@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 default = ["tracing", "metrics", "redb-backend"]
 tracing = ["dep:dora-tracing"]
-metrics = ["dora-runtime/metrics", "dora-coordinator/metrics"]
+metrics = ["dora-runtime-shared-lib/metrics", "dora-coordinator/metrics"]
 python = ["pyo3"]
 # Enable extension-module only when building the Python wheel via maturin.
 # This suppresses Python library linking, which is correct for cdylib targets
@@ -56,7 +56,7 @@ tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
-dora-runtime = { workspace = true }
+dora-runtime-shared-lib = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["io-util", "net"] }
 futures = { workspace = true }

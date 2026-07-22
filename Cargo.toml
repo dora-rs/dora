@@ -14,7 +14,9 @@ members = [
     "binaries/cli",
     "binaries/coordinator",
     "binaries/daemon",
-    "binaries/runtime",
+    "binaries/runtime-api",
+    "binaries/runtime-shared-lib",
+    "binaries/runtime-python",
     "binaries/mavlink2-bridge-node",
     "binaries/ros2-bridge-node",
     "examples/rust-dataflow/node",
@@ -114,7 +116,9 @@ dora-download = { version = "1.0.0-rc.2", path = "libraries/extensions/download"
 dora-log-utils = { version = "1.0.0-rc.2", path = "libraries/log-utils" }
 dora-coordinator-store = { version = "1.0.0-rc.2", path = "libraries/coordinator-store" }
 dora-cli = { version = "1.0.0-rc.2", path = "binaries/cli" }
-dora-runtime = { version = "1.0.0-rc.2", path = "binaries/runtime" }
+dora-runtime-api = { version = "1.0.0-rc.2", path = "binaries/runtime-api" }
+dora-runtime-shared-lib = { version = "1.0.0-rc.2", path = "binaries/runtime-shared-lib" }
+dora-runtime-python = { version = "1.0.0-rc.2", path = "binaries/runtime-python" }
 dora-daemon = { version = "1.0.0-rc.2", path = "binaries/daemon" }
 dora-coordinator = { version = "1.0.0-rc.2", path = "binaries/coordinator" }
 dora-ros2-bridge = { version = "1.0.0-rc.2", path = "libraries/extensions/ros2-bridge" }

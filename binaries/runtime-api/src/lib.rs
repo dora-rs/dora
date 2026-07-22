@@ -10,8 +10,6 @@ use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
-use operator::{OperatorEvent, StopReason, run_operator};
-
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
@@ -21,9 +19,19 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 use tokio_stream::wrappers::ReceiverStream;
+
+mod channel;
 mod operator;
 
-pub fn main() -> eyre::Result<()> {
+pub use operator::{OperatorEvent, OperatorRunner, StopReason};
+
+/// Entry point for a runtime process.
+///
+/// Reads the `DORA_RUNTIME_CONFIG` env var, builds the tokio runtime, runs the
+/// language-neutral event loop on a spawned thread, and calls
+/// [`OperatorRunner::run_operator`] on the main thread. Each per-language
+/// backend calls this with its own runner.
+pub fn main(runner: impl OperatorRunner) -> eyre::Result<()> {
     let config: RuntimeConfig = {
         let raw = std::env::var("DORA_RUNTIME_CONFIG")
             .wrap_err("env variable DORA_RUNTIME_CONFIG must be set")?;
@@ -72,8 +80,7 @@ pub fn main() -> eyre::Result<()> {
 
     let mut operator_channels = HashMap::new();
     let queue_sizes = queue_sizes(&operator_definition.config);
-    let (operator_channel, incoming_events) =
-        operator::channel::channel(tokio_runtime.handle(), queue_sizes);
+    let (operator_channel, incoming_events) = channel::channel(tokio_runtime.handle(), queue_sizes);
     operator_channels.insert(operator_definition.id.clone(), operator_channel);
 
     tracing::info!("spawning main task");
@@ -95,15 +102,16 @@ pub fn main() -> eyre::Result<()> {
     });
 
     let operator_id = operator_definition.id.clone();
-    run_operator(
-        &node_id,
-        operator_definition,
-        incoming_events,
-        operator_events_tx,
-        init_done_tx,
-        &dataflow_descriptor,
-    )
-    .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
+    runner
+        .run_operator(
+            &node_id,
+            operator_definition,
+            incoming_events,
+            operator_events_tx,
+            init_done_tx,
+            &dataflow_descriptor,
+        )
+        .wrap_err_with(|| format!("failed to run operator {operator_id}"))?;
 
     match main_task.join() {
         Ok(result) => result.wrap_err("main task failed")?,
