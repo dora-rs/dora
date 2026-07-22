@@ -484,7 +484,7 @@ async fn collect_and_send_metrics_bg(
                     None
                 }
             };
-            let msg = serde_json::to_vec(&Timestamped {
+            let msg = match serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: daemon_id.clone(),
                     event: DaemonEvent::NodeMetrics {
@@ -494,7 +494,21 @@ async fn collect_and_send_metrics_bg(
                     },
                 },
                 timestamp: clock.new_timestamp(),
-            })?;
+            }) {
+                Ok(msg) => msg,
+                // Skip this dataflow's batch rather than `?`-returning: an early
+                // return here would bypass the `System` restore below, leaving
+                // the shared metrics `System` (moved out via `mem::take`) empty
+                // until the next successful collection repopulates it.
+                // Serialization of this structure is effectively infallible, so
+                // this is defense-in-depth — `continue` just keeps the cleanup
+                // path unconditional against any future error here. Matches the
+                // `send_event` failure handling just below.
+                Err(e) => {
+                    tracing::warn!("failed to serialize metrics for dataflow: {e}");
+                    continue;
+                }
+            };
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::warn!("failed to send metrics for dataflow: {e}");
                 continue;
