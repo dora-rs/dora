@@ -653,6 +653,21 @@ fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
     );
 }
 
+/// Converts a Python `timeout` (seconds) to `Duration`, returning a
+/// clean `ValueError` on NaN, negative, or infinite input instead of
+/// the panic that [`Duration::from_secs_f32`] raises on such inputs.
+fn timeout_to_duration(timeout: Option<f32>) -> PyResult<Option<Duration>> {
+    timeout
+        .map(|secs| {
+            Duration::try_from_secs_f32(secs).map_err(|err| {
+                pyo3::exceptions::PyValueError::new_err(format!(
+                    "invalid timeout of {secs} seconds: {err}"
+                ))
+            })
+        })
+        .transpose()
+}
+
 /// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
 /// **if the generation is even**.  Returns the pre-write generation value.
 ///
@@ -840,14 +855,7 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let timeout = timeout
-            .map(Duration::try_from_secs_f32)
-            .transpose()
-            .map_err(|err| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "invalid timeout of {timeout:?} seconds: {err}"
-                ))
-            })?;
+        let timeout = timeout_to_duration(timeout)?;
         let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
             let dict = event
@@ -934,14 +942,7 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let timeout = timeout
-            .map(Duration::try_from_secs_f32)
-            .transpose()
-            .map_err(|err| {
-                pyo3::exceptions::PyValueError::new_err(format!(
-                    "invalid timeout of {timeout:?} seconds: {err}"
-                ))
-            })?;
+        let timeout = timeout_to_duration(timeout)?;
         let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
             // Get python
@@ -1654,6 +1655,8 @@ impl Node {
                 if use_transit {
                     // Allocate pool buffer on receiver's GPU so the
                     // receiver can import the IPC handle on its own device.
+                    // _transit_copy internally saves/restores the caller's
+                    // device, so an explicit restore is unnecessary here.
                     let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
                     let dst: u64 = bound
                         .call_method1("_get_gpu_buf", (pool_counter, size))
@@ -1701,6 +1704,11 @@ impl Node {
                     } else {
                         None
                     }
+                    // Device restore: _transit_copy internally saves and
+                    // restores the caller's device, so an explicit restore
+                    // here is redundant for the transit path.  Contrast
+                    // with the same-device branch which does its own
+                    // cudaMemcpy inline and must restore explicitly.
                 } else {
                     // Same-device or P2P available: allocate on sender device.
                     // Save the current device — the ambient CUDA device may
@@ -2451,16 +2459,82 @@ impl Node {
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) if std::time::Instant::now() < deadline => {
-                        // Transient — writer in progress, shmem not
-                        // ready, etc.  Yield the CPU briefly so the
+                        // Transient — yield the GIL and sleep so the
                         // writer can complete its copy+sync.
-                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        py.detach(|| {
+                            std::thread::sleep(std::time::Duration::from_millis(1));
+                        });
                         continue;
                     }
                     Ok(None) => break,
                     Err(e) => {
                         warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
                         eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
+                    }
+                }
+            }
+            // Retries exhausted — fall back to the daemon for CPU pools.
+            if let Ok(metadata) = self
+                .node
+                .get_mut()
+                .read_pinned_memory(buffer_id.clone(), false)
+            {
+                let size = metadata
+                    .parameters
+                    .get("size")
+                    .and_then(|p| {
+                        if let Parameter::Integer(v) = p {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
+                let dtype = metadata
+                    .parameters
+                    .get("dtype")
+                    .and_then(|p| {
+                        if let Parameter::String(s) = p {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let shape = metadata
+                    .parameters
+                    .get("shape")
+                    .and_then(|p| {
+                        if let Parameter::ListInt(v) = p {
+                            Some(v.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
+                    if let Parameter::String(s) = p {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                });
+                if let Some(ref name) = shmem_name
+                    && let Ok(shmem) = ShmemConf::new().os_id(name).open()
+                    && shmem.len() >= DORADMA_HEADER_SIZE
+                {
+                    let shmem_ptr = shmem.as_ptr();
+                    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+                    if magic == DORADMA_MAGIC {
+                        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
+                        let read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
+                        let dict = PyDict::new(py);
+                        dict.set_item("ptr", read_ptr)?;
+                        dict.set_item("size", size)?;
+                        dict.set_item("dtype", dtype)?;
+                        dict.set_item("shape", shape)?;
+                        dict.set_item("device", "cpu")?;
+                        return Ok(dict.into());
                     }
                 }
             }
@@ -2907,13 +2981,20 @@ impl Node {
                         // Validate size against daemon-trusted capacity
                         // before the first IPC import.  GPU_BUF_SIZES is
                         // populated from daemon metadata before the fast
-                        // path runs.
+                        // path runs.  Fail closed: if no trusted entry
+                        // exists, reject the import rather than trusting
+                        // the world-writable shmem size.
                         {
                             let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
-                            if let Some(&capped) = trusted.get(buffer_id) {
-                                if capped > 0 && (size as u64) > capped {
+                            match trusted.get(buffer_id) {
+                                Some(&capped) if capped > 0 && (size as u64) > capped => {
                                     return Ok(None);
                                 }
+                                None => {
+                                    // No daemon-trusted size — reject
+                                    return Ok(None);
+                                }
+                                _ => {}
                             }
                         }
                         drop(cache);
