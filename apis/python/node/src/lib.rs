@@ -753,7 +753,13 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = py.detach(|| self.events.recv(timeout.map(Duration::from_secs_f32)));
+        let timeout = timeout
+            .map(Duration::try_from_secs_f32)
+            .transpose()
+            .map_err(|err| {
+                PyValueError::new_err(format!("invalid timeout of {timeout:?} seconds: {err}"))
+            })?;
+        let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
             let dict = event
                 .to_py_dict(py)
@@ -839,10 +845,13 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
-        let event = self
-            .events
-            .recv_async_timeout(timeout.map(Duration::from_secs_f32))
-            .await;
+        let timeout = timeout
+            .map(Duration::try_from_secs_f32)
+            .transpose()
+            .map_err(|err| {
+                PyValueError::new_err(format!("invalid timeout of {timeout:?} seconds: {err}"))
+            })?;
+        let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
             // Get python
             Python::attach(|py| {
