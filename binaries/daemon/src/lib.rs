@@ -2314,9 +2314,9 @@ impl Daemon {
                     // both to stop delivering to a removed node and so a re-added
                     // ID is classified by its own inputs, not stale timer/log
                     // state (which would mark it never-finishing forever, #2270).
-                    for receivers in dataflow.timers.values_mut() {
-                        receivers.retain(|(nid, _)| nid != &node_id);
-                    }
+                    // Cancels the timer task of any interval left with no
+                    // subscribers (#2585); see the method for details.
+                    dataflow.unsubscribe_node_from_timers(&node_id);
                     dataflow
                         .log_subscribers
                         .retain(|sub| sub.node_id != node_id);
@@ -6168,6 +6168,52 @@ mod fault_tolerance_tests {
         assert!(df._timer_handles.contains_key(&first));
         assert!(df._timer_handles.contains_key(&second));
         assert_eq!(df._timer_handles.len(), 2);
+    }
+
+    // dora-rs/dora: removing the last subscriber of a timer interval (via
+    // `RemoveNode`) must cancel that interval's timer task and forget the
+    // entry, so it doesn't keep ticking to an empty subscriber set for the
+    // rest of the dataflow's life (#2585). An interval that still has other
+    // subscribers must be left running.
+    #[tokio::test]
+    async fn unsubscribe_last_subscriber_cancels_timer_task() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        let node_a = NodeId::from("a".to_string());
+        let node_b = NodeId::from("b".to_string());
+        let solo = Duration::from_millis(100); // only `a` subscribes
+        let shared = Duration::from_millis(250); // `a` and `b` subscribe
+
+        df.timers
+            .entry(solo)
+            .or_default()
+            .insert((node_a.clone(), DataId::from("t".to_string())));
+        df.timers
+            .entry(shared)
+            .or_default()
+            .insert((node_a.clone(), DataId::from("t".to_string())));
+        df.timers
+            .entry(shared)
+            .or_default()
+            .insert((node_b.clone(), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df._timer_handles.contains_key(&solo));
+        assert!(df._timer_handles.contains_key(&shared));
+
+        df.unsubscribe_node_from_timers(&node_a);
+
+        // `solo` lost its only subscriber: entry and task both gone.
+        assert!(!df.timers.contains_key(&solo));
+        assert!(!df._timer_handles.contains_key(&solo));
+        // `shared` still has `b`: it keeps its subscriber set and its task.
+        assert_eq!(
+            df.timers.get(&shared).map(|s| s.len()),
+            Some(1),
+            "shared interval must keep its remaining subscriber"
+        );
+        assert!(df._timer_handles.contains_key(&shared));
     }
 
     // dora-rs/dora: the `AddNode` handler guards its re-invocation of
