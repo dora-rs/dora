@@ -179,7 +179,32 @@ impl GraphCache {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use super::{GraphCache, GraphSnapshot};
     use crate::transport::zenoh::{Context, ContextOptions};
+
+    /// Liveliness-token declaration/undeclaration propagates through the Zenoh
+    /// session asynchronously, so the graph cache is updated a beat after
+    /// `create_node` / `drop` return. Await the graph reaching the expected
+    /// state (event-driven via `wait_for_change`) instead of asserting the
+    /// snapshot synchronously, which raced and flaked (~1-in-4).
+    async fn wait_until(graph: &GraphCache, predicate: impl Fn(&GraphSnapshot) -> bool) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let snapshot = graph.snapshot();
+                if predicate(&snapshot) {
+                    break;
+                }
+                graph
+                    .wait_for_change(snapshot.generation)
+                    .await
+                    .expect("graph closed while waiting for a change");
+            }
+        })
+        .await
+        .expect("timed out waiting for the graph to reach the expected state");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn drop_removes_all_tokens() {
@@ -193,8 +218,8 @@ mod tests {
             .create_node("zid", "nid", "/", "/", "node")
             .await
             .unwrap();
-        assert_eq!(context.graph.snapshot().entities.len(), 1);
+        wait_until(&context.graph, |snapshot| snapshot.entities.len() == 1).await;
         drop(node);
-        assert!(context.graph.snapshot().entities.is_empty());
+        wait_until(&context.graph, |snapshot| snapshot.entities.is_empty()).await;
     }
 }
