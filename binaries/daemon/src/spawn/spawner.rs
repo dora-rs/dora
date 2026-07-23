@@ -135,6 +135,24 @@ pub struct NodeZenohPeering {
 /// Dynamic nodes are omitted: they are not in the descriptor's spawn set and join
 /// at arbitrary times, so they keep the daemon-endpoint-only behavior.
 ///
+/// # Caveat: per-node endpoints are advertised before they bind (#2762)
+///
+/// This reserves each local node's loopback port with
+/// `dora_core::topics::reserve_loopback_zenoh_endpoint`
+/// — which binds `127.0.0.1:0`, reads the port, and drops the socket — and commits
+/// that port into every *consumer's* dial list here at plan time, i.e. **before the
+/// producing node process has bound it**. Unlike the daemon's own listener, these
+/// per-node endpoints are therefore *not* covered by the bind-verification in
+/// `open_zenoh_session_with_listen` (#1858): the node opens with
+/// `listen/exit_on_failure: false` and discards its own `effective_listen_endpoint`,
+/// so a lost reserve→bind race (another process grabs the port in the window) leaves
+/// the producer listener-less while its consumers hold a dead endpoint. Because those
+/// consumers also have explicit `connect/endpoints`, multicast scouting is disabled
+/// for them, so there is no fallback and that edge is silently partitioned. The
+/// probability is low (the OS keeps handing out fresh ephemeral ports) but the impact
+/// is silent data loss; closing the window fully requires holding each reservation
+/// until the child binds, or verifying the per-node bind and re-planning on failure.
+///
 /// Only *local* nodes are planned. `nodes` spans the whole dataflow including
 /// nodes on other daemons, whose endpoints are not on this host's loopback, so a
 /// local consumer of a remote producer gets no dial for it and keeps the existing

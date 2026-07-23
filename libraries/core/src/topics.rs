@@ -330,11 +330,31 @@ pub async fn open_zenoh_session_with_listen(
                             .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
                         if bound {
                             effective_listen_endpoint = Some(requested);
+                        } else if connect_inserted {
+                            // We set explicit `connect/endpoints` above, so
+                            // multicast scouting was disabled for this session
+                            // (#1856). There is therefore NO discovery fallback:
+                            // peers already told to dial `{requested}` (e.g. via
+                            // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
+                            // cannot reach this now-listener-less session, and it
+                            // cannot be scouted either — that edge is silently
+                            // partitioned. Do not claim "multicast scouting only"
+                            // here; that fallback does not exist in this mode and
+                            // the old message pointed debuggers the wrong way
+                            // (#2762).
+                            warn!(
+                                "zenoh session opened but listener for `{requested}` \
+                                 did not bind (actually bound: {bound_locators:?}); \
+                                 multicast scouting is disabled for this session \
+                                 (explicit connect endpoints are set), so peers told \
+                                 to dial `{requested}` have no fallback path to reach \
+                                 it (#2762)"
+                            );
                         } else {
                             warn!(
                                 "zenoh session opened but listener for `{requested}` \
                                  did not bind (actually bound: {bound_locators:?}); \
-                                 spawned nodes will use multicast scouting only"
+                                 falling back to multicast scouting for discovery"
                             );
                         }
                     }
