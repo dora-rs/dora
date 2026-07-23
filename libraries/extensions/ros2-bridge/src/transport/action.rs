@@ -196,11 +196,14 @@ struct Goal<G, R> {
     feedback_sequence: u64,
     result: Option<R>,
     server_lost: bool,
+    /// Monotonic acceptance order — used to evict the oldest terminal goal.
+    seq: u64,
 }
 
 pub struct ActionState<G, R> {
     goals: HashMap<[u8; 16], Goal<G, R>>,
     limit: usize,
+    next_seq: u64,
 }
 
 impl<G, R: Clone> ActionState<G, R> {
@@ -208,6 +211,7 @@ impl<G, R: Clone> ActionState<G, R> {
         Self {
             goals: HashMap::new(),
             limit,
+            next_seq: 0,
         }
     }
     pub fn accept(&mut self, id: [u8; 16], value: G) -> Result<(), ActionError> {
@@ -220,12 +224,28 @@ impl<G, R: Clone> ActionState<G, R> {
             return Err(ActionError::GoalLimit { limit: self.limit });
         }
         // Only active goals count against `limit`; terminal goals linger until
-        // their result is fetched (`remove`). Reclaim them once total retention
-        // exceeds twice the limit, so a peer that submits and finishes goals but
-        // never fetches results cannot grow the map without bound.
-        if self.goals.len() >= self.limit.saturating_mul(2) {
-            self.goals.retain(|_, goal| !goal.status.is_terminal());
+        // their result is fetched (`remove`). Bound total retention at 2*limit
+        // by evicting the OLDEST terminal goals first, so a recently
+        // finished-but-unpolled result survives longer than an all-or-nothing
+        // purge, while a client that never fetches can't grow the map unbounded.
+        let cap = self.limit.saturating_mul(2);
+        if self.goals.len() >= cap {
+            let mut terminal: Vec<([u8; 16], u64)> = self
+                .goals
+                .iter()
+                .filter(|(_, goal)| goal.status.is_terminal())
+                .map(|(goal_id, goal)| (*goal_id, goal.seq))
+                .collect();
+            terminal.sort_by_key(|(_, seq)| *seq);
+            for (goal_id, _) in terminal {
+                if self.goals.len() < cap {
+                    break;
+                }
+                self.goals.remove(&goal_id);
+            }
         }
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
         self.goals.insert(
             id,
             Goal {
@@ -234,6 +254,7 @@ impl<G, R: Clone> ActionState<G, R> {
                 feedback_sequence: 0,
                 result: None,
                 server_lost: false,
+                seq,
             },
         );
         Ok(())
@@ -534,7 +555,26 @@ pub mod zenoh {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionError, ActionState, GoalStatus};
+    use super::{ActionError, ActionState, GoalStatus, ResultAvailability};
+
+    #[test]
+    fn accept_evicts_oldest_terminal_first_keeping_recent_results() {
+        // Under a flood of finished-but-unfetched goals, the OLDEST terminal
+        // goals are evicted first, so the most-recently finished result is still
+        // retrievable (rather than an all-or-nothing purge dropping it too).
+        let mut state: ActionState<(), u8> = ActionState::new(2);
+        let mut last = [0u8; 16];
+        for i in 0..50u8 {
+            let id = [i; 16];
+            state.accept(id, ()).unwrap();
+            state.finish(id, GoalStatus::Succeeded, i).unwrap();
+            last = id;
+        }
+        assert!(matches!(
+            state.request_result(last),
+            Ok(ResultAvailability::Ready { .. })
+        ));
+    }
 
     #[test]
     fn accept_reclaims_terminal_goals_to_bound_retention() {

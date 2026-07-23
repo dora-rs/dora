@@ -38,10 +38,19 @@ pub enum GraphError {
     Closed,
 }
 
+struct Entry {
+    token: LivelinessKey,
+    /// Monotonic insertion order — used to evict the oldest remote entity.
+    seq: u64,
+    /// Locally-declared (own) entity; never evicted under capacity pressure.
+    local: bool,
+}
+
 #[derive(Default)]
 struct State {
     generation: u64,
-    entities: BTreeMap<String, LivelinessKey>,
+    entities: BTreeMap<String, Entry>,
+    next_seq: u64,
     waiters: Vec<oneshot::Sender<Result<u64, GraphError>>>,
     closed: bool,
     initialized: bool,
@@ -73,7 +82,19 @@ impl GraphCache {
         }
     }
 
+    /// Record a liveliness token observed from the (untrusted) ROS graph.
     pub fn apply_put(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.insert(key, false)
+    }
+
+    /// Record a liveliness token the local process declared itself. Local
+    /// entities are protected from capacity eviction so a remote token flood
+    /// cannot evict the node's own discovery state.
+    pub fn apply_put_local(&self, key: &str) -> Result<GraphUpdate, GraphError> {
+        self.insert(key, true)
+    }
+
+    fn insert(&self, key: &str, local: bool) -> Result<GraphUpdate, GraphError> {
         let token = LivelinessKey::parse(key).map_err(GraphError::MalformedToken)?;
         if token.domain != self.domain {
             return Ok(GraphUpdate(false));
@@ -82,17 +103,43 @@ impl GraphCache {
         if state.closed {
             return Err(GraphError::Closed);
         }
-        if state.entities.contains_key(key) {
+        if let Some(entry) = state.entities.get_mut(key) {
+            // Already known. Upgrade to local if this is our own declaration —
+            // the subscriber may have echoed the token back before we ran.
+            if local && !entry.local {
+                entry.local = true;
+            }
             return Ok(GraphUpdate(false));
         }
         if state.entities.len() >= self.limit {
-            tracing::warn!(
-                "ROS graph cache at capacity ({}); dropping liveliness token",
-                self.limit
-            );
-            return Ok(GraphUpdate(false));
+            // Admit the new token by evicting the oldest *remote* entity; never
+            // evict a local (own) entity. Refuse only if everything retained is
+            // local (which cannot happen from a remote flood alone).
+            let victim = state
+                .entities
+                .iter()
+                .filter(|(_, entry)| !entry.local)
+                .min_by_key(|(_, entry)| entry.seq)
+                .map(|(evict_key, _)| evict_key.clone());
+            match victim {
+                Some(victim) => {
+                    state.entities.remove(&victim);
+                }
+                None => {
+                    tracing::warn!(
+                        "ROS graph cache at capacity ({}) with only local entities; \
+                         dropping liveliness token",
+                        self.limit
+                    );
+                    return Ok(GraphUpdate(false));
+                }
+            }
         }
-        state.entities.insert(key.to_owned(), token);
+        let seq = state.next_seq;
+        state.next_seq = state.next_seq.wrapping_add(1);
+        state
+            .entities
+            .insert(key.to_owned(), Entry { token, seq, local });
         Self::changed(&mut state);
         Ok(GraphUpdate(true))
     }
@@ -120,9 +167,9 @@ impl GraphCache {
             entities: state
                 .entities
                 .iter()
-                .map(|(key, token)| GraphEntity {
+                .map(|(key, entry)| GraphEntity {
                     key: key.clone(),
-                    token: token.clone(),
+                    token: entry.token.clone(),
                 })
                 .collect(),
             initialized: state.initialized,
@@ -203,20 +250,50 @@ mod tests {
     use super::{GraphCache, GraphSnapshot};
     use crate::transport::zenoh::{Context, ContextOptions, keyexpr::LivelinessKey};
 
+    fn node_key(nid: &str) -> String {
+        LivelinessKey::node(0, "zid", nid, "eid", "/", "/ns", "node")
+            .unwrap()
+            .as_str()
+            .to_owned()
+    }
+
     #[test]
-    fn apply_put_caps_entities_to_prevent_unbounded_growth() {
+    fn apply_put_caps_entities_and_evicts_oldest_remote() {
         // A remote peer controls how many liveliness tokens it announces; the
-        // cache must refuse new entries past its cap instead of growing without
-        // bound.
+        // cache stays bounded, admitting the newest by evicting the oldest
+        // remote entry (so discovery of new entities is never stalled).
         let cache = GraphCache::with_limit(0, 2);
         for i in 0..8 {
-            let key = LivelinessKey::node(0, "zid", &format!("n{i}"), "eid", "/", "/ns", "node")
-                .unwrap()
-                .as_str()
-                .to_owned();
-            let _ = cache.apply_put(&key);
+            let _ = cache.apply_put(&node_key(&format!("n{i}")));
         }
-        assert_eq!(cache.snapshot().entities.len(), 2);
+        let keys: Vec<_> = cache
+            .snapshot()
+            .entities
+            .into_iter()
+            .map(|entity| entity.key)
+            .collect();
+        assert_eq!(keys.len(), 2);
+        // The two most-recent tokens are retained; the oldest were evicted.
+        assert!(keys.contains(&node_key("n6")) && keys.contains(&node_key("n7")));
+    }
+
+    #[test]
+    fn apply_put_never_evicts_local_entities() {
+        // Local (own) entities must survive a remote token flood.
+        let cache = GraphCache::with_limit(0, 2);
+        let local = node_key("local");
+        cache.apply_put_local(&local).unwrap();
+        for i in 0..16 {
+            let _ = cache.apply_put(&node_key(&format!("flood{i}")));
+        }
+        let keys: Vec<_> = cache
+            .snapshot()
+            .entities
+            .into_iter()
+            .map(|entity| entity.key)
+            .collect();
+        assert_eq!(keys.len(), 2);
+        assert!(keys.contains(&local), "local entity must not be evicted");
     }
 
     /// Liveliness-token declaration/undeclaration propagates through the Zenoh

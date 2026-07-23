@@ -284,7 +284,7 @@ mod lifecycle {
                 .await
                 .map_err(|error| ContextError::Token(error.to_string()))?;
             self.graph
-                .apply_put(key.as_str())
+                .apply_put_local(key.as_str())
                 .map_err(|error| ContextError::Token(error.to_string()))?;
             let token = NodeToken::from_guard(
                 key.as_str(),
@@ -408,7 +408,7 @@ mod lifecycle {
                 eprintln!("dora rmw_zenoh liveliness declare: {}", key.as_str());
             }
             self.graph
-                .apply_put(key.as_str())
+                .apply_put_local(key.as_str())
                 .map_err(|error| ContextError::Token(error.to_string()))?;
             let token = EndpointToken::from_guard(
                 key.as_str(),

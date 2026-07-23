@@ -976,6 +976,7 @@ impl Ros2Node {
             executing: GoalSlots::new(MAX_CONCURRENT_GOALS),
             zenoh_result_requests,
             pending_result_requests: HashMap::new(),
+            pending_result_seq: 0,
         })
     }
     // ---- END SPIKE ----
@@ -1592,7 +1593,9 @@ pub struct Ros2ActionServer {
     executing: GoalSlots<String, PythonServerGoal>,
     zenoh_result_requests:
         Option<flume::Receiver<dora_ros2_bridge::transport::zenoh::service::ServiceRequest>>,
-    pending_result_requests: HashMap<String, dora_ros2_bridge::transport::RequestId>,
+    pending_result_requests: HashMap<String, (dora_ros2_bridge::transport::RequestId, u64)>,
+    /// Monotonic counter used to evict the oldest stashed request on overflow.
+    pending_result_seq: u64,
 }
 
 enum ActionServerBackend {
@@ -2014,6 +2017,7 @@ impl Ros2ActionServer {
                     let request_id = self
                         .pending_result_requests
                         .remove(goal_id)
+                        .map(|(id, _)| id)
                         .or_else(|| {
                             let receiver = self.zenoh_result_requests.as_ref()?;
                             let deadline = Instant::now() + timeout;
@@ -2049,13 +2053,21 @@ impl Ros2ActionServer {
                                 if self.pending_result_requests.len() >= MAX_PENDING_REQUESTS
                                     && !self.pending_result_requests.contains_key(&key)
                                 {
-                                    if let Some(evict) =
-                                        self.pending_result_requests.keys().next().cloned()
+                                    // Evict the OLDEST stash entry (lowest seq), not an
+                                    // arbitrary HashMap entry, so a flood can't drop a
+                                    // recently-stashed legitimate request.
+                                    if let Some(evict) = self
+                                        .pending_result_requests
+                                        .iter()
+                                        .min_by_key(|(_, (_, seq))| *seq)
+                                        .map(|(evict_key, _)| evict_key.clone())
                                     {
                                         self.pending_result_requests.remove(&evict);
                                     }
                                 }
-                                self.pending_result_requests.insert(key, request.id);
+                                let seq = self.pending_result_seq;
+                                self.pending_result_seq = self.pending_result_seq.wrapping_add(1);
+                                self.pending_result_requests.insert(key, (request.id, seq));
                             }
                         })
                         .context("get-result request timed out")?;
