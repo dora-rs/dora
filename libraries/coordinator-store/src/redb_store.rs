@@ -119,18 +119,30 @@ impl RedbStore {
 // Serialisation helpers
 // ---------------------------------------------------------------------------
 
+/// Maximum size of a single serialized record. `decode` refuses to *read*
+/// beyond this (capping allocation from a malformed varint length prefix), and
+/// `encode` refuses to *write* beyond it. The two limits must match: a record
+/// that encodes larger than `decode` will accept is silently unreadable —
+/// `put_dataflow` would persist it, but every later `get_dataflow` returns a
+/// decode error and `list_dataflows` skips it as "corrupt" (dora-rs/dora#2027),
+/// dropping a perfectly valid dataflow from startup recovery. Guarding at write
+/// time turns that silent data loss into an explicit error at the source.
+const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+
 fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(|e| eyre!("encode error: {e}"))
+    let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard())
+        .map_err(|e| eyre!("encode error: {e}"))?;
+    if bytes.len() > MAX_RECORD_BYTES {
+        eyre::bail!(
+            "record too large to store: {} bytes exceeds the {MAX_RECORD_BYTES}-byte limit",
+            bytes.len()
+        );
+    }
+    Ok(bytes)
 }
 
-/// Decode uses a separate config with a 64 MiB limit that `encode` intentionally
-/// omits: encoding our own data needs no guard, but decoding potentially corrupt
-/// data must cap allocation sizes to prevent OOM from malformed varint length
-/// prefixes. The limit type is a const generic in bincode 2.x, so it cannot
-/// share a single `const` with the unlimited encode config.
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let config = bincode::config::standard().with_limit::<{ 64 * 1024 * 1024 }>();
+    let config = bincode::config::standard().with_limit::<{ MAX_RECORD_BYTES }>();
     let (val, _) =
         bincode::serde::decode_from_slice(bytes, config).map_err(|e| eyre!("decode error: {e}"))?;
     Ok(val)
@@ -430,6 +442,28 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = RedbStore::open(&dir.path().join("test.redb")).unwrap();
         (store, dir)
+    }
+
+    /// A record that serializes beyond `MAX_RECORD_BYTES` is rejected at write
+    /// time (`encode`) rather than persisted and then silently skipped as
+    /// "corrupt" by the `list_*` recovery paths. Write and read limits must
+    /// stay symmetric — see the `MAX_RECORD_BYTES` doc (dora-rs/dora#2027).
+    #[test]
+    fn encode_rejects_record_larger_than_decode_limit() {
+        // Serializes to just over the limit (raw bytes + a small length prefix),
+        // exactly the size `decode`'s `with_limit` would refuse to read back.
+        let oversized = vec![0u8; MAX_RECORD_BYTES + 1];
+        let err = encode(&oversized).unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "expected 'too large' error, got: {err}"
+        );
+
+        // A normal-sized record still encodes and round-trips.
+        let small = vec![1u8, 2, 3];
+        let bytes = encode(&small).unwrap();
+        let decoded: Vec<u8> = decode(&bytes).unwrap();
+        assert_eq!(decoded, small);
     }
 
     #[test]
