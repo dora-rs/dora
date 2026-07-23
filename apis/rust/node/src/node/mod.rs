@@ -1465,12 +1465,18 @@ impl DoraNode {
             .as_ref()
             .expect("zenoh session presence checked above");
 
-        // Serialize metadata as zenoh attachment.
-        let metadata_bytes = match bincode::serialize(metadata) {
-            Ok(bytes) => bytes,
+        // Serialize metadata as the zenoh attachment, lazily. The steady-state
+        // schema-less-batch fast path (the hottest small-message case) builds
+        // its own attachment carrying the schema hash inside
+        // `publish_schema_once`, so serializing `metadata` unconditionally here
+        // would be a redundant per-message serialization on that path. Each arm
+        // that actually attaches the plain metadata calls this instead; `None`
+        // means serialization failed and the message falls back to the daemon.
+        let serialize_metadata = || match bincode::serialize(metadata) {
+            Ok(bytes) => Some(bytes),
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
-                return Ok(PublishOutcome::NotPublished(finalized));
+                None
             }
         };
 
@@ -1490,6 +1496,9 @@ impl DoraNode {
             // the deliberate, accepted trade-off for the zero-copy large-output
             // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
+                let Some(metadata_bytes) = serialize_metadata() else {
+                    return Ok(PublishOutcome::NotPublished(FinalizedSample::Shm(sbuf)));
+                };
                 publisher
                     .put(sbuf)
                     .attachment(&metadata_bytes[..])
@@ -1521,6 +1530,11 @@ impl DoraNode {
                         .wait()
                     {
                         Ok(mut sbuf) => {
+                            let Some(metadata_bytes) = serialize_metadata() else {
+                                return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(
+                                    avec,
+                                )));
+                            };
                             sbuf.as_mut().copy_from_slice(&avec);
                             return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
                             {
@@ -1611,13 +1625,31 @@ impl DoraNode {
                     None
                 };
                 // Fall back to a full standalone stream if the batch slice can't
-                // be taken (a real IPC stream always can — defensive).
+                // be taken (a real IPC stream always can — defensive). Only the
+                // fallback (and the no-schema-once case) attaches the plain
+                // metadata, so it is serialized only then, not on the common
+                // schema-less-batch path which uses `att`.
+                let fallback_metadata; // owned bytes, must outlive the `put` below
                 let (payload, attachment): (&[u8], &[u8]) = match schema_once.as_ref() {
                     Some(att) => match arrow_utils::ipc_encode::batch_slice(&avec) {
                         Some(slice) => (slice, att.as_slice()),
-                        None => (&avec[..], &metadata_bytes[..]),
+                        None => {
+                            let Some(bytes) = serialize_metadata() else {
+                                return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(
+                                    avec,
+                                )));
+                            };
+                            fallback_metadata = bytes;
+                            (&avec[..], &fallback_metadata[..])
+                        }
                     },
-                    None => (&avec[..], &metadata_bytes[..]),
+                    None => {
+                        let Some(bytes) = serialize_metadata() else {
+                            return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
+                        };
+                        fallback_metadata = bytes;
+                        (&avec[..], &fallback_metadata[..])
+                    }
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
                     Ok(()) => Ok(PublishOutcome::Published),
