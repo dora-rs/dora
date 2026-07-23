@@ -842,19 +842,28 @@ impl EventStream {
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
-            loop {
-                if self.scheduler.is_empty() {
-                    if let Some(event) = self.receiver.recv().await {
-                        self.add_event(event);
-                    } else {
-                        break;
-                    }
-                } else {
-                    match self.receiver.try_recv() {
-                        Ok(event) => self.add_event(event),
-                        Err(_) => break, // empty or disconnected
-                    };
+            // Block for the first event while the scheduler is empty, then drain
+            // the rest non-blocking. The old code re-checked `is_empty()` on
+            // every iteration; `Scheduler::is_empty()` scans every input queue
+            // (O(#inputs)), so draining K events cost O(K·#inputs).
+            //
+            // `add_event` usually pushes, but it can also *drop* the event
+            // without retaining it (e.g. `queue_size: 0` -> `DropIncoming`), so
+            // we must keep blocking while the scheduler is still empty rather
+            // than assume a single `recv` made it non-empty — otherwise a
+            // dropped-only event would fall through to `scheduler.next() ==
+            // None` and be misread as a closed stream. This preserves the
+            // previous "block until a retained event arrives" behavior while
+            // checking `is_empty()` only twice in the common case instead of
+            // once per drained event.
+            while self.scheduler.is_empty() {
+                match self.receiver.recv().await {
+                    Some(event) => self.add_event(event),
+                    None => break,
                 }
+            }
+            while let Ok(event) = self.receiver.try_recv() {
+                self.add_event(event);
             }
             self.scheduler.next().map(Self::convert_event_item)
         };
@@ -1679,12 +1688,21 @@ impl Drop for EventStream {
         // finish and the dataflow stalls until an outer timeout (dora-rs/dora#2425).
         // The callbacks use `try_send`, so undeclaring before `receiver` drops
         // cannot deadlock on a blocked callback.
+        //
+        // The `@schema` `AdvancedSubscriber`s (added with the Arrow IPC data
+        // plane in #2366) undeclare on the same shared session and can wedge
+        // the same way, so they must be torn down under the same deadline —
+        // mirroring `DoraNode::Drop`, which drops both publisher maps inside
+        // one guard. Left out, they would otherwise drop unbounded in the
+        // implicit field-drop phase after this `Drop` body returns (#2583).
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
+        let schema_subscribers = std::mem::take(&mut self._zenoh_schema_subscribers);
         let startup_acker = self.startup_acker.take();
-        if !subscribers.is_empty() || startup_acker.is_some() {
+        if !subscribers.is_empty() || !schema_subscribers.is_empty() || startup_acker.is_some() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
+                    drop(schema_subscribers);
                     // Dropping the subscribers dropped their callbacks — the
                     // only senders into the acker's queue — so the acker
                     // thread exits (undeclaring its ack publishers, also

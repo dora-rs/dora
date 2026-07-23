@@ -38,11 +38,17 @@ pub enum QueuePolicy {
 impl QueuePolicy {
     /// Returns the effective capacity for a given configured queue size.
     ///
-    /// - `DropOldest`: returns `queue_size` as-is.
+    /// - `DropOldest`: returns `queue_size`, but never less than 1.
     /// - `Backpressure`: returns `10 * queue_size` (min 100) as a hard safety cap.
+    ///
+    /// A `DropOldest` cap of 0 would drop 100% of the input's events — the
+    /// runtime operator channel sets the just-queued event to `None` on every
+    /// `add_event`, so the operator never receives a single message and the
+    /// dataflow silently hangs. Clamp `queue_size: 0` to 1 (latest-only)
+    /// instead of turning the input into a dead port.
     pub fn effective_cap(&self, queue_size: usize) -> usize {
         match self {
-            Self::DropOldest => queue_size,
+            Self::DropOldest => queue_size.max(1),
             Self::Backpressure => queue_size.saturating_mul(10).max(100),
         }
     }
@@ -280,6 +286,10 @@ impl FromStr for InputMapping {
                                     "hz must be a positive finite number (got `{value}`)"
                                 ));
                             }
+                            // A very large hz makes `1/hz` round below 1ns, so
+                            // `try_from_secs_f64` returns `Ok(Duration::ZERO)`;
+                            // that zero interval is caught by the shared guard
+                            // after this `match`, together with `<unit>/0`.
                             Duration::try_from_secs_f64(1.0 / hz).map_err(|e| {
                                 format!("hz `{value}` produces an out-of-range interval: {e}")
                             })?
@@ -290,6 +300,19 @@ impl FromStr for InputMapping {
                             ));
                         }
                     };
+                    // A zero-length interval is invalid for every unit: the timer
+                    // task builds `tokio::time::interval(interval)`, which panics
+                    // (`period` must be non-zero). Reject it at parse time for all
+                    // units -- `secs/0`, `millis/0`, `micros/0`, `nanos/0`, and a
+                    // huge `hz` that rounds `1/hz` below 1ns -- so a bad descriptor
+                    // fails at load with a clear message instead of panicking a
+                    // daemon task later.
+                    if interval.is_zero() {
+                        return Err(format!(
+                            "timer interval must be non-zero (`{unit}/{value}` \
+                             produces a zero-length interval)"
+                        ));
+                    }
                     Self::Timer { interval }
                 }
                 Some(("logs", rest)) => {
@@ -640,6 +663,23 @@ mod tests {
     }
 
     #[test]
+    fn drop_oldest_cap_is_never_zero() {
+        // A `queue_size: 0` DropOldest input must keep at least the latest
+        // message; a cap of 0 would starve the operator entirely.
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(0), 1);
+        // Non-zero sizes are unchanged.
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(1), 1);
+        assert_eq!(QueuePolicy::DropOldest.effective_cap(5), 5);
+    }
+
+    #[test]
+    fn backpressure_cap_has_floor() {
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(0), 100);
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(5), 100);
+        assert_eq!(QueuePolicy::Backpressure.effective_cap(20), 200);
+    }
+
+    #[test]
     fn parse_user_mapping_rejects_invalid_ids() {
         // A source node id with a space is not a valid `NodeId` and must be
         // rejected with a clean error rather than panicking the parser via the
@@ -746,6 +786,34 @@ mod tests {
             .parse::<InputMapping>()
             .unwrap_err();
         assert!(err.contains("hz"), "error should mention hz: {err}");
+    }
+
+    #[test]
+    fn parse_timer_rejects_zero_interval_for_every_unit() {
+        // A zero-length interval panics `tokio::time::interval` in the timer
+        // task (`period` must be non-zero), so every unit that can express it
+        // must be rejected at parse time -- not just `hz`. `<unit>/0` is the
+        // obvious case; a huge `hz` reaches the same zero interval because
+        // `1/hz` rounds below 1ns.
+        let cases = [
+            "dora/timer/secs/0",
+            "dora/timer/millis/0",
+            "dora/timer/micros/0",
+            "dora/timer/nanos/0",
+            "dora/timer/hz/1000000000000",
+        ];
+        for case in cases {
+            let err = case.parse::<InputMapping>().unwrap_err();
+            assert!(
+                err.contains("non-zero"),
+                "`{case}` should be rejected as a zero-length interval, got: {err}"
+            );
+        }
+        // Sanity check: the huge-hz conversion really does round to zero.
+        assert_eq!(
+            Duration::try_from_secs_f64(1.0 / 1_000_000_000_000.0),
+            Ok(Duration::ZERO)
+        );
     }
 
     /// Regression test for dora-rs#2031: the `Display` impl previously emitted

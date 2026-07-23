@@ -16,6 +16,10 @@ name: Test C/C++ find_package
 #   covers a batch of up to 5 PRs, and quiet batches cost one short runner.
 #   Manual dispatch always runs it.
 #
+#   The queue is push-triggered, so a batch arrives as a push to a
+#   `trunk-merge/**` branch. See the `changes` job for why that has to be
+#   diffed against `main` rather than against `github.event.before`.
+#
 #   `find_package smoke all green` is a merge-queue required status
 #   (.trunk/trunk.yaml). That is why there is no workflow-level `paths:`
 #   filter: a workflow skipped by path filtering emits *no* check run at
@@ -27,7 +31,7 @@ name: Test C/C++ find_package
 
 on:
   push:
-    branches: [main]
+    branches: [main, "trunk-merge/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -37,8 +41,12 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  # The `changes` job diffs the batch branch against main via the
+  # compare REST API.
   contents: read
-  # The `changes` job lists the PR's changed files via the REST API.
+  # Only for the dev-PR path of `changes`, which lists the PR's changed
+  # files via the pulls REST API. Batches arrive as pushes and never use
+  # it; the path is kept so the workflow still reports on dev PRs.
   pull-requests: read
 
 jobs:
@@ -61,6 +69,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BEFORE: ${{ github.event.before }}
+          REF_NAME: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -110,14 +119,30 @@ jobs:
               ;;
             push)
               CAP=300  # compare caps .files at 300 and will not paginate it.
+              # A merge-queue batch branch is main plus the batched PRs, so
+              # always diff it against main: `base...head` merge-base
+              # semantics then yield exactly the changes the batch carries.
+              # Keyed on the ref name rather than on `before` because the
+              # two disagree on a re-pushed batch. A fresh batch branch has
+              # an all-zero `before` and nothing to diff against; a retried
+              # or bisected one has a real `before`, and diffing against
+              # that would narrow the filter to the delta between attempts
+              # and skip the matrix on a batch that does touch the
+              # find_package surface. Without either, every batch would
+              # fail open and run the 3-OS matrix — the cost this job
+              # exists to avoid.
+              case "$REF_NAME" in
+                trunk-merge/*) BASE=main ;;
+                *)             BASE="$BEFORE" ;;
+              esac
               # All-zero SHA => branch creation, nothing to compare against.
-              if [ -z "${BEFORE//0/}" ]; then
+              if [ -z "${BASE//0/}" ]; then
                 decided true "No base commit for this push; running the smoke matrix."
               fi
               # No --paginate: it pages .commits and would re-emit .files.
-              gh api "repos/$REPO/compare/$BEFORE...$SHA" \
+              gh api "repos/$REPO/compare/$BASE...$SHA" \
                 --jq '.files[].filename' > changed.txt \
-                || decided true "::warning::Could not compare $BEFORE...$SHA; running the smoke matrix."
+                || decided true "::warning::Could not compare $BASE...$SHA; running the smoke matrix."
               ;;
             *)
               decided true "Event is $EVENT_NAME; running the smoke matrix."
@@ -157,7 +182,7 @@ jobs:
     needs: changes
     if: >-
       needs.changes.outputs.relevant == 'true' &&
-      (github.event_name != 'pull_request' || startsWith(github.head_ref, 'trunk-merge/'))
+      github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:

@@ -684,6 +684,10 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
     let dataflow_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/input-recovered-delivery.yml");
 
+    // 15s, not 5s: node spawn + zenoh session establishment can delay the
+    // first emit by several seconds (observed ~4s on macOS). The window must
+    // fit startup + the 0.5s timeout break + the 2s silence gap + the second
+    // emit, or the dataflow stops before recovery can happen.
     let result = Daemon::run_dataflow(
         &dataflow_path,
         None,
@@ -692,7 +696,7 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
         false,
         LogDestination::Tracing,
         None,
-        Some(Duration::from_secs(5)),
+        Some(Duration::from_secs(15)),
         false,
         None,
         None,

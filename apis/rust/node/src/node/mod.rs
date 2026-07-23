@@ -605,9 +605,25 @@ fn normalize_output_routing(
     }
 }
 
-/// Must exceed zenoh's internal 10s session close timeout, which is not
-/// enforceable when zenoh's net runtime is wedged.
-pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Per-phase deadline for tearing down zenoh state on node shutdown (subscribers,
+/// liveliness tokens, and the session/publishers — see [`DoraNode::drop`] and
+/// `EventStream::drop`). Each `undeclare`/close blocks indefinitely when zenoh's net
+/// runtime is wedged (e.g. retrying an unreachable scouted peer on a headless CI
+/// runner), so it is bounded here and abandoned on timeout.
+///
+/// This MUST stay comfortably below the daemon's force-kill grace
+/// (`DEFAULT_STOP_GRACE (10s) + DEFAULT_STOP_GRACE/2 = 15s`, see
+/// `binaries/daemon/src/running_dataflow.rs`), including the worst case where all
+/// three phases wedge sequentially (`3 *` this value). Otherwise a node with a wedged
+/// net runtime is still tearing down when the daemon `TerminateProcess`es it, which on
+/// Windows surfaces as `ExitCode(1)` and reddens the nightly (dora-rs/dora#2742). The
+/// `zenoh_teardown_fits_within_daemon_force_kill_grace` test guards the invariant.
+///
+/// This deliberately no longer exceeds zenoh's internal 10s session-close timeout: a
+/// semi-wedged close that would settle at ~10s is abandoned instead, and peers fall
+/// back to liveliness expiry. That is the right trade for a *shutting-down* node —
+/// waiting out the 10s only to be force-killed anyway yields a worse (unclean) exit.
+pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Allows sending outputs and retrieving node information.
 ///
@@ -3457,5 +3473,27 @@ mod tests {
             panic!("teardown panicked")
         });
         assert!(completed, "panicking teardown still counts as completed");
+    }
+
+    // Regression guard for dora-rs/dora#2742: the node's worst-case zenoh teardown must
+    // stay under the daemon's force-kill grace (full rationale on `ZENOH_TEARDOWN_TIMEOUT`).
+    //
+    // Teardown runs in sequential bounded phases (two in `EventStream::drop`, one in
+    // `DoraNode::drop`), so the worst case is `TEARDOWN_PHASES * ZENOH_TEARDOWN_TIMEOUT` —
+    // bump `TEARDOWN_PHASES` if you add another. The grace is `DEFAULT_STOP_GRACE +
+    // DEFAULT_STOP_GRACE/2 = 15s` (`binaries/daemon/src/running_dataflow.rs`); it lives in
+    // a binary crate that can't be imported here, hence the hard-coded copy, which the
+    // daemon const back-references so the two can't silently drift apart.
+    #[test]
+    fn zenoh_teardown_fits_within_daemon_force_kill_grace() {
+        const DAEMON_FORCE_KILL_GRACE: Duration = Duration::from_secs(15);
+        const TEARDOWN_PHASES: u32 = 3;
+        let worst_case = ZENOH_TEARDOWN_TIMEOUT * TEARDOWN_PHASES;
+        assert!(
+            worst_case < DAEMON_FORCE_KILL_GRACE,
+            "worst-case zenoh teardown ({worst_case:?}) must stay under the daemon \
+             force-kill grace ({DAEMON_FORCE_KILL_GRACE:?}); raising ZENOH_TEARDOWN_TIMEOUT \
+             reintroduces dora-rs/dora#2742"
+        );
     }
 }

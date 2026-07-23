@@ -399,8 +399,9 @@ job_record_replay() {
     -p dora-replay-node
 
   # Write the .drec next to its dataflow (not at the workspace root) so
-  # replay's working_dir is examples/rust-dataflow/ -- avoids picking up
-  # $WORKSPACE/types/std/* as "user types" (build/mod.rs rejects those).
+  # replay's working_dir is examples/rust-dataflow/. (Historically the
+  # workspace root also had a types/ dir that replay wrongly loaded as user
+  # types; it moved to libraries/core/types/ but the placement stands.)
   local DREC=examples/rust-dataflow/run.drec
   rm -f "$DREC"
 
@@ -1294,7 +1295,8 @@ job_topic_and_top() {
   out=$(timeout 30 dora self update --check-only 2>&1) || true
   echo "$out" | grep -q "Checking for updates" \
     || { echo "ERROR: --check-only didn't enter update-check path"; return 1; }
-  if echo "$out" | grep -qE "latest version|update is available"; then
+  # "up to date" covers the #2512 reworded up-to-date message.
+  if echo "$out" | grep -qE "up to date|latest version|update is available"; then
     :
   elif echo "$out" | grep -qE "rate limit|403|429"; then
     echo "WARN: GitHub API rate-limited -- skipping outcome assertion"

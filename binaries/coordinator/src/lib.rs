@@ -893,7 +893,18 @@ async fn start_inner(
                             grace_duration,
                             force,
                         } => {
-                            if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                            // `dataflow_results` is filled incrementally, one
+                            // entry per daemon, while a multi-daemon dataflow is
+                            // still running on the others (see
+                            // `DataflowFinishedOnDaemon`). Only take the
+                            // already-stopped fast path when the dataflow is
+                            // truly gone from `running_dataflows`; otherwise fall
+                            // through to `stop_dataflow` so the daemons that are
+                            // still running actually get told to stop. Mirrors
+                            // the `Clean` handler's guard.
+                            if !running_dataflows.contains_key(&dataflow_uuid)
+                                && let Some(result) = dataflow_results.get(&dataflow_uuid)
+                            {
                                 let reply = ControlRequestReply::DataflowStopped {
                                     uuid: dataflow_uuid,
                                     result: dataflow_result(result, dataflow_uuid, &clock),
@@ -935,7 +946,13 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
-                                if let Some(result) = dataflow_results.get(&dataflow_uuid) {
+                                // Same partial-completion guard as `Stop`: a
+                                // still-running multi-daemon dataflow has a
+                                // partial `dataflow_results` entry, but must
+                                // still be stopped rather than reported done.
+                                if !running_dataflows.contains_key(&dataflow_uuid)
+                                    && let Some(result) = dataflow_results.get(&dataflow_uuid)
+                                {
                                     let reply = ControlRequestReply::DataflowStopped {
                                         uuid: dataflow_uuid,
                                         result: dataflow_result(result, dataflow_uuid, &clock),
@@ -1090,8 +1107,16 @@ async fn start_inner(
                                 },
                                 status: DataflowStatus::Running,
                             });
-                            let finished_failed =
-                                dataflow_results.iter().map(|(&uuid, results)| {
+                            // Skip uuids still in `running_dataflows`: a
+                            // partially-finished multi-daemon dataflow has a
+                            // partial `dataflow_results` entry while it keeps
+                            // running, and would otherwise be listed twice (once
+                            // Running, once Finished/Failed) with contradictory
+                            // statuses. It is already yielded above as Running.
+                            let finished_failed = dataflow_results
+                                .iter()
+                                .filter(|(uuid, _)| !running_dataflows.contains_key(uuid))
+                                .map(|(&uuid, results)| {
                                     let name =
                                         archived_dataflows.get(&uuid).and_then(|d| d.name.clone());
                                     let id = DataflowIdAndName { uuid, name };
@@ -2762,16 +2787,6 @@ async fn start_inner(
                         // isn't swept on the next tick.
                         dataflow.node_stopped_at.remove(&node_id);
                     }
-                }
-            }
-            Event::NodeMetricsExpire {
-                dataflow_id,
-                node_id,
-            } => {
-                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
-                    dataflow.node_metrics.remove(&node_id);
-                    dataflow.node_stopped_at.remove(&node_id);
-                    dataflow.node_finalized.remove(&node_id);
                 }
             }
         }
@@ -5928,6 +5943,42 @@ mod tests {
     }
 
     #[test]
+    fn state_log_delta_returns_none_when_log_fully_drained_but_daemon_behind() {
+        // Regression for #2601: a relinked daemon that was never seeded into
+        // `daemon_ack_sequence` queries with last_ack == 0. If peers have
+        // acked and `prune_state_log` drained the log entirely (while
+        // `state_log_sequence` stays > 0), the empty-log branch must return
+        // `None` (→ full param replay), not `Some([])` ("up to date").
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let d1 = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, d1.clone(), node_id.clone());
+        for i in 0..3 {
+            df.append_state_log(StateCatchUpOperation::SetParam {
+                node_id: node_id.clone(),
+                key: format!("key_{i}"),
+                value: serde_json::json!(i),
+            });
+        }
+
+        // d1 (the only member in the ack map) acks all 3 → prune drains the
+        // whole log, but state_log_sequence stays at 3.
+        df.daemon_ack_sequence.insert(d1, 3);
+        df.prune_state_log();
+        assert!(df.state_log.is_empty());
+        assert_eq!(df.state_log_sequence, 3);
+
+        // A relinked daemon not in the ack map is provably behind (0 < 3) yet
+        // sees an empty log → must get the None fallback, not Some([]).
+        assert!(df.state_log_delta(0).is_none());
+
+        // A member already at the head is genuinely up to date → empty, non-None.
+        let delta = df.state_log_delta(3).expect("head daemon is up to date");
+        assert!(delta.is_empty());
+    }
+
+    #[test]
     fn set_param_forward_reply_reports_daemon_rejection() {
         let reply = serde_json::to_vec(&DaemonCoordinatorReply::SetParamResult(Err(
             "node `camera` channel full".to_string(),
@@ -7292,6 +7343,57 @@ mod tests {
             "Stop handler's dataflow_results early-return must fire for \
              watchdog-failed dataflows (otherwise stop_dataflow bails \
              with 'no known running dataflow')"
+        );
+    }
+
+    /// A partially-finished multi-daemon dataflow is present in BOTH
+    /// `running_dataflows` (still running on the remaining daemons) and
+    /// `dataflow_results` (a partial, per-daemon entry). The Stop/StopByName
+    /// early-return and the List `finished_failed` projection both consult
+    /// `dataflow_results`; without a `running_dataflows` guard, Stop no-ops
+    /// (leaving the still-running daemons' nodes alive) and List shows the
+    /// dataflow twice with contradictory statuses. This exercises the guard
+    /// predicate shared by all three handlers.
+    #[test]
+    fn partial_multi_daemon_dataflow_is_not_stopped_early_or_listed_twice() {
+        let partial = DataflowId::from(Uuid::new_v4()); // running + partial results
+        let finished = DataflowId::from(Uuid::new_v4()); // fully done, results only
+
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        running_dataflows.insert(
+            partial,
+            test_running_dataflow(partial, daemon_id.clone(), "sender".to_string().into()),
+        );
+
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
+        dataflow_results.insert(partial, BTreeMap::new());
+        dataflow_results.insert(finished, BTreeMap::new());
+
+        // Stop/StopByName fast path: only the fully-finished dataflow may take it.
+        let stop_fast_path = |uuid: &DataflowId| {
+            !running_dataflows.contains_key(uuid) && dataflow_results.contains_key(uuid)
+        };
+        assert!(
+            !stop_fast_path(&partial),
+            "partial dataflow must fall through to stop_dataflow, not report DataflowStopped"
+        );
+        assert!(
+            stop_fast_path(&finished),
+            "fully finished dataflow keeps the DataflowStopped fast path"
+        );
+
+        // List: only the fully-finished dataflow is a finished_failed row.
+        let finished_failed: Vec<_> = dataflow_results
+            .iter()
+            .filter(|(uuid, _)| !running_dataflows.contains_key(uuid))
+            .map(|(&uuid, _)| uuid)
+            .collect();
+        assert_eq!(
+            finished_failed,
+            vec![finished],
+            "the still-running partial dataflow must not also appear as finished/failed"
         );
     }
 

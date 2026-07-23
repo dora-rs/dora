@@ -9,10 +9,17 @@ use tokio::io::AsyncWriteExt;
 ///
 /// Handles headers that carry additional parameters after the filename, e.g.
 /// `attachment; filename="model.bin"; size=1000`, and both quoted and unquoted
-/// forms. Returns `None` when no non-empty `filename=` value is present (the
-/// RFC 5987 extended `filename*=` form is not decoded and falls through).
+/// forms. Per RFC 6266 / RFC 2616 the parameter name is case-insensitive, so
+/// `Filename`, `FILENAME`, etc. are matched too. Returns `None` when no
+/// non-empty `filename=` value is present (the RFC 5987 extended `filename*=`
+/// form is not decoded and falls through — searching for the literal
+/// `filename=` skips it, since `filename*=` does not contain that substring).
 fn parse_content_disposition_filename(header: &str) -> Option<String> {
-    let rest = header.split("filename=").nth(1)?.trim_start();
+    // RFC 6266: parameter names are case-insensitive. Lower-casing only maps
+    // ASCII bytes 1:1, so byte offsets stay valid indices into `header`.
+    let lower = header.to_ascii_lowercase();
+    let start = lower.find("filename=")? + "filename=".len();
+    let rest = header[start..].trim_start();
     let name = if let Some(after_quote) = rest.strip_prefix('"') {
         // Quoted form: the value runs up to the closing quote, so a trailing
         // `; param=...` (or a `;` inside the quotes) is handled correctly.
@@ -156,6 +163,37 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
             Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn filename_parameter_name_is_case_insensitive() {
+        // RFC 6266: `Content-Disposition` parameter names are case-insensitive,
+        // so a spec-compliant server sending a non-lowercase `filename` must not
+        // have its filename silently dropped.
+        for header in [
+            "attachment; Filename=\"model.bin\"",
+            "attachment; FILENAME=\"model.bin\"",
+            "attachment; FileName=model.bin",
+        ] {
+            assert_eq!(
+                parse_content_disposition_filename(header),
+                Some("model.bin".to_string()),
+                "header {header:?} should parse case-insensitively"
+            );
+        }
+    }
+
+    #[test]
+    fn extended_form_before_plain_filename_is_skipped() {
+        // A header may carry both the RFC 5987 extended form and a plain one;
+        // the plain `filename=` value must still be found (and the `filename*=`
+        // form skipped, not mistaken for it).
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename*=UTF-8''extended.bin; filename=\"plain.bin\""
+            ),
+            Some("plain.bin".to_string())
         );
     }
 

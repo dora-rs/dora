@@ -8,6 +8,8 @@ use std::{
 use crate::ffi::MetadataValueType;
 
 use chrono::DateTime;
+#[cfg(any(feature = "ros2-bridge", test))]
+use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, TryRecvError,
@@ -365,6 +367,8 @@ fn dora_events_into_combined(events: Box<Events>) -> ffi::CombinedEvents {
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(events)),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
         }),
     }
 }
@@ -373,6 +377,8 @@ fn empty_combined_events() -> ffi::CombinedEvents {
     ffi::CombinedEvents {
         events: Box::new(MergedEvents {
             events: Some(Box::new(stream::empty())),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
         }),
     }
 }
@@ -770,9 +776,18 @@ impl Metadata {
     }
 
     pub fn set_timestamp(&mut self, key: &str, value: i64) -> EyreResult<()> {
-        // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>
-        let secs = value / 1_000_000_000;
-        let subsec_nanos = (value % 1_000_000_000) as u32;
+        // Convert nanoseconds since Unix epoch to chrono::DateTime<Utc>.
+        //
+        // Use Euclidean division so pre-epoch (negative) timestamps split
+        // correctly. Plain `/` and `%` truncate toward zero, yielding a
+        // *negative* remainder for negative inputs; casting that to `u32`
+        // wraps it to a huge value and makes `from_timestamp` reject the
+        // (otherwise valid) instant. `div_euclid`/`rem_euclid` keep the
+        // remainder in `0..1_000_000_000`, matching how `from_timestamp`
+        // interprets `(secs, subsec_nanos)` and round-tripping with
+        // `get_timestamp` for negative values.
+        let secs = value.div_euclid(1_000_000_000);
+        let subsec_nanos = value.rem_euclid(1_000_000_000) as u32;
 
         let dt = DateTime::from_timestamp(secs, subsec_nanos)
             .ok_or_else(|| eyre!("Invalid timestamp: out of range (nanos: {value})"))?;
@@ -910,6 +925,8 @@ fn send_output_internal(
 
 pub struct MergedEvents {
     events: Option<Box<dyn Stream<Item = MergedEvent<ExternalEvent>> + Unpin>>,
+    #[cfg(any(feature = "ros2-bridge", test))]
+    next_id: u32,
 }
 
 fn new_metadata() -> Box<Metadata> {
@@ -982,6 +999,23 @@ unsafe fn send_arrow_output_impl(
 }
 
 impl MergedEvents {
+    #[cfg(any(feature = "ros2-bridge", test))]
+    fn merge(&mut self, events: impl Stream<Item = Box<dyn Any>> + Unpin + 'static) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let events = Box::pin(events.map(move |event| ExternalEvent { event, id }));
+
+        let inner = self.events.take().unwrap();
+        let merged: Box<dyn Stream<Item = _> + Unpin + 'static> =
+            Box::new(inner.merge_external(events).map(|event| match event {
+                MergedEvent::Dora(event) => MergedEvent::Dora(event),
+                MergedEvent::External(event) => MergedEvent::External(event.flatten()),
+            }));
+        self.events = Some(merged);
+
+        id
+    }
+
     fn next(&mut self) -> MergedDoraEvent {
         let event = futures_lite::future::block_on(self.events.as_mut().unwrap().next());
         MergedDoraEvent(event)
@@ -1044,5 +1078,56 @@ mod tests {
 
         let result = event_as_input(event);
         assert!(result.is_err(), "expected Err for non-UInt8 input, got Ok");
+    }
+
+    #[test]
+    fn merged_events_assigns_ids_to_external_streams() {
+        let mut events = MergedEvents {
+            events: Some(Box::new(stream::empty())),
+            #[cfg(any(feature = "ros2-bridge", test))]
+            next_id: 1,
+        };
+
+        let first_id = events.merge(stream::once(Box::new("first") as Box<dyn Any>));
+        let second_id = events.merge(stream::once(Box::new("second") as Box<dyn Any>));
+
+        assert_eq!(first_id, 1);
+        assert_eq!(second_id, 2);
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            if let Some(MergedEvent::External(event)) = events.next().0 {
+                seen.push(event.id);
+            }
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, vec![1, 2]);
+    }
+
+    /// Regression test: `set_timestamp` must accept and correctly represent
+    /// pre-epoch (negative) nanosecond timestamps. The previous truncating
+    /// `value % 1_000_000_000` produced a negative remainder that wrapped when
+    /// cast to `u32`, making `from_timestamp` reject valid instants. The value
+    /// must also round-trip through `get_timestamp`.
+    #[test]
+    fn set_timestamp_roundtrips_negative_values() {
+        for value in [
+            -1_i64,
+            -500_000_000,
+            -1_000_000_000,
+            -1_500_000_000,
+            -1_000_000_001,
+            0,
+            1,
+            1_500_000_000,
+        ] {
+            let mut meta = Metadata::empty();
+            meta.set_timestamp("ts", value)
+                .unwrap_or_else(|e| panic!("set_timestamp({value}) failed: {e}"));
+            let got = meta
+                .get_timestamp("ts")
+                .unwrap_or_else(|e| panic!("get_timestamp after set({value}) failed: {e}"));
+            assert_eq!(got, value, "timestamp {value} did not round-trip");
+        }
     }
 }

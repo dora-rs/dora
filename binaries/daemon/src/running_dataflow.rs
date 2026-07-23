@@ -16,7 +16,12 @@ use dora_message::{
     metadata::{self},
     node_to_daemon::Timestamped,
 };
-/// Default grace period before force-killing a stopped node.
+/// Default grace period before force-killing a stopped node. A stopped node is
+/// hard-killed at `DEFAULT_STOP_GRACE + DEFAULT_STOP_GRACE/2` (= 15s), so a node's own
+/// zenoh teardown deadline must stay under that or it gets force-killed mid-teardown
+/// (`ExitCode(1)` on Windows — dora-rs/dora#2742). Kept in sync by
+/// `ZENOH_TEARDOWN_TIMEOUT` in `apis/rust/node/src/node/mod.rs` and its
+/// `zenoh_teardown_fits_within_daemon_force_kill_grace` guard test.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_millis(10_000);
 /// Default grace period before force-killing a restarting node.
 const DEFAULT_RESTART_GRACE: Duration = Duration::from_millis(5_000);
@@ -183,6 +188,10 @@ pub struct LogSubscriber {
 pub struct RunningDataflow {
     pub(crate) id: uuid::Uuid,
     pub(crate) descriptor: Descriptor,
+    /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
+    /// needs are established deterministically rather than left to gossip.
+    /// Populated when the dataflow is spawned; see `plan_zenoh_peering`.
+    pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
@@ -257,6 +266,7 @@ impl RunningDataflow {
         let (listener_shutdown_tx, listener_shutdown_rx) = tokio::sync::watch::channel(false);
         Self {
             id: dataflow_id,
+            zenoh_peering: Arc::new(BTreeMap::new()),
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
@@ -355,6 +365,17 @@ impl RunningDataflow {
             tokio::spawn(task);
             self._timer_handles.insert(interval, handle);
         }
+
+        // Record that the dataflow has been started. This must hold on *every*
+        // start path — the single-daemon `Subscribe`-readiness path and the
+        // distributed coordinator `AllNodesReady` path both funnel through
+        // here — so the flag lives in `start()` rather than at the call sites.
+        // The `AddNode` handler relies on it to tell "already running, spawn a
+        // task for a freshly-added interval" apart from "still bringing up, let
+        // the readiness path spawn the tasks". Setting it at only one call site
+        // (as before) left it `false` for the entire life of a distributed
+        // dataflow, silently starving timer inputs on nodes added later.
+        self.dataflow_started = true;
 
         Ok(())
     }
@@ -592,6 +613,18 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
+    /// All output ids produced by `node_id`, whether they are consumed by a
+    /// local node (recorded in `mappings`) or only by nodes on another daemon
+    /// (recorded in `open_external_mappings`).
+    ///
+    /// Deriving the set from `mappings` alone misses outputs that have no local
+    /// consumer, so their remote consumers would never receive the
+    /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
+    /// region — graceful cross-daemon shutdown).
+    pub(crate) fn node_output_ids(&self, node_id: &NodeId) -> BTreeSet<DataId> {
+        node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
+    }
+
     /// Nodes blocking an otherwise-finished dataflow (dora-rs/dora#2152).
     ///
     /// Returns nodes that should be force-stopped because the dataflow is
@@ -691,6 +724,23 @@ struct StragglerNode<'a> {
     node_grace: Option<Duration>,
 }
 
+/// Pure core of [`RunningDataflow::node_output_ids`].
+///
+/// Unions the output ids of `node_id` across both the locally-consumed
+/// `mappings` and the remote-only `open_external_mappings`.
+fn node_output_ids(
+    mappings: &HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    open_external_mappings: &BTreeSet<OutputId>,
+    node_id: &NodeId,
+) -> BTreeSet<DataId> {
+    mappings
+        .keys()
+        .chain(open_external_mappings.iter())
+        .filter(|output| &output.0 == node_id)
+        .map(|output| output.1.clone())
+        .collect()
+}
+
 /// Pure core of [`RunningDataflow::finish_stragglers`].
 fn select_finish_stragglers<'a>(
     running_nodes: impl Iterator<Item = StragglerNode<'a>>,
@@ -750,6 +800,48 @@ mod tests {
 
     fn node_id(name: &str) -> NodeId {
         NodeId::from(name.to_string())
+    }
+
+    fn data_id(name: &str) -> DataId {
+        DataId::from(name.to_string())
+    }
+
+    // ---- node_output_ids: remote-only outputs must be included ----
+
+    #[test]
+    fn node_output_ids_unions_local_and_remote_outputs() {
+        let source = node_id("source");
+        let mut mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>> = HashMap::new();
+        // `source/local_out` is consumed by a local node.
+        mappings.insert(
+            OutputId(source.clone(), data_id("local_out")),
+            BTreeSet::from([(node_id("sink"), data_id("in"))]),
+        );
+        // `source/remote_out` is consumed only by a node on another daemon.
+        let open_external_mappings =
+            BTreeSet::from([OutputId(source.clone(), data_id("remote_out"))]);
+
+        let outputs = node_output_ids(&mappings, &open_external_mappings, &source);
+
+        // Both the locally-consumed and the remote-only output must appear, so
+        // the remote consumer receives an `OutputClosed` when `source` finishes.
+        assert_eq!(
+            outputs,
+            BTreeSet::from([data_id("local_out"), data_id("remote_out")]),
+        );
+    }
+
+    #[test]
+    fn node_output_ids_ignores_other_producers() {
+        let mut mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>> = HashMap::new();
+        mappings.insert(
+            OutputId(node_id("other"), data_id("x")),
+            BTreeSet::from([(node_id("sink"), data_id("in"))]),
+        );
+        let open_external_mappings = BTreeSet::from([OutputId(node_id("other"), data_id("y"))]);
+
+        let outputs = node_output_ids(&mappings, &open_external_mappings, &node_id("source"));
+        assert!(outputs.is_empty());
     }
 
     const TEST_GRACE: Duration = Duration::from_millis(100);

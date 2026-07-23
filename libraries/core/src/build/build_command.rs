@@ -301,10 +301,20 @@ async fn ensure_managed_python_runtime(
         )
     })?;
     if !exit_status.success() {
-        return Err(eyre!(
+        let mut err = eyre!(
             "managed Python runtime installation `{}` returned {exit_status}",
             python_env_dir.display()
-        ));
+        );
+        if local_source.is_none() {
+            err = err.wrap_err(format!(
+                "failed to install dora-rs=={} from PyPI. If you are running a \
+                 pre-release/dev build of dora, that version is not published — \
+                 either run the dataflow from inside a dora source checkout, or \
+                 set DORA_PYTHON_RUNTIME_SOURCE=<dora-repo>/apis/python/node",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+        return Err(err);
     }
 
     if let Some(source) = local_source {
@@ -344,6 +354,18 @@ async fn managed_python_can_import_dora(
 /// directory containing it if found (so in-tree dev workflows install the local Python
 /// package instead of pulling from PyPI).
 fn local_dora_python_package_dir(working_dir: &Path) -> Option<PathBuf> {
+    // Explicit override for dataflows outside a dora source checkout running
+    // against a pre-release CLI whose dora-rs version is not on PyPI.
+    if let Ok(source) = std::env::var("DORA_PYTHON_RUNTIME_SOURCE") {
+        let package_dir = PathBuf::from(source);
+        if package_dir.join("pyproject.toml").is_file() {
+            return Some(package_dir);
+        }
+        tracing::warn!(
+            "DORA_PYTHON_RUNTIME_SOURCE `{}` has no pyproject.toml — ignoring override",
+            package_dir.display()
+        );
+    }
     working_dir.ancestors().find_map(|dir| {
         let package_dir = dir.join("apis").join("python").join("node");
         package_dir

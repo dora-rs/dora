@@ -51,13 +51,69 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
     Ok(())
 }
 
-pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
+/// Static (filesystem-independent) descriptor checks: ROS2 bridge configs,
+/// timing fields, input/output wiring, and log-output configuration.
+///
+/// This is the subset of [`check_dataflow`] that `dora validate` can run
+/// before any build has happened. [`check_dataflow`] runs it as its first
+/// step and adds source-path existence and Python runtime checks on top.
+pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     // validate ROS2 bridge configs before resolution
     for node in &dataflow.nodes {
         if let Some(ros2) = &node.ros2 {
             validate_ros2_config(&node.id, ros2, &node.inputs, &node.outputs)?;
         }
     }
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+
+    // reject negative / non-finite / overflowing timing values before they
+    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
+    for node in nodes.values() {
+        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+            check_timing_fields(&node.id, custom)?;
+        }
+        // `input_timeout` is a second-valued `f64` that the daemon also feeds
+        // to `Duration::from_secs_f64`, on both the initial-spawn and the
+        // reconnect paths.
+        for (input_id, input) in node_inputs(node) {
+            check_seconds_field(
+                &format!("input `{input_id}` of node `{}`", node.id),
+                "input_timeout",
+                input.input_timeout,
+            )?;
+        }
+    }
+    // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
+    // in the same way (`binaries/daemon/src/lib.rs`).
+    check_seconds_field(
+        "dataflow",
+        "health_check_interval",
+        dataflow.health_check_interval,
+    )?;
+
+    // check that all inputs mappings point to an existing output
+    check_wiring(dataflow)?;
+
+    // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
+    for node in nodes.values() {
+        node.send_stdout_as()
+            .context("Could not resolve `send_stdout_as` configuration")?;
+        node.send_logs_as()
+            .context("Could not resolve `send_logs_as` configuration")?;
+        node.min_log_level()
+            .context("Could not resolve `min_log_level` configuration")?;
+        node.max_log_size()
+            .context("Could not resolve `max_log_size` configuration")?;
+        node.max_rotated_files()
+            .context("Could not resolve `max_rotated_files` configuration")?;
+    }
+
+    Ok(())
+}
+
+pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
+    check_dataflow_static(dataflow)?;
 
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
     let mut has_python_operator = false;
@@ -126,48 +182,6 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         }
     }
 
-    // reject negative / non-finite timing values before they reach the daemon,
-    // where `Duration::from_secs_f64` would panic on spawn.
-    for node in nodes.values() {
-        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
-            check_timing_fields(&node.id, custom)?;
-        }
-        // `input_timeout` is a second-valued `f64` that the daemon also feeds
-        // to `Duration::from_secs_f64`, on both the initial-spawn and the
-        // reconnect paths.
-        for (input_id, input) in node_inputs(node) {
-            check_seconds_field(
-                &format!("input `{input_id}` of node `{}`", node.id),
-                "input_timeout",
-                input.input_timeout,
-            )?;
-        }
-    }
-    // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
-    // in the same way (`binaries/daemon/src/lib.rs`).
-    check_seconds_field(
-        "dataflow",
-        "health_check_interval",
-        dataflow.health_check_interval,
-    )?;
-
-    // check that all inputs mappings point to an existing output
-    check_wiring(dataflow)?;
-
-    // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
-    for node in nodes.values() {
-        node.send_stdout_as()
-            .context("Could not resolve `send_stdout_as` configuration")?;
-        node.send_logs_as()
-            .context("Could not resolve `send_logs_as` configuration")?;
-        node.min_log_level()
-            .context("Could not resolve `min_log_level` configuration")?;
-        node.max_log_size()
-            .context("Could not resolve `max_log_size` configuration")?;
-        node.max_rotated_files()
-            .context("Could not resolve `max_rotated_files` configuration")?;
-    }
-
     if has_python_operator {
         check_python_runtime()?;
     }
@@ -175,11 +189,13 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
     Ok(())
 }
 
-/// Reject negative / non-finite second-valued timing fields on a custom node.
+/// Reject negative / non-finite / overflowing second-valued timing fields on a
+/// custom node.
 ///
 /// The daemon converts these to `Duration` via `Duration::from_secs_f64`, which
-/// panics on negative, NaN, or infinite input. Catching them here surfaces a
-/// clean descriptor error instead of crashing the daemon on node spawn.
+/// panics on negative, NaN, infinite, or overflowing (> `Duration::MAX`) input.
+/// Catching them here surfaces a clean descriptor error instead of crashing the
+/// daemon on node spawn.
 fn check_timing_fields(
     node_id: &NodeId,
     custom: &dora_message::descriptor::CustomNode,
@@ -197,15 +213,22 @@ fn check_timing_fields(
     Ok(())
 }
 
-/// Reject a negative / non-finite second-valued field before it reaches the
-/// daemon, where `Duration::from_secs_f64` would panic on such input.
+/// Reject a negative / non-finite / overflowing second-valued field before it
+/// reaches the daemon, where `Duration::from_secs_f64` would panic on such
+/// input.
+///
+/// `Duration::from_secs_f64` panics on negative, NaN, infinite, *and* finite
+/// values too large to fit in a `Duration` (> `Duration::MAX`, ≈ 1.8e19 s). We
+/// probe the exact same boundary with its non-panicking twin
+/// `try_from_secs_f64`, so a value accepted here can never panic the daemon.
 fn check_seconds_field(owner: &str, field: &str, value: Option<f64>) -> eyre::Result<()> {
     if let Some(value) = value
-        && (!value.is_finite() || value < 0.0)
+        && std::time::Duration::try_from_secs_f64(value).is_err()
     {
         bail!(
             "{owner} has invalid `{field}`: {value} \
-             (must be a finite, non-negative number of seconds)"
+             (must be a finite, non-negative number of seconds smaller than {})",
+            std::time::Duration::MAX.as_secs_f64()
         );
     }
     Ok(())
@@ -931,8 +954,18 @@ pub fn check_type_annotations_full(
             );
             for (output_id, urn) in &op.config.output_types {
                 if registry.resolve(urn).is_some() {
+                    // A consumer of a single-`operator:` node references its
+                    // output in short form (`node/output`) in the source YAML;
+                    // the `op/` prefix is only injected later by
+                    // `resolve_aliases_and_set_defaults`, which this pre-build
+                    // check never runs. Register both the prefixed key and the
+                    // bare `output_id` so short-form edges resolve here too —
+                    // otherwise the upstream type is invisible, silently
+                    // dropping genuine mismatches and, under `strict`, emitting
+                    // a false "upstream has no type annotation" warning.
                     output_type_map
                         .insert((nid.clone(), format!("{op_id}/{output_id}")), urn.clone());
+                    output_type_map.insert((nid.clone(), output_id.to_string()), urn.clone());
                 }
             }
             check_port_types(
@@ -1382,6 +1415,33 @@ operators:
         }
     }
 
+    // Finite, non-negative, but too large for `Duration::from_secs_f64`, which
+    // would otherwise panic on daemon node spawn (see #2470). `Duration::MAX`'s
+    // own `as_secs_f64()` rounds *up* past the representable max, so the exact
+    // boundary value must be rejected too — a `value > MAX` guard would wrongly
+    // let it through.
+    #[test]
+    fn seconds_field_rejects_values_that_overflow_duration() {
+        for bad in [1e20, Duration::MAX.as_secs_f64()] {
+            // Confirms the value genuinely trips the daemon's conversion.
+            assert!(Duration::try_from_secs_f64(bad).is_err());
+            let err = check_seconds_field("owner", "field", Some(bad))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("field") && err.contains("smaller than"),
+                "overflowing {bad} should be rejected with a field/bound message, got: {err}"
+            );
+        }
+    }
+
+    // A large but representable value (well under `Duration::MAX`) stays valid.
+    #[test]
+    fn seconds_field_accepts_large_representable_value() {
+        assert!(Duration::try_from_secs_f64(1e18).is_ok());
+        check_seconds_field("owner", "field", Some(1e18)).unwrap();
+    }
+
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
     // in the daemon just like the per-node timing fields, so `check_dataflow`
     // must reject a non-finite / negative value rather than let the daemon panic.
@@ -1426,6 +1486,36 @@ nodes:
       x:
         source: a/out
         input_timeout: .inf
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("input_timeout") && err.contains('x'),
+            "error should name the offending input and field, got: {err}"
+        );
+    }
+
+    // A finite `input_timeout` too large for `Duration` must be rejected too:
+    // `Duration::from_secs_f64` panics on overflow just as it does on `.inf`.
+    #[test]
+    fn check_dataflow_rejects_overflowing_input_timeout() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+  - id: b
+    path: node_b
+    build: cargo build
+    inputs:
+      x:
+        source: a/out
+        input_timeout: 1e20
 ",
         );
         let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
@@ -2382,6 +2472,111 @@ nodes:
         assert!(
             !msg.contains("my-operator/runtime-node/tick"),
             "input id should not use reversed operator/node order, got: {msg}"
+        );
+    }
+
+    // --- Single-`operator:` producer edges (short-form references) ---
+    //
+    // A consumer of a single-`operator:` node references its output in short
+    // form (`node/output`) in the source YAML. The `op/` prefix is only
+    // injected later by `resolve_aliases_and_set_defaults`, which the
+    // pre-build type check does not run. These tests guard that the type
+    // check still sees the upstream type across such an edge.
+
+    #[test]
+    fn infers_type_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result.warnings.is_empty(),
+            "unexpected: {:?}",
+            result.warnings
+        );
+        assert_eq!(
+            result.inferences.len(),
+            1,
+            "should infer from the operator output"
+        );
+        assert_eq!(result.inferences[0].inferred_urn, "std/core/v1/Float64");
+        assert_eq!(result.inferences[0].port_id, "reading");
+    }
+
+    #[test]
+    fn detects_mismatch_across_single_operator_edge() {
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Int32
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, false);
+        assert!(
+            result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("type mismatch")),
+            "expected a type mismatch warning, got: {:?}",
+            result.warnings
+        );
+    }
+
+    #[test]
+    fn strict_mode_no_false_positive_across_single_operator_edge() {
+        // Upstream single-operator output IS annotated, so strict mode must
+        // not claim it has "no type annotation".
+        let dataflow = parse_dataflow(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+      output_types:
+        result: std/core/v1/Float64
+  - id: consumer
+    inputs:
+      reading: producer/result
+    input_types:
+      reading: std/core/v1/Float64
+",
+        );
+        let reg = TypeRegistry::new();
+        let result = check_type_annotations_full(&dataflow, &reg, true);
+        assert!(
+            !result
+                .warnings
+                .iter()
+                .any(|w| w.message.contains("no type annotation")),
+            "annotated upstream must not trigger a strict no-annotation warning, got: {:?}",
+            result.warnings
         );
     }
 
