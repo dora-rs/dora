@@ -5875,6 +5875,7 @@ mod fault_tolerance_tests {
                 dynamic: false,
                 write_events_to: None,
                 restart_count: 0,
+                output_routing: None,
             },
             pid: None,
             restart_count: Arc::new(AtomicU32::new(0)),

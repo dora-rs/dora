@@ -45,6 +45,40 @@ impl Metadata {
         get_bool_param(&self.parameters, STARTUP_MARKER_PARAM).unwrap_or(false)
     }
 
+    /// Metadata for a startup route-probe **ack**: the consumer-side reply to a
+    /// startup marker, identifying which consumer input received it (see
+    /// [`STARTUP_ACK_PARAM`]).
+    pub fn startup_ack(timestamp: uhlc::Timestamp, consumer_node: &str, input_id: &str) -> Self {
+        Self::from_parameters(
+            timestamp,
+            BTreeMap::from([
+                (STARTUP_ACK_PARAM.to_owned(), Parameter::Bool(true)),
+                (
+                    STARTUP_ACK_CONSUMER_PARAM.to_owned(),
+                    Parameter::String(consumer_node.to_owned()),
+                ),
+                (
+                    STARTUP_ACK_INPUT_PARAM.to_owned(),
+                    Parameter::String(input_id.to_owned()),
+                ),
+            ]),
+        )
+    }
+
+    /// `Some((consumer_node, input_id))` iff this message is a well-formed
+    /// startup route-probe ack — see [`STARTUP_ACK_PARAM`]. Malformed acks
+    /// (missing or wrongly-typed identity parameters) return `None` and are
+    /// ignored by producers, which keeps the affected output on the reliable
+    /// daemon path instead of switching on bad evidence.
+    pub fn startup_ack_identity(&self) -> Option<(&str, &str)> {
+        if !get_bool_param(&self.parameters, STARTUP_ACK_PARAM).unwrap_or(false) {
+            return None;
+        }
+        let consumer = get_string_param(&self.parameters, STARTUP_ACK_CONSUMER_PARAM)?;
+        let input = get_string_param(&self.parameters, STARTUP_ACK_INPUT_PARAM)?;
+        Some((consumer, input))
+    }
+
     pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
             metadata_version: Self::CURRENT_VERSION,
@@ -85,6 +119,32 @@ impl Metadata {
 /// The `__dora_` prefix is reserved; user parameters must not use it. Receivers
 /// filter markers before decoding the payload, so they never reach user code.
 pub const STARTUP_MARKER_PARAM: &str = "__dora_startup_marker";
+
+/// Reserved [`MetadataParameters`] key marking a message as a **startup
+/// route-probe ack**: the consumer-side half of the startup handshake.
+///
+/// When a consumer's data subscriber receives a startup marker (see
+/// [`STARTUP_MARKER_PARAM`]) for an input, it replies with an ack on the
+/// output's dedicated `@ack` topic. An ack arriving back at the producer is
+/// end-to-end proof that the route works in *both* directions; once every
+/// required consumer of an output has acked, the producer switches that output
+/// from the reliable daemon path to the direct node-to-node zenoh path. A
+/// missing ack never fails anything — the output simply stays on the daemon
+/// path.
+///
+/// Acks travel as an empty-payload message whose attachment carries this flag
+/// plus the acking consumer's identity under [`STARTUP_ACK_CONSUMER_PARAM`] and
+/// [`STARTUP_ACK_INPUT_PARAM`] — the identity rides in the attachment rather
+/// than the zenoh key so consumer/input ids never need key escaping.
+pub const STARTUP_ACK_PARAM: &str = "__dora_startup_ack";
+
+/// Reserved key carrying the acking consumer's node id as a
+/// [`Parameter::String`] — see [`STARTUP_ACK_PARAM`].
+pub const STARTUP_ACK_CONSUMER_PARAM: &str = "__dora_startup_ack_consumer";
+
+/// Reserved key carrying the acking consumer's input id as a
+/// [`Parameter::String`] — see [`STARTUP_ACK_PARAM`].
+pub const STARTUP_ACK_INPUT_PARAM: &str = "__dora_startup_ack_input";
 
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
@@ -299,6 +359,92 @@ mod tests {
             FLUSH,
         ] {
             assert_ne!(STARTUP_MARKER_PARAM, key);
+        }
+    }
+
+    #[test]
+    fn startup_ack_round_trips_and_extracts_identity() {
+        // The ack travels as a bincode attachment on the `@ack` topic; the
+        // producer must recover exactly the (consumer, input) identity it needs
+        // to tick off a required acker.
+        let ack = Metadata::startup_ack(test_timestamp(), "camera-consumer", "image/depth");
+        assert_eq!(
+            ack.startup_ack_identity(),
+            Some(("camera-consumer", "image/depth"))
+        );
+        // An ack is not a marker (and vice versa, checked below): the two
+        // travel on different topics but share the filtering code path.
+        assert!(!ack.is_startup_marker());
+
+        let bytes = bincode::serialize(&ack).expect("serialize");
+        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        assert_eq!(
+            decoded.startup_ack_identity(),
+            Some(("camera-consumer", "image/depth"))
+        );
+    }
+
+    #[test]
+    fn malformed_startup_acks_are_rejected() {
+        // Ordinary metadata and markers are not acks.
+        assert_eq!(Metadata::new(test_timestamp()).startup_ack_identity(), None);
+        assert_eq!(
+            Metadata::startup_marker(test_timestamp()).startup_ack_identity(),
+            None
+        );
+
+        // Flag present but identity missing → not a valid ack: a producer must
+        // never count an acker it cannot identify.
+        let flag_only = Metadata::from_parameters(
+            test_timestamp(),
+            BTreeMap::from([(STARTUP_ACK_PARAM.to_owned(), Parameter::Bool(true))]),
+        );
+        assert_eq!(flag_only.startup_ack_identity(), None);
+
+        // Wrongly-typed identity parameters are rejected too.
+        let wrong_types = Metadata::from_parameters(
+            test_timestamp(),
+            BTreeMap::from([
+                (STARTUP_ACK_PARAM.to_owned(), Parameter::Bool(true)),
+                (STARTUP_ACK_CONSUMER_PARAM.to_owned(), Parameter::Integer(1)),
+                (STARTUP_ACK_INPUT_PARAM.to_owned(), Parameter::Integer(2)),
+            ]),
+        );
+        assert_eq!(wrong_types.startup_ack_identity(), None);
+
+        // `Bool(false)` under the flag key is not an ack.
+        let explicit_false = Metadata::from_parameters(
+            test_timestamp(),
+            BTreeMap::from([
+                (STARTUP_ACK_PARAM.to_owned(), Parameter::Bool(false)),
+                (
+                    STARTUP_ACK_CONSUMER_PARAM.to_owned(),
+                    Parameter::String("c".into()),
+                ),
+                (
+                    STARTUP_ACK_INPUT_PARAM.to_owned(),
+                    Parameter::String("i".into()),
+                ),
+            ]),
+        );
+        assert_eq!(explicit_false.startup_ack_identity(), None);
+    }
+
+    #[test]
+    fn startup_ack_keys_are_reserved_and_distinct() {
+        let ack_keys = [
+            STARTUP_ACK_PARAM,
+            STARTUP_ACK_CONSUMER_PARAM,
+            STARTUP_ACK_INPUT_PARAM,
+        ];
+        for key in ack_keys {
+            assert!(key.starts_with("__dora_"));
+            assert_ne!(key, STARTUP_MARKER_PARAM);
+        }
+        for (i, a) in ack_keys.iter().enumerate() {
+            for b in &ack_keys[i + 1..] {
+                assert_ne!(a, b);
+            }
         }
     }
 

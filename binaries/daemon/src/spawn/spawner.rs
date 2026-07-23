@@ -168,6 +168,7 @@ impl Spawner {
             dynamic: node.kind.dynamic(),
             write_events_to,
             restart_count: 0,
+            output_routing: None,
         };
 
         let mut logger = logger

@@ -615,6 +615,7 @@ impl DoraNode {
             dynamic: false,
             write_events_to: None,
             restart_count: 0,
+            output_routing: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -651,6 +652,7 @@ impl DoraNode {
             dynamic: false,
             write_events_to: None,
             restart_count: 0,
+            output_routing: None,
         };
         let testing_comm = TestingCommunication {
             input,
@@ -683,6 +685,9 @@ impl DoraNode {
             dynamic,
             write_events_to,
             restart_count,
+            // Consumed by the producer-side startup handshake (wired in a
+            // follow-up commit of this series).
+            output_routing: _,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();

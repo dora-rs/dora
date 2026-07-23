@@ -352,6 +352,30 @@ pub fn zenoh_output_schema_topic(
     )
 }
 
+/// Zenoh key on which consumers acknowledge a producer's startup route-probe
+/// markers, as a `/@ack` sub-key of [`zenoh_output_publish_topic`].
+///
+/// The producer declares one **exact-key** subscriber here per output and the
+/// consumers of that output publish their acks to the same exact key, with the
+/// acking consumer's identity in the attachment (never in the key). Exact-key
+/// matching means `.../cmd/@ack` and `.../cmd/vel/@ack` can never
+/// cross-deliver even though `cmd` is a chunk-prefix of `cmd/vel` — the
+/// collision that forced hex-encoded wildcard keys in the earlier
+/// liveliness-counting design (#2666) cannot arise without wildcards. The
+/// `@`-prefixed final chunk additionally keeps the key from matching any
+/// wildcard subscription on the data-topic namespace.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_output_ack_topic(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
+) -> String {
+    format!(
+        "{}/@ack",
+        zenoh_output_publish_topic(dataflow_id, node_id, output_id)
+    )
+}
+
 /// Zenoh key for control frames associated with a node output.
 ///
 /// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh
@@ -415,5 +439,58 @@ mod tests {
             output_topic, control_topic,
             "node output and daemon control must not share a Zenoh key (dora #1992/#2008)"
         );
+    }
+
+    // Data, schema, ack, and control keys for the same (node, output) must all
+    // be distinct: each carries a different payload format for a different
+    // consumer, and any overlap would cross-deliver frames to a decoder that
+    // cannot parse them.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn per_output_topics_are_distinct() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+
+        let topics = [
+            zenoh_output_publish_topic(dataflow_id, &node, &output),
+            zenoh_output_schema_topic(dataflow_id, &node, &output),
+            zenoh_output_ack_topic(dataflow_id, &node, &output),
+            zenoh_daemon_control_topic(dataflow_id, &node, &output),
+        ];
+        for (i, a) in topics.iter().enumerate() {
+            for b in &topics[i + 1..] {
+                assert_ne!(a, b, "per-output zenoh keys must not overlap");
+            }
+        }
+    }
+
+    // The ack design relies on exact-key matching instead of wildcards, so an
+    // output id that is a chunk-prefix of another (`cmd` vs `cmd/vel` — the
+    // collision that forced hex-encoded keys in the #2666 liveliness design)
+    // must yield distinct ack keys with no subsumption possible.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn ack_topics_of_prefix_outputs_are_distinct() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let cmd = DataId::from("cmd".to_string());
+        let cmd_vel = DataId::from("cmd/vel".to_string());
+
+        let cmd_ack = zenoh_output_ack_topic(dataflow_id, &node, &cmd);
+        let cmd_vel_ack = zenoh_output_ack_topic(dataflow_id, &node, &cmd_vel);
+
+        assert_ne!(cmd_ack, cmd_vel_ack);
+        // `cmd`'s ack key ends in `cmd/@ack`; the nested output's key contains
+        // `cmd/vel/@ack`. Neither is a prefix of the other, so exact-key
+        // subscribers can never receive the other output's acks.
+        assert!(cmd_ack.ends_with("/cmd/@ack"));
+        assert!(cmd_vel_ack.ends_with("/cmd/vel/@ack"));
+        assert!(!cmd_vel_ack.starts_with(&cmd_ack));
+        assert!(!cmd_ack.starts_with(&cmd_vel_ack));
     }
 }
