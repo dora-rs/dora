@@ -669,19 +669,22 @@ fn timeout_to_duration(timeout: Option<f32>) -> PyResult<Option<Duration>> {
 }
 
 /// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
-/// **if the generation is even**.  Returns the pre-write generation value.
+/// **if the generation is even**.  Returns the **even** pre-write
+/// generation — i.e., the generation value before the write cycle
+/// began, which is always even.
 ///
 /// If the generation is already odd (leftover from a previous failed
-/// write), the begin-increment is skipped and the odd generation is
-/// returned — the caller should proceed with the copy and then call
-/// `seqlock_end` to restore even parity on success.
+/// write), the begin-increment is skipped and the **previous** even
+/// generation (`cur - 1`) is returned.  This ensures that
+/// `seqlock_end`'s `pre + 2` always produces an even generation,
+/// avoiding a permanent parity inversion.
 unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     let cur = std::ptr::read_volatile(gen_ptr);
     if cur % 2 == 0 {
         std::ptr::write_volatile(gen_ptr, cur + 1);
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
-    cur
+    cur & !1 // always return the even baseline
 }
 
 /// Closes a memory-pool seqlock write (header offset 96).
@@ -711,12 +714,31 @@ mod seqlock_tests {
     }
 
     #[test]
-    fn begin_if_even_when_odd_is_noop() {
+    fn begin_if_even_when_odd_returns_even_baseline() {
         let mut generation: u64 = 11;
+        let pre;
         unsafe {
-            super::seqlock_begin_if_even(&mut generation);
+            pre = super::seqlock_begin_if_even(&mut generation);
         }
         assert_eq!(generation, 11, "odd generation must stay odd (skip begin)");
+        assert_eq!(pre, 10, "pre-write baseline must be even (cur - 1)");
+        assert_eq!(pre % 2, 0);
+    }
+
+    #[test]
+    fn begin_if_even_then_end_always_produces_even() {
+        // Simulates: gen stuck odd (11) from failure → begin returns 10
+        // → end does 10+2=12 which is even → pool recovers.
+        let mut generation: u64 = 11;
+        let pre;
+        unsafe {
+            pre = super::seqlock_begin_if_even(&mut generation);
+        }
+        unsafe {
+            super::seqlock_end(&mut generation, pre, true);
+        }
+        assert_eq!(generation, 12, "pre(10)+2=12 is even → recovery");
+        assert_eq!(generation % 2, 0);
     }
 
     /// Regression test for #2436: a successful copy publishes the new
@@ -2512,6 +2534,26 @@ impl Node {
                         }
                     })
                     .unwrap_or_default();
+                // Only for CPU pools — GPU pools need IPC import.
+                let ipc_present = metadata
+                    .parameters
+                    .get("ipc_present")
+                    .and_then(|p| {
+                        if let Parameter::Bool(v) = p {
+                            Some(*v)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                if ipc_present {
+                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    eyre::bail!(
+                        "memory pool {}: fast path retries exhausted for GPU pool \
+                         (daemon fallback cannot provide a GPU pointer)",
+                        buffer_id
+                    );
+                }
                 let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
                     if let Parameter::String(s) = p {
                         Some(s.clone())
@@ -2527,7 +2569,31 @@ impl Node {
                     let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
                     if magic == DORADMA_MAGIC {
                         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) as usize };
-                        let read_ptr = (shmem_ptr as u64 + data_offset as u64) as i64;
+                        // Mirror fast-path bounds check.
+                        if data_offset > shmem.len()
+                            || (size as usize) > shmem.len().saturating_sub(data_offset)
+                        {
+                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                            eyre::bail!(
+                                "memory pool {}: header bounds exceeded: \
+                                 data_offset {} + size {} > shmem_len {}",
+                                buffer_id,
+                                data_offset,
+                                size,
+                                shmem.len()
+                            );
+                        }
+                        // Keep shmem alive by stashing it in the CPU cache.
+                        let base = shmem_ptr as u64;
+                        let read_ptr = (base + data_offset as u64) as i64;
+                        {
+                            let mut cpu_cache =
+                                RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
+                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
+                                _shmem: shmem,
+                                base,
+                            });
+                        }
                         let dict = PyDict::new(py);
                         dict.set_item("ptr", read_ptr)?;
                         dict.set_item("size", size)?;
