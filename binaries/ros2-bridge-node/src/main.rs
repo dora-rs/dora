@@ -389,7 +389,14 @@ fn run_zenoh_service_mode(
                                 value: &data,
                                 type_info: &response_info,
                             })?;
-                            futures::executor::block_on(server.reply(id, &response))?;
+                            // A slow local handler can let the request expire before we
+                            // reply; a RequestExpired/RequestAbsent here must not tear
+                            // down the whole service bridge.
+                            if let Err(error) =
+                                futures::executor::block_on(server.reply(id, &response))
+                            {
+                                tracing::warn!("failed to reply to Zenoh service request: {error}");
+                            }
                         }
                     }
                     MergedEvent::Dora(Event::Stop(_)) => break,
@@ -725,12 +732,36 @@ fn run_zenoh_action_server(
                     }
                 };
                 let key = decoded.goal_id.uuid.to_string();
+                // Retire completed goals the client never polled so a burst of
+                // finished goals can't permanently fill the slot table and reject
+                // all future work. Executing/Canceling goals are always kept.
+                if goals.len() >= MAX_CONCURRENT_GOALS {
+                    let finished: Vec<String> = goals
+                        .iter()
+                        .filter(|(_, goal)| {
+                            matches!(
+                                goal.status,
+                                GoalStatusEnum::Succeeded
+                                    | GoalStatusEnum::Aborted
+                                    | GoalStatusEnum::Canceled
+                            )
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for k in finished {
+                        goals.remove(&k);
+                    }
+                }
                 let accepted = goals.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
                 let response = serialize_cdr(&SendGoalResponse {
                     accepted,
                     stamp: ros2_client::builtin_interfaces::Time::from_nanos(unix_timestamp_ns()),
                 })?;
-                futures::executor::block_on(server.send_goal.reply(request.id, &response))?;
+                if let Err(error) =
+                    futures::executor::block_on(server.send_goal.reply(request.id, &response))
+                {
+                    tracing::warn!("failed to reply to Zenoh send-goal request: {error}");
+                }
                 if accepted {
                     let data = decoded.goal.0.expect("accepted goal has payload");
                     goals.insert(
@@ -761,16 +792,35 @@ fn run_zenoh_action_server(
                     continue;
                 };
                 let key = decoded.goal_id.uuid.to_string();
-                if let Some(goal) = goals.get_mut(&key) {
-                    if let Some(response) = goal.result.as_ref() {
-                        futures::executor::block_on(server.get_result.reply(request.id, response))?;
-                    } else {
-                        goal.result_request = Some(request.id);
+                let delivered = match goals.get_mut(&key) {
+                    Some(goal) => match goal.result.as_ref() {
+                        Some(response) => {
+                            if let Err(error) = futures::executor::block_on(
+                                server.get_result.reply(request.id, response),
+                            ) {
+                                tracing::warn!(
+                                    "failed to reply to Zenoh get-result request: {error}"
+                                );
+                            }
+                            true
+                        }
+                        None => {
+                            goal.result_request = Some(request.id);
+                            false
+                        }
+                    },
+                    None => {
+                        futures::executor::block_on(
+                            server.get_result.reject(request.id, "unknown goal"),
+                        )?;
+                        false
                     }
-                } else {
-                    futures::executor::block_on(
-                        server.get_result.reject(request.id, "unknown goal"),
-                    )?;
+                };
+                if delivered {
+                    // The client has its result; retire the goal so completed goals
+                    // don't accumulate in the slot table or the published status.
+                    goals.remove(&key);
+                    publish_zenoh_status(&server, &goals)?;
                 }
             }
             MergedEvent::External(ZenohActionServerEvent::Cancel(request)) => {
@@ -808,11 +858,12 @@ fn run_zenoh_action_server(
                     },
                     goals_canceling: canceling,
                 };
-                futures::executor::block_on(
-                    server
-                        .cancel_goal
-                        .reply(request.id, &serialize_cdr(&response)?),
-                )?;
+                let payload = serialize_cdr(&response)?;
+                if let Err(error) =
+                    futures::executor::block_on(server.cancel_goal.reply(request.id, &payload))
+                {
+                    tracing::warn!("failed to reply to Zenoh cancel-goal request: {error}");
+                }
                 publish_zenoh_status(&server, &goals)?;
             }
             MergedEvent::Dora(Event::Input { id, metadata, data }) => {
@@ -850,12 +901,25 @@ fn run_zenoh_action_server(
                                 result: BridgeMessage(Some(data.to_data())),
                             })?
                         };
-                        if let Some(request_id) = goal.result_request.take() {
-                            futures::executor::block_on(
+                        let delivered = if let Some(request_id) = goal.result_request.take() {
+                            if let Err(error) = futures::executor::block_on(
                                 server.get_result.reply(request_id, &response),
-                            )?;
+                            ) {
+                                tracing::warn!(
+                                    "failed to reply to Zenoh get-result request: {error}"
+                                );
+                            }
+                            true
+                        } else {
+                            goal.result = Some(response);
+                            false
+                        };
+                        // If a get-result request was already waiting, the result is
+                        // delivered now and the goal is retired; otherwise keep it
+                        // (with the stored result) until the client polls.
+                        if delivered {
+                            goals.remove(&goal_key);
                         }
-                        goal.result = Some(response);
                         publish_zenoh_status(&server, &goals)?;
                     }
                     other => tracing::warn!("unexpected action server input `{other}`"),

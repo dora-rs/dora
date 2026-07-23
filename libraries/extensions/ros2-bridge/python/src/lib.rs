@@ -2020,8 +2020,19 @@ impl Ros2ActionServer {
                             loop {
                                 let remaining = deadline.checked_duration_since(Instant::now())?;
                                 let request = receiver.recv_timeout(remaining).ok()?;
+                                // A malformed, peer-controlled payload must not abort a
+                                // legitimate pending result: skip it and keep draining,
+                                // exactly like the valid-but-non-matching branch below.
                                 let decoded: ros2_client::action::GetResultRequest =
-                                    deserialize_cdr(&request.payload).ok()?;
+                                    match deserialize_cdr(&request.payload) {
+                                        Ok(decoded) => decoded,
+                                        Err(error) => {
+                                            eprintln!(
+                                                "dropping malformed get-result request: {error:?}"
+                                            );
+                                            continue;
+                                        }
+                                    };
                                 let key = decoded.goal_id.uuid.to_string();
                                 if decoded.goal_id == *id {
                                     return Some(request.id);

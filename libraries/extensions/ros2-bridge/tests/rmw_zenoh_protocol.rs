@@ -2,7 +2,7 @@
 
 use dora_ros2_bridge::transport::zenoh::compatibility::{RosTypeIdentity, TypeHash};
 use dora_ros2_bridge::transport::{
-    History, Reliability, Ros2Qos,
+    Durability, History, Liveliness, Reliability, Ros2Qos,
     zenoh::{
         attachment::Attachment,
         keyexpr::{DataKey, EntityKind, LivelinessKey, TopicToken},
@@ -114,6 +114,21 @@ fn qos_default_and_non_default_match_rmw_components() {
     assert_eq!(
         ZenohQosMapping::from_ros_qos(&qos).to_string(),
         "2::,7:,:,:,,"
+    );
+    // Manual liveliness + transient-local durability: the liveliness kind ("3")
+    // must land in the *first* subfield of the trailing group (kind,lease_sec,
+    // lease_nsec), i.e. `3,,` — not `,3,`. This guards the rmw_zenoh_cpp wire
+    // parity that the buggy `,{liveliness},` layout silently broke.
+    let qos = Ros2Qos {
+        durability: Durability::TransientLocal,
+        liveliness: Liveliness::ManualByTopic {
+            lease_duration: None,
+        },
+        ..Ros2Qos::default()
+    };
+    assert_eq!(
+        ZenohQosMapping::from_ros_qos(&qos).to_string(),
+        "2:1:,1:,:,:3,,"
     );
 }
 

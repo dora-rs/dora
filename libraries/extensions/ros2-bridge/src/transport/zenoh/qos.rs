@@ -23,8 +23,12 @@ impl ZenohQosMapping {
             Liveliness::Automatic { .. } => "",
             Liveliness::ManualByParticipant { .. } | Liveliness::ManualByTopic { .. } => "3",
         };
+        // Upstream `rmw_zenoh_cpp` encodes the trailing group as
+        // `<liveliness_kind>,<lease_sec>,<lease_nsec>` — the liveliness *kind*
+        // is the first subfield. Keep it first (with empty lease sec/nsec) so a
+        // real `rmw_zenoh` peer reads the kind, not the lease-seconds slot.
         Self(format!(
-            "{reliability}:{durability}:{history},{depth}:,:,:,{liveliness},"
+            "{reliability}:{durability}:{history},{depth}:,:,:{liveliness},,"
         ))
     }
 }
