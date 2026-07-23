@@ -283,7 +283,47 @@ fn parse_labels(s: &str) -> Result<BTreeMap<String, String>, String> {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| format!("invalid label `{pair}`, expected key=value"))?;
+        // Trim the key and value: the coordinator matches labels against the
+        // descriptor's `_unstable_deploy.labels` by exact string comparison
+        // (`binaries/coordinator/src/state.rs`), so an untrimmed
+        // `--labels "gpu = true"` would register key `"gpu "` and silently
+        // never match a node requiring `gpu`. The sibling parser
+        // `parse_log_filter` trims both sides for the same reason.
+        let (k, v) = (k.trim(), v.trim());
+        if k.is_empty() {
+            return Err(format!("invalid label `{pair}`, key must not be empty"));
+        }
         map.insert(k.to_string(), v.to_string());
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_labels;
+
+    #[test]
+    fn parse_labels_trims_whitespace_around_keys_and_values() {
+        // Whitespace around `=` and `,` must not leak into the stored key/value,
+        // otherwise label-based scheduling silently fails to match.
+        let map = parse_labels("gpu = true , arch=arm64").unwrap();
+        assert_eq!(map.get("gpu").map(String::as_str), Some("true"));
+        assert_eq!(map.get("arch").map(String::as_str), Some("arm64"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parse_labels_skips_empty_pairs_and_rejects_empty_keys() {
+        // Trailing/duplicate separators yield empty pairs, which are skipped.
+        assert!(parse_labels("").unwrap().is_empty());
+        assert!(parse_labels(" , ").unwrap().is_empty());
+        // A pair whose key trims to empty (e.g. ` =v`) is an error, not a
+        // silently-stored empty key.
+        assert!(parse_labels(" =v").is_err());
+    }
+
+    #[test]
+    fn parse_labels_requires_key_value_form() {
+        assert!(parse_labels("gpu").is_err());
+    }
 }
