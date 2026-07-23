@@ -217,8 +217,18 @@ impl GitManager {
         // file:// URLs (local mirrors, air-gapped setups, tests) have no
         // hostname — group their clones under a "localhost" directory
         let host = repo_url.host_str().unwrap_or("localhost");
-        let mut path = base_dir.join(host);
-        path.extend(repo_url.path_segments().context("no path in git URL")?);
+        let mut path = base_dir.join(sanitize_dir_component(host));
+        // A `file:///C:/...` URL parses with the drive letter (`C:`) as its
+        // first path segment; the colon makes that an unnameable directory on
+        // Windows (#2742). Sanitize every component so the cache path is legal
+        // on all platforms — a no-op for normal `https://host/owner/repo` URLs,
+        // whose segments carry no reserved characters.
+        path.extend(
+            repo_url
+                .path_segments()
+                .context("no path in git URL")?
+                .map(sanitize_dir_component),
+        );
         let path = path.join(commit_hash);
         Ok(dunce::simplified(&path).to_owned())
     }
@@ -496,6 +506,28 @@ fn is_full_commit_hash(s: &str) -> bool {
     matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Map one git-URL component (host or path segment) onto a single directory
+/// name by replacing the characters Windows forbids in a path component with
+/// `_`. The one that bites in practice is the `:` of a `file:///C:/...` drive
+/// letter, which otherwise lands mid-path as an unnameable `C:` directory
+/// (#2742). This is a no-op for normal `https://host/owner/repo` URLs, whose
+/// components have no reserved characters; a collision here only means two
+/// repos share a parent cache dir, and the commit hash still keeps their
+/// clones apart. Not handled (they don't occur in real git URLs): reserved
+/// device names like `CON`/`NUL` and trailing dot/space components.
+fn sanitize_dir_component(component: &str) -> String {
+    component
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*' | '\\' | '/') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 fn clone_into(repo_addr: Url, clone_dir: &Path) -> eyre::Result<git2::Repository> {
     if let Some(parent) = clone_dir.parent() {
         std::fs::create_dir_all(parent)
@@ -622,6 +654,28 @@ mod tests {
         repo.commit(Some("HEAD"), &sig, &sig, "A", &tree, &[])
             .unwrap()
             .to_string()
+    }
+
+    #[test]
+    fn clone_dir_path_keeps_a_file_url_drive_letter_out_of_the_on_disk_path() {
+        // A `file://` URL to a Windows-style absolute path parses with the
+        // drive letter as its first path segment (`C:`). Colon is illegal in a
+        // Windows path component, so if it survives into the cache path the
+        // clone destination can't be created on Windows -- exactly the failure
+        // `reuse_still_verifies_a_dir_left_by_a_different_finished_session` hit
+        // on the nightly Windows runner (#2742). The check is
+        // platform-independent: `clone_dir_path` must never emit a component
+        // carrying a colon, whatever OS builds it.
+        let url = Url::parse("file:///C:/Users/runner/repo").unwrap();
+        let dir = GitManager::clone_dir_path(Path::new("base"), &url, &"a".repeat(40)).unwrap();
+        for component in dir.components() {
+            let name = component.as_os_str().to_string_lossy();
+            assert!(
+                !name.contains(':'),
+                "component `{name}` keeps a colon Windows rejects, in {}",
+                dir.display()
+            );
+        }
     }
 
     #[tokio::test]
