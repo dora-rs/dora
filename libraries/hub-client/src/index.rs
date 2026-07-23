@@ -5,7 +5,7 @@
 //! verbatim and a source pointer; resolution picks the highest non-yanked
 //! version satisfying a requirement.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use dora_core::{manifest::NodeManifest, types::edit_distance};
 use eyre::Context;
@@ -191,17 +191,55 @@ impl IndexCatalog {
     }
 
     /// Reject a path that, after following symlinks, resolves outside the
-    /// catalog root. A non-existent path is fine — nothing is read, and the
-    /// caller handles `NotFound`.
+    /// catalog root. Safe for a not-yet-existing leaf (e.g. a version entry a
+    /// caller is about to write): intermediate symlinks are still resolved, so
+    /// a write can't land outside the root through a symlinked parent.
     fn confine(&self, path: &Path) -> eyre::Result<()> {
-        match path.canonicalize() {
-            Ok(real) if real.starts_with(&self.canonical_root) => Ok(()),
-            Ok(_) => eyre::bail!(
+        let escapes = || {
+            eyre::eyre!(
                 "index path `{}` escapes the catalog root (symlink?)",
                 path.display()
-            ),
-            Err(_) => Ok(()),
+            )
+        };
+        // Fast path: a fully existing path canonicalizes directly.
+        if let Ok(real) = path.canonicalize() {
+            return real
+                .starts_with(&self.canonical_root)
+                .then_some(())
+                .ok_or_else(escapes);
         }
+        // The leaf (or some tail component) doesn't exist yet, so
+        // `canonicalize` failed on the whole path without resolving
+        // intermediate symlinks. Resolve component by component under the
+        // canonical root, rejecting any existing component that redirects
+        // outside it. Once we reach a component that doesn't exist, the
+        // remaining ones are the (validated) names the caller will create,
+        // which stay under the already-confined `current`.
+        let relative = path.strip_prefix(&self.root).map_err(|_| escapes())?;
+        let mut current = self.canonical_root.clone();
+        for component in relative.components() {
+            let Component::Normal(part) = component else {
+                // `namespace`/`name` are validated and versions are semver, so
+                // no `.`/`..`/root components ever reach here; reject anything
+                // unexpected defensively.
+                return Err(escapes());
+            };
+            let next = current.join(part);
+            match next.symlink_metadata() {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    let real = next.canonicalize().map_err(|_| escapes())?;
+                    if !real.starts_with(&self.canonical_root) {
+                        return Err(escapes());
+                    }
+                    current = real;
+                }
+                // A regular entry inside an already-confined directory, or a
+                // not-yet-created component: either way it stays under
+                // `current`, which is inside the root.
+                Ok(_) | Err(_) => current = next,
+            }
+        }
+        Ok(())
     }
 
     fn package_dir(&self, namespace: &str, name: &str) -> eyre::Result<PathBuf> {
@@ -533,6 +571,42 @@ mod tests {
                 .is_err()
         );
         assert!(catalog.package_meta("acme", "escape").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_entry_path_rejects_symlinked_dir_for_a_nonexistent_leaf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        // a real directory OUTSIDE the catalog root, with no entry file yet
+        let real = outside.path().join("evil");
+        std::fs::create_dir_all(&real).unwrap();
+        // inside the catalog, a package dir that is a symlink pointing there
+        let ns = tmp.path().join("acme");
+        std::fs::create_dir_all(&ns).unwrap();
+        std::os::unix::fs::symlink(&real, ns.join("lidar")).unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        // the leaf `1.0.0.yml` does not exist, but the parent is a symlink out
+        // of the root, so handing back a writable path would let the caller's
+        // write land in `outside` — confine must refuse it.
+        let err = catalog
+            .version_entry_path("acme", "lidar", &Version::parse("1.0.0").unwrap())
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("escapes the catalog root"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn version_entry_path_allows_a_new_leaf_under_the_root() {
+        let (_tmp, catalog) = fixture();
+        // a version file that does not exist yet under a legitimate package
+        // must still resolve to a writable in-root path.
+        let path = catalog
+            .version_entry_path("dora-rs", "dora-yolo", &Version::parse("0.7.0").unwrap())
+            .unwrap();
+        assert!(path.ends_with("dora-rs/dora-yolo/0.7.0.yml"));
     }
 
     #[test]
