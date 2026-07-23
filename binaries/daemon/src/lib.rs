@@ -3198,6 +3198,15 @@ impl Daemon {
                                     }) else {
                                         continue;
                                     };
+                                    // Startup-handshake markers ride the real data
+                                    // topic (empty payload); consumers filter them
+                                    // before decode and so must this inspection
+                                    // path, or `dora topic echo`/`hz` would show
+                                    // spurious empty frames and inflated rates
+                                    // during every startup handshake.
+                                    if metadata.is_startup_marker() {
+                                        continue;
+                                    }
                                     let payload = sample.payload().to_bytes();
                                     let data = {
                                         let mut cached =

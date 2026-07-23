@@ -301,7 +301,8 @@ fn declare_ack_subscribers(
     use zenoh::Wait;
 
     let mut subscribers = Vec::new();
-    ack_states.retain(|state| {
+    let mut awaited = Vec::new();
+    for state in ack_states.drain(..) {
         let topic =
             dora_core::topics::zenoh_output_ack_topic(dataflow_id, node_id, &state.output_id);
         let state_cb = state.clone();
@@ -328,17 +329,17 @@ fn declare_ack_subscribers(
         match subscriber {
             Ok(subscriber) => {
                 subscribers.push(subscriber);
-                true
+                awaited.push(state);
             }
             Err(e) => {
                 warn!(
                     output = %state.output_id,
                     "failed to declare startup-ack subscriber ({e}); output stays on the daemon path"
                 );
-                false
             }
         }
-    });
+    }
+    *ack_states = awaited;
     subscribers
 }
 
@@ -370,9 +371,10 @@ fn declare_ack_subscribers(
 /// (their ack publishers answer markers for the consumer's whole lifetime).
 struct StartupHandshake {
     stop: Arc<AtomicBool>,
-    /// Deadline for un-acked outputs; `None` until armed post-barrier (see
-    /// [`Self::arm_deadline`]).
-    deadline: Arc<Mutex<Option<Instant>>>,
+    /// Deadline for un-acked outputs; unset until armed post-barrier (see
+    /// [`Self::arm_deadline`]). Written exactly once, hence a lock-free
+    /// `OnceLock` rather than a mutex.
+    deadline: Arc<std::sync::OnceLock<Instant>>,
     /// The outputs whose handshake is (or was) in flight.
     ack_states: Vec<Arc<AckState>>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -393,7 +395,7 @@ impl StartupHandshake {
         use zenoh::Wait;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let deadline = Arc::new(Mutex::new(None));
+        let deadline = Arc::new(std::sync::OnceLock::new());
         let ack_subscribers =
             declare_ack_subscribers(session, dataflow_id, node_id, &mut ack_states);
         if ack_states.is_empty() {
@@ -420,9 +422,8 @@ impl StartupHandshake {
                         return;
                     }
                     let deadline_passed = thread_deadline
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .is_some_and(|deadline| Instant::now() >= deadline);
+                        .get()
+                        .is_some_and(|deadline| Instant::now() >= *deadline);
                     let mut awaiting = false;
                     for state in &thread_states {
                         if state.ready.load(Ordering::Relaxed) {
@@ -506,11 +507,9 @@ impl StartupHandshake {
     /// wait is meaningful. (For a dynamic or restarted producer the barrier
     /// releases immediately — its consumers have long been running.)
     fn arm_deadline(&self) {
-        *self
+        let _ = self
             .deadline
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some(Instant::now() + ZENOH_STARTUP_ACK_TIMEOUT);
+            .set(Instant::now() + ZENOH_STARTUP_ACK_TIMEOUT);
     }
 
     /// Post-barrier grace wait: give the handshake a moment to complete before
