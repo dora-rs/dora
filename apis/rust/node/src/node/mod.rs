@@ -883,7 +883,7 @@ impl DoraNode {
         self.send_output_sample(output_id, parameters, Some(sample))
     }
 
-    /// Sends the give Arrow array as an output message.
+    /// Sends the given Arrow array as an output message.
     ///
     /// Uses shared memory for efficient data transfer if suitable.
     ///
@@ -891,6 +891,20 @@ impl DoraNode {
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_node_api::arrow::array::UInt64Array;
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env().expect("Could not init node.");
+    ///
+    /// let output = DataId::from("output_id".to_owned());
+    /// let data = UInt64Array::from(vec![1, 2, 3]);
+    ///
+    /// node.send_output(output, MetadataParameters::default(), data)
+    ///     .expect("Could not send output");
+    /// ```
     pub fn send_output(
         &mut self,
         output_id: DataId,
