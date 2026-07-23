@@ -111,10 +111,13 @@ impl Metadata {
 /// The zenoh data plane is direct node-to-node pub/sub, so a producer that
 /// publishes before a consumer's subscription has propagated would drop those
 /// early samples. Rather than infer route-readiness from zenoh declarations,
-/// each producer publishes markers on its real output topic during startup and
-/// each consumer waits until it has actually *received* one per input: an
-/// arrived marker is end-to-end proof that the route carries data. Producers
-/// stop once the daemon's "all nodes ready" barrier releases.
+/// each producer publishes markers on its real output topic while an output is
+/// still on the reliable daemon path, and each consumer answers every received
+/// marker with an ack (see [`STARTUP_ACK_PARAM`]): an ack arriving back at the
+/// producer is end-to-end proof that the route pair carries data. The producer
+/// stops marking an output — and switches it to the direct zenoh path — once
+/// all its required consumers have acked; a route that never proves itself
+/// just keeps the output on the daemon path.
 ///
 /// The `__dora_` prefix is reserved; user parameters must not use it. Receivers
 /// filter markers before decoding the payload, so they never reach user code.

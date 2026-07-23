@@ -2,10 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -86,6 +83,11 @@ pub struct EventStream {
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
+    /// The `dora-startup-acker` thread (see [`spawn_startup_acker`]). Exits
+    /// once the data subscribers — the only senders into its queue — are
+    /// dropped; joined in `EventStream::drop` inside the bounded zenoh
+    /// teardown, right after those subscribers are dropped.
+    startup_acker: Option<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -110,67 +112,69 @@ pub struct EventStream {
     stop_received: bool,
 }
 
-/// How long a node waits for each of its inputs' zenoh data routes to prove
-/// themselves before failing init (see [`wait_for_input_routes`]).
+/// Spawn the consumer half of the startup handshake: a thread that answers
+/// every startup marker with an ack on the marked output's `@ack` topic.
 ///
-/// Healthy dataflows resolve in milliseconds: the producer starts emitting
-/// markers as soon as it declares its publishers, so this only bounds the
-/// pathological case where the zenoh data plane cannot connect even though the
-/// daemon control plane can.
-const ZENOH_ROUTE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Poll interval while waiting for input routes to prove themselves.
-const ZENOH_ROUTE_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// The data callbacks `try_send` the input id of each received marker into
+/// `ack_rx` (a zenoh callback must never `put` itself — it runs on zenoh's IO
+/// worker); this thread publishes the corresponding ack, identifying this
+/// (node, input) in the attachment. The producer switches the output from the
+/// lossless daemon path to direct zenoh once all its required consumers acked.
+///
+/// The thread acks *every* marker for the stream's whole lifetime: markers
+/// keep coming until the producer has this ack, so ack-route establishment
+/// races self-heal, and late producers (dynamic nodes, restarts) get their
+/// acks whenever they run their handshake. It exits when the data subscribers
+/// (the only senders) are dropped.
+fn spawn_startup_acker(
+    node_id: NodeId,
+    ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    mut ack_rx: tokio::sync::mpsc::Receiver<DataId>,
+    clock: Arc<uhlc::HLC>,
+) -> Option<std::thread::JoinHandle<()>> {
+    use dora_message::metadata::Metadata;
+    use zenoh::Wait;
 
-/// Per-input startup route probe.
-///
-/// `connected` is set by the input's zenoh data callback when the producer's
-/// startup marker arrives — end-to-end proof that this route actually carries
-/// data, as opposed to merely having had its declarations exchanged.
-struct RouteProbe {
-    input: DataId,
-    /// `source_node/source_output` this input maps to, for error messages.
-    source: String,
-    connected: Arc<AtomicBool>,
-}
-
-/// Block until every input's zenoh data route has proven itself by delivering
-/// the producer's startup marker.
-///
-/// Called *before* the node checks in to the daemon's "all nodes ready" barrier,
-/// so that barrier only releases once every node's inputs are wired — which is
-/// what stops a producer from publishing real data into a route that hasn't been
-/// established yet (zenoh drops samples for a not-yet-propagated subscription).
-///
-/// Cannot deadlock: every producer starts emitting markers from a background
-/// thread *before* it blocks here, so markers keep flowing while a node waits.
-/// This holds for cycles (`a -> b -> a`) too.
-fn wait_for_input_routes(probes: &[RouteProbe], timeout: Duration) -> eyre::Result<()> {
-    if probes.is_empty() {
-        return Ok(());
+    if ack_publishers.is_empty() {
+        return None;
     }
-    let deadline = Instant::now() + timeout;
-    loop {
-        let pending: Vec<&RouteProbe> = probes
-            .iter()
-            .filter(|p| !p.connected.load(Ordering::Relaxed))
-            .collect();
-        if pending.is_empty() {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            let links: Vec<String> = pending
-                .iter()
-                .map(|p| format!("`{}` (from `{}`)", p.input, p.source))
-                .collect();
-            eyre::bail!(
-                "no zenoh data route established for input(s) {} after {}s: the \
-                 producer's startup markers never arrived. Check zenoh connectivity \
-                 between these nodes.",
-                links.join(", "),
-                timeout.as_secs()
+    let handle = std::thread::Builder::new()
+        .name("dora-startup-acker".into())
+        .spawn(move || {
+            while let Some(input_id) = ack_rx.blocking_recv() {
+                let Some(publisher) = ack_publishers.get(&input_id) else {
+                    continue;
+                };
+                let metadata = Metadata::startup_ack(
+                    clock.new_timestamp(),
+                    node_id.as_ref(),
+                    input_id.as_ref(),
+                );
+                let attachment = match bincode::serialize(&metadata) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::debug!(input = %input_id, "failed to serialize startup ack ({e})");
+                        continue;
+                    }
+                };
+                if let Err(e) = publisher.put(&[][..]).attachment(&attachment[..]).wait() {
+                    // Expected while the ack route is still coming up; the
+                    // producer's next marker triggers a retry.
+                    tracing::trace!(input = %input_id, "startup ack put failed ({e})");
+                }
+            }
+        });
+    match handle {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            // Without acks the producers keep this node's inputs on the
+            // reliable daemon path — correct, just without the fast path.
+            tracing::warn!(
+                "failed to spawn startup-acker thread ({e}); \
+                 producers keep this node's inputs on the daemon path"
             );
+            None
         }
-        std::thread::sleep(ZENOH_ROUTE_PROBE_POLL_INTERVAL);
     }
 }
 
@@ -186,7 +190,6 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -331,7 +334,6 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
-            dynamic,
         )
     }
 
@@ -348,7 +350,6 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -370,9 +371,16 @@ impl EventStream {
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
         let mut zenoh_schema_subscribers = Vec::new();
-        let mut route_probes: Vec<RouteProbe> = Vec::new();
+        // Consumer half of the startup handshake: the data callbacks enqueue
+        // the input id of every received startup marker here, and the
+        // `dora-startup-acker` thread answers each with an ack on the output's
+        // `@ack` topic (see `spawn_startup_acker`). Bounded and `try_send`-fed:
+        // a full queue just delays the ack until the producer's next marker.
+        let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<DataId>(256);
+        let mut ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>> = HashMap::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
+            use zenoh::qos::CongestionControl;
             for (input_id, input) in input_config {
                 let mapping = &input.mapping;
                 if let dora_message::config::InputMapping::User(user_mapping) = mapping {
@@ -390,6 +398,33 @@ impl EventStream {
                             continue;
                         }
                     };
+                    // Ack publisher for this input, declared eagerly so its
+                    // route wires while the node is parked in the barrier.
+                    // `express` + `Drop` QoS: a lost ack is retried on the
+                    // producer's next marker. On failure the producer's ack
+                    // deadline keeps the output on the (correct) daemon path.
+                    let ack_topic = dora_core::topics::zenoh_output_ack_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    match session
+                        .declare_publisher(ack_topic)
+                        .congestion_control(CongestionControl::Drop)
+                        .express(true)
+                        .wait()
+                    {
+                        Ok(publisher) => {
+                            ack_publishers.insert(input_id.clone(), publisher);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare startup-ack publisher ({e}); \
+                                 the producer keeps this input on the daemon path"
+                            );
+                        }
+                    }
                     // Per-input persistent decoder for the schema-once path,
                     // shared between this data subscriber (which decodes batches
                     // in zenoh receipt order) and the `@schema` subscriber (which
@@ -429,12 +464,7 @@ impl EventStream {
                         &mut zenoh_schema_subscribers,
                     );
 
-                    // Startup route probe for this input: set by the data callback
-                    // when the producer's marker arrives, proving this route carries
-                    // data. Registered below only if the subscriber actually declares.
-                    let route_probe = Arc::new(AtomicBool::new(false));
-                    let route_probe_cb = route_probe.clone();
-
+                    let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
                     let decoder = decoder.clone();
@@ -492,13 +522,16 @@ impl EventStream {
                                             return;
                                         }
                                     };
-                                    // Startup route probe: its arrival is proof that this
-                                    // input's zenoh route now carries data end-to-end.
-                                    // Record it for the startup barrier and stop — a
+                                    // Startup marker: its arrival proves this input's
+                                    // zenoh route carries data end-to-end. Answer with
+                                    // an ack (via the acker thread — a zenoh callback
+                                    // must not `put` itself) so the producer can switch
+                                    // the output to the direct zenoh path, and stop — a
                                     // marker has no payload and must never reach the
-                                    // (stateful) decoder or user code.
+                                    // (stateful) decoder or user code. A full ack queue
+                                    // is fine: the producer's next marker retries.
                                     if metadata.is_startup_marker() {
-                                        route_probe_cb.store(true, Ordering::Relaxed);
+                                        let _ = ack_tx_cb.try_send(input_id_cb.clone());
                                         return;
                                     }
                                     let payload = sample.payload().clone();
@@ -645,24 +678,12 @@ impl EventStream {
                         Ok(s) => {
                             tracing::debug!(input = %input_id, %topic, "zenoh subscriber declared (callback)");
                             zenoh_subscribers.push(s);
-
-                            // Wait on this input's route only now that its subscriber
-                            // actually exists. Skipped for dynamic nodes: they join at
-                            // arbitrary times and are not part of the startup barrier,
-                            // so nothing may block on them (their callback still
-                            // filters markers out of the event stream).
-                            if !dynamic {
-                                route_probes.push(RouteProbe {
-                                    input: input_id.clone(),
-                                    source: format!("{source_node}/{source_output}"),
-                                    connected: route_probe,
-                                });
-                            }
                         }
                         Err(e) => {
-                            // No zenoh subscriber for this input: it is served by the
-                            // reliable daemon path, so there is no route to prove and
-                            // no probe to wait on.
+                            // No zenoh subscriber for this input: no marker can
+                            // ever arrive, so this node never acks it and the
+                            // producer keeps the output on the reliable daemon
+                            // path — the input is served via daemon events.
                             tracing::warn!(
                                 input = %input_id,
                                 "failed to declare zenoh subscriber ({e}), using daemon path"
@@ -673,13 +694,16 @@ impl EventStream {
             }
         }
 
-        // Startup no-loss barrier, part 1: don't check in until every input's zenoh
-        // data route has proven itself by delivering the producer's marker. Because
-        // this runs *before* `Subscribe`, the daemon's "all nodes ready" barrier
-        // cannot release until every node's inputs are wired — so no producer ever
-        // publishes real data into a route that zenoh would still drop.
-        wait_for_input_routes(&route_probes, ZENOH_ROUTE_PROBE_TIMEOUT)
-            .wrap_err_with(|| format!("node `{node_id}` failed to establish its input routes"))?;
+        // Consumer half of the startup handshake: from here on, every startup
+        // marker received by a data callback above is answered with an ack.
+        // Nothing blocks and nothing can fail init: a route that never
+        // delivers a marker simply never gets acked, and the producer keeps
+        // that output on the lossless daemon path (see `StartupHandshake` on
+        // the producer side). The acker runs for the stream's whole lifetime
+        // so late producers (dynamic nodes, restarts) get acks too.
+        drop(ack_tx); // the callbacks hold the only remaining senders
+        let startup_acker =
+            spawn_startup_acker(node_id.clone(), ack_publishers, ack_rx, clock.clone());
 
         let reply = channel
             .request(&Timestamped {
@@ -707,6 +731,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
             _zenoh_schema_subscribers: zenoh_schema_subscribers,
+            startup_acker,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -1655,10 +1680,18 @@ impl Drop for EventStream {
         // The callbacks use `try_send`, so undeclaring before `receiver` drops
         // cannot deadlock on a blocked callback.
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
-        if !subscribers.is_empty() {
+        let startup_acker = self.startup_acker.take();
+        if !subscribers.is_empty() || startup_acker.is_some() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
+                    // Dropping the subscribers dropped their callbacks — the
+                    // only senders into the acker's queue — so the acker
+                    // thread exits (undeclaring its ack publishers, also
+                    // bounded by this deadline) and can be joined.
+                    if let Some(handle) = startup_acker {
+                        let _ = handle.join();
+                    }
                 });
             if !completed {
                 tracing::warn!(
@@ -1827,56 +1860,6 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn probe(input: &str, source: &str, connected: bool) -> RouteProbe {
-        RouteProbe {
-            input: DataId::from(input.to_string()),
-            source: source.to_string(),
-            connected: Arc::new(AtomicBool::new(connected)),
-        }
-    }
-
-    #[test]
-    fn route_wait_returns_immediately_when_all_routes_proven() {
-        // Healthy case: every input already saw its producer's marker, so the
-        // node must not stall the daemon's start barrier at all.
-        let probes = [probe("a", "src/one", true), probe("b", "other/two", true)];
-        let start = Instant::now();
-        wait_for_input_routes(&probes, Duration::from_secs(10)).expect("all routes proven");
-        assert!(
-            start.elapsed() < Duration::from_secs(1),
-            "proven routes must not delay startup"
-        );
-    }
-
-    #[test]
-    fn route_wait_is_a_noop_without_zenoh_inputs() {
-        // Nodes with no zenoh-backed inputs (pure sources, daemon-path-only
-        // inputs, dynamic nodes) register no probes and must never block.
-        wait_for_input_routes(&[], Duration::from_secs(10)).expect("no probes to wait on");
-    }
-
-    #[test]
-    fn route_wait_fails_naming_only_the_unproven_links() {
-        // The whole point of failing (rather than hanging) is diagnosability, so
-        // the error must name the broken link and not the healthy one.
-        let probes = [
-            probe("good", "src/ok", true),
-            probe("bad", "rust-node/random", false),
-        ];
-        let err = wait_for_input_routes(&probes, Duration::from_millis(20))
-            .expect_err("an unproven route must fail rather than hang");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("bad"), "must name the input: {msg}");
-        assert!(
-            msg.contains("rust-node/random"),
-            "must name the source: {msg}"
-        );
-        assert!(
-            !msg.contains("src/ok"),
-            "must not blame a healthy link: {msg}"
-        );
-    }
 
     #[test]
     fn convert_param_update() {

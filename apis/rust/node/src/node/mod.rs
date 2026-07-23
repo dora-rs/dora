@@ -1214,7 +1214,6 @@ impl DoraNode {
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),
-            dynamic,
         )
         .wrap_err("failed to init event stream")?;
 
