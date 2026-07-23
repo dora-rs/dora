@@ -20,8 +20,9 @@ use dora_message::{
     DataflowId,
     common::LogLevel,
     daemon_to_coordinator::Timestamped,
-    daemon_to_node::{NodeConfig, RuntimeConfig},
+    daemon_to_node::{NodeConfig, OutputRouting, RuntimeConfig},
     descriptor::EnvValue,
+    id::DataId,
 };
 use eyre::{ContextCompat, WrapErr, bail};
 use std::{
@@ -281,6 +282,7 @@ impl Spawner {
         confined: bool,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         write_events_to: Option<PathBuf>,
+        output_routing: BTreeMap<DataId, OutputRouting>,
         logger: &mut NodeLogger<'_>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
@@ -315,6 +317,7 @@ impl Spawner {
             dynamic: node.kind.dynamic(),
             write_events_to,
             restart_count: 0,
+            output_routing: Some(output_routing),
         };
 
         let mut logger = logger

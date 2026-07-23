@@ -13,14 +13,14 @@ use arrow::array::{Array, ArrayData};
 use colored::Colorize;
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
-    descriptor::{Descriptor, DescriptorExt},
+    descriptor::Descriptor,
     topics::{DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST},
     types::TypeRegistry,
     uhlc,
 };
 use dora_message::{
     DataflowId,
-    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig},
+    daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, OutputRouting},
     metadata::{
         FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
         SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
@@ -30,12 +30,13 @@ use dora_message::{
 use eyre::WrapErr;
 use is_terminal::IsTerminal;
 
-#[cfg(feature = "tracing")]
-use std::sync::Mutex;
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 #[cfg(feature = "tracing")]
@@ -43,7 +44,7 @@ use tokio::runtime::Handle;
 
 #[cfg(feature = "tracing")]
 use dora_tracing::{OtelGuard, TracingBuilder};
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
@@ -92,43 +93,516 @@ impl RuntimeTypeCheck {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
-/// Per-output data-plane readiness for the startup no-loss barrier.
+/// How often a starting node re-publishes its startup route-probe markers.
 ///
-/// The zenoh data plane is direct node-to-node pub/sub, so a producer that
-/// starts publishing before a consumer's subscription has propagated drops those
-/// early samples. Until every expected subscriber has announced its subscription
-/// (via a liveliness readiness token — see
-/// [`dora_core::topics::zenoh_input_ready_liveliness_topic`]), the producer keeps
-/// delivering over the reliable daemon path and only switches this output to the
-/// fast zenoh path once all subscribers are confirmed wired. Over-counting keeps
-/// an output on the (lossless) daemon path; it never drops messages.
-struct ZenohOutputReadiness {
-    /// Number of subscriber input-links this output has in the dataflow.
-    expected: usize,
-    /// Latches `true` once all expected subscribers are confirmed wired. Never
-    /// reverts — once switched to the fast path we stay on it.
-    ready: bool,
-    /// Distinct readiness-token key expressions currently seen for this output
-    /// (deduped). Maintained by the liveliness subscriber callback.
-    alive: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
-    /// Liveliness subscriber counting readiness tokens for this output. Kept
-    /// alive so its callback keeps `alive` current; dropped with the node.
-    _liveliness_sub: zenoh::pubsub::Subscriber<()>,
+/// See [`StartupHandshake`]. Markers stop per output as soon as that output's
+/// required acks have arrived (or the deadline froze it on the daemon path),
+/// so this rate only applies while the handshake is in flight.
+const ZENOH_STARTUP_MARKER_INTERVAL: Duration = Duration::from_millis(5);
+
+/// How long a producer keeps publishing markers for an un-acked output before
+/// freezing it on the reliable daemon path.
+///
+/// Armed only once the daemon's "all nodes ready" barrier has released — i.e.
+/// once every static consumer has declared its subscribers and ack publishers
+/// — so a consumer that is merely slow to *start* (a Python node importing
+/// heavy libraries for a minute) cannot burn the deadline. From arming, this
+/// long with 5 ms markers and no ack means the route is genuinely broken, not
+/// slow. Nothing fails on the deadline: the output just keeps riding the
+/// lossless daemon path.
+const ZENOH_STARTUP_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long `init` waits after the barrier for the handshake to complete
+/// before returning control to user code.
+///
+/// The healthy case completes in one marker→ack round-trip (single-digit
+/// milliseconds), which makes switch-before-first-send the overwhelmingly
+/// common case — messages then never straddle the daemon→zenoh path switch,
+/// so cross-path reordering cannot occur. When a route is genuinely broken
+/// this costs half a second once and the affected outputs keep riding the
+/// daemon path (still upgrading later if acks arrive before the deadline).
+const ZENOH_STARTUP_GRACE: Duration = Duration::from_millis(500);
+
+/// Poll interval for the post-barrier grace wait.
+const ZENOH_STARTUP_GRACE_POLL_INTERVAL: Duration = Duration::from_millis(2);
+
+/// A declared direct-zenoh data publisher plus its startup-handshake state.
+struct DirectOutput {
+    publisher: zenoh::pubsub::Publisher<'static>,
+    /// `false` until the startup handshake proves this output's routes — every
+    /// required consumer acked one of its markers (see [`StartupHandshake`]).
+    /// The send path consults this per message and takes the reliable daemon
+    /// path while it is `false`.
+    ready: Arc<AtomicBool>,
 }
 
-/// How long [`DoraNode::init`] waits for the direct-zenoh routes of this node's
-/// outputs to connect before handing control to user code.
+type ZenohPublishers = HashMap<DataId, DirectOutput>;
+
+/// Declare a direct-zenoh data publisher for every output that may ever take
+/// the direct path, plus the per-output ack state the startup handshake needs.
 ///
-/// The daemon "all nodes ready" barrier already guarantees every subscriber is
-/// *declared* before any node runs; this only waits out the residual zenoh
-/// propagation between two already-declared endpoints, so it is normally
-/// sub-second. On timeout (e.g. a zenoh data plane that can't connect while the
-/// control plane can) the un-connected outputs simply start on the reliable
-/// daemon path and upgrade to direct zenoh once their subscribers appear — the
-/// dataflow is never blocked, and nothing is dropped.
-const ZENOH_OUTPUT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-/// Poll interval while waiting for output routes to connect at startup.
-const ZENOH_OUTPUT_CONNECT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+/// Outputs the daemon pinned `daemon_only` (some consumer runs under another
+/// daemon, so delivery must go through this daemon's inter-daemon forwarding —
+/// #2738) get no publisher and no markers: they stay on the daemon path for
+/// the node's lifetime. Every other output gets a publisher declared eagerly
+/// at init (rather than on first send) for two reasons: zenoh starts wiring
+/// routes immediately, and [`StartupHandshake`] needs the publishers to probe
+/// those routes before the node's first real send. An output with no required
+/// ackers (no consumers, or only dynamic local ones) is `ready` immediately.
+///
+/// QoS is set at declare time so it applies to every put: `express(true)` bypasses
+/// zenoh's adaptive batch timer (the single biggest small-message latency win —
+/// without it, per-put delivery on the bare local config collapses to a few
+/// msg/s), `Priority::RealTime` keeps data-plane messages off the bulk-data
+/// queues, and `CongestionControl::Drop` prevents a stalled subscriber from
+/// back-pressuring the publishing node.
+///
+/// An output whose publisher fails to declare is simply absent from the map; its
+/// sends then fall back to the reliable daemon path.
+fn declare_output_publishers(
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    outputs: &BTreeSet<DataId>,
+    routing: &BTreeMap<DataId, OutputRouting>,
+) -> (ZenohPublishers, Vec<Arc<AckState>>) {
+    use zenoh::Wait;
+    use zenoh::qos::{CongestionControl, Priority};
+
+    let mut publishers = HashMap::new();
+    let mut ack_states = Vec::new();
+    for output_id in outputs {
+        let Some(output_routing) = routing.get(output_id) else {
+            // Defensive: the daemon computes an entry for every declared
+            // output. An output it doesn't know stays on the daemon path.
+            warn!(output = %output_id, "no routing entry for output; staying on the daemon path");
+            continue;
+        };
+        if output_routing.daemon_only {
+            debug!(
+                output = %output_id,
+                "output pinned to the daemon path (a consumer runs under another daemon)"
+            );
+            continue;
+        }
+        let topic = dora_core::topics::zenoh_output_publish_topic(dataflow_id, node_id, output_id);
+        let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
+            Ok(key) => key.into_owned(),
+            Err(e) => {
+                warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
+                continue;
+            }
+        };
+        match session
+            .declare_publisher(key_expr)
+            .congestion_control(CongestionControl::Drop)
+            .express(true)
+            .priority(Priority::RealTime)
+            .wait()
+        {
+            Ok(publisher) => {
+                let ready = Arc::new(AtomicBool::new(output_routing.required_ackers.is_empty()));
+                if !output_routing.required_ackers.is_empty() {
+                    ack_states.push(Arc::new(AckState::new(
+                        output_id.clone(),
+                        &output_routing.required_ackers,
+                        ready.clone(),
+                    )));
+                }
+                publishers.insert(output_id.clone(), DirectOutput { publisher, ready });
+            }
+            Err(e) => {
+                warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
+            }
+        }
+    }
+    (publishers, ack_states)
+}
+
+/// Ack bookkeeping for one output whose startup handshake is in flight.
+///
+/// Shared between the output's ack-subscriber callback (which records incoming
+/// acks) and the [`StartupHandshake`] thread (which publishes markers until
+/// completion and checks the deadline).
+struct AckState {
+    output_id: DataId,
+    /// The (consumer node, input) identities that must ack before the output
+    /// may switch to the direct zenoh path — the daemon's required-acker set,
+    /// derived from actual placement (local static consumers only).
+    required: BTreeSet<(String, String)>,
+    /// Identities that have acked so far.
+    received: Mutex<BTreeSet<(String, String)>>,
+    /// The same flag as the output's [`DirectOutput::ready`]; flipped exactly
+    /// once, when `received` covers `required`.
+    ready: Arc<AtomicBool>,
+}
+
+impl AckState {
+    fn new(
+        output_id: DataId,
+        required: &BTreeSet<dora_message::daemon_to_node::RequiredAcker>,
+        ready: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            output_id,
+            required: required
+                .iter()
+                .map(|acker| (acker.node_id.to_string(), acker.input_id.to_string()))
+                .collect(),
+            received: Mutex::new(BTreeSet::new()),
+            ready,
+        }
+    }
+
+    /// Records one ack. Identities outside the required set — a dynamic or
+    /// debug consumer may ack too — are ignored; they must never count toward
+    /// completion. Flips `ready` once the required set is covered.
+    fn record(&self, consumer_node: &str, input_id: &str) {
+        let identity = (consumer_node.to_owned(), input_id.to_owned());
+        if !self.required.contains(&identity) {
+            return;
+        }
+        let mut received = self
+            .received
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        received.insert(identity);
+        if received.len() == self.required.len() {
+            self.ready.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// The required identities that have not acked (for the deadline warning).
+    fn missing(&self) -> Vec<String> {
+        let received = self
+            .received
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.required
+            .difference(&received)
+            .map(|(node, input)| format!("{node}/{input}"))
+            .collect()
+    }
+}
+
+/// Declare one exact-key ack subscriber per awaited output.
+///
+/// The callback records acks into the output's [`AckState`]. An output whose
+/// ack subscriber fails to declare can never complete its handshake, so it is
+/// removed from the awaited set right away (its `ready` flag stays `false`
+/// and it keeps riding the daemon path) instead of publishing markers no ack
+/// could ever answer.
+fn declare_ack_subscribers(
+    session: &zenoh::Session,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    ack_states: &mut Vec<Arc<AckState>>,
+) -> Vec<zenoh::pubsub::Subscriber<()>> {
+    use zenoh::Wait;
+
+    let mut subscribers = Vec::new();
+    let mut awaited = Vec::new();
+    for state in ack_states.drain(..) {
+        let topic =
+            dora_core::topics::zenoh_output_ack_topic(dataflow_id, node_id, &state.output_id);
+        let state_cb = state.clone();
+        let subscriber = session
+            .declare_subscriber(topic)
+            .callback(move |sample| {
+                let Some(attachment) = sample.attachment() else {
+                    return;
+                };
+                let Ok(metadata) = bincode::deserialize::<Metadata>(&attachment.to_bytes()) else {
+                    // Not a dora ack (foreign publisher on the ack key): ignore.
+                    return;
+                };
+                if metadata.metadata_version() != Metadata::CURRENT_VERSION {
+                    // A peer speaking another wire format cannot be attributed
+                    // reliably; never count its acks.
+                    return;
+                }
+                if let Some((consumer, input)) = metadata.startup_ack_identity() {
+                    state_cb.record(consumer, input);
+                }
+            })
+            .wait();
+        match subscriber {
+            Ok(subscriber) => {
+                subscribers.push(subscriber);
+                awaited.push(state);
+            }
+            Err(e) => {
+                warn!(
+                    output = %state.output_id,
+                    "failed to declare startup-ack subscriber ({e}); output stays on the daemon path"
+                );
+            }
+        }
+    }
+    *ack_states = awaited;
+    subscribers
+}
+
+/// The producer half of the startup handshake: publishes route-probe markers
+/// per output until that output's required consumers have acked, then lets the
+/// send path switch it from the reliable daemon path to direct zenoh.
+///
+/// The zenoh data plane is direct node-to-node pub/sub: zenoh drops samples for
+/// a subscription that hasn't propagated to this publisher yet, so a fast
+/// source could otherwise lose its first messages. Rather than infer
+/// route-readiness from zenoh declarations, the handshake proves it end to end
+/// and in both directions: a marker rides the output's *real* topic, and the
+/// consumer's ack rides the output's `@ack` topic back — an arrived ack is
+/// evidence that the route pair carries data. Until then every send takes the
+/// daemon path, so nothing is ever lost; a route that never proves itself only
+/// costs the fast path, never correctness ([`ZENOH_STARTUP_ACK_TIMEOUT`]).
+///
+/// Runs on its own thread because the node blocks inside the daemon's "all
+/// nodes ready" barrier while markers must already be flowing: consumers ack
+/// from their subscriber callbacks (also while parked in the barrier), which is
+/// what makes cycles (`a -> b -> a`, and self-loops) resolve rather than
+/// deadlock — no node ever waits on another node's post-barrier progress.
+///
+/// Markers carry an empty payload (so they never touch shared memory) and are
+/// tagged with [`dora_message::metadata::STARTUP_MARKER_PARAM`], which
+/// consumers filter out before decoding — they never reach user code. This
+/// works for late producers too: a dynamic node or a restarted producer runs
+/// the same handshake at join time against consumers that are already running
+/// (their ack publishers answer markers for the consumer's whole lifetime).
+struct StartupHandshake {
+    stop: Arc<AtomicBool>,
+    /// Deadline for un-acked outputs; unset until armed post-barrier (see
+    /// [`Self::arm_deadline`]). Written exactly once, hence a lock-free
+    /// `OnceLock` rather than a mutex.
+    deadline: Arc<std::sync::OnceLock<Instant>>,
+    /// The outputs whose handshake is (or was) in flight.
+    ack_states: Vec<Arc<AckState>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+    /// Per-output ack subscribers. Kept for the node's lifetime (idle once the
+    /// handshake resolves) and dropped before the session in `DoraNode::drop`.
+    ack_subscribers: Vec<zenoh::pubsub::Subscriber<()>>,
+}
+
+impl StartupHandshake {
+    fn start(
+        session: &zenoh::Session,
+        dataflow_id: DataflowId,
+        node_id: &NodeId,
+        publishers: &Arc<ZenohPublishers>,
+        mut ack_states: Vec<Arc<AckState>>,
+        clock: Arc<uhlc::HLC>,
+    ) -> Self {
+        use zenoh::Wait;
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let deadline = Arc::new(std::sync::OnceLock::new());
+        let ack_subscribers =
+            declare_ack_subscribers(session, dataflow_id, node_id, &mut ack_states);
+        if ack_states.is_empty() {
+            // Nothing awaits acks (no consumers, or every ack subscriber
+            // failed): no markers to publish, nothing to stop.
+            return Self {
+                stop,
+                deadline,
+                ack_states,
+                handle: None,
+                ack_subscribers,
+            };
+        }
+
+        let thread_stop = stop.clone();
+        let thread_deadline = deadline.clone();
+        let thread_states = ack_states.clone();
+        let thread_publishers = publishers.clone();
+        let handle = std::thread::Builder::new()
+            .name("dora-startup-handshake".into())
+            .spawn(move || {
+                loop {
+                    if thread_stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    let deadline_passed = thread_deadline
+                        .get()
+                        .is_some_and(|deadline| Instant::now() >= *deadline);
+                    let mut awaiting = false;
+                    for state in &thread_states {
+                        if state.ready.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        if deadline_passed {
+                            // Freeze: no more markers and no late upgrade — a
+                            // route that produced no ack in 10s of 5ms markers
+                            // after every consumer subscribed is broken, and
+                            // upgrading minutes in would trade a working
+                            // (slower) path for a mid-run reorder.
+                            warn!(
+                                output = %state.output_id,
+                                missing = ?state.missing(),
+                                "startup handshake incomplete after {}s; \
+                                 output stays on the reliable daemon path",
+                                ZENOH_STARTUP_ACK_TIMEOUT.as_secs()
+                            );
+                            continue;
+                        }
+                        awaiting = true;
+                        let Some(output) = thread_publishers.get(&state.output_id) else {
+                            continue;
+                        };
+                        let metadata = Metadata::startup_marker(clock.new_timestamp());
+                        let attachment = match bincode::serialize(&metadata) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                debug!(output = %state.output_id, "failed to serialize startup marker ({e})");
+                                continue;
+                            }
+                        };
+                        if let Err(e) = output
+                            .publisher
+                            .put(&[][..])
+                            .attachment(&attachment[..])
+                            .wait()
+                        {
+                            // Expected while the route is still coming up.
+                            tracing::trace!(output = %state.output_id, "startup marker put failed ({e})");
+                        }
+                    }
+                    if !awaiting {
+                        // Every output is acked or frozen: the handshake is over.
+                        return;
+                    }
+                    std::thread::sleep(ZENOH_STARTUP_MARKER_INTERVAL);
+                }
+            });
+        match handle {
+            Ok(handle) => Self {
+                stop,
+                deadline,
+                ack_states,
+                handle: Some(handle),
+                ack_subscribers,
+            },
+            Err(e) => {
+                // Without markers no consumer will ack, so the awaited outputs
+                // simply stay on the reliable daemon path. Loud because the
+                // fast path is silently lost for this node.
+                error!(
+                    "failed to spawn startup-handshake thread ({e}); outputs stay on the daemon path"
+                );
+                Self {
+                    stop,
+                    deadline,
+                    ack_states,
+                    handle: None,
+                    ack_subscribers,
+                }
+            }
+        }
+    }
+
+    /// Arm the handshake deadline.
+    ///
+    /// Called once `EventStream::init` has returned, i.e. once the daemon's
+    /// "all nodes ready" barrier has released: from that point every static
+    /// consumer has declared its subscribers and ack publishers, so a bounded
+    /// wait is meaningful. (For a dynamic or restarted producer the barrier
+    /// releases immediately — its consumers have long been running.)
+    fn arm_deadline(&self) {
+        let _ = self
+            .deadline
+            .set(Instant::now() + ZENOH_STARTUP_ACK_TIMEOUT);
+    }
+
+    /// Post-barrier grace wait: give the handshake a moment to complete before
+    /// user code runs, so outputs switch to the direct zenoh path *before*
+    /// their first real send and no message straddles the daemon→zenoh switch.
+    /// Returns as soon as every awaited output is ready; bounded by
+    /// [`ZENOH_STARTUP_GRACE`].
+    fn wait_for_grace(&self) {
+        if self.ack_states.is_empty() {
+            return;
+        }
+        let grace_deadline = Instant::now() + ZENOH_STARTUP_GRACE;
+        loop {
+            if self
+                .ack_states
+                .iter()
+                .all(|state| state.ready.load(Ordering::Relaxed))
+            {
+                return;
+            }
+            if Instant::now() >= grace_deadline {
+                let pending: Vec<_> = self
+                    .ack_states
+                    .iter()
+                    .filter(|state| !state.ready.load(Ordering::Relaxed))
+                    .map(|state| state.output_id.to_string())
+                    .collect();
+                debug!(
+                    outputs = ?pending,
+                    "startup handshake still in flight after the {}ms grace; \
+                     these outputs start on the daemon path and upgrade when acked",
+                    ZENOH_STARTUP_GRACE.as_millis()
+                );
+                return;
+            }
+            std::thread::sleep(ZENOH_STARTUP_GRACE_POLL_INTERVAL);
+        }
+    }
+
+    /// Signal the handshake thread to stop and wait for it to exit, so its
+    /// `Arc` clone of the publishers is released. Idempotent.
+    fn shutdown(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for StartupHandshake {
+    fn drop(&mut self) {
+        // Safety net for error paths that return before `DoraNode::drop` (e.g.
+        // a failed `EventStream::init`). Without this the handshake thread
+        // would keep publishing and keep the publishers (and session) alive.
+        self.shutdown();
+    }
+}
+
+/// The per-output routing the daemon computed for this node, or the safe
+/// all-daemon-path fallback when it provided none.
+///
+/// A missing map means the node was spawned by an older daemon (or an
+/// interactive/manual setup) that doesn't know about the startup handshake.
+/// Without required-acker sets no route can be proven, so every output stays
+/// on the reliable daemon path — correct, just without the zenoh fast path.
+fn normalize_output_routing(
+    routing: Option<BTreeMap<DataId, OutputRouting>>,
+    outputs: &BTreeSet<DataId>,
+) -> BTreeMap<DataId, OutputRouting> {
+    match routing {
+        Some(routing) => routing,
+        None => {
+            if !outputs.is_empty() {
+                warn!(
+                    "node config carries no output routing (spawned by an older daemon?); \
+                     all outputs stay on the reliable daemon path"
+                );
+            }
+            outputs
+                .iter()
+                .map(|output_id| {
+                    (
+                        output_id.clone(),
+                        OutputRouting {
+                            daemon_only: true,
+                            required_ackers: Default::default(),
+                        },
+                    )
+                })
+                .collect()
+        }
+    }
+}
 
 /// Per-phase deadline for tearing down zenoh state on node shutdown (subscribers,
 /// liveliness tokens, and the session/publishers — see [`DoraNode::drop`] and
@@ -166,11 +640,21 @@ pub struct DoraNode {
     zenoh_session: Option<zenoh::Session>,
     /// Zenoh shared memory provider for zero-copy publishing.
     zenoh_shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
-    /// Per-output zenoh publishers (lazily created on first send).
+    /// Per-output zenoh publishers with their handshake state, declared eagerly
+    /// at init (see [`declare_output_publishers`]) so zenoh wires routes
+    /// immediately and [`StartupHandshake`] can probe them before the first
+    /// real send. An output missing here (declaration failed, or pinned to the
+    /// daemon path by the daemon's routing) falls back to the daemon path; one
+    /// whose `ready` flag is still `false` (handshake in flight or frozen)
+    /// does too. Shared with the handshake thread via `Arc`; the thread is
+    /// joined in `drop` before the map is torn down.
     /// `'static` is sound because zenoh `Publisher` internally holds `Arc<Session>`,
     /// so it doesn't borrow from the session field on this struct.
     /// Publishers must be dropped BEFORE the session (enforced in Drop impl).
-    zenoh_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    zenoh_publishers: Arc<ZenohPublishers>,
+    /// The producer half of the startup handshake (marker thread + ack
+    /// subscribers). `None` without a zenoh session (interactive/testing).
+    startup_handshake: Option<StartupHandshake>,
     /// Per-output schema publishers on the `@schema` subtopic (lazily created on
     /// the first small message). Their cache retains the last schema so a
     /// late-joining subscriber fetches it via a history query, letting the data
@@ -183,9 +667,6 @@ pub struct DoraNode {
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
-    /// Per-output startup readiness for the direct zenoh data plane (lazily
-    /// created on first send). See [`ZenohOutputReadiness`].
-    zenoh_output_readiness: HashMap<DataId, ZenohOutputReadiness>,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -496,6 +977,7 @@ impl DoraNode {
             dynamic: false,
             write_events_to: None,
             restart_count: 0,
+            output_routing: None,
         };
         let (mut node, events) = Self::init(node_config)?;
         node.interactive = true;
@@ -532,6 +1014,7 @@ impl DoraNode {
             dynamic: false,
             write_events_to: None,
             restart_count: 0,
+            output_routing: None,
         };
         let testing_comm = TestingCommunication {
             input,
@@ -564,6 +1047,7 @@ impl DoraNode {
             dynamic,
             write_events_to,
             restart_count,
+            output_routing,
         } = node_config;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
@@ -705,6 +1189,37 @@ impl DoraNode {
             (Some(session), provider, owned_runtime)
         };
 
+        // Declare output publishers and start the startup handshake *before*
+        // `EventStream::init`, which blocks in the daemon's "all nodes ready"
+        // barrier: markers must be in flight while we are parked there so that
+        // consumers (whose subscriber callbacks ack them, also while parked)
+        // can prove the routes. This ordering is what keeps cycles
+        // (`a -> b -> a`) and self-loops from deadlocking — every node emits
+        // markers before it waits on anyone, and no one blocks on acks.
+        let (zenoh_publishers, startup_handshake) = match zenoh_session.as_ref() {
+            Some(session) => {
+                let routing = normalize_output_routing(output_routing, &run_config.outputs);
+                let (publishers, ack_states) = declare_output_publishers(
+                    session,
+                    dataflow_id,
+                    &node_id,
+                    &run_config.outputs,
+                    &routing,
+                );
+                let publishers = Arc::new(publishers);
+                let handshake = StartupHandshake::start(
+                    session,
+                    dataflow_id,
+                    &node_id,
+                    &publishers,
+                    ack_states,
+                    clock.clone(),
+                );
+                (publishers, Some(handshake))
+            }
+            None => (Arc::new(HashMap::new()), None),
+        };
+
         let event_stream = EventStream::init(
             dataflow_id,
             &node_id,
@@ -714,9 +1229,17 @@ impl DoraNode {
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),
-            dynamic,
         )
         .wrap_err("failed to init event stream")?;
+
+        // The barrier has released: every static consumer is subscribed and
+        // acking. Arm the bounded handshake deadline and give the handshake a
+        // moment to complete, so outputs switch to direct zenoh before the
+        // first real send.
+        if let Some(handshake) = &startup_handshake {
+            handshake.arm_deadline();
+            handshake.wait_for_grace();
+        }
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
                 .wrap_err("failed to init control channel")?;
@@ -747,7 +1270,7 @@ impl DoraNode {
             }
         };
 
-        let mut node = Self {
+        let node = Self {
             id: node_id,
             dataflow_id,
             node_config: run_config.clone(),
@@ -755,11 +1278,11 @@ impl DoraNode {
             clock,
             zenoh_session,
             zenoh_shm_provider,
-            zenoh_publishers: HashMap::new(),
+            zenoh_publishers,
+            startup_handshake,
             zenoh_schema_publishers: HashMap::new(),
             zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
-            zenoh_output_readiness: HashMap::new(),
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -795,13 +1318,6 @@ impl DoraNode {
                 }
             }
         }
-
-        // Warm up the direct-zenoh data plane before handing control to user
-        // code: declare output publishers and wait (bounded) until their
-        // subscribers are wired, so the first `send_output` on a connected output
-        // hits an established route. Fail-safe — un-connected outputs start on the
-        // daemon path and upgrade later (see `warm_up_direct_outputs`).
-        node.warm_up_direct_outputs();
 
         Ok((node, event_stream))
     }
@@ -1063,14 +1579,18 @@ impl DoraNode {
             Daemon(Option<DataMessage>),
         }
 
-        // Always publish data-plane messages via zenoh when a session is
-        // available. The daemon control channel is only used as a fallback when
-        // the zenoh session could not be opened (e.g. interactive/testing mode)
-        // or when no subscriber matched in time. An SHM-backed sample is moved
-        // straight into zenoh's `put` (no extra copy); only the daemon fallback
+        // Publish via direct zenoh only when the output may take the direct
+        // path: its publisher exists and the startup handshake has proven its
+        // routes — every required consumer acked a marker (see
+        // `StartupHandshake`). Everything else takes the reliable daemon path:
+        // no zenoh session (interactive/testing mode), an output the daemon
+        // pinned there (a consumer on another daemon needs inter-daemon
+        // forwarding, which only daemon-path sends feed — #2738), or a
+        // handshake still in flight or frozen. An SHM-backed sample is moved
+        // straight into zenoh's `put` (no extra copy); only the daemon path
         // copies it out into a `DataMessage::Vec`.
         let delivery = match finalized {
-            Some(finalized) if self.zenoh_session.is_some() => {
+            Some(finalized) if self.output_direct_ready(&output_id) => {
                 tracing::trace!(
                     output = %output_id,
                     size = finalized.byte_len(),
@@ -1114,8 +1634,9 @@ impl DoraNode {
                 {
                     return Err(NodeError::Output(format!(
                         "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
-                         the {}-byte daemon transport limit (no matching zenoh subscriber to \
-                         take the large payload)",
+                         the {}-byte daemon transport limit (the output is on the daemon \
+                         path: pinned for a consumer on another daemon, its startup \
+                         handshake did not complete, or no zenoh route is available)",
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));
@@ -1156,276 +1677,25 @@ impl DoraNode {
         Ok(())
     }
 
-    /// Whether the direct zenoh data plane is safe to use for `output_id` — i.e.
-    /// every subscriber this output has in the dataflow has announced its
-    /// subscription. Returns `false` while any expected subscriber is still
-    /// missing, so the caller keeps using the reliable daemon path (no message is
-    /// dropped during the startup subscription-establishment window).
-    ///
-    /// Lazily declares the per-output liveliness counter on first use. Once all
-    /// subscribers are confirmed the result latches `true` and later calls are a
-    /// cheap map lookup. If readiness tracking cannot be set up (no zenoh session
-    /// or an invalid key) this returns `true` so the data plane is not stalled.
-    fn ensure_output_ready(&mut self, output_id: &DataId) -> bool {
-        use zenoh::Wait;
-
-        if self
-            .zenoh_output_readiness
+    /// Whether `output_id` may take the direct zenoh path: its publisher exists
+    /// (declared at init, not pinned to the daemon path) and the startup
+    /// handshake has proven its routes — see [`StartupHandshake`].
+    fn output_direct_ready(&self, output_id: &DataId) -> bool {
+        self.zenoh_publishers
             .get(output_id)
-            .is_some_and(|r| r.ready)
-        {
-            return true;
-        }
-
-        if !self.zenoh_output_readiness.contains_key(output_id) {
-            match self.declare_output_readiness(output_id) {
-                Some(readiness) => {
-                    self.zenoh_output_readiness
-                        .insert(output_id.clone(), readiness);
-                }
-                // Tracking unavailable — don't stall the data plane.
-                None => return true,
-            }
-        }
-
-        let (expected, count) = {
-            let readiness = self
-                .zenoh_output_readiness
-                .get(output_id)
-                .expect("readiness entry just ensured");
-            let count = readiness.alive.lock().map(|alive| alive.len()).unwrap_or(0);
-            (readiness.expected, count)
-        };
-
-        // No subscribers to wait for: nothing can be lost, use the fast path.
-        if expected == 0 {
-            self.mark_output_ready(output_id);
-            return true;
-        }
-
-        if count < expected {
-            return false;
-        }
-
-        // Every readiness token is visible (all subscribers declared their
-        // subscriptions). Confirm zenoh has actually forwarded a matching
-        // subscription to this publisher before switching, so the very first
-        // zenoh sample isn't published into a not-yet-wired route.
-        let matched = self
-            .zenoh_publishers
-            .get(output_id)
-            .and_then(|publisher| publisher.matching_status().wait().ok())
-            .is_some_and(|status| status.matching());
-        if matched {
-            self.mark_output_ready(output_id);
-            return true;
-        }
-
-        false
-    }
-
-    /// Latch the output's data plane as ready (idempotent).
-    fn mark_output_ready(&mut self, output_id: &DataId) {
-        if let Some(readiness) = self.zenoh_output_readiness.get_mut(output_id) {
-            if !readiness.ready {
-                tracing::debug!(
-                    output = %output_id,
-                    subscribers = readiness.expected,
-                    "all subscribers wired; switching output to direct zenoh data plane"
-                );
-            }
-            readiness.ready = true;
-        }
-    }
-
-    /// Build the per-output readiness counter: resolve how many subscribers the
-    /// output has (from the dataflow descriptor) and declare a liveliness
-    /// subscriber that counts their readiness tokens. Returns `None` if there is
-    /// no zenoh session or the counting subscription could not be declared.
-    fn declare_output_readiness(&self, output_id: &DataId) -> Option<ZenohOutputReadiness> {
-        use zenoh::Wait;
-
-        let session = self.zenoh_session.as_ref()?;
-
-        // Expected subscriber count from the global topology. A descriptor that
-        // failed to parse (never the case for a daemon-spawned node) yields 0,
-        // which just means "no barrier" — the pre-existing behaviour.
-        let expected = match &self.dataflow_descriptor {
-            Ok(descriptor) => descriptor
-                .output_subscriber_count(&self.id, output_id)
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        output = %output_id,
-                        "failed to count subscribers ({e}); not gating the zenoh data plane"
-                    );
-                    0
-                }),
-            Err(_) => 0,
-        };
-
-        let prefix = dora_core::topics::zenoh_output_ready_liveliness_prefix(
-            self.dataflow_id,
-            &self.id,
-            output_id,
-        );
-        let key_expr = match zenoh::key_expr::KeyExpr::new(prefix) {
-            Ok(key) => key.into_owned(),
-            Err(e) => {
-                tracing::warn!(output = %output_id, "invalid readiness key ({e}); not gating the zenoh data plane");
-                return None;
-            }
-        };
-
-        let alive = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-        let alive_cb = alive.clone();
-        // `history(true)` replays tokens that were declared before this
-        // subscriber, so subscribers that wired up early are still counted.
-        let subscriber = session
-            .liveliness()
-            .declare_subscriber(key_expr)
-            .history(true)
-            .callback(move |sample| {
-                let key = sample.key_expr().as_str().to_string();
-                if let Ok(mut alive) = alive_cb.lock() {
-                    match sample.kind() {
-                        zenoh::sample::SampleKind::Put => {
-                            alive.insert(key);
-                        }
-                        zenoh::sample::SampleKind::Delete => {
-                            alive.remove(&key);
-                        }
-                    }
-                }
-            })
-            .wait();
-
-        match subscriber {
-            Ok(subscriber) => Some(ZenohOutputReadiness {
-                expected,
-                ready: false,
-                alive,
-                _liveliness_sub: subscriber,
-            }),
-            Err(e) => {
-                tracing::warn!(output = %output_id, "failed to declare readiness subscriber ({e}); not gating the zenoh data plane");
-                None
-            }
-        }
-    }
-
-    /// Ensure a direct-zenoh data publisher is declared for `output_id`.
-    ///
-    /// Idempotent: returns `true` if a publisher exists after the call (already
-    /// present or freshly declared), `false` if there is no zenoh session or the
-    /// declaration failed (the caller then falls back to the daemon path).
-    ///
-    /// QoS is configured at declare time so it applies to every put:
-    /// `express(true)` bypasses zenoh's adaptive batch timer (the single biggest
-    /// small-message latency win — without it, per-put delivery on the bare local
-    /// config collapses to a few msg/s), `Priority::RealTime` keeps data-plane
-    /// messages off the bulk-data queues, and `CongestionControl::Drop` prevents a
-    /// stalled subscriber from back-pressuring the publishing node.
-    fn ensure_zenoh_publisher(&mut self, output_id: &DataId) -> bool {
-        use zenoh::Wait;
-        use zenoh::qos::{CongestionControl, Priority};
-
-        if self.zenoh_publishers.contains_key(output_id) {
-            return true;
-        }
-        let Some(session) = self.zenoh_session.as_ref() else {
-            return false;
-        };
-        let topic =
-            dora_core::topics::zenoh_output_publish_topic(self.dataflow_id, &self.id, output_id);
-        let key_expr = match zenoh::key_expr::KeyExpr::new(topic) {
-            Ok(key) => key.into_owned(),
-            Err(e) => {
-                tracing::warn!(output = %output_id, "invalid zenoh key ({e}); falling back to daemon path");
-                return false;
-            }
-        };
-        let publisher = match session
-            .declare_publisher(key_expr)
-            .congestion_control(CongestionControl::Drop)
-            .express(true)
-            .priority(Priority::RealTime)
-            .wait()
-        {
-            Ok(publisher) => publisher,
-            Err(e) => {
-                tracing::warn!(output = %output_id, "failed to declare zenoh publisher ({e}); falling back to daemon path");
-                return false;
-            }
-        };
-        self.zenoh_publishers.insert(output_id.clone(), publisher);
-        true
-    }
-
-    /// Eagerly declare this node's direct-zenoh output publishers and readiness
-    /// counters, then wait (bounded) until every output's subscribers are wired
-    /// up — so the user's first `send_output` on a connected output is guaranteed
-    /// to hit an established route rather than dropping startup samples.
-    ///
-    /// Runs once, at the end of [`Self::init`], *after* the daemon "all nodes
-    /// ready" barrier. By then every subscriber in the dataflow has already
-    /// declared its data subscriber and readiness token (the barrier releases
-    /// only once all nodes have subscribed), so this merely waits out zenoh route
-    /// propagation between already-declared endpoints — normally milliseconds.
-    ///
-    /// Fail-safe: outputs that don't connect within
-    /// [`ZENOH_OUTPUT_CONNECT_TIMEOUT`] (an unreachable remote subscriber, or a
-    /// zenoh data plane that can't connect while the control plane can) are left
-    /// on the reliable daemon path and upgrade to direct zenoh on a later send
-    /// once their subscribers appear. The dataflow is never blocked from starting
-    /// and nothing is dropped.
-    fn warm_up_direct_outputs(&mut self) {
-        if self.zenoh_session.is_none() {
-            return;
-        }
-        let outputs: Vec<DataId> = self.node_config.outputs.iter().cloned().collect();
-        if outputs.is_empty() {
-            return;
-        }
-
-        // Declare publishers up front so zenoh starts wiring routes immediately
-        // and `ensure_output_ready` (which reads `matching_status`) can observe
-        // them. `ensure_output_ready` lazily declares the readiness counter.
-        for output_id in &outputs {
-            self.ensure_zenoh_publisher(output_id);
-        }
-
-        let deadline = Instant::now() + ZENOH_OUTPUT_CONNECT_TIMEOUT;
-        loop {
-            let all_ready = outputs
-                .iter()
-                .all(|output_id| self.ensure_output_ready(output_id));
-            if all_ready {
-                break;
-            }
-            if Instant::now() >= deadline {
-                let pending: Vec<&str> = outputs
-                    .iter()
-                    .filter(|o| !self.ensure_output_ready(o))
-                    .map(|o| o.as_str())
-                    .collect();
-                tracing::debug!(
-                    outputs = ?pending,
-                    "direct-zenoh routes not confirmed within {}s; these outputs start on the daemon path and upgrade when their subscribers connect",
-                    ZENOH_OUTPUT_CONNECT_TIMEOUT.as_secs()
-                );
-                break;
-            }
-            std::thread::sleep(ZENOH_OUTPUT_CONNECT_POLL_INTERVAL);
-        }
+            .is_some_and(|output| output.ready.load(Ordering::Relaxed))
     }
 
     /// Publish data directly via zenoh (node-to-node, bypassing daemon for data).
     /// Uses SHM for zero-copy when possible, falls back to heap buffer.
     ///
-    /// The publisher is declared (see [`Self::ensure_zenoh_publisher`]) with
+    /// The publisher was declared at init (see [`declare_output_publishers`]) with
     /// `express(true)` to bypass zenoh's adaptive batch timer and with
     /// `Priority::RealTime` so data-plane messages don't share queues with bulk
-    /// traffic.
+    /// traffic. Its routes were already proven by the startup handshake
+    /// ([`StartupHandshake`]) before [`Self::output_direct_ready`] let the send
+    /// take this path, so the first send here cannot be dropped for a
+    /// not-yet-established subscription.
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
@@ -1439,31 +1709,17 @@ impl DoraNode {
         // daemon. Only a failed `put` of an SHM buffer (which consumes it)
         // returns `Err` — that is the single non-recoverable case.
         //
-        // Get or create the publisher for this output. Normally it was already
-        // declared eagerly at startup (see [`Self::warm_up_direct_outputs`]);
-        // this covers outputs sent that weren't declared then. A missing
-        // session or a declaration failure falls back to the daemon path.
-        if !self.ensure_zenoh_publisher(output_id) {
-            return Ok(PublishOutcome::NotPublished(finalized));
-        }
-
-        // Startup no-loss barrier: until every subscriber for this output has
-        // wired up its zenoh subscription, deliver over the reliable daemon path
-        // rather than dropping early samples on the not-yet-established data
-        // plane. Once all subscribers are confirmed this latches ready and every
-        // subsequent send takes the fast zenoh path.
-        if !self.ensure_output_ready(output_id) {
-            return Ok(PublishOutcome::NotPublished(finalized));
-        }
-
-        let Some(publisher) = self.zenoh_publishers.get(output_id) else {
-            tracing::warn!(output = %output_id, "zenoh publisher missing; falling back to daemon path");
+        // No publisher means there is no zenoh session, its declaration failed
+        // at init, or the output is pinned to the daemon path: fall back to the
+        // reliable daemon path (defense in depth — `output_direct_ready`
+        // already gates the caller).
+        let Some(DirectOutput { publisher, .. }) = self.zenoh_publishers.get(output_id) else {
             return Ok(PublishOutcome::NotPublished(finalized));
         };
         let session = self
             .zenoh_session
             .as_ref()
-            .expect("zenoh session presence checked above");
+            .expect("a declared publisher implies a zenoh session");
 
         // Serialize metadata as zenoh attachment.
         let metadata_bytes = match bincode::serialize(metadata) {
@@ -2082,18 +2338,26 @@ pub(crate) fn teardown_with_timeout(
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
+        // Stop the startup handshake first: joining its marker thread releases
+        // the thread's `Arc` clone of the publishers, so the teardown below
+        // holds the last reference and actually undeclares them.
+        let ack_subscribers = match self.startup_handshake.take() {
+            Some(mut handshake) => {
+                handshake.shutdown();
+                std::mem::take(&mut handshake.ack_subscribers)
+            }
+            None => Vec::new(),
+        };
         // Tear down zenoh before notifying the daemon below, so that
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
         let schema_publishers = std::mem::take(&mut self.zenoh_schema_publishers);
-        // Per-output readiness counters hold liveliness subscribers on the shared
-        // session; drop them before the session (same reasoning as publishers).
-        let readiness = std::mem::take(&mut self.zenoh_output_readiness);
         let shm_provider = self.zenoh_shm_provider.take();
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
         if session.is_none() && shm_provider.is_none() && publishers.is_empty() {
             // no zenoh state (interactive/testing mode): drop inline
+            drop(ack_subscribers);
             drop(runtime);
         } else {
             // A wedged zenoh net runtime stalls `Session` close beyond its
@@ -2101,12 +2365,14 @@ impl Drop for DoraNode {
             // hang node shutdown (and with it the daemon, which waits for
             // `InputClosed`). Bound the teardown with a deadline instead.
             let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
-                // documented drop order: publishers (data + schema) and readiness
-                // subscribers before the session, owned runtime last so async
-                // cleanup can still run
+                // documented drop order: subscribers and publishers (data +
+                // schema) before the session, owned runtime last so async
+                // cleanup can still run. The handshake thread was joined
+                // above, so the publishers `Arc` is the last reference and
+                // dropping it undeclares them here.
+                drop(ack_subscribers);
                 drop(publishers);
                 drop(schema_publishers);
-                drop(readiness);
                 drop(shm_provider);
                 drop(session);
                 drop(runtime);
@@ -2620,6 +2886,90 @@ mod tests {
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
     use arrow::array::NullArray;
+
+    fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
+        dora_message::daemon_to_node::RequiredAcker {
+            node_id: NodeId::from(node.to_string()),
+            input_id: DataId::from(input.to_string()),
+        }
+    }
+
+    #[test]
+    fn ack_state_completes_only_when_required_set_is_covered() {
+        let ready = Arc::new(AtomicBool::new(false));
+        let required = BTreeSet::from([
+            required_acker("sink-a", "camera"),
+            required_acker("sink-b", "cam"),
+        ]);
+        let state = AckState::new(DataId::from("image".to_string()), &required, ready.clone());
+
+        // An acker outside the required set (dynamic or debug consumer) must
+        // never count toward completion.
+        state.record("stranger", "camera");
+        assert!(!ready.load(Ordering::Relaxed));
+
+        // Duplicate acks of one required identity don't complete the set.
+        state.record("sink-a", "camera");
+        state.record("sink-a", "camera");
+        assert!(!ready.load(Ordering::Relaxed));
+        assert_eq!(state.missing(), vec!["sink-b/cam".to_string()]);
+
+        // The last required identity completes it.
+        state.record("sink-b", "cam");
+        assert!(ready.load(Ordering::Relaxed));
+        assert!(state.missing().is_empty());
+    }
+
+    #[test]
+    fn ack_state_requires_exact_identity_match() {
+        // (node, input) is one identity: the right node acking the wrong input
+        // (or vice versa) must not count.
+        let ready = Arc::new(AtomicBool::new(false));
+        let required = BTreeSet::from([required_acker("sink", "camera")]);
+        let state = AckState::new(DataId::from("image".to_string()), &required, ready.clone());
+
+        state.record("sink", "other-input");
+        state.record("other-node", "camera");
+        assert!(!ready.load(Ordering::Relaxed));
+
+        state.record("sink", "camera");
+        assert!(ready.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn missing_output_routing_pins_every_output_to_the_daemon_path() {
+        // `None` means an older daemon spawned this node: without
+        // required-acker sets no route can be proven, so the safe result is
+        // daemon-only for every declared output.
+        let outputs = BTreeSet::from([
+            DataId::from("image".to_string()),
+            DataId::from("status".to_string()),
+        ]);
+        let routing = normalize_output_routing(None, &outputs);
+        assert_eq!(routing.len(), 2);
+        for output_id in &outputs {
+            let entry = routing.get(output_id).expect("entry per output");
+            assert!(entry.daemon_only);
+            assert!(entry.required_ackers.is_empty());
+        }
+
+        // No outputs → nothing to pin (interactive mode).
+        assert!(normalize_output_routing(None, &BTreeSet::new()).is_empty());
+    }
+
+    #[test]
+    fn provided_output_routing_is_passed_through() {
+        let outputs = BTreeSet::from([DataId::from("image".to_string())]);
+        let provided = BTreeMap::from([(
+            DataId::from("image".to_string()),
+            OutputRouting {
+                daemon_only: false,
+                required_ackers: BTreeSet::from([required_acker("sink", "camera")]),
+            },
+        )]);
+        let routing = normalize_output_routing(Some(provided.clone()), &outputs);
+        assert_eq!(routing, provided);
+    }
 
     #[test]
     fn new_request_id_returns_valid_uuid() {

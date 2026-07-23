@@ -83,12 +83,11 @@ pub struct EventStream {
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
-    /// Per-input liveliness tokens announcing "my data subscriber is declared"
-    /// so producers can count subscribers and only switch an output to the direct
-    /// zenoh data plane once every subscriber is wired (startup no-loss barrier;
-    /// see [`dora_core::topics::zenoh_input_ready_liveliness_topic`]). Kept alive
-    /// for the EventStream's lifetime; dropping a token undeclares it.
-    _zenoh_liveliness_tokens: Vec<zenoh::liveliness::LivelinessToken>,
+    /// The `dora-startup-acker` thread (see [`spawn_startup_acker`]). Exits
+    /// once the data subscribers — the only senders into its queue — are
+    /// dropped; joined in `EventStream::drop` inside the bounded zenoh
+    /// teardown, right after those subscribers are dropped.
+    startup_acker: Option<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -113,6 +112,72 @@ pub struct EventStream {
     stop_received: bool,
 }
 
+/// Spawn the consumer half of the startup handshake: a thread that answers
+/// every startup marker with an ack on the marked output's `@ack` topic.
+///
+/// The data callbacks `try_send` the input id of each received marker into
+/// `ack_rx` (a zenoh callback must never `put` itself — it runs on zenoh's IO
+/// worker); this thread publishes the corresponding ack, identifying this
+/// (node, input) in the attachment. The producer switches the output from the
+/// lossless daemon path to direct zenoh once all its required consumers acked.
+///
+/// The thread acks *every* marker for the stream's whole lifetime: markers
+/// keep coming until the producer has this ack, so ack-route establishment
+/// races self-heal, and late producers (dynamic nodes, restarts) get their
+/// acks whenever they run their handshake. It exits when the data subscribers
+/// (the only senders) are dropped.
+fn spawn_startup_acker(
+    node_id: NodeId,
+    ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    mut ack_rx: tokio::sync::mpsc::Receiver<DataId>,
+    clock: Arc<uhlc::HLC>,
+) -> Option<std::thread::JoinHandle<()>> {
+    use dora_message::metadata::Metadata;
+    use zenoh::Wait;
+
+    if ack_publishers.is_empty() {
+        return None;
+    }
+    let handle = std::thread::Builder::new()
+        .name("dora-startup-acker".into())
+        .spawn(move || {
+            while let Some(input_id) = ack_rx.blocking_recv() {
+                let Some(publisher) = ack_publishers.get(&input_id) else {
+                    continue;
+                };
+                let metadata = Metadata::startup_ack(
+                    clock.new_timestamp(),
+                    node_id.as_ref(),
+                    input_id.as_ref(),
+                );
+                let attachment = match bincode::serialize(&metadata) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::debug!(input = %input_id, "failed to serialize startup ack ({e})");
+                        continue;
+                    }
+                };
+                if let Err(e) = publisher.put(&[][..]).attachment(&attachment[..]).wait() {
+                    // Expected while the ack route is still coming up; the
+                    // producer's next marker triggers a retry.
+                    tracing::trace!(input = %input_id, "startup ack put failed ({e})");
+                }
+            }
+        });
+    match handle {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            // Without acks the producers keep this node's inputs on the
+            // reliable daemon path — correct, just without the fast path.
+            tracing::warn!(
+                "failed to spawn startup-acker thread ({e}); \
+                 producers keep this node's inputs on the daemon path"
+            );
+            None
+        }
+    }
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -125,7 +190,6 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -270,7 +334,6 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
-            dynamic,
         )
     }
 
@@ -287,7 +350,6 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -309,9 +371,16 @@ impl EventStream {
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
         let mut zenoh_schema_subscribers = Vec::new();
-        let mut zenoh_liveliness_tokens = Vec::new();
+        // Consumer half of the startup handshake: the data callbacks enqueue
+        // the input id of every received startup marker here, and the
+        // `dora-startup-acker` thread answers each with an ack on the output's
+        // `@ack` topic (see `spawn_startup_acker`). Bounded and `try_send`-fed:
+        // a full queue just delays the ack until the producer's next marker.
+        let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<DataId>(256);
+        let mut ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>> = HashMap::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
+            use zenoh::qos::CongestionControl;
             for (input_id, input) in input_config {
                 let mapping = &input.mapping;
                 if let dora_message::config::InputMapping::User(user_mapping) = mapping {
@@ -329,6 +398,33 @@ impl EventStream {
                             continue;
                         }
                     };
+                    // Ack publisher for this input, declared eagerly so its
+                    // route wires while the node is parked in the barrier.
+                    // `express` + `Drop` QoS: a lost ack is retried on the
+                    // producer's next marker. On failure the producer's ack
+                    // deadline keeps the output on the (correct) daemon path.
+                    let ack_topic = dora_core::topics::zenoh_output_ack_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    match session
+                        .declare_publisher(ack_topic)
+                        .congestion_control(CongestionControl::Drop)
+                        .express(true)
+                        .wait()
+                    {
+                        Ok(publisher) => {
+                            ack_publishers.insert(input_id.clone(), publisher);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare startup-ack publisher ({e}); \
+                                 the producer keeps this input on the daemon path"
+                            );
+                        }
+                    }
                     // Per-input persistent decoder for the schema-once path,
                     // shared between this data subscriber (which decodes batches
                     // in zenoh receipt order) and the `@schema` subscriber (which
@@ -368,6 +464,7 @@ impl EventStream {
                         &mut zenoh_schema_subscribers,
                     );
 
+                    let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
                     let decoder = decoder.clone();
@@ -425,6 +522,18 @@ impl EventStream {
                                             return;
                                         }
                                     };
+                                    // Startup marker: its arrival proves this input's
+                                    // zenoh route carries data end-to-end. Answer with
+                                    // an ack (via the acker thread — a zenoh callback
+                                    // must not `put` itself) so the producer can switch
+                                    // the output to the direct zenoh path, and stop — a
+                                    // marker has no payload and must never reach the
+                                    // (stateful) decoder or user code. A full ack queue
+                                    // is fine: the producer's next marker retries.
+                                    if metadata.is_startup_marker() {
+                                        let _ = ack_tx_cb.try_send(input_id_cb.clone());
+                                        return;
+                                    }
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
                                     // persistent decoder stays in sync. This runs on
@@ -569,39 +678,12 @@ impl EventStream {
                         Ok(s) => {
                             tracing::debug!(input = %input_id, %topic, "zenoh subscriber declared (callback)");
                             zenoh_subscribers.push(s);
-
-                            // Announce readiness for this link so the producer
-                            // counts us before switching the output to the direct
-                            // zenoh data plane. Declared only after a *successful*
-                            // data subscriber (so a counted token always implies
-                            // the subscription is in flight) and never for dynamic
-                            // nodes — they connect at arbitrary times and are not
-                            // part of the startup barrier (the producer reaches
-                            // them via normal matching once they join). A failure
-                            // here is non-fatal: the producer just keeps this
-                            // output on the reliable daemon path.
-                            if !dynamic {
-                                let ready_key =
-                                    dora_core::topics::zenoh_input_ready_liveliness_topic(
-                                        dataflow_id,
-                                        source_node,
-                                        source_output,
-                                        node_id,
-                                        input_id,
-                                    );
-                                match session.liveliness().declare_token(ready_key).wait() {
-                                    Ok(token) => zenoh_liveliness_tokens.push(token),
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            input = %input_id,
-                                            "failed to declare zenoh readiness token ({e}); \
-                                             producer will keep this output on the daemon path"
-                                        );
-                                    }
-                                }
-                            }
                         }
                         Err(e) => {
+                            // No zenoh subscriber for this input: no marker can
+                            // ever arrive, so this node never acks it and the
+                            // producer keeps the output on the reliable daemon
+                            // path — the input is served via daemon events.
                             tracing::warn!(
                                 input = %input_id,
                                 "failed to declare zenoh subscriber ({e}), using daemon path"
@@ -611,6 +693,17 @@ impl EventStream {
                 }
             }
         }
+
+        // Consumer half of the startup handshake: from here on, every startup
+        // marker received by a data callback above is answered with an ack.
+        // Nothing blocks and nothing can fail init: a route that never
+        // delivers a marker simply never gets acked, and the producer keeps
+        // that output on the lossless daemon path (see `StartupHandshake` on
+        // the producer side). The acker runs for the stream's whole lifetime
+        // so late producers (dynamic nodes, restarts) get acks too.
+        drop(ack_tx); // the callbacks hold the only remaining senders
+        let startup_acker =
+            spawn_startup_acker(node_id.clone(), ack_publishers, ack_rx, clock.clone());
 
         let reply = channel
             .request(&Timestamped {
@@ -638,7 +731,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
             _zenoh_schema_subscribers: zenoh_schema_subscribers,
-            _zenoh_liveliness_tokens: zenoh_liveliness_tokens,
+            startup_acker,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -1649,35 +1742,23 @@ impl Drop for EventStream {
         // implicit field-drop phase after this `Drop` body returns (#2583).
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
         let schema_subscribers = std::mem::take(&mut self._zenoh_schema_subscribers);
-        if !subscribers.is_empty() || !schema_subscribers.is_empty() {
+        let startup_acker = self.startup_acker.take();
+        if !subscribers.is_empty() || !schema_subscribers.is_empty() || startup_acker.is_some() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
                     drop(schema_subscribers);
+                    // Dropping the subscribers dropped their callbacks — the
+                    // only senders into the acker's queue — so the acker
+                    // thread exits (undeclaring its ack publishers, also
+                    // bounded by this deadline) and can be joined.
+                    if let Some(handle) = startup_acker {
+                        let _ = handle.join();
+                    }
                 });
             if !completed {
                 tracing::warn!(
                     "zenoh subscriber teardown timed out after {}s; continuing node shutdown",
-                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
-                );
-            }
-        }
-
-        // Undeclare readiness tokens under the same deadline: like subscriber
-        // teardown, `LivelinessToken::drop` undeclares on the shared session and
-        // can block if zenoh's net runtime is wedged (dora-rs/dora#2425).
-        let tokens = std::mem::take(&mut self._zenoh_liveliness_tokens);
-        if !tokens.is_empty() {
-            let completed = teardown_with_timeout(
-                "zenoh-liveliness-tokens",
-                ZENOH_TEARDOWN_TIMEOUT,
-                move || {
-                    drop(tokens);
-                },
-            );
-            if !completed {
-                tracing::warn!(
-                    "zenoh readiness-token teardown timed out after {}s; continuing node shutdown",
                     ZENOH_TEARDOWN_TIMEOUT.as_secs()
                 );
             }

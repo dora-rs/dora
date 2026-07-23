@@ -164,6 +164,7 @@ pub(crate) mod fault_tolerance;
 mod local_listener;
 mod log;
 mod node_communication;
+mod output_routing;
 mod pending;
 pub(crate) mod running_dataflow;
 mod socket_stream_utils;
@@ -2076,6 +2077,20 @@ impl Daemon {
                     let inputs = node_inputs(&node);
                     let is_dynamic = node.kind.dynamic();
 
+                    // Startup-handshake routing for the added node, from the
+                    // *live* dataflow state rather than the (stale) descriptor
+                    // — see `added_node_output_routing` for the policy
+                    // (existing receivers on a re-added id handshake as usual;
+                    // receiver-less outputs are pinned to the daemon path so
+                    // `dora node connect` edges can deliver).
+                    let output_routing = output_routing::added_node_output_routing(
+                        &node_id,
+                        node.kind.run_config().outputs,
+                        &dataflow.mappings,
+                        &dataflow.open_external_mappings,
+                        &dataflow.dynamic_nodes,
+                    );
+
                     // Prepare stderr buffer (harmless — just an empty
                     // ArrayQueue, no routing implications).
                     let node_stderr = dataflow
@@ -2116,6 +2131,7 @@ impl Daemon {
                             false,
                             node_stderr,
                             None,
+                            output_routing,
                             &mut logger,
                         )
                         .await
@@ -3161,6 +3177,15 @@ impl Daemon {
                                     }) else {
                                         continue;
                                     };
+                                    // Startup-handshake markers ride the real data
+                                    // topic (empty payload); consumers filter them
+                                    // before decode and so must this inspection
+                                    // path, or `dora topic echo`/`hz` would show
+                                    // spurious empty frames and inflated rates
+                                    // during every startup handshake.
+                                    if metadata.is_startup_marker() {
+                                        continue;
+                                    }
                                     let payload = sample.payload().to_bytes();
                                     let data = {
                                         let mut cached =
@@ -3235,6 +3260,12 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
         };
+
+        // Startup-handshake routing, from actual placement (`spawn_nodes`):
+        // which outputs are pinned to the daemon path (remote consumers) and
+        // which local static consumers must ack before an output may switch to
+        // the direct zenoh path.
+        let mut output_routing = output_routing::compute_output_routing(&nodes, &spawn_nodes);
 
         let mut tasks = Vec::new();
 
@@ -3317,6 +3348,7 @@ impl Daemon {
                         confined_nodes.contains(&node_id),
                         node_stderr_most_recent,
                         node_write_events_to,
+                        output_routing.remove(&node_id).unwrap_or_default(),
                         &mut logger,
                     )
                     .await
@@ -6207,6 +6239,7 @@ mod fault_tolerance_tests {
                 dynamic: false,
                 write_events_to: None,
                 restart_count: 0,
+                output_routing: None,
             },
             pid: None,
             restart_count: Arc::new(AtomicU32::new(0)),
