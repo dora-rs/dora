@@ -2583,16 +2583,39 @@ impl Node {
                                 shmem.len()
                             );
                         }
-                        // Keep shmem alive by stashing it in the CPU cache.
-                        let base = shmem_ptr as u64;
-                        let read_ptr = (base + data_offset as u64) as i64;
+                        // Seqlock: reject a torn mid-write frame.  The
+                        // fallback is reached when the fast path retries
+                        // are exhausted, typically because the generation
+                        // is stuck odd (crashed writer).
+                        let read_gen =
+                            unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
+                        if read_gen % 2 != 0 {
+                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                            eyre::bail!(
+                                "memory pool {}: daemon fallback: seqlock write in progress \
+                                 (generation={}, odd)",
+                                buffer_id,
+                                read_gen
+                            );
+                        }
+                        // Cache-hit: use the stored mapping's base so
+                        // the pointer stays valid after the fresh shmem
+                        // is dropped.  Cache-miss: insert the fresh
+                        // mapping and drop the old one (if any).
+                        let read_ptr;
                         {
                             let mut cpu_cache =
                                 RECV_CPU_SHMEM.lock().unwrap_or_else(|e| e.into_inner());
-                            cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
-                                _shmem: shmem,
-                                base,
-                            });
+                            if let Some(cached) = cpu_cache.get(&buffer_id) {
+                                read_ptr = (cached.base + data_offset as u64) as i64;
+                            } else {
+                                let base = shmem_ptr as u64;
+                                read_ptr = (base + data_offset as u64) as i64;
+                                cpu_cache.entry(buffer_id.clone()).or_insert(RecvCpuSlot {
+                                    _shmem: shmem,
+                                    base,
+                                });
+                            }
                         }
                         let dict = PyDict::new(py);
                         dict.set_item("ptr", read_ptr)?;
