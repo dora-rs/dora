@@ -289,7 +289,14 @@ unsafe fn try_send_output(
     }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
-    let output_id = id.to_owned().into();
+    // Parse via `FromStr` instead of the panicking `From<String>`: an invalid
+    // id (e.g. a typo containing a space) must surface as a `-1` return, not
+    // unwind across the `extern "C"` boundary and abort the node process.
+    // `DataId::from(String)` is documented as panicking on invalid characters
+    // (see `libraries/message/src/id.rs`, `# Panics`).
+    let output_id = id
+        .parse::<dora_node_api::dora_core::config::DataId>()
+        .map_err(|e| eyre::eyre!("invalid output id `{id}`: {e}"))?;
     let data = unsafe { data_slice(data_ptr, data_len) }?;
     Ok(context
         .node
