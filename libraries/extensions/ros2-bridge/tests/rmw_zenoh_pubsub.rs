@@ -8,6 +8,7 @@ use dora_ros2_bridge::transport::{
     zenoh::{
         Context, ContextOptions,
         attachment::Attachment,
+        graph::GraphSnapshot,
         keyexpr::{EntityKind, TopicToken},
         pubsub::{
             NodePublisher, NodeSubscription, PublisherMode, PublisherState, RawPublisher,
@@ -15,6 +16,29 @@ use dora_ros2_bridge::transport::{
         },
     },
 };
+
+/// Liveliness-token declaration/undeclaration propagates through the Zenoh
+/// session asynchronously, so the graph cache updates a beat after
+/// `declare`/`drop` return. Await the graph reaching the expected state
+/// (event-driven via `wait_for_change`) instead of asserting the snapshot
+/// synchronously, which races and flakes.
+async fn wait_for_graph(context: &Context, predicate: impl Fn(&GraphSnapshot) -> bool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = context.graph.snapshot();
+            if predicate(&snapshot) {
+                break;
+            }
+            context
+                .graph
+                .wait_for_change(snapshot.generation)
+                .await
+                .expect("graph closed while waiting for a change");
+        }
+    })
+    .await
+    .expect("timed out waiting for the graph to reach the expected state");
+}
 
 #[test]
 fn publisher_sequence_starts_at_one_and_metadata_is_preserved() {
@@ -289,27 +313,27 @@ async fn node_bound_entities_track_graph_and_drop_tokens() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        context
-            .graph
-            .snapshot()
+    wait_for_graph(&context, |snapshot| {
+        snapshot
             .entities
             .iter()
-            .filter(|entity| matches!(
-                entity.token.kind,
-                EntityKind::Publisher | EntityKind::Subscription
-            ))
-            .count(),
-        2
-    );
+            .filter(|entity| {
+                matches!(
+                    entity.token.kind,
+                    EntityKind::Publisher | EntityKind::Subscription
+                )
+            })
+            .count()
+            == 2
+    })
+    .await;
     drop(subscription);
     drop(publisher);
-    assert!(
-        context
-            .graph
-            .snapshot()
+    wait_for_graph(&context, |snapshot| {
+        snapshot
             .entities
             .iter()
             .all(|entity| entity.token.kind == EntityKind::Node)
-    );
+    })
+    .await;
 }
