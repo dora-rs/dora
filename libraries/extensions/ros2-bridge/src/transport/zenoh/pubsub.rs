@@ -237,6 +237,10 @@ impl<T> SubscriptionIngress<T> {
         })
     }
     pub fn ingest(&self, attachment: &[u8], payload: &[u8]) -> Result<bool, PubSubError> {
+        // `max_payload_size` is a *pre-decode* guard: it stops the decoder from
+        // allocating on an oversize sample. It does NOT bound the raw sample the
+        // Zenoh transport already received/buffered before `ingest` runs — that
+        // receive-buffer limit is Zenoh's responsibility (session/link config).
         let attachment = Attachment::decode(attachment).map_err(|error| {
             self.malformed.fetch_add(1, Ordering::Relaxed);
             PubSubError::Attachment(error)

@@ -282,7 +282,10 @@ impl RawServiceClient {
                 reply = receive => match reply {
                     Ok(reply) => match reply.into_result() {
                         Ok(sample) => {
-                            let actual = request_id_from_attachment(sample.attachment().map(|value| value.to_bytes()).as_deref())?;
+                            // A reply with a malformed attachment (e.g. from a spoofing
+                            // peer) must not cancel a pending legitimate reply: skip it
+                            // and keep waiting rather than `?`-propagating out of `call`.
+                            let Ok(actual) = request_id_from_attachment(sample.attachment().map(|value| value.to_bytes()).as_deref()) else { continue; };
                             if actual == expected { return Ok(sample.payload().to_bytes().into_owned()); }
                         }
                         Err(error) => return Err(ServiceError::Remote(String::from_utf8_lossy(&error.payload().to_bytes()).into_owned())),

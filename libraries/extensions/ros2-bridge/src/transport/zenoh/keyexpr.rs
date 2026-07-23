@@ -193,6 +193,13 @@ impl LivelinessKey {
     }
     pub fn parse(value: &str) -> Result<Self, KeyError> {
         OwnedKeyExpr::try_from(value.to_owned()).map_err(|_| KeyError::Malformed)?;
+        // A valid token has exactly 9 or 13 `/`-separated parts (8 or 12
+        // separators). Reject anything with more separators before allocating
+        // the `Vec`, so a peer-supplied string of many `/` can't amplify into a
+        // large transient allocation.
+        if value.bytes().filter(|&byte| byte == b'/').count() > 12 {
+            return Err(KeyError::Malformed);
+        }
         let p: Vec<_> = value.split('/').collect();
         if p.len() != 9 && p.len() != 13 || p.first() != Some(&"@ros2_lv") {
             return Err(KeyError::Malformed);

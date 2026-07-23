@@ -2017,19 +2017,25 @@ impl Ros2ActionServer {
                         .or_else(|| {
                             let receiver = self.zenoh_result_requests.as_ref()?;
                             let deadline = Instant::now() + timeout;
+                            let mut malformed = 0u64;
                             loop {
                                 let remaining = deadline.checked_duration_since(Instant::now())?;
                                 let request = receiver.recv_timeout(remaining).ok()?;
                                 // A malformed, peer-controlled payload must not abort a
                                 // legitimate pending result: skip it and keep draining,
                                 // exactly like the valid-but-non-matching branch below.
+                                // Log only the first drop per call so a malformed flood
+                                // can't spam stderr.
                                 let decoded: ros2_client::action::GetResultRequest =
                                     match deserialize_cdr(&request.payload) {
                                         Ok(decoded) => decoded,
                                         Err(error) => {
-                                            eprintln!(
-                                                "dropping malformed get-result request: {error:?}"
-                                            );
+                                            malformed += 1;
+                                            if malformed == 1 {
+                                                eprintln!(
+                                                    "dropping malformed get-result request(s): {error:?}"
+                                                );
+                                            }
                                             continue;
                                         }
                                     };
