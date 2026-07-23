@@ -1265,7 +1265,10 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    timeout-minutes: 90
+    # Raised alongside the Multiple Daemons step bump (30->45 min) so the whole
+    # sequence of from-scratch example builds still fits under the job cap on a
+    # cold Windows runner (#2742).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -1311,7 +1314,12 @@ jobs:
         timeout-minutes: 30
         run: cargo run --example rust-dataflow-git
       - name: Multiple Daemons example
-        timeout-minutes: 30
+        # `dora build` recompiles the node/operator crates (zenoh, arrow,
+        # rustls, quinn) from scratch in release, which on a cold Windows
+        # runner can outrun a 30-min step budget — the 2026-07-23 nightly was
+        # still compiling zenoh when the step was force-killed (#2742). 45 min
+        # gives the release build margin without masking a genuine hang.
+        timeout-minutes: 45
         run: cargo run --example multiple-daemons
       - name: C Dataflow example
         timeout-minutes: 15
