@@ -3917,14 +3917,27 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        let output_id_key = OutputId(node_id.clone(), output_id.clone());
-        let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
-            || dataflow.enable_debug_inspection;
-        let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
+        // Only build the `OutputId` lookup key (two `String` clones of the
+        // `NodeId`/`DataId`) when this dataflow actually has a remote or debug
+        // destination that could consume it. A pure-local dataflow leaves
+        // `open_external_mappings`/`debug_topic_watchers` empty and disables
+        // debug inspection, so on that hot path we skip both per-message
+        // allocations and early-return below.
+        let needs_key = dataflow.enable_debug_inspection
+            || !dataflow.open_external_mappings.is_empty()
+            || !dataflow.debug_topic_watchers.is_empty();
+        let output_id_key = needs_key.then(|| OutputId(node_id.clone(), output_id.clone()));
+        let remote_receivers = dataflow.enable_debug_inspection
+            || output_id_key
+                .as_ref()
+                .is_some_and(|key| dataflow.open_external_mappings.contains(key));
+        let has_debug_watchers = output_id_key
+            .as_ref()
+            .is_some_and(|key| dataflow.debug_topic_watchers.contains_key(key));
         // `node_id`/`output_id` are not read past this call — the later
-        // inter-daemon path uses `output_id_key` (cloned just above) instead —
-        // so move them in rather than adding a second per-message clone of the
-        // `NodeId`/`DataId` on this output-dispatch hot path.
+        // inter-daemon path uses `output_id_key` instead — so move them in
+        // rather than adding a second per-message clone of the `NodeId`/`DataId`
+        // on this output-dispatch hot path.
         let data_bytes = send_output_to_local_receivers(
             node_id,
             output_id,
@@ -3941,7 +3954,12 @@ impl Daemon {
             return Ok(());
         }
 
-        let output_id = output_id_key;
+        // Reaching here means `remote_receivers || has_debug_watchers`, which
+        // implies `needs_key` was true and the key was built. Assert that
+        // invariant loudly rather than silently dropping the inter-daemon
+        // publish if a future refactor ever drifts the two predicates apart.
+        let output_id =
+            output_id_key.expect("output_id_key is built whenever a remote/debug receiver exists");
         let event = InterDaemonEvent::Output {
             dataflow_id,
             node_id: output_id.0.clone(),
