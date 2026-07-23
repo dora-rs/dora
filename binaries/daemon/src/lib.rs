@@ -163,6 +163,7 @@ pub(crate) mod fault_tolerance;
 mod local_listener;
 mod log;
 mod node_communication;
+mod output_routing;
 mod pending;
 pub(crate) mod running_dataflow;
 mod socket_stream_utils;
@@ -1922,6 +1923,43 @@ impl Daemon {
                     let inputs = node_inputs(&node);
                     let is_dynamic = node.kind.dynamic();
 
+                    // Startup-handshake routing for the added node, from the
+                    // *live* dataflow state rather than the (stale) descriptor:
+                    // consumers of this node's outputs exist only if a node of
+                    // the same id ran before (remove + re-add) — a freshly
+                    // added id has no consumers yet, and later-added consumers
+                    // join mid-stream by definition. Local receivers come from
+                    // `mappings`, remote ones from `open_external_mappings`.
+                    let output_routing: BTreeMap<
+                        DataId,
+                        dora_message::daemon_to_node::OutputRouting,
+                    > = node
+                        .kind
+                        .run_config()
+                        .outputs
+                        .into_iter()
+                        .map(|output_id| {
+                            let output = OutputId(node_id.clone(), output_id.clone());
+                            let mut routing = dora_message::daemon_to_node::OutputRouting {
+                                daemon_only: dataflow.open_external_mappings.contains(&output),
+                                ..Default::default()
+                            };
+                            if let Some(receivers) = dataflow.mappings.get(&output) {
+                                for (receiver, input_id) in receivers {
+                                    if !dataflow.dynamic_nodes.contains(receiver) {
+                                        routing.required_ackers.insert(
+                                            dora_message::daemon_to_node::RequiredAcker {
+                                                node_id: receiver.clone(),
+                                                input_id: input_id.clone(),
+                                            },
+                                        );
+                                    }
+                                }
+                            }
+                            (output_id, routing)
+                        })
+                        .collect();
+
                     // Prepare stderr buffer (harmless — just an empty
                     // ArrayQueue, no routing implications).
                     let node_stderr = dataflow
@@ -1961,6 +1999,7 @@ impl Daemon {
                             false,
                             node_stderr,
                             None,
+                            output_routing,
                             &mut logger,
                         )
                         .await
@@ -3034,6 +3073,12 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
         };
 
+        // Startup-handshake routing, from actual placement (`spawn_nodes`):
+        // which outputs are pinned to the daemon path (remote consumers) and
+        // which local static consumers must ack before an output may switch to
+        // the direct zenoh path.
+        let mut output_routing = output_routing::compute_output_routing(&nodes, &spawn_nodes);
+
         let mut tasks = Vec::new();
 
         // spawn nodes and set up subscriptions
@@ -3115,6 +3160,7 @@ impl Daemon {
                         confined_nodes.contains(&node_id),
                         node_stderr_most_recent,
                         node_write_events_to,
+                        output_routing.remove(&node_id).unwrap_or_default(),
                         &mut logger,
                     )
                     .await
