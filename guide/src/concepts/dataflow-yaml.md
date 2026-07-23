@@ -396,7 +396,22 @@ Operators also support `inputs`, `outputs`, `build`, `send_stdout_as`, `send_log
 
 ## ROS2 Bridge
 
-Declare a node as a ROS2 bridge to automatically convert between ROS2 DDS messages and Dora's Arrow format. No custom code needed.
+Declare a node as a ROS2 bridge to automatically convert between ROS2 messages and Dora's Arrow format. DDS is the default; native `rmw_zenoh_cpp` compatibility is selected explicitly.
+
+```yaml
+ros2:
+  transport:
+    kind: zenoh
+    compatibility: humble # or rep2016
+    config_uri: /etc/zenoh/session.json5 # optional
+  topic: /chatter
+  message_type: std_msgs/String
+  direction: subscribe
+```
+
+`config_uri` overrides `ZENOH_SESSION_CONFIG_URI`; otherwise the embedded
+Zenoh default is used. The selected profile and `ROS_DOMAIN_ID` must match the
+ROS peers.
 
 ### Single Topic
 

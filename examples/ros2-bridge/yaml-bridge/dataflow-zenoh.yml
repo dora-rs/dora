@@ -1,0 +1,21 @@
+nodes:
+  - id: pose_bridge
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs: [pose]
+
+  - id: cmd_bridge
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      topic: /turtle1/cmd_vel
+      message_type: geometry_msgs/Twist
+      direction: publish
+    inputs:
+      cmd_vel: planner/cmd_vel

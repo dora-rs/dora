@@ -437,3 +437,18 @@ MyCustomIdent = "MyCustomIdent"
 - CI runs on Ubuntu; check for platform-specific assumptions (paths, process signals)
 - CI uses `rust-cache` so dependency versions may differ from your local lockfile
 - Ensure `cargo fmt --all -- --check` passes (CI enforces this)
+# ROS2 native Zenoh interoperability
+
+The real-peer matrix uses digest-pinned ROS images and version-pinned
+`rmw_zenoh_cpp` packages:
+
+```bash
+scripts/ros2-zenoh-interop.sh humble all
+scripts/ros2-zenoh-interop.sh kilted all
+```
+
+Run one case by replacing `all` with `topic-pub`, `topic-sub`,
+`service-client`, `service-server`, `action-client`, `action-server`, `graph`,
+`domain`, `namespace`, or `qos-transient-local`. The driver has bounded waits
+and always removes its containers. An environment-dependent skip is not proof
+of compatibility and must keep that profile incomplete.

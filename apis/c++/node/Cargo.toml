@@ -23,7 +23,9 @@ ros2-bridge = [
     "dep:rust-format",
     "dep:prettyplease",
     "dep:serde-big-array",
+    "rmw-zenoh",
 ]
+rmw-zenoh = ["dora-ros2-bridge/rmw-zenoh"]
 
 [dependencies]
 cxx = "1.0.194"

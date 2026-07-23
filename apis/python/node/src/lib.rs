@@ -1249,7 +1249,7 @@ impl Node {
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
-                    Ok((value, _info)) => Python::attach(|py| {
+                    Ok(value) => Python::attach(|py| {
                         value
                             .to_pyarrow(py)
                             .map(|b| b.unbind())
