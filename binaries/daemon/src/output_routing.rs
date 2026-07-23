@@ -25,7 +25,7 @@
 //! remote static consumers become required ackers instead of forcing
 //! `daemon_only`, and a fully-acked output goes pure-zenoh across machines.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use dora_core::{config::InputMapping, descriptor::ResolvedNode};
 use dora_message::{
@@ -33,7 +33,7 @@ use dora_message::{
     id::{DataId, NodeId},
 };
 
-use crate::{CoreNodeKindExt, node_inputs};
+use crate::{CoreNodeKindExt, OutputId, node_inputs};
 
 /// Computes the per-output routing for every producer in `local_nodes`, from
 /// the full resolved node set of the dataflow.
@@ -90,6 +90,54 @@ pub fn compute_output_routing(
     }
 
     routing
+}
+
+/// Routing for a node added to a *running* dataflow (`dora node add`),
+/// computed from the live dataflow state rather than the (stale) descriptor.
+///
+/// Receivers exist at add time only when a node of the same id ran before
+/// (remove + re-add) — their subscribers and ack publishers are still alive,
+/// so the ordinary handshake proves those routes again. An output with **no**
+/// current receivers is pinned to the daemon path: its future consumers can
+/// only be wired via `dora node connect` (`AddMapping`), and connect-edges
+/// deliver solely on the daemon path — a direct-zenoh output would starve
+/// them (the consumer has no zenoh subscriber for a source it didn't declare).
+pub fn added_node_output_routing(
+    node_id: &NodeId,
+    outputs: BTreeSet<DataId>,
+    mappings: &HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    open_external_mappings: &BTreeSet<OutputId>,
+    dynamic_nodes: &BTreeSet<NodeId>,
+) -> BTreeMap<DataId, OutputRouting> {
+    outputs
+        .into_iter()
+        .map(|output_id| {
+            let output = OutputId(node_id.clone(), output_id.clone());
+            let mut routing = OutputRouting {
+                daemon_only: open_external_mappings.contains(&output),
+                ..Default::default()
+            };
+            match mappings
+                .get(&output)
+                .filter(|receivers| !receivers.is_empty())
+            {
+                Some(receivers) => {
+                    for (receiver, input_id) in receivers {
+                        if !dynamic_nodes.contains(receiver) {
+                            routing.required_ackers.insert(RequiredAcker {
+                                node_id: receiver.clone(),
+                                input_id: input_id.clone(),
+                            });
+                        }
+                    }
+                }
+                None => {
+                    routing.daemon_only = true;
+                }
+            }
+            (output_id, routing)
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -266,6 +314,85 @@ nodes:
             output(&routing, "source", "image").required_ackers,
             BTreeSet::from([acker("runtime-consumer", "op/camera")])
         );
+    }
+
+    #[test]
+    fn added_node_without_receivers_is_pinned_to_the_daemon_path() {
+        // A freshly added id has no receivers; future consumers can only be
+        // wired via `dora node connect`, which delivers on the daemon path
+        // only — going direct-zenoh would starve them.
+        let node = NodeId::from("added".to_string());
+        let routing = added_node_output_routing(
+            &node,
+            BTreeSet::from([DataId::from("out".to_string())]),
+            &HashMap::new(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+        );
+        let out = routing.get(&DataId::from("out".to_string())).unwrap();
+        assert!(out.daemon_only);
+        assert!(out.required_ackers.is_empty());
+    }
+
+    #[test]
+    fn readded_node_requires_acks_from_its_existing_static_receivers() {
+        // remove + re-add: the old consumers' subscribers and ack publishers
+        // are still alive, so the ordinary handshake proves the routes again.
+        let node = NodeId::from("sender".to_string());
+        let out_id = DataId::from("value".to_string());
+        let mappings = HashMap::from([(
+            OutputId(node.clone(), out_id.clone()),
+            BTreeSet::from([
+                (
+                    NodeId::from("receiver".to_string()),
+                    DataId::from("value".to_string()),
+                ),
+                (
+                    NodeId::from("dyn-sink".to_string()),
+                    DataId::from("value".to_string()),
+                ),
+            ]),
+        )]);
+        let dynamic_nodes = BTreeSet::from([NodeId::from("dyn-sink".to_string())]);
+        let routing = added_node_output_routing(
+            &node,
+            BTreeSet::from([out_id.clone()]),
+            &mappings,
+            &BTreeSet::new(),
+            &dynamic_nodes,
+        );
+        let out = routing.get(&out_id).unwrap();
+        assert!(!out.daemon_only);
+        // The static receiver must ack; the dynamic one must not be required.
+        assert_eq!(
+            out.required_ackers,
+            BTreeSet::from([RequiredAcker {
+                node_id: NodeId::from("receiver".to_string()),
+                input_id: DataId::from("value".to_string()),
+            }])
+        );
+    }
+
+    #[test]
+    fn readded_node_with_remote_receiver_is_pinned() {
+        let node = NodeId::from("sender".to_string());
+        let out_id = DataId::from("value".to_string());
+        let output = OutputId(node.clone(), out_id.clone());
+        let mappings = HashMap::from([(
+            output.clone(),
+            BTreeSet::from([(
+                NodeId::from("local-receiver".to_string()),
+                DataId::from("value".to_string()),
+            )]),
+        )]);
+        let routing = added_node_output_routing(
+            &node,
+            BTreeSet::from([out_id.clone()]),
+            &mappings,
+            &BTreeSet::from([output]),
+            &BTreeSet::new(),
+        );
+        assert!(routing.get(&out_id).unwrap().daemon_only);
     }
 
     #[test]

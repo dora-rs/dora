@@ -1924,41 +1924,18 @@ impl Daemon {
                     let is_dynamic = node.kind.dynamic();
 
                     // Startup-handshake routing for the added node, from the
-                    // *live* dataflow state rather than the (stale) descriptor:
-                    // consumers of this node's outputs exist only if a node of
-                    // the same id ran before (remove + re-add) — a freshly
-                    // added id has no consumers yet, and later-added consumers
-                    // join mid-stream by definition. Local receivers come from
-                    // `mappings`, remote ones from `open_external_mappings`.
-                    let output_routing: BTreeMap<
-                        DataId,
-                        dora_message::daemon_to_node::OutputRouting,
-                    > = node
-                        .kind
-                        .run_config()
-                        .outputs
-                        .into_iter()
-                        .map(|output_id| {
-                            let output = OutputId(node_id.clone(), output_id.clone());
-                            let mut routing = dora_message::daemon_to_node::OutputRouting {
-                                daemon_only: dataflow.open_external_mappings.contains(&output),
-                                ..Default::default()
-                            };
-                            if let Some(receivers) = dataflow.mappings.get(&output) {
-                                for (receiver, input_id) in receivers {
-                                    if !dataflow.dynamic_nodes.contains(receiver) {
-                                        routing.required_ackers.insert(
-                                            dora_message::daemon_to_node::RequiredAcker {
-                                                node_id: receiver.clone(),
-                                                input_id: input_id.clone(),
-                                            },
-                                        );
-                                    }
-                                }
-                            }
-                            (output_id, routing)
-                        })
-                        .collect();
+                    // *live* dataflow state rather than the (stale) descriptor
+                    // — see `added_node_output_routing` for the policy
+                    // (existing receivers on a re-added id handshake as usual;
+                    // receiver-less outputs are pinned to the daemon path so
+                    // `dora node connect` edges can deliver).
+                    let output_routing = output_routing::added_node_output_routing(
+                        &node_id,
+                        node.kind.run_config().outputs,
+                        &dataflow.mappings,
+                        &dataflow.open_external_mappings,
+                        &dataflow.dynamic_nodes,
+                    );
 
                     // Prepare stderr buffer (harmless — just an empty
                     // ArrayQueue, no routing implications).
