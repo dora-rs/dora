@@ -1386,6 +1386,20 @@ fn contract_action_example_feedback_precedes_success_result() {
     );
     let combined = format!("{stdout}\n{stderr}");
 
+    // The zenoh fast path must actually engage on a healthy local dataflow:
+    // if the startup handshake silently froze an output on the daemon path,
+    // the producer logs this warning at its 10s ack deadline — which fires
+    // inside this test's 20s window because the client and server run for
+    // the whole `--stop-after` span. Guards against an "everything works but
+    // every message secretly rides the daemon path" regression that liveness
+    // and count assertions cannot see.
+    let freeze_marker = "startup handshake incomplete";
+    assert!(
+        !combined.contains(freeze_marker),
+        "a startup handshake froze an output on the daemon path in a healthy \
+         local dataflow.\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+
     // Lines from `dora run` are log-forwarded with a timestamp + stream
     // prefix: e.g. `09:48:50 stdout  action-server:  [server] result <gid>: succeeded`.
     // `GOAL_STATUS_SUCCEEDED` is the lowercase literal `"succeeded"` from
