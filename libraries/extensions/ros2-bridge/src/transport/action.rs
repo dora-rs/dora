@@ -219,6 +219,13 @@ impl<G, R: Clone> ActionState<G, R> {
         if active >= self.limit {
             return Err(ActionError::GoalLimit { limit: self.limit });
         }
+        // Only active goals count against `limit`; terminal goals linger until
+        // their result is fetched (`remove`). Reclaim them once total retention
+        // exceeds twice the limit, so a peer that submits and finishes goals but
+        // never fetches results cannot grow the map without bound.
+        if self.goals.len() >= self.limit.saturating_mul(2) {
+            self.goals.retain(|_, goal| !goal.status.is_terminal());
+        }
         self.goals.insert(
             id,
             Goal {
@@ -522,5 +529,39 @@ pub mod zenoh {
             history: crate::transport::History::KeepLast { depth: 1 },
             liveliness: qos.liveliness,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ActionError, ActionState, GoalStatus};
+
+    #[test]
+    fn accept_reclaims_terminal_goals_to_bound_retention() {
+        // Only active goals count against the limit; terminal goals linger until
+        // fetched. A peer that submits and finishes goals but never fetches
+        // results must not grow the map without bound.
+        let mut state: ActionState<(), ()> = ActionState::new(2);
+        for i in 0..100u8 {
+            let id = [i; 16];
+            state.accept(id, ()).unwrap();
+            state.finish(id, GoalStatus::Succeeded, ()).unwrap();
+        }
+        assert!(
+            state.len() <= 2 * 2,
+            "terminal goals must be reclaimed; retained {}",
+            state.len()
+        );
+    }
+
+    #[test]
+    fn accept_still_enforces_the_active_limit() {
+        let mut state: ActionState<(), ()> = ActionState::new(2);
+        state.accept([1; 16], ()).unwrap();
+        state.accept([2; 16], ()).unwrap();
+        assert!(matches!(
+            state.accept([3; 16], ()),
+            Err(ActionError::GoalLimit { .. })
+        ));
     }
 }

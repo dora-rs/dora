@@ -47,16 +47,28 @@ struct State {
     initialized: bool,
 }
 
+/// Upper bound on liveliness entities retained in the graph cache. The tokens
+/// are announced by remote, unauthenticated peers, so the map must be capped to
+/// prevent a memory-exhaustion DoS (a peer streaming distinct tokens on
+/// `@ros2_lv/{domain}/**`).
+const MAX_GRAPH_ENTITIES: usize = 16 * 1024;
+
 #[derive(Clone)]
 pub struct GraphCache {
     domain: usize,
+    limit: usize,
     state: Arc<Mutex<State>>,
 }
 
 impl GraphCache {
     pub fn new(domain: usize) -> Self {
+        Self::with_limit(domain, MAX_GRAPH_ENTITIES)
+    }
+
+    fn with_limit(domain: usize, limit: usize) -> Self {
         Self {
             domain,
+            limit,
             state: Arc::new(Mutex::new(State::default())),
         }
     }
@@ -71,6 +83,13 @@ impl GraphCache {
             return Err(GraphError::Closed);
         }
         if state.entities.contains_key(key) {
+            return Ok(GraphUpdate(false));
+        }
+        if state.entities.len() >= self.limit {
+            tracing::warn!(
+                "ROS graph cache at capacity ({}); dropping liveliness token",
+                self.limit
+            );
             return Ok(GraphUpdate(false));
         }
         state.entities.insert(key.to_owned(), token);
@@ -182,7 +201,23 @@ mod tests {
     use std::time::Duration;
 
     use super::{GraphCache, GraphSnapshot};
-    use crate::transport::zenoh::{Context, ContextOptions};
+    use crate::transport::zenoh::{Context, ContextOptions, keyexpr::LivelinessKey};
+
+    #[test]
+    fn apply_put_caps_entities_to_prevent_unbounded_growth() {
+        // A remote peer controls how many liveliness tokens it announces; the
+        // cache must refuse new entries past its cap instead of growing without
+        // bound.
+        let cache = GraphCache::with_limit(0, 2);
+        for i in 0..8 {
+            let key = LivelinessKey::node(0, "zid", &format!("n{i}"), "eid", "/", "/ns", "node")
+                .unwrap()
+                .as_str()
+                .to_owned();
+            let _ = cache.apply_put(&key);
+        }
+        assert_eq!(cache.snapshot().entities.len(), 2);
+    }
 
     /// Liveliness-token declaration/undeclaration propagates through the Zenoh
     /// session asynchronously, so the graph cache is updated a beat after

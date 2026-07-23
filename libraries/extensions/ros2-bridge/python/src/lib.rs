@@ -2037,6 +2037,18 @@ impl Ros2ActionServer {
                                 if decoded.goal_id == *id {
                                     return Some(request.id);
                                 }
+                                // The key is a peer-controlled goal UUID; a flood of
+                                // non-matching get-result queries must not grow this
+                                // stash without bound. Cap it and evict on overflow.
+                                if self.pending_result_requests.len() >= MAX_PENDING_REQUESTS
+                                    && !self.pending_result_requests.contains_key(&key)
+                                {
+                                    if let Some(evict) =
+                                        self.pending_result_requests.keys().next().cloned()
+                                    {
+                                        self.pending_result_requests.remove(&evict);
+                                    }
+                                }
                                 self.pending_result_requests.insert(key, request.id);
                             }
                         })

@@ -353,7 +353,11 @@ fn run_zenoh_service_mode(
                     }
                 })
             });
+            // `request_key -> (RequestId, inserted_at)`. Bounded below (evict on
+            // SERVICE_RESPONSE_TIMEOUT + cap) so a peer streaming requests the local
+            // handler never answers cannot grow it without bound.
             let mut pending = HashMap::new();
+            let mut oldest_insert: Option<std::time::Instant> = None;
             let merged = events.merge_external(Box::pin(rx.into_stream()));
             for event in futures::executor::block_on_stream(merged) {
                 match event {
@@ -371,19 +375,47 @@ fn run_zenoh_service_mode(
                             ),
                             "invalid Zenoh service request",
                         ) else {
-                            futures::executor::block_on(
+                            if let Err(error) = futures::executor::block_on(
                                 server.reject(request.id, "invalid request payload"),
-                            )?;
+                            ) {
+                                tracing::warn!("failed to reject Zenoh service request: {error}");
+                            }
                             continue;
                         };
-                        pending.insert(request_key.clone(), request.id);
+                        // Evict timed-out entries, then cap, mirroring the DDS service
+                        // path — the local handler may never answer some requests.
+                        let now = std::time::Instant::now();
+                        if oldest_insert
+                            .is_some_and(|t| now.duration_since(t) >= SERVICE_RESPONSE_TIMEOUT)
+                        {
+                            pending.retain(|key, (_, t)| {
+                                let keep = now.duration_since(*t) < SERVICE_RESPONSE_TIMEOUT;
+                                if !keep {
+                                    tracing::warn!(
+                                        "evicting timed-out pending service request {key}"
+                                    );
+                                }
+                                keep
+                            });
+                            oldest_insert = pending.values().map(|(_, t)| *t).min();
+                        }
+                        if pending.len() >= MAX_PENDING_REQUESTS {
+                            tracing::warn!(
+                                "pending service requests full ({MAX_PENDING_REQUESTS}), dropping request"
+                            );
+                            continue;
+                        }
+                        if oldest_insert.is_none() {
+                            oldest_insert = Some(now);
+                        }
+                        pending.insert(request_key.clone(), (request.id, now));
                         let mut metadata = dora_message::metadata::MetadataParameters::default();
                         metadata.insert(REQUEST_ID.into(), Parameter::String(request_key));
                         node.send_output("request".into(), metadata, StructArray::from(data))?;
                     }
                     MergedEvent::Dora(Event::Input { metadata, data, .. }) => {
                         if let Some(key) = get_string_param(&metadata.parameters, REQUEST_ID)
-                            && let Some(id) = pending.remove(key)
+                            && let Some((id, _)) = pending.remove(key)
                         {
                             let response = serialize_raw_cdr(&TypedValue {
                                 value: &data,
@@ -725,9 +757,17 @@ fn run_zenoh_action_server(
                 let decoded = match decoded {
                     Ok(decoded) => decoded,
                     Err(error) => {
-                        futures::executor::block_on(
+                        // `reject` can fail with RequestExpired/RequestAbsent (e.g. a
+                        // peer replaying the same forged attachment); that must not
+                        // tear down the bridge, so warn and continue like the reply
+                        // paths rather than `?`-propagating out of the loop.
+                        if let Err(reject_error) = futures::executor::block_on(
                             server.send_goal.reject(request.id, &error.to_string()),
-                        )?;
+                        ) {
+                            tracing::warn!(
+                                "failed to reject Zenoh send-goal request: {reject_error}"
+                            );
+                        }
                         continue;
                     }
                 };
@@ -784,11 +824,13 @@ fn run_zenoh_action_server(
                     deserialize_cdr(&request.payload),
                     "invalid Zenoh action get-result request",
                 ) else {
-                    futures::executor::block_on(
+                    if let Err(error) = futures::executor::block_on(
                         server
                             .get_result
                             .reject(request.id, "invalid request payload"),
-                    )?;
+                    ) {
+                        tracing::warn!("failed to reject Zenoh get-result request: {error}");
+                    }
                     continue;
                 };
                 let key = decoded.goal_id.uuid.to_string();
@@ -810,9 +852,13 @@ fn run_zenoh_action_server(
                         }
                     },
                     None => {
-                        futures::executor::block_on(
+                        if let Err(error) = futures::executor::block_on(
                             server.get_result.reject(request.id, "unknown goal"),
-                        )?;
+                        ) {
+                            tracing::warn!(
+                                "failed to reject unknown-goal get-result request: {error}"
+                            );
+                        }
                         false
                     }
                 };
@@ -828,11 +874,13 @@ fn run_zenoh_action_server(
                     deserialize_cdr(&request.payload),
                     "invalid Zenoh action cancel-goal request",
                 ) else {
-                    futures::executor::block_on(
+                    if let Err(error) = futures::executor::block_on(
                         server
                             .cancel_goal
                             .reject(request.id, "invalid request payload"),
-                    )?;
+                    ) {
+                        tracing::warn!("failed to reject Zenoh cancel-goal request: {error}");
+                    }
                     continue;
                 };
                 let requested = decoded.goal_info.goal_id.uuid;
