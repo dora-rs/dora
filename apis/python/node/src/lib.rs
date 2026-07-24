@@ -2107,26 +2107,32 @@ impl Node {
                                             .and_then(|d| d.strip_prefix(':'))
                                             .and_then(|d| d.parse::<i32>().ok())
                                             .unwrap_or(0);
-                                        bound.call_method1(
-                                            "_transit_copy_gpu_buf",
-                                            (counter, ptr_val, sender_dev, tp, pool_dev, size),
-                                        )
+                                        bound
+                                            .call_method1(
+                                                "_transit_copy_gpu_buf",
+                                                (counter, ptr_val, sender_dev, tp, pool_dev, size),
+                                            )
+                                            .map(|_| ())
                                     } else {
-                                        bound.call_method1(
-                                            "_cuda_memcpy_gpu_buf",
-                                            (counter, ptr_val, size),
-                                        )
+                                        bound
+                                            .call_method1(
+                                                "_cuda_memcpy_gpu_buf",
+                                                (counter, ptr_val, size),
+                                            )
+                                            .map(|_| ())
                                     }
                                 } else {
-                                    bound.call_method1(
-                                        "_cuda_memcpy",
-                                        (
-                                            shmem_ptr as u64 + data_offset as u64,
-                                            ptr_val,
-                                            size,
-                                            2u32,
-                                        ),
-                                    )
+                                    bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                ptr_val,
+                                                size,
+                                                2u32,
+                                            ),
+                                        )
+                                        .map(|_| ())
                                 };
                                 if let Err(e) = res {
                                     copy_ok = false;
@@ -2248,70 +2254,41 @@ impl Node {
                             let slow_counter = buffer_id
                                 .rsplit_once('_')
                                 .and_then(|(_, c)| c.parse::<u64>().ok());
-                            // If generation is odd (leftover from a failed GPU copy),
-                            // skip the begin-increment.  Same pattern as the
-                            // is_cuda branch.
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 == 0 {
-                                    std::ptr::write_volatile(gen_ptr, cur + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            }
-                            // Slow path: daemon-mediated fallback (rare).
-                            // Respect the same 25 MiB auto-pin threshold as the
-                            // fast path and register_memory_pool.  no_dma=true
-                            // skips cudaHostRegister for small pageable tensors
-                            // where pin overhead dominates DMA gain.
-                            let slow_no_dma = !auto_pin;
-                            let dma_result = if let (Ok(helpers), Some(c)) =
-                                (get_cuda_helpers(py), slow_counter)
-                            {
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
+                            let mut copy_ok = true;
+                            if let (Ok(helpers), Some(c)) = (get_cuda_helpers(py), slow_counter) {
                                 let bound = helpers.bind(py);
-                                bound
-                                    .call_method1("dma_copy", (ptr_val, size, c, slow_no_dma))
-                                    .map(|_| ())
+                                let slow_no_dma = !auto_pin;
+                                if let Err(e) =
+                                    bound.call_method1("dma_copy", (ptr_val, size, c, slow_no_dma))
+                                {
+                                    copy_ok = false;
+                                    tracing::error!(
+                                        "[{}] write_memory_pool (slow path): DMA copy failed: {}",
+                                        self.node_id,
+                                        e
+                                    );
+                                }
                             } else {
-                                Ok(())
-                            };
-                            if let Err(e) = dma_result {
+                                copy_ok = false;
+                            }
+                            unsafe {
+                                seqlock_end(gen_ptr, pre_write_gen, copy_ok);
+                            }
+                            if !copy_ok {
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool (slow path): DMA copy failed: {}",
-                                    self.node_id,
-                                    e
+                                    "[{}] write_memory_pool (slow path): DMA copy failed",
+                                    self.node_id
                                 ));
                             }
-                            // Seqlock: end write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
                         } else if is_cuda {
-                            // If generation is odd, the previous GPU copy failed
-                            // and left it in the "write in progress" state.
-                            // Skip the begin-increment so the reader sees
-                            // "writing" throughout — no window where generation is
-                            // even with stale data.  If generation is even (normal
-                            // case), begin the write as usual.
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let cur = std::ptr::read_volatile(gen_ptr);
-                                if cur % 2 == 0 {
-                                    std::ptr::write_volatile(gen_ptr, cur + 1);
-                                    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                                }
-                            }
-                            let write_result = if let Ok(helpers) = get_cuda_helpers(py) {
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
+                            let mut copy_ok = true;
+                            if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                if ipc_present == 1 {
-                                    // GPU pool: write to the GPU buffer.  Use the
-                                    // transit path when the pool is on a different
-                                    // device without P2P (e.g. RTX 5090).  This slow
-                                    // path does not hold the slot, so PINNED_POOL is
-                                    // the correct source for the transit info.
+                                let res = if ipc_present == 1 {
                                     if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
                                         && let Ok(c) = counter_str.parse::<u64>()
                                     {
@@ -2348,8 +2325,6 @@ impl Node {
                                         Ok(())
                                     }
                                 } else {
-                                    // CPU pool: copy GPU source → shmem via DtoH so the
-                                    // receiver can read the data through /dev/shm.
                                     bound
                                         .call_method1(
                                             "_cuda_memcpy",
@@ -2361,29 +2336,26 @@ impl Node {
                                             ),
                                         )
                                         .map(|_| ())
+                                };
+                                if let Err(e) = res {
+                                    copy_ok = false;
+                                    tracing::error!(
+                                        "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
+                                        self.node_id,
+                                        e
+                                    );
                                 }
                             } else {
-                                Ok(())
-                            };
-
-                            // Check copy result before advancing the seqlock.
-                            // On failure, leave generation odd so the reader falls
-                            // back to the daemon path.  The next successful
-                            // write will restore even parity before beginning.
-                            if let Err(e) = write_result {
-                                return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
-                                    self.node_id,
-                                    e
-                                ));
+                                copy_ok = false;
                             }
-
-                            // Seqlock: end write (generation → even, only on copy success)
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end(gen_ptr, pre_write_gen, copy_ok);
+                            }
+                            if !copy_ok {
+                                return Err(eyre::eyre!(
+                                    "[{}] write_memory_pool (slow path): GPU pool copy failed",
+                                    self.node_id
+                                ));
                             }
                         } else {
                             // Seqlock: begin write
