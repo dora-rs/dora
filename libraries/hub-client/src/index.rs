@@ -439,14 +439,19 @@ fn read_capped(path: &Path) -> eyre::Result<String> {
     use std::io::Read as _;
     let file = std::fs::File::open(path)
         .with_context(|| format!("no index entry at `{}`", path.display()))?;
-    let mut raw = String::new();
+    // Read raw bytes and check the size cap *before* validating UTF-8. Reading
+    // straight into a `String` validates UTF-8 over the `MAX_ENTRY_SIZE + 1`
+    // bytes we deliberately over-read to detect oversize files; if that extra
+    // byte lands mid-way through a multi-byte sequence, the caller would see a
+    // confusing "invalid UTF-8" error instead of the intended "too large" one.
+    let mut raw = Vec::new();
     file.take(MAX_ENTRY_SIZE + 1)
-        .read_to_string(&mut raw)
+        .read_to_end(&mut raw)
         .with_context(|| format!("failed to read `{}`", path.display()))?;
     if raw.len() as u64 > MAX_ENTRY_SIZE {
         eyre::bail!("index file `{}` too large", path.display());
     }
-    Ok(raw)
+    String::from_utf8(raw).with_context(|| format!("`{}` is not valid UTF-8", path.display()))
 }
 
 #[cfg(test)]
@@ -728,5 +733,36 @@ mod tests {
         let mut a = art("linux-x86_64");
         a.sha256 = "z".repeat(64);
         assert!(a.validate().is_err());
+    }
+
+    #[test]
+    fn read_capped_reports_too_large_even_when_cap_splits_a_char() {
+        // A file larger than the cap, filled with a 2-byte character so the
+        // deliberately over-read `MAX_ENTRY_SIZE + 1`th byte lands mid-way
+        // through a UTF-8 sequence. The error must still be "too large", not a
+        // confusing "invalid UTF-8".
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("big.yml");
+        let oversized = "é".repeat((MAX_ENTRY_SIZE as usize / 2) + 8);
+        std::fs::write(&path, oversized).unwrap();
+        let err = read_capped(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "expected `too large`, got: {err}"
+        );
+    }
+
+    #[test]
+    fn read_capped_reports_invalid_utf8_for_small_binary_file() {
+        // A sub-cap file that is genuinely not UTF-8 still surfaces a clear
+        // UTF-8 error rather than being silently accepted.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("binary.yml");
+        std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01]).unwrap();
+        let err = read_capped(&path).unwrap_err();
+        assert!(
+            err.to_string().contains("not valid UTF-8"),
+            "expected UTF-8 error, got: {err}"
+        );
     }
 }
