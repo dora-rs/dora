@@ -1766,11 +1766,20 @@ impl Node {
                     result
                 }
             } else {
-                // CPU source → GPU pool: use pinned DMA (existing path).
-                bound
+                // CPU source → GPU pool: switch to the receiver's device
+                // so cudaMalloc in dma_copy → _get_gpu_buf lands on the
+                // correct GPU (matching the GPU-source branches).
+                let saved_dev: i32 = bound
+                    .call_method0("_get_cuda_device")
+                    .and_then(|r| r.extract::<i32>())
+                    .unwrap_or(0);
+                let _ = bound.call_method1("_set_cuda_device", (receiver_device_idx,));
+                let result = bound
                     .call_method1("dma_copy", (ptr_val, size, pool_counter, !is_pinned))
                     .and_then(|r| r.extract::<u64>())
-                    .ok()
+                    .ok();
+                let _ = bound.call_method1("_set_cuda_device", (saved_dev,));
+                result
             };
 
             if let Some(gpu_ptr) = gpu_ptr
