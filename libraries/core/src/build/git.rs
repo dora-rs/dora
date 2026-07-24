@@ -268,14 +268,23 @@ impl GitFolder {
                     )
                     .await;
                 let clone_target = target_dir.clone();
-                let checkout_result = tokio::task::spawn_blocking(move || {
+                let checkout_result = match tokio::task::spawn_blocking(move || {
                     let repository = clone_into(repo_url.clone(), &clone_target)
                         .with_context(|| format!("failed to clone git repo from `{repo_url}`"))?;
                     checkout_tree(&repository, &commit_hash)
                         .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
                 })
                 .await
-                .unwrap();
+                {
+                    Ok(result) => result,
+                    // A panic in the blocking clone/checkout task must not abort the
+                    // whole build: route it through the same cleanup + `bail!` arm as
+                    // an ordinary clone error so we don't leave a half-written clone
+                    // behind for the next build to reuse (#2480).
+                    Err(join_err) => {
+                        Err(eyre::Report::new(join_err)).context("git clone/checkout task panicked")
+                    }
+                };
 
                 match checkout_result {
                     Ok(()) => target_dir,
