@@ -311,7 +311,9 @@ impl Scheduler {
             return Some(event);
         }
 
-        // Process the ID with the oldest timestamp using BTreeMap Ordering
+        // Yield from the first non-empty input queue in least-recently-used
+        // order: `last_used` is a VecDeque of input IDs, and the ID we serve
+        // from is rotated to the back below so the others get a turn next.
         for index in 0..self.last_used.len() {
             let id = &self.last_used[index];
             if let Some((_size, queue)) = self.event_queues.get_mut(id)
