@@ -25,14 +25,23 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
     where
         S: serde::Serializer,
     {
-        let entry = if let Some(list) = self.column.as_list_opt::<i32>() {
+        // `entry` is the array passed to the element serializers; `seq_len` is
+        // the true number of sequence elements used for the BoundedSequence
+        // bound check. For `List`/`LargeList` these coincide (`entry` is the
+        // inner element array). For `Binary`/`LargeBinary`, `entry` is a 1-row
+        // binary array — its `len()` is the row count (always 1), so the
+        // element count must be read from the row's byte length instead
+        // (see #2816).
+        let (entry, seq_len) = if let Some(list) = self.column.as_list_opt::<i32>() {
             if list.len() != 1 {
                 return Err(error(format!(
                     "expected single-element list, got length {}",
                     list.len()
                 )));
             }
-            list.value(0)
+            let entry = list.value(0);
+            let seq_len = entry.len();
+            (entry, seq_len)
         } else if let Some(list) = self.column.as_list_opt::<i64>() {
             if list.len() != 1 {
                 return Err(error(format!(
@@ -40,7 +49,9 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     list.len()
                 )));
             }
-            list.value(0)
+            let entry = list.value(0);
+            let seq_len = entry.len();
+            (entry, seq_len)
         } else if let Some(list) = self.column.as_binary_opt::<i32>() {
             if list.len() != 1 {
                 return Err(error(format!(
@@ -48,7 +59,8 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     list.len()
                 )));
             }
-            Arc::new(list.slice(0, 1)) as ArrayRef
+            let seq_len = list.value(0).len();
+            (Arc::new(list.slice(0, 1)) as ArrayRef, seq_len)
         } else if let Some(list) = self.column.as_binary_opt::<i64>() {
             if list.len() != 1 {
                 return Err(error(format!(
@@ -56,7 +68,8 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
                     list.len()
                 )));
             }
-            Arc::new(list.slice(0, 1)) as ArrayRef
+            let seq_len = list.value(0).len();
+            (Arc::new(list.slice(0, 1)) as ArrayRef, seq_len)
         } else {
             return Err(error(format!(
                 "value is not compatible with expected sequence type: {:?}",
@@ -65,12 +78,10 @@ impl serde::Serialize for SequenceSerializeWrapper<'_> {
         };
         // Enforce BoundedSequence max_size
         if let Some(max) = self.max_size
-            && entry.len() > max
+            && seq_len > max
         {
             return Err(error(format!(
-                "sequence length {} exceeds BoundedSequence max_size {}",
-                entry.len(),
-                max
+                "sequence length {seq_len} exceeds BoundedSequence max_size {max}"
             )));
         }
         match &self.item_type {
@@ -352,7 +363,7 @@ mod tests {
     use dora_ros2_bridge_msg_gen::types::{
         Member, MemberType, Message,
         primitives::{BasicType, NestableType},
-        sequences::Sequence,
+        sequences::{BoundedSequence, Sequence},
     };
 
     use super::*;
@@ -583,5 +594,90 @@ mod tests {
             decoded.1, tail,
             "trailing field after byte sequence corrupted"
         );
+    }
+
+    /// Builds a message type with a bounded `uint8[<=max_size]` field followed
+    /// by an `int32` field.
+    fn bounded_byte_seq_then_int32_message(
+        max_size: usize,
+    ) -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "ByteSeqMsg".to_string(),
+            members: vec![
+                Member {
+                    name: "data".to_string(),
+                    r#type: MemberType::BoundedSequence(BoundedSequence {
+                        value_type: NestableType::BasicType(BasicType::U8),
+                        max_size,
+                    }),
+                    default: None,
+                },
+                Member {
+                    name: "tail".to_string(),
+                    r#type: MemberType::NestableType(NestableType::BasicType(BasicType::I32)),
+                    default: None,
+                },
+            ],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("ByteSeqMsg".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    /// Regression test for #2816: a `BoundedSequence` (`uint8[<=N]`) supplied as
+    /// an Arrow `Binary` column must enforce `max_size` on the byte count, just
+    /// like the `List<UInt8>` representation. The buggy check compared against
+    /// the 1-row array length (always 1), so an over-capacity Binary payload was
+    /// silently accepted.
+    #[test]
+    fn bounded_byte_sequence_binary_enforces_max_size() {
+        let max_size = 10;
+        let over: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        let tail = 0x1234_5678_i32;
+
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ByteSeqMsg"),
+            messages: bounded_byte_seq_then_int32_message(max_size),
+        };
+
+        // Over-capacity as a `List<UInt8>` column: rejected (the already-working
+        // representation).
+        let list_err = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &build_byte_value_list(&over, tail),
+            type_info: &type_info,
+        })
+        .expect_err("List over max_size must be rejected");
+        assert!(
+            list_err
+                .to_string()
+                .contains("exceeds BoundedSequence max_size"),
+            "unexpected error for List: {list_err}"
+        );
+
+        // Over-capacity as a `Binary` column: must be rejected identically.
+        let binary_err = cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &build_byte_value_binary(&over, tail),
+            type_info: &type_info,
+        })
+        .expect_err("Binary over max_size must be rejected");
+        assert!(
+            binary_err
+                .to_string()
+                .contains("sequence length 100 exceeds BoundedSequence max_size 10"),
+            "unexpected error for Binary: {binary_err}"
+        );
+
+        // Within capacity as a `Binary` column: must still serialize fine.
+        let ok: Vec<u8> = vec![1, 2, 3];
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &build_byte_value_binary(&ok, tail),
+            type_info: &type_info,
+        })
+        .expect("Binary within max_size must serialize");
     }
 }
