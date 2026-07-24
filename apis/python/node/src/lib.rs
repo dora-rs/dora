@@ -2074,6 +2074,15 @@ impl Node {
                                 seqlock_end(gen_ptr, pre_write_gen, copy_ok);
                             }
                             if !copy_ok {
+                                // Re-insert the slot so free_memory_pool
+                                // can clean up the GPU buffer and transit
+                                // allocation (mirrors the is_cuda branch).
+                                if let Some(slot_data) = store_back.take() {
+                                    PINNED_POOL
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(counter, slot_data);
+                                }
                                 return Err(eyre::eyre!(
                                     "[{}] write_memory_pool: DMA copy failed",
                                     self.node_id
