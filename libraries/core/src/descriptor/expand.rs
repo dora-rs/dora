@@ -195,12 +195,16 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     }
 
     // Check outputs: each declared output should be produced by some inner node.
+    // Runtime (operator) and legacy custom nodes declare their outputs through
+    // config.outputs / run_config.outputs rather than the node-level `outputs`
+    // set, so those need the same treatment as inputs (see #2817).
     // For nested module children, recursively load their declared outputs.
     let mut inner_outputs: BTreeSet<String> = module_file
         .nodes
         .iter()
         .filter(|n| n.module.is_none())
-        .flat_map(|n| n.outputs.iter().map(|o| o.to_string()))
+        .flat_map(|n| node_output_maps(n))
+        .flat_map(|outputs| outputs.iter().map(|o| o.to_string()))
         .collect();
 
     // Check nested module files exist and collect their declared outputs
@@ -298,6 +302,26 @@ fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
     }
     if let Some(ref custom) = node.custom {
         maps.push(&custom.run_config.inputs);
+    }
+    maps
+}
+
+/// Collect every output set a node produces. Runtime (`operators:` / `operator:`)
+/// and legacy `custom:` nodes declare their produced outputs in
+/// `config.outputs` / `run_config.outputs` rather than the node-level
+/// `outputs` set, which stays empty for them. Output resolution must consult
+/// all of these, mirroring [`node_input_maps`] on the input side (see #2817,
+/// the output-side counterpart of the #2441 input fix).
+fn node_output_maps(node: &Node) -> Vec<&BTreeSet<DataId>> {
+    let mut maps = vec![&node.outputs];
+    if let Some(ref operators) = node.operators {
+        maps.extend(operators.operators.iter().map(|op| &op.config.outputs));
+    }
+    if let Some(ref operator) = node.operator {
+        maps.push(&operator.config.outputs);
+    }
+    if let Some(ref custom) = node.custom {
+        maps.push(&custom.run_config.outputs);
     }
     maps
 }
@@ -549,7 +573,11 @@ fn expand_module_node(
     for declared_output in &module_file.module.outputs {
         let producer = final_nodes
             .iter()
-            .find(|n| n.outputs.contains(declared_output))
+            .find(|n| {
+                node_output_maps(n)
+                    .iter()
+                    .any(|outputs| outputs.contains(declared_output))
+            })
             .ok_or_else(|| {
                 eyre::eyre!(
                     "module `{}` declares output `{}` but no inner node produces it",
@@ -2240,5 +2268,125 @@ nodes:
             }
             _ => panic!("expected user mapping"),
         }
+    }
+
+    /// Regression test for #2817: a module output produced by an `operators:`
+    /// (runtime) inner node must resolve. The produced outputs live in
+    /// `operators[].config.outputs`, not the node-level `outputs` set, so the
+    /// pre-fix producer lookup wrongly rejected the module.
+    #[test]
+    fn expand_resolves_operator_produced_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "operator_output_module.yml",
+            r#"
+module:
+  name: rt
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: operator_output_module.yml
+    inputs:
+      data: src/val
+  - id: sink
+    path: sink.py
+    inputs:
+      y: m/result
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        // The downstream consumer's `m/result` reference must resolve to the
+        // operator's producer node.
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "sink")
+            .unwrap();
+        let y = &sink.inputs[&DataId::from("y".to_string())];
+        match &y.mapping {
+            InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "m.runtime");
+                assert_eq!(m.output.to_string(), "result");
+            }
+            _ => panic!("expected user mapping"),
+        }
+    }
+
+    /// Regression test for #2817: `check_module_file` must accept a module
+    /// whose declared output is produced by an operator (runtime) or legacy
+    /// `custom:` inner node. Before the fix it wrongly bailed with
+    /// "no inner node produces it" because it only scanned node-level outputs.
+    #[test]
+    fn check_module_file_accepts_operator_and_custom_produced_outputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        let operator_path = write_file(
+            base,
+            "operator_output_module.yml",
+            r#"
+module:
+  name: rt
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - result
+"#,
+        );
+        check_module_file(&operator_path).unwrap();
+
+        let custom_path = write_file(
+            base,
+            "custom_output_module.yml",
+            r#"
+module:
+  name: legacy
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runner
+    custom:
+      path: node.py
+      source: Local
+      inputs:
+        x: _mod/data
+      outputs:
+        - result
+"#,
+        );
+        check_module_file(&custom_path).unwrap();
     }
 }
