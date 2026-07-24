@@ -542,6 +542,9 @@ fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
     if let Some(ref n) = meta.shared_memory_name {
         p.insert("shared_memory_name".into(), Parameter::String(n.clone()));
     }
+    if let Some(ipc) = meta.ipc_present {
+        p.insert("ipc_present".into(), Parameter::Bool(ipc));
+    }
     if let Some(ref b) = meta.buffer_id {
         p.insert("buffer_id".into(), Parameter::String(b.clone()));
     }
@@ -595,6 +598,7 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
         is_pinned: get_bool("is_pinned").unwrap_or(false),
         shared_memory_name: get_str("shared_memory_name"),
         buffer_id: get_str("buffer_id"),
+        ipc_present: get_bool("ipc_present"),
         pinned_type: get_str("pinned_type"),
     }
 }

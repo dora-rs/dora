@@ -36,6 +36,10 @@ pub struct MemoryPoolMetadata {
     pub shared_memory_name: Option<String>,
     /// Buffer ID used for lifecycle tracking and cleanup.
     pub buffer_id: Option<String>,
+    /// Whether an IPC handle was successfully exported to the shmem header
+    /// (byte 24).  True (1) means the pool's GPU buffer is accessible via
+    /// cudaIpcOpenMemHandle; the shmem data region may be header-only in this case.
+    pub ipc_present: Option<bool>,
     /// Pool type: "cpu" or "cuda", indicating whether the receiver is a CUDA device.
     pub pinned_type: Option<String>,
 }
@@ -313,6 +317,7 @@ mod tests {
             shared_memory_name: None,
             buffer_id: None,
             pinned_type: None,
+            ipc_present: None,
         }
     }
 

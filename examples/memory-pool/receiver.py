@@ -17,6 +17,9 @@ SCENARIO = os.getenv("memory_pool_scenario", "throughput")
 
 if RECEIVER_DEVICE.startswith("cuda") and not torch.cuda.is_available():
     raise RuntimeError("CUDA is not available for the configured receiver device.")
+if RECEIVER_DEVICE.startswith("cuda"):
+    idx = int(RECEIVER_DEVICE.split(":")[1]) if ":" in RECEIVER_DEVICE else 0
+    torch.cuda.set_device(idx)
 
 pbar = tqdm(total=MESSAGE_COUNT)
 velocities = []
