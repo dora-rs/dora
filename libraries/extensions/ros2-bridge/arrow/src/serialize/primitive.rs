@@ -58,6 +58,7 @@ impl serde::Serialize for SerializeWrapper<'_> {
                         array.len()
                     )));
                 }
+                super::check_not_null(array, "BooleanArray")?;
                 let field_value = array.value(0);
                 serializer.serialize_bool(field_value)
             }
@@ -83,6 +84,7 @@ where
             array.len()
         )));
     }
+    super::check_not_null(array, std::any::type_name::<T::Native>())?;
     let number = array.value(0);
     Ok(number)
 }
