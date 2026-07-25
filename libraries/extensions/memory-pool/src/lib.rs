@@ -18,7 +18,7 @@ pub struct MemoryPoolId {
 /// process**. It is meaningless in any other process — consumers **must**
 /// retrieve the data pointer via `shared_memory_name` (opening the shmem
 /// file and reading the DORADMA header for `data_offset`), not via `ptr`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MemoryPoolMetadata {
     /// Raw pointer to tensor data in the registering process's address space.
     /// Only valid in the registering process; cross-process consumers must

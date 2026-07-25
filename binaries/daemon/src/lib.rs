@@ -589,6 +589,47 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
     }
 }
 
+#[cfg(test)]
+mod metadata_roundtrip_tests {
+    use super::*;
+    use dora_memory_pool::MemoryPoolMetadata;
+
+    /// `ipc_present` must survive a to_params → from_params round-trip
+    /// so the read path receives the trusted flag from daemon metadata.
+    #[test]
+    fn ipc_present_survives_roundtrip_true() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: Some(true),
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, Some(true));
+    }
+
+    #[test]
+    fn ipc_present_survives_roundtrip_false() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: Some(false),
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, Some(false));
+    }
+
+    #[test]
+    fn ipc_present_survives_roundtrip_none() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: None,
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, None);
+    }
+}
+
 /// Where the daemon's zenoh listen address came from, which decides what a bind
 /// failure means.
 ///
