@@ -355,7 +355,7 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
                 "module node `{}` must be expanded before resolution — \
                  call expand_modules() first",
                 node.id
-            )
+            );
         }
         NodeKind::Standard(_) => {
             let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
@@ -369,7 +369,7 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
                         other @ (_, _, _) => {
                             eyre::bail!(
                                 "only one of `branch`, `tag`, and `rev` are allowed (got {other:?})"
-                            )
+                            );
                         }
                     };
                     NodeSource::GitBranch {
@@ -378,7 +378,7 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
                     }
                 }
                 (None, _, _, _) => {
-                    eyre::bail!("`git` source required when using branch, tag, or rev")
+                    eyre::bail!("`git` source required when using branch, tag, or rev");
                 }
             };
 
@@ -454,7 +454,7 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     } else if let Ok(abs_path) = which::which(&path) {
         Ok(abs_path)
     } else {
-        bail!("Could not find source path {}", path.display())
+        bail!("Could not find source path {}", path.display());
     }
 }
 
@@ -500,7 +500,7 @@ pub fn resolve_path_confined(
         python_env_dir
             .map(|env| format!(" or its managed environment `{}`", env.display()))
             .unwrap_or_default(),
-    )
+    );
 }
 
 /// Canonicalize `candidate` and require it to stay under `root`.
@@ -605,7 +605,7 @@ impl NodeExt for Node {
                 eyre::bail!(
                     "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
                     self.id
-                )
+                );
             }
             (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
             (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
@@ -617,7 +617,7 @@ impl NodeExt for Node {
                 eyre::bail!(
                     "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
-                )
+                );
             }
         }
     }
