@@ -997,18 +997,24 @@ mod tests {
         let clone_dir = folder_a.prepare(&mut TestLogger).await.unwrap();
 
         // The clone on disk drifts to a different commit -- a stale leftover,
-        // exactly the case the #2482 HEAD check exists to catch.
+        // exactly the case the #2482 HEAD check exists to catch. Scope every
+        // git2 handle to this block so they're all dropped before prepare()
+        // tries to delete the dir: on Windows an open repo handle keeps a lock
+        // on the .git files and blocks remove_dir_all, leaving the stale clone
+        // behind and failing the assertion below.
         std::fs::write(clone_dir.join("file.txt"), b"B").unwrap();
-        let repo = git2::Repository::open(&clone_dir).unwrap();
-        let parent = repo.head().unwrap().peel_to_commit().unwrap();
-        let mut index = repo.index().unwrap();
-        index.add_path(Path::new("file.txt")).unwrap();
-        index.write().unwrap();
-        let tree_id = index.write_tree().unwrap();
-        let tree = repo.find_tree(tree_id).unwrap();
-        let sig = git2::Signature::now("t", "t@t").unwrap();
-        repo.commit(Some("HEAD"), &sig, &sig, "B", &tree, &[&parent])
-            .unwrap();
+        {
+            let repo = git2::Repository::open(&clone_dir).unwrap();
+            let parent = repo.head().unwrap().peel_to_commit().unwrap();
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("file.txt")).unwrap();
+            index.write().unwrap();
+            let tree_id = index.write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            let sig = git2::Signature::now("t", "t@t").unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "B", &tree, &[&parent])
+                .unwrap();
+        }
 
         // Session B (a fresh SessionId -- a second, unrelated `dora start`)
         // asks for the same old commit and is handed the same dir. Session
