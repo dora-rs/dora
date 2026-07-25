@@ -219,17 +219,15 @@ static RECV_CPU_SHMEM: LazyLock<std::sync::Mutex<HashMap<String, RecvCpuSlot>>> 
 /// DORADMA shared-memory header layout:
 ///
 /// Offset  Size   Field
-/// 0       8      magic        — b"DORADMA\x00"
-/// 8       8      json_len     — u64 LE, metadata JSON byte length
-/// 16      8      data_off     — u64 LE, byte offset of tensor data from shmem base
-/// 24      8      ipc_flag     — u64 LE, 1 when ipc handles are valid
-/// 32      64     ipc_handle_0 — CUDA IPC handle (shadow: writer target)
-/// 96      8      write_gen    — u64 LE, seqlock: even = complete, odd = writing
-/// 104     64     ipc_handle_1 — CUDA IPC handle (active: reader source)
-/// 168     8      active_slot  — u64 LE, 0 or 1, which handle the reader should use
-/// 176     80     reserved
-/// 256     N      json         — padded-to-256-byte-alignment metadata JSON
-/// 256+N   M      data         — tensor payload
+/// 0       8      magic      — b"DORADMA\x00"
+/// 8       8      json_len   — u64 LE, metadata JSON byte length
+/// 16      8      data_off   — u64 LE, byte offset of tensor data from shmem base
+/// 24      8      ipc_flag   — u64 LE, 1 when ipc_handle is valid
+/// 32      64     ipc_handle — CUDA IPC mem handle (only valid if ipc_flag == 1)
+/// 96      8      write_gen  — u64 LE, seqlock: even = complete, odd = writing
+/// 104     152    reserved
+/// 256     N      json       — padded-to-256-byte-alignment metadata JSON
+/// 256+N   M      data       — tensor payload
 const DORADMA_HEADER_SIZE: usize = 256;
 const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
 const DORADMA_METADATA_ALIGN: usize = 256;
@@ -2084,6 +2082,8 @@ impl Node {
                                         e
                                     );
                                 }
+                            } else {
+                                copy_ok = false;
                             }
                             if copy_ok {
                                 // Publish: gen was odd (in-progress), flip to even.
