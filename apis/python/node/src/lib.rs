@@ -1651,7 +1651,11 @@ impl Node {
             .unwrap_or(0);
         let cross_device = sender_device_idx != receiver_device_idx;
         let mut transit_ptr: u64 = 0;
-        let mut pool_device = sender_device_idx;
+        let mut pool_device = if receiver_is_cuda {
+            receiver_device_idx
+        } else {
+            sender_device_idx
+        };
 
         // Tracks whether the GPU pool buffer + IPC handle were successfully set
         // up.  A CUDA receiver's shmem is header-only, so without the handle the
