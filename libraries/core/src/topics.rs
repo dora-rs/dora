@@ -355,10 +355,12 @@ pub async fn open_zenoh_session_with_listen(
                 }
             }
         }
-        Err(std::env::VarError::NotUnicode(_)) => eyre::bail!(
-            "{} env variable is not valid unicode",
-            zenoh::Config::DEFAULT_CONFIG_PATH_ENV
-        ),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            eyre::bail!(
+                "{} env variable is not valid unicode",
+                zenoh::Config::DEFAULT_CONFIG_PATH_ENV
+            );
+        }
     };
     Ok((zenoh_session, effective_listen_endpoint))
 }

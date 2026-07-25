@@ -281,7 +281,7 @@ pub fn validate_subdir(subdir: &str) -> eyre::Result<()> {
                 .chars()
                 .filter(|c| !c.is_control())
                 .collect::<String>()
-        )
+        );
     }
 }
 

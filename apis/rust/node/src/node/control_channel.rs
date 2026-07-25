@@ -70,7 +70,9 @@ impl ControlChannel {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to report outputs done event to dora-daemon")?,
-            other => bail!("unexpected outputs done reply: {other:?}"),
+            other => {
+                bail!("unexpected outputs done reply: {other:?}");
+            }
         }
         Ok(())
     }
@@ -87,7 +89,9 @@ impl ControlChannel {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to receive closed outputs reply from dora-daemon")?,
-            other => bail!("unexpected closed outputs reply: {other:?}"),
+            other => {
+                bail!("unexpected closed outputs reply: {other:?}");
+            }
         }
         Ok(())
     }
@@ -112,7 +116,9 @@ impl ControlChannel {
             .wrap_err("failed to send SendMessage request to dora-daemon")?;
         match reply {
             DaemonReply::Empty => Ok(()),
-            other => bail!("unexpected SendMessage reply: {other:?}"),
+            other => {
+                bail!("unexpected SendMessage reply: {other:?}");
+            }
         }
     }
 
@@ -134,7 +140,9 @@ impl ControlChannel {
             .wrap_err("failed to send OutputSent request to dora-daemon")?;
         match reply {
             DaemonReply::Empty => Ok(()),
-            other => bail!("unexpected OutputSent reply: {other:?}"),
+            other => {
+                bail!("unexpected OutputSent reply: {other:?}");
+            }
         }
     }
 
@@ -156,8 +164,12 @@ impl ControlChannel {
             .wrap_err("failed to send RegisterPinnedMemory request to dora-daemon")?;
         match reply {
             DaemonReply::Result(Ok(())) => Ok(()),
-            DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected RegisterPinnedMemory reply: {other:?}"),
+            DaemonReply::Result(Err(e)) => {
+                bail!("{e}");
+            }
+            other => {
+                bail!("unexpected RegisterPinnedMemory reply: {other:?}");
+            }
         }
     }
 
@@ -179,8 +191,12 @@ impl ControlChannel {
             .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
         match reply {
             DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
-            DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
+            DaemonReply::Result(Err(e)) => {
+                bail!("{e}");
+            }
+            other => {
+                bail!("unexpected ReadPinnedMemory reply: {other:?}");
+            }
         }
     }
 
@@ -195,8 +211,12 @@ impl ControlChannel {
             .wrap_err("failed to send FreePinnedMemory request to dora-daemon")?;
         match reply {
             DaemonReply::Result(Ok(())) => Ok(()),
-            DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
+            DaemonReply::Result(Err(e)) => {
+                bail!("{e}");
+            }
+            other => {
+                bail!("unexpected FreePinnedMemory reply: {other:?}");
+            }
         }
     }
 }

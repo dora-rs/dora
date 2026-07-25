@@ -623,9 +623,11 @@ impl EventStream {
         match reply {
             DaemonReply::Result(Ok(())) => {}
             DaemonReply::Result(Err(err)) => {
-                eyre::bail!("subscribe failed: {err}")
+                eyre::bail!("subscribe failed: {err}");
             }
-            other => eyre::bail!("unexpected subscribe reply: {other:?}"),
+            other => {
+                eyre::bail!("unexpected subscribe reply: {other:?}");
+            }
         }
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;

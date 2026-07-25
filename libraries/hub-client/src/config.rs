@@ -207,7 +207,7 @@ pub(crate) fn validate_index_entry(index: &IndexConfig) -> eyre::Result<()> {
     }
     match (&index.git, &index.path) {
         (None, None) => {
-            eyre::bail!("index `{}` has neither `git` nor `path`", index.alias)
+            eyre::bail!("index `{}` has neither `git` nor `path`", index.alias);
         }
         (Some(git), path) => {
             crate::validate_git_url(git).with_context(|| format!("index `{}`", index.alias))?;

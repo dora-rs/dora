@@ -83,7 +83,7 @@ impl InteractiveEvents {
             | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. } => DaemonReply::Result(Ok(())),
             DaemonRequest::NodeConfig { .. } => {
-                eyre::bail!("unexpected NodeConfig in interactive mode")
+                eyre::bail!("unexpected NodeConfig in interactive mode");
             }
         };
         Ok(reply)

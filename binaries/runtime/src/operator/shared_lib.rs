@@ -102,7 +102,7 @@ impl SharedLibraryOperator<'_> {
             let raw = match result.error {
                 Some(error) => {
                     let _ = init_done.send(Err(eyre!(error.to_string())));
-                    bail!("init_operator failed: {}", *error)
+                    bail!("init_operator failed: {}", *error);
                 }
                 None => operator_context,
             };
@@ -254,7 +254,9 @@ impl SharedLibraryOperator<'_> {
                 )
             };
             match error {
-                Some(error) => bail!("on_input failed: {}", *error),
+                Some(error) => {
+                    bail!("on_input failed: {}", *error);
+                }
                 None => match status {
                     DoraStatus::Continue => {}
                     DoraStatus::Stop => break StopReason::ExplicitStop,

@@ -13,7 +13,9 @@ pub fn read_json_bytes_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
             // try again with quoting the input to treat it as a string
             match arrow_json::reader::infer_json_schema(wrapped_quoted(data), None) {
                 Ok((schema, _)) => read_from_json_with_schema(wrapped_quoted(data), schema),
-                Err(err) => eyre::bail!("failed to infer JSON schema: {err}"),
+                Err(err) => {
+                    eyre::bail!("failed to infer JSON schema: {err}");
+                }
             }
         }
     }

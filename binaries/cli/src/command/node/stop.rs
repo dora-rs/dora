@@ -70,8 +70,12 @@ impl Executable for Stop {
                 println!("Node `{node_id}` stopped");
                 Ok(())
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("{err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
     }
 }

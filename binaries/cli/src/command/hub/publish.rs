@@ -208,11 +208,13 @@ impl Executable for Publish {
                 .open(&dest)
             {
                 Ok(file) => file,
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!(
-                    "version {version} of `{namespace}/{name}` already exists at `{}` — \
-                     the index is append-only; bump the version to publish a new one",
-                    dest.display()
-                ),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    bail!(
+                        "version {version} of `{namespace}/{name}` already exists at `{}` — \
+                         the index is append-only; bump the version to publish a new one",
+                        dest.display()
+                    );
+                }
                 Err(e) => {
                     return Err(e).with_context(|| format!("failed to write `{}`", dest.display()));
                 }

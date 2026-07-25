@@ -98,8 +98,12 @@ fn restart_dataflow(
             println!("dataflow restarted: {old_uuid} -> {new_uuid}");
             Ok(())
         }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected restart dataflow reply: {other:?}"),
+        ControlRequestReply::Error(err) => {
+            bail!("{err}");
+        }
+        other => {
+            bail!("unexpected restart dataflow reply: {other:?}");
+        }
     }
 }
 
@@ -126,7 +130,11 @@ fn restart_dataflow_by_name(
             println!("dataflow restarted: {old_uuid} -> {new_uuid}");
             Ok(())
         }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected restart dataflow reply: {other:?}"),
+        ControlRequestReply::Error(err) => {
+            bail!("{err}");
+        }
+        other => {
+            bail!("unexpected restart dataflow reply: {other:?}");
+        }
     }
 }
