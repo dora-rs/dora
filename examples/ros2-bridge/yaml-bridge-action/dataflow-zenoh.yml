@@ -1,0 +1,21 @@
+nodes:
+  - id: goal_sender
+    build: cargo build -p yaml-bridge-action-goal
+    path: ../../../target/debug/yaml-bridge-action-goal
+    inputs:
+      tick: dora/timer/millis/5000
+      feedback: fib_client/feedback
+      result: fib_client/result
+    outputs: [goal]
+
+  - id: fib_client
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      action: /fibonacci
+      action_type: example_interfaces/Fibonacci
+      role: client
+    inputs:
+      goal: goal_sender/goal
+    outputs: [feedback, result]

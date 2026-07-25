@@ -13,6 +13,7 @@ use proc_macro2::Ident;
 use quote::{format_ident, quote};
 
 pub mod parser;
+pub mod type_description;
 pub mod types;
 
 pub use crate::parser::get_packages;
@@ -150,7 +151,7 @@ pub fn generate_package(package: &Package, create_cxx_bridge: bool) -> proc_macr
 
     let (attributes, ffi_imports, extern_block, rust_imports) = if create_cxx_bridge {
         let reuse_bindings = package.reuse_bindings_token_stream();
-        let rust_imports = generate_rust_imports_for_cxx();
+        let rust_imports = generate_package_rust_imports_for_cxx();
         (
             quote! { #[cxx::bridge] },
             quote! {},
@@ -289,9 +290,24 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
             type Ros2Node;
             type ActionGoalId;
             fn init_ros2_context() -> Result<Box<Ros2Context>>;
+            fn init_ros2_context_with_transport(transport: Ros2TransportConfig) -> Result<Box<Ros2Context>>;
             fn new_node(self: &Ros2Context, name_space: &str, base_name: &str) -> Result<Box<Ros2Node>>;
             fn qos_default() -> Ros2QosPolicies;
             fn actionqos_default() -> Ros2ActionClientQosPolicies;
+        }
+
+        #[derive(Debug, Clone, Copy)]
+        pub enum Ros2TransportKind {
+            Dds,
+            ZenohHumble,
+            ZenohRep2016,
+        }
+
+        #[derive(Debug, Clone)]
+        pub struct Ros2TransportConfig {
+            pub kind: Ros2TransportKind,
+            /// Empty means use `ZENOH_SESSION_CONFIG_URI`, then the embedded default.
+            pub config_uri: String,
         }
 
         #[derive(Debug, Clone)]
@@ -352,13 +368,41 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
     };
     let cxx_ros2_impl = quote! {
         pub struct Ros2Context{
-            context: crate::ros2_client::Context,
+            context: dora_ros2_bridge::transport::Context,
+            compatibility: Option<dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility>,
             executor: std::sync::Arc<futures::executor::ThreadPool>,
         }
 
         fn init_ros2_context() -> eyre::Result<Box<Ros2Context>> {
+            init_ros2_context_with_transport(ffi::Ros2TransportConfig {
+                kind: ffi::Ros2TransportKind::Dds,
+                config_uri: String::new(),
+            })
+        }
+
+        fn init_ros2_context_with_transport(transport: ffi::Ros2TransportConfig) -> eyre::Result<Box<Ros2Context>> {
+            let config_uri = (!transport.config_uri.is_empty()).then(|| transport.config_uri.into());
+            let (config, compatibility) = match transport.kind {
+                ffi::Ros2TransportKind::Dds => (dora_ros2_bridge::dora_message::descriptor::Ros2TransportConfig::Dds, None),
+                ffi::Ros2TransportKind::ZenohHumble => (dora_ros2_bridge::dora_message::descriptor::Ros2TransportConfig::Zenoh {
+                    compatibility: dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility::Humble,
+                    config_uri: config_uri.clone(),
+                }, Some(dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility::Humble)),
+                ffi::Ros2TransportKind::ZenohRep2016 => (dora_ros2_bridge::dora_message::descriptor::Ros2TransportConfig::Zenoh {
+                    compatibility: dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility::Rep2016,
+                    config_uri,
+                }, Some(dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility::Rep2016)),
+                _ => eyre::bail!("unknown ROS2 transport kind"),
+            };
             Ok(Box::new(Ros2Context{
-                context: crate::ros2_client::Context::new()?,
+                context: futures::executor::block_on(dora_ros2_bridge::transport::Context::open(
+                    &config,
+                    std::env::var("ROS_DOMAIN_ID")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(0),
+                ))?,
+                compatibility,
                 executor: std::sync::Arc::new(futures::executor::ThreadPool::new()?),
             }))
         }
@@ -366,28 +410,65 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
         impl Ros2Context {
             fn new_node(&self, name_space: &str, base_name: &str) -> eyre::Result<Box<Ros2Node>> {
                 use futures::task::SpawnExt as _;
-                use eyre::WrapErr as _;
+                use eyre::{ContextCompat as _, WrapErr as _};
 
-                let name = crate::ros2_client::NodeName::new(name_space, base_name).map_err(|e| eyre::eyre!(e))?;
                 let options = crate::ros2_client::NodeOptions::new().enable_rosout(true);
-                let mut node = self.context.new_node(name, options)
+                let node = futures::executor::block_on(self.context.new_named_node(name_space, base_name, options))
                     .map_err(|e| eyre::eyre!("failed to create ROS2 node: {e:?}"))?;
 
-                let spinner = node.spinner().context("failed to create spinner")?;
-                self.executor.spawn(async {
-                    if let Err(err) = spinner.spin().await {
-                        eprintln!("ros2 spinner failed: {err:?}");
+                let node = match node {
+                    dora_ros2_bridge::transport::Node::Dds(node) => {
+                        let mut node = (*node).into_inner();
+                        let spinner = node.spinner().context("failed to create spinner")?;
+                        self.executor.spawn(async {
+                            if let Err(err) = spinner.spin().await {
+                                eprintln!("ros2 spinner failed: {err:?}");
+                            }
+                        })
+                        .context("failed to spawn ros2 spinner")?;
+                        GeneratedNode::Dds(node)
                     }
-                })
-                .context("failed to spawn ros2 spinner")?;
+                    #[cfg(feature = "rmw-zenoh")]
+                    dora_ros2_bridge::transport::Node::Zenoh(node) => GeneratedNode::Zenoh {
+                        node,
+                        compatibility: self.compatibility.context("Zenoh compatibility profile missing")?,
+                    }
+                };
 
                 Ok(Box::new(Ros2Node{ node, executor: self.executor.clone(), }))
             }
         }
 
+        pub enum GeneratedNode {
+            Dds(ros2_client::Node),
+            #[cfg(feature = "rmw-zenoh")]
+            Zenoh {
+                node: dora_ros2_bridge::transport::zenoh::Node,
+                compatibility: dora_ros2_bridge::dora_message::descriptor::RmwZenohCompatibility,
+            },
+        }
+
         pub struct Ros2Node {
-            pub node : ros2_client::Node,
+            pub node : GeneratedNode,
             pub executor: std::sync::Arc<futures::executor::ThreadPool>,
+        }
+
+        impl Ros2Node {
+            pub fn dds_node(&self) -> eyre::Result<&ros2_client::Node> {
+                match &self.node {
+                    GeneratedNode::Dds(node) => Ok(node),
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { .. } => eyre::bail!("entity requires the DDS transport"),
+                }
+            }
+
+            pub fn dds_node_mut(&mut self) -> eyre::Result<&mut ros2_client::Node> {
+                match &mut self.node {
+                    GeneratedNode::Dds(node) => Ok(node),
+                    #[cfg(feature = "rmw-zenoh")]
+                    GeneratedNode::Zenoh { .. } => eyre::bail!("entity requires the DDS transport"),
+                }
+            }
         }
 
         unsafe impl cxx::ExternType for Ros2Node {
@@ -444,6 +525,31 @@ fn generate_default_impls(create_cxx_bridge: bool) -> proc_macro2::TokenStream {
                     keep_last: keep_last.unwrap_or(1),
                 }
             }
+        }
+
+        #[cfg(feature = "rmw-zenoh")]
+        pub fn neutral_qos(value: &ffi::Ros2QosPolicies) -> eyre::Result<dora_ros2_bridge::transport::Ros2Qos> {
+            use dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
+            let lease = value.lease_duration.is_finite().then(|| std::time::Duration::from_secs_f64(value.lease_duration.max(0.0)));
+            let durability = match value.durability {
+                ffi::Ros2Durability::Volatile => Durability::Volatile,
+                ffi::Ros2Durability::TransientLocal => Durability::TransientLocal,
+                _ => eyre::bail!("native Zenoh supports volatile and transient-local durability"),
+            };
+            let liveliness = match value.liveliness {
+                ffi::Ros2Liveliness::Automatic => Liveliness::Automatic { lease_duration: lease },
+                ffi::Ros2Liveliness::ManualByParticipant => Liveliness::ManualByParticipant { lease_duration: lease },
+                ffi::Ros2Liveliness::ManualByTopic => Liveliness::ManualByTopic { lease_duration: lease },
+                _ => eyre::bail!("unknown ROS2 liveliness policy"),
+            };
+            Ok(Ros2Qos {
+                reliability: if value.reliable {
+                    Reliability::Reliable { max_blocking_time: std::time::Duration::from_secs_f64(value.max_blocking_time.max(0.0)) }
+                } else { Reliability::BestEffort },
+                durability,
+                history: if value.keep_all { History::KeepAll } else { History::KeepLast { depth: value.keep_last } },
+                liveliness,
+            })
         }
 
         impl From<ffi::Ros2QosPolicies> for rustdds::QosPolicies {
@@ -617,6 +723,18 @@ fn generate_rust_imports_for_cxx() -> proc_macro2::TokenStream {
     }
 }
 
+fn generate_package_rust_imports_for_cxx() -> proc_macro2::TokenStream {
+    let common = generate_rust_imports_for_cxx();
+    quote! {
+        #common
+        #[allow(unused_imports)]
+        use crate::ros2::default_impl::GeneratedNode;
+        #[cfg(feature = "rmw-zenoh")]
+        #[allow(unused_imports)]
+        use crate::ros2::default_impl::neutral_qos;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::env::VarError;
@@ -729,5 +847,21 @@ mod tests {
             detect(Err(VarError::NotPresent), Err(VarError::NotPresent)),
             "Enhanced"
         );
+    }
+
+    #[test]
+    fn transport_initializers_are_generated_for_rust_and_cxx() {
+        let generated = generate_default_impls(true).to_string();
+        assert!(generated.contains("init_ros2_context"));
+        assert!(generated.contains("init_ros2_context_with_transport"));
+        assert!(generated.contains("ZenohHumble"));
+        assert!(generated.contains("ZenohRep2016"));
+        assert!(generated.contains("dora_ros2_bridge :: transport :: Context"));
+    }
+
+    #[test]
+    fn cxx_package_modules_import_transport_neutral_node_type() {
+        let imports = generate_package_rust_imports_for_cxx().to_string();
+        assert!(imports.contains("GeneratedNode"));
     }
 }

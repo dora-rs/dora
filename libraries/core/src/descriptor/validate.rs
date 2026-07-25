@@ -554,7 +554,16 @@ fn validate_ros2_config(
     node_inputs: &BTreeMap<DataId, Input>,
     node_outputs: &BTreeSet<DataId>,
 ) -> eyre::Result<()> {
-    use dora_message::descriptor::{Ros2Direction, Ros2Role};
+    use dora_message::descriptor::{Ros2Direction, Ros2Role, Ros2TransportConfig};
+
+    if let Ros2TransportConfig::Zenoh {
+        config_uri: Some(uri),
+        ..
+    } = &config.transport
+        && uri.as_os_str().is_empty()
+    {
+        bail!("node `{node_id}`: ros2 Zenoh config_uri must not be empty");
+    }
 
     // Exactly one of topic, topics, service, action must be set
     let mode_count = [
@@ -1287,8 +1296,10 @@ mod tests {
     use super::*;
     use crate::types::TypeRegistry;
     use dora_message::config::{Input, InputMapping};
-    use dora_message::descriptor::{Descriptor, Ros2BridgeConfig, Ros2Role};
-    use std::time::Duration;
+    use dora_message::descriptor::{
+        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Role, Ros2TransportConfig,
+    };
+    use std::{path::PathBuf, time::Duration};
 
     fn dummy_input() -> Input {
         Input {
@@ -1640,6 +1651,27 @@ nodes:
         )
         .unwrap_err();
         assert!(err.to_string().contains("requires one of"));
+    }
+
+    #[test]
+    fn validate_rejects_empty_ros2_zenoh_config_uri() {
+        let config = Ros2BridgeConfig {
+            transport: Ros2TransportConfig::Zenoh {
+                compatibility: RmwZenohCompatibility::Humble,
+                config_uri: Some(PathBuf::new()),
+            },
+            topic: Some("/t".into()),
+            message_type: Some("a/B".into()),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("out".to_owned())]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("config_uri must not be empty"));
     }
 
     #[test]
@@ -2406,6 +2438,49 @@ nodes:
 "#;
         let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
         check_wiring(&descriptor).unwrap();
+    }
+
+    #[test]
+    fn ros2_zenoh_documentation_examples_parse_with_explicit_profiles() {
+        let examples = [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"
+            )),
+        ];
+        for yaml in examples {
+            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+            let ros2 = descriptor
+                .nodes
+                .iter()
+                .find_map(|node| node.ros2.as_ref())
+                .unwrap();
+            assert!(matches!(
+                ros2.transport,
+                Ros2TransportConfig::Zenoh {
+                    compatibility: RmwZenohCompatibility::Humble,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn ros2_zenoh_documentation_links_upstream_wire_contract() {
+        let guide = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../guide/src/advanced/ros2-bridge.md"
+        ));
+        assert!(guide.contains("https://github.com/ros2/rmw_zenoh/blob/rolling/docs/design.md"));
+        assert!(guide.contains("https://www.ros.org/reps/rep-2016.html"));
     }
 
     #[test]

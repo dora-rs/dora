@@ -871,21 +871,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cdr-encoding"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cd0f96619d833f771daff46c9755785f6fdea3d9ff67ec329f52f66936b0d6d"
-dependencies = [
- "byteorder",
- "log",
- "pastey",
- "serde",
- "serde_repr",
- "static_assertions",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "cdr-encoding-size"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2473,8 +2458,11 @@ name = "dora-ros2-bridge"
 version = "1.0.0-rc.4"
 dependencies = [
  "array-init",
+ "byteorder",
+ "cdr-encoding",
  "dora-cli",
  "dora-daemon",
+ "dora-message",
  "dora-ros2-bridge-msg-gen",
  "dunce",
  "eyre",
@@ -2488,10 +2476,13 @@ dependencies = [
  "rustdds",
  "serde",
  "serde-big-array",
+ "thiserror 2.0.19",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "widestring",
+ "zenoh",
+ "zenoh-ext",
 ]
 
 [[package]]
@@ -2500,7 +2491,7 @@ version = "1.0.0-rc.4"
 dependencies = [
  "arrow",
  "byteorder",
- "cdr-encoding 0.11.0",
+ "cdr-encoding",
  "dora-ros2-bridge-msg-gen",
  "eyre",
  "ros2-client",
@@ -2520,6 +2511,8 @@ dependencies = [
  "quote",
  "regex",
  "rust-format",
+ "serde",
+ "serde_json",
  "syn 2.0.119",
  "thiserror 2.0.19",
  "tracing",
@@ -2541,6 +2534,7 @@ dependencies = [
  "futures-timer",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tracing",
  "tracing-subscriber",
 ]
@@ -2550,10 +2544,12 @@ name = "dora-ros2-bridge-python"
 version = "1.0.0-rc.4"
 dependencies = [
  "arrow",
+ "dora-message",
  "dora-ros2-bridge",
  "dora-ros2-bridge-arrow",
  "dora-ros2-bridge-msg-gen",
  "eyre",
+ "flume 0.12.0",
  "futures",
  "futures-timer",
  "pyo3",
@@ -5228,12 +5224,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
-name = "pastey"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
-
-[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6432,7 +6422,7 @@ dependencies = [
  "bit-vec 0.8.0",
  "byteorder",
  "bytes",
- "cdr-encoding 0.10.2",
+ "cdr-encoding",
  "cdr-encoding-size",
  "chrono",
  "enumflags2",

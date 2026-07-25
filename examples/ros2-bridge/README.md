@@ -1,8 +1,9 @@
 # `ros2-bridge` examples
 
 These examples show how to bridge between ROS2 and dora. dora speaks the ROS2
-wire protocol directly over a pure-Rust DDS stack (`ros2-client` + `rustdds`) and
-never links `rcl`/`rclcpp`/`rclpy`, so a sourced ROS2 install is only needed for
+wire protocol directly through either the pure-Rust DDS stack (`ros2-client` +
+`rustdds`) or native Zenoh compatible with `rmw_zenoh_cpp`. It never links
+`rcl`/`rclcpp`/`rclpy`, so a sourced ROS2 install is only needed for
 the examples that talk to a *real* ROS2 node (e.g. `turtlesim`, or an `rclcpp`
 peer).
 
@@ -39,6 +40,23 @@ codegen surfaces delivered for [#1170](https://github.com/dora-rs/dora/issues/11
 covered by the Rust and Python examples.
 
 ## Running
+
+DDS remains the default. YAML bridges select native Zenoh explicitly:
+
+```yaml
+ros2:
+  transport:
+    kind: zenoh
+    compatibility: humble # or rep2016
+    config_uri: /etc/zenoh/dora.json5 # optional
+  topic: /chatter
+  message_type: std_msgs/String
+  direction: subscribe
+```
+
+Start `rmw_zenohd` for the selected ROS distribution and use the same
+`ROS_DOMAIN_ID` on Dora and ROS peers. See `dataflow-zenoh.yml` in each YAML
+example directory and `scripts/ros2-zenoh-interop.sh` for pinned real-peer tests.
 
 Each example is wired as a Cargo `[[example]]` of the `dora-ros2-bridge` crate
 (its `run.rs` builds the dataflow and launches it, spawning any ROS2 peer it
