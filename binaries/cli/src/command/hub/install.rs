@@ -19,6 +19,6 @@ impl Executable for Install {
              - id: my-node\n      hub: <name>@<version-req>\n\n  \
              then `dora build dataflow.yml` fetches and builds it.\n  \
              To pre-populate caches for offline use, see `dora hub fetch` (planned)."
-        )
+        );
     }
 }

@@ -159,10 +159,12 @@ pub(crate) fn resolve_dataflow_identifier_interactive(
         return Ok(dataflow.uuid);
     }
     Ok(match &active[..] {
-        [] => bail!(
-            "no dataflows are running\n\n  \
-             hint: start a dataflow with `dora start` or `dora run`"
-        ),
+        [] => {
+            bail!(
+                "no dataflows are running\n\n  \
+                 hint: start a dataflow with `dora start` or `dora run`"
+            );
+        }
         [entry] => entry.uuid,
         _ => {
             if !std::io::stdin().is_terminal() {

@@ -31,11 +31,15 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
         .status();
     match status {
         Ok(s) if s.success() => {}
-        Ok(s) => bail!("failed to install {crate_name} (exit code: {s})"),
-        Err(e) => bail!(
-            "could not find `{binary_name}` and installation failed: {e}\n\
-             Install it manually with: cargo install {crate_name}"
-        ),
+        Ok(s) => {
+            bail!("failed to install {crate_name} (exit code: {s})");
+        }
+        Err(e) => {
+            bail!(
+                "could not find `{binary_name}` and installation failed: {e}\n\
+                 Install it manually with: cargo install {crate_name}"
+            );
+        }
     }
 
     search(binary_name).ok_or_else(|| {

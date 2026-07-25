@@ -63,8 +63,12 @@ impl Executable for Get {
                 println!("{value}");
                 Ok(())
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("{err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
     }
 }

@@ -135,10 +135,12 @@ fn run_record(args: Record) -> eyre::Result<()> {
                 Some(input_id) => {
                     filtered.insert(requested.clone(), input_id.clone());
                 }
-                None => bail!(
-                    "topic `{requested}` not found in descriptor. Available: {}",
-                    all_topics.keys().cloned().collect::<Vec<_>>().join(", ")
-                ),
+                None => {
+                    bail!(
+                        "topic `{requested}` not found in descriptor. Available: {}",
+                        all_topics.keys().cloned().collect::<Vec<_>>().join(", ")
+                    );
+                }
             }
         }
         filtered
@@ -348,7 +350,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         dora_message::coordinator_to_cli::ControlRequestReply::DataflowList(list) => {
             list.get_active()
         }
-        _ => bail!("unexpected reply to List"),
+        _ => {
+            bail!("unexpected reply to List");
+        }
     };
 
     if active_ids.is_empty() {
@@ -552,10 +556,12 @@ fn select_dataflow(
             .filter(|d| d.name.as_deref() == Some(name))
             .collect();
         return match matched.len() {
-            0 => bail!(
-                "no running dataflow named `{name}`. \
-                 Run `dora list` to see the names of running dataflows."
-            ),
+            0 => {
+                bail!(
+                    "no running dataflow named `{name}`. \
+                     Run `dora list` to see the names of running dataflows."
+                );
+            }
             1 => Ok(Selection::One(matched.remove(0))),
             _ => Ok(Selection::Many(matched)),
         };

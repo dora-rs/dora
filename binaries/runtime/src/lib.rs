@@ -256,7 +256,7 @@ async fn run(
                     bail!(err.wrap_err(format!(
                         "operator {}/{operator_id} raised an error",
                         node.id()
-                    )))
+                    )));
                 }
                 OperatorEvent::Panic(payload) => {
                     let message = payload
@@ -408,7 +408,9 @@ async fn run(
                     }
                 }
             }
-            RuntimeEvent::Event(Event::Error(err)) => eyre::bail!("received error event: {err}"),
+            RuntimeEvent::Event(Event::Error(err)) => {
+                eyre::bail!("received error event: {err}");
+            }
             RuntimeEvent::Event(other) => {
                 tracing::warn!("received unknown event `{other:?}`");
             }

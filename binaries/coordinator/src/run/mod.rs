@@ -79,7 +79,9 @@ pub(super) async fn spawn_dataflow(
                 DaemonCoordinatorReply::TriggerSpawnResult(result) => result
                     .map_err(|e| eyre!(e))
                     .wrap_err("daemon returned an error")?,
-                _ => bail!("unexpected reply"),
+                _ => {
+                    bail!("unexpected reply");
+                }
             }
             Ok(())
         }
@@ -237,7 +239,9 @@ async fn rollback_spawned_daemons(
                 DaemonCoordinatorReply::StopResult(r) => {
                     r.map_err(|e| eyre!(e)).wrap_err("daemon stop failed")?;
                 }
-                other => bail!("unexpected reply during rollback: {other:?}"),
+                other => {
+                    bail!("unexpected reply during rollback: {other:?}");
+                }
             }
             Ok(())
         }

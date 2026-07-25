@@ -48,8 +48,12 @@ impl Executable for Disconnect {
             ControlRequestReply::MappingRemoved { .. } => {
                 println!("{source_node}/{source_output} -x- {target_node}/{target_input}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to disconnect: {err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("failed to disconnect: {err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
         Ok(())
     }

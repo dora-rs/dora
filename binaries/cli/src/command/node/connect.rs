@@ -48,8 +48,12 @@ impl Executable for Connect {
             ControlRequestReply::MappingAdded { .. } => {
                 println!("{source_node}/{source_output} -> {target_node}/{target_input}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to connect: {err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("failed to connect: {err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
         Ok(())
     }

@@ -114,16 +114,20 @@ fn resolve_dataflow_pins(dataflow: &str) -> eyre::Result<Vec<GitSource>> {
             .with_context(|| format!("node `{}`: invalid `hub:` reference", node.id))?;
         let source = match pinned.get(&node.id) {
             Some(source) => source,
-            None if binary_pinned.contains(&node.id) => eyre::bail!(
-                "node `{}`: resolves to a prebuilt binary artifact — `dora hub fetch` does not \
-                 pre-download binary artifacts yet (the daemon fetches and verifies them at \
-                 spawn time); offline (UC7) binary prefetch is a follow-up",
-                node.id
-            ),
-            None => eyre::bail!(
-                "node `{}`: `hub:` reference is not in the lockfile — {regen}",
-                node.id
-            ),
+            None if binary_pinned.contains(&node.id) => {
+                eyre::bail!(
+                    "node `{}`: resolves to a prebuilt binary artifact — `dora hub fetch` does not \
+                     pre-download binary artifacts yet (the daemon fetches and verifies them at \
+                     spawn time); offline (UC7) binary prefetch is a follow-up",
+                    node.id
+                );
+            }
+            None => {
+                eyre::bail!(
+                    "node `{}`: `hub:` reference is not in the lockfile — {regen}",
+                    node.id
+                );
+            }
         };
         let prov = source.hub.as_ref().expect("filtered to hub sources");
         let version = dora_hub_client::semver::Version::parse(&prov.version)

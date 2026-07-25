@@ -63,8 +63,12 @@ impl Executable for Delete {
                 println!("Deleted `{}` from node `{}`", self.key, self.node);
                 Ok(())
             }
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("{err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
     }
 }

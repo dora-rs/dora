@@ -1310,7 +1310,7 @@ impl Daemon {
                 Instead, you need to spawn a `dora coordinator` and one or more `dora daemon`
                 instances and then use `dora start`.",
                 node.id
-            )
+            );
         }
 
         validate::check_dataflow(&descriptor, &working_dir)
@@ -1411,7 +1411,7 @@ impl Daemon {
             None,
             if let Some(local_build) = local_build {
                 let Some(build_id) = build_id else {
-                    bail!("no build_id, but local_build set")
+                    bail!("no build_id, but local_build set");
                 };
                 let mut builds = BTreeMap::new();
                 builds.insert(build_id, local_build);
@@ -1881,7 +1881,7 @@ impl Daemon {
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
                             // (dora-rs/dora#2029).
-                            bail!("coordinator heartbeat timeout (20s)")
+                            bail!("coordinator heartbeat timeout (20s)");
                         }
                     }
                 }
@@ -3950,7 +3950,7 @@ impl Daemon {
                 entry.insert(dataflow)
             }
             std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("there is already a running dataflow with ID `{dataflow_id}`")
+                bail!("there is already a running dataflow with ID `{dataflow_id}`");
             }
         };
 
@@ -3970,7 +3970,7 @@ impl Daemon {
                     nodes with a `git` field must be built using `dora build` before starting the \
                     dataflow",
                 git_node.id
-            )
+            );
         }
         // Reuse build-time metadata so runtime spawn can follow the same
         // working-directory and managed-env decisions.
@@ -4262,7 +4262,7 @@ impl Daemon {
                         "node {} has git source, but no git clone directory was found for it\n\n\
                         try running `dora build` again",
                         node.id
-                    )
+                    );
                 }
                 let node_working_dir = configured_node_working_dir
                     .or_else(|| {
@@ -6222,7 +6222,7 @@ impl Daemon {
                     bail!(
                         "working directory does not exist: {}",
                         working_dir.display(),
-                    )
+                    );
                 }
             }
             None => {

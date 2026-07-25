@@ -231,7 +231,7 @@ pub(crate) async fn stop_dataflow<'a>(
     force: bool,
 ) -> eyre::Result<&'a mut RunningDataflow> {
     let Some(dataflow) = running_dataflows.get_mut(&dataflow_uuid) else {
-        bail!("no known running dataflow found with UUID `{dataflow_uuid}`")
+        bail!("no known running dataflow found with UUID `{dataflow_uuid}`");
     };
 
     let message = serde_json::to_vec(&Timestamped {
@@ -258,7 +258,9 @@ pub(crate) async fn stop_dataflow<'a>(
             DaemonCoordinatorReply::StopResult(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to stop dataflow")?,
-            other => bail!("unexpected reply after sending stop: {other:?}"),
+            other => {
+                bail!("unexpected reply after sending stop: {other:?}");
+            }
         }
     }
 
@@ -276,7 +278,7 @@ pub(crate) async fn reload_dataflow(
     timestamp: uhlc::Timestamp,
 ) -> eyre::Result<()> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
-        bail!("No running dataflow found with UUID `{dataflow_id}`")
+        bail!("No running dataflow found with UUID `{dataflow_id}`");
     };
     let message = serde_json::to_vec(&Timestamped {
         inner: DaemonCoordinatorEvent::ReloadDataflow {
@@ -302,7 +304,9 @@ pub(crate) async fn reload_dataflow(
             DaemonCoordinatorReply::ReloadResult(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to reload dataflow")?,
-            other => bail!("unexpected reply after sending reload: {other:?}"),
+            other => {
+                bail!("unexpected reply after sending reload: {other:?}");
+            }
         }
     }
     tracing::info!("successfully reloaded dataflow `{dataflow_id}`");
@@ -321,7 +325,7 @@ async fn dispatch_node_command(
     action: &str,
 ) -> eyre::Result<DaemonCoordinatorReply> {
     let Some(dataflow) = running_dataflows.get(&dataflow_id) else {
-        bail!("No running dataflow found with UUID `{dataflow_id}`")
+        bail!("No running dataflow found with UUID `{dataflow_id}`");
     };
     let daemon_id = dataflow
         .node_to_daemon
@@ -370,7 +374,9 @@ pub(crate) async fn restart_node(
         DaemonCoordinatorReply::RestartNodeResult(result) => result
             .map_err(|e| eyre!(e))
             .wrap_err("failed to restart node")?,
-        other => bail!("unexpected reply after sending restart node: {other:?}"),
+        other => {
+            bail!("unexpected reply after sending restart node: {other:?}");
+        }
     }
     tracing::info!("successfully restarted node `{node_id}` in dataflow `{dataflow_id}`");
     Ok(())
@@ -402,7 +408,9 @@ pub(crate) async fn stop_node(
         DaemonCoordinatorReply::StopNodeResult(result) => result
             .map_err(|e| eyre!(e))
             .wrap_err("failed to stop node")?,
-        other => bail!("unexpected reply after sending stop node: {other:?}"),
+        other => {
+            bail!("unexpected reply after sending stop node: {other:?}");
+        }
     }
     tracing::info!("successfully stopped node `{node_id}` in dataflow `{dataflow_id}`");
     Ok(())
@@ -438,12 +446,16 @@ fn resolve_log_daemon_id(
 
         let machine_id = match &machine_ids[..] {
             [machine_id] => machine_id.clone(),
-            [] => bail!("No machine contains {}/{}", dataflow_id, node_id),
-            _ => bail!(
-                "More than one machine contains {}/{}. However, it should only be present on one.",
-                dataflow_id,
-                node_id
-            ),
+            [] => {
+                bail!("No machine contains {}/{}", dataflow_id, node_id);
+            }
+            _ => {
+                bail!(
+                    "More than one machine contains {}/{}. However, it should only be present on one.",
+                    dataflow_id,
+                    node_id
+                );
+            }
         };
 
         let daemon_ids: Vec<_> = match &machine_id {
@@ -455,15 +467,19 @@ fn resolve_log_daemon_id(
         };
         match &daemon_ids[..] {
             [id] => Ok((*id).clone()),
-            [] => bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
-            _ => bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
+            [] => {
+                bail!("no matching daemon connections for machine ID `{machine_id:?}`");
+            }
+            _ => {
+                bail!("multiple matching daemon connections for machine ID `{machine_id:?}`");
+            }
         }
     } else if let Some(node_to_daemon) = running_node_to_daemon {
         node_to_daemon.get(node_id).cloned().ok_or_else(|| {
             eyre!("node `{node_id}` is not part of running dataflow `{dataflow_id}`")
         })
     } else {
-        bail!("No dataflow found with UUID `{dataflow_id}`")
+        bail!("No dataflow found with UUID `{dataflow_id}`");
     }
 }
 
@@ -507,7 +523,9 @@ pub(crate) async fn retrieve_logs(
         .wrap_err("failed to deserialize logs reply from daemon")?
     {
         DaemonCoordinatorReply::Logs(logs) => logs,
-        other => bail!("unexpected reply after sending logs: {other:?}"),
+        other => {
+            bail!("unexpected reply after sending logs: {other:?}");
+        }
     };
     tracing::info!("successfully retrieved logs for `{dataflow_id}/{node_id}`");
 
@@ -609,7 +627,9 @@ pub(crate) async fn build_dataflow(
             DaemonCoordinatorReply::TriggerBuildResult(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("daemon returned an error")?,
-            _ => bail!("unexpected reply"),
+            _ => {
+                bail!("unexpected reply");
+            }
         }
 
         daemons.insert(daemon_id.clone());
@@ -718,7 +738,9 @@ async fn destroy_daemon(
         DaemonCoordinatorReply::DestroyResult { result, .. } => result
             .map_err(|e| eyre!(e))
             .wrap_err("failed to destroy dataflow")?,
-        other => bail!("unexpected reply after sending `destroy`: {other:?}"),
+        other => {
+            bail!("unexpected reply after sending `destroy`: {other:?}");
+        }
     }
 
     tracing::info!("successfully destroyed daemon `{daemon_id}`");

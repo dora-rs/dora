@@ -99,11 +99,15 @@ impl SourceSpec {
                 }
                 Ok((git, rev))
             }
-            (None, None) if !self.binary.is_empty() => eyre::bail!(
-                "this version is published as prebuilt binaries only, which this \
-                 dora version does not support yet"
-            ),
-            _ => eyre::bail!("index entry has an incomplete git source (needs `git` + `rev`)"),
+            (None, None) if !self.binary.is_empty() => {
+                eyre::bail!(
+                    "this version is published as prebuilt binaries only, which this \
+                     dora version does not support yet"
+                );
+            }
+            _ => {
+                eyre::bail!("index entry has an incomplete git source (needs `git` + `rev`)");
+            }
         }
     }
 
@@ -401,7 +405,7 @@ impl IndexCatalog {
             } else {
                 available.join(", ")
             }
-        )
+        );
     }
 
     /// All packages in the catalog as `(namespace, name)` pairs. Directory

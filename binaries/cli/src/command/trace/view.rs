@@ -66,9 +66,13 @@ fn resolve_trace_id(session: &WsSession, prefix: &str) -> eyre::Result<String> {
         .collect();
 
     match matches.len() {
-        0 => bail!("no trace found matching prefix `{prefix}`"),
+        0 => {
+            bail!("no trace found matching prefix `{prefix}`");
+        }
         1 => Ok(matches[0].trace_id.clone()),
-        n => bail!("prefix `{prefix}` is ambiguous ({n} matches). Use a longer prefix."),
+        n => {
+            bail!("prefix `{prefix}` is ambiguous ({n} matches). Use a longer prefix.");
+        }
     }
 }
 

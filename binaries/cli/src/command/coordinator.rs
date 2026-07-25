@@ -137,7 +137,9 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
             )
         }
 
-        other => eyre::bail!("unknown store backend: `{other}` (expected `memory` or `redb`)"),
+        other => {
+            eyre::bail!("unknown store backend: `{other}` (expected `memory` or `redb`)");
+        }
     }
 }
 
