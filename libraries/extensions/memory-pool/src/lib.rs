@@ -225,16 +225,27 @@ impl MemoryPoolManager {
         #[cfg(target_os = "linux")]
         {
             let prefix = format!("dora_pool_{}_", dataflow_id);
-            if let Ok(entries) = std::fs::read_dir("/dev/shm") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with(&prefix)
-                        && let Err(err) = std::fs::remove_file(entry.path())
-                        && err.kind() != std::io::ErrorKind::NotFound
-                    {
-                        tracing::debug!("Orphan sweep: could not unlink {}: {}", name, err);
+            match std::fs::read_dir("/dev/shm") {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        if name.starts_with(&prefix)
+                            && let Err(err) = std::fs::remove_file(entry.path())
+                            && err.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::debug!(
+                                "Orphan sweep: could not unlink {} at {}: {}",
+                                name,
+                                entry.path().display(),
+                                err
+                            );
+                        }
                     }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    tracing::debug!("Orphan sweep: failed to read /dev/shm directory: {}", err);
                 }
             }
         }
@@ -482,5 +493,11 @@ mod tests {
             // Guard held; drop it before testing further operations.
         }
         assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn cleanup_orphans_runs_without_panic() {
+        // Sweep should run cleanly without panicking regardless of platform.
+        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
     }
 }
