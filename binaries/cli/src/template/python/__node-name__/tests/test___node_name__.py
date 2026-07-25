@@ -2,7 +2,6 @@
 
 import pyarrow as pa
 import pytest
-
 from dora.testing import MockNode
 
 
