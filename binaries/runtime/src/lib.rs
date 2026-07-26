@@ -285,13 +285,16 @@ async fn run(
 
                 if let Err(err) = operator_channel
                     .send_async(Event::Input {
-                        id: input_id.clone(),
+                        id: input_id,
                         metadata,
                         data,
                     })
                     .await
                     .wrap_err_with(|| {
-                        format!("failed to send input `{input_id}` to operator `{operator_id}`")
+                        // `id` is the full `operator/input` DataId; use it (and the
+                        // still-owned `operator_id`) here so `input_id` can be moved
+                        // into the event above without a per-message clone.
+                        format!("failed to send input `{id}` to operator `{operator_id}`")
                     })
                 {
                     tracing::warn!("{err}");
