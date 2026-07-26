@@ -52,14 +52,37 @@ impl Ros2QosPolicies {
 
 impl From<Ros2QosPolicies> for rustdds::QosPolicies {
     fn from(value: Ros2QosPolicies) -> Self {
-        ::dora_ros2_bridge::transport::dds::to_rustdds_qos(&value.into())
+        // `Transient`/`Persistent` durability exists only on the DDS path: the
+        // backend-neutral `Ros2Qos` collapses both to `Volatile`, so routing DDS
+        // QoS through it would silently downgrade them on the wire. Build the
+        // shared policies through the neutral path (reliability/history/
+        // liveliness), then restore the faithful four-variant DDS durability.
+        let durability: policy::Durability = value.durability.into();
+        let neutral = ::dora_ros2_bridge::transport::dds::to_rustdds_qos(&value.into());
+        let mut builder = rustdds::QosPolicyBuilder::new().durability(durability);
+        if let Some(reliability) = neutral.reliability() {
+            builder = builder.reliability(reliability);
+        }
+        if let Some(history) = neutral.history() {
+            builder = builder.history(history);
+        }
+        if let Some(liveliness) = neutral.liveliness() {
+            builder = builder.liveliness(liveliness);
+        }
+        builder.build()
     }
 }
 
 impl From<Ros2QosPolicies> for Ros2Qos {
     fn from(value: Ros2QosPolicies) -> Self {
-        let lease_duration = (!value.lease_duration.is_infinite())
-            .then(|| std::time::Duration::from_secs_f64(value.lease_duration));
+        // `Duration::from_secs_f64` panics on a negative, NaN, or overflowing
+        // value; the pre-existing `rustdds` path did not. Convert without
+        // panicking, treating an invalid duration as zero.
+        let to_duration = |secs: f64| {
+            std::time::Duration::try_from_secs_f64(secs).unwrap_or(std::time::Duration::ZERO)
+        };
+        let lease_duration =
+            (!value.lease_duration.is_infinite()).then(|| to_duration(value.lease_duration));
         Self {
             durability: match value.durability {
                 Ros2Durability::TransientLocal => Durability::TransientLocal,
@@ -74,7 +97,7 @@ impl From<Ros2QosPolicies> for Ros2Qos {
             },
             reliability: if value.reliable {
                 Reliability::Reliable {
-                    max_blocking_time: std::time::Duration::from_secs_f64(value.max_blocking_time),
+                    max_blocking_time: to_duration(value.max_blocking_time),
                 }
             } else {
                 Reliability::BestEffort
@@ -125,4 +148,59 @@ pub enum Ros2Liveliness {
     Automatic,
     ManualByParticipant,
     ManualByTopic,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policies(
+        durability: Ros2Durability,
+        lease_duration: f64,
+        reliable: bool,
+        max_blocking_time: f64,
+    ) -> Ros2QosPolicies {
+        Ros2QosPolicies {
+            durability,
+            liveliness: Ros2Liveliness::Automatic,
+            lease_duration,
+            reliable,
+            max_blocking_time,
+            keep_all: false,
+            keep_last: 1,
+        }
+    }
+
+    /// The DDS conversion must preserve all four durability variants. Routing it
+    /// through the two-variant backend-neutral `Ros2Qos` used to silently
+    /// downgrade `Transient`/`Persistent` to `Volatile` (regression from #2790).
+    #[test]
+    fn dds_durability_preserves_all_variants() {
+        for (variant, expected) in [
+            (Ros2Durability::Volatile, policy::Durability::Volatile),
+            (
+                Ros2Durability::TransientLocal,
+                policy::Durability::TransientLocal,
+            ),
+            (Ros2Durability::Transient, policy::Durability::Transient),
+            (Ros2Durability::Persistent, policy::Durability::Persistent),
+        ] {
+            let qos: rustdds::QosPolicies = policies(variant, f64::INFINITY, false, 0.0).into();
+            assert_eq!(qos.durability(), Some(expected));
+        }
+    }
+
+    /// NaN / negative / overflowing QoS durations must not panic (they used to
+    /// hit `Duration::from_secs_f64`, which panics). They are clamped to zero.
+    #[test]
+    fn invalid_qos_durations_do_not_panic() {
+        for bad in [f64::NAN, -1.0, f64::MAX] {
+            // `lease_duration` path (finite non-infinite value reaches the conversion)
+            let _: Ros2Qos = policies(Ros2Durability::Volatile, bad, false, 0.0).into();
+            // `max_blocking_time` path (only reached when `reliable` is true)
+            let reliable: Ros2Qos =
+                policies(Ros2Durability::Volatile, f64::INFINITY, true, bad).into();
+            assert!(matches!(reliable.reliability, Reliability::Reliable { .. }));
+        }
+    }
 }
