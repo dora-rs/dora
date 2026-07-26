@@ -689,10 +689,13 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 
 /// Closes a memory-pool seqlock write (header offset 96).
 ///
-/// On success (`copy_ok == true`) the generation is advanced to
-/// `pre_write_gen + 2` (restoring even parity → "complete").  On
-/// failure the generation is rolled **back** to `pre_write_gen` so a
-/// consumer keeps seeing the previous valid frame (see dora-rs/dora#2436).
+/// Advances the generation to `pre_write_gen + 2` (even = "complete").
+/// The caller must only invoke this on a successful copy.  GPU pool write
+/// paths leave gen odd on failure (in-place writes cannot roll back to a
+/// clean previous frame; double-buffering is deferred to a follow-up PR).
+/// The `copy_ok == false` rollback branch is retained for the helper's
+/// contract but is dead code in production — see the leave-gen-odd blocks
+/// in `write_memory_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
     if copy_ok {
         std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
