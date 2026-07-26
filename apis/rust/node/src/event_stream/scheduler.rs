@@ -7,7 +7,7 @@ use dora_message::{
     config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
     daemon_to_node::NodeEvent,
     id::DataId,
-    metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, get_string_param},
+    metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, carries_pattern_correlation, get_string_param},
 };
 
 use super::thread::EventItem;
@@ -28,9 +28,13 @@ fn is_correlated(event: &EventItem) -> bool {
         EventItem::ZenohInput { metadata, .. } => &metadata.parameters,
         _ => return false,
     };
-    params.contains_key(REQUEST_ID)
-        || params.contains_key(GOAL_ID)
-        || params.contains_key(GOAL_STATUS)
+    // Delegate to the canonical definition in `dora_message` so the scheduler's
+    // eviction guard can never disagree with the send-side / receive-side /
+    // daemon-debug layers about which keys mark a message as pattern-correlated
+    // (see `carries_pattern_correlation`). Duplicating the key list here risked
+    // silently dropping service/action messages if a new correlation key were
+    // added to only one copy.
+    carries_pattern_correlation(params)
 }
 
 /// Outcome of `select_eviction`.
