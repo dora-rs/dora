@@ -292,6 +292,345 @@ mod pin_tests {
     }
 }
 
+// ---------------------------------------------------------------------------
+// GPU transport-path classification — pure decision logic extractable
+// from CUDA-runtime-embedded code so the full matrix can be exercised in
+// CI without a GPU.  Same pattern as `should_pin` above.
+// ---------------------------------------------------------------------------
+
+/// Which transport path a GPU-pool registration (write-time) selects.
+///
+/// Pure logic — no CUDA runtime calls.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum TransportPath {
+    /// Buffer on sender device, plain DtoD memcpy (same-device or CPU source).
+    SameDeviceDtoD,
+    /// Cross-device with P2P peer access enabled.
+    P2PPeerAccess,
+    /// Cross-device without P2P — CPU page-locked transit (DtoH → HtoD).
+    HostStagingTransit,
+}
+
+/// Classify which transport path a GPU-pool write should take at
+/// registration time.
+///
+/// Decision matrix (2³ = 8 cases, `is_cuda_source` dominates):
+///
+/// | src CUDA | same dev | P2P | path                |
+/// |----------|----------|-----|---------------------|
+/// | false    | *        | *   | `SameDeviceDtoD`    |
+/// | true     | true     | *   | `SameDeviceDtoD`    |
+/// | true     | false    | yes | `P2PPeerAccess`     |
+/// | true     | false    | no  | `HostStagingTransit`|
+#[inline]
+fn classify_transport(
+    sender_device: i32,
+    receiver_device: i32,
+    p2p_available: bool,
+    is_cuda_source: bool,
+) -> TransportPath {
+    if !is_cuda_source {
+        return TransportPath::SameDeviceDtoD;
+    }
+    if sender_device == receiver_device {
+        return TransportPath::SameDeviceDtoD;
+    }
+    if p2p_available {
+        return TransportPath::P2PPeerAccess;
+    }
+    TransportPath::HostStagingTransit
+}
+
+/// Which write path `write_memory_pool` dispatches to for a given frame.
+///
+/// The fast and slow write paths both branch on the same 2×2×2 matrix
+/// (`ipc_present` × `is_cuda` × `transit_ptr`); extracting the
+/// classification makes the 5 reachable paths explicit and testable.
+#[derive(Debug, PartialEq, Eq)]
+enum WritePath {
+    /// CPU source → GPU pool via `dma_copy` (ipc_present=1, !is_cuda).
+    CpuToGpuPoolDma,
+    /// GPU source → GPU pool via transit (ipc_present=1, is_cuda, transit_ptr≠0).
+    GpuToGpuPoolTransit,
+    /// GPU source → GPU pool via plain DtoD `_cuda_memcpy_gpu_buf`
+    /// (ipc_present=1, is_cuda, transit_ptr=0).
+    GpuToGpuPoolDtoD,
+    /// GPU source → shmem data region via `cudaMemcpy` (ipc_present≠1, is_cuda).
+    GpuToShmem,
+    /// CPU source → shmem data region via `ptr::copy_nonoverlapping`
+    /// (ipc_present≠1, !is_cuda).
+    CpuToShmem,
+}
+
+/// Classify which write path to take.
+#[inline]
+fn classify_write_path(ipc_present: u64, is_cuda: bool, transit_ptr: u64) -> WritePath {
+    if ipc_present == 1 {
+        if is_cuda {
+            if transit_ptr != 0 {
+                WritePath::GpuToGpuPoolTransit
+            } else {
+                WritePath::GpuToGpuPoolDtoD
+            }
+        } else {
+            WritePath::CpuToGpuPoolDma
+        }
+    } else if is_cuda {
+        WritePath::GpuToShmem
+    } else {
+        WritePath::CpuToShmem
+    }
+}
+
+/// Result of validating a GPU-pool read `size` against the daemon-trusted
+/// capacity cache (`GPU_BUF_SIZES`) and the first-import baseline
+/// (`RecvGpuSlot::gpu_buf_size`).
+#[derive(Debug, PartialEq, Eq)]
+enum CapacityCheck {
+    /// Size is within the trusted bound.
+    Ok,
+    /// Size exceeds the trusted capacity → reject this read.
+    ExceedsTrustedSize,
+    /// No daemon-trusted entry and no cached baseline → reject first import.
+    NoTrustedEntry,
+}
+
+/// Validate the read `size` for a GPU-pool buffer against the daemon-trusted
+/// capacity and the cached first-import baseline.
+///
+/// Resolution order: `trusted_sizes` (daemon metadata) → `cached_gpu_buf_size`
+/// (first-import baseline) → reject.
+#[inline]
+fn check_capacity_gpu_pool(
+    trusted_sizes: Option<u64>,
+    cached_gpu_buf_size: Option<u64>,
+    size: u64,
+) -> CapacityCheck {
+    let cap = trusted_sizes.or(cached_gpu_buf_size);
+    match cap {
+        None => CapacityCheck::NoTrustedEntry,
+        Some(capped) if capped > 0 && size > capped => CapacityCheck::ExceedsTrustedSize,
+        Some(_) => CapacityCheck::Ok,
+    }
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+
+    // -- classify_transport -------------------------------------------------
+
+    #[test]
+    fn same_device_no_transit() {
+        // Same GPU — never transit, regardless of P2P
+        assert_eq!(
+            classify_transport(0, 0, false, true),
+            TransportPath::SameDeviceDtoD
+        );
+        assert_eq!(
+            classify_transport(1, 1, true, true),
+            TransportPath::SameDeviceDtoD
+        );
+    }
+
+    #[test]
+    fn cpu_source_never_transit() {
+        // CPU→GPU always uses dma_copy, no transit needed
+        assert_eq!(
+            classify_transport(0, 1, false, false),
+            TransportPath::SameDeviceDtoD
+        );
+        assert_eq!(
+            classify_transport(0, 2, true, false),
+            TransportPath::SameDeviceDtoD
+        );
+    }
+
+    #[test]
+    fn cross_device_with_p2p() {
+        assert_eq!(
+            classify_transport(0, 1, true, true),
+            TransportPath::P2PPeerAccess
+        );
+    }
+
+    #[test]
+    fn cross_device_no_p2p_uses_transit() {
+        // This is the RTX 5090 / Blackwell path — the flag-ship non-P2P
+        // fallback that must NOT be dead code.
+        assert_eq!(
+            classify_transport(0, 1, false, true),
+            TransportPath::HostStagingTransit
+        );
+        assert_eq!(
+            classify_transport(2, 0, false, true),
+            TransportPath::HostStagingTransit
+        );
+    }
+
+    #[test]
+    fn classify_transport_full_8_case_matrix() {
+        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
+            // (src_dev, dst_dev, p2p, is_cuda) → expected
+            ((0, 0, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, false, true), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, true), TransportPath::SameDeviceDtoD),
+            ((0, 1, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, false, true), TransportPath::HostStagingTransit),
+            ((0, 1, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, true, true), TransportPath::P2PPeerAccess),
+        ];
+        for ((s, r, p2p, cuda), expected) in cases {
+            let got = classify_transport(*s, *r, *p2p, *cuda);
+            assert_eq!(
+                got, *expected,
+                "classify_transport(s={s}, r={r}, p2p={p2p}, cuda={cuda}) → {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    // -- classify_write_path -------------------------------------------------
+
+    #[test]
+    fn write_path_cpu_to_gpu_pool_dma() {
+        assert_eq!(classify_write_path(1, false, 0), WritePath::CpuToGpuPoolDma);
+        // transit_ptr is irrelevant when !is_cuda
+        assert_eq!(
+            classify_write_path(1, false, 0xDEAD),
+            WritePath::CpuToGpuPoolDma
+        );
+    }
+
+    #[test]
+    fn write_path_gpu_to_gpu_pool_transit() {
+        assert_eq!(
+            classify_write_path(1, true, 1),
+            WritePath::GpuToGpuPoolTransit
+        );
+        assert_eq!(
+            classify_write_path(1, true, 0xDEAD_BEEF),
+            WritePath::GpuToGpuPoolTransit
+        );
+    }
+
+    #[test]
+    fn write_path_gpu_to_gpu_pool_dtod() {
+        assert_eq!(classify_write_path(1, true, 0), WritePath::GpuToGpuPoolDtoD);
+    }
+
+    #[test]
+    fn write_path_gpu_to_shmem() {
+        assert_eq!(classify_write_path(0, true, 0), WritePath::GpuToShmem);
+        assert_eq!(classify_write_path(0, true, 1), WritePath::GpuToShmem);
+    }
+
+    #[test]
+    fn write_path_cpu_to_shmem() {
+        assert_eq!(classify_write_path(0, false, 0), WritePath::CpuToShmem);
+        assert_eq!(classify_write_path(0, false, 1), WritePath::CpuToShmem);
+    }
+
+    #[test]
+    fn write_path_cache_miss_defaults_to_dtod() {
+        // When the write fast path hits a cache miss and constructs a
+        // fresh PoolSlot with transit_ptr=0, the dispatch must fall
+        // through to plain DtoD — NOT transit.  This documents the
+        // current behaviour; if cache-miss transit recovery is added
+        // later, this test must be updated.
+        let path = classify_write_path(1, true, 0);
+        assert_eq!(path, WritePath::GpuToGpuPoolDtoD);
+    }
+
+    #[test]
+    fn write_path_full_matrix() {
+        // 2×2×2 = 8 cases; 6 reachable (ipc_present=1 && transit_ptr≠0
+        // for a CPU source is semantically unreachable because transit is
+        // only allocated on the CUDA-registration path).
+        let cases: &[(u64, bool, u64, WritePath)] = &[
+            (1, false, 0, WritePath::CpuToGpuPoolDma),
+            (1, false, 1, WritePath::CpuToGpuPoolDma),
+            (1, true, 0, WritePath::GpuToGpuPoolDtoD),
+            (1, true, 1, WritePath::GpuToGpuPoolTransit),
+            (0, false, 0, WritePath::CpuToShmem),
+            (0, false, 1, WritePath::CpuToShmem),
+            (0, true, 0, WritePath::GpuToShmem),
+            (0, true, 1, WritePath::GpuToShmem),
+        ];
+        for (ipc, cuda, tp, expected) in cases {
+            let got = classify_write_path(*ipc, *cuda, *tp);
+            assert_eq!(
+                got, *expected,
+                "classify_write_path(ipc={ipc}, cuda={cuda}, tp={tp}) → {got:?}, expected {expected:?}"
+            );
+        }
+    }
+
+    // -- check_capacity_gpu_pool --------------------------------------------
+
+    #[test]
+    fn capacity_ok_within_bounds() {
+        // Daemon-trusted cap present, size fits
+        assert_eq!(
+            check_capacity_gpu_pool(Some(4096), None, 4096),
+            CapacityCheck::Ok
+        );
+        assert_eq!(
+            check_capacity_gpu_pool(Some(4096), None, 1),
+            CapacityCheck::Ok
+        );
+    }
+
+    #[test]
+    fn capacity_exceeds_trusted_size() {
+        assert_eq!(
+            check_capacity_gpu_pool(Some(4096), None, 4097),
+            CapacityCheck::ExceedsTrustedSize
+        );
+    }
+
+    #[test]
+    fn capacity_fallback_to_gpu_buf_size() {
+        // No daemon entry, but cached first-import baseline exists
+        assert_eq!(
+            check_capacity_gpu_pool(None, Some(4096), 2048),
+            CapacityCheck::Ok
+        );
+        assert_eq!(
+            check_capacity_gpu_pool(None, Some(4096), 4097),
+            CapacityCheck::ExceedsTrustedSize
+        );
+    }
+
+    #[test]
+    fn capacity_no_trusted_entry_rejects() {
+        // Neither daemon nor cached baseline — must fail closed
+        assert_eq!(
+            check_capacity_gpu_pool(None, None, 1024),
+            CapacityCheck::NoTrustedEntry
+        );
+    }
+
+    #[test]
+    fn capacity_zero_trusted_cap_allows_any_size() {
+        // A registered capacity of 0 means the bound is unknown; the
+        // check must not reject reads (0 > size is always false).
+        assert_eq!(
+            check_capacity_gpu_pool(Some(0), None, 1024 * 1024),
+            CapacityCheck::Ok
+        );
+    }
+
+    #[test]
+    fn capacity_zero_cached_buf_size() {
+        // gpu_buf_size was never set (edge case) — treated as no cap
+        assert_eq!(
+            check_capacity_gpu_pool(None, Some(0), 1024),
+            CapacityCheck::Ok
+        );
+    }
+}
+
 /// Get (or compile) the persistent CUDA DMA helper module.
 ///
 /// Compiled once at first use and reused across all subsequent iterations.
@@ -1671,14 +2010,21 @@ impl Node {
             let _ =
                 bound.call_method1("_ensure_p2p_pair", (sender_device_idx, receiver_device_idx));
 
-            // Cross-device without P2P needs CPU transit (e.g. RTX 5090).
-            // Check P2P availability via the Python helper.
+            // Resolve transport path.  classify_transport encodes the full
+            // 2³ decision matrix (pure, CI-tested); here we only need the
+            // single GPU-runtime-dependent input (p2p_available).
             let p2p_available: bool = cross_device
                 && bound
                     .call_method1("_can_access_peer", (sender_device_idx, receiver_device_idx))
                     .and_then(|r| r.extract::<bool>())
                     .unwrap_or(false);
-            let use_transit = cross_device && !p2p_available;
+            let transport_path = classify_transport(
+                sender_device_idx,
+                receiver_device_idx,
+                p2p_available,
+                is_cuda,
+            );
+            let use_transit = transport_path == TransportPath::HostStagingTransit;
 
             let gpu_ptr: Option<u64> = if is_cuda {
                 if use_transit {
@@ -2122,12 +2468,18 @@ impl Node {
                             let mut copy_ok = true;
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let res = if ipc_present == 1 {
-                                    let transit =
-                                        store_back.as_ref().map(|s| (s.transit_ptr, s.pool_device));
-                                    if let Some((tp, pool_dev)) = transit
-                                        && tp != 0
-                                    {
+                                // classify_write_path resolves transit-vs-DtoD-vs-shmem
+                                // from the PoolSlot transit_ptr (see tests).
+                                let transit_ptr = store_back.as_ref().map_or(0, |s| s.transit_ptr);
+                                let write_path = classify_write_path(
+                                    ipc_present,
+                                    /*is_cuda=*/ true,
+                                    transit_ptr,
+                                );
+                                let res = match write_path {
+                                    WritePath::GpuToGpuPoolTransit => {
+                                        let pool_dev =
+                                            store_back.as_ref().map_or(0, |s| s.pool_device);
                                         let sender_dev = tensor_device
                                             .strip_prefix("cuda")
                                             .and_then(|d| d.strip_prefix(':'))
@@ -2136,29 +2488,38 @@ impl Node {
                                         bound
                                             .call_method1(
                                                 "_transit_copy_gpu_buf",
-                                                (counter, ptr_val, sender_dev, tp, pool_dev, size),
-                                            )
-                                            .map(|_| ())
-                                    } else {
-                                        bound
-                                            .call_method1(
-                                                "_cuda_memcpy_gpu_buf",
-                                                (counter, ptr_val, size),
+                                                (
+                                                    counter,
+                                                    ptr_val,
+                                                    sender_dev,
+                                                    transit_ptr,
+                                                    pool_dev,
+                                                    size,
+                                                ),
                                             )
                                             .map(|_| ())
                                     }
-                                } else {
-                                    bound
+                                    WritePath::GpuToGpuPoolDtoD => bound
                                         .call_method1(
-                                            "_cuda_memcpy",
-                                            (
-                                                shmem_ptr as u64 + data_offset as u64,
-                                                ptr_val,
-                                                size,
-                                                2u32,
-                                            ),
+                                            "_cuda_memcpy_gpu_buf",
+                                            (counter, ptr_val, size),
                                         )
-                                        .map(|_| ())
+                                        .map(|_| ()),
+                                    _ => {
+                                        // GpuToShmem: ipc_present ≠ 1,
+                                        // copy to shared-memory data region.
+                                        bound
+                                            .call_method1(
+                                                "_cuda_memcpy",
+                                                (
+                                                    shmem_ptr as u64 + data_offset as u64,
+                                                    ptr_val,
+                                                    size,
+                                                    2u32,
+                                                ),
+                                            )
+                                            .map(|_| ())
+                                    }
                                 };
                                 if let Err(e) = res {
                                     copy_ok = false;
@@ -2330,54 +2691,77 @@ impl Node {
                             let mut copy_ok = true;
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                let res = if ipc_present == 1 {
-                                    if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                                        && let Ok(c) = counter_str.parse::<u64>()
-                                    {
-                                        let transit = {
-                                            PINNED_POOL
-                                                .lock()
-                                                .unwrap_or_else(|e| e.into_inner())
-                                                .get(&c)
-                                                .map(|s| (s.transit_ptr, s.pool_device))
-                                        };
-                                        if let Some((tp, pool_dev)) = transit
-                                            && tp != 0
-                                        {
-                                            let sender_dev = tensor_device
-                                                .strip_prefix("cuda")
-                                                .and_then(|d| d.strip_prefix(':'))
-                                                .and_then(|d| d.parse::<i32>().ok())
-                                                .unwrap_or(0);
-                                            bound
-                                                .call_method1(
-                                                    "_transit_copy_gpu_buf",
-                                                    (c, ptr_val, sender_dev, tp, pool_dev, size),
-                                                )
-                                                .map(|_| ())
-                                        } else {
-                                            bound
-                                                .call_method1(
-                                                    "_cuda_memcpy_gpu_buf",
-                                                    (c, ptr_val, size),
-                                                )
-                                                .map(|_| ())
-                                        }
-                                    } else {
-                                        Ok(())
-                                    }
+                                // Slow path transit look-up: PINNED_POOL
+                                // (contrast fast path which uses store_back).
+                                let (transit_ptr, pool_device) = if let Some((_, counter_str)) =
+                                    buffer_id.rsplit_once('_')
+                                    && let Ok(c) = counter_str.parse::<u64>()
+                                {
+                                    PINNED_POOL
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .get(&c)
+                                        .map(|s| (s.transit_ptr, s.pool_device))
+                                        .unwrap_or((0, 0))
                                 } else {
-                                    bound
+                                    (0, 0)
+                                };
+                                let write_path = classify_write_path(
+                                    ipc_present,
+                                    /*is_cuda=*/ true,
+                                    transit_ptr,
+                                );
+                                let res = match write_path {
+                                    WritePath::GpuToGpuPoolTransit => {
+                                        let sender_dev = tensor_device
+                                            .strip_prefix("cuda")
+                                            .and_then(|d| d.strip_prefix(':'))
+                                            .and_then(|d| d.parse::<i32>().ok())
+                                            .unwrap_or(0);
+                                        bound
+                                            .call_method1(
+                                                "_transit_copy_gpu_buf",
+                                                (
+                                                    buffer_id
+                                                        .rsplit_once('_')
+                                                        .and_then(|(_, cs)| cs.parse::<u64>().ok())
+                                                        .unwrap_or(0),
+                                                    ptr_val,
+                                                    sender_dev,
+                                                    transit_ptr,
+                                                    pool_device,
+                                                    size,
+                                                ),
+                                            )
+                                            .map(|_| ())
+                                    }
+                                    WritePath::GpuToGpuPoolDtoD => bound
                                         .call_method1(
-                                            "_cuda_memcpy",
+                                            "_cuda_memcpy_gpu_buf",
                                             (
-                                                shmem_ptr as u64 + data_offset as u64,
+                                                buffer_id
+                                                    .rsplit_once('_')
+                                                    .and_then(|(_, cs)| cs.parse::<u64>().ok())
+                                                    .unwrap_or(0),
                                                 ptr_val,
                                                 size,
-                                                2u32,
                                             ),
                                         )
-                                        .map(|_| ())
+                                        .map(|_| ()),
+                                    _ => {
+                                        // GpuToShmem: copy to shmem data region.
+                                        bound
+                                            .call_method1(
+                                                "_cuda_memcpy",
+                                                (
+                                                    shmem_ptr as u64 + data_offset as u64,
+                                                    ptr_val,
+                                                    size,
+                                                    2u32,
+                                                ),
+                                            )
+                                            .map(|_| ())
+                                    }
                                 };
                                 if let Err(e) = res {
                                     copy_ok = false;
@@ -3081,40 +3465,33 @@ impl Node {
                         // capacity.  GPU_BUF_SIZES (populated from daemon
                         // metadata) is authoritative; gpu_buf_size (populated
                         // from shmem at first import) is the baseline.
-                        // If size exceeds the trusted capacity, fall back to
-                        // the daemon so the read is re-validated.
-                        let capped = {
+                        let trusted_sizes = {
                             let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
-                            trusted
-                                .get(buffer_id)
-                                .copied()
-                                .or(Some(slot_data.gpu_buf_size))
+                            trusted.get(buffer_id).copied()
                         };
-                        if let Some(max_size) = capped {
-                            if max_size > 0 && (size as u64) > max_size {
-                                return Ok(None);
-                            }
+                        if check_capacity_gpu_pool(
+                            trusted_sizes,
+                            Some(slot_data.gpu_buf_size),
+                            size as u64,
+                        ) == CapacityCheck::ExceedsTrustedSize
+                        {
+                            return Ok(None);
                         }
                         slot_data.gpu_buf
                     }
                     _ => {
-                        // Validate size against daemon-trusted capacity
-                        // before the first IPC import.  GPU_BUF_SIZES is
-                        // populated from daemon metadata before the fast
-                        // path runs.  Fail closed: if no trusted entry
-                        // exists, reject the import rather than trusting
-                        // the world-writable shmem size.
-                        {
+                        // First IPC import: validate size against
+                        // daemon-trusted capacity.  Fail closed —
+                        // NoTrustedEntry rejects the import rather than
+                        // trusting the world-writable shmem size.
+                        let trusted_sizes = {
                             let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
-                            match trusted.get(buffer_id) {
-                                Some(&capped) if capped > 0 && (size as u64) > capped => {
-                                    return Ok(None);
-                                }
-                                None => {
-                                    // No daemon-trusted size — reject
-                                    return Ok(None);
-                                }
-                                _ => {}
+                            trusted.get(buffer_id).copied()
+                        };
+                        match check_capacity_gpu_pool(trusted_sizes, None, size as u64) {
+                            CapacityCheck::Ok => {}
+                            CapacityCheck::ExceedsTrustedSize | CapacityCheck::NoTrustedEntry => {
+                                return Ok(None);
                             }
                         }
                         drop(cache);
