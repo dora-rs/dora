@@ -342,12 +342,29 @@ pub async fn open_zenoh_session_with_listen(
                 }
                 Err(err) => {
                     warn!(
-                        "failed to open tuned zenoh session ({err}), retrying with default config"
+                        "failed to open tuned zenoh session ({err}), retrying with \
+                         multicast scouting disabled"
                     );
                     // Default fallback has no listener; `effective_listen_endpoint`
                     // stays `None` so peers don't try to reach a bind that isn't
                     // there (#1856).
-                    let zenoh_config = zenoh::Config::default();
+                    //
+                    // Disable multicast scouting on the retry. The most common open
+                    // failure is the scouting socket failing to bind its multicast
+                    // group (`224.0.0.224:7446`) — e.g. when a busy DDS/ROS2
+                    // multicast graph (a full TurtleBot3 / nav2 stack) saturates the
+                    // multicast networking. A plain `Config::default()` retry keeps
+                    // multicast enabled, re-attempts the same failing bind, and takes
+                    // the whole dataflow down. Gossip + explicit connect endpoints
+                    // still cover discovery for co-located and connect-configured
+                    // setups, so degrading to non-multicast here keeps dora running
+                    // where it would otherwise fail outright.
+                    let mut zenoh_config = zenoh::Config::default();
+                    if let Err(err) =
+                        zenoh_config.insert_json5("scouting/multicast/enabled", "false")
+                    {
+                        warn!("failed to disable zenoh scouting/multicast on fallback: {err}");
+                    }
                     zenoh::open(zenoh_config)
                         .await
                         .map_err(|e| eyre!(e))
