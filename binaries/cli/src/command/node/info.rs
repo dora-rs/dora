@@ -230,18 +230,16 @@ fn build_input_info(node_desc: &dora_message::descriptor::Node) -> Vec<InputInfo
     node_desc
         .inputs
         .iter()
-        .map(|(input_id, input)| {
-            let source = match &input.mapping {
-                InputMapping::User(user) => format!("{}/{}", user.source, user.output),
-                InputMapping::Timer { interval } => {
-                    format!("dora/timer/millis/{}", interval.as_millis())
-                }
-                mapping @ InputMapping::Logs(_) => mapping.to_string(),
-            };
-            InputInfo {
-                id: input_id.to_string(),
-                source,
-            }
+        .map(|(input_id, input)| InputInfo {
+            id: input_id.to_string(),
+            // Use `InputMapping`'s canonical `Display` rather than re-deriving the
+            // source string here. The previous hand-rolled
+            // `dora/timer/millis/{interval.as_millis()}` truncated any
+            // sub-millisecond timer (e.g. a `dora/timer/hz/2000` = 500µs input)
+            // to `dora/timer/millis/0`, a nonsensical zero-interval source;
+            // `Display` picks the coarsest exact unit and round-trips through the
+            // descriptor parser.
+            source: input.mapping.to_string(),
         })
         .collect()
 }
