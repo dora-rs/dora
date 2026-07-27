@@ -371,6 +371,23 @@ fn smoke_rust_dataflow_url() {
     );
 }
 
+/// Regression test for a shared-library operator teardown SIGSEGV: the runtime
+/// used to unload the operator's `.so` as soon as its `on_event` loop returned,
+/// while the main loop (another thread) still held in-flight Arrow arrays whose
+/// FFI `release` callbacks live in that `.so`. Freeing them after `dlclose`
+/// jumped into unmapped code (`Signal(11)`). The fixture floods large outputs so
+/// a burst is in flight at `--stop-after`; `run_smoke_test_local` asserts `dora
+/// run` exits zero, which a crashing operator node breaks. Builds the operator
+/// via the dataflow's `build:` field.
+#[test]
+fn local_rust_operator_teardown_no_segfault() {
+    run_smoke_test_local(
+        "rust-operator-teardown",
+        "examples/rust-operator-teardown/dataflow.yml",
+        3,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark example (release build)
 // ---------------------------------------------------------------------------

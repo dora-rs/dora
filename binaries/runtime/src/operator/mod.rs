@@ -12,6 +12,12 @@ pub mod channel;
 mod python;
 mod shared_lib;
 
+/// Runs the operator to completion. Returns a shared library that the caller
+/// **must keep alive until after the runtime's main event loop has joined**: a
+/// shared-library operator's outputs are Arrow arrays whose FFI `release`
+/// callbacks point into the `.so`, and the main loop (on another thread) may
+/// still hold in-flight arrays when this returns. See `shared_lib::run`. Returns
+/// `None` for operator kinds with no such library (Python).
 #[allow(unused_variables)]
 pub fn run_operator(
     node_id: &NodeId,
@@ -20,10 +26,10 @@ pub fn run_operator(
     events_tx: Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
     dataflow_descriptor: &Descriptor,
-) -> eyre::Result<()> {
-    match &operator_definition.config.source {
+) -> eyre::Result<Option<libloading::Library>> {
+    let library = match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
-            shared_lib::run(
+            let library = shared_lib::run(
                 node_id,
                 &operator_definition.id,
                 source,
@@ -37,25 +43,29 @@ pub fn run_operator(
                     operator_definition.id
                 )
             })?;
+            Some(library)
         }
         #[allow(unused_variables)]
         OperatorSource::Python(source) => {
             #[cfg(feature = "python")]
-            python::run(
-                node_id,
-                &operator_definition.id,
-                source,
-                events_tx,
-                incoming_events,
-                init_done,
-                dataflow_descriptor,
-            )
-            .wrap_err_with(|| {
-                format!(
-                    "failed to spawn Python operator for {}",
-                    operator_definition.id
+            {
+                python::run(
+                    node_id,
+                    &operator_definition.id,
+                    source,
+                    events_tx,
+                    incoming_events,
+                    init_done,
+                    dataflow_descriptor,
                 )
-            })?;
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to spawn Python operator for {}",
+                        operator_definition.id
+                    )
+                })?;
+                None
+            }
             #[cfg(not(feature = "python"))]
             eyre::bail!(
                 "operator `{}` uses a Python source, but this dora-runtime was \
@@ -69,8 +79,8 @@ pub fn run_operator(
                 operator_definition.id
             );
         }
-    }
-    Ok(())
+    };
+    Ok(library)
 }
 
 #[derive(Debug)]
