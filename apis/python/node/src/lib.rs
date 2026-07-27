@@ -172,6 +172,15 @@ unsafe impl Sync for PoolSlot {}
 static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// Persistent transit-buffer metadata for GPU pools.
+/// Survives `PINNED_POOL` cache-miss so the write fast path can recover
+/// `transit_ptr` and `pool_device` even when the `PoolSlot` has been evicted.
+/// Keyed by counter, populated during `register_memory_pool`, cleared in
+/// `free_memory_pool`.  `transit_ptr=0` means no transit buffer (same-device
+/// or P2P path).
+static TRANSIT_META: LazyLock<std::sync::Mutex<HashMap<u64, (u64, i32)>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// Receiver-side GPU cache per pool.
 /// Keeps Shmem alive to prevent munmap, preserving stable mmap addresses
 /// and valid GPU VAs for zero-copy reads across iterations.
@@ -2016,8 +2025,13 @@ impl Node {
             let bound = helpers.bind(py);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
+            // _ensure_p2p_pair saves/restores the caller's device internally,
+            // but both the transit and same-device branches below start their
+            // device management from this point — explicitly restore the sender
+            // device so neither branch implicitly depends on the Python helper.
             let _ =
                 bound.call_method1("_ensure_p2p_pair", (sender_device_idx, receiver_device_idx));
+            let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
 
             // Resolve transport path.  classify_transport encodes the full
             // 2³ decision matrix (pure, CI-tested); here we only need the
@@ -2088,16 +2102,15 @@ impl Node {
                     } else {
                         None
                     }
-                    // Device restore: _transit_copy internally saves and
-                    // restores the caller's device, so an explicit restore
-                    // here is redundant for the transit path.  Contrast
-                    // with the same-device branch which does its own
-                    // cudaMemcpy inline and must restore explicitly.
+                    // Both branches start from sender_device_idx (restored
+                    // after _ensure_p2p_pair above).  _transit_copy does its
+                    // own internal save/restore; the same-device branch below
+                    // saves/restores explicitly so later cudaMalloc calls land
+                    // on the right GPU.
                 } else {
                     // Same-device or P2P available: allocate on sender device.
-                    // Save the current device — the ambient CUDA device may
-                    // differ from the tensor device — and restore before
-                    // returning so later cudaMalloc calls land on the right GPU.
+                    // Save the current device and restore before returning
+                    // so later cudaMalloc calls land on the right GPU.
                     let saved_dev: i32 = bound
                         .call_method0("_get_cuda_device")
                         .and_then(|r| r.extract::<i32>())
@@ -2207,6 +2220,15 @@ impl Node {
                     pool_device,
                 },
             );
+        }
+
+        // Persist transit metadata so the write fast path can recover
+        // transit_ptr / pool_device on a PINNED_POOL cache-miss.
+        if transit_ptr != 0 || pool_device != 0 {
+            TRANSIT_META
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(pool_counter, (transit_ptr, pool_device));
         }
 
         let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
@@ -2477,9 +2499,27 @@ impl Node {
                             let mut copy_ok = true;
                             if let Ok(helpers) = get_cuda_helpers(py) {
                                 let bound = helpers.bind(py);
-                                // classify_write_path resolves transit-vs-DtoD-vs-shmem
-                                // from the PoolSlot transit_ptr (see tests).
-                                let transit_ptr = store_back.as_ref().map_or(0, |s| s.transit_ptr);
+                                // Resolve transit metadata: cache-hit from PoolSlot,
+                                // cache-miss from TRANSIT_META (populated during registration).
+                                let mut transit_ptr = store_back.as_ref().map_or(0, |s| s.transit_ptr);
+                                let transit_from_cache;
+                                if transit_ptr == 0 {
+                                    // Cache-miss fallback: TRANSIT_META survives
+                                    // PINNED_POOL eviction so the write fast path
+                                    // always knows whether a transit buffer exists.
+                                    let meta = TRANSIT_META
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    if let Some(&(tp, _pd)) = meta.get(&counter) {
+                                        transit_ptr = tp;
+                                        transit_from_cache = true;
+                                    } else {
+                                        transit_from_cache = false;
+                                    }
+                                } else {
+                                    transit_from_cache = false;
+                                }
+                                let pool_dev = store_back.as_ref().map_or(0, |s| s.pool_device);
                                 let write_path = classify_write_path(
                                     ipc_present,
                                     /*is_cuda=*/ true,
@@ -2487,8 +2527,19 @@ impl Node {
                                 );
                                 let res = match write_path {
                                     WritePath::GpuToGpuPoolTransit => {
-                                        let pool_dev =
-                                            store_back.as_ref().map_or(0, |s| s.pool_device);
+                                        // Recover pool_device from TRANSIT_META on
+                                        // cache-miss; otherwise use the PoolSlot value.
+                                        let pool_dev = if transit_from_cache {
+                                            TRANSIT_META
+                                                .lock()
+                                                .unwrap_or_else(|e| e.into_inner())
+                                                .get(&counter)
+                                                .copied()
+                                                .map(|(_tp, pd)| pd)
+                                                .unwrap_or(pool_dev)
+                                        } else {
+                                            pool_dev
+                                        };
                                         let sender_dev = tensor_device
                                             .strip_prefix("cuda")
                                             .and_then(|d| d.strip_prefix(':'))
@@ -3082,14 +3133,22 @@ impl Node {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c)
-                && let Ok(helpers) = get_cuda_helpers(py)
             {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1("_unregister_host", (slot.base,));
-                let _ = bound.call_method1("_free_gpu_buf", (c,));
-                if slot.transit_ptr != 0 {
-                    let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                if let Ok(helpers) = get_cuda_helpers(py) {
+                    let bound = helpers.bind(py);
+                    let _ = bound.call_method1("_unregister_host", (slot.base,));
+                    let _ = bound.call_method1("_free_gpu_buf", (c,));
+                    if slot.transit_ptr != 0 {
+                        let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                    }
                 }
+                // Remove transit metadata regardless of whether CUDA helpers
+                // are available — a missing _free_transit is a leak, but a stale
+                // TRANSIT_META entry is a correctness bug on re-registration.
+                TRANSIT_META
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&c);
             }
             // PoolSlot dropped here -> Shmem unmapped
         }
