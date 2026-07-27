@@ -24,8 +24,16 @@ dora-ros2-bridge-msg-gen = { workspace = true }
 serde = { workspace = true }
 serde-big-array = "0.5.1"
 widestring = "1.2.1"
-ros2-client = "0.8.0"
-rustdds = "=0.11.4" # pinned because of https://github.com/Atostek/RustDDS/issues/375
+# Version + ROS distro feature are set in `[workspace.dependencies]`.
+ros2-client = { workspace = true }
+# No longer pinned to `=0.11.4`. RustDDS 0.11.5+ depends unconditionally on
+# `pnet`, whose `pnet_datalink` links `Packet.lib` on Windows, so Windows builds
+# need the Npcap SDK: https://github.com/Atostek/RustDDS/issues/375 (still open
+# as of this bump). Instead of pinning, the crates that pull RustDDS are
+# excluded from the Windows build/test steps in `.github/workflows/nightly.yml`.
+# RustDDS needs `pnet` for a single `pnet::datalink::interfaces()` call, so the
+# durable fix is upstreaming an optional-`pnet` feature.
+rustdds = "0.13.1"
 eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
@@ -33,7 +41,7 @@ flume = "0.12.0"
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.4"
 thiserror = { workspace = true }
-cdr-encoding = "=0.10.2"
+cdr-encoding = { workspace = true }
 byteorder = "1"
 zenoh = { workspace = true, optional = true }
 zenoh-ext = { workspace = true, optional = true }

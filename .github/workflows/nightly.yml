@@ -1145,7 +1145,33 @@ jobs:
     runs-on: ${{ matrix.platform }}
     strategy:
       matrix:
-        platform: [macos-latest, windows-latest]
+        include:
+          - platform: macos-latest
+            # macOS links `pnet` fine, so it keeps full ROS2 bridge coverage.
+            ros2_excludes: ""
+          - platform: windows-latest
+            # RustDDS 0.11.5+ depends unconditionally on `pnet`, and
+            # `pnet_datalink` declares `#[link(name = "Packet")]` on Windows
+            # (see its `src/bindings/winpcap.rs`). Linking therefore needs
+            # `Packet.lib` from the Npcap/WinPcap SDK, which is not installed on
+            # GitHub's Windows runners:
+            # https://github.com/Atostek/RustDDS/issues/375 (still open).
+            #
+            # `Packet.lib` is only required at *link* time, so the `cargo check`
+            # steps below are unaffected and stay unexcluded — as does the
+            # `cross-check` job's `x86_64-pc-windows-gnu` target, which also
+            # only runs `cargo check`. Just the steps that produce linked
+            # artifacts need these excludes.
+            #
+            # This is the exact set of crates that transitively pull RustDDS
+            # (`cargo tree -e normal`); `dora-ros2-bridge-msg-gen`,
+            # `dora-cli`, and `dora-daemon` do not, so Windows still covers
+            # them. `dora-ros2-bridge-python` is already excluded below.
+            ros2_excludes: >-
+              --exclude dora-ros2-bridge
+              --exclude dora-ros2-bridge-arrow
+              --exclude dora-ros2-bridge-node
+              --exclude rust-ros2-example-node
       fail-fast: false
     steps:
       - uses: actions/checkout@v6
@@ -1170,6 +1196,7 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          ${{ matrix.ros2_excludes }}
       - name: Test
         run: >
           cargo test --all
@@ -1178,6 +1205,7 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+          ${{ matrix.ros2_excludes }}
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
