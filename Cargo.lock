@@ -6374,6 +6374,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust-operator-teardown-example-operator"
+version = "1.0.0-rc.4"
+dependencies = [
+ "dora-operator-api",
+]
+
+[[package]]
 name = "rust-ros2-example-node"
 version = "1.0.0-rc.4"
 dependencies = [

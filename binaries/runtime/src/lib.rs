@@ -97,7 +97,12 @@ pub fn main() -> eyre::Result<()> {
     });
 
     let operator_id = operator_definition.id.clone();
-    run_operator(
+    // Keep the operator's shared library mapped until *after* the main event
+    // loop has joined below: its outputs are Arrow arrays whose FFI `release`
+    // callbacks live in the `.so`, and the loop may still hold in-flight arrays
+    // (see `run_operator` / `shared_lib::run`). Unloading it earlier dangles
+    // those callbacks and SIGSEGVs when the arrays are freed.
+    let _operator_library = run_operator(
         &node_id,
         operator_definition,
         incoming_events,
@@ -112,6 +117,9 @@ pub fn main() -> eyre::Result<()> {
         Err(panic) => std::panic::resume_unwind(panic),
     }
 
+    // `_operator_library` drops (unloads the `.so`) at end of scope here, after
+    // the main loop has joined and released every Arrow array the operator
+    // exported.
     Ok(())
 }
 
