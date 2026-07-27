@@ -2556,13 +2556,10 @@ impl Node {
                                 ));
                             }
                         } else {
-                            // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
+                            // Seqlock: begin (noop if still odd from a
+                            // previous failed GPU-to-shmem copy).
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             unsafe {
                                 std::ptr::copy_nonoverlapping(
                                     ptr_val as *const u8,
@@ -2570,12 +2567,12 @@ impl Node {
                                     size,
                                 );
                             }
-                            // Seqlock: end write
+                            // Publish: gen was odd (in-progress), flip to even.
+                            // The shmem data region is not shared with the reader
+                            // through IPC, so a copy failure means segfault — the
+                            // process is dead before reaching here.  No rollback needed.
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end(gen_ptr, pre_write_gen, true);
                             }
                         }
 
@@ -2792,13 +2789,10 @@ impl Node {
                                 ));
                             }
                         } else {
-                            // Seqlock: begin write
-                            unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-                            }
+                            // Seqlock: begin (noop if still odd from a
+                            // previous failed GPU-to-shmem copy).
+                            let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
+                            let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             unsafe {
                                 std::ptr::copy_nonoverlapping(
                                     ptr_val as *const u8,
@@ -2806,12 +2800,12 @@ impl Node {
                                     size,
                                 );
                             }
-                            // Seqlock: end write
+                            // Publish: gen was odd (in-progress), flip to even.
+                            // The shmem data region is not shared through IPC —
+                            // copy_nonoverlapping failure means segfault,
+                            // so the process is dead before reaching here.
                             unsafe {
-                                let gen_ptr = shmem_ptr.add(96) as *mut u64;
-                                let old_gen = std::ptr::read_volatile(gen_ptr);
-                                std::ptr::write_volatile(gen_ptr, old_gen + 1);
-                                std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+                                seqlock_end(gen_ptr, pre_write_gen, true);
                             }
                         }
                     }
