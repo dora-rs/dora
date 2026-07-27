@@ -3,20 +3,6 @@ use std::convert::TryInto;
 use super::string::U16String;
 use array_init::array_init;
 
-pub trait MessageT: Default + Send + Sync {
-    type Raw: FFIToRust<Target = Self> + Send + Sync;
-    type RawRef: FFIFromRust<From = Self>;
-}
-
-pub trait ActionT: Send {
-    type Goal: MessageT;
-    type Result: MessageT;
-    type Feedback: MessageT;
-    type SendGoal;
-    type GetResult;
-    type FeedbackMessage: MessageT;
-}
-
 // I was going to use `std::default::Default`, however generic arrays do not implement `std::default::Default`.
 pub trait InternalDefault {
     fn _default() -> Self;

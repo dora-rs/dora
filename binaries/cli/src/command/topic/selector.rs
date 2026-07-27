@@ -71,6 +71,19 @@ impl TopicSelector {
         &self,
         session: &WsSession,
     ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
+        let (dataflow_id, topics, _descriptor) = self.resolve_with_descriptor(session)?;
+        Ok((dataflow_id, topics))
+    }
+
+    /// Like [`Self::resolve`], but also returns the dataflow descriptor that
+    /// was fetched to resolve the topics. Callers that additionally need the
+    /// descriptor (e.g. to enumerate subscribers) should use this to avoid a
+    /// second `Info` round-trip — and, when the dataflow is ambiguous, a second
+    /// interactive selection prompt.
+    pub fn resolve_with_descriptor(
+        &self,
+        session: &WsSession,
+    ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>, Descriptor)> {
         let (dataflow_id, dataflow_descriptor) = self.dataflow.resolve(session)?;
 
         let node_map = dataflow_descriptor
@@ -87,7 +100,7 @@ impl TopicSelector {
                     data_id: output.clone(),
                 })
             }));
-            return Ok((dataflow_id, data));
+            return Ok((dataflow_id, data, dataflow_descriptor));
         }
 
         for s in &self.data {
@@ -147,6 +160,6 @@ impl TopicSelector {
             );
         }
 
-        Ok((dataflow_id, data))
+        Ok((dataflow_id, data, dataflow_descriptor))
     }
 }

@@ -656,12 +656,23 @@ mod tests {
     // (`tcp/::1:7447` is ambiguous).
     #[test]
     fn ipv6_endpoints_are_bracketed() {
-        let endpoint = reserve_zenoh_endpoint(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))
-            .expect("reservation on ::1 succeeds");
-        assert!(
-            endpoint.starts_with("tcp/[::1]:"),
-            "expected a bracketed IPv6 endpoint, got {endpoint}"
-        );
+        match reserve_zenoh_endpoint(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)) {
+            Ok(endpoint) => assert!(
+                endpoint.starts_with("tcp/[::1]:"),
+                "expected a bracketed IPv6 endpoint, got {endpoint}"
+            ),
+            // Many CI runners, Docker containers, and locked-down hosts have no
+            // IPv6 address on `lo`, so binding `::1` fails with EAFNOSUPPORT
+            // (`Unsupported`) or `AddrNotAvailable`. That is a property of the
+            // host, not of the endpoint formatting under test, so skip rather
+            // than fail — the production path never binds `::1` on such hosts.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
+                ) || e.raw_os_error() == Some(97) => {}
+            Err(e) => panic!("unexpected error reserving ::1 endpoint: {e}"),
+        }
     }
 
     // The filter behind the routing lookup, tested directly rather than through

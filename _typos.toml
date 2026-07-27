@@ -1,7 +1,11 @@
 [files]
 # `worktrees/` is the local git-worktree convention (untracked, absent in CI
 # checkouts); excluding it keeps `make qa-fast` usable while worktrees exist.
-extend-exclude = ["Changelog.md", "worktrees/"]
+extend-exclude = [
+    "Changelog.md",
+    "libraries/extensions/ros2-bridge/msg-gen/test_type_descriptions/",
+    "worktrees/",
+]
 
 [default.extend-identifiers]
 # *sigh* this just isn't worth the cost of fixing

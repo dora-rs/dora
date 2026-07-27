@@ -42,11 +42,4 @@ pub enum ControlEvent {
         subscription_id: Uuid,
         done_tx: oneshot::Sender<()>,
     },
-    Error(eyre::Report),
-}
-
-impl From<eyre::Report> for ControlEvent {
-    fn from(err: eyre::Report) -> Self {
-        ControlEvent::Error(err)
-    }
 }

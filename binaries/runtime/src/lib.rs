@@ -5,7 +5,6 @@ use dora_core::{
     descriptor::OperatorConfig,
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_metrics::run_metrics_monitor;
 use dora_node_api::{DoraNode, Event};
 use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
@@ -136,8 +135,28 @@ async fn run(
     mut operator_channels: HashMap<OperatorId, flume::Sender<Event>>,
     init_done: oneshot::Receiver<Result<()>>,
 ) -> eyre::Result<()> {
+    // Start the OTLP metrics exporter only when an endpoint is configured, and
+    // spawn it as a background task. `run_metrics_monitor` is an `async fn`, so
+    // its returned future does nothing until polled; previously the future was
+    // bound to a `_meter_provider` local and dropped without ever being awaited
+    // or spawned, so the `metrics` feature silently exported nothing. The future
+    // also never resolves (the process observer runs for the node's lifetime),
+    // so it must be spawned rather than awaited inline. Mirrors the gating and
+    // spawning used by the node API (`apis/rust/node/src/node/mod.rs`).
     #[cfg(feature = "metrics")]
-    let _meter_provider = run_metrics_monitor(config.node_id.to_string());
+    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+        use dora_metrics::run_metrics_monitor;
+
+        let meter_id = config.node_id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = run_metrics_monitor(meter_id)
+                .await
+                .wrap_err("metrics monitor exited unexpectedly")
+            {
+                tracing::warn!("metrics monitor failed: {e:#}");
+            }
+        });
+    }
     init_done
         .await
         .wrap_err("the `init_done` channel was closed unexpectedly")?
@@ -213,14 +232,6 @@ async fn run(
                         break;
                     }
                 }
-                OperatorEvent::AllocateOutputSample { len, sample: tx } => {
-                    let sample = node.allocate_data_sample(len).map_err(eyre::Report::from);
-                    if tx.send(sample).is_err() {
-                        tracing::warn!(
-                            "output sample requested, but operator {operator_id} exited already"
-                        );
-                    }
-                }
                 OperatorEvent::Output {
                     output_id,
                     parameters,
@@ -274,13 +285,16 @@ async fn run(
 
                 if let Err(err) = operator_channel
                     .send_async(Event::Input {
-                        id: input_id.clone(),
+                        id: input_id,
                         metadata,
                         data,
                     })
                     .await
                     .wrap_err_with(|| {
-                        format!("failed to send input `{input_id}` to operator `{operator_id}`")
+                        // `id` is the full `operator/input` DataId; use it (and the
+                        // still-owned `operator_id`) here so `input_id` can be moved
+                        // into the event above without a per-message clone.
+                        format!("failed to send input `{id}` to operator `{operator_id}`")
                     })
                 {
                     tracing::warn!("{err}");

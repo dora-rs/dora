@@ -9,8 +9,6 @@ pub use dora_message::{config, uhlc};
 #[cfg(feature = "build")]
 pub mod build;
 pub mod descriptor;
-#[cfg(feature = "type-inference")]
-pub mod inference;
 pub mod manifest;
 pub mod topics;
 pub mod types;

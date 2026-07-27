@@ -50,14 +50,23 @@ impl Executable for SelfSubCommand {
                     match status.get_latest_release() {
                         Ok(release) => {
                             let current_version = self_update::cargo_crate_version!();
-                            if current_version != release.version {
+                            // Semver comparison — a dev/pre-release build that is
+                            // ahead of the latest published release must not be
+                            // offered a downgrade.
+                            let newer = self_update::version::bump_is_greater(
+                                current_version,
+                                &release.version,
+                            )
+                            .unwrap_or(current_version != release.version);
+                            if newer {
                                 println!(
                                     "An update is available: {}. Run 'dora self update' to update",
                                     release.version
                                 );
                             } else {
                                 println!(
-                                    "Dora CLI is already at the latest version: {current_version}"
+                                    "Dora CLI is up to date (current: {current_version}, latest release: {})",
+                                    release.version
                                 );
                             }
                         }

@@ -88,7 +88,7 @@ members = [
 edition = "2024"
 rust-version = "1.88.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "1.0.0-rc.2"
+version = "1.0.0-rc.4"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
 readme = "./README.md"
@@ -96,33 +96,33 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "1.0.0-rc.2", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "1.0.0-rc.2", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "1.0.0-rc.2", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "1.0.0-rc.2", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "1.0.0-rc.2", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "1.0.0-rc.2", path = "apis/python/operator" }
-dora-operator-api-c = { version = "1.0.0-rc.2", path = "apis/c/operator" }
-dora-node-api-c = { version = "1.0.0-rc.2", path = "apis/c/node" }
-dora-core = { version = "1.0.0-rc.2", path = "libraries/core" }
-dora-hub-client = { version = "1.0.0-rc.2", path = "libraries/hub-client" }
-dora-recording = { version = "1.0.0-rc.2", path = "libraries/recording" }
-dora-arrow-convert = { version = "1.0.0-rc.2", path = "libraries/arrow-convert" }
-dora-tracing = { version = "1.0.0-rc.2", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "1.0.0-rc.2", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "1.0.0-rc.2", path = "libraries/extensions/download" }
-dora-log-utils = { version = "1.0.0-rc.2", path = "libraries/log-utils" }
-dora-coordinator-store = { version = "1.0.0-rc.2", path = "libraries/coordinator-store" }
-dora-cli = { version = "1.0.0-rc.2", path = "binaries/cli" }
-dora-runtime = { version = "1.0.0-rc.2", path = "binaries/runtime" }
-dora-daemon = { version = "1.0.0-rc.2", path = "binaries/daemon" }
-dora-coordinator = { version = "1.0.0-rc.2", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "1.0.0-rc.2", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.2", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "1.0.0-rc.4", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "1.0.0-rc.4", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "1.0.0-rc.4", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "1.0.0-rc.4", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "1.0.0-rc.4", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "1.0.0-rc.4", path = "apis/python/operator" }
+dora-operator-api-c = { version = "1.0.0-rc.4", path = "apis/c/operator" }
+dora-node-api-c = { version = "1.0.0-rc.4", path = "apis/c/node" }
+dora-core = { version = "1.0.0-rc.4", path = "libraries/core" }
+dora-hub-client = { version = "1.0.0-rc.4", path = "libraries/hub-client" }
+dora-recording = { version = "1.0.0-rc.4", path = "libraries/recording" }
+dora-arrow-convert = { version = "1.0.0-rc.4", path = "libraries/arrow-convert" }
+dora-tracing = { version = "1.0.0-rc.4", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "1.0.0-rc.4", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "1.0.0-rc.4", path = "libraries/extensions/download" }
+dora-log-utils = { version = "1.0.0-rc.4", path = "libraries/log-utils" }
+dora-coordinator-store = { version = "1.0.0-rc.4", path = "libraries/coordinator-store" }
+dora-cli = { version = "1.0.0-rc.4", path = "binaries/cli" }
+dora-runtime = { version = "1.0.0-rc.4", path = "binaries/runtime" }
+dora-daemon = { version = "1.0.0-rc.4", path = "binaries/daemon" }
+dora-coordinator = { version = "1.0.0-rc.4", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-mavlink2-bridge = { version = "1.0.0-rc.2", path = "libraries/extensions/mavlink2-bridge" }
-dora-memory-pool = { version = "1.0.0-rc.2", path = "libraries/extensions/memory-pool" }
-dora-message = { version = "1.0.0-rc.2", path = "libraries/message" }
+dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
+dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
+dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 arrow = { version = "59", default-features = false }
 arrow-schema = { version = "59" }
 arrow-data = { version = "59" }

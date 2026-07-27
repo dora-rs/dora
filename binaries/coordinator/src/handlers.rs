@@ -18,7 +18,7 @@ use dora_message::{
     coordinator_to_cli::{DataflowResult, LogMessage},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, Timestamped},
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    descriptor::Descriptor,
+    descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
 use futures::future::join_all;
@@ -399,6 +399,65 @@ pub(crate) async fn stop_node(
     Ok(())
 }
 
+/// Pick the daemon that runs `node_id`, for a log request.
+///
+/// For a **running** dataflow the coordinator already records the exact
+/// node→daemon assignment in `node_to_daemon`; that daemon is where the node
+/// was spawned and is authoritative. Re-deriving the daemon from the node's
+/// `deploy.machine` (as the archived path must) is wrong for a node without an
+/// explicit machine when more than one *unnamed* daemon is connected: the
+/// machine-`None` branch collects every unnamed daemon and bails with
+/// "multiple matching daemon connections", making `dora logs` unavailable for
+/// a node that is definitely running on one specific daemon.
+///
+/// Archived dataflows keep no `node_to_daemon` map, so they still fall back to
+/// the machine-based derivation. Archived takes priority when a dataflow id is
+/// somehow present in both, matching the previous behavior.
+fn resolve_log_daemon_id(
+    running_node_to_daemon: Option<&BTreeMap<NodeId, DaemonId>>,
+    archived_nodes: Option<&BTreeMap<NodeId, ResolvedNode>>,
+    dataflow_id: Uuid,
+    node_id: &NodeId,
+    daemon_connections: &DaemonConnections,
+) -> eyre::Result<DaemonId> {
+    if let Some(nodes) = archived_nodes {
+        let machine_ids: Vec<Option<String>> = nodes
+            .values()
+            .filter(|node| node.id == *node_id)
+            .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
+            .collect();
+
+        let machine_id = match &machine_ids[..] {
+            [machine_id] => machine_id.clone(),
+            [] => bail!("No machine contains {}/{}", dataflow_id, node_id),
+            _ => bail!(
+                "More than one machine contains {}/{}. However, it should only be present on one.",
+                dataflow_id,
+                node_id
+            ),
+        };
+
+        let daemon_ids: Vec<_> = match &machine_id {
+            None => daemon_connections.unnamed().collect(),
+            Some(machine_id) => daemon_connections
+                .get_matching_daemon_id(machine_id)
+                .into_iter()
+                .collect(),
+        };
+        match &daemon_ids[..] {
+            [id] => Ok((*id).clone()),
+            [] => bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
+            _ => bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
+        }
+    } else if let Some(node_to_daemon) = running_node_to_daemon {
+        node_to_daemon.get(node_id).cloned().ok_or_else(|| {
+            eyre!("node `{node_id}` is not part of running dataflow `{dataflow_id}`")
+        })
+    } else {
+        bail!("No dataflow found with UUID `{dataflow_id}`")
+    }
+}
+
 pub(crate) async fn retrieve_logs(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     archived_dataflows: &indexmap::IndexMap<Uuid, ArchivedDataflow>,
@@ -408,13 +467,15 @@ pub(crate) async fn retrieve_logs(
     timestamp: uhlc::Timestamp,
     tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
-    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else {
-        bail!("No dataflow found with UUID `{dataflow_id}`")
-    };
+    let daemon_id = resolve_log_daemon_id(
+        running_dataflows
+            .get(&dataflow_id)
+            .map(|d| &d.node_to_daemon),
+        archived_dataflows.get(&dataflow_id).map(|d| &d.nodes),
+        dataflow_id,
+        &node_id,
+        daemon_connections,
+    )?;
 
     let message = serde_json::to_vec(&Timestamped {
         inner: DaemonCoordinatorEvent::Logs {
@@ -425,36 +486,6 @@ pub(crate) async fn retrieve_logs(
         timestamp,
     })?;
 
-    let machine_ids: Vec<Option<String>> = nodes
-        .values()
-        .filter(|node| node.id == node_id)
-        .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
-        .collect();
-
-    let machine_id = if let [machine_id] = &machine_ids[..] {
-        machine_id
-    } else if machine_ids.is_empty() {
-        bail!("No machine contains {}/{}", dataflow_id, node_id)
-    } else {
-        bail!(
-            "More than one machine contains {}/{}. However, it should only be present on one.",
-            dataflow_id,
-            node_id
-        )
-    };
-
-    let daemon_ids: Vec<_> = match machine_id {
-        None => daemon_connections.unnamed().collect(),
-        Some(machine_id) => daemon_connections
-            .get_matching_daemon_id(machine_id)
-            .into_iter()
-            .collect(),
-    };
-    let daemon_id = match &daemon_ids[..] {
-        [id] => (*id).clone(),
-        [] => eyre::bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
-        _ => eyre::bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
-    };
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
@@ -705,7 +736,73 @@ async fn destroy_daemons(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::DaemonConnection;
     use crate::topic_subscriber::TopicSubscriber;
+
+    fn dummy_connection() -> DaemonConnection {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        DaemonConnection::new(
+            tx,
+            std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn running_logs_use_node_to_daemon_with_multiple_unnamed_daemons() {
+        // Two unnamed daemons are connected and the target node has no explicit
+        // deploy machine. The machine-based derivation would collect both and
+        // bail; `node_to_daemon` resolves the exact daemon that runs the node.
+        let node = NodeId::from("worker".to_string());
+        let d1 = DaemonId::new(None);
+        let d2 = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(d1.clone(), dummy_connection());
+        daemon_connections.add(d2.clone(), dummy_connection());
+
+        let mut node_to_daemon = BTreeMap::new();
+        node_to_daemon.insert(node.clone(), d2.clone());
+
+        let resolved = resolve_log_daemon_id(
+            Some(&node_to_daemon),
+            None,
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("running node must resolve to its recorded daemon");
+        assert_eq!(resolved, d2);
+    }
+
+    #[test]
+    fn running_logs_error_when_node_not_in_dataflow() {
+        let node_to_daemon = BTreeMap::new();
+        let daemon_connections = DaemonConnections::default();
+        let err = resolve_log_daemon_id(
+            Some(&node_to_daemon),
+            None,
+            Uuid::nil(),
+            &NodeId::from("ghost".to_string()),
+            &daemon_connections,
+        )
+        .expect_err("a node absent from the dataflow must error");
+        assert!(err.to_string().contains("ghost"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_dataflow_errors() {
+        let daemon_connections = DaemonConnections::default();
+        let err = resolve_log_daemon_id(
+            None,
+            None,
+            Uuid::nil(),
+            &NodeId::from("n".to_string()),
+            &daemon_connections,
+        )
+        .expect_err("unknown dataflow must error");
+        assert!(err.to_string().contains("No dataflow found"), "got: {err}");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn send_topic_frames_resets_timeout_streak_on_successful_send() {

@@ -31,7 +31,7 @@ use std::{
 };
 use tokio::{
     fs::File,
-    io::{AsyncBufReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
 };
 
@@ -86,6 +86,55 @@ fn truncate_log_line(content: &mut String) {
         content.truncate(boundary);
         content.push_str("... [truncated]");
     }
+}
+
+/// Read a single log line from `reader`, buffering at most
+/// `MAX_LOG_LINE_BYTES + 1` bytes into `raw`. Returns `Ok(true)` once the
+/// stream reaches EOF (nothing more to read).
+///
+/// A plain `read_until(b'\n', ..)` is unbounded: a malicious or buggy node
+/// that writes gigabytes without a newline would grow `raw` until the daemon
+/// runs out of memory, defeating [`truncate_log_line`] (which only runs
+/// *after* the whole line is materialized). This caps the read, and if the
+/// line is longer than the cap it discards the remainder (without buffering
+/// it) so the next call starts on a fresh line. The one extra byte lets
+/// `truncate_log_line` observe that truncation happened and append its marker.
+async fn read_capped_line<R>(
+    reader: &mut tokio::io::Take<R>,
+    raw: &mut Vec<u8>,
+) -> std::io::Result<bool>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    const CAP: u64 = MAX_LOG_LINE_BYTES as u64 + 1;
+    reader.set_limit(CAP);
+    let n = reader.read_until(b'\n', raw).await?;
+    if n == 0 {
+        return Ok(true);
+    }
+    // If the cap was reached before a newline, drop the rest of this line so
+    // the daemon never buffers an unbounded amount for a single line. The
+    // remainder is skipped via the reader's own buffer (O(1) extra memory).
+    if reader.limit() == 0 && raw.last() != Some(&b'\n') {
+        reader.set_limit(u64::MAX);
+        loop {
+            let available = reader.fill_buf().await?;
+            if available.is_empty() {
+                break; // EOF mid-line
+            }
+            match available.iter().position(|&b| b == b'\n') {
+                Some(pos) => {
+                    reader.consume(pos + 1);
+                    break;
+                }
+                None => {
+                    let len = available.len();
+                    reader.consume(len);
+                }
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Default)]
@@ -329,18 +378,28 @@ impl PreparedNode {
                         )
                         .await;
                     tokio::time::sleep(backoff).await;
+                }
 
-                    // Re-check disable_restart after sleep (may have changed)
-                    if disable_restart.load(atomic::Ordering::Acquire) {
-                        logger
-                            .log(
-                                LogLevel::Info,
-                                Some("daemon".into()),
-                                "restart cancelled: inputs closed during backoff wait".to_string(),
-                            )
-                            .await;
-                        break;
-                    }
+                // Re-check `disable_restart` before committing to a respawn. It
+                // may have flipped to `true` after the `load` at the top of this
+                // iteration: emitting the `SpawnedNodeResult` event and any
+                // backoff sleep above are `.await` points, and a concurrent
+                // `StopDataflow` (`RunningDataflow::stop_all`) sets
+                // `disable_restart` on every node. Keeping this gate inside the
+                // `restart_delay.is_some()` branch above meant that a node with
+                // the default (unset) `restart_delay` had no final check, so a
+                // stop racing an in-progress restart was ignored and the node
+                // respawned *after* the stop — an orphan process that `stop_all`
+                // has already passed over.
+                if disable_restart.load(atomic::Ordering::Acquire) {
+                    logger
+                        .log(
+                            LogLevel::Info,
+                            Some("daemon".into()),
+                            "restart cancelled: inputs closed before respawn".to_string(),
+                        )
+                        .await;
+                    break;
                 }
 
                 restart_count += 1;
@@ -569,34 +628,34 @@ impl PreparedNode {
                 .stdout()
                 .take()
                 .ok_or_else(|| eyre::eyre!("failed to take stdout"))?,
-        );
+        )
+        .take(MAX_LOG_LINE_BYTES as u64);
         let stdout_tx = tx.clone();
         let node_id = self.node.id.clone();
         let mut logger_c = logger.try_clone().await?;
         // Stdout listener stream
         tokio::spawn(async move {
-            let mut buffer = String::new();
             let mut finished = false;
             while !finished {
                 let mut raw = Vec::new();
-                finished = match child_stdout
-                    .read_until(b'\n', &mut raw)
+                finished = match read_capped_line(&mut child_stdout, &mut raw)
                     .await
                     .wrap_err_with(|| {
                         format!("failed to read stdout line from spawned node {node_id}")
                     }) {
-                    Ok(0) => true,
-                    Ok(_) => false,
+                    Ok(eof) => eof,
                     Err(err) => {
                         logger_c
                             .log(LogLevel::Warn, Some("daemon".into()), format!("{err:?}"))
                             .await;
-                        false
+                        // Stop on a persistent read error instead of looping
+                        // (which would busy-spin and flood the log channel).
+                        true
                     }
                 };
 
-                match String::from_utf8(raw) {
-                    Ok(s) => buffer.push_str(&s),
+                let mut content = match String::from_utf8(raw) {
+                    Ok(s) => s,
                     Err(err) => {
                         let lossy = String::from_utf8_lossy(err.as_bytes());
                         logger_c
@@ -609,11 +668,9 @@ impl PreparedNode {
                                 ),
                             )
                             .await;
-                        buffer.push_str(&lossy)
+                        lossy.into_owned()
                     }
                 };
-
-                let mut content = std::mem::take(&mut buffer);
                 truncate_log_line(&mut content);
                 let sent = stdout_tx
                     .send(LogLine {
@@ -632,32 +689,30 @@ impl PreparedNode {
                 .stderr()
                 .take()
                 .ok_or_else(|| eyre::eyre!("failed to take stderr"))?,
-        );
+        )
+        .take(MAX_LOG_LINE_BYTES as u64);
 
         // Stderr listener stream
         let stderr_tx = tx.clone();
         let node_id = self.node.id.clone();
         let daemon_tx_log = self.daemon_tx.clone();
         tokio::spawn(async move {
-            let mut buffer = String::new();
             let mut finished = false;
             while !finished {
                 let mut raw = Vec::new();
-                finished = match child_stderr
-                    .read_until(b'\n', &mut raw)
+                finished = match read_capped_line(&mut child_stderr, &mut raw)
                     .await
                     .wrap_err_with(|| {
                         format!("failed to read stderr line from spawned node {node_id}")
                     }) {
-                    Ok(0) => true,
-                    Ok(_) => false,
+                    Ok(eof) => eof,
                     Err(err) => {
                         tracing::warn!("{err:?}");
                         true
                     }
                 };
 
-                let new = match String::from_utf8(raw) {
+                let mut content = match String::from_utf8(raw) {
                     Ok(s) => s,
                     Err(err) => {
                         let lossy = String::from_utf8_lossy(err.as_bytes());
@@ -669,12 +724,11 @@ impl PreparedNode {
                     }
                 };
 
-                buffer.push_str(&new);
-
-                self.node_stderr_most_recent.force_push(new);
-
-                let mut content = std::mem::take(&mut buffer);
                 truncate_log_line(&mut content);
+
+                // Store the truncated line in the crash-diagnostics ring buffer
+                // so a single over-long line cannot be retained in full here.
+                self.node_stderr_most_recent.force_push(content.clone());
                 let sent = stderr_tx
                     .send(LogLine {
                         content: content.clone(),
@@ -992,4 +1046,63 @@ struct NodeProcessFinished {
     // (dora-rs/adora#152). The receiver is now dropped at the end of
     // the spawn_inner task and each restart creates a fresh channel
     // pair.
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn read_all_lines(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut reader = tokio::io::BufReader::new(input).take(MAX_LOG_LINE_BYTES as u64);
+        let mut lines = Vec::new();
+        loop {
+            let mut raw = Vec::new();
+            let eof = read_capped_line(&mut reader, &mut raw).await.unwrap();
+            if !raw.is_empty() {
+                lines.push(raw);
+            }
+            if eof {
+                break;
+            }
+        }
+        lines
+    }
+
+    #[tokio::test]
+    async fn reads_plain_lines() {
+        assert_eq!(
+            read_all_lines(b"hello\nworld\n").await,
+            vec![b"hello\n".to_vec(), b"world\n".to_vec()]
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_final_line_without_newline() {
+        assert_eq!(
+            read_all_lines(b"a\nno-newline").await,
+            vec![b"a\n".to_vec(), b"no-newline".to_vec()]
+        );
+    }
+
+    #[tokio::test]
+    async fn caps_and_discards_overlong_line() {
+        // One line longer than the cap, followed by a normal line.
+        let mut input = vec![b'a'; MAX_LOG_LINE_BYTES + 4096];
+        input.push(b'\n');
+        input.extend_from_slice(b"next\n");
+
+        let lines = read_all_lines(&input).await;
+        assert_eq!(lines.len(), 2, "over-long line must not be split unbounded");
+        // The over-long line is capped: at most MAX_LOG_LINE_BYTES + 1 bytes
+        // are buffered, never the full multi-MB line.
+        assert!(
+            lines[0].len() <= MAX_LOG_LINE_BYTES + 1,
+            "buffered {} bytes, expected <= {}",
+            lines[0].len(),
+            MAX_LOG_LINE_BYTES + 1
+        );
+        // The remainder of the over-long line is discarded, so the next line
+        // is read intact rather than being merged with the overflow.
+        assert_eq!(lines[1], b"next\n".to_vec());
+    }
 }

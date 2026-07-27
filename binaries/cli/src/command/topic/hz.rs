@@ -156,7 +156,11 @@ fn run_hz_oneshot(
 
     println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
     for (label, hz_stats) in &stats {
-        let samples = hz_stats.timestamps.lock().unwrap().len();
+        let samples = hz_stats
+            .timestamps
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         match hz_stats.calculate() {
             Some(s) => println!(
                 "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
@@ -205,7 +209,7 @@ impl HzStats {
     fn intervals_ms(&self) -> Vec<f64> {
         self.timestamps
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .tuple_windows()
             .filter_map(|(a, b)| {
@@ -609,6 +613,27 @@ mod tests {
     #[test]
     fn parse_window_non_numeric() {
         assert!(parse_window("abc").is_err());
+    }
+
+    #[test]
+    fn lock_reads_recover_from_poisoning() {
+        use std::sync::Arc;
+
+        let stats = Arc::new(HzStats::new(1));
+
+        // Poison the timestamps mutex by panicking while holding the lock.
+        let poisoner = Arc::clone(&stats);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.timestamps.lock().unwrap();
+            panic!("poison the timestamps lock");
+        })
+        .join();
+
+        // Writer and reader must still work despite the poisoned lock rather
+        // than panicking on a bare `.unwrap()`.
+        stats.record(Instant::now());
+        stats.record(Instant::now());
+        let _ = stats.intervals_ms();
     }
 
     // A huge window (`parse_window` imposes no upper bound) must not panic in

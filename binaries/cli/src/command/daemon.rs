@@ -18,6 +18,19 @@ use std::{
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
+/// Parse `--worker-threads`, rejecting 0.
+///
+/// `tokio::runtime::Builder::worker_threads` asserts `val > 0` and would
+/// otherwise abort the daemon with a raw panic ("Worker threads cannot be set
+/// to 0"). Validating here turns that into a normal clap usage error.
+fn parse_worker_threads(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("worker threads must be at least 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Debug, clap::Args)]
 /// Run daemon
 pub struct Daemon {
@@ -72,7 +85,7 @@ pub struct Daemon {
     #[clap(long)]
     allow_shell_nodes: bool,
     /// Number of tokio worker threads (default: number of CPU cores).
-    #[clap(long)]
+    #[clap(long, value_parser = parse_worker_threads)]
     worker_threads: Option<usize>,
     /// Enable real-time profile: mlockall + SCHED_FIFO priority.
     /// Requires CAP_SYS_NICE + CAP_IPC_LOCK capabilities.

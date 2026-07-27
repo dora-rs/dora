@@ -127,7 +127,11 @@ fn info(
     duration_secs: u64,
 ) -> eyre::Result<()> {
     let session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(&session)?;
+    // Resolve once: this yields both the topic and the dataflow descriptor used
+    // to find subscribers. Resolving a second time would repeat the coordinator
+    // round-trip and, when the dataflow is ambiguous, prompt the user to pick a
+    // dataflow again (and could even pick a different one).
+    let (dataflow_id, topics, descriptor) = selector.resolve_with_descriptor(&session)?;
 
     if topics.is_empty() {
         eyre::bail!("No topics specified");
@@ -138,9 +142,6 @@ fn info(
     }
 
     let topic = topics.into_iter().next().unwrap();
-
-    // Get dataflow descriptor to find subscribers
-    let (_, descriptor) = selector.dataflow.resolve(&session)?;
 
     // Find subscribers
     let mut subscribers = Vec::new();
@@ -177,8 +178,15 @@ fn info(
                         }
                     };
                     match event.inner {
-                        InterDaemonEvent::Output { data, .. } => {
-                            let data_size = data.as_ref().map(|d| d.len()).unwrap_or(0);
+                        InterDaemonEvent::Output { data, metadata, .. } => {
+                            // Charge the real on-wire size, not the rebuilt
+                            // self-describing `data` (which re-prepends the schema
+                            // a schema-once output ships only once) — see
+                            // `debug_frame_wire_size` (#2584).
+                            let data_size = dora_message::metadata::debug_frame_wire_size(
+                                &metadata.parameters,
+                                data.as_deref(),
+                            );
                             // The payload is a self-describing Arrow IPC stream;
                             // read its data type from the decoded array (best
                             // effort — a malformed stream just leaves it unknown).

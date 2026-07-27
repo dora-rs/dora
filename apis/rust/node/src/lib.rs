@@ -128,8 +128,8 @@ mod node;
 
 pub use error::{NodeError, NodeResult, PatternError};
 
-/// Backward-compatible alias so code using the old `DoraNode` name still compiles.
-/// Backward-compatible alias for [`Event`].
+/// Backward-compatible alias for [`Event`], so code using the old `DoraEvent`
+/// name still compiles.
 pub use Event as DoraEvent;
 
 #[derive(Debug)]

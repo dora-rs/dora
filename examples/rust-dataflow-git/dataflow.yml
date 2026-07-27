@@ -3,10 +3,16 @@
 # without needing a release. Update `rev:` when a message-format-breaking
 # change lands on main — otherwise the CI job catches the mismatch and
 # signals a compatibility break, which is the whole point of this test.
+#
+# Currently pinned past #2774, which added a `metadata_version` field to
+# `NodeRegisterRequest` to reject metadata-format skew at registration. The
+# previous pin (07ed3be, from #2745) predated that, so its nodes failed to
+# register against a current daemon with `unexpected end of file` (#2742).
+# (#2745 had likewise moved the pin past #2366's payload-format v1 break.)
 nodes:
   - id: rust-node
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: c9a3699209f6bb771952e365df044788d1347626
     build: cargo build -p rust-dataflow-example-node
     path: target/debug/rust-dataflow-example-node
     inputs:
@@ -16,7 +22,7 @@ nodes:
 
   - id: rust-status-node
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: c9a3699209f6bb771952e365df044788d1347626
     build: cargo build -p rust-dataflow-example-status-node
     path: target/debug/rust-dataflow-example-status-node
     inputs:
@@ -27,7 +33,7 @@ nodes:
 
   - id: rust-sink
     git: https://github.com/dora-rs/dora.git
-    rev: f40b5e7e8aa10a6faafdcebd37c7e440741722ed
+    rev: c9a3699209f6bb771952e365df044788d1347626
     build: cargo build -p rust-dataflow-example-sink
     path: target/debug/rust-dataflow-example-sink
     inputs:

@@ -161,6 +161,12 @@ pub unsafe extern "C" fn read_dora_input_id(
 /// Writes a null pointer and length `0` if the given event is not an input event
 /// or when an input event has no associated data.
 ///
+/// The raw-byte C API can only expose `UInt8` (and empty `Null`) payloads.
+/// A payload of any other Arrow type (for example an `Int32`/`Float` array
+/// from another node) also yields a null pointer and length `0` (and logs an
+/// error), so a null result is not by itself proof that the message carried no
+/// data.
+///
 /// ## Safety
 ///
 /// The `event` argument must be a dora event received through
@@ -219,9 +225,13 @@ pub unsafe extern "C" fn read_dora_input_data(
 
 /// Reads out the timestamp of the given input event from metadata.
 ///
+/// Returns `0` if the given event is not an input event.
+///
 /// ## Safety
 ///
-/// Return `0` if the given event is not an input event.
+/// The `event` argument must be a dora event received through
+/// [`dora_next_event`]. The event must be still valid, i.e., not
+/// freed yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
@@ -284,18 +294,42 @@ unsafe fn try_send_output(
     data_ptr: *const u8,
     data_len: usize,
 ) -> eyre::Result<()> {
-    if context.is_null() || id_ptr.is_null() || data_ptr.is_null() {
+    if context.is_null() || id_ptr.is_null() {
         eyre::bail!("null pointer passed to dora_send_output");
     }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
     let output_id = id.to_owned().into();
-    let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+    let data = unsafe { data_slice(data_ptr, data_len) }?;
     Ok(context
         .node
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
         })?)
+}
+
+/// Resolve a C `(ptr, len)` payload pair into a slice, accepting the standard
+/// `(NULL, 0)` idiom for an empty message.
+///
+/// `slice::from_raw_parts` is UB when the pointer is null even for length 0
+/// (the pointer must be non-null and well-aligned regardless of length), so an
+/// empty payload must be handled without dereferencing the pointer. This
+/// mirrors the operator FFI (`dora_send_operator_output`), which already
+/// accepts `(NULL, 0)`; previously a C node emitting an empty output via the
+/// idiomatic `dora_send_output(ctx, id, id_len, NULL, 0)` was rejected.
+///
+/// # Safety
+///
+/// When `data_len > 0`, `data_ptr` must point to `data_len` initialized bytes
+/// valid for the duration of the returned borrow.
+unsafe fn data_slice<'a>(data_ptr: *const u8, data_len: usize) -> eyre::Result<&'a [u8]> {
+    if data_len == 0 {
+        Ok(&[])
+    } else if data_ptr.is_null() {
+        eyre::bail!("dora_send_output: data_ptr is null with non-zero data_len");
+    } else {
+        Ok(unsafe { slice::from_raw_parts(data_ptr, data_len) })
+    }
 }
 
 /// Sends a structured log message from a C node.
@@ -384,5 +418,28 @@ mod tests {
             "expected null out_ptr for non-UInt8 input"
         );
         assert_eq!(out_len, 0, "expected zero out_len for non-UInt8 input");
+    }
+
+    #[test]
+    fn data_slice_accepts_null_zero_idiom() {
+        // A C node sending an empty output: `dora_send_output(.., NULL, 0)`.
+        let data =
+            unsafe { data_slice(std::ptr::null(), 0) }.expect("(NULL, 0) is a valid empty payload");
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn data_slice_rejects_null_with_nonzero_len() {
+        let err = unsafe { data_slice(std::ptr::null(), 4) }
+            .expect_err("null pointer with a non-zero length must be rejected");
+        assert!(err.to_string().contains("null"), "got: {err}");
+    }
+
+    #[test]
+    fn data_slice_reads_valid_pointer() {
+        let buf = [1u8, 2, 3, 4];
+        let data =
+            unsafe { data_slice(buf.as_ptr(), buf.len()) }.expect("valid pointer yields a slice");
+        assert_eq!(data, &buf);
     }
 }

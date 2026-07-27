@@ -484,7 +484,7 @@ async fn collect_and_send_metrics_bg(
                     None
                 }
             };
-            let msg = serde_json::to_vec(&Timestamped {
+            let msg = match serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: daemon_id.clone(),
                     event: DaemonEvent::NodeMetrics {
@@ -494,7 +494,21 @@ async fn collect_and_send_metrics_bg(
                     },
                 },
                 timestamp: clock.new_timestamp(),
-            })?;
+            }) {
+                Ok(msg) => msg,
+                // Skip this dataflow's batch rather than `?`-returning: an early
+                // return here would bypass the `System` restore below, leaving
+                // the shared metrics `System` (moved out via `mem::take`) empty
+                // until the next successful collection repopulates it.
+                // Serialization of this structure is effectively infallible, so
+                // this is defense-in-depth — `continue` just keeps the cleanup
+                // path unconditional against any future error here. Matches the
+                // `send_event` failure handling just below.
+                Err(e) => {
+                    tracing::warn!("failed to serialize metrics for dataflow: {e}");
+                    continue;
+                }
+            };
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::warn!("failed to send metrics for dataflow: {e}");
                 continue;
@@ -615,27 +629,7 @@ impl ZenohBind {
 }
 
 impl Daemon {
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-    ) -> eyre::Result<()> {
-        Self::run_with_zenoh_listen(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-        )
-        .await
-    }
-
-    /// Like [`Daemon::run`], but `zenoh_listen_addr` overrides the address this
+    /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
     /// told to dial.
     ///
@@ -665,28 +659,6 @@ impl Daemon {
         .await
     }
 
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run_with_builds(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-        initial_builds: BTreeMap<BuildId, BuildInfo>,
-    ) -> eyre::Result<()> {
-        Self::run_inner_with_builds(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-            initial_builds,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn run_inner_with_builds(
         coordinator_ws_addr: SocketAddr,
@@ -700,7 +672,8 @@ impl Daemon {
         let zenoh_bind = match zenoh_listen_addr {
             Some(addr) => {
                 validate_zenoh_listen(addr).wrap_err(
-                    "invalid --zenoh-listen address (omit the flag to derive it                      from --coordinator-addr)",
+                    "invalid --zenoh-listen address (omit the flag to derive it \
+                     from --coordinator-addr)",
                 )?;
                 ZenohBind::Explicit(addr)
             }
@@ -1155,7 +1128,7 @@ impl Daemon {
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
-        // and reuses it across reconnects (see `run_with_builds`), so that node
+        // and reuses it across reconnects (see `run_inner_with_builds`), so that node
         // processes are not killed when the coordinator connection drops.
         // `dora run` is single-machine by construction: the daemon, its nodes
         // and the in-process coordinator all live on this host, so loopback is
@@ -1477,7 +1450,7 @@ impl Daemon {
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                             // Return error to trigger the reconnection loop in
-                            // `run_with_builds`. Because `run_inner` borrows
+                            // `run_inner_with_builds`. Because `run_inner` borrows
                             // `&mut self`, this error does NOT drop the daemon:
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
@@ -2265,6 +2238,23 @@ impl Daemon {
                             deploy: None,
                         });
 
+                    // Spawn timer tasks for any interval this node just
+                    // registered. Timer tasks are only ever created in
+                    // `start()`, so a node added to an already-running dataflow
+                    // whose timer input uses an interval no existing node uses
+                    // would otherwise register into `dataflow.timers` but never
+                    // get a tick-emitting task — silently starving that input.
+                    // `start()` is idempotent (it skips intervals that already
+                    // have a handle), so this only spawns tasks for genuinely
+                    // new intervals. Guard on `dataflow_started` so that during
+                    // initial bring-up the readiness path stays the sole
+                    // trigger. Done last, after all state mutations, so a
+                    // spawn/registration failure above never leaves a half-added
+                    // node with live timer tasks.
+                    if dataflow.dataflow_started {
+                        dataflow.start(&self.events_tx, &self.clock).await?;
+                    }
+
                     tracing::info!(
                         %dataflow_id,
                         %node_id,
@@ -2342,6 +2332,12 @@ impl Daemon {
                     // subscribes and could be selected mid-startup (dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
+                    // Purge per-node bookkeeping keyed by node id that the
+                    // routing cleanup above doesn't touch. Otherwise stale
+                    // input_deadlines/broken_inputs entries are re-scanned
+                    // every tick forever and the stderr queue leaks across
+                    // repeated dynamic add/remove cycles.
+                    dataflow.forget_node_bookkeeping(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
@@ -3190,6 +3186,20 @@ impl Daemon {
                                     dora_message::metadata::strip_internal_parameters(
                                         &mut metadata.parameters,
                                     );
+                                    // Record the true on-wire size so `dora topic
+                                    // info` measures the schema-less batch that
+                                    // actually travelled, not the rebuilt stream
+                                    // (which prepends the schema to every frame even
+                                    // though it ships once). For a full
+                                    // self-describing frame this equals `data.len()`;
+                                    // for a schema-once batch it excludes the
+                                    // prepended schema block (dora-rs/dora#2584).
+                                    metadata.parameters.insert(
+                                        dora_message::metadata::WIRE_SIZE.to_string(),
+                                        dora_message::metadata::Parameter::Integer(
+                                            payload.len() as i64
+                                        ),
+                                    );
                                     let event = Event::DebugTopicData {
                                         dataflow_id,
                                         output_id: OutputId(node_id.clone(), output_id.clone()),
@@ -3676,8 +3686,9 @@ impl Daemon {
                                         "all nodes are ready, starting dataflow",
                                     )
                                     .await;
+                                // `start()` sets `dataflow_started`; the guard
+                                // above keeps this to a single spawn.
                                 dataflow.start(&self.events_tx, &self.clock).await?;
-                                dataflow.dataflow_started = true;
                             }
                             _ => {}
                         }
@@ -4227,13 +4238,12 @@ impl Daemon {
             .get_mut(&dataflow_id)
             .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
 
-        let outputs = dataflow
-            .mappings
-            .keys()
-            .filter(|m| &m.0 == node_id)
-            .map(|m| &m.1)
-            .cloned()
-            .collect();
+        // Include outputs consumed only by nodes on other daemons
+        // (`open_external_mappings`), not just those with a local consumer
+        // (`mappings`). Otherwise a remote-only output never triggers an
+        // `OutputClosed` event when the producing node finishes, leaving the
+        // remote consumer's input open until it is force-killed.
+        let outputs = dataflow.node_output_ids(node_id).into_iter().collect();
 
         if might_restart {
             self.logger
@@ -4596,6 +4606,23 @@ impl Daemon {
                     aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
+                // Build the metadata once and share the `Arc` across subscribers.
+                // It is identical for every delivery (only the `arrow-ipc`
+                // framing parameter), so rebuilding it (and re-allocating the
+                // `Arc`) per subscriber was wasted work — mirror the Timer/Logs
+                // broadcast loops, which build the `Arc<Metadata>` once.
+                let mut params = MetadataParameters::new();
+                params.insert(
+                    dora_message::metadata::FRAMING.to_string(),
+                    dora_message::metadata::Parameter::String(
+                        dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                    ),
+                );
+                let metadata = Arc::new(metadata::Metadata::from_parameters(
+                    self.clock.new_timestamp(),
+                    params,
+                ));
+
                 let mut closed = Vec::new();
                 for sub in &dataflow.log_subscribers {
                     // Apply level filter
@@ -4619,21 +4646,11 @@ impl Daemon {
                         continue;
                     };
 
-                    let mut params = MetadataParameters::new();
-                    params.insert(
-                        dora_message::metadata::FRAMING.to_string(),
-                        dora_message::metadata::Parameter::String(
-                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
-                        ),
-                    );
-                    let metadata =
-                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
-
                     let send_result = send_with_timestamp(
                         channel,
                         NodeEvent::Input {
                             id: sub.input_id.clone(),
-                            metadata: Arc::new(metadata),
+                            metadata: metadata.clone(),
                             data: Some(data.clone()),
                         },
                         &self.clock,
@@ -5192,7 +5209,11 @@ async fn read_last_n_lines(file: &mut File, mut tail: usize) -> io::Result<Vec<u
         }
 
         estimated_line_length = estimated_line_length.max((read_buf.len() + 1).div_ceil(lines));
-        let estimated_buffer_length = estimated_line_length * tail;
+        // `tail` is the client-supplied `--tail N` line count with no upper
+        // bound, so `estimated_line_length * tail` can overflow `usize` (a debug
+        // panic in the log task; a benign wrap in release). It only feeds a
+        // buffer-growth heuristic, so saturate instead of overflowing.
+        let estimated_buffer_length = estimated_line_length.saturating_mul(tail);
         if estimated_buffer_length >= buffer.len() * 2 {
             buffer.resize(buffer.len() * 2, 0);
         }
@@ -5294,7 +5315,13 @@ fn note_output_sent_to_local_receivers(
             .subscribe_channels
             .get(receiver_id)
             .is_some_and(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+        // Looking up these maps requires cloning the `(NodeId, DataId)` key (the
+        // tuple key type can't borrow). Both maps are empty unless input
+        // deadlines or circuit breakers are configured, so skip the per-message
+        // key clone + hash in the common case — mirroring
+        // `send_output_to_local_receivers`.
         if receiver_keeping_up
+            && !dataflow.input_deadlines.is_empty()
             && let Some(deadline) = dataflow
                 .input_deadlines
                 .get_mut(&(receiver_id.clone(), input_id.clone()))
@@ -5302,6 +5329,25 @@ fn note_output_sent_to_local_receivers(
             deadline.last_received = Some(now);
         }
 
+        // Circuit-breaker recovery must be gated on the same backpressure
+        // signal as the deadline refresh above. A bare `OutputSent` is not a
+        // delivery confirmation (see the comment above), so re-opening a broken
+        // input while the receiver is still saturated only makes it flap
+        // `broken ↔ recovered` every `input_timeout` without any data actually
+        // getting through (#2627). Leave the `broken_inputs` entry in place
+        // until the receiver drains enough to keep up — matching the recovery
+        // in `send_output_to_local_receivers`, which only fires inside the
+        // successful `try_send` arm.
+        if !receiver_keeping_up {
+            continue;
+        }
+
+        // `broken_inputs` is empty unless circuit breakers are configured, so
+        // skip the per-message `(NodeId, DataId)` key clone + hash + remove in
+        // the common case — mirroring `send_output_to_local_receivers`.
+        if dataflow.broken_inputs.is_empty() {
+            continue;
+        }
         let Some(timeout) = dataflow
             .broken_inputs
             .remove(&(receiver_id.clone(), input_id.clone()))
@@ -5514,35 +5560,50 @@ fn close_input(
         return;
     }
 
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if was_open
-            && send_with_timestamp(
-                channel,
-                NodeEvent::InputClosed {
-                    id: input_id.clone(),
-                },
-                clock,
-            )
-            .ok()
-                == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && was_open
+        && send_with_timestamp(
+            channel,
+            NodeEvent::InputClosed {
+                id: input_id.clone(),
+            },
+            clock,
+        )
+        .ok()
+            == Some(true)
+    {
+        dataflow.inc_pending(receiver_id);
+    }
 
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+}
+
+/// If `receiver_id` has no remaining open inputs (and none are circuit-broken),
+/// disable its restart policy and notify it that all inputs are closed.
+///
+/// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
+/// no-op if the node still has open/broken inputs or has no subscribe channel.
+fn signal_all_inputs_closed_if_drained(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    clock: &HLC,
+) {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return;
+    };
+    let has_broken = dataflow
+        .broken_inputs
+        .keys()
+        .any(|(nid, _)| nid == receiver_id);
+    if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
+        if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
+            node.disable_restart();
+        }
+        if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
+            dataflow.inc_pending(receiver_id);
+            dataflow
+                .all_inputs_closed_at
+                .insert(receiver_id.clone(), Instant::now());
         }
     }
 }
@@ -5560,8 +5621,8 @@ fn break_input(
     {
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
-        if send_with_timestamp(
+    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
+        && send_with_timestamp(
             channel,
             NodeEvent::InputClosed {
                 id: input_id.clone(),
@@ -5570,26 +5631,11 @@ fn break_input(
         )
         .ok()
             == Some(true)
-        {
-            dataflow.inc_pending(receiver_id);
-        }
-
-        let has_broken = dataflow
-            .broken_inputs
-            .keys()
-            .any(|(nid, _)| nid == receiver_id);
-        if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-            if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-                node.disable_restart();
-            }
-            if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-                dataflow.inc_pending(receiver_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(receiver_id.clone(), Instant::now());
-            }
-        }
+    {
+        dataflow.inc_pending(receiver_id);
     }
+
+    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
 }
 
 /// Grace period used when the finish-straggler watchdog is enabled but
@@ -5912,7 +5958,10 @@ fn rebuild_debug_topic_stream(
 #[cfg(test)]
 mod debug_topic_tests {
     use super::rebuild_debug_topic_stream;
-    use dora_message::metadata::{MetadataParameters, Parameter, SCHEMA_HASH, fnv1a};
+    use dora_message::metadata::{
+        MetadataParameters, Parameter, SCHEMA_HASH, WIRE_SIZE, debug_frame_wire_size, fnv1a,
+        get_integer_param, strip_internal_parameters,
+    };
 
     fn params_with_schema_hash(hash: u64) -> MetadataParameters {
         let mut params = MetadataParameters::default();
@@ -5953,6 +6002,58 @@ mod debug_topic_tests {
         let mut expected = schema;
         expected.extend_from_slice(&batch);
         assert_eq!(out, Some(expected));
+    }
+
+    /// End-to-end guard for the `dora topic info` bandwidth fix, mirroring the
+    /// daemon debug path (the topic subscriber in `Daemon::spawn_dataflow`):
+    /// rebuild the inspection stream, strip the internal wire keys, then stamp
+    /// the *input* payload length under `WIRE_SIZE`. The CLI reader
+    /// ([`debug_frame_wire_size`]) must then charge the schema-less on-wire
+    /// size, not the rebuilt stream — otherwise bandwidth is over-reported by
+    /// the prepended schema on every schema-once frame, worst for the
+    /// small/frequent primitives the schema-once optimization targets (#2584).
+    /// Keep this in sync with the stamp site in `spawn_dataflow`.
+    #[test]
+    fn on_wire_size_excludes_prepended_schema() {
+        // --- schema-once frame: rebuilt = schema ++ batch, only batch on-wire.
+        let schema = b"SCHEMA-BLOCK".to_vec();
+        let hash = fnv1a(&schema);
+        let batch = b"schema-less-batch".to_vec();
+        let mut cache = vec![(hash, schema.clone())];
+        let mut params = params_with_schema_hash(hash);
+
+        let rebuilt =
+            rebuild_debug_topic_stream(&mut cache, &params, &batch).expect("schema cached");
+        assert_eq!(rebuilt.len(), schema.len() + batch.len());
+
+        // Replicate the daemon stamp: strip wire keys, record the input length.
+        strip_internal_parameters(&mut params);
+        assert!(
+            get_integer_param(&params, SCHEMA_HASH).is_none(),
+            "internal wire keys must be stripped before stamping"
+        );
+        params.insert(
+            WIRE_SIZE.to_string(),
+            Parameter::Integer(batch.len() as i64),
+        );
+
+        // The CLI reader charges the schema-less size, not the rebuilt stream.
+        let charged = debug_frame_wire_size(&params, Some(&rebuilt));
+        assert_eq!(charged, batch.len());
+        assert!(
+            charged < rebuilt.len(),
+            "schema-once accounting must exclude the prepended schema"
+        );
+
+        // --- full self-describing frame: rebuilt == payload, charge full len.
+        let full = b"self-describing-stream".to_vec();
+        let mut full_params = MetadataParameters::default();
+        let out = rebuild_debug_topic_stream(&mut Vec::new(), &full_params, &full)
+            .expect("full stream forwarded");
+        assert_eq!(out.len(), full.len());
+        strip_internal_parameters(&mut full_params);
+        full_params.insert(WIRE_SIZE.to_string(), Parameter::Integer(full.len() as i64));
+        assert_eq!(debug_frame_wire_size(&full_params, Some(&out)), full.len());
     }
 
     #[test]
@@ -6079,6 +6180,57 @@ mod fault_tolerance_tests {
             env: None,
         };
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
+    }
+
+    // dora-rs/dora: a node added to an already-running dataflow (via
+    // `AddNode`) may register a timer input on an interval no existing node
+    // uses. `start()` is the only place timer tasks are spawned, so the
+    // `AddNode` handler re-invokes it. This test locks in the property that
+    // makes that safe: `start()` is idempotent for existing intervals yet
+    // still spawns a task for a newly-added one.
+    #[tokio::test]
+    async fn start_spawns_task_for_interval_added_after_first_start() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        let first = Duration::from_millis(100);
+        df.timers
+            .entry(first)
+            .or_default()
+            .insert((NodeId::from("a".to_string()), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df._timer_handles.contains_key(&first));
+
+        // Simulate a node added later that registers a brand-new interval.
+        let second = Duration::from_millis(250);
+        df.timers
+            .entry(second)
+            .or_default()
+            .insert((NodeId::from("b".to_string()), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+
+        assert!(df._timer_handles.contains_key(&first));
+        assert!(df._timer_handles.contains_key(&second));
+        assert_eq!(df._timer_handles.len(), 2);
+    }
+
+    // dora-rs/dora: the `AddNode` handler guards its re-invocation of
+    // `start()` on `dataflow_started`, so that flag must be set on *every*
+    // start path. It used to be set only at the single-daemon `Subscribe`
+    // readiness call site, leaving it `false` for the whole life of a
+    // distributed dataflow (which starts via the coordinator `AllNodesReady`
+    // path instead) — so a node added later was silently starved of ticks.
+    // `start()` now sets the flag itself; this pins that invariant.
+    #[tokio::test]
+    async fn start_marks_dataflow_started() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        assert!(!df.dataflow_started);
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df.dataflow_started);
     }
 
     fn test_running_node() -> RunningNode {
@@ -6477,6 +6629,57 @@ mod fault_tolerance_tests {
         assert!(disable_restart.load(atomic::Ordering::Acquire));
     }
 
+    #[test]
+    fn forget_node_bookkeeping_purges_only_that_node() {
+        // Regression: RemoveNode must drop the removed node's per-node
+        // bookkeeping, otherwise stale input_deadlines/broken_inputs entries
+        // are re-scanned every tick forever and the stderr queue leaks across
+        // repeated dynamic add/remove cycles.
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+        let timeout = Duration::from_secs(1);
+
+        for node in [&node_a, &node_b] {
+            df.input_deadlines.insert(
+                (node.clone(), input_x.clone()),
+                InputDeadline {
+                    timeout,
+                    last_received: None,
+                },
+            );
+            df.broken_inputs
+                .insert((node.clone(), input_x.clone()), timeout);
+            df.node_stderr_most_recent
+                .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
+        }
+
+        df.forget_node_bookkeeping(&node_a);
+
+        // node_a's entries are gone …
+        assert!(
+            !df.input_deadlines
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(!df.node_stderr_most_recent.contains_key(&node_a));
+
+        // … while node_b's are untouched.
+        assert!(
+            df.input_deadlines
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(
+            df.broken_inputs
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(df.node_stderr_most_recent.contains_key(&node_b));
+    }
+
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
 
     #[test]
@@ -6546,6 +6749,104 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Circuit-breaker recovery must be gated on receiver backpressure (#2627) --
+
+    /// Helper: wire `sender/output -> receiver/input` and mark the input broken.
+    /// `channel_capacity` controls whether the receiver counts as "keeping up"
+    /// (>= CONTROL_EVENT_HEADROOM) or "saturated" (< CONTROL_EVENT_HEADROOM).
+    fn broken_input_dataflow(
+        channel_capacity: usize,
+    ) -> (
+        RunningDataflow,
+        NodeId,
+        DataId,
+        NodeId,
+        DataId,
+        mpsc::Receiver<Timestamped<NodeEvent>>,
+    ) {
+        let mut df = test_dataflow();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        let mut mapping = BTreeSet::new();
+        mapping.insert((receiver.clone(), input.clone()));
+        df.mappings
+            .insert(OutputId(sender.clone(), output.clone()), mapping);
+
+        let (tx, rx) = mpsc::channel(channel_capacity);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        // Input is currently broken (circuit breaker open).
+        df.broken_inputs
+            .insert((receiver.clone(), input.clone()), Duration::from_secs(5));
+
+        (df, sender, output, receiver, input, rx)
+    }
+
+    /// A bare `OutputSent` is not a delivery confirmation. When the receiver's
+    /// event channel is still saturated (`capacity() < CONTROL_EVENT_HEADROOM`),
+    /// recovery must NOT fire — otherwise the circuit breaker flaps
+    /// `broken ↔ recovered` every `input_timeout` for a persistently-slow
+    /// consumer without any data actually getting through.
+    #[test]
+    fn output_sent_does_not_recover_broken_input_when_receiver_saturated() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // capacity 1 < CONTROL_EVENT_HEADROOM (50) => not keeping up
+        let (mut df, sender, output, receiver, input, mut rx) = broken_input_dataflow(1);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must stay broken while the receiver is saturated"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            0,
+            "no recovery may be counted for a saturated receiver"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "no InputRecovered may be emitted while the receiver is saturated"
+        );
+    }
+
+    /// Companion case: once the receiver has channel headroom (is keeping up),
+    /// the same `OutputSent` recovers the broken input exactly as before.
+    #[test]
+    fn output_sent_recovers_broken_input_when_receiver_keeping_up() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // an empty NODE_EVENT_CHANNEL_CAPACITY channel has ample headroom
+        let (mut df, sender, output, receiver, input, mut rx) =
+            broken_input_dataflow(NODE_EVENT_CHANNEL_CAPACITY);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            !df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must recover once the receiver is keeping up"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "recovery must be counted once the receiver is keeping up"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "InputRecovered must be emitted on recovery"
+        );
     }
 
     // -- Test 5: break_input sends InputClosed --
@@ -7262,5 +7563,27 @@ mod planned_stop_exit_tests {
         // SIGKILL is a hard kill (grace exceeded), not a graceful stop —
         // it must keep flowing through the GraceDuration branch.
         assert!(!is_sigterm_like_exit(&NodeExitStatus::Signal(9)));
+    }
+}
+
+#[cfg(test)]
+mod log_tail_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[tokio::test]
+    async fn read_last_n_lines_handles_huge_tail_without_overflow() {
+        // `--tail N` is unbounded client input. A very large `N` used to make
+        // the `estimated_line_length * tail` buffer-growth estimate overflow
+        // `usize` (a debug-mode panic in the log task). With fewer lines than
+        // requested the whole file is returned; the request must not panic.
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        write!(tmp, "line1\nline2\nline3\n").unwrap();
+        tmp.flush().unwrap();
+
+        let mut file = File::open(tmp.path()).await.unwrap();
+        let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
+
+        assert_eq!(out, b"line1\nline2\nline3");
     }
 }

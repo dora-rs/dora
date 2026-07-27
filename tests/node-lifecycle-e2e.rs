@@ -558,12 +558,11 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
 }
 
 #[test]
-// Python variant is Unix-only because it uses `--uv` for the Python
-// venv and the CircleCI Windows lane (`.circleci/config.yml`
-// test-windows job) does NOT install uv. Linux + macOS CI install it
-// explicitly. If a Windows uv path lands later (e.g. via
-// `winget install astral-sh.uv` in the runner setup), this gate can
-// be relaxed.
+// Python variant is Unix-only because its `--uv` venv path has never
+// been exercised on Windows. Tool availability is no longer the
+// blocker — the nightly CLI Tests lane installs uv on all three
+// platforms — so this gate can be relaxed once someone confirms the
+// `--uv` path actually works there.
 #[cfg(unix)]
 fn lifecycle_python_dynamic_add_remove() {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");

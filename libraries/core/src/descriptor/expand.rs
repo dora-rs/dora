@@ -184,26 +184,13 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .map(|d| d.to_string())
         .collect();
 
-    // Check _mod/ references point to declared inputs
+    // Check _mod/ references point to declared inputs. Runtime (operator)
+    // and legacy custom nodes wire their inputs through config.inputs /
+    // run_config.inputs rather than the node-level `inputs` map, so those
+    // need the same check (see #2441).
     for node in &module_file.nodes {
-        for (input_id, input) in &node.inputs {
-            if let InputMapping::User(m) = &input.mapping
-                && m.source.to_string() == MODULE_INPUT_SOURCE
-            {
-                let port = m.output.to_string();
-                if !all_input_names.contains(&port) {
-                    bail!(
-                        "module `{}`: node `{}` input `{}` references \
-                             `_mod/{}` but `{}` is not declared in module \
-                             inputs or inputs_optional",
-                        module_file.module.name,
-                        node.id,
-                        input_id,
-                        port,
-                        port,
-                    );
-                }
-            }
+        for inputs in node_input_maps(node) {
+            check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
         }
     }
 
@@ -262,6 +249,78 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+/// Check that every `_mod/X` reference in `inputs` points to a declared
+/// module input (or optional input). Shared by the node-level `inputs`
+/// check and the operator/custom `config.inputs` / `run_config.inputs`
+/// checks in [`check_module_file`].
+fn check_mod_refs(
+    module_name: &str,
+    node_id: &NodeId,
+    inputs: &BTreeMap<DataId, Input>,
+    all_input_names: &BTreeSet<String>,
+) -> eyre::Result<()> {
+    for (input_id, input) in inputs {
+        if let InputMapping::User(m) = &input.mapping
+            && m.source.to_string() == MODULE_INPUT_SOURCE
+        {
+            let port = m.output.to_string();
+            if !all_input_names.contains(&port) {
+                bail!(
+                    "module `{}`: node `{}` input `{}` references \
+                         `_mod/{}` but `{}` is not declared in module \
+                         inputs or inputs_optional",
+                    module_name,
+                    node_id,
+                    input_id,
+                    port,
+                    port,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// All the places a node's inputs can live: the node-level `inputs` map,
+/// plus the operator/custom `config.inputs` / `run_config.inputs` maps for
+/// runtime (operator) and legacy custom inner nodes. Centralizes the
+/// node-kind enumeration so `_mod/`-reference validation and rewriting stay
+/// in sync as node kinds are added or change (see #2441).
+fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
+    let mut maps = vec![&node.inputs];
+    if let Some(ref operators) = node.operators {
+        maps.extend(operators.operators.iter().map(|op| &op.config.inputs));
+    }
+    if let Some(ref operator) = node.operator {
+        maps.push(&operator.config.inputs);
+    }
+    if let Some(ref custom) = node.custom {
+        maps.push(&custom.run_config.inputs);
+    }
+    maps
+}
+
+/// Mutable counterpart of [`node_input_maps`], used by the Phase 1 rewrite
+/// pass in [`expand_module_node`].
+fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
+    let mut maps = vec![&mut node.inputs];
+    if let Some(ref mut operators) = node.operators {
+        maps.extend(
+            operators
+                .operators
+                .iter_mut()
+                .map(|op| &mut op.config.inputs),
+        );
+    }
+    if let Some(ref mut operator) = node.operator {
+        maps.push(&mut operator.config.inputs);
+    }
+    if let Some(ref mut custom) = node.custom {
+        maps.push(&mut custom.run_config.inputs);
+    }
+    maps
 }
 
 /// Expand a single module node into its constituent flat nodes.
@@ -352,6 +411,7 @@ fn expand_module_node(
         .collect();
 
     // Validate and collect params
+    let mut seen_upper: BTreeMap<String, &String> = BTreeMap::new();
     for key in node.params.keys() {
         if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || key.is_empty() {
             bail!(
@@ -359,6 +419,22 @@ fn expand_module_node(
                  contain only [A-Za-z0-9_]",
                 key,
                 node.id
+            );
+        }
+        // Params are injected into the node env as `PARAM_<KEY>` with the key
+        // upper-cased (see `substitute_params_in_node`). Two keys that differ
+        // only in case (e.g. `mode` and `Mode`) would both map to `PARAM_MODE`,
+        // so one would silently overwrite the other. Reject the collision
+        // instead of dropping a param.
+        let upper = key.to_uppercase();
+        if let Some(existing) = seen_upper.insert(upper.clone(), key) {
+            bail!(
+                "param keys `{}` and `{}` in node `{}` collide: both map to the \
+                 env var `PARAM_{}`. Param keys must be unique case-insensitively.",
+                existing,
+                key,
+                node.id,
+                upper
             );
         }
     }
@@ -374,23 +450,22 @@ fn expand_module_node(
         let prefixed_id: NodeId = format!("{module_id}.{}", inner_node.id).into();
         inner_node.id = prefixed_id;
 
-        // Rewrite inputs (None = optional input not provided, skip it)
-        let mut new_inputs = BTreeMap::new();
-        for (input_id, input) in &inner_node.inputs {
-            match rewrite_module_input(
-                input,
+        // Rewrite inputs (None = optional input not provided, skip it).
+        // Runtime (operator) nodes and legacy custom nodes wire their inputs
+        // through config.inputs / run_config.inputs rather than the
+        // node-level `inputs` map, so `node_input_maps_mut` rewrites all of
+        // them the same way — otherwise `_mod/` references and sibling
+        // cross-references wouldn't resolve for operator/custom inner nodes
+        // (see #2441).
+        for inputs in node_input_maps_mut(&mut inner_node) {
+            *inputs = rewrite_module_inputs_map(
+                inputs,
                 &module_id,
                 &node.inputs,
                 &inner_node_ids,
                 &optional_inputs,
-            )? {
-                Some(new_input) => {
-                    new_inputs.insert(input_id.clone(), new_input);
-                }
-                None => continue, // optional input not provided
-            }
+            )?;
         }
-        inner_node.inputs = new_inputs;
 
         // Resolve relative paths: make inner node paths relative to base_dir.
         // Normalize lexically (collapse `..`) before the containment check so
@@ -575,6 +650,32 @@ fn rewrite_module_input(
             }
         }
     }
+}
+
+/// Rewrite every input in `inputs` via [`rewrite_module_input`], dropping
+/// entries whose optional module input wasn't provided. Used for both the
+/// node-level `inputs` map and the operator/custom `config.inputs` /
+/// `run_config.inputs` maps in Phase 1 of [`expand_module_node`].
+fn rewrite_module_inputs_map(
+    inputs: &BTreeMap<DataId, Input>,
+    module_id: &str,
+    module_inputs: &BTreeMap<DataId, Input>,
+    inner_node_ids: &BTreeSet<String>,
+    optional_inputs: &BTreeSet<String>,
+) -> eyre::Result<BTreeMap<DataId, Input>> {
+    let mut new_inputs = BTreeMap::new();
+    for (input_id, input) in inputs {
+        if let Some(new_input) = rewrite_module_input(
+            input,
+            module_id,
+            module_inputs,
+            inner_node_ids,
+            optional_inputs,
+        )? {
+            new_inputs.insert(input_id.clone(), new_input);
+        }
+    }
+    Ok(new_inputs)
 }
 
 /// Rewrite inputs across all nodes that reference module outputs.
@@ -1747,6 +1848,52 @@ nodes:
     }
 
     #[test]
+    fn reject_case_colliding_param_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "param_mod.yml",
+            r#"
+module:
+  name: p
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: n
+    path: n.py
+    inputs:
+      x: _mod/x
+    outputs: [y]
+"#,
+        );
+
+        // `mode` and `Mode` are both valid keys but both map to `PARAM_MODE`,
+        // so one would silently overwrite the other in the node env.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: param_mod.yml
+    inputs:
+      x: src/v
+    params:
+      mode: safe
+      Mode: turbo
+"#,
+        );
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("PARAM_MODE"), "got: {msg}");
+    }
+
+    #[test]
     fn reject_duplicate_node_ids() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -1905,5 +2052,193 @@ nodes:
             env["PARAM_SPEED"],
             EnvValue::String("caller_value".to_string())
         );
+    }
+
+    /// Regression test for #2441: operator (runtime) inner nodes wire their
+    /// inputs through `config.inputs`, not the node-level `inputs` map, so
+    /// `_mod/` and sibling references inside an operator input must be
+    /// rewritten the same way as node-level inputs.
+    #[test]
+    fn expand_rewrites_operator_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "runtime_module.yml",
+            r#"
+module:
+  name: rt
+  inputs: [data]
+
+nodes:
+  - id: stage_a
+    path: a.py
+    outputs: [aux]
+
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/data
+          y: stage_a/aux
+        outputs:
+          - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: runtime_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        let proc = runtime
+            .operators
+            .as_ref()
+            .unwrap()
+            .operators
+            .iter()
+            .find(|op| op.id.to_string() == "proc")
+            .unwrap();
+
+        let x = &proc.config.inputs[&DataId::from("x".to_string())];
+        match &x.mapping {
+            InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "src");
+                assert_eq!(m.output.to_string(), "val");
+            }
+            _ => panic!("expected user mapping"),
+        }
+
+        let y = &proc.config.inputs[&DataId::from("y".to_string())];
+        match &y.mapping {
+            InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "m.stage_a");
+                assert_eq!(m.output.to_string(), "aux");
+            }
+            _ => panic!("expected user mapping"),
+        }
+    }
+
+    /// Regression test for #2441: `check_module_file` must catch an invalid
+    /// `_mod/` reference inside an operator input, not just node-level inputs.
+    #[test]
+    fn check_module_file_rejects_invalid_mod_ref_in_operator_input() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        let path = write_file(
+            base,
+            "bad_operator_module.yml",
+            r#"
+module:
+  name: bad
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/nonexistent
+        outputs:
+          - result
+"#,
+        );
+
+        let err = check_module_file(&path).unwrap_err();
+        assert!(err.to_string().contains("_mod/nonexistent"));
+    }
+
+    /// Regression test for #2441: legacy `custom:` inner nodes have the same
+    /// blind spot as operator nodes — their inputs live in
+    /// `run_config.inputs`, not the node-level `inputs` map.
+    #[test]
+    fn expand_rewrites_custom_node_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "custom_module.yml",
+            r#"
+module:
+  name: legacy
+  inputs: [data]
+
+nodes:
+  - id: stage_a
+    path: a.py
+    outputs: [aux]
+
+  - id: runner
+    custom:
+      path: node.py
+      source: Local
+      inputs:
+        x: _mod/data
+        y: stage_a/aux
+      outputs:
+        - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: custom_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        let custom = runner.custom.as_ref().unwrap();
+
+        let x = &custom.run_config.inputs[&DataId::from("x".to_string())];
+        match &x.mapping {
+            InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "src");
+                assert_eq!(m.output.to_string(), "val");
+            }
+            _ => panic!("expected user mapping"),
+        }
+
+        let y = &custom.run_config.inputs[&DataId::from("y".to_string())];
+        match &y.mapping {
+            InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "m.stage_a");
+                assert_eq!(m.output.to_string(), "aux");
+            }
+            _ => panic!("expected user mapping"),
+        }
     }
 }

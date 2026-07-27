@@ -293,15 +293,22 @@ class Ros2Context:
 
     You can also use `ros_paths` if you don't want to use env variable.
 
+    The DDS domain id is taken from the `domain_id` argument; if omitted, from
+    the `ROS_DOMAIN_ID` environment variable; if neither is set, default to 0.
+    A `ROS_DOMAIN_ID` that is set but not a valid domain id raises an error.
+
     warning::
     Dora ROS2 bridge functionality is considered **unstable**. It may be changed
     at any point without it being considered a breaking change.
 
     ```python
-    context = Ros2Context()
+    context = Ros2Context(domain_id=1)   # explicit domain
+    context = Ros2Context()              # domain from ROS_DOMAIN_ID, else 0
     ```"""
 
-    def __init__(self, ros_paths: typing.List[str] = None) -> None:
+    def __init__(
+        self, ros_paths: typing.List[str] = None, domain_id: typing.Optional[int] = None
+    ) -> None:
         """ROS2 Context holding all messages definition for receiving and sending messages to ROS2.
 
         By default, Ros2Context will use env `AMENT_PREFIX_PATH` to search for message definition.
@@ -313,12 +320,17 @@ class Ros2Context:
 
         You can also use `ros_paths` if you don't want to use env variable.
 
+        The DDS domain id is taken from the `domain_id` argument; if omitted, from
+        the `ROS_DOMAIN_ID` environment variable; if neither is set, default to 0.
+        A `ROS_DOMAIN_ID` that is set but not a valid domain id raises an error.
+
         warning::
         Dora ROS2 bridge functionality is considered **unstable**. It may be changed
         at any point without it being considered a breaking change.
 
         ```python
-        context = Ros2Context()
+        context = Ros2Context(domain_id=1)   # explicit domain
+        context = Ros2Context()              # domain from ROS_DOMAIN_ID, else 0
         ```"""
 
     def new_node(

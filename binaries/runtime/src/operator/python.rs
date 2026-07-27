@@ -228,9 +228,15 @@ pub fn run(
                     .map_err(traceback);
                 match status_enum {
                     Ok(status_enum) => {
-                        let status_val = Python::attach(|py| status_enum.getattr(py, "value"))
+                        // Already inside the outer `Python::attach` (the `py`
+                        // token is in scope), so reuse it instead of re-entering
+                        // the GIL twice per event on the operator's steady-state
+                        // path.
+                        let status_val = status_enum
+                            .getattr(py, "value")
                             .wrap_err("on_event must have enum return value")?;
-                        Python::attach(|py| status_val.extract(py))
+                        status_val
+                            .extract(py)
                             .wrap_err("on_event has invalid return value")
                     }
                     Err(err) => {

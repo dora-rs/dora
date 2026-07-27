@@ -716,6 +716,23 @@ impl EventStream {
         if let Some(event) = self.pending_passthrough.pop_front() {
             return Some(event);
         }
+        self.recv_from_stream().await
+    }
+
+    /// Receive the next event straight from the scheduler/receiver,
+    /// **without** draining `pending_passthrough` first.
+    ///
+    /// The pattern-aware wait loop ([`wait_for_correlation`](Self::wait_for_correlation))
+    /// buffers every non-matching event into `pending_passthrough` itself. If
+    /// it pumped the stream through [`recv_async`](Self::recv_async), that
+    /// drain would immediately hand the just-buffered event straight back, the
+    /// classifier would re-buffer it, and the loop would spin on the same event
+    /// forever — never reading the awaited response off the receiver — until it
+    /// hit its deadline and wrongly reported a timeout (while pinning a CPU
+    /// core). Reading through this bypass keeps the buffered events reserved for
+    /// the caller's own `recv`/`recv_async` while the wait loop makes real
+    /// progress.
+    async fn recv_from_stream(&mut self) -> Option<Event> {
         // Close the stream after a Stop event: the daemon thread has
         // already dropped its sender, but zenoh subscriber threads
         // hold clones that would otherwise keep `receiver` open.
@@ -749,19 +766,28 @@ impl EventStream {
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
-            loop {
-                if self.scheduler.is_empty() {
-                    if let Some(event) = self.receiver.recv().await {
-                        self.add_event(event);
-                    } else {
-                        break;
-                    }
-                } else {
-                    match self.receiver.try_recv() {
-                        Ok(event) => self.add_event(event),
-                        Err(_) => break, // empty or disconnected
-                    };
+            // Block for the first event while the scheduler is empty, then drain
+            // the rest non-blocking. The old code re-checked `is_empty()` on
+            // every iteration; `Scheduler::is_empty()` scans every input queue
+            // (O(#inputs)), so draining K events cost O(K·#inputs).
+            //
+            // `add_event` usually pushes, but it can also *drop* the event
+            // without retaining it (e.g. `queue_size: 0` -> `DropIncoming`), so
+            // we must keep blocking while the scheduler is still empty rather
+            // than assume a single `recv` made it non-empty — otherwise a
+            // dropped-only event would fall through to `scheduler.next() ==
+            // None` and be misread as a closed stream. This preserves the
+            // previous "block until a retained event arrives" behavior while
+            // checking `is_empty()` only twice in the common case instead of
+            // once per drained event.
+            while self.scheduler.is_empty() {
+                match self.receiver.recv().await {
+                    Some(event) => self.add_event(event),
+                    None => break,
                 }
+            }
+            while let Ok(event) = self.receiver.try_recv() {
+                self.add_event(event);
             }
             self.scheduler.next().map(Self::convert_event_item)
         };
@@ -1128,13 +1154,41 @@ impl EventStream {
     where
         F: Fn(&Event, &str) -> bool,
     {
+        // A previous pattern-aware wait may already have buffered the event
+        // we are now looking for. With pipelined requests, the response to
+        // `req-2` can arrive — and be classified non-matching, so buffered
+        // into `pending_passthrough` — *during* the wait for `req-1`. The loop
+        // below pumps `recv_from_stream`, which never reads
+        // `pending_passthrough`, so without this scan that already-buffered
+        // response would be invisible and the wait would wrongly time out.
+        // Extract a buffered match in place (preserving the order of the
+        // remaining events for the caller's own `recv()`/`recv_async()`).
+        //
+        // Only a `Match` is pulled from the buffer: a buffered `Stop` is
+        // already handled by the `stop_received` short-circuit in
+        // `recv_from_stream`, and a buffered `NodeRestarted` was reported to
+        // the caller when it was first seen, so it is left for the caller's
+        // own event loop rather than re-surfaced here.
+        if let Some(pos) = self
+            .pending_passthrough
+            .iter()
+            .position(|event| is_match(event, needle))
+            && let Some(event) = self.pending_passthrough.remove(pos)
+        {
+            return Ok(event);
+        }
+
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return Err(PatternError::Timeout);
             }
-            let event = match select(Delay::new(remaining), pin!(self.recv_async())).await {
+            // Pump the stream via `recv_from_stream`, NOT `recv_async`: the
+            // latter drains `pending_passthrough` first, which would re-hand us
+            // the very events we buffer below and livelock the loop (see
+            // `recv_from_stream`'s docs).
+            let event = match select(Delay::new(remaining), pin!(self.recv_from_stream())).await {
                 Either::Left((_elapsed, _)) => return Err(PatternError::Timeout),
                 Either::Right((None, _)) => return Err(PatternError::StreamEnded),
                 Either::Right((Some(e), _)) => e,
@@ -1586,11 +1640,20 @@ impl Drop for EventStream {
         // finish and the dataflow stalls until an outer timeout (dora-rs/dora#2425).
         // The callbacks use `try_send`, so undeclaring before `receiver` drops
         // cannot deadlock on a blocked callback.
+        //
+        // The `@schema` `AdvancedSubscriber`s (added with the Arrow IPC data
+        // plane in #2366) undeclare on the same shared session and can wedge
+        // the same way, so they must be torn down under the same deadline —
+        // mirroring `DoraNode::Drop`, which drops both publisher maps inside
+        // one guard. Left out, they would otherwise drop unbounded in the
+        // implicit field-drop phase after this `Drop` body returns (#2583).
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
-        if !subscribers.is_empty() {
+        let schema_subscribers = std::mem::take(&mut self._zenoh_schema_subscribers);
+        if !subscribers.is_empty() || !schema_subscribers.is_empty() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
+                    drop(schema_subscribers);
                 });
             if !completed {
                 tracing::warn!(
@@ -2264,6 +2327,157 @@ mod tests {
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
         );
+    }
+
+    /// Regression: a pattern-aware wait (`recv_service_response`) must make
+    /// progress when a non-matching event arrives *before* the correlated
+    /// response.
+    ///
+    /// The wait loop buffers every non-matching event into
+    /// `pending_passthrough` so the caller's own event loop can still see it.
+    /// Before the fix the loop pumped the stream via `recv_async`, which
+    /// drains `pending_passthrough` first — so it kept re-serving the buffered
+    /// non-matching event, re-buffering it, and spinning forever without ever
+    /// reading the response off the receiver. Every such call pinned a CPU core
+    /// and returned `Timeout`. The fix pumps via `recv_from_stream`, which
+    /// bypasses the passthrough buffer.
+    #[test]
+    fn recv_service_response_matches_after_non_matching_event() {
+        // Delivered FIFO (integration tests disable the reordering scheduler):
+        // the non-matching "sensor" input, then the correlated "response".
+        let events = vec![
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "sensor".parse().unwrap(),
+                    metadata: None,
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-1")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            },
+        ];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (_node, mut events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Ok(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
+            other => panic!("expected the correlated response Input, got {other:?}"),
+        }
+
+        // The non-matching "sensor" input must not be lost — it is replayed
+        // to the caller's own event loop after the wait returns.
+        let buffered = events.recv();
+        assert!(
+            matches!(&buffered, Some(Event::Input { id, .. }) if id.as_str() == "sensor"),
+            "expected the buffered non-matching 'sensor' input, got {buffered:?}"
+        );
+    }
+
+    /// Regression: a pattern-aware wait must find its correlated response even
+    /// when a *previous* wait already buffered it.
+    ///
+    /// This is the pipelined / out-of-order case: two requests are in flight,
+    /// and `req-2`'s response arrives before `req-1`'s. The wait for `req-1`
+    /// buffers `resp-2` into `pending_passthrough` as non-matching, then
+    /// returns `resp-1`. The subsequent wait for `req-2` must return the
+    /// already-buffered `resp-2` — the wait loop pumps `recv_from_stream`,
+    /// which never reads `pending_passthrough`, so `wait_for_correlation`
+    /// scans the buffer for a match before reading the stream. Without that
+    /// scan the buffered response is invisible and the wait wrongly times out.
+    #[test]
+    fn recv_service_response_matches_buffered_response_from_prior_wait() {
+        // Delivered FIFO: `resp-2` arrives before `resp-1`, then `Stop`.
+        let events = vec![
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-2")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-1")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            },
+        ];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (_node, mut events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
+
+        let server = NodeId::from("calc".to_string());
+        let request_id_of = |event: &Event| match event {
+            Event::Input { metadata, .. } => dora_message::metadata::get_string_param(
+                &metadata.parameters,
+                dora_message::metadata::REQUEST_ID,
+            )
+            .map(str::to_owned),
+            _ => None,
+        };
+
+        // Wait for `req-1`: reads `resp-2` (buffered as non-matching), then
+        // returns `resp-1`.
+        let first = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match &first {
+            Ok(event) => assert_eq!(request_id_of(event).as_deref(), Some("req-1")),
+            other => panic!("expected the req-1 response, got {other:?}"),
+        }
+
+        // Wait for `req-2`: `resp-2` is already in `pending_passthrough`, so
+        // this must return it from the buffer rather than time out.
+        let second = futures::executor::block_on(events.recv_service_response(
+            "req-2",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match &second {
+            Ok(event) => assert_eq!(request_id_of(event).as_deref(), Some("req-2")),
+            other => panic!("expected the buffered req-2 response, got {other:?}"),
+        }
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must

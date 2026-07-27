@@ -120,10 +120,19 @@ pub fn inject_adjacent_manifests(
         }
     }
     // Register the survivors into the shared registry, skipping URNs already
-    // present so preserved definitions win.
-    for &(urn, def) in &candidates {
-        if scratch.resolve(urn).is_some() && registry.resolve(urn).is_none() {
-            let _ = registry.add_user_type(urn, def.clone());
+    // present so preserved definitions win. `candidates` is a flat list across
+    // all manifests and is NOT deduplicated by URN, so two matched manifests
+    // may ship the same URN with differing bodies. Register the *admitted*
+    // definition from `scratch` — the body-valid one the fixpoint chose — not
+    // this candidate's own `def`, which may be a body-invalid duplicate listed
+    // first. Registering `def` here would write an unmaterializable definition
+    // into the shared registry and let a referencing node's port check pass
+    // against a type that can never become an Arrow schema (dora-rs/dora#2599).
+    for &(urn, _def) in &candidates {
+        if registry.resolve(urn).is_none()
+            && let Some(admitted) = scratch.resolve(urn)
+        {
+            let _ = registry.add_user_type(urn, admitted.clone());
         }
     }
 
@@ -840,6 +849,70 @@ nodes:
         assert!(registry.resolve("acme/foo/v1/Y").is_none());
         assert!(registry.resolve("acme/foo/v1/X").is_none());
         assert!(df.nodes[1].output_types.is_empty());
+    }
+
+    #[test]
+    fn duplicate_urn_registers_the_body_valid_definition_not_the_first_listed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Two same-namespace manifests ship the SAME urn `acme/foo/v1/X` with
+        // differing bodies. `bad` (listed first) is body-invalid — its field
+        // type does not resolve; `good` (listed second) is body-valid. The
+        // fixpoint admits only the valid body into `scratch`, and the shared
+        // registry must end up holding THAT definition — not the first-listed
+        // invalid candidate, which would let a referencing node's port check
+        // pass against a type that can never materialize (dora-rs/dora#2599).
+        write_manifest(
+            &tmp.path().join("bad"),
+            r#"
+apiVersion: 1
+name: bad
+namespace: acme
+runtime: rust
+entrypoint: target/release/bad
+types:
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: bad
+        type: NotARealType
+"#,
+        );
+        write_manifest(
+            &tmp.path().join("good"),
+            r#"
+apiVersion: 1
+name: good
+namespace: acme
+runtime: rust
+entrypoint: target/release/good
+types:
+  acme/foo/v1/X:
+    arrow: Struct
+    fields:
+      - name: x
+        type: Float32
+"#,
+        );
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: bad
+    path: bad/target/release/bad
+  - id: good
+    path: good/target/release/good
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let _ = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        // The URN is registered (a body-valid definition exists for it)...
+        let def = registry
+            .resolve("acme/foo/v1/X")
+            .expect("a body-valid duplicate should register the type");
+        // ...and it is the body-valid one (field `x: Float32`), never the
+        // body-invalid first-listed candidate (field `bad: NotARealType`).
+        assert_eq!(def.fields.len(), 1, "{def:?}");
+        assert_eq!(def.fields[0].name, "x", "{def:?}");
+        assert_eq!(def.fields[0].r#type, "Float32", "{def:?}");
     }
 
     #[test]

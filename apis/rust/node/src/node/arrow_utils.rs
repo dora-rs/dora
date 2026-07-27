@@ -51,6 +51,22 @@ pub fn encode_arrow_ipc(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
             .finish()
             .context("failed to finish Arrow IPC stream")?;
     }
+
+    // Fail loudly at the producer instead of emitting a stream that every
+    // receive path will unconditionally reject. `decode_arrow_ipc`,
+    // `decode_arrow_ipc_zero_copy`, and the streaming `InputDecoder` all bail
+    // on payloads over `MAX_IPC_BYTES`, and the fast-path encoder refuses
+    // oversized arrays too (routing them here). Without this check an
+    // oversized array would encode successfully, get sent, and then be
+    // silently dropped as undecodable on the consumer with no error on the
+    // sending side — see the matching guard in `uint8_layout`.
+    if buf.len() > MAX_IPC_BYTES {
+        eyre::bail!(
+            "Arrow IPC payload too large: {} bytes (max {MAX_IPC_BYTES}); \
+             split the output into smaller batches",
+            buf.len()
+        );
+    }
     Ok(buf)
 }
 
@@ -162,6 +178,24 @@ mod tests {
         let encoded = encode_arrow_ipc(&data).unwrap();
         let decoded = decode_arrow_ipc(&encoded).unwrap();
         assert_eq!(data, decoded);
+    }
+
+    /// An array whose IPC stream exceeds `MAX_IPC_BYTES` must fail at encode
+    /// time. Otherwise the sender would emit a stream that every receive path
+    /// rejects, silently dropping the message with no producer-side error.
+    #[test]
+    fn ipc_encode_rejects_oversized_payload() {
+        use arrow::array::UInt8Array;
+
+        // Body just over the 256 MB cap; the framing pushes the stream over too.
+        let array = UInt8Array::from(vec![0u8; MAX_IPC_BYTES + 1]);
+        let data = array.into_data();
+        let err =
+            encode_arrow_ipc(&data).expect_err("oversized payload must be rejected by the encoder");
+        assert!(
+            err.to_string().contains("too large"),
+            "unexpected error: {err}"
+        );
     }
 
     /// Copy `bytes` into a 128-byte-aligned buffer, mirroring how Dora's

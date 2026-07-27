@@ -17,7 +17,17 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
-const SCHEMA_VERSION: u32 = 2; // Sprint 9: added node_to_daemon, uv, Recovering status
+///
+/// bincode is not self-describing, so `#[serde(default)]` on a struct/enum
+/// field does NOT make old persisted bytes decodable -- it only fills in the
+/// field when the deserializer already knows the field is absent, which for
+/// bincode's positional encoding never happens (a missing trailing field
+/// reads past the end of the buffer and fails). Any change to a persisted
+/// type's shape -- including adding a `#[serde(default)]` field -- MUST bump
+/// this constant, so `open()` rejects old-format databases up front instead
+/// of decoding old rows into errors that get silently dropped by the
+/// `list_*` methods below.
+const SCHEMA_VERSION: u32 = 3; // v3: added `terminal` to DataflowStatus::Failed
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -540,6 +550,98 @@ mod tests {
         assert_eq!(flows[0].uuid, uuid);
     }
 
+    /// #2471: `#[serde(default)]` on `DataflowStatus::Failed::terminal` does NOT
+    /// make bincode-encoded bytes from before the field existed decodable --
+    /// bincode is positional, not self-describing. `status` is not the last
+    /// field of `DataflowRecord`, so a missing `terminal` byte doesn't reliably
+    /// fail to decode the way a standalone `DataflowStatus` would: the decoder
+    /// instead reads the next record field's first byte as `terminal` and keeps
+    /// going, shifted by one byte, into `daemon_ids`/`node_to_daemon`/`uv`/
+    /// `generation`/timestamps. Depending on the field values that land on
+    /// each shifted position, this either surfaces much later as a confusing,
+    /// unrelated decode error (e.g. `InvalidBooleanValue` on `uv`, as observed
+    /// with the field values below -- nothing about that error points at
+    /// `terminal` or `status`) or -- for other field-value combinations --
+    /// could silently succeed with a structurally valid but corrupted record.
+    /// Neither outcome is the clean, predictable "missing field" failure the
+    /// `terminal` doc comment implies, and both confirm the actual safety net
+    /// is the `SCHEMA_VERSION` bump: a database written before `terminal`
+    /// existed carries the pre-bump version and is rejected at `open()` (see
+    /// `older_schema_version_is_rejected`), so `list_dataflows`/`get_dataflow`
+    /// never reach this undecodable-or-corrupted row in the first place.
+    #[test]
+    fn old_dataflow_record_without_terminal_field_misdecodes_silently() {
+        // Mirrors `DataflowStatus` variant-for-variant, except `Failed` has no
+        // `terminal` field -- i.e. the exact byte layout written by a
+        // pre-#1854 coordinator.
+        #[derive(serde::Serialize)]
+        #[allow(dead_code)]
+        enum OldDataflowStatus {
+            Pending,
+            Running,
+            Recovering,
+            Stopping,
+            Succeeded,
+            Failed { error: String },
+        }
+
+        // Mirrors `DataflowRecord` field-for-field, using `OldDataflowStatus`
+        // for `status` -- the exact pre-#1854 `DataflowRecord` byte layout.
+        #[derive(serde::Serialize)]
+        struct OldDataflowRecord {
+            uuid: Uuid,
+            name: Option<String>,
+            descriptor_json: String,
+            status: OldDataflowStatus,
+            daemon_ids: Vec<DaemonId>,
+            node_to_daemon: std::collections::BTreeMap<String, String>,
+            uv: bool,
+            generation: u64,
+            created_at: u64,
+            updated_at: u64,
+        }
+
+        let uuid = Uuid::new_v4();
+        let old_record = OldDataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: OldDataflowStatus::Failed {
+                error: "boom".into(),
+            },
+            daemon_ids: vec![], // empty -> length-prefix byte is 0x00
+            node_to_daemon: Default::default(),
+            uv: false,
+            generation: 42,
+            created_at: 1000,
+            updated_at: 2000,
+        };
+        let old_bytes =
+            bincode::serde::encode_to_vec(&old_record, bincode::config::standard()).unwrap();
+
+        // Decoding as the current `DataflowRecord` must NOT reproduce the
+        // encoded values: it either errors out (empirically: `InvalidBooleanValue`
+        // on the shifted `uv` field, not anything mentioning `terminal`), or --
+        // for other field-value combinations -- silently misdecodes into a
+        // structurally valid but wrong record. Either outcome is unsafe to
+        // serve from `list_dataflows`/`get_dataflow`, which is exactly why old
+        // databases must be rejected at `open()` instead.
+        match decode::<crate::DataflowRecord>(&old_bytes) {
+            Err(_) => {} // the common case for these field values; see doc comment above
+            Ok(decoded) => {
+                assert_eq!(decoded.uuid, uuid, "fields before `status` are unaffected");
+                assert!(
+                    decoded.generation != 42
+                        || decoded.created_at != 1000
+                        || decoded.updated_at != 2000,
+                    "decode succeeded AND reproduced the original trailing fields -- \
+                     the byte-shift this test exists to demonstrate did not occur; \
+                     re-check bincode's encoding of an empty Vec/BTreeMap length prefix"
+                );
+            }
+        }
+    }
+
     #[test]
     fn dataflow_update_persists() {
         let (store, _dir) = temp_store();
@@ -1021,6 +1123,84 @@ mod tests {
         }
         match RedbStore::open(&path) {
             Ok(_) => panic!("expected schema version mismatch error"),
+            Err(err) => assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected schema version mismatch, got: {err}"
+            ),
+        }
+    }
+
+    /// #2471 review follow-up: `older_schema_version_is_rejected` is
+    /// parameterized on `SCHEMA_VERSION - 1`, so it auto-follows the
+    /// constant and would keep passing even if a future bump moved the
+    /// rejected version away from `2` -- it doesn't pin the actual decision
+    /// being made here. That decision is deliberate and literal: schema `2`
+    /// is permanently ambiguous (v1.0.0-rc.1 stamped pre-`terminal` records
+    /// as v2; v1.0.0-rc.2 stamped post-`terminal` records as v2 too, because
+    /// the version bump that should have accompanied #1854 never happened),
+    /// so *every* v2 database is rejected at `open()` -- even one written by
+    /// rc.2 whose stored row would, on its own, decode perfectly fine under
+    /// the current (terminal-carrying) shape. This test locks in that
+    /// blanket-rejection decision with a hardcoded `2u32`, independent of
+    /// whatever `SCHEMA_VERSION` becomes in the future, and independent of
+    /// whether the specific stored row is decodable.
+    #[test]
+    fn schema_v2_is_rejected_even_though_this_particular_row_would_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2-decodable-row.redb");
+
+        let uuid = Uuid::new_v4();
+        // An rc.2-shaped row: current `DataflowRecord`/`DataflowStatus` types,
+        // `terminal` included. This is fully decodable by the current
+        // `decode()` -- the version guard is the only thing standing between
+        // this store and a successful `open()`.
+        let record = DataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: crate::DataflowStatus::Failed {
+                error: "boom".into(),
+                terminal: true,
+            },
+            daemon_ids: vec![],
+            node_to_daemon: Default::default(),
+            uv: false,
+            generation: 1,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let bytes = encode(&record).unwrap();
+
+        // Sanity check: the row really is decodable under the current shape,
+        // so the rejection below (via a real `RedbStore::open`) is caused by
+        // the version guard alone, not by an incidental encoding mismatch.
+        assert!(decode::<DataflowRecord>(&bytes).is_ok());
+
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                // Hardcoded `2`, not `SCHEMA_VERSION - 1`: this is the
+                // specific historical version both rc.1 and rc.2 stamped
+                // their (mutually incompatible) stores with.
+                meta.insert(SCHEMA_VERSION_KEY, 2u32).unwrap();
+
+                let mut table = txn.open_table(DATAFLOWS).unwrap();
+                table
+                    .insert(record.uuid.as_bytes().as_slice(), bytes.as_slice())
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        match RedbStore::open(&path) {
+            Ok(_) => panic!(
+                "a v2-stamped database must be rejected at open() regardless of \
+                 whether this particular row would decode -- v2 is ambiguous \
+                 between the pre-#1854 (rc.1) and post-#1854 (rc.2) shapes, so \
+                 blanket rejection is the only simple, safe option"
+            ),
             Err(err) => assert!(
                 err.to_string().contains("schema version mismatch"),
                 "expected schema version mismatch, got: {err}"

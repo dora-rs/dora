@@ -9,10 +9,17 @@ use tokio::io::AsyncWriteExt;
 ///
 /// Handles headers that carry additional parameters after the filename, e.g.
 /// `attachment; filename="model.bin"; size=1000`, and both quoted and unquoted
-/// forms. Returns `None` when no non-empty `filename=` value is present (the
-/// RFC 5987 extended `filename*=` form is not decoded and falls through).
+/// forms. Per RFC 6266 / RFC 2616 the parameter name is case-insensitive, so
+/// `Filename`, `FILENAME`, etc. are matched too. Returns `None` when no
+/// non-empty `filename=` value is present (the RFC 5987 extended `filename*=`
+/// form is not decoded and falls through — searching for the literal
+/// `filename=` skips it, since `filename*=` does not contain that substring).
 fn parse_content_disposition_filename(header: &str) -> Option<String> {
-    let rest = header.split("filename=").nth(1)?.trim_start();
+    // RFC 6266: parameter names are case-insensitive. Lower-casing only maps
+    // ASCII bytes 1:1, so byte offsets stay valid indices into `header`.
+    let lower = header.to_ascii_lowercase();
+    let start = lower.find("filename=")? + "filename=".len();
+    let rest = header[start..].trim_start();
     let name = if let Some(after_quote) = rest.strip_prefix('"') {
         // Quoted form: the value runs up to the closing quote, so a trailing
         // `; param=...` (or a `;` inside the quotes) is handled correctly.
@@ -24,6 +31,18 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
+/// Derive a candidate filename from the *last path segment* of a URL.
+///
+/// Uses the parsed URL structure rather than the serialized string, so the
+/// query string and fragment (e.g. the long presigned-URL parameters that S3
+/// and GitHub-release redirects append) never leak into the name. Returns
+/// `None` when the URL has no non-empty path segment.
+fn filename_from_url(url: &reqwest::Url) -> Option<String> {
+    url.path_segments()?
+        .rfind(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+}
+
 fn get_filename(response: &reqwest::Response) -> Option<String> {
     let raw_name = response
         .headers()
@@ -31,13 +50,8 @@ fn get_filename(response: &reqwest::Response) -> Option<String> {
         .and_then(|value| value.to_str().ok())
         .and_then(parse_content_disposition_filename);
 
-    // If Content-Disposition header is not available, extract from URL
-    let raw_name = raw_name.or_else(|| {
-        Path::new(response.url().as_str())
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())
-    });
+    // If Content-Disposition header is not available, extract from the URL.
+    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
 
     // Sanitize: strip path components to prevent traversal,
     // reject null bytes and overly long names
@@ -124,7 +138,50 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::parse_content_disposition_filename;
+    use super::{filename_from_url, parse_content_disposition_filename};
+
+    fn name_from(url: &str) -> Option<String> {
+        filename_from_url(&reqwest::Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn url_filename_ignores_query_string() {
+        // Regression: presigned S3/GitHub-release redirects carry a long query
+        // string but no Content-Disposition header. The query must not leak into
+        // the filename (and must not push the name over the 255-char limit).
+        assert_eq!(
+            name_from("https://example.com/path/model.bin?X-Amz-Signature=deadbeef&expires=123"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_ignores_fragment() {
+        assert_eq!(
+            name_from("https://example.com/path/model.bin#section"),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_plain() {
+        assert_eq!(
+            name_from("https://example.com/a/b/weights.safetensors"),
+            Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_skips_empty_trailing_segment() {
+        // A trailing slash yields an empty last segment, which is skipped in
+        // favor of the last non-empty one (matching the previous
+        // `Path::file_name` behavior). A bare root has no non-empty segment.
+        assert_eq!(
+            name_from("https://example.com/dir/"),
+            Some("dir".to_string())
+        );
+        assert_eq!(name_from("https://example.com/"), None);
+    }
 
     #[test]
     fn quoted_filename_without_extra_params() {
@@ -156,6 +213,37 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
             Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn filename_parameter_name_is_case_insensitive() {
+        // RFC 6266: `Content-Disposition` parameter names are case-insensitive,
+        // so a spec-compliant server sending a non-lowercase `filename` must not
+        // have its filename silently dropped.
+        for header in [
+            "attachment; Filename=\"model.bin\"",
+            "attachment; FILENAME=\"model.bin\"",
+            "attachment; FileName=model.bin",
+        ] {
+            assert_eq!(
+                parse_content_disposition_filename(header),
+                Some("model.bin".to_string()),
+                "header {header:?} should parse case-insensitively"
+            );
+        }
+    }
+
+    #[test]
+    fn extended_form_before_plain_filename_is_skipped() {
+        // A header may carry both the RFC 5987 extended form and a plain one;
+        // the plain `filename=` value must still be found (and the `filename*=`
+        // form skipped, not mistaken for it).
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename*=UTF-8''extended.bin; filename=\"plain.bin\""
+            ),
+            Some("plain.bin".to_string())
         );
     }
 

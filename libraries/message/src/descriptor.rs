@@ -1193,6 +1193,12 @@ impl fmt::Display for EnvValue {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Ros2BridgeConfig {
+    /// Native transport used to communicate with the ROS2 graph.
+    ///
+    /// Defaults to the existing DDS implementation.
+    #[serde(default)]
+    pub transport: Ros2TransportConfig,
+
     /// ROS2 topic name (e.g. "/camera/image_raw").
     /// Mutually exclusive with `topics`, `service`, `action`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1253,6 +1259,7 @@ pub struct Ros2BridgeConfig {
 impl Default for Ros2BridgeConfig {
     fn default() -> Self {
         Self {
+            transport: Ros2TransportConfig::default(),
             topic: None,
             message_type: None,
             direction: Ros2Direction::default(),
@@ -1267,6 +1274,33 @@ impl Default for Ros2BridgeConfig {
             node_name: None,
         }
     }
+}
+
+/// Native transport used by a ROS2 bridge context.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Ros2TransportConfig {
+    /// The existing `ros2-client` and RustDDS transport.
+    #[default]
+    Dds,
+    /// Direct interoperability with `rmw_zenoh_cpp` peers.
+    Zenoh {
+        /// Wire-compatibility profile used by the target ROS2 distribution.
+        compatibility: RmwZenohCompatibility,
+        /// Optional Zenoh session configuration path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        config_uri: Option<PathBuf>,
+    },
+}
+
+/// Wire-compatibility profile for the `rmw_zenoh_cpp` protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RmwZenohCompatibility {
+    /// ROS2 Humble, whose endpoint identity uses `TypeHashNotSupported`.
+    Humble,
+    /// ROS2 distributions whose endpoint identity uses REP-2016 type hashes.
+    Rep2016,
 }
 
 /// Role of a ROS2 service or action bridge node.
@@ -1357,6 +1391,39 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ros2_transport_defaults_to_dds() {
+        let config: Ros2BridgeConfig =
+            serde_yaml::from_str("topic: /chatter\nmessage_type: std_msgs/String\n").unwrap();
+        assert!(matches!(config.transport, Ros2TransportConfig::Dds));
+    }
+
+    #[test]
+    fn ros2_transport_parses_humble_zenoh() {
+        let config: Ros2BridgeConfig = serde_yaml::from_str(
+            "transport:\n  kind: zenoh\n  compatibility: humble\n  config_uri: /tmp/rmw.json5\n\
+             topic: /chatter\nmessage_type: std_msgs/String\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.transport,
+            Ros2TransportConfig::Zenoh {
+                compatibility: RmwZenohCompatibility::Humble,
+                config_uri: Some("/tmp/rmw.json5".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn ros2_transport_rejects_unknown_zenoh_compatibility() {
+        let error = serde_yaml::from_str::<Ros2BridgeConfig>(
+            "transport:\n  kind: zenoh\n  compatibility: automatic\n\
+             topic: /chatter\nmessage_type: std_msgs/String\n",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown variant `automatic`"));
+    }
 
     #[test]
     fn output_framing_defaults_to_raw() {

@@ -1,4 +1,5 @@
 use ::dora_ros2_bridge::rustdds::{self, policy};
+use ::dora_ros2_bridge::transport::{Durability, History, Liveliness, Reliability, Ros2Qos};
 use pyo3::prelude::{pyclass, pymethods};
 /// ROS2 QoS Policy
 ///
@@ -51,26 +52,41 @@ impl Ros2QosPolicies {
 
 impl From<Ros2QosPolicies> for rustdds::QosPolicies {
     fn from(value: Ros2QosPolicies) -> Self {
-        rustdds::QosPolicyBuilder::new()
-            .durability(value.durability.into())
-            .liveliness(value.liveliness.convert(value.lease_duration))
-            .reliability(if value.reliable {
-                policy::Reliability::Reliable {
-                    max_blocking_time: rustdds::Duration::from_frac_seconds(
-                        value.max_blocking_time,
-                    ),
+        ::dora_ros2_bridge::transport::dds::to_rustdds_qos(&value.into())
+    }
+}
+
+impl From<Ros2QosPolicies> for Ros2Qos {
+    fn from(value: Ros2QosPolicies) -> Self {
+        let lease_duration = (!value.lease_duration.is_infinite())
+            .then(|| std::time::Duration::from_secs_f64(value.lease_duration));
+        Self {
+            durability: match value.durability {
+                Ros2Durability::TransientLocal => Durability::TransientLocal,
+                _ => Durability::Volatile,
+            },
+            liveliness: match value.liveliness {
+                Ros2Liveliness::Automatic => Liveliness::Automatic { lease_duration },
+                Ros2Liveliness::ManualByParticipant => {
+                    Liveliness::ManualByParticipant { lease_duration }
+                }
+                Ros2Liveliness::ManualByTopic => Liveliness::ManualByTopic { lease_duration },
+            },
+            reliability: if value.reliable {
+                Reliability::Reliable {
+                    max_blocking_time: std::time::Duration::from_secs_f64(value.max_blocking_time),
                 }
             } else {
-                policy::Reliability::BestEffort
-            })
-            .history(if value.keep_all {
-                policy::History::KeepAll
+                Reliability::BestEffort
+            },
+            history: if value.keep_all {
+                History::KeepAll
             } else {
-                policy::History::KeepLast {
+                History::KeepLast {
                     depth: value.keep_last,
                 }
-            })
-            .build()
+            },
+        }
     }
 }
 
@@ -109,23 +125,4 @@ pub enum Ros2Liveliness {
     Automatic,
     ManualByParticipant,
     ManualByTopic,
-}
-
-impl Ros2Liveliness {
-    /// :type lease_duration: float
-    /// :rtype: dora.Ros2Liveliness
-    fn convert(self, lease_duration: f64) -> policy::Liveliness {
-        let lease_duration = if lease_duration.is_infinite() {
-            rustdds::Duration::INFINITE
-        } else {
-            rustdds::Duration::from_frac_seconds(lease_duration)
-        };
-        match self {
-            Ros2Liveliness::Automatic => policy::Liveliness::Automatic { lease_duration },
-            Ros2Liveliness::ManualByParticipant => {
-                policy::Liveliness::ManualByParticipant { lease_duration }
-            }
-            Ros2Liveliness::ManualByTopic => policy::Liveliness::ManualByTopic { lease_duration },
-        }
-    }
 }

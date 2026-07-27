@@ -37,11 +37,21 @@ arrow = { workspace = true, features = ["ffi"] }
 aligned-vec = "0.6.4"
 
 [build-dependencies]
-pyo3-build-config = { workspace = true }
+# Optional: pyo3-build-config's own build script (resolve-config feature)
+# probes the Python interpreter and fails when it's older than the
+# workspace abi3-py311 floor, which broke plain `cargo build -p dora-cli`
+# on systems with Python <= 3.10. Only pull it in when Python is wanted.
+pyo3-build-config = { workspace = true, optional = true }
 
 [features]
 default = ["tracing", "metrics"]
 tracing = ["dora-tracing"]
 telemetry = ["tracing", "tracing-opentelemetry"]
 metrics = ["dora-metrics"]
-python = ["pyo3", "dora-operator-api-python", "pythonize", "arrow/pyarrow"]
+python = [
+    "pyo3",
+    "dora-operator-api-python",
+    "pythonize",
+    "arrow/pyarrow",
+    "dep:pyo3-build-config",
+]
