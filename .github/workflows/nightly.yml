@@ -1327,6 +1327,11 @@ jobs:
       - name: C++ Dataflow example
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
+      # Service/Action parity for the C++ binding (#2686). Placed before the
+      # Arrow install because it uses byte payloads and needs no Arrow C++.
+      - name: C++ Service and Action example
+        timeout-minutes: 15
+        run: cargo run --example cxx-service-action
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
