@@ -400,6 +400,14 @@ enum CapacityCheck {
 ///
 /// Resolution order: `trusted_sizes` (daemon metadata) → `cached_gpu_buf_size`
 /// (first-import baseline) → reject.
+///
+/// When the resolved capacity is **zero**, the size bound is unknown (a pool
+/// registered with zero byte capacity is a degenerate case that should not
+/// occur in practice).  Rather than rejecting every read on such a pool or
+/// silently skipping validation, this function treats zero as "unbounded"
+/// (`capped == 0` never triggers `size > capped`).  The call site in
+/// `try_doradma_read` emits a warning when this path is taken so the
+/// degenerate state is observable.
 #[inline]
 fn check_capacity_gpu_pool(
     trusted_sizes: Option<u64>,
@@ -409,6 +417,7 @@ fn check_capacity_gpu_pool(
     let cap = trusted_sizes.or(cached_gpu_buf_size);
     match cap {
         None => CapacityCheck::NoTrustedEntry,
+        // `capped == 0` → capacity unknown; allow through (see doc).
         Some(capped) if capped > 0 && size > capped => CapacityCheck::ExceedsTrustedSize,
         Some(_) => CapacityCheck::Ok,
     }
