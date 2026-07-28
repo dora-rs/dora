@@ -47,9 +47,10 @@ pub struct Run {
     /// similar to pressing Ctrl-C. This gracefully stops all nodes in the dataflow.
     ///
     /// Examples:
-    ///   --stop-after 30      # 30 seconds
-    ///   --stop-after 30s     # 30 seconds
+    ///   --stop-after 10s     # 10 seconds
     ///   --stop-after 5m      # 5 minutes
+    ///   --stop-after 1h30m   # 1 hour 30 minutes
+    ///   --stop-after 500ms   # 500 milliseconds
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration)]
     pub stop_after: Option<Duration>,
