@@ -5285,6 +5285,15 @@ fn note_output_sent_to_local_receivers(
     clock: &HLC,
     ft_stats: Option<&FaultToleranceStats>,
 ) {
+    // Both side effects below are gated on a non-empty `input_deadlines`
+    // (deadline refresh) or `broken_inputs` (circuit-breaker recovery). When
+    // neither feature is configured — the common case — the whole loop is a
+    // no-op, so skip it entirely rather than paying a clock read plus a
+    // `subscribe_channels` lookup per receiver on every `OutputSent`.
+    if dataflow.input_deadlines.is_empty() && dataflow.broken_inputs.is_empty() {
+        return;
+    }
+
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
