@@ -2501,15 +2501,15 @@ impl Node {
                                 let bound = helpers.bind(py);
                                 // Resolve transit metadata: cache-hit from PoolSlot,
                                 // cache-miss from TRANSIT_META (populated during registration).
-                                let mut transit_ptr = store_back.as_ref().map_or(0, |s| s.transit_ptr);
+                                let mut transit_ptr =
+                                    store_back.as_ref().map_or(0, |s| s.transit_ptr);
                                 let transit_from_cache;
                                 if transit_ptr == 0 {
                                     // Cache-miss fallback: TRANSIT_META survives
                                     // PINNED_POOL eviction so the write fast path
                                     // always knows whether a transit buffer exists.
-                                    let meta = TRANSIT_META
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner());
+                                    let meta =
+                                        TRANSIT_META.lock().unwrap_or_else(|e| e.into_inner());
                                     if let Some(&(tp, _pd)) = meta.get(&counter) {
                                         transit_ptr = tp;
                                         transit_from_cache = true;
