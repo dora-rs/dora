@@ -47,6 +47,7 @@ pub struct Run {
     /// similar to pressing Ctrl-C. This gracefully stops all nodes in the dataflow.
     ///
     /// Examples:
+    ///   --stop-after 30      # 30 seconds (a bare number is seconds)
     ///   --stop-after 10s     # 10 seconds
     ///   --stop-after 5m      # 5 minutes
     ///   --stop-after 1h30m   # 1 hour 30 minutes
