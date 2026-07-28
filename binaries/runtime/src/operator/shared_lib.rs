@@ -163,6 +163,14 @@ impl SharedLibraryOperator<'_> {
             }
         });
 
+        // `send_output_closure` is invariant across events, so build the FFI
+        // `SendOutput` wrapper once and reuse it by reference each iteration
+        // rather than cloning the `Arc` and reconstructing an `ArcDynFn1` per
+        // event.
+        let send_output = SendOutput {
+            send_output: ArcDynFn1::new(send_output_closure),
+        };
+
         let reason = loop {
             #[allow(unused_mut)]
             let Ok(mut event) = self.incoming_events.recv() else {
@@ -252,9 +260,6 @@ impl SharedLibraryOperator<'_> {
                 }
             };
 
-            let send_output = SendOutput {
-                send_output: ArcDynFn1::new(send_output_closure.clone()),
-            };
             let OnEventResult {
                 result: DoraResult { error },
                 status,
