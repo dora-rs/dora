@@ -189,7 +189,6 @@ pub fn run(
 
             let status = Python::attach(|py| -> Result<i32> {
                 let span = span!(tracing::Level::TRACE, "on_event", input_id = field::Empty);
-                let _enter = span.enter();
 
                 // Add metadata context if we have a tracer and
                 // incoming input has some metadata.
@@ -216,6 +215,7 @@ pub fn run(
                         Parameter::String(string_cx),
                     );
                 }
+                let _enter = span.enter();
 
                 let py_event = PyEvent {
                     event: MergedEvent::Dora(event),
