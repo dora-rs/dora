@@ -88,9 +88,24 @@ fn main() -> eyre::Result<()> {
                     // stream (or absent for metadata-only messages). Decode it
                     // back to an array and re-send; `send_output` re-encodes it
                     // into a fresh IPC stream on the wire.
+                    //
+                    // Skip-and-continue on a single undecodable payload rather
+                    // than aborting the whole replay, matching the bincode arm
+                    // above and the reader's own torn-record tolerance
+                    // (`RecordingReader::next_entry` stops gracefully at a torn
+                    // trailing record instead of erroring). Otherwise one corrupt
+                    // record would drop every remaining valid message.
                     let array = match &data {
-                        Some(bytes) => decode_arrow_ipc(bytes)
-                            .wrap_err("failed to decode recorded Arrow IPC payload")?,
+                        Some(bytes) => match decode_arrow_ipc(bytes) {
+                            Ok(array) => array,
+                            Err(e) => {
+                                eprintln!(
+                                    "warning: failed to decode recorded Arrow IPC payload for {}/{}: {e}",
+                                    entry.node_id, entry.output_id
+                                );
+                                continue;
+                            }
+                        },
                         None => NullArray::new(0).into(),
                     };
                     node.send_output(output_id, metadata.parameters, make_array(array))
