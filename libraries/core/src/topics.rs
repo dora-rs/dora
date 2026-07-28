@@ -31,6 +31,60 @@ pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 /// deterministic instead of racy.
 pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 
+/// Opt out of zenoh multicast scouting for this process, regardless of whether
+/// explicit connect endpoints replaced it.
+///
+/// Set to `off`, `0`, `false`, or `no` to disable. Any other value (including
+/// unset) leaves the default behaviour, where multicast is dropped only once
+/// [`DORA_ZENOH_CONNECT_ENV`] gives the session something to dial instead.
+///
+/// Exists for networks where the scouting socket itself is the problem: a busy
+/// DDS/ROS2 multicast graph can keep zenoh from binding its scouting group,
+/// which fails `zenoh::open` outright. Disabling scouting sidesteps that bind
+/// entirely — but it removes a discovery mechanism, so a session that has no
+/// connect endpoints *and* no multicast can reach nobody. Set it only where
+/// every link is established explicitly (the daemon injects
+/// [`DORA_ZENOH_CONNECT_ENV`] into the nodes it spawns, so those are covered).
+///
+/// The daemon sets this on the nodes it spawns when started with
+/// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
+pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
+
+/// Whether a session may discover peers by multicast scouting.
+///
+/// Spelled as an enum rather than a bool because the concept flips polarity at
+/// every hop it crosses — `--zenoh-no-multicast`, `DORA_ZENOH_MULTICAST=off`,
+/// `scouting/multicast/enabled=false` — and an inverted bool would not fail a
+/// test, it would silently partition the dataflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MulticastScouting {
+    /// Scout unless explicit connect endpoints replace it. The default
+    /// everywhere; [`DORA_ZENOH_MULTICAST_ENV`] can still turn it off.
+    #[default]
+    Allowed,
+    /// The caller establishes every link explicitly and wants no scouting.
+    Disabled,
+}
+
+/// Whether [`DORA_ZENOH_MULTICAST_ENV`] asks for multicast scouting to be off.
+#[cfg(feature = "zenoh")]
+fn multicast_disabled_by_env() -> bool {
+    multicast_disabled_by_value(std::env::var(DORA_ZENOH_MULTICAST_ENV).ok().as_deref())
+}
+
+/// Parse a [`DORA_ZENOH_MULTICAST_ENV`] value (`None` when the var is unset).
+///
+/// Split from [`multicast_disabled_by_env`] so it is testable without mutating
+/// the process environment, which is `unsafe` in edition 2024 and racy against
+/// other tests in the same binary.
+#[cfg(feature = "zenoh")]
+fn multicast_disabled_by_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("off" | "0" | "false" | "no")
+    )
+}
+
 /// Split a comma-separated endpoint list env var, ignoring empty entries.
 #[cfg(feature = "zenoh")]
 fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
@@ -43,7 +97,11 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
-    let (session, _) = open_zenoh_session_with_listen(coordinator_addr, None, None).await?;
+    // Nodes and the coordinator have no in-process way to know, so
+    // [`DORA_ZENOH_MULTICAST_ENV`] (honored inside) is their only channel.
+    let (session, _) =
+        open_zenoh_session_with_listen(coordinator_addr, None, None, MulticastScouting::Allowed)
+            .await?;
     Ok(session)
 }
 
@@ -76,11 +134,17 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 /// part of the returned endpoint — it is cluster-wide configuration
 /// shared by the caller (e.g. `dora cluster up`), not per-daemon
 /// state to advertise back to nodes.
+///
+/// `multicast` lets a caller that establishes every link explicitly opt out of
+/// scouting — see [`DORA_ZENOH_MULTICAST_ENV`], honored in addition to this
+/// argument. It is a request, not a command: it is ignored unless this session
+/// ends up reachable some other way (see the `#1856` guard below).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
     coordinator_addr: Option<IpAddr>,
     listen_endpoint: Option<&str>,
     inter_daemon_peer: Option<&str>,
+    multicast: MulticastScouting,
 ) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
@@ -192,15 +256,6 @@ pub async fn open_zenoh_session_with_listen(
                     }
                 }
             }
-            // Only disable multicast scouting if we successfully replaced
-            // it with explicit connect endpoints — otherwise we'd end up
-            // with no discovery at all (#1856).
-            if connect_inserted
-                && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
-            {
-                warn!("failed to disable zenoh scouting/multicast: {err}");
-            }
-
             // Track whether listen/endpoints was accepted into THIS config.
             // We don't promote it to `effective_listen_endpoint` until the
             // configured open succeeds — the fallback default-config path
@@ -212,6 +267,10 @@ pub async fn open_zenoh_session_with_listen(
             // wrong (nodes would try to reach it through what may be a
             // remote address, defeating the loopback shortcut).
             let mut listen_inserted_into_configured: Option<String> = None;
+            // Any accepted listener, including the cluster-wide rendezvous that
+            // is deliberately absent from `listen_inserted_into_configured`.
+            // Reachability, not advertisability, is what the #1856 guard needs.
+            let mut listen_configured = false;
 
             // Build the listen-endpoint list (loopback for spawned nodes +
             // optional inter-daemon rendezvous). With multiple entries,
@@ -247,6 +306,7 @@ pub async fn open_zenoh_session_with_listen(
                 let listen_inserted = match zenoh_config.insert_json5("listen/endpoints", &json) {
                     Ok(()) => {
                         listen_inserted_into_configured = listen_endpoint.map(String::from);
+                        listen_configured = true;
                         true
                     }
                     Err(err) => {
@@ -264,6 +324,29 @@ pub async fn open_zenoh_session_with_listen(
                 {
                     warn!("failed to set zenoh listen/exit_on_failure: {err}");
                 }
+            }
+
+            // Drop multicast scouting only once this session is reachable some
+            // other way — otherwise it has no endpoints to dial and no way to
+            // be found, which is the silent partition #1856 exists to prevent.
+            //
+            // Two things make it reachable. `connect_inserted`: explicit
+            // endpoints replaced scouting (the pre-existing rule). Or an
+            // accepted listener plus a caller that asked to stop scouting —
+            // `dora run` without dynamic nodes, or `--zenoh-no-multicast` on a
+            // network where the scouting bind itself fails; a listener means
+            // peers that hold the endpoint can dial in.
+            //
+            // Deliberately *not* honoring the request when neither holds: the
+            // reservation-failure paths in `build_daemon` log "falling back to
+            // multicast scouting only" and mean it. Treating the request as
+            // absolute would disarm that recovery and strand the daemon.
+            let requested_off =
+                matches!(multicast, MulticastScouting::Disabled) || multicast_disabled_by_env();
+            if (connect_inserted || (requested_off && listen_configured))
+                && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
+            {
+                warn!("failed to disable zenoh scouting/multicast: {err}");
             }
 
             if let Some(addr) = coordinator_addr
@@ -621,6 +704,32 @@ pub fn zenoh_output_ready_liveliness_prefix(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn multicast_disable_spellings_are_recognized() {
+        for value in ["off", "0", "false", "no", "OFF", "False", "  off  "] {
+            assert!(
+                multicast_disabled_by_value(Some(value)),
+                "{value:?} should disable multicast scouting"
+            );
+        }
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn unset_or_unrecognized_multicast_value_keeps_default() {
+        // Anything that is not an explicit disable spelling must leave the
+        // default behaviour: silently dropping discovery because of a typo
+        // would be a partition with no error to point at (#1856).
+        assert!(!multicast_disabled_by_value(None));
+        for value in ["on", "1", "true", "yes", "", "maybe"] {
+            assert!(
+                !multicast_disabled_by_value(Some(value)),
+                "{value:?} must not disable multicast scouting"
+            );
+        }
+    }
 
     #[test]
     fn reserve_loopback_endpoint_returns_loopback_tcp() {

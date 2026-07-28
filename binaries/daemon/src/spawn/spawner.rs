@@ -13,7 +13,7 @@ use dora_core::{
         CoreNodeKind, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
     },
     get_python_path,
-    topics::{DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV},
+    topics::{DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV},
     uhlc::HLC,
 };
 use dora_message::{
@@ -249,11 +249,15 @@ pub struct Spawner {
     /// Per-node listener + dial-list, so the node↔node links the dataflow needs
     /// are established deterministically. See [`plan_zenoh_peering`].
     pub zenoh_peering: Arc<BTreeMap<NodeId, NodeZenohPeering>>,
+    /// Whether this daemon runs without multicast scouting, so spawned nodes
+    /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
+    /// node scouting for a daemon that no longer answers.
+    pub disable_multicast: bool,
 }
 
 impl Spawner {
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
-        match self.zenoh_peering.get(node_id) {
+        let command = match self.zenoh_peering.get(node_id) {
             Some(peering) => {
                 let command = command.env(DORA_ZENOH_LISTEN_ENV, &peering.listen);
                 if peering.connect.is_empty() {
@@ -269,6 +273,16 @@ impl Spawner {
                 Some(ep) => command.env(DORA_ZENOH_CONNECT_ENV, ep),
                 None => command,
             },
+        };
+        // Forward the daemon's multicast decision unconditionally: it is a
+        // request, and `open_zenoh_session_with_listen` ignores it for a node
+        // that ended up with neither an endpoint to dial nor a listener to be
+        // dialled on. Re-deriving that condition here would duplicate the
+        // #1856 guard against the code that owns it.
+        if self.disable_multicast {
+            command.env(DORA_ZENOH_MULTICAST_ENV, "off")
+        } else {
+            command
         }
     }
 
@@ -639,6 +653,54 @@ impl Spawner {
 mod tests {
     use super::*;
     use dora_core::descriptor::DescriptorExt;
+    use std::ffi::{OsStr, OsString};
+
+    fn spawner_for(daemon_endpoint: Option<&str>, disable_multicast: bool) -> Spawner {
+        let (daemon_tx, _rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown) = tokio::sync::watch::channel(false);
+        Spawner {
+            dataflow_id: uuid::Uuid::nil(),
+            daemon_tx,
+            dataflow_descriptor: serde_yaml::from_str("nodes: []").expect("parse descriptor"),
+            clock: Arc::new(HLC::default()),
+            uv: false,
+            ft_stats: Arc::new(crate::FaultToleranceStats::default()),
+            shutdown,
+            zenoh_connect_endpoint: daemon_endpoint.map(String::from),
+            // Empty: exercises the daemon-endpoint fallback arm, which is the
+            // one a node without its own peering plan takes.
+            zenoh_peering: Arc::new(BTreeMap::new()),
+            disable_multicast,
+        }
+    }
+
+    fn injected_multicast(spawner: &Spawner) -> Option<OsString> {
+        let command = spawner.maybe_inject_zenoh_connect(Command::new("true"), &node("sink"));
+        command
+            .environment
+            .get(&OsString::from(DORA_ZENOH_MULTICAST_ENV))
+            .cloned()
+            .flatten()
+    }
+
+    /// A node must discover the same way the daemon does: a node left scouting
+    /// for a daemon that has stopped scouting finds nothing. Whether the
+    /// request is honored is `open_zenoh_session_with_listen`'s call (it keeps
+    /// scouting for a node with no endpoint and no listener, per #1856), so the
+    /// spawner forwards it and does not re-derive that condition.
+    #[test]
+    fn the_daemons_multicast_decision_is_forwarded_to_spawned_nodes() {
+        assert_eq!(
+            injected_multicast(&spawner_for(Some("tcp/127.0.0.1:7447"), true)).as_deref(),
+            Some(OsStr::new("off")),
+            "a daemon off multicast must tell its nodes"
+        );
+        assert_eq!(
+            injected_multicast(&spawner_for(Some("tcp/127.0.0.1:7447"), false)),
+            None,
+            "a daemon still scouting must not disable it for its nodes"
+        );
+    }
 
     fn plan_for(yaml: &str, daemon: Option<&str>) -> BTreeMap<NodeId, NodeZenohPeering> {
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");

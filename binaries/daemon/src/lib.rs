@@ -9,9 +9,9 @@ use dora_core::{
         read_as_descriptor, validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
-        reserve_zenoh_endpoint, validate_zenoh_listen, zenoh_bind_address_for,
-        zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
+        zenoh_bind_address_for, zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -282,6 +282,10 @@ pub struct Daemon {
     /// peer without multicast (#1778). `None` when the OS rejected the
     /// reservation; nodes then fall back to multicast scouting.
     pub(crate) zenoh_listen_endpoint: Option<String>,
+    /// Whether this daemon opened its zenoh session without multicast
+    /// scouting. Forwarded to spawned nodes so they discover the same way the
+    /// daemon does (see `DORA_ZENOH_MULTICAST`).
+    pub(crate) disable_multicast: bool,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -646,6 +650,7 @@ impl Daemon {
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
         zenoh_listen_addr: Option<IpAddr>,
+        disable_multicast: bool,
     ) -> eyre::Result<()> {
         Self::run_inner_with_builds(
             coordinator_ws_addr,
@@ -654,6 +659,7 @@ impl Daemon {
             local_listen_port,
             inter_daemon_peer,
             zenoh_listen_addr,
+            disable_multicast,
             Default::default(),
         )
         .await
@@ -667,6 +673,7 @@ impl Daemon {
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
         zenoh_listen_addr: Option<IpAddr>,
+        disable_multicast: bool,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
         let zenoh_bind = match zenoh_listen_addr {
@@ -832,6 +839,7 @@ impl Daemon {
                                 log_destination,
                                 inter_daemon_peer.clone(),
                                 zenoh_bind,
+                                disable_multicast,
                             )
                             .await?;
                             daemon = Some(built);
@@ -978,10 +986,10 @@ impl Daemon {
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
         let (events_tx, events_rx) = flume::bounded(10);
-        if nodes
+        let has_dynamic_nodes = nodes
             .iter()
-            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
-        {
+            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic());
+        if has_dynamic_nodes {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
                 (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
@@ -1079,6 +1087,17 @@ impl Daemon {
             // Local dataflow runs (one daemon, no cluster) never need
             // cross-daemon Zenoh discovery; the rendezvous is irrelevant.
             None,
+            // `dora run` is single-machine by construction, and every node it
+            // spawns is handed `DORA_ZENOH_CONNECT`, so all links are explicit
+            // and multicast scouting buys nothing — while still exposing us to
+            // a scouting bind that fails on a busy DDS/ROS2 network.
+            //
+            // Dynamic nodes are the exception: they are started by the user in
+            // a separate process, inherit none of the daemon's environment, and
+            // so have no endpoint to dial. Multicast is the only way they and
+            // the daemon find each other, so keep it on when the descriptor
+            // declares any.
+            !has_dynamic_nodes,
         );
 
         let spawn_result = reply_rx
@@ -1125,6 +1144,7 @@ impl Daemon {
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
+        disable_multicast: bool,
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
@@ -1143,6 +1163,7 @@ impl Daemon {
             log_destination,
             inter_daemon_peer,
             ZenohBind::Derived(LOCALHOST),
+            disable_multicast,
         )
         .await?;
         daemon
@@ -1174,6 +1195,7 @@ impl Daemon {
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
         zenoh_bind: ZenohBind,
+        disable_multicast: bool,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Reserve a port and have zenoh listen on it. The endpoint is injected
         // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
@@ -1226,6 +1248,11 @@ impl Daemon {
             None,
             requested_listen_endpoint.as_deref(),
             inter_daemon_peer.as_deref(),
+            if disable_multicast {
+                MulticastScouting::Disabled
+            } else {
+                MulticastScouting::Allowed
+            },
         )
         .await
         .wrap_err("failed to open zenoh session")?;
@@ -1291,6 +1318,7 @@ impl Daemon {
             ft_stats: Default::default(),
             zenoh_session,
             zenoh_listen_endpoint,
+            disable_multicast,
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -2096,6 +2124,7 @@ impl Daemon {
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
+                        disable_multicast: self.disable_multicast,
                     };
                     let mut logger = self
                         .logger
@@ -3234,6 +3263,7 @@ impl Daemon {
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
+            disable_multicast: self.disable_multicast,
         };
 
         let mut tasks = Vec::new();
