@@ -221,15 +221,21 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
                     module_file.module.name, mod_path, node.id,
                 )
             })?;
-            let base_canonical = module_dir.canonicalize()?;
-            if !nested_canonical.starts_with(&base_canonical) {
-                bail!(
-                    "module `{}`: nested module path `{}` escapes the module directory",
-                    module_file.module.name,
-                    mod_path,
-                );
-            }
-            // Load nested module to collect its declared outputs
+            // Note: unlike `expand_module_node`, we intentionally do NOT reject
+            // a nested reference that leaves `module_dir`. The real expansion
+            // path confines nested modules to the *project root*
+            // (`canonical_base`, threaded through recursion), which routinely
+            // sits above an individual module's directory -- a module in
+            // `modules/a/` may reference a sibling module in `modules/shared/`
+            // via `../shared/base.yml`. This linter runs on a module file in
+            // isolation, with no project root to bound against, so a
+            // `module_dir` containment check would spuriously reject
+            // cross-directory references that `dora run` / `dora build` accept
+            // and run fine (see #2851). We keep the absolute-path rejection and
+            // the `canonicalize()` existence check above; the containment
+            // boundary is enforced by the real expansion path, not this lint.
+            //
+            // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
             for output in &nested_module.module.outputs {
                 inner_outputs.insert(output.to_string());
@@ -1723,6 +1729,55 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    /// Regression test for #2851: `check_module_file` must accept a nested
+    /// module reference that points to a sibling directory inside the same
+    /// project (e.g. `../shared/base.yml`). The real expansion path
+    /// (`expand_module_node`) confines nested modules to the project root, not
+    /// to the referencing module's own directory, so such a reference is valid
+    /// and runnable -- the standalone linter must not spuriously reject it.
+    #[test]
+    fn check_module_file_accepts_cross_directory_nested_ref() {
+        let tmp = TempDir::new().unwrap();
+
+        // project/modules/shared/base.yml -- the nested module.
+        write_file(
+            tmp.path(),
+            "modules/shared/base.yml",
+            r#"
+module:
+  name: base
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: inner
+    path: inner.py
+    outputs:
+      - y
+"#,
+        );
+
+        // project/modules/a/mod.yml -- references the sibling module via `..`.
+        let path = write_file(
+            tmp.path(),
+            "modules/a/mod.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: nested
+    module: ../shared/base.yml
+"#,
+        );
+
+        // Must pass: the nested reference leaves `modules/a/` but stays inside
+        // the project, exactly what real expansion accepts.
+        check_module_file(&path).unwrap();
     }
 
     // ---- Security tests ----
