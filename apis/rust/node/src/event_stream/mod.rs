@@ -792,51 +792,50 @@ impl EventStream {
             self.scheduler.next().map(Self::convert_event_item)
         };
 
+        if let Some(ref event) = event {
+            self.note_produced_event(event);
+        }
+        event
+    }
+
+    /// Post-process an event just produced by `recv_async` / `poll_next`: run
+    /// the one-shot, first-message input type check and update the
+    /// stop-tracking flag. Shared by both receive paths so they cannot drift —
+    /// the two paths must stay in lockstep (dora-rs/adora#172, #174).
+    fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
-        // Zero cost after first message per input.
+        // `contains_key` short-circuits cheaply once the check is consumed, so
+        // steady-state topic messages pay a single map lookup (zero extra cost
+        // after the first message per input).
         //
-        // Skip the check when the message carries pattern metadata
-        // (`request_id`, `goal_id`, or `goal_status`) — the input is
-        // polymorphic by pattern design and a single declared type
-        // cannot cover all variants. The check stays armed so a later
-        // non-pattern message can still validate (dora-rs/adora#150).
-        if let Some(Event::Input {
-            ref id,
-            ref metadata,
-            ref data,
-        }) = event
-            && let Some(expected) = self.input_type_checks.get(id).cloned()
+        // Skip the check (and keep it armed) when the message carries pattern
+        // metadata (`request_id`, `goal_id`, or `goal_status`) — the input is
+        // polymorphic by pattern design and a single declared type cannot cover
+        // all variants (dora-rs/adora#150). The membership test runs before the
+        // pattern predicate so the common consumed-check path avoids the
+        // parameter lookups, and before `remove` so an armed pattern input's
+        // stored `DataType` is never cloned.
+        if let Event::Input { id, metadata, data } = event
+            && self.input_type_checks.contains_key(id)
+            && !crate::node::carries_pattern_correlation(&metadata.parameters)
+            && let Some(expected) = self.input_type_checks.remove(id)
         {
-            let is_pattern_message = metadata
-                .parameters
-                .contains_key(dora_message::metadata::REQUEST_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_STATUS);
-            if !is_pattern_message {
-                // Consume the check and validate.
-                self.input_type_checks.remove(id);
-                let actual = data.data_type();
-                // Skip check for Null type (timer ticks, empty payloads)
-                // to avoid spurious warnings on annotated timer inputs.
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message"
-                    );
-                }
+            let actual = data.data_type();
+            // Skip check for Null type (timer ticks, empty payloads)
+            // to avoid spurious warnings on annotated timer inputs.
+            if *actual != arrow_schema::DataType::Null && *actual != expected {
+                tracing::warn!(
+                    input = %id,
+                    expected = ?expected,
+                    actual = ?actual,
+                    "input type mismatch on first message"
+                );
             }
         }
 
-        if matches!(&event, Some(Event::Stop(_))) {
+        if matches!(event, Event::Stop(_)) {
             self.stop_received = true;
         }
-        event
     }
 
     /// Check if there are any buffered events in the scheduler, the
@@ -1586,43 +1585,11 @@ impl Stream for EventStream {
             .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item));
 
-        // Run first-message type check on the Stream path too.
-        //
-        // Mirror the recv_async() logic: skip the check (and keep it
-        // armed) when the message carries pattern metadata, so a later
-        // non-pattern message can still validate (dora-rs/adora#174).
-        if let std::task::Poll::Ready(Some(Event::Input {
-            ref id,
-            ref metadata,
-            ref data,
-        })) = poll
-            && let Some(expected) = self.input_type_checks.get(id).cloned()
-        {
-            let is_pattern_message = metadata
-                .parameters
-                .contains_key(dora_message::metadata::REQUEST_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_STATUS);
-            if !is_pattern_message {
-                self.input_type_checks.remove(id);
-                let actual = data.data_type();
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message (Stream path)"
-                    );
-                }
-            }
-        }
-
-        if matches!(&poll, std::task::Poll::Ready(Some(Event::Stop(_)))) {
-            self.stop_received = true;
+        // Mirror recv_async(): run the first-message type check and stop
+        // tracking on the Stream path too, via the shared helper so the two
+        // paths stay in lockstep (dora-rs/adora#172, #174).
+        if let std::task::Poll::Ready(Some(ref event)) = poll {
+            self.note_produced_event(event);
         }
         poll
     }
