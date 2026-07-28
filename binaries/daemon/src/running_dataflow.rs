@@ -397,6 +397,36 @@ impl RunningDataflow {
         Ok(())
     }
 
+    /// Drop `node_id` from every timer subscriber set, and for any interval it
+    /// was the *last* subscriber of, cancel that interval's timer task and
+    /// forget the now-empty entry.
+    ///
+    /// Without the cancellation, the per-interval task spawned by [`start`]
+    /// keeps ticking and dispatching `DoraEvent::Timer`s to an empty subscriber
+    /// set for the remaining life of the dataflow — a bounded but pointless
+    /// stream of wakeups after the last consumer of that interval is removed
+    /// via `RemoveNode` (#2585). Dropping the [`RemoteHandle`] stored in
+    /// `_timer_handles` cancels the spawned future. A later `AddNode` that
+    /// re-subscribes to the same interval re-spawns the task through `start`,
+    /// whose `_timer_handles.contains_key` guard makes that safe.
+    ///
+    /// [`start`]: RunningDataflow::start
+    /// [`RemoteHandle`]: futures::future::RemoteHandle
+    pub(crate) fn unsubscribe_node_from_timers(&mut self, node_id: &NodeId) {
+        let mut drained_intervals = Vec::new();
+        for (interval, receivers) in self.timers.iter_mut() {
+            receivers.retain(|(nid, _)| nid != node_id);
+            if receivers.is_empty() {
+                drained_intervals.push(*interval);
+            }
+        }
+        for interval in drained_intervals {
+            self.timers.remove(&interval);
+            // Dropping the RemoteHandle cancels the spawned timer task.
+            self._timer_handles.remove(&interval);
+        }
+    }
+
     pub(crate) async fn stop_all(
         &mut self,
         coordinator_sender: &mut Option<coordinator::CoordinatorSender>,
