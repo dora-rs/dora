@@ -39,6 +39,16 @@ fn create_custom_node(
     path: Option<PathBuf>,
     main: &str,
 ) -> Result<(), eyre::ErrReport> {
+    // Reject names that would turn into path separators or non-ASCII module
+    // directories, mirroring the validation in `create_dataflow`. Spaces are
+    // fine — they are normalized to `-`/`_` below.
+    if name.contains('/') {
+        bail!("node name must not contain `/` separators");
+    }
+    if !name.is_ascii() {
+        bail!("node name must be ASCII");
+    }
+
     // create directories
     let root = path.unwrap_or_else(|| PathBuf::from(name.replace(" ", "-")));
     let module_path = root.join(name.replace(" ", "_").replace("-", "_"));
