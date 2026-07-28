@@ -664,6 +664,47 @@ impl RunningDataflow {
         }
     }
 
+    /// Propagate a `NodeFailed` event to every downstream subscriber of the
+    /// failed node's outputs.
+    ///
+    /// Each successful enqueue is paired with `inc_pending`, mirroring every
+    /// other delivery site: the `Listener` unconditionally decrements a node's
+    /// `pending_messages` counter for every event it drains (`NodeFailed`
+    /// included), so an enqueue without the matching increment would leave the
+    /// reported count one too low — and underflow it to `u64::MAX` when the
+    /// receiver's channel was already empty (dora-rs/dora#2827).
+    pub(crate) fn propagate_node_failed(&self, failed_node: &NodeId, error_msg: &str, clock: &HLC) {
+        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
+        for (output_id, receivers) in &self.mappings {
+            if output_id.0 == *failed_node {
+                for (recv_id, input_id) in receivers {
+                    affected_by_receiver
+                        .entry(recv_id.clone())
+                        .or_default()
+                        .push(input_id.clone());
+                }
+            }
+        }
+        for (recv_id, affected_ids) in affected_by_receiver {
+            if let Some(channel) = self.subscribe_channels.get(&recv_id) {
+                let delivered = send_with_timestamp(
+                    channel,
+                    NodeEvent::NodeFailed {
+                        affected_input_ids: affected_ids,
+                        error: error_msg.to_string(),
+                        source_node_id: failed_node.clone(),
+                    },
+                    clock,
+                )
+                .ok()
+                    == Some(true);
+                if delivered {
+                    self.inc_pending(&recv_id);
+                }
+            }
+        }
+    }
+
     pub(crate) fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
@@ -897,6 +938,68 @@ mod tests {
 
         let outputs = node_output_ids(&mappings, &open_external_mappings, &node_id("source"));
         assert!(outputs.is_empty());
+    }
+
+    // ---- dora-rs/dora#2827: NodeFailed propagation must not underflow the
+    //      receiver's pending_messages counter ----
+
+    fn empty_descriptor() -> Descriptor {
+        use dora_message::{config::CommunicationConfig, descriptor::Debug as DescriptorDebug};
+        Descriptor {
+            nodes: vec![],
+            communication: CommunicationConfig::default(),
+            deploy: None,
+            debug: DescriptorDebug::default(),
+            health_check_interval: None,
+            strict_types: None,
+            type_rules: vec![],
+            env: None,
+        }
+    }
+
+    #[test]
+    fn propagate_node_failed_keeps_idle_receiver_counter_consistent() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let failed = node_id("source");
+        let receiver = node_id("sink");
+
+        // `source/out` is consumed by `sink/in`.
+        df.mappings.insert(
+            OutputId(failed.clone(), data_id("out")),
+            BTreeSet::from([(receiver.clone(), data_id("in"))]),
+        );
+
+        // The receiver is subscribed and idle: its pending counter starts at 0.
+        let (tx, mut rx) = mpsc::channel(16);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        let counter = Arc::new(AtomicU64::new(0));
+        df.pending_messages
+            .insert(receiver.clone(), counter.clone());
+
+        let clock = HLC::default();
+        df.propagate_node_failed(&failed, "boom", &clock);
+
+        // The successful enqueue must have incremented the counter to match the
+        // in-flight event.
+        assert_eq!(counter.load(atomic::Ordering::Relaxed), 1);
+
+        // Drain the event exactly as the Listener does: one unconditional
+        // decrement per drained event. With the matching increment in place the
+        // counter returns to 0; without it, this decrement would wrap to
+        // `u64::MAX`.
+        let mut drained = 0;
+        while let Ok(event) = rx.try_recv() {
+            counter.fetch_sub(1, atomic::Ordering::Relaxed);
+            assert!(matches!(event.inner, NodeEvent::NodeFailed { .. }));
+            drained += 1;
+        }
+        assert_eq!(drained, 1, "receiver should get exactly one NodeFailed");
+        assert_eq!(
+            counter.load(atomic::Ordering::Relaxed),
+            0,
+            "pending counter must stay consistent (no u64::MAX underflow)"
+        );
     }
 
     const TEST_GRACE: Duration = Duration::from_millis(100);

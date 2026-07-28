@@ -4961,32 +4961,7 @@ impl Daemon {
                     if let Err(e) = &node_result
                         && let Some(dataflow) = self.running.get(&dataflow_id)
                     {
-                        let error_msg = e.to_string();
-                        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> =
-                            BTreeMap::new();
-                        for (output_id, receivers) in &dataflow.mappings {
-                            if output_id.0 == node_id {
-                                for (recv_id, input_id) in receivers {
-                                    affected_by_receiver
-                                        .entry(recv_id.clone())
-                                        .or_default()
-                                        .push(input_id.clone());
-                                }
-                            }
-                        }
-                        for (recv_id, affected_ids) in affected_by_receiver {
-                            if let Some(channel) = dataflow.subscribe_channels.get(&recv_id) {
-                                let _ = send_with_timestamp(
-                                    channel,
-                                    NodeEvent::NodeFailed {
-                                        affected_input_ids: affected_ids,
-                                        error: error_msg.clone(),
-                                        source_node_id: node_id.clone(),
-                                    },
-                                    &self.clock,
-                                );
-                            }
-                        }
+                        dataflow.propagate_node_failed(&node_id, &e.to_string(), &self.clock);
                     }
 
                     let exit_clean = node_result.is_ok();
