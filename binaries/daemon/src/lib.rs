@@ -5422,10 +5422,15 @@ async fn send_output_to_local_receivers(
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
-    // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
-    let metadata = Arc::new(metadata.clone());
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
+    // Clone the metadata into an `Arc` lazily, on the first actual delivery.
+    // Fan-out clones are then O(1) atomic ref bumps instead of O(payload_size)
+    // memcpy. For a pure-remote output topology `local_receivers` is empty (all
+    // subscribers live on other daemons), so this deep clone (a `BTreeMap` of
+    // owned `Parameter`s) is skipped entirely rather than built and dropped on
+    // every such message.
+    let mut metadata_arc = None;
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             // Reserve headroom for control events (Stop, InputClosed, etc.)
@@ -5440,7 +5445,9 @@ async fn send_output_to_local_receivers(
             }
             let item = NodeEvent::Input {
                 id: input_id.clone(),
-                metadata: metadata.clone(),
+                metadata: metadata_arc
+                    .get_or_insert_with(|| Arc::new(metadata.clone()))
+                    .clone(),
                 data: data.clone(),
             };
             match channel.try_send(Timestamped {
