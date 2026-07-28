@@ -45,8 +45,12 @@ impl Executable for Remove {
             ControlRequestReply::NodeRemoved { node_id, .. } => {
                 println!("Node `{node_id}` removed from dataflow {dataflow_id}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to remove node: {err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("failed to remove node: {err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
         Ok(())
     }

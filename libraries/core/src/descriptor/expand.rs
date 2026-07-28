@@ -628,10 +628,12 @@ fn rewrite_module_input(
                         }))
                     }
                     None if optional_inputs.contains(&port_name) => Ok(None),
-                    None => bail!(
-                        "module input reference `_mod/{}` not found in module node inputs",
-                        port_name,
-                    ),
+                    None => {
+                        bail!(
+                            "module input reference `_mod/{}` not found in module node inputs",
+                            port_name,
+                        );
+                    }
                 }
             } else if inner_node_ids.contains(&source_str) {
                 // Internal cross-reference: prefix with module_id

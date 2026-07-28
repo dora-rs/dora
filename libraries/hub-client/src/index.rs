@@ -99,11 +99,15 @@ impl SourceSpec {
                 }
                 Ok((git, rev))
             }
-            (None, None) if !self.binary.is_empty() => eyre::bail!(
-                "this version is published as prebuilt binaries only, which this \
-                 dora version does not support yet"
-            ),
-            _ => eyre::bail!("index entry has an incomplete git source (needs `git` + `rev`)"),
+            (None, None) if !self.binary.is_empty() => {
+                eyre::bail!(
+                    "this version is published as prebuilt binaries only, which this \
+                     dora version does not support yet"
+                );
+            }
+            _ => {
+                eyre::bail!("index entry has an incomplete git source (needs `git` + `rev`)");
+            }
         }
     }
 
@@ -196,10 +200,12 @@ impl IndexCatalog {
     fn confine(&self, path: &Path) -> eyre::Result<()> {
         match path.canonicalize() {
             Ok(real) if real.starts_with(&self.canonical_root) => Ok(()),
-            Ok(_) => eyre::bail!(
-                "index path `{}` escapes the catalog root (symlink?)",
-                path.display()
-            ),
+            Ok(_) => {
+                eyre::bail!(
+                    "index path `{}` escapes the catalog root (symlink?)",
+                    path.display()
+                );
+            }
             Err(_) => Ok(()),
         }
     }
@@ -363,7 +369,7 @@ impl IndexCatalog {
             } else {
                 available.join(", ")
             }
-        )
+        );
     }
 
     /// All packages in the catalog as `(namespace, name)` pairs. Directory

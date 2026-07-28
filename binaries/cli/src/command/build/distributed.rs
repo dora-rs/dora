@@ -78,6 +78,8 @@ pub fn wait_until_dataflow_built(
             println!("dataflow build finished successfully");
             Ok(build_id)
         }
-        Err(err) => bail!("{err}"),
+        Err(err) => {
+            bail!("{err}");
+        }
     }
 }

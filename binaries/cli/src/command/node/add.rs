@@ -36,8 +36,12 @@ impl Executable for Add {
             ControlRequestReply::NodeAdded { node_id, .. } => {
                 println!("Node `{node_id}` added to dataflow {dataflow_id}");
             }
-            ControlRequestReply::Error(err) => bail!("failed to add node: {err}"),
-            other => bail!("unexpected reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("failed to add node: {err}");
+            }
+            other => {
+                bail!("unexpected reply: {other:?}");
+            }
         }
         Ok(())
     }

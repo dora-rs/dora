@@ -70,7 +70,9 @@ impl Executable for SelfSubCommand {
                                 );
                             }
                         }
-                        Err(e) => bail!("failed to check for updates: {e}"),
+                        Err(e) => {
+                            bail!("failed to check for updates: {e}");
+                        }
                     }
                 } else {
                     // Perform the actual update
@@ -83,7 +85,9 @@ impl Executable for SelfSubCommand {
                                 println!("Successfully updated Dora CLI to version: {version}");
                             }
                         },
-                        Err(e) => bail!("failed to update: {e}"),
+                        Err(e) => {
+                            bail!("failed to update: {e}");
+                        }
                     }
                 }
             }

@@ -89,7 +89,7 @@ WantedBy=multi-user.target
                 "install failed on {}/{} machine(s)",
                 failures.len(),
                 config.machines.len()
-            )
+            );
         }
     }
 }

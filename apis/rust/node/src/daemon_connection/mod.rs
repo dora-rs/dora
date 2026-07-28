@@ -53,7 +53,9 @@ impl DaemonChannel {
             DaemonReply::Result(result) => result
                 .map_err(|e| eyre!(e))
                 .wrap_err("failed to register node with dora-daemon")?,
-            other => bail!("unexpected register reply: {other:?}"),
+            other => {
+                bail!("unexpected register reply: {other:?}");
+            }
         }
         Ok(())
     }

@@ -627,9 +627,11 @@ fn select_distributed_working_dir(
             let canonical = canonicalize_working_dir(Some(override_), dataflow_path)?;
             Ok(Some(canonical))
         }
-        (Some(_), None) => eyre::bail!(
-            "`working_dir_override` can only be used for single-machine coordinator builds where CLI and daemon run on the same machine"
-        ),
+        (Some(_), None) => {
+            eyre::bail!(
+                "`working_dir_override` can only be used for single-machine coordinator builds where CLI and daemon run on the same machine"
+            );
+        }
         (None, inferred) => Ok(inferred),
     }
 }

@@ -39,8 +39,12 @@ impl DataflowSelector {
             serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
         match reply {
             ControlRequestReply::DataflowInfo { descriptor, .. } => Ok((dataflow_id, descriptor)),
-            ControlRequestReply::Error(err) => bail!("{err}"),
-            other => bail!("unexpected list dataflow reply: {other:?}"),
+            ControlRequestReply::Error(err) => {
+                bail!("{err}");
+            }
+            other => {
+                bail!("unexpected list dataflow reply: {other:?}");
+            }
         }
     }
 }
@@ -147,9 +151,11 @@ impl TopicSelector {
                     }
                 }
                 Ok(_) => {
-                    bail!("Reserved input mapping cannot be inspected")
+                    bail!("Reserved input mapping cannot be inspected");
                 }
-                Err(e) => bail!("Invalid output id `{s}`: {e}"),
+                Err(e) => {
+                    bail!("Invalid output id `{s}`: {e}");
+                }
             }
         }
 

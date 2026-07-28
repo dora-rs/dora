@@ -162,7 +162,7 @@ impl Executable for Up {
                 "cluster up incomplete: {} ssh failure(s), {} daemon(s) did not register",
                 ssh_failures.len(),
                 missing_daemons.len()
-            )
+            );
         }
     }
 }

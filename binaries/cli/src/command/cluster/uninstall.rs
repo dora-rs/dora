@@ -59,7 +59,7 @@ impl Executable for Uninstall {
                 "uninstall failed on {}/{} machine(s)",
                 failures.len(),
                 config.machines.len()
-            )
+            );
         }
     }
 }

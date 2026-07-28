@@ -832,7 +832,7 @@ fn decode_one_batch(
             bail!("IPC batch decoder made no progress on a partial/corrupt message");
         }
     }
-    bail!("IPC batch message yielded no record batch")
+    bail!("IPC batch message yielded no record batch");
 }
 
 #[cfg(test)]
