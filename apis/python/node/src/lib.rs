@@ -410,13 +410,11 @@ enum CapacityCheck {
 /// Resolution order: `trusted_sizes` (daemon metadata) → `cached_gpu_buf_size`
 /// (first-import baseline) → reject.
 ///
-/// When the resolved capacity is **zero**, the size bound is unknown (a pool
-/// registered with zero byte capacity is a degenerate case that should not
-/// occur in practice).  Rather than rejecting every read on such a pool or
-/// silently skipping validation, this function treats zero as "unbounded"
-/// (`capped == 0` never triggers `size > capped`).  The call site in
-/// `try_doradma_read` emits a warning when this path is taken so the
-/// degenerate state is observable.
+/// The daemon rejects zero-size pools at registration, so a resolved capacity
+/// of zero is unreachable in normal operation.  If it does occur (daemon bug
+/// or memory corruption), the `size > capped` check fails closed — any
+/// non-zero `size` triggers `ExceedsTrustedSize` rather than silently skipping
+/// validation.
 #[inline]
 fn check_capacity_gpu_pool(
     trusted_sizes: Option<u64>,
@@ -426,8 +424,7 @@ fn check_capacity_gpu_pool(
     let cap = trusted_sizes.or(cached_gpu_buf_size);
     match cap {
         None => CapacityCheck::NoTrustedEntry,
-        // `capped == 0` → capacity unknown; allow through (see doc).
-        Some(capped) if capped > 0 && size > capped => CapacityCheck::ExceedsTrustedSize,
+        Some(capped) if size > capped => CapacityCheck::ExceedsTrustedSize,
         Some(_) => CapacityCheck::Ok,
     }
 }
@@ -630,21 +627,25 @@ mod transport_tests {
     }
 
     #[test]
-    fn capacity_zero_trusted_cap_allows_any_size() {
-        // A registered capacity of 0 means the bound is unknown; the
-        // check must not reject reads (0 > size is always false).
+    fn capacity_zero_trusted_cap_allows_zero_size_only() {
+        // The daemon rejects zero-size pools at registration, so
+        // a trusted capacity of 0 is unreachable in normal operation.
+        // If it does occur, fail closed: any non-zero size must be
+        // rejected rather than silently skipping validation.
+        assert_eq!(check_capacity_gpu_pool(Some(0), None, 0), CapacityCheck::Ok);
         assert_eq!(
             check_capacity_gpu_pool(Some(0), None, 1024 * 1024),
-            CapacityCheck::Ok
+            CapacityCheck::ExceedsTrustedSize
         );
     }
 
     #[test]
-    fn capacity_zero_cached_buf_size() {
-        // gpu_buf_size was never set (edge case) — treated as no cap
+    fn capacity_zero_cached_buf_size_fails_closed() {
+        // Same reasoning as above: a cached baseline of 0 is
+        // unreachable; fail closed on any non-zero read.
         assert_eq!(
             check_capacity_gpu_pool(None, Some(0), 1024),
-            CapacityCheck::Ok
+            CapacityCheck::ExceedsTrustedSize
         );
     }
 }
