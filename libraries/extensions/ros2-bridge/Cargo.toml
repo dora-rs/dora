@@ -12,8 +12,9 @@ links = "dora-ros2-bridge"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["generate-messages"]
+default = ["generate-messages", "pre-iron-gid"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
+pre-iron-gid = ["ros2-client/pre-iron-gid"]
 ros2-examples = []
 rmw-zenoh = ["dep:zenoh", "dep:zenoh-ext"]
 
