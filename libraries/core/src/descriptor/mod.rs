@@ -275,23 +275,28 @@ impl DescriptorExt for Descriptor {
 }
 
 /// Merge dataflow-level `env` into a node's `env`, with per-node keys winning
-/// on conflict. Returns `None` when both inputs are empty so the resolved
-/// node serializes cleanly when no env vars are set anywhere.
+/// on conflict. Returns `None` when the merged result is empty so the resolved
+/// node serializes cleanly (no empty `env: {}` map) whenever no env vars are
+/// effectively set — regardless of whether the emptiness comes from the global
+/// map, the node map, or both (e.g. a node that declares `env: {}` with no
+/// dataflow-level env).
 fn merge_env(
     global: Option<&BTreeMap<String, EnvValue>>,
     node: Option<BTreeMap<String, EnvValue>>,
 ) -> Option<BTreeMap<String, EnvValue>> {
-    match (global, node) {
-        (None, node) => node,
-        (Some(global), None) if global.is_empty() => None,
-        (Some(global), None) => Some(global.clone()),
+    let merged = match (global, node) {
+        (None, None) => return None,
+        (None, Some(node)) => node,
+        (Some(global), None) => global.clone(),
         (Some(global), Some(node)) => {
             let mut merged = global.clone();
             // Per-node entries override global ones on key conflict.
             merged.extend(node);
-            Some(merged)
+            merged
         }
-    }
+    };
+    // Normalize an empty result to `None` regardless of which side was empty.
+    (!merged.is_empty()).then_some(merged)
 }
 
 pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
@@ -608,6 +613,21 @@ mod tests {
         let global = env(&[("A", "1")]);
         let merged = merge_env(Some(&global), None).unwrap();
         assert_eq!(merged, global);
+    }
+
+    #[test]
+    fn merge_env_normalizes_empty_node_map_to_none() {
+        // A node that declares `env: {}` with no dataflow-level env must
+        // resolve to `None`, not `Some({})`, matching the documented contract
+        // (and the `(Some(empty), None)` arm) so the resolved node serializes
+        // without an empty `env:` map.
+        assert!(merge_env(None, Some(env(&[]))).is_none());
+    }
+
+    #[test]
+    fn merge_env_normalizes_empty_global_and_node_maps_to_none() {
+        assert!(merge_env(Some(&env(&[])), Some(env(&[]))).is_none());
+        assert!(merge_env(Some(&env(&[])), None).is_none());
     }
 
     #[test]
