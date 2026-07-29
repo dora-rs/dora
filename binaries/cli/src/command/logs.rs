@@ -300,28 +300,67 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         print_log_message(msg, &config);
     }
 
-    // Track file byte offsets (start after existing content)
-    let mut file_positions: HashMap<PathBuf, u64> = HashMap::new();
+    // Track per-file follow state (offset already consumed + a head fingerprint
+    // to recognise the same file across a rotation rename). Start after the
+    // existing content printed above.
+    let mut follow_state: HashMap<PathBuf, FollowedFile> = HashMap::new();
     for path in &files {
-        let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-        file_positions.insert(path.clone(), len);
+        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        follow_state.insert(
+            path.clone(),
+            FollowedFile {
+                offset: size,
+                head: read_log_head(path),
+            },
+        );
     }
 
     // Follow loop: poll for new content
     loop {
         std::thread::sleep(std::time::Duration::from_millis(200));
 
+        // Re-glob every poll so files that appear after the follow started —
+        // in particular a freshly rotated `log_<node>.1.jsonl` — are picked up.
+        // A transient read error just skips this poll and keeps the state.
+        let files = match &args.node {
+            Some(node) => find_node_log_files(&dataflow_dir, node),
+            None => find_log_files(&dataflow_dir),
+        };
+        let files = match files {
+            Ok(files) => files,
+            Err(_) => continue,
+        };
+
+        let snapshot: Vec<LogFileSnapshot> = files
+            .iter()
+            .map(|path| {
+                let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+                LogFileSnapshot {
+                    path: path.clone(),
+                    size,
+                    head: read_log_head(path),
+                }
+            })
+            .collect();
+
         let mut new_messages = Vec::new();
-        for path in &files {
-            let pos = file_positions.get(path).copied().unwrap_or(0);
-            let current_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            let Some(start) = follow_read_offset(pos, current_size) else {
-                continue;
+        let mut next_state: HashMap<PathBuf, FollowedFile> = HashMap::new();
+        for plan in plan_follow_reads(&follow_state, &snapshot) {
+            let (msgs, new_pos) = if plan.size > plan.resume {
+                read_appended_log_lines(&plan.path, plan.resume)?
+            } else {
+                (Vec::new(), plan.resume)
             };
-            let (msgs, new_pos) = read_appended_log_lines(path, start)?;
             new_messages.extend(msgs);
-            file_positions.insert(path.clone(), new_pos);
+            next_state.insert(
+                plan.path,
+                FollowedFile {
+                    offset: new_pos,
+                    head: plan.head,
+                },
+            );
         }
+        follow_state = next_state;
 
         new_messages.sort_by_key(|a| a.timestamp);
         for msg in new_messages {
@@ -332,23 +371,120 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
     }
 }
 
-/// Decide where to resume reading a followed log file given the last-read
-/// offset `pos` and the file's `current_size`, returning `None` when there is
-/// nothing new to read.
-///
-/// A file whose size shrank below `pos` was rotated or truncated behind its
-/// path (the daemon renames `log_<node>.jsonl` to `log_<node>.1.jsonl` and
-/// re-creates a fresh file at offset 0 when `max_log_size` is configured — see
-/// `binaries/daemon/src/log.rs`). Seeking to the stale `pos` in the fresh file
-/// would silently drop its leading bytes and garble the remainder once it grows
-/// past `pos`, so we resume from offset 0 instead.
-fn follow_read_offset(pos: u64, current_size: u64) -> Option<u64> {
-    let start = if current_size < pos { 0 } else { pos };
-    if current_size <= start {
-        None
-    } else {
-        Some(start)
+/// Number of leading bytes of a log file used as a rename/replacement
+/// fingerprint (see [`plan_follow_reads`]). Large enough to span the first
+/// JSONL line — whose timestamp makes it distinct per file — but small enough
+/// to read cheaply on every poll.
+const LOG_HEAD_FINGERPRINT_LEN: usize = 256;
+
+/// Per-file follow state: the byte offset already consumed and a fingerprint of
+/// the file's leading bytes used to recognise the same file across a rotation
+/// rename.
+#[derive(Clone, Debug, PartialEq)]
+struct FollowedFile {
+    offset: u64,
+    head: Vec<u8>,
+}
+
+/// A poll-time observation of a log file.
+struct LogFileSnapshot {
+    path: PathBuf,
+    size: u64,
+    head: Vec<u8>,
+}
+
+/// A per-file decision produced by [`plan_follow_reads`].
+struct FollowPlan {
+    path: PathBuf,
+    /// Byte offset to resume reading from.
+    resume: u64,
+    size: u64,
+    head: Vec<u8>,
+}
+
+/// Read up to [`LOG_HEAD_FINGERPRINT_LEN`] leading bytes of `path`, used as a
+/// content fingerprint. Returns an empty vec on any error (treated as "could
+/// not fingerprint", which never matches another file).
+fn read_log_head(path: &Path) -> Vec<u8> {
+    let mut buf = vec![0u8; LOG_HEAD_FINGERPRINT_LEN];
+    match std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)) {
+        Ok(n) => {
+            buf.truncate(n);
+            buf
+        }
+        Err(_) => Vec::new(),
     }
+}
+
+/// Whether two head fingerprints identify the same underlying file. A followed
+/// file only ever grows, extending its head, so a shorter recorded head that is
+/// a prefix of the current one is the same file; a rotated-in fresh file starts
+/// with a different first line. Two empty heads never match — a fingerprint we
+/// could not read must not be mistaken for another unreadable file.
+fn same_log_file(a: &[u8], b: &[u8]) -> bool {
+    let n = a.len().min(b.len());
+    n > 0 && a[..n] == b[..n]
+}
+
+/// Decide, for each file in `snapshot`, the byte offset to resume reading from,
+/// given the previous poll's `prev` state.
+///
+/// The daemon rotates logs by *renaming* (`log_<node>.jsonl` ->
+/// `log_<node>.1.jsonl`, shifting older ones up) and creating a fresh current
+/// file — see `binaries/daemon/src/log.rs`. Two failure modes this avoids:
+///
+/// 1. A fresh file that grew past the stale offset within a single poll: a
+///    size-only check would seek into it mid-line and garble the output. The
+///    head fingerprint differs, so it is recognised as a new file and read
+///    from 0.
+/// 2. The rotated file's unread tail (bytes appended to the current file
+///    between the last poll and the rename) being dropped: the carried offset
+///    follows the content to its new path — matched by fingerprint — so the
+///    tail is drained exactly once before the fresh file is read from 0.
+fn plan_follow_reads(
+    prev: &HashMap<PathBuf, FollowedFile>,
+    snapshot: &[LogFileSnapshot],
+) -> Vec<FollowPlan> {
+    snapshot
+        .iter()
+        .map(|snap| {
+            let (resume, head) = match prev.get(&snap.path) {
+                // Couldn't re-fingerprint (transient read error): assume the
+                // same file and keep the recorded head so a later poll can
+                // still match it — never re-read from 0 and duplicate.
+                Some(state) if snap.head.is_empty() => {
+                    (state.offset.min(snap.size), state.head.clone())
+                }
+                // Same file still at this path: resume where we left off, unless
+                // it was truncated in place (size shrank below the offset).
+                Some(state) if same_log_file(&state.head, &snap.head) => {
+                    (state.offset.min(snap.size), snap.head.clone())
+                }
+                // A new path, or the content at this path changed (rotation).
+                // Follow the content by fingerprint from wherever it last was to
+                // drain its unread tail; otherwise it is genuinely new — read
+                // from the start.
+                _ => {
+                    let carried = if snap.head.is_empty() {
+                        None
+                    } else {
+                        prev.iter()
+                            .find(|(path, state)| {
+                                *path != &snap.path && same_log_file(&state.head, &snap.head)
+                            })
+                            .map(|(_, state)| state.offset.min(snap.size))
+                    };
+                    (carried.unwrap_or(0), snap.head.clone())
+                }
+            };
+            FollowPlan {
+                path: snap.path.clone(),
+                resume,
+                size: snap.size,
+                head,
+            }
+        })
+        .collect()
 }
 
 /// Read log lines appended to `path` after byte offset `pos`, returning the
@@ -1099,31 +1235,118 @@ mod tests {
         assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
     }
 
-    // --- follow_read_offset (rotation / truncation handling) ---
+    // --- follow-mode rotation planning (plan_follow_reads / same_log_file) ---
 
-    #[test]
-    fn follow_read_offset_reads_appended_bytes() {
-        // File grew past the tracked offset: resume from `pos`.
-        assert_eq!(follow_read_offset(10, 25), Some(10));
+    fn followed(offset: u64, head: &[u8]) -> FollowedFile {
+        FollowedFile {
+            offset,
+            head: head.to_vec(),
+        }
+    }
+
+    fn snap(path: &str, size: u64, head: &[u8]) -> LogFileSnapshot {
+        LogFileSnapshot {
+            path: PathBuf::from(path),
+            size,
+            head: head.to_vec(),
+        }
+    }
+
+    fn resume_for<'a>(plans: &'a [FollowPlan], path: &str) -> &'a FollowPlan {
+        plans
+            .iter()
+            .find(|p| p.path == PathBuf::from(path))
+            .expect("plan for path")
     }
 
     #[test]
-    fn follow_read_offset_skips_when_unchanged() {
-        // No new bytes: nothing to read.
-        assert_eq!(follow_read_offset(25, 25), None);
+    fn same_log_file_matches_growing_prefix_only() {
+        // A followed file only ever grows, extending its head — a recorded head
+        // that is a prefix of the current one is the same file.
+        assert!(same_log_file(b"line1\n", b"line1\nline2\n"));
+        assert!(same_log_file(b"line1\nline2\n", b"line1\n"));
+        // A rotated-in fresh file starts with a different first line.
+        assert!(!same_log_file(b"old-first\n", b"new-first\n"));
+        // Two unreadable (empty) fingerprints must never be treated as equal.
+        assert!(!same_log_file(b"", b""));
     }
 
     #[test]
-    fn follow_read_offset_resets_after_rotation() {
-        // File shrank (rotated behind the path to a fresh 0-based file): the
-        // stale offset would drop leading bytes, so resume from 0.
-        assert_eq!(follow_read_offset(500, 30), Some(0));
+    fn plan_resumes_from_offset_on_plain_append() {
+        let mut prev = HashMap::new();
+        prev.insert(PathBuf::from("log_n.jsonl"), followed(10, b"AAAA"));
+        let plans = plan_follow_reads(&prev, &[snap("log_n.jsonl", 25, b"AAAAmore")]);
+        assert_eq!(resume_for(&plans, "log_n.jsonl").resume, 10);
     }
 
     #[test]
-    fn follow_read_offset_skips_empty_after_rotation() {
-        // Rotated but the fresh file has no content yet: skip this poll.
-        assert_eq!(follow_read_offset(500, 0), None);
+    fn plan_reads_brand_new_file_from_start() {
+        let prev = HashMap::new();
+        let plans = plan_follow_reads(&prev, &[snap("log_n.jsonl", 5, b"X")]);
+        assert_eq!(resume_for(&plans, "log_n.jsonl").resume, 0);
+    }
+
+    #[test]
+    fn plan_rotation_drains_tail_and_reads_fresh_file_from_zero() {
+        // Before: current file at offset 100 (head OLD). After rotation the old
+        // content is at `.1.jsonl` (grown to 150 as the final flush landed) and
+        // a fresh current file (head NEW) exists.
+        let mut prev = HashMap::new();
+        prev.insert(PathBuf::from("log_n.jsonl"), followed(100, b"OLDHEAD"));
+        let plans = plan_follow_reads(
+            &prev,
+            &[
+                snap("log_n.1.jsonl", 150, b"OLDHEAD"),
+                snap("log_n.jsonl", 40, b"NEWHEAD"),
+            ],
+        );
+        // The rotated file's unread tail [100..150) is drained exactly once.
+        assert_eq!(resume_for(&plans, "log_n.1.jsonl").resume, 100);
+        // The fresh file is read from the start, not the stale offset.
+        assert_eq!(resume_for(&plans, "log_n.jsonl").resume, 0);
+    }
+
+    #[test]
+    fn plan_fresh_file_grown_past_offset_is_not_garbled() {
+        // Residual gap #1: the fresh current file grew past the stale offset
+        // (200 > 100) within one poll. A size-only check would seek to 100 and
+        // start mid-line; the differing fingerprint makes it a new file at 0.
+        let mut prev = HashMap::new();
+        prev.insert(PathBuf::from("log_n.jsonl"), followed(100, b"OLDHEAD"));
+        let plans = plan_follow_reads(
+            &prev,
+            &[
+                snap("log_n.1.jsonl", 150, b"OLDHEAD"),
+                snap("log_n.jsonl", 200, b"NEWHEAD"),
+            ],
+        );
+        assert_eq!(resume_for(&plans, "log_n.jsonl").resume, 0);
+        assert_eq!(resume_for(&plans, "log_n.1.jsonl").resume, 100);
+    }
+
+    #[test]
+    fn plan_unreadable_head_keeps_offset_instead_of_rereading() {
+        // A transient failure to fingerprint (empty head) must not reset a
+        // tracked file to 0 — that would re-read and duplicate its whole body.
+        let mut prev = HashMap::new();
+        prev.insert(PathBuf::from("log_n.jsonl"), followed(80, b"OLDHEAD"));
+        let plans = plan_follow_reads(&prev, &[snap("log_n.jsonl", 80, b"")]);
+        let plan = resume_for(&plans, "log_n.jsonl");
+        assert_eq!(plan.resume, 80);
+        // The recorded head is retained so the next poll can still match it.
+        assert_eq!(plan.head, b"OLDHEAD");
+    }
+
+    #[test]
+    fn plan_already_read_rotated_file_is_not_reread_on_shift() {
+        // A `.1.jsonl` we had fully read (offset == len) shifts to `.2.jsonl`.
+        // The carried offset follows it, so nothing is re-read.
+        let mut prev = HashMap::new();
+        prev.insert(PathBuf::from("log_n.1.jsonl"), followed(150, b"OLDHEAD"));
+        let plans = plan_follow_reads(&prev, &[snap("log_n.2.jsonl", 150, b"OLDHEAD")]);
+        let plan = resume_for(&plans, "log_n.2.jsonl");
+        assert_eq!(plan.resume, 150);
+        assert_eq!(plan.size, 150); // resume == size ⇒ nothing to read
     }
 
     // --- read_appended_log_lines (follow-mode offset tracking) ---
