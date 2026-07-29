@@ -3924,28 +3924,39 @@ impl Daemon {
                     dataflow_id: dataflow_id.to_string(),
                     id: shared_memory_id.clone(),
                 };
-                let result: Result<(), String> = match self
-                    .memory_pool
-                    .free_memory_pool(&id, node_id.as_ref())
-                {
-                    Ok((_meta, touched)) => {
-                        // Send targeted cleanup to every node that
-                        // registered or read this pool — a single
-                        // free_memory_pool call by any node releases
-                        // per-process resources in all relevant nodes.
-                        if let Some(dataflow) = self.running.get(&dataflow_id) {
-                            let event = NodeEvent::FreeMemoryPool { shared_memory_id };
-                            for (node, channel) in &dataflow.subscribe_channels {
-                                if touched.contains(node.as_ref()) {
-                                    let _ =
-                                        send_with_timestamp(channel, event.clone(), &self.clock);
+                let result: Result<(), String> =
+                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
+                        Ok((_meta, touched)) => {
+                            // Send targeted cleanup to every node that
+                            // registered or read this pool — a single
+                            // free_memory_pool call by any node releases
+                            // per-process resources in all relevant nodes.
+                            // The initiator already released synchronously;
+                            // exclude it to avoid redundant work.
+                            if let Some(dataflow) = self.running.get(&dataflow_id) {
+                                let event = NodeEvent::FreeMemoryPool {
+                                    shared_memory_id: shared_memory_id.clone(),
+                                };
+                                for (node, channel) in &dataflow.subscribe_channels {
+                                    if touched.contains(node.as_ref())
+                                        && node.as_ref() != node_id.as_ref()
+                                    {
+                                        if let Err(e) =
+                                            send_with_timestamp(channel, event.clone(), &self.clock)
+                                        {
+                                            tracing::warn!(
+                                                node_id = %node,
+                                                pool = %shared_memory_id,
+                                                "failed to deliver FreeMemoryPool: {e}"
+                                            );
+                                        }
+                                    }
                                 }
                             }
+                            Ok(())
                         }
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                };
+                        Err(e) => Err(e),
+                    };
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
