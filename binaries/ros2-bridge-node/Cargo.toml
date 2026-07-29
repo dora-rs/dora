@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 dora-node-api = { workspace = true }
-dora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false, features = ["rmw-zenoh"] }
+dora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false, features = ["pre-iron-gid", "rmw-zenoh"] }
 dora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
 dora-ros2-bridge-msg-gen = { workspace = true }
 dora-message = { workspace = true }

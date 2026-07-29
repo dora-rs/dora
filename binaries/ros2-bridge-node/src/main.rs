@@ -1128,7 +1128,7 @@ fn run_service_mode(
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
 
-    let service_qos = config.qos.to_rustdds_qos();
+    let service_qos = service_or_action_qos(&config.qos);
 
     match role {
         Ros2Role::Client => {
@@ -1354,7 +1354,7 @@ fn run_action_mode(
     let feedback_type_info = make_type_info("Feedback");
 
     let (mut ros_node, _pool) = create_ros_node(&config)?;
-    let qos = config.qos.to_rustdds_qos();
+    let qos = service_or_action_qos(&config.qos);
     let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
         .map_err(|e| eyre!("failed to create action name: {e}"))?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
@@ -1369,7 +1369,7 @@ fn run_action_mode(
                 status_subscription: qos,
             };
 
-            let client = ros_node
+            let mut client = ros_node
                 .create_action_client::<BridgeActionType>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
@@ -1378,11 +1378,8 @@ fn run_action_mode(
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
 
-            // NOTE: ros2_client does not provide a wait_for_action_server API.
-            // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
-            // action server is not yet available. Start the action server
-            // before this dataflow for reliable operation.
-            tracing::info!("action client created, waiting for goals from Dora inputs");
+            wait_for_action_goal_service(&mut client, &ros_node, action_name)?;
+            tracing::info!("action goal service is ready, waiting for goals from Dora inputs");
 
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
@@ -1987,8 +1984,10 @@ struct SubscriptionStream {
 fn create_ros_node(
     config: &Ros2BridgeConfig,
 ) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let ros_context =
-        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+        ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
+            .map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
         .node_name
         .clone()
@@ -2014,6 +2013,32 @@ fn create_ros_node(
     .context("failed to spawn ros2 spinner")?;
 
     Ok((ros_node, pool))
+}
+
+fn parse_ros_domain_id(value: Option<&str>) -> u16 {
+    value
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(0)
+}
+
+fn default_service_qos_config() -> Ros2QosConfig {
+    Ros2QosConfig {
+        reliable: true,
+        durability: None,
+        liveliness: None,
+        lease_duration: None,
+        max_blocking_time: None,
+        keep_last: Some(10),
+        keep_all: false,
+    }
+}
+
+fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    if config.is_default_topic_qos() {
+        default_service_qos_config().to_rustdds_qos()
+    } else {
+        config.to_rustdds_qos()
+    }
 }
 
 /// Wait for a ROS2 service to become available.
@@ -2042,6 +2067,38 @@ fn wait_for_service(
         eyre::bail!("service not available after 10 retries");
     };
     futures::executor::block_on(service_ready)
+}
+
+fn wait_for_action_goal_service(
+    client: &mut ros2_client::action::ActionClient<BridgeActionType>,
+    ros_node: &ros2_client::Node,
+    action_name: &str,
+) -> eyre::Result<()> {
+    let service_ready = async {
+        for _ in 0..10 {
+            let ready = client.goal_client().wait_for_service(ros_node);
+            futures::pin_mut!(ready);
+            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+            match futures::future::select(ready, timeout).await {
+                futures::future::Either::Left(((), _)) => {
+                    tracing::info!(action = action_name, "action goal service is ready");
+                    return Ok(());
+                }
+                futures::future::Either::Right(_) => {
+                    tracing::info!(
+                        action = action_name,
+                        "timeout waiting for action goal service, retrying"
+                    );
+                }
+            }
+        }
+        eyre::bail!("{}", action_goal_service_unavailable_message(action_name));
+    };
+    futures::executor::block_on(service_ready)
+}
+
+fn action_goal_service_unavailable_message(action_name: &str) -> String {
+    format!("action goal service `{action_name}/_action/send_goal` not available after 10 retries")
 }
 
 fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>>> {
@@ -2163,9 +2220,29 @@ impl ToNeutralQos for Ros2QosConfig {
     }
 }
 
+trait IsDefaultTopicQos {
+    fn is_default_topic_qos(&self) -> bool;
+}
+
+impl IsDefaultTopicQos for Ros2QosConfig {
+    fn is_default_topic_qos(&self) -> bool {
+        !self.reliable
+            && self.durability.is_none()
+            && self.liveliness.is_none()
+            && self.lease_duration.is_none()
+            && self.max_blocking_time.is_none()
+            && self.keep_last.is_none()
+            && !self.keep_all
+    }
+}
+
 #[cfg(test)]
 mod peer_failure_tests {
-    use super::peer_value_or_warn;
+    use super::{
+        IsDefaultTopicQos, action_goal_service_unavailable_message, default_service_qos_config,
+        parse_ros_domain_id, peer_value_or_warn,
+    };
+    use dora_message::descriptor::Ros2QosConfig;
 
     #[test]
     fn malformed_peer_value_is_dropped_without_poisoning_the_next_value() {
@@ -2173,5 +2250,40 @@ mod peer_failure_tests {
         assert!(peer_value_or_warn(malformed, "test").is_none());
         let valid: eyre::Result<u32> = Ok(42);
         assert_eq!(peer_value_or_warn(valid, "test"), Some(42));
+    }
+
+    #[test]
+    fn ros_domain_id_parser_uses_env_value_and_defaults_to_zero() {
+        assert_eq!(parse_ros_domain_id(Some("23")), 23);
+        assert_eq!(parse_ros_domain_id(Some("0")), 0);
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+        assert_eq!(parse_ros_domain_id(None), 0);
+    }
+
+    #[test]
+    fn service_default_qos_is_reliable_without_changing_topic_default_detection() {
+        let topic_default = Ros2QosConfig::default();
+        assert!(topic_default.is_default_topic_qos());
+
+        let service_default = default_service_qos_config();
+        assert!(service_default.reliable);
+        assert_eq!(service_default.keep_last, Some(10));
+        assert!(service_default.durability.is_none());
+        assert!(!service_default.is_default_topic_qos());
+
+        let explicit_best_effort = Ros2QosConfig {
+            keep_last: Some(1),
+            ..Ros2QosConfig::default()
+        };
+        assert!(!explicit_best_effort.is_default_topic_qos());
+    }
+
+    #[test]
+    fn action_goal_service_unavailable_message_names_action_and_discovery_endpoint() {
+        let message = action_goal_service_unavailable_message("/fibonacci");
+
+        assert!(message.contains("/fibonacci"));
+        assert!(message.contains("send_goal"));
+        assert!(message.contains("10 retries"));
     }
 }

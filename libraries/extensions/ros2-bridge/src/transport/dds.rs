@@ -134,6 +134,14 @@ pub fn to_rustdds_qos(qos: &Ros2Qos) -> rustdds::QosPolicies {
         .build()
 }
 
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn default_ros2_bridge_build_uses_humble_compatible_gid_length() {
+        assert!(cfg!(feature = "pre-iron-gid"));
+    }
+}
+
 /// Convert the bridge-supported subset of RustDDS policies to neutral policies.
 pub fn from_rustdds_qos(qos: &rustdds::QosPolicies) -> Ros2Qos {
     use rustdds::policy;
