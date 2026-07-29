@@ -1,0 +1,2 @@
+0/chatter/std_msgs::msg::dds_::String_/TypeHashNotSupported
+42/robot/_hidden/chatter/std_msgs::msg::dds_::String_/TypeHashNotSupported

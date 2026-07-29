@@ -18,6 +18,19 @@ use std::{
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
+/// Parse `--worker-threads`, rejecting 0.
+///
+/// `tokio::runtime::Builder::worker_threads` asserts `val > 0` and would
+/// otherwise abort the daemon with a raw panic ("Worker threads cannot be set
+/// to 0"). Validating here turns that into a normal clap usage error.
+fn parse_worker_threads(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("worker threads must be at least 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Debug, clap::Args)]
 /// Run daemon
 pub struct Daemon {
@@ -49,6 +62,26 @@ pub struct Daemon {
     /// the `zenoh_peer` field in cluster.yml.
     #[clap(long, value_name = "ENDPOINT")]
     zenoh_peer: Option<String>,
+    /// Open zenoh sessions without multicast scouting, for this daemon and the
+    /// nodes it spawns.
+    ///
+    /// Discovery then relies entirely on explicit endpoints — which is already
+    /// how the daemon reaches its nodes (it injects `DORA_ZENOH_CONNECT` into
+    /// each one) and, with `--zenoh-peer`, how daemons reach each other. Use it
+    /// where the scouting socket itself is the problem: a busy DDS/ROS2
+    /// multicast graph can keep zenoh from binding its scouting group, which
+    /// fails session startup outright.
+    ///
+    /// Not for multi-daemon setups without `--zenoh-peer`: those discover each
+    /// other *by* multicast, and this would leave them unable to.
+    ///
+    /// Dynamic nodes need care too. They are started outside the daemon, so
+    /// they inherit neither its environment nor a `DORA_ZENOH_CONNECT`, and
+    /// scouting is symmetric — a dynamic node still scouting finds nothing once
+    /// the daemon has stopped answering. Export `DORA_ZENOH_CONNECT` (the
+    /// daemon's listen endpoint) for them yourself when using this flag.
+    #[clap(long)]
+    zenoh_no_multicast: bool,
     /// IP address this daemon's Zenoh listener binds (e.g. `--zenoh-listen
     /// 100.64.0.3`).
     ///
@@ -72,7 +105,7 @@ pub struct Daemon {
     #[clap(long)]
     allow_shell_nodes: bool,
     /// Number of tokio worker threads (default: number of CPU cores).
-    #[clap(long)]
+    #[clap(long, value_parser = parse_worker_threads)]
     worker_threads: Option<usize>,
     /// Enable real-time profile: mlockall + SCHED_FIFO priority.
     /// Requires CAP_SYS_NICE + CAP_IPC_LOCK capabilities.
@@ -252,7 +285,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen).await
+                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen, self.zenoh_no_multicast).await
                     }
                 }
             })

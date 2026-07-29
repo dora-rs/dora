@@ -125,7 +125,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|kani-proofs)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
       return 0
       ;;
     *)
@@ -158,6 +158,8 @@ Supported jobs:
   msrv
   cross-check
   ros2-bridge
+  ros2-zenoh-humble
+  ros2-zenoh-kilted
   kani-proofs
 EOF
 }
@@ -2046,6 +2048,14 @@ job_ros2_bridge() {
   deactivate
 }
 
+job_ros2_zenoh_humble() {
+  timeout 3600s scripts/ros2-zenoh-interop.sh humble all
+}
+
+job_ros2_zenoh_kilted() {
+  timeout 3600s scripts/ros2-zenoh-interop.sh kilted all
+}
+
 # -----------------------------------------------------------------------------
 # Dispatch
 # -----------------------------------------------------------------------------
@@ -2066,6 +2076,8 @@ run_job "bench-example"             job_bench_example
 run_job "msrv"                      job_msrv
 run_job "cross-check"               job_cross_check
 run_job "ros2-bridge"               job_ros2_bridge
+run_job "ros2-zenoh-humble"        job_ros2_zenoh_humble
+run_job "ros2-zenoh-kilted"        job_ros2_zenoh_kilted
 run_job "kani-proofs"               job_kani_proofs
 
 echo

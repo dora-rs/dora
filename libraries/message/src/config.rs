@@ -100,12 +100,26 @@ pub struct NodeRunConfig {
     pub shared_memory_pool_size: Option<ByteSize>,
 }
 
+/// A single input subscription of a node, as declared under `inputs:` in a
+/// dataflow descriptor.
+///
+/// In YAML an input is written either as a bare mapping string
+/// (`source_node/output`) or as a mapping plus per-input options; both forms
+/// deserialize into this struct (see [`InputDef`]).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(from = "InputDef", into = "InputDef")]
 pub struct Input {
+    /// What this input subscribes to (another node's output, a timer, or the
+    /// dataflow log stream).
     pub mapping: InputMapping,
+    /// Maximum number of buffered messages for this input. `None` uses
+    /// [`DEFAULT_QUEUE_SIZE`].
     pub queue_size: Option<usize>,
+    /// Deadline, in seconds, after which the input is considered stalled if no
+    /// message arrives. `None` disables the deadline.
     pub input_timeout: Option<f64>,
+    /// Policy applied when `queue_size` is exceeded. `None` uses the default
+    /// [`QueuePolicy`].
     pub queue_policy: Option<QueuePolicy>,
 }
 
@@ -202,15 +216,39 @@ impl From<InputDef> for Input {
     }
 }
 
+/// The source an [`Input`] subscribes to.
+///
+/// The wire form is a `/`-separated string; [`FromStr`] parses it and
+/// [`fmt::Display`] renders it back, so the two round-trip:
+///
+/// ```
+/// use dora_message::config::InputMapping;
+///
+/// let mapping: InputMapping = "camera/image".parse().unwrap();
+/// assert!(matches!(mapping, InputMapping::User(_)));
+/// assert_eq!(mapping.to_string(), "camera/image");
+///
+/// // Built-in timer source.
+/// let timer: InputMapping = "dora/timer/millis/100".parse().unwrap();
+/// assert_eq!(timer.to_string(), "dora/timer/millis/100");
+///
+/// // A mapping without a `/` separator is rejected.
+/// assert!("no-slash".parse::<InputMapping>().is_err());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub enum InputMapping {
+    /// A built-in timer that fires at a fixed `interval`.
+    ///
+    /// Syntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.
     Timer {
+        /// How often the timer fires.
         interval: Duration,
     },
     /// Subscribe to log messages from all (or filtered) nodes in the dataflow.
     ///
     /// Syntax: `dora/logs`, `dora/logs/{level}`, `dora/logs/{level}/{node_id}`
     Logs(LogSubscriptionFilter),
+    /// Subscribe to another node's output — the common case.
     User(UserInputMapping),
 }
 
@@ -442,9 +480,12 @@ impl<'de> Deserialize<'de> for InputMapping {
     }
 }
 
+/// A subscription to another node's output, written as `source/output` in YAML.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct UserInputMapping {
+    /// The id of the node that produces the output.
     pub source: NodeId,
+    /// The id of that node's output to subscribe to.
     pub output: DataId,
 }
 

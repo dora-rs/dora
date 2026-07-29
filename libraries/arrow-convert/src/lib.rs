@@ -89,7 +89,13 @@ macro_rules! register_array_handlers {
 
                         let mut result = Vec::with_capacity(buffer.len());
                         for &v in buffer.values() {
-                            let converted = NumCast::from(v).context(format!("Failed to cast value from {} to target type",$type_name))?;
+                            // `with_context` defers the `format!` to the error
+                            // path: `context(format!(...))` would heap-allocate a
+                            // fresh error String on every element even on the
+                            // (overwhelmingly common) success path.
+                            let converted = NumCast::from(v).with_context(|| {
+                                format!("Failed to cast value from {} to target type", $type_name)
+                            })?;
                             result.push(converted);
                         }
                         Ok(result)

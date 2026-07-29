@@ -210,9 +210,19 @@ impl<R: Read> RecordingReader<R> {
             eyre::bail!("record too large: {record_len} bytes (max {MAX_RECORD_BYTES})");
         }
         let mut record_buf = vec![0u8; record_len];
-        self.reader
-            .read_exact(&mut record_buf)
-            .wrap_err("truncated record")?;
+        match self.reader.read_exact(&mut record_buf) {
+            Ok(()) => {}
+            // A crash (SIGKILL / Ctrl-C) can flush a record's 4-byte length
+            // prefix but only part of the record body that follows. Treat such
+            // a torn trailing record the same way as a torn length prefix
+            // (handled above): stop gracefully at EOF so every fully-written
+            // record still replays, rather than failing the whole replay with
+            // `truncated record`. Genuine intra-record corruption in a
+            // *complete* record is still rejected below by the bounds checks in
+            // `read_array` / `read_slice`.
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e).wrap_err("failed to read record"),
+        }
 
         let mut pos = 0;
 
@@ -424,6 +434,32 @@ mod tests {
         let read_entry = reader.next_entry().unwrap().unwrap();
         assert_eq!(entry, read_entry);
         // Should gracefully return None at EOF
+        assert!(reader.next_entry().unwrap().is_none());
+    }
+
+    /// A crash can flush a record's length prefix but only part of its body.
+    /// Replay must return every fully-written record and then stop gracefully
+    /// at the torn tail, rather than failing the whole replay with an error.
+    #[test]
+    fn truncated_record_body_stops_gracefully() {
+        let header = sample_header();
+        let entry = sample_entry("node1", "out1", 10, b"data");
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+            writer.write_entry(&entry).unwrap();
+            writer.flush().unwrap();
+        }
+        // Append a second record's length prefix but only part of its body,
+        // simulating a crash mid-write after the prefix was flushed.
+        buf.extend_from_slice(&64u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 10]);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        // The first, complete record still replays.
+        assert_eq!(entry, reader.next_entry().unwrap().unwrap());
+        // The torn trailing record is discarded gracefully (no error).
         assert!(reader.next_entry().unwrap().is_none());
     }
 

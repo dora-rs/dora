@@ -526,7 +526,7 @@ fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
 unsafe fn seqlock_begin_write(gen_ptr: *mut u64) -> u64 {
     unsafe {
         let pre_write_gen = std::ptr::read_volatile(gen_ptr);
-        std::ptr::write_volatile(gen_ptr, pre_write_gen + 1);
+        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(1));
         std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         pre_write_gen
     }
@@ -1249,7 +1249,7 @@ impl Node {
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
-                    Ok((value, _info)) => Python::attach(|py| {
+                    Ok(value) => Python::attach(|py| {
                         value
                             .to_pyarrow(py)
                             .map(|b| b.unbind())

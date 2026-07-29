@@ -38,6 +38,7 @@ members = [
     "examples/multiple-daemons/node",
     "examples/multiple-daemons/operator",
     "examples/multiple-daemons/sink",
+    "examples/rust-operator-teardown/operator",
     "examples/cpu-affinity-probe",
     "examples/log-sink-tcp",
     "examples/log-sink-file",

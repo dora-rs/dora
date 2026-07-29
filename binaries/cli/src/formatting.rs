@@ -33,7 +33,8 @@ impl std::fmt::Display for FormatDataflowError<'_> {
             .filter(|(_, e)| !matches!(e.cause, NodeErrorCause::Cascading { .. }))
             .collect();
         non_cascading.sort_by_key(|(_, e)| e.timestamp);
-        // try to print earliest non-cascading error
+        // print every non-cascading (root-cause) error; if there are none, fall
+        // back to the earliest cascading error
         let hidden = if !non_cascading.is_empty() {
             let printed = non_cascading.len();
             for (id, err) in non_cascading {
@@ -53,14 +54,93 @@ impl std::fmt::Display for FormatDataflowError<'_> {
             }
         };
 
-        if hidden > 1 {
+        if hidden >= 1 {
+            let noun = if hidden == 1 { "error" } else { "errors" };
             write!(
                 f,
-                "\n\nThere are {hidden} consequential errors. Check the `out/{}` folder for full details.",
+                "\n\nThere {} {hidden} more consequential {noun}. Check the `out/{}` folder for full details.",
+                if hidden == 1 { "is" } else { "are" },
                 self.0.uuid
             )?;
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_message::{
+        common::{NodeError, NodeExitStatus},
+        id::NodeId,
+        uhlc::HLC,
+    };
+    use std::collections::BTreeMap;
+    use uuid::Uuid;
+
+    fn cascading_error(hlc: &HLC, caused_by: &str) -> NodeError {
+        NodeError {
+            timestamp: hlc.new_timestamp(),
+            cause: NodeErrorCause::Cascading {
+                caused_by_node: caused_by.to_string().into(),
+            },
+            exit_status: NodeExitStatus::ExitCode(1),
+        }
+    }
+
+    #[test]
+    fn all_cascading_two_failures_reports_the_hidden_one() {
+        let hlc = HLC::default();
+        let mut node_results: BTreeMap<NodeId, Result<(), NodeError>> = BTreeMap::new();
+        node_results.insert("a".to_string().into(), Err(cascading_error(&hlc, "root")));
+        node_results.insert("b".to_string().into(), Err(cascading_error(&hlc, "root")));
+
+        let result = DataflowResult {
+            uuid: Uuid::nil(),
+            timestamp: hlc.new_timestamp(),
+            node_results,
+        };
+
+        let rendered = FormatDataflowError(&result).to_string();
+
+        // Exactly one of the two failures is shown inline...
+        assert_eq!(
+            rendered.matches("failed:").count(),
+            1,
+            "expected a single inline failure, got:\n{rendered}"
+        );
+        // ...but the user must still be told the second failure exists and
+        // pointed at the `out/` folder (this is the case #2736 dropped).
+        assert!(
+            rendered.contains("1 more consequential error")
+                && !rendered.contains("consequential errors"),
+            "expected a singular summary line, got:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("out/"),
+            "expected a pointer to the out/ folder, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn all_cascading_three_failures_uses_plural_summary() {
+        let hlc = HLC::default();
+        let mut node_results: BTreeMap<NodeId, Result<(), NodeError>> = BTreeMap::new();
+        node_results.insert("a".to_string().into(), Err(cascading_error(&hlc, "root")));
+        node_results.insert("b".to_string().into(), Err(cascading_error(&hlc, "root")));
+        node_results.insert("c".to_string().into(), Err(cascading_error(&hlc, "root")));
+
+        let result = DataflowResult {
+            uuid: Uuid::nil(),
+            timestamp: hlc.new_timestamp(),
+            node_results,
+        };
+
+        let rendered = FormatDataflowError(&result).to_string();
+        assert!(
+            rendered.contains("2 more consequential errors"),
+            "expected a plural summary line, got:\n{rendered}"
+        );
     }
 }
