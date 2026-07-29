@@ -29,3 +29,9 @@ nodes:
     path: ../../target/debug/multiple-daemons-example-sink
     inputs:
       message: runtime-node/rust-operator/status
+      # Cross-machine consumer of an output that ALSO has a same-machine
+      # consumer (runtime-node on A): `rust-node/random` is thus pinned to
+      # the daemon path and must reach machine A's operator locally AND
+      # machine B's sink via inter-daemon forwarding — the mixed
+      # local+remote delivery case of the startup-handshake routing.
+      random: rust-node/random
