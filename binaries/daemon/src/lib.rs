@@ -3924,23 +3924,29 @@ impl Daemon {
                     dataflow_id: dataflow_id.to_string(),
                     id: shared_memory_id.clone(),
                 };
-                let result: Result<(), String> =
-                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
-                        Ok(_) => Ok(()),
-                        Err(e) => Err(e),
-                    };
-                let _ = reply_sender.send(DaemonReply::Result(result));
-
-                // Broadcast to all nodes so every process releases its
-                // per-process resources (GPU buffers, transit buffers, shmem
-                // mappings) — a single free_memory_pool call by any node
-                // cleans up the pool in every process.
-                if let Some(dataflow) = self.running.get(&dataflow_id) {
-                    let broadcast_event = NodeEvent::FreeMemoryPool { shared_memory_id };
-                    for (_, channel) in &dataflow.subscribe_channels {
-                        let _ = send_with_timestamp(channel, broadcast_event.clone(), &self.clock);
+                let result: Result<(), String> = match self
+                    .memory_pool
+                    .free_memory_pool(&id, node_id.as_ref())
+                {
+                    Ok((_meta, touched)) => {
+                        // Send targeted cleanup to every node that
+                        // registered or read this pool — a single
+                        // free_memory_pool call by any node releases
+                        // per-process resources in all relevant nodes.
+                        if let Some(dataflow) = self.running.get(&dataflow_id) {
+                            let event = NodeEvent::FreeMemoryPool { shared_memory_id };
+                            for (node, channel) in &dataflow.subscribe_channels {
+                                if touched.contains(node.as_ref()) {
+                                    let _ =
+                                        send_with_timestamp(channel, event.clone(), &self.clock);
+                                }
+                            }
+                        }
+                        Ok(())
                     }
-                }
+                    Err(e) => Err(e),
+                };
+                let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
         Ok(())
