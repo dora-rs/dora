@@ -1238,6 +1238,13 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        // Drain any daemon-broadcast FreeMemoryPool events before
+        // yielding the next user-visible event — this ensures that
+        // a single free_memory_pool call by any node releases
+        // per-process resources (GPU buffers, transit buffers, shmem
+        // mappings) in every process.
+        self.process_pending_memory_pool_frees(py);
+
         let timeout = timeout_to_duration(timeout)?;
         let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
@@ -1247,6 +1254,62 @@ impl Node {
             Ok(Some(dict))
         } else {
             Ok(None)
+        }
+    }
+
+    /// Process any memory pools that were freed by another node.
+    fn process_pending_memory_pool_frees(&self, py: Python) {
+        for shared_memory_id in dora_node_api::event_stream::memory_pool::drain_freed_pools() {
+            let buffer_id = shared_memory_id;
+            // Receiver-side cleanup (IPC handles, shmem mappings).
+            {
+                if let Some(slot) = RECV_GPU_VA
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&buffer_id)
+                {
+                    if slot.gpu_buf != 0 {
+                        if let Ok(helpers) = get_cuda_helpers(py) {
+                            let bound = helpers.bind(py);
+                            let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
+                        }
+                    } else if slot.gpu_va != 0 {
+                        if let Ok(helpers) = get_cuda_helpers(py) {
+                            let bound = helpers.bind(py);
+                            let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
+                        }
+                    }
+                    // Drop slot → munmap
+                }
+            }
+            RECV_CPU_SHMEM
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&buffer_id);
+
+            // Sender-side cleanup (PINNED_POOL, GPU/transit buffers).
+            if let Some(c) = buffer_id
+                .strip_prefix("pool_")
+                .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
+                .and_then(|c| c.parse::<u64>().ok())
+                && let Some(slot) = PINNED_POOL
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&c)
+            {
+                if let Ok(helpers) = get_cuda_helpers(py) {
+                    let bound = helpers.bind(py);
+                    let _ = bound.call_method1("_unregister_host", (slot.base,));
+                    let _ = bound.call_method1("_free_gpu_buf", (c,));
+                    if slot.transit_ptr != 0 {
+                        let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                    }
+                }
+                TRANSIT_META
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&c);
+            }
         }
     }
 
@@ -1262,6 +1325,7 @@ impl Node {
     /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
+        self.process_pending_memory_pool_frees(py);
         let events = self
             .events
             .drain()
@@ -1291,6 +1355,7 @@ impl Node {
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+        self.process_pending_memory_pool_frees(py);
         match self.events.try_recv() {
             Ok(event) => event.to_py_dict(py).ok(),
             Err(_) => None,

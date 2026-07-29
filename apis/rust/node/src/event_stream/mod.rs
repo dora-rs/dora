@@ -39,6 +39,7 @@ pub use scheduler::Scheduler as EventScheduler;
 mod data_conversion;
 mod event;
 pub mod input_tracker;
+pub mod memory_pool;
 pub mod merged;
 mod scheduler;
 mod thread;

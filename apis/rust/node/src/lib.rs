@@ -122,7 +122,7 @@ use tokio::sync::oneshot;
 
 mod daemon_connection;
 mod error;
-mod event_stream;
+pub mod event_stream;
 pub mod integration_testing;
 mod node;
 

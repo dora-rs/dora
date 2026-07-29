@@ -3930,6 +3930,17 @@ impl Daemon {
                         Err(e) => Err(e),
                     };
                 let _ = reply_sender.send(DaemonReply::Result(result));
+
+                // Broadcast to all nodes so every process releases its
+                // per-process resources (GPU buffers, transit buffers, shmem
+                // mappings) — a single free_memory_pool call by any node
+                // cleans up the pool in every process.
+                if let Some(dataflow) = self.running.get(&dataflow_id) {
+                    let broadcast_event = NodeEvent::FreeMemoryPool { shared_memory_id };
+                    for (_, channel) in &dataflow.subscribe_channels {
+                        let _ = send_with_timestamp(channel, broadcast_event.clone(), &self.clock);
+                    }
+                }
             }
         }
         Ok(())
