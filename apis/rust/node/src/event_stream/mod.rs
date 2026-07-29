@@ -38,8 +38,11 @@ pub use scheduler::Scheduler as EventScheduler;
 
 mod data_conversion;
 mod event;
+/// Tracks input health (timeouts, liveness) for circuit-breaker recovery.
 pub mod input_tracker;
+/// Cross-process memory-pool cleanup coordination via daemon broadcast.
 pub mod memory_pool;
+/// Merged event streams combining internal and external event sources.
 pub mod merged;
 mod scheduler;
 mod thread;
@@ -1637,6 +1640,8 @@ fn prime_in_band(
     }
 }
 
+/// Convert an optional [`DataMessage`] into an Arrow array, or return an
+/// empty null array when no data is present.
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
