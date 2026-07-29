@@ -136,6 +136,14 @@ mod runtime_type_check_tests {
 /// TCP.
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
+/// How many large outbound sends are traced hop-by-hop
+/// (dora-rs/dora#2742 diagnostic; see [`DoraNode::send_output_sample`]).
+///
+/// The Windows nightly wedge happens on a node's *first* large output, so a
+/// handful of traced sends is enough to name the blocked call while keeping a
+/// healthy run's logs clean.
+const LARGE_SEND_DIAG_LIMIT: u32 = 3;
+
 /// How often a starting node re-publishes its startup route-probe markers.
 ///
 /// See [`StartupHandshake`]. Markers stop per output as soon as that output's
@@ -710,6 +718,13 @@ pub struct DoraNode {
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
     zenoh_zero_copy_threshold: usize,
+
+    /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
+    /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
+    /// inside `send_output` on the very first large output, so tracing only the
+    /// first few large sends pins the stuck hop without spamming a healthy run.
+    /// Remove together with the runtime's stall watchdog once #2742 is closed.
+    large_send_diag_count: u32,
 
     dataflow_descriptor: serde_yaml::Result<Descriptor>,
     warned_unknown_output: BTreeSet<DataId>,
@@ -1326,6 +1341,7 @@ impl DoraNode {
             zenoh_schema_publishers: HashMap::new(),
             zenoh_schema_state: HashMap::new(),
             zenoh_zero_copy_threshold,
+            large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
             interactive: false,
@@ -1612,6 +1628,21 @@ impl DoraNode {
 
         let finalized = sample.map(|sample| sample.finalize());
 
+        // Diagnostic (dora-rs/dora#2742): the Windows nightly wedges a runtime's
+        // main loop inside this function on the first large output and is
+        // force-killed at the daemon's grace period, so nothing that only logs
+        // *after* a hop returns can ever show where it parked. Log on entry to
+        // each hop instead: the last line printed names the blocked call. Capped
+        // at the first few large sends (the wedge is on the first), so a healthy
+        // run pays one comparison per send and prints a handful of lines.
+        // `warn!` so it survives the default stdout filter and reaches CI logs.
+        let diag_bytes = finalized.as_ref().map_or(0, |f| f.byte_len());
+        let diag = diag_bytes >= self.zenoh_zero_copy_threshold
+            && self.large_send_diag_count < LARGE_SEND_DIAG_LIMIT;
+        if diag {
+            self.large_send_diag_count += 1;
+        }
+
         // How a data-plane message should be delivered.
         enum Delivery {
             /// zenoh delivered the payload (or it was consumed by a failed SHM
@@ -1639,7 +1670,13 @@ impl DoraNode {
                     size = finalized.byte_len(),
                     "publishing via zenoh"
                 );
-                match self.zenoh_publish(&output_id, &metadata, finalized) {
+                if diag {
+                    warn!(
+                        "output `{output_id}`: {diag_bytes} B -> zenoh direct path \
+                         (dora-rs/dora#2742 diagnostic)"
+                    );
+                }
+                match self.zenoh_publish(&output_id, &metadata, finalized, diag) {
                     Ok(PublishOutcome::Published) => Delivery::Zenoh,
                     Ok(PublishOutcome::NotPublished(sample)) => {
                         Delivery::Daemon(Some(sample.into_data_message()))
@@ -1653,7 +1690,15 @@ impl DoraNode {
                     }
                 }
             }
-            Some(finalized) => Delivery::Daemon(Some(finalized.into_data_message())),
+            Some(finalized) => {
+                if diag {
+                    warn!(
+                        "output `{output_id}`: {diag_bytes} B -> daemon path \
+                         (dora-rs/dora#2742 diagnostic)"
+                    );
+                }
+                Delivery::Daemon(Some(finalized.into_data_message()))
+            }
             None => Delivery::Daemon(None),
         };
 
@@ -1662,6 +1707,12 @@ impl DoraNode {
                 // Keep the daemon's control-plane state in sync (input
                 // deadlines, circuit-breaker recovery) without duplicating the
                 // data payload that zenoh already delivered.
+                if diag {
+                    warn!(
+                        "output `{output_id}`: entering report_output_sent \
+                         (dora-rs/dora#2742 diagnostic)"
+                    );
+                }
                 self.control_channel
                     .report_output_sent(output_id.clone(), metadata)
                     .wrap_err_with(|| format!("failed to report output {output_id}"))?;
@@ -1683,6 +1734,12 @@ impl DoraNode {
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));
+                }
+                if diag {
+                    warn!(
+                        "output `{output_id}`: entering control_channel.send_message \
+                         (dora-rs/dora#2742 diagnostic)"
+                    );
                 }
                 self.control_channel
                     .send_message(output_id.clone(), metadata, data)
@@ -1739,11 +1796,16 @@ impl DoraNode {
     /// ([`StartupHandshake`]) before [`Self::output_direct_ready`] let the send
     /// take this path, so the first send here cannot be dropped for a
     /// not-yet-established subscription.
+    ///
+    /// `diag` enables the per-hop entry logging described in
+    /// [`Self::send_output_sample`] (dora-rs/dora#2742); it is only ever set for
+    /// the first few large sends of a node's lifetime.
     fn zenoh_publish(
         &mut self,
         output_id: &DataId,
         metadata: &Metadata,
         finalized: FinalizedSample,
+        diag: bool,
     ) -> eyre::Result<PublishOutcome> {
         use zenoh::Wait;
 
@@ -1789,6 +1851,12 @@ impl DoraNode {
             // the deliberate, accepted trade-off for the zero-copy large-output
             // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
+                if diag {
+                    tracing::warn!(
+                        "output `{output_id}`: entering zenoh put of an SHM buffer \
+                         (dora-rs/dora#2742 diagnostic)"
+                    );
+                }
                 publisher
                     .put(sbuf)
                     .attachment(&metadata_bytes[..])
@@ -1814,6 +1882,13 @@ impl DoraNode {
                     // 1.8 has no alloc signalling yet), throttling throughput to
                     // ~1k msg/s. Falling back to a heap-buffered put instead keeps
                     // the producer moving (PR #2366).
+                    if diag {
+                        tracing::warn!(
+                            "output `{output_id}`: entering SHM alloc of {} B \
+                             (dora-rs/dora#2742 diagnostic)",
+                            avec.len()
+                        );
+                    }
                     match provider
                         .alloc(avec.len())
                         .with_policy::<GarbageCollect>()
@@ -1821,6 +1896,12 @@ impl DoraNode {
                     {
                         Ok(mut sbuf) => {
                             sbuf.as_mut().copy_from_slice(&avec);
+                            if diag {
+                                tracing::warn!(
+                                    "output `{output_id}`: entering zenoh put of a \
+                                     copied SHM buffer (dora-rs/dora#2742 diagnostic)"
+                                );
+                            }
                             return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
                             {
                                 Ok(()) => Ok(PublishOutcome::Published),
