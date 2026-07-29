@@ -1,0 +1,20 @@
+nodes:
+  - id: requester
+    build: cargo build -p yaml-bridge-service-requester
+    path: ../../../target/debug/yaml-bridge-service-requester
+    inputs:
+      tick: dora/timer/millis/1000
+      response: add_client/response
+    outputs: [request]
+
+  - id: add_client
+    ros2:
+      transport:
+        kind: zenoh
+        compatibility: humble
+      service: /add_two_ints
+      service_type: example_interfaces/AddTwoInts
+      role: client
+    inputs:
+      request: requester/request
+    outputs: [response]

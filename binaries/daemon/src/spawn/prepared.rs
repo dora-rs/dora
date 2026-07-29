@@ -672,14 +672,17 @@ impl PreparedNode {
                     }
                 };
                 truncate_log_line(&mut content);
-                let sent = stdout_tx
+                // Move `content` into the `LogLine`; on the rare closed-channel
+                // error, recover it from the returned `SendError` for the
+                // warning instead of cloning on every line.
+                if let Err(mpsc::error::SendError(unsent)) = stdout_tx
                     .send(LogLine {
-                        content: content.clone(),
+                        content,
                         stream: LogStream::Stdout,
                     })
-                    .await;
-                if sent.is_err() {
-                    tracing::warn!("Could not log: {content}");
+                    .await
+                {
+                    tracing::warn!("Could not log: {}", unsent.content);
                 }
             }
         });
@@ -729,14 +732,17 @@ impl PreparedNode {
                 // Store the truncated line in the crash-diagnostics ring buffer
                 // so a single over-long line cannot be retained in full here.
                 self.node_stderr_most_recent.force_push(content.clone());
-                let sent = stderr_tx
+                // Move `content` into the `LogLine` (the ring-buffer clone above
+                // is the only copy kept); recover it from `SendError` on the rare
+                // closed-channel error rather than cloning again per line.
+                if let Err(mpsc::error::SendError(unsent)) = stderr_tx
                     .send(LogLine {
-                        content: content.clone(),
+                        content,
                         stream: LogStream::Stderr,
                     })
-                    .await;
-                if sent.is_err() {
-                    tracing::warn!("Could not log: {content}");
+                    .await
+                {
+                    tracing::warn!("Could not log: {}", unsent.content);
                 }
             }
         });
@@ -811,6 +817,10 @@ impl PreparedNode {
         let working_dir_c = self.node_working_dir.clone();
         let uhlc = self.clock.clone();
         let mut logger_c = logger.try_clone().await?;
+        // Read `DORA_QUIET` once instead of on every log line: the env var
+        // cannot change during this task's lifetime, and `std::env::var` takes
+        // the process-global environment lock (and allocates) on each call.
+        let quiet = std::env::var_os("DORA_QUIET").is_some();
         // Log to file stream.
         tokio::spawn(async move {
             let mut bytes_written: u64 = 0;
@@ -1009,7 +1019,7 @@ impl PreparedNode {
                 }
 
                 // Forward to channel/coordinator for live display
-                if std::env::var("DORA_QUIET").is_err() {
+                if !quiet {
                     cloned_logger.log(log_message).await;
                 }
 

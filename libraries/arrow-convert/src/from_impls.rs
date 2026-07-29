@@ -233,7 +233,7 @@ impl TryFrom<&ArrowData> for NaiveDateTime {
         }
         let array = value
             .as_primitive_opt::<arrow::datatypes::TimestampNanosecondType>()
-            .context("not any of the primitive Time arrays")?;
+            .context("not any of the primitive Timestamp arrays")?;
         if check_single_datetime(array) {
             eyre::bail!("Not a valid array");
         }

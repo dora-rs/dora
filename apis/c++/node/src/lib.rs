@@ -474,26 +474,29 @@ fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFail
     })
 }
 
+/// Parse a caller-supplied output id via `FromStr` instead of the panicking
+/// `From<String>`.
+///
+/// `DataId::from(String)` is documented as panicking on invalid characters
+/// (see `libraries/message/src/id.rs`, `# Panics`). Calling it on a
+/// caller-supplied string would mean a typo in a C++ string literal aborts
+/// the whole node by unwinding across the `cxx::bridge`. Returning the error
+/// as a `DoraResult.error` instead lets the C++ caller handle it.
+fn parse_output_id(id: &str) -> Result<dora_node_api::dora_core::config::DataId, ffi::DoraResult> {
+    id.parse().map_err(|e| ffi::DoraResult {
+        error: format!("invalid output id '{id}': {e}"),
+    })
+}
+
 fn close_outputs(
     output_sender: &mut Box<OutputSender>,
     output_ids: Vec<String>,
 ) -> ffi::DoraResult {
-    // Parse via `FromStr` instead of `From<String>` so invalid IDs
-    // surface as a `DoraResult.error` rather than panicking across
-    // the cxx::bridge. `DataId::from(String)` is documented as
-    // panicking on invalid characters (see
-    // `libraries/message/src/id.rs:186`, `# Panics`); calling it on
-    // caller-supplied input would mean a typo in a C++ string literal
-    // aborts the whole node.
     let mut ids = Vec::with_capacity(output_ids.len());
     for id in output_ids {
-        match id.parse::<dora_node_api::dora_core::config::DataId>() {
+        match parse_output_id(&id) {
             Ok(parsed) => ids.push(parsed),
-            Err(e) => {
-                return ffi::DoraResult {
-                    error: format!("invalid output id '{id}': {e}"),
-                };
-            }
+            Err(err) => return err,
         }
     }
     match output_sender.0.close_outputs(ids) {
@@ -911,9 +914,13 @@ fn send_output_internal(
     data: &[u8],
     metadata: DoraMetadataParameters,
 ) -> ffi::DoraResult {
+    let output_id = match parse_output_id(&id) {
+        Ok(parsed) => parsed,
+        Err(err) => return err,
+    };
     let result = sender
         .0
-        .send_output_raw(id.into(), metadata, data.len(), |out| {
+        .send_output_raw(output_id, metadata, data.len(), |out| {
             out.copy_from_slice(data)
         });
     let error = match result {
@@ -982,7 +989,11 @@ unsafe fn send_arrow_output_impl(
                 .as_ref()
                 .map(|metadata| metadata.parameters.clone())
                 .unwrap_or_default();
-            let result = sender.0.send_output(id.into(), parameters, arrow_array);
+            let output_id = match parse_output_id(&id) {
+                Ok(parsed) => parsed,
+                Err(err) => return err,
+            };
+            let result = sender.0.send_output(output_id, parameters, arrow_array);
             match result {
                 Ok(()) => ffi::DoraResult {
                     error: String::new(),
@@ -1102,6 +1113,27 @@ mod tests {
         }
         seen.sort_unstable();
         assert_eq!(seen, vec![1, 2]);
+    }
+
+    /// Regression test: a caller-supplied output id with invalid characters
+    /// (e.g. a typo containing a space) must surface as a `DoraResult.error`
+    /// rather than panicking across the `cxx::bridge` and aborting the node.
+    /// The `send_output`/`send_arrow_output`/`close_outputs` paths all route
+    /// through `parse_output_id`.
+    #[test]
+    fn parse_output_id_rejects_invalid_without_panicking() {
+        let ok = parse_output_id("cmd_vel");
+        assert!(ok.is_ok(), "a valid id must parse");
+
+        for bad in ["cmd vel", "cmd!", "señal"] {
+            let err = parse_output_id(bad).expect_err("invalid id must return an error");
+            assert!(
+                err.error.contains("invalid output id"),
+                "error must describe the failure, got {:?}",
+                err.error
+            );
+            assert!(!err.error.is_empty());
+        }
     }
 
     /// Regression test: `set_timestamp` must accept and correctly represent

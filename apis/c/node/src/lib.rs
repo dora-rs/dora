@@ -161,6 +161,12 @@ pub unsafe extern "C" fn read_dora_input_id(
 /// Writes a null pointer and length `0` if the given event is not an input event
 /// or when an input event has no associated data.
 ///
+/// The raw-byte C API can only expose `UInt8` (and empty `Null`) payloads.
+/// A payload of any other Arrow type (for example an `Int32`/`Float` array
+/// from another node) also yields a null pointer and length `0` (and logs an
+/// error), so a null result is not by itself proof that the message carried no
+/// data.
+///
 /// ## Safety
 ///
 /// The `event` argument must be a dora event received through
@@ -219,9 +225,13 @@ pub unsafe extern "C" fn read_dora_input_data(
 
 /// Reads out the timestamp of the given input event from metadata.
 ///
+/// Returns `0` if the given event is not an input event.
+///
 /// ## Safety
 ///
-/// Return `0` if the given event is not an input event.
+/// The `event` argument must be a dora event received through
+/// [`dora_next_event`]. The event must be still valid, i.e., not
+/// freed yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
@@ -289,7 +299,14 @@ unsafe fn try_send_output(
     }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
-    let output_id = id.to_owned().into();
+    // Parse via `FromStr` instead of the panicking `From<String>`: an invalid
+    // id (e.g. a typo containing a space) must surface as a `-1` return, not
+    // unwind across the `extern "C"` boundary and abort the node process.
+    // `DataId::from(String)` is documented as panicking on invalid characters
+    // (see `libraries/message/src/id.rs`, `# Panics`).
+    let output_id = id
+        .parse::<dora_node_api::dora_core::config::DataId>()
+        .map_err(|e| eyre::eyre!("invalid output id `{id}`: {e}"))?;
     let data = unsafe { data_slice(data_ptr, data_len) }?;
     Ok(context
         .node

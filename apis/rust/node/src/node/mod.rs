@@ -62,11 +62,19 @@ enum RuntimeTypeCheck {
 
 impl RuntimeTypeCheck {
     fn from_env() -> Self {
-        match std::env::var("DORA_RUNTIME_TYPE_CHECK").as_deref() {
-            Ok("error") => Self::Error,
-            Ok("1" | "warn" | "true") => Self::Warn,
-            Ok("") | Err(_) => Self::Off,
-            Ok(other) => {
+        Self::from_value(std::env::var("DORA_RUNTIME_TYPE_CHECK").ok().as_deref())
+    }
+
+    /// Parse the `DORA_RUNTIME_TYPE_CHECK` value (`None` when the var is unset).
+    fn from_value(value: Option<&str>) -> Self {
+        match value {
+            Some("error") => Self::Error,
+            Some("1" | "warn" | "true" | "on") => Self::Warn,
+            // Accept the natural "disable" spellings without a warning: a user
+            // who sets `=0`/`=false`/`=off` to turn the feature off means to
+            // disable it, not to type an unrecognized value.
+            Some("" | "0" | "false" | "off") | None => Self::Off,
+            Some(other) => {
                 tracing::warn!(
                     "unknown DORA_RUNTIME_TYPE_CHECK value \"{other}\", \
                      expected \"warn\" or \"error\"; disabling runtime type check"
@@ -74,6 +82,41 @@ impl RuntimeTypeCheck {
                 Self::Off
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_type_check_tests {
+    use super::RuntimeTypeCheck;
+
+    #[test]
+    fn parses_enable_spellings() {
+        for v in ["1", "warn", "true", "on"] {
+            assert_eq!(
+                RuntimeTypeCheck::from_value(Some(v)),
+                RuntimeTypeCheck::Warn
+            );
+        }
+        assert_eq!(
+            RuntimeTypeCheck::from_value(Some("error")),
+            RuntimeTypeCheck::Error
+        );
+    }
+
+    #[test]
+    fn disable_spellings_and_unset_are_off() {
+        for v in ["", "0", "false", "off"] {
+            assert_eq!(RuntimeTypeCheck::from_value(Some(v)), RuntimeTypeCheck::Off);
+        }
+        assert_eq!(RuntimeTypeCheck::from_value(None), RuntimeTypeCheck::Off);
+    }
+
+    #[test]
+    fn unknown_value_falls_back_to_off() {
+        assert_eq!(
+            RuntimeTypeCheck::from_value(Some("maybe")),
+            RuntimeTypeCheck::Off
+        );
     }
 }
 

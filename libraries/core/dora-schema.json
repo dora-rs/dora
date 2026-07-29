@@ -1037,6 +1037,21 @@
         }
       ]
     },
+    "RmwZenohCompatibility": {
+      "description": "Wire-compatibility profile for the `rmw_zenoh_cpp` protocol.",
+      "oneOf": [
+        {
+          "description": "ROS2 Humble, whose endpoint identity uses `TypeHashNotSupported`.",
+          "type": "string",
+          "const": "humble"
+        },
+        {
+          "description": "ROS2 distributions whose endpoint identity uses REP-2016 type hashes.",
+          "type": "string",
+          "const": "rep2016"
+        }
+      ]
+    },
     "Ros2BridgeConfig": {
       "description": "ROS2 bridge configuration for declarative ROS2 bridging.\n\nThis allows nodes to interact with ROS2 topics, services, and actions\nwithout writing any custom code. The framework spawns a bridge binary that\nhandles the ROS2 DDS communication and Arrow data conversion.\n\nExactly one of `topic`, `topics`, `service`, or `action` must be set.",
       "type": "object",
@@ -1127,6 +1142,13 @@
           ],
           "items": {
             "$ref": "#/$defs/Ros2TopicConfig"
+          }
+        },
+        "transport": {
+          "description": "Native transport used to communicate with the ROS2 graph.\n\nDefaults to the existing DDS implementation.",
+          "$ref": "#/$defs/Ros2TransportConfig",
+          "default": {
+            "kind": "dds"
           }
         }
       },
@@ -1264,6 +1286,51 @@
       "required": [
         "topic",
         "message_type"
+      ]
+    },
+    "Ros2TransportConfig": {
+      "description": "Native transport used by a ROS2 bridge context.",
+      "oneOf": [
+        {
+          "description": "The existing `ros2-client` and RustDDS transport.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "dds"
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "Direct interoperability with `rmw_zenoh_cpp` peers.",
+          "type": "object",
+          "properties": {
+            "compatibility": {
+              "description": "Wire-compatibility profile used by the target ROS2 distribution.",
+              "$ref": "#/$defs/RmwZenohCompatibility"
+            },
+            "config_uri": {
+              "description": "Optional Zenoh session configuration path.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "zenoh"
+            }
+          },
+          "additionalProperties": true,
+          "required": [
+            "kind",
+            "compatibility"
+          ]
+        }
       ]
     },
     "RuntimeNode": {

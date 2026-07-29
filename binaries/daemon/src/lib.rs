@@ -9,9 +9,9 @@ use dora_core::{
         read_as_descriptor, validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, open_zenoh_session_with_listen,
-        reserve_zenoh_endpoint, validate_zenoh_listen, zenoh_bind_address_for,
-        zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
+        zenoh_bind_address_for, zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -283,6 +283,10 @@ pub struct Daemon {
     /// peer without multicast (#1778). `None` when the OS rejected the
     /// reservation; nodes then fall back to multicast scouting.
     pub(crate) zenoh_listen_endpoint: Option<String>,
+    /// Whether this daemon opened its zenoh session without multicast
+    /// scouting. Forwarded to spawned nodes so they discover the same way the
+    /// daemon does (see `DORA_ZENOH_MULTICAST`).
+    pub(crate) disable_multicast: bool,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -485,7 +489,7 @@ async fn collect_and_send_metrics_bg(
                     None
                 }
             };
-            let msg = serde_json::to_vec(&Timestamped {
+            let msg = match serde_json::to_vec(&Timestamped {
                 inner: CoordinatorRequest::Event {
                     daemon_id: daemon_id.clone(),
                     event: DaemonEvent::NodeMetrics {
@@ -495,7 +499,21 @@ async fn collect_and_send_metrics_bg(
                     },
                 },
                 timestamp: clock.new_timestamp(),
-            })?;
+            }) {
+                Ok(msg) => msg,
+                // Skip this dataflow's batch rather than `?`-returning: an early
+                // return here would bypass the `System` restore below, leaving
+                // the shared metrics `System` (moved out via `mem::take`) empty
+                // until the next successful collection repopulates it.
+                // Serialization of this structure is effectively infallible, so
+                // this is defense-in-depth — `continue` just keeps the cleanup
+                // path unconditional against any future error here. Matches the
+                // `send_event` failure handling just below.
+                Err(e) => {
+                    tracing::warn!("failed to serialize metrics for dataflow: {e}");
+                    continue;
+                }
+            };
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::warn!("failed to send metrics for dataflow: {e}");
                 continue;
@@ -615,28 +633,61 @@ impl ZenohBind {
     }
 }
 
-impl Daemon {
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-    ) -> eyre::Result<()> {
-        Self::run_with_zenoh_listen(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-        )
-        .await
+/// Report whether `zenoh_bind` can be reached by remote daemons, and reject a
+/// configuration that would run silently undialable.
+///
+/// A loopback listener advertises `127.0.0.1` to peers, who dial their own
+/// loopback and reach nothing — and since zenoh 1.9 peers do not relay, that
+/// pair is dead with no fallback. When the coordinator is remote (so other
+/// daemons are expected):
+///
+/// * an *explicit* loopback address is a hard error — the operator named it, and
+///   the [`ZenohBind::Explicit`] contract is "bind a routable address or exit",
+///   the same "nothing to advertise" reason [`validate_zenoh_listen`] already
+///   rejects the wildcard for;
+/// * a *derived* loopback only warns — it is a best-effort fallback the operator
+///   can override with `--zenoh-listen`.
+///
+/// A routable bind is announced at info level; a single-machine (loopback
+/// coordinator) setup is silent.
+fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -> eyre::Result<()> {
+    if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
+        match zenoh_bind {
+            ZenohBind::Explicit(addr) => {
+                eyre::bail!(
+                    "--zenoh-listen {addr} is a loopback address, but the coordinator \
+                     at {coordinator_ws_addr} is remote, so other daemons must be able \
+                     to reach this one. A loopback listener advertises {addr} to peers, \
+                     who would dial their own loopback and reach nothing. Pass the \
+                     address other daemons should use to reach this host (e.g. its LAN \
+                     or VPN address)."
+                );
+            }
+            ZenohBind::Derived(_) => {
+                tracing::warn!(
+                    "coordinator at {coordinator_ws_addr} is remote, but no routable local \
+                     address toward it was found; zenoh will bind loopback and other daemons \
+                     will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
+                );
+            }
+        }
+    } else if !zenoh_bind.addr().is_loopback() {
+        tracing::info!(
+            "zenoh listener binding {} ({}); this port accepts connections from \
+             other hosts",
+            zenoh_bind.addr(),
+            match zenoh_bind {
+                ZenohBind::Explicit(_) => "given via --zenoh-listen".to_string(),
+                ZenohBind::Derived(_) =>
+                    format!("derived from coordinator address {coordinator_ws_addr}"),
+            }
+        );
     }
+    Ok(())
+}
 
-    /// Like [`Daemon::run`], but `zenoh_listen_addr` overrides the address this
+impl Daemon {
+    /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
     /// told to dial.
     ///
@@ -653,6 +704,7 @@ impl Daemon {
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
         zenoh_listen_addr: Option<IpAddr>,
+        disable_multicast: bool,
     ) -> eyre::Result<()> {
         Self::run_inner_with_builds(
             coordinator_ws_addr,
@@ -661,29 +713,8 @@ impl Daemon {
             local_listen_port,
             inter_daemon_peer,
             zenoh_listen_addr,
+            disable_multicast,
             Default::default(),
-        )
-        .await
-    }
-
-    /// Derives the zenoh listen address from `coordinator_ws_addr`; see
-    /// [`Daemon::run_with_zenoh_listen`] to override it.
-    pub async fn run_with_builds(
-        coordinator_ws_addr: SocketAddr,
-        machine_id: Option<String>,
-        labels: BTreeMap<String, String>,
-        local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-        initial_builds: BTreeMap<BuildId, BuildInfo>,
-    ) -> eyre::Result<()> {
-        Self::run_inner_with_builds(
-            coordinator_ws_addr,
-            machine_id,
-            labels,
-            local_listen_port,
-            inter_daemon_peer,
-            None,
-            initial_builds,
         )
         .await
     }
@@ -696,12 +727,14 @@ impl Daemon {
         local_listen_port: u16,
         inter_daemon_peer: Option<String>,
         zenoh_listen_addr: Option<IpAddr>,
+        disable_multicast: bool,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
         let zenoh_bind = match zenoh_listen_addr {
             Some(addr) => {
                 validate_zenoh_listen(addr).wrap_err(
-                    "invalid --zenoh-listen address (omit the flag to derive it                      from --coordinator-addr)",
+                    "invalid --zenoh-listen address (omit the flag to derive it \
+                     from --coordinator-addr)",
                 )?;
                 ZenohBind::Explicit(addr)
             }
@@ -724,30 +757,7 @@ impl Daemon {
                     )
                 })?;
         }
-        if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
-            // The coordinator is remote, so other daemons are expected, but we
-            // have no address to offer them. Binding loopback anyway means
-            // advertising `127.0.0.1` to peers, who dial their own loopback and
-            // reach nothing — and since zenoh 1.9 peers do not relay, that pair
-            // is dead with no fallback. Say so: this is the silent failure the
-            // routable bind exists to prevent.
-            tracing::warn!(
-                "coordinator at {coordinator_ws_addr} is remote, but no routable local \
-                 address toward it was found; zenoh will bind loopback and other daemons \
-                 will not be able to reach this one. Pass --zenoh-listen <IP> explicitly."
-            );
-        } else if !zenoh_bind.addr().is_loopback() {
-            tracing::info!(
-                "zenoh listener binding {} ({}); this port accepts connections from \
-                 other hosts",
-                zenoh_bind.addr(),
-                match zenoh_bind {
-                    ZenohBind::Explicit(_) => "given via --zenoh-listen".to_string(),
-                    ZenohBind::Derived(_) =>
-                        format!("derived from coordinator address {coordinator_ws_addr}"),
-                }
-            );
-        }
+        announce_zenoh_bind(zenoh_bind, coordinator_ws_addr)?;
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -860,6 +870,7 @@ impl Daemon {
                                 log_destination,
                                 inter_daemon_peer.clone(),
                                 zenoh_bind,
+                                disable_multicast,
                             )
                             .await?;
                             daemon = Some(built);
@@ -1006,10 +1017,10 @@ impl Daemon {
         let nodes = descriptor.resolve_aliases_and_set_defaults()?;
 
         let (events_tx, events_rx) = flume::bounded(10);
-        if nodes
+        let has_dynamic_nodes = nodes
             .iter()
-            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic())
-        {
+            .any(|(_n, resolved_nodes)| resolved_nodes.kind.dynamic());
+        if has_dynamic_nodes {
             // Spawn local listener for dynamic nodes
             let _listen_port = local_listener::spawn_listener_loop(
                 (LOCALHOST, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT).into(),
@@ -1107,6 +1118,17 @@ impl Daemon {
             // Local dataflow runs (one daemon, no cluster) never need
             // cross-daemon Zenoh discovery; the rendezvous is irrelevant.
             None,
+            // `dora run` is single-machine by construction, and every node it
+            // spawns is handed `DORA_ZENOH_CONNECT`, so all links are explicit
+            // and multicast scouting buys nothing — while still exposing us to
+            // a scouting bind that fails on a busy DDS/ROS2 network.
+            //
+            // Dynamic nodes are the exception: they are started by the user in
+            // a separate process, inherit none of the daemon's environment, and
+            // so have no endpoint to dial. Multicast is the only way they and
+            // the daemon find each other, so keep it on when the descriptor
+            // declares any.
+            !has_dynamic_nodes,
         );
 
         let spawn_result = reply_rx
@@ -1153,10 +1175,11 @@ impl Daemon {
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
+        disable_multicast: bool,
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
-        // and reuses it across reconnects (see `run_with_builds`), so that node
+        // and reuses it across reconnects (see `run_inner_with_builds`), so that node
         // processes are not killed when the coordinator connection drops.
         // `dora run` is single-machine by construction: the daemon, its nodes
         // and the in-process coordinator all live on this host, so loopback is
@@ -1171,6 +1194,7 @@ impl Daemon {
             log_destination,
             inter_daemon_peer,
             ZenohBind::Derived(LOCALHOST),
+            disable_multicast,
         )
         .await?;
         daemon
@@ -1202,6 +1226,7 @@ impl Daemon {
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
         zenoh_bind: ZenohBind,
+        disable_multicast: bool,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Reserve a port and have zenoh listen on it. The endpoint is injected
         // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
@@ -1254,6 +1279,11 @@ impl Daemon {
             None,
             requested_listen_endpoint.as_deref(),
             inter_daemon_peer.as_deref(),
+            if disable_multicast {
+                MulticastScouting::Disabled
+            } else {
+                MulticastScouting::Allowed
+            },
         )
         .await
         .wrap_err("failed to open zenoh session")?;
@@ -1319,6 +1349,7 @@ impl Daemon {
             ft_stats: Default::default(),
             zenoh_session,
             zenoh_listen_endpoint,
+            disable_multicast,
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -1478,7 +1509,7 @@ impl Daemon {
 
                         if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
                             // Return error to trigger the reconnection loop in
-                            // `run_with_builds`. Because `run_inner` borrows
+                            // `run_inner_with_builds`. Because `run_inner` borrows
                             // `&mut self`, this error does NOT drop the daemon:
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
@@ -2138,6 +2169,7 @@ impl Daemon {
                         shutdown: dataflow.listener_shutdown_rx.clone(),
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
+                        disable_multicast: self.disable_multicast,
                     };
                     let mut logger = self
                         .logger
@@ -2357,9 +2389,9 @@ impl Daemon {
                     // both to stop delivering to a removed node and so a re-added
                     // ID is classified by its own inputs, not stale timer/log
                     // state (which would mark it never-finishing forever, #2270).
-                    for receivers in dataflow.timers.values_mut() {
-                        receivers.retain(|(nid, _)| nid != &node_id);
-                    }
+                    // Cancels the timer task of any interval left with no
+                    // subscribers (#2585); see the method for details.
+                    dataflow.unsubscribe_node_from_timers(&node_id);
                     dataflow
                         .log_subscribers
                         .retain(|sub| sub.node_id != node_id);
@@ -2375,6 +2407,12 @@ impl Daemon {
                     // subscribes and could be selected mid-startup (dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
+                    // Purge per-node bookkeeping keyed by node id that the
+                    // routing cleanup above doesn't touch. Otherwise stale
+                    // input_deadlines/broken_inputs entries are re-scanned
+                    // every tick forever and the stderr queue leaks across
+                    // repeated dynamic add/remove cycles.
+                    dataflow.forget_node_bookkeeping(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
@@ -3280,6 +3318,7 @@ impl Daemon {
             shutdown: dataflow.listener_shutdown_rx.clone(),
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
+            disable_multicast: self.disable_multicast,
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):
@@ -4659,6 +4698,23 @@ impl Daemon {
                     aligned_vec::AVec::from_slice(128, &ipc_bytes);
                 let data = Arc::new(DataMessage::Vec(sample));
 
+                // Build the metadata once and share the `Arc` across subscribers.
+                // It is identical for every delivery (only the `arrow-ipc`
+                // framing parameter), so rebuilding it (and re-allocating the
+                // `Arc`) per subscriber was wasted work — mirror the Timer/Logs
+                // broadcast loops, which build the `Arc<Metadata>` once.
+                let mut params = MetadataParameters::new();
+                params.insert(
+                    dora_message::metadata::FRAMING.to_string(),
+                    dora_message::metadata::Parameter::String(
+                        dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
+                    ),
+                );
+                let metadata = Arc::new(metadata::Metadata::from_parameters(
+                    self.clock.new_timestamp(),
+                    params,
+                ));
+
                 let mut closed = Vec::new();
                 for sub in &dataflow.log_subscribers {
                     // Apply level filter
@@ -4682,21 +4738,11 @@ impl Daemon {
                         continue;
                     };
 
-                    let mut params = MetadataParameters::new();
-                    params.insert(
-                        dora_message::metadata::FRAMING.to_string(),
-                        dora_message::metadata::Parameter::String(
-                            dora_message::metadata::FRAMING_ARROW_IPC.to_string(),
-                        ),
-                    );
-                    let metadata =
-                        metadata::Metadata::from_parameters(self.clock.new_timestamp(), params);
-
                     let send_result = send_with_timestamp(
                         channel,
                         NodeEvent::Input {
                             id: sub.input_id.clone(),
-                            metadata: Arc::new(metadata),
+                            metadata: metadata.clone(),
                             data: Some(data.clone()),
                         },
                         &self.clock,
@@ -4775,12 +4821,16 @@ impl Daemon {
                         // and exit with code 143 (= 128 + 15) instead
                         // of propagating the signal, so `child.wait()`
                         // returns `ExitCode(143)` not `Signal(15)`.
-                        // Same shape for SIGINT (2 / 130). Treat any of
-                        // those as a clean planned stop so `dora run
+                        // Same shape for SIGINT (2 / 130). On Windows the
+                        // daemon's SoftKill sends `CTRL_BREAK_EVENT`, so a
+                        // node without its own console handler reports
+                        // `STATUS_CONTROL_C_EXIT` (`ExitCode(-1073741510)`)
+                        // — the Windows analog (dora-rs/dora#2425). Treat any
+                        // of those as a clean planned stop so `dora run
                         // --stop-after` doesn't report a fake "Node
                         // failed: exited with code 143" when the
                         // dataflow shut down exactly as requested
-                        // (dora-rs/dora#1882).
+                        // (dora-rs/dora#1882). See `is_sigterm_like_exit`.
                         //
                         // `grace_duration_kill` is the right
                         // discriminant — not `restarts_disabled` —
@@ -4809,13 +4859,7 @@ impl Daemon {
                         // collateral, we want to surface the original
                         // failure rather than hide it behind the
                         // shutdown that followed.
-                        let is_sigterm_like = matches!(
-                            exit_status,
-                            NodeExitStatus::Signal(15)
-                                | NodeExitStatus::Signal(2)
-                                | NodeExitStatus::ExitCode(143)
-                                | NodeExitStatus::ExitCode(130)
-                        );
+                        let is_sigterm_like = is_sigterm_like_exit(&exit_status);
                         if caused_by_node.is_none()
                             && grace_duration_kill
                             && is_sigterm_like
@@ -5009,32 +5053,7 @@ impl Daemon {
                     if let Err(e) = &node_result
                         && let Some(dataflow) = self.running.get(&dataflow_id)
                     {
-                        let error_msg = e.to_string();
-                        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> =
-                            BTreeMap::new();
-                        for (output_id, receivers) in &dataflow.mappings {
-                            if output_id.0 == node_id {
-                                for (recv_id, input_id) in receivers {
-                                    affected_by_receiver
-                                        .entry(recv_id.clone())
-                                        .or_default()
-                                        .push(input_id.clone());
-                                }
-                            }
-                        }
-                        for (recv_id, affected_ids) in affected_by_receiver {
-                            if let Some(channel) = dataflow.subscribe_channels.get(&recv_id) {
-                                let _ = send_with_timestamp(
-                                    channel,
-                                    NodeEvent::NodeFailed {
-                                        affected_input_ids: affected_ids,
-                                        error: error_msg.clone(),
-                                        source_node_id: node_id.clone(),
-                                    },
-                                    &self.clock,
-                                );
-                            }
-                        }
+                        dataflow.propagate_node_failed(&node_id, &e.to_string(), &self.clock);
                     }
 
                     let exit_clean = node_result.is_ok();
@@ -5333,6 +5352,15 @@ fn note_output_sent_to_local_receivers(
     clock: &HLC,
     ft_stats: Option<&FaultToleranceStats>,
 ) {
+    // Both side effects below are gated on a non-empty `input_deadlines`
+    // (deadline refresh) or `broken_inputs` (circuit-breaker recovery). When
+    // neither feature is configured — the common case — the whole loop is a
+    // no-op, so skip it entirely rather than paying a clock read plus a
+    // `subscribe_channels` lookup per receiver on every `OutputSent`.
+    if dataflow.input_deadlines.is_empty() && dataflow.broken_inputs.is_empty() {
+        return;
+    }
+
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
@@ -5363,7 +5391,13 @@ fn note_output_sent_to_local_receivers(
             .subscribe_channels
             .get(receiver_id)
             .is_some_and(|channel| channel.capacity() >= CONTROL_EVENT_HEADROOM);
+        // Looking up these maps requires cloning the `(NodeId, DataId)` key (the
+        // tuple key type can't borrow). Both maps are empty unless input
+        // deadlines or circuit breakers are configured, so skip the per-message
+        // key clone + hash in the common case — mirroring
+        // `send_output_to_local_receivers`.
         if receiver_keeping_up
+            && !dataflow.input_deadlines.is_empty()
             && let Some(deadline) = dataflow
                 .input_deadlines
                 .get_mut(&(receiver_id.clone(), input_id.clone()))
@@ -5371,6 +5405,25 @@ fn note_output_sent_to_local_receivers(
             deadline.last_received = Some(now);
         }
 
+        // Circuit-breaker recovery must be gated on the same backpressure
+        // signal as the deadline refresh above. A bare `OutputSent` is not a
+        // delivery confirmation (see the comment above), so re-opening a broken
+        // input while the receiver is still saturated only makes it flap
+        // `broken ↔ recovered` every `input_timeout` without any data actually
+        // getting through (#2627). Leave the `broken_inputs` entry in place
+        // until the receiver drains enough to keep up — matching the recovery
+        // in `send_output_to_local_receivers`, which only fires inside the
+        // successful `try_send` arm.
+        if !receiver_keeping_up {
+            continue;
+        }
+
+        // `broken_inputs` is empty unless circuit breakers are configured, so
+        // skip the per-message `(NodeId, DataId)` key clone + hash + remove in
+        // the common case — mirroring `send_output_to_local_receivers`.
+        if dataflow.broken_inputs.is_empty() {
+            continue;
+        }
         let Some(timeout) = dataflow
             .broken_inputs
             .remove(&(receiver_id.clone(), input_id.clone()))
@@ -5436,10 +5489,15 @@ async fn send_output_to_local_receivers(
     let empty_set = BTreeSet::new();
     let output_id = OutputId(node_id, output_id);
     let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
-    // Wrap in Arc once; fan-out clones are O(1) atomic ref bumps instead of O(payload_size) memcpy
-    let metadata = Arc::new(metadata.clone());
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
+    // Clone the metadata into an `Arc` lazily, on the first actual delivery.
+    // Fan-out clones are then O(1) atomic ref bumps instead of O(payload_size)
+    // memcpy. For a pure-remote output topology `local_receivers` is empty (all
+    // subscribers live on other daemons), so this deep clone (a `BTreeMap` of
+    // owned `Parameter`s) is skipped entirely rather than built and dropped on
+    // every such message.
+    let mut metadata_arc = None;
     for (receiver_id, input_id) in local_receivers {
         if let Some(channel) = dataflow.subscribe_channels.get(receiver_id) {
             // Reserve headroom for control events (Stop, InputClosed, etc.)
@@ -5454,7 +5512,9 @@ async fn send_output_to_local_receivers(
             }
             let item = NodeEvent::Input {
                 id: input_id.clone(),
-                metadata: metadata.clone(),
+                metadata: metadata_arc
+                    .get_or_insert_with(|| Arc::new(metadata.clone()))
+                    .clone(),
                 data: data.clone(),
             };
             match channel.try_send(Timestamped {
@@ -5666,6 +5726,41 @@ fn break_input(
 /// a sink may legitimately keep working for a while after its inputs close
 /// (flushing recordings, final writes).
 const DEFAULT_FINISH_DRAIN_GRACE: Duration = Duration::from_secs(120);
+
+/// Windows `STATUS_CONTROL_C_EXIT`. A process terminated by an unhandled
+/// console `CTRL_C` / `CTRL_BREAK` event exits with this NTSTATUS, which Rust's
+/// [`std::process::ExitStatus::code`] surfaces as this `i32` (`0xC000013A`).
+/// The daemon's Windows `SoftKill` stops nodes with
+/// `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` (see `running_dataflow.rs`), so
+/// a node that doesn't install its own console handler reports this code on a
+/// planned stop — the Windows analog of Unix `Signal(15)` or the `143` wrapper
+/// exit (dora-rs/dora#2425).
+const STATUS_CONTROL_C_EXIT: i32 = -1073741510;
+
+/// Whether `exit_status` has the *shape* of a node that exited because the
+/// daemon asked it to stop (SoftKill), rather than because of an application
+/// error.
+///
+/// Callers must additionally gate on `grace_duration_kills` — this predicate
+/// only recognises the shape of a stop-induced exit, not whether the daemon
+/// actually initiated one. A node that produces one of these codes on its own
+/// (without a preceding daemon SoftKill) is still reported as a failure.
+///
+/// - Unix: `SIGTERM` (15) / `SIGINT` (2) surface as `Signal`.
+/// - Wrappers such as `uv run python` catch the signal and exit `128 + signo`
+///   (143 / 130) instead of propagating it, so the code appears as `ExitCode`.
+/// - Windows: an unhandled `CTRL_BREAK_EVENT` terminates the node with
+///   [`STATUS_CONTROL_C_EXIT`] (dora-rs/dora#2425).
+fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
+    matches!(
+        exit_status,
+        NodeExitStatus::Signal(15)
+            | NodeExitStatus::Signal(2)
+            | NodeExitStatus::ExitCode(143)
+            | NodeExitStatus::ExitCode(130)
+            | NodeExitStatus::ExitCode(STATUS_CONTROL_C_EXIT)
+    )
+}
 
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
 /// `None` if the watchdog has been explicitly **disabled**.
@@ -6203,6 +6298,52 @@ mod fault_tolerance_tests {
         assert_eq!(df._timer_handles.len(), 2);
     }
 
+    // dora-rs/dora: removing the last subscriber of a timer interval (via
+    // `RemoveNode`) must cancel that interval's timer task and forget the
+    // entry, so it doesn't keep ticking to an empty subscriber set for the
+    // rest of the dataflow's life (#2585). An interval that still has other
+    // subscribers must be left running.
+    #[tokio::test]
+    async fn unsubscribe_last_subscriber_cancels_timer_task() {
+        let mut df = test_dataflow();
+        let clock = Arc::new(HLC::default());
+        let (events_tx, _events_rx) = mpsc::channel(8);
+
+        let node_a = NodeId::from("a".to_string());
+        let node_b = NodeId::from("b".to_string());
+        let solo = Duration::from_millis(100); // only `a` subscribes
+        let shared = Duration::from_millis(250); // `a` and `b` subscribe
+
+        df.timers
+            .entry(solo)
+            .or_default()
+            .insert((node_a.clone(), DataId::from("t".to_string())));
+        df.timers
+            .entry(shared)
+            .or_default()
+            .insert((node_a.clone(), DataId::from("t".to_string())));
+        df.timers
+            .entry(shared)
+            .or_default()
+            .insert((node_b.clone(), DataId::from("t".to_string())));
+        df.start(&events_tx, &clock).await.unwrap();
+        assert!(df._timer_handles.contains_key(&solo));
+        assert!(df._timer_handles.contains_key(&shared));
+
+        df.unsubscribe_node_from_timers(&node_a);
+
+        // `solo` lost its only subscriber: entry and task both gone.
+        assert!(!df.timers.contains_key(&solo));
+        assert!(!df._timer_handles.contains_key(&solo));
+        // `shared` still has `b`: it keeps its subscriber set and its task.
+        assert_eq!(
+            df.timers.get(&shared).map(|s| s.len()),
+            Some(1),
+            "shared interval must keep its remaining subscriber"
+        );
+        assert!(df._timer_handles.contains_key(&shared));
+    }
+
     // dora-rs/dora: the `AddNode` handler guards its re-invocation of
     // `start()` on `dataflow_started`, so that flag must be set on *every*
     // start path. It used to be set only at the single-daemon `Subscribe`
@@ -6618,6 +6759,57 @@ mod fault_tolerance_tests {
         assert!(disable_restart.load(atomic::Ordering::Acquire));
     }
 
+    #[test]
+    fn forget_node_bookkeeping_purges_only_that_node() {
+        // Regression: RemoveNode must drop the removed node's per-node
+        // bookkeeping, otherwise stale input_deadlines/broken_inputs entries
+        // are re-scanned every tick forever and the stderr queue leaks across
+        // repeated dynamic add/remove cycles.
+        let mut df = test_dataflow();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+        let timeout = Duration::from_secs(1);
+
+        for node in [&node_a, &node_b] {
+            df.input_deadlines.insert(
+                (node.clone(), input_x.clone()),
+                InputDeadline {
+                    timeout,
+                    last_received: None,
+                },
+            );
+            df.broken_inputs
+                .insert((node.clone(), input_x.clone()), timeout);
+            df.node_stderr_most_recent
+                .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
+        }
+
+        df.forget_node_bookkeeping(&node_a);
+
+        // node_a's entries are gone …
+        assert!(
+            !df.input_deadlines
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(
+            !df.broken_inputs
+                .contains_key(&(node_a.clone(), input_x.clone()))
+        );
+        assert!(!df.node_stderr_most_recent.contains_key(&node_a));
+
+        // … while node_b's are untouched.
+        assert!(
+            df.input_deadlines
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(
+            df.broken_inputs
+                .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(df.node_stderr_most_recent.contains_key(&node_b));
+    }
+
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
 
     #[test]
@@ -6687,6 +6879,104 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- Circuit-breaker recovery must be gated on receiver backpressure (#2627) --
+
+    /// Helper: wire `sender/output -> receiver/input` and mark the input broken.
+    /// `channel_capacity` controls whether the receiver counts as "keeping up"
+    /// (>= CONTROL_EVENT_HEADROOM) or "saturated" (< CONTROL_EVENT_HEADROOM).
+    fn broken_input_dataflow(
+        channel_capacity: usize,
+    ) -> (
+        RunningDataflow,
+        NodeId,
+        DataId,
+        NodeId,
+        DataId,
+        mpsc::Receiver<Timestamped<NodeEvent>>,
+    ) {
+        let mut df = test_dataflow();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        let input: DataId = "input".to_string().into();
+
+        let mut mapping = BTreeSet::new();
+        mapping.insert((receiver.clone(), input.clone()));
+        df.mappings
+            .insert(OutputId(sender.clone(), output.clone()), mapping);
+
+        let (tx, rx) = mpsc::channel(channel_capacity);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+
+        // Input is currently broken (circuit breaker open).
+        df.broken_inputs
+            .insert((receiver.clone(), input.clone()), Duration::from_secs(5));
+
+        (df, sender, output, receiver, input, rx)
+    }
+
+    /// A bare `OutputSent` is not a delivery confirmation. When the receiver's
+    /// event channel is still saturated (`capacity() < CONTROL_EVENT_HEADROOM`),
+    /// recovery must NOT fire — otherwise the circuit breaker flaps
+    /// `broken ↔ recovered` every `input_timeout` for a persistently-slow
+    /// consumer without any data actually getting through.
+    #[test]
+    fn output_sent_does_not_recover_broken_input_when_receiver_saturated() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // capacity 1 < CONTROL_EVENT_HEADROOM (50) => not keeping up
+        let (mut df, sender, output, receiver, input, mut rx) = broken_input_dataflow(1);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must stay broken while the receiver is saturated"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            0,
+            "no recovery may be counted for a saturated receiver"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "no InputRecovered may be emitted while the receiver is saturated"
+        );
+    }
+
+    /// Companion case: once the receiver has channel headroom (is keeping up),
+    /// the same `OutputSent` recovers the broken input exactly as before.
+    #[test]
+    fn output_sent_recovers_broken_input_when_receiver_keeping_up() {
+        let clock = test_clock();
+        let ft_stats = FaultToleranceStats::default();
+        // an empty NODE_EVENT_CHANNEL_CAPACITY channel has ample headroom
+        let (mut df, sender, output, receiver, input, mut rx) =
+            broken_input_dataflow(NODE_EVENT_CHANNEL_CAPACITY);
+
+        note_output_sent_to_local_receivers(sender, output, &mut df, &clock, Some(&ft_stats));
+
+        assert!(
+            !df.broken_inputs.contains_key(&(receiver, input)),
+            "broken input must recover once the receiver is keeping up"
+        );
+        assert_eq!(
+            ft_stats
+                .circuit_breaker_recoveries
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "recovery must be counted once the receiver is keeping up"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "InputRecovered")),
+            "InputRecovered must be emitted on recovery"
+        );
     }
 
     // -- Test 5: break_input sends InputClosed --
@@ -7368,6 +7658,45 @@ mod fault_tolerance_tests {
 }
 
 #[cfg(test)]
+mod planned_stop_exit_tests {
+    use super::{STATUS_CONTROL_C_EXIT, is_sigterm_like_exit};
+    use dora_message::common::NodeExitStatus;
+
+    #[test]
+    fn status_control_c_exit_constant_matches_ntstatus() {
+        // STATUS_CONTROL_C_EXIT = 0xC000013A, surfaced by
+        // `ExitStatus::code()` (u32 -> i32) on Windows.
+        assert_eq!(STATUS_CONTROL_C_EXIT, 0xC000013Au32 as i32);
+        assert_eq!(STATUS_CONTROL_C_EXIT, -1073741510);
+    }
+
+    #[test]
+    fn recognises_planned_stop_exit_shapes() {
+        // Unix SIGTERM / SIGINT.
+        assert!(is_sigterm_like_exit(&NodeExitStatus::Signal(15)));
+        assert!(is_sigterm_like_exit(&NodeExitStatus::Signal(2)));
+        // Wrapper (`uv run python`) that catches the signal and exits 128 + signo.
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(143)));
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(130)));
+        // Windows: unhandled CTRL_BREAK_EVENT -> STATUS_CONTROL_C_EXIT (dora-rs/dora#2425).
+        assert!(is_sigterm_like_exit(&NodeExitStatus::ExitCode(
+            STATUS_CONTROL_C_EXIT
+        )));
+    }
+
+    #[test]
+    fn does_not_recognise_genuine_failures() {
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Success));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::ExitCode(1)));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::ExitCode(-1)));
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Unknown));
+        // SIGKILL is a hard kill (grace exceeded), not a graceful stop —
+        // it must keep flowing through the GraceDuration branch.
+        assert!(!is_sigterm_like_exit(&NodeExitStatus::Signal(9)));
+    }
+}
+
+#[cfg(test)]
 mod log_tail_tests {
     use super::*;
     use std::io::Write as _;
@@ -7386,5 +7715,54 @@ mod log_tail_tests {
         let out = read_last_n_lines(&mut file, usize::MAX).await.unwrap();
 
         assert_eq!(out, b"line1\nline2\nline3");
+    }
+}
+
+#[cfg(test)]
+mod announce_zenoh_bind_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const REMOTE_COORDINATOR: IpAddr = IpAddr::V4(Ipv4Addr::new(203, 0, 113, 5));
+    const ROUTABLE_LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20));
+
+    fn sock(ip: IpAddr) -> SocketAddr {
+        SocketAddr::new(ip, 6012)
+    }
+
+    #[test]
+    fn explicit_loopback_under_remote_coordinator_is_rejected() {
+        // #2770: an operator who names a loopback address while the coordinator
+        // is remote gets a silently-undialable daemon. The `Explicit` contract
+        // is "bind a routable address or exit", so this must be a hard error.
+        let err = announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(REMOTE_COORDINATOR))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("loopback"), "unexpected error: {msg}");
+        assert!(msg.contains("--zenoh-listen"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn derived_loopback_under_remote_coordinator_only_warns() {
+        // A derived loopback is a best-effort fallback (no routable address was
+        // found), so the daemon still starts — the operator can override it.
+        announce_zenoh_bind(ZenohBind::Derived(LOOPBACK), sock(REMOTE_COORDINATOR)).unwrap();
+    }
+
+    #[test]
+    fn explicit_loopback_under_local_coordinator_is_allowed() {
+        // Single-machine `dora run`: coordinator and nodes share loopback, so a
+        // loopback listener is both sufficient and correct.
+        announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(LOOPBACK)).unwrap();
+    }
+
+    #[test]
+    fn explicit_routable_address_is_allowed() {
+        announce_zenoh_bind(
+            ZenohBind::Explicit(ROUTABLE_LOCAL),
+            sock(REMOTE_COORDINATOR),
+        )
+        .unwrap();
     }
 }

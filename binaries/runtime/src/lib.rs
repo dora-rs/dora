@@ -15,6 +15,8 @@ use operator::{OperatorEvent, StopReason, run_operator};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::{
     runtime::Builder,
@@ -95,7 +97,12 @@ pub fn main() -> eyre::Result<()> {
     });
 
     let operator_id = operator_definition.id.clone();
-    run_operator(
+    // Keep the operator's shared library mapped until *after* the main event
+    // loop has joined below: its outputs are Arrow arrays whose FFI `release`
+    // callbacks live in the `.so`, and the loop may still hold in-flight arrays
+    // (see `run_operator` / `shared_lib::run`). Unloading it earlier dangles
+    // those callbacks and SIGSEGVs when the arrays are freed.
+    let _operator_library = run_operator(
         &node_id,
         operator_definition,
         incoming_events,
@@ -110,6 +117,9 @@ pub fn main() -> eyre::Result<()> {
         Err(panic) => std::panic::resume_unwind(panic),
     }
 
+    // `_operator_library` drops (unloads the `.so`) at end of scope here, after
+    // the main loop has joined and released every Arrow array the operator
+    // exported.
     Ok(())
 }
 
@@ -179,7 +189,48 @@ async fn run(
         .map(|(id, config)| (id, config.inputs.keys().collect()))
         .collect();
 
-    while let Some(event) = events.next().await {
+    // Diagnostic watchdog (dora-rs/dora#2742): warn when the main loop stops
+    // making progress *while handling* an event, naming the stuck event. On
+    // Windows a wedged operator can't be soft-killed (`CTRL_BREAK_EVENT` cannot
+    // interrupt native code the way Unix `SIGTERM` does), so the only symptom is
+    // a silent grace-period force-kill with no clue where it parked.
+    let activity = Arc::new(Mutex::new(LoopActivity::Idle));
+    {
+        let activity = activity.clone();
+        let node_id = node.id().to_string();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(2));
+            ticker.tick().await; // first tick fires immediately
+            loop {
+                ticker.tick().await;
+                let stalled = match &*lock(&activity) {
+                    LoopActivity::Handling { since, what }
+                        if since.elapsed() > Duration::from_secs(3) =>
+                    {
+                        Some((since.elapsed(), *what))
+                    }
+                    _ => None,
+                };
+                if let Some((elapsed, what)) = stalled {
+                    tracing::warn!(
+                        "runtime `{node_id}` main loop stalled for {:.0}s while handling {what} \
+                         (dora-rs/dora#2742 diagnostic)",
+                        elapsed.as_secs_f32()
+                    );
+                }
+            }
+        });
+    }
+
+    loop {
+        *lock(&activity) = LoopActivity::Idle;
+        let Some(event) = events.next().await else {
+            break;
+        };
+        *lock(&activity) = LoopActivity::Handling {
+            since: Instant::now(),
+            what: describe_runtime_event(&event),
+        };
         match event {
             RuntimeEvent::Operator {
                 id: operator_id,
@@ -250,9 +301,25 @@ async fn run(
                 }
             },
             RuntimeEvent::Event(Event::Stop(cause)) => {
+                // Diagnostic (dora-rs/dora#2742): trace Stop delivery so a
+                // Windows nightly shows whether the runtime received Stop and
+                // whether each per-operator forward *completed*. A logged
+                // "received Stop" with no matching "forwarded Stop" means the
+                // forward blocked on a full operator channel — i.e. the operator
+                // is parked in its own `on_event` and never draining.
+                // `warn!` (not `info!`) so it survives the runtime's default
+                // stdout filter (`with_stdout("warn", …)`) and reaches the
+                // nightly log.
+                tracing::warn!(
+                    "runtime received Stop; forwarding to {} operator(s) (dora-rs/dora#2742 diagnostic)",
+                    operator_channels.len()
+                );
                 // forward stop event to all operators and close the event channels
-                for (_, channel) in operator_channels.drain() {
+                for (id, channel) in operator_channels.drain() {
                     let _ = channel.send_async(Event::Stop(cause.clone())).await;
+                    tracing::warn!(
+                        "forwarded Stop to operator `{id}` (dora-rs/dora#2742 diagnostic)"
+                    );
                 }
             }
             RuntimeEvent::Event(Event::Reload {
@@ -285,13 +352,16 @@ async fn run(
 
                 if let Err(err) = operator_channel
                     .send_async(Event::Input {
-                        id: input_id.clone(),
+                        id: input_id,
                         metadata,
                         data,
                     })
                     .await
                     .wrap_err_with(|| {
-                        format!("failed to send input `{input_id}` to operator `{operator_id}`")
+                        // `id` is the full `operator/input` DataId; use it (and the
+                        // still-owned `operator_id`) here so `input_id` can be moved
+                        // into the event above without a per-message clone.
+                        format!("failed to send input `{id}` to operator `{operator_id}`")
                     })
                 {
                     tracing::warn!("{err}");
@@ -359,4 +429,46 @@ enum RuntimeEvent {
         event: OperatorEvent,
     },
     Event(Event),
+}
+
+/// What the runtime's main loop is currently doing, for the stall watchdog.
+///
+/// Diagnostic for dora-rs/dora#2742: on Windows a wedged operator cannot be
+/// interrupted by the daemon's soft-kill (`CTRL_BREAK_EVENT`, unlike Unix
+/// `SIGTERM`), so the node runs to the force-kill and the failure shows up only
+/// as a grace-period kill with no clue where it parked. The watchdog names the
+/// event whose handling has stopped making progress.
+enum LoopActivity {
+    Idle,
+    Handling { since: Instant, what: &'static str },
+}
+
+/// Which *kind* of runtime event the main loop is handling, for the stall
+/// watchdog. Returns a `&'static str` (no per-event allocation on the hot path);
+/// the kind alone distinguishes the two wedge sites that matter — a stalled
+/// `an operator output` is a blocked daemon send, a stalled `an operator input`
+/// is a blocked forward to a parked operator.
+fn describe_runtime_event(event: &RuntimeEvent) -> &'static str {
+    match event {
+        RuntimeEvent::Operator { event, .. } => match event {
+            OperatorEvent::Output { .. } => "an operator output",
+            _ => "an operator lifecycle event",
+        },
+        RuntimeEvent::Event(event) => match event {
+            Event::Input { .. } => "an operator input",
+            Event::InputClosed { .. } => "an input-closed event",
+            Event::Stop(_) => "a stop event",
+            Event::Reload { .. } => "a reload event",
+            _ => "an event",
+        },
+    }
+}
+
+/// Lock a mutex, recovering the guard even if a previous holder panicked. The
+/// watchdog state is pure diagnostics, so a poisoned lock must not take the
+/// runtime down with it.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }

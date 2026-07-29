@@ -304,6 +304,23 @@ impl RunningDataflow {
         }
     }
 
+    /// Drop per-node bookkeeping that is keyed by node id but not covered by
+    /// the routing-table cleanup in the `RemoveNode` handler.
+    ///
+    /// Without this, removing a node (dynamic reconfiguration) leaves stale
+    /// `input_deadlines` / `broken_inputs` entries behind. A never-armed
+    /// `input_deadlines` entry never times out, so `check_input_timeouts`
+    /// re-scans it every tick forever; a `broken_inputs` entry can never
+    /// recover once the node is gone (recovery only happens on message
+    /// receipt, which a removed node never sees). Together with the
+    /// `node_stderr_most_recent` queue this is an unbounded accumulation
+    /// across repeated add/remove cycles.
+    pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
+        self.input_deadlines.retain(|(n, _), _| n != node_id);
+        self.broken_inputs.retain(|(n, _), _| n != node_id);
+        self.node_stderr_most_recent.remove(node_id);
+    }
+
     pub(crate) async fn start(
         &mut self,
         events_tx: &mpsc::Sender<Timestamped<Event>>,
@@ -380,6 +397,36 @@ impl RunningDataflow {
         Ok(())
     }
 
+    /// Drop `node_id` from every timer subscriber set, and for any interval it
+    /// was the *last* subscriber of, cancel that interval's timer task and
+    /// forget the now-empty entry.
+    ///
+    /// Without the cancellation, the per-interval task spawned by [`start`]
+    /// keeps ticking and dispatching `DoraEvent::Timer`s to an empty subscriber
+    /// set for the remaining life of the dataflow — a bounded but pointless
+    /// stream of wakeups after the last consumer of that interval is removed
+    /// via `RemoveNode` (#2585). Dropping the [`RemoteHandle`] stored in
+    /// `_timer_handles` cancels the spawned future. A later `AddNode` that
+    /// re-subscribes to the same interval re-spawns the task through `start`,
+    /// whose `_timer_handles.contains_key` guard makes that safe.
+    ///
+    /// [`start`]: RunningDataflow::start
+    /// [`RemoteHandle`]: futures::future::RemoteHandle
+    pub(crate) fn unsubscribe_node_from_timers(&mut self, node_id: &NodeId) {
+        let mut drained_intervals = Vec::new();
+        for (interval, receivers) in self.timers.iter_mut() {
+            receivers.retain(|(nid, _)| nid != node_id);
+            if receivers.is_empty() {
+                drained_intervals.push(*interval);
+            }
+        }
+        for interval in drained_intervals {
+            self.timers.remove(&interval);
+            // Dropping the RemoteHandle cancels the spawned timer task.
+            self._timer_handles.remove(&interval);
+        }
+    }
+
     pub(crate) async fn stop_all(
         &mut self,
         coordinator_sender: &mut Option<coordinator::CoordinatorSender>,
@@ -416,9 +463,17 @@ impl RunningDataflow {
             .map(|(id, n)| (id.clone(), n.process.take()))
             .collect();
         if force {
-            for (_, proc) in &running_processes {
-                if let Some(proc) = proc {
-                    proc.submit(ProcessOperation::Kill);
+            for (node, proc) in &running_processes {
+                if let Some(proc) = proc
+                    && proc.submit(ProcessOperation::Kill)
+                {
+                    // Record the daemon-initiated kill so a node that ignores
+                    // the pre-kill `Stop` and gets SIGKILLed is classified as
+                    // a planned `GraceDuration` stop rather than a genuine node
+                    // failure. Mirrors the graceful branch below; exit
+                    // classification keys "the daemon asked this node to stop"
+                    // off `grace_duration_kills` (see lib.rs exit handling).
+                    self.grace_duration_kills.insert(node.clone());
                 }
             }
         } else {
@@ -606,6 +661,47 @@ impl RunningDataflow {
     pub(crate) fn inc_pending(&self, node_id: &NodeId) {
         if let Some(counter) = self.pending_messages.get(node_id) {
             counter.fetch_add(1, atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Propagate a `NodeFailed` event to every downstream subscriber of the
+    /// failed node's outputs.
+    ///
+    /// Each successful enqueue is paired with `inc_pending`, mirroring every
+    /// other delivery site: the `Listener` unconditionally decrements a node's
+    /// `pending_messages` counter for every event it drains (`NodeFailed`
+    /// included), so an enqueue without the matching increment would leave the
+    /// reported count one too low — and underflow it to `u64::MAX` when the
+    /// receiver's channel was already empty (dora-rs/dora#2827).
+    pub(crate) fn propagate_node_failed(&self, failed_node: &NodeId, error_msg: &str, clock: &HLC) {
+        let mut affected_by_receiver: BTreeMap<NodeId, Vec<DataId>> = BTreeMap::new();
+        for (output_id, receivers) in &self.mappings {
+            if output_id.0 == *failed_node {
+                for (recv_id, input_id) in receivers {
+                    affected_by_receiver
+                        .entry(recv_id.clone())
+                        .or_default()
+                        .push(input_id.clone());
+                }
+            }
+        }
+        for (recv_id, affected_ids) in affected_by_receiver {
+            if let Some(channel) = self.subscribe_channels.get(&recv_id) {
+                let delivered = send_with_timestamp(
+                    channel,
+                    NodeEvent::NodeFailed {
+                        affected_input_ids: affected_ids,
+                        error: error_msg.to_string(),
+                        source_node_id: failed_node.clone(),
+                    },
+                    clock,
+                )
+                .ok()
+                    == Some(true);
+                if delivered {
+                    self.inc_pending(&recv_id);
+                }
+            }
         }
     }
 
@@ -842,6 +938,68 @@ mod tests {
 
         let outputs = node_output_ids(&mappings, &open_external_mappings, &node_id("source"));
         assert!(outputs.is_empty());
+    }
+
+    // ---- dora-rs/dora#2827: NodeFailed propagation must not underflow the
+    //      receiver's pending_messages counter ----
+
+    fn empty_descriptor() -> Descriptor {
+        use dora_message::{config::CommunicationConfig, descriptor::Debug as DescriptorDebug};
+        Descriptor {
+            nodes: vec![],
+            communication: CommunicationConfig::default(),
+            deploy: None,
+            debug: DescriptorDebug::default(),
+            health_check_interval: None,
+            strict_types: None,
+            type_rules: vec![],
+            env: None,
+        }
+    }
+
+    #[test]
+    fn propagate_node_failed_keeps_idle_receiver_counter_consistent() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let failed = node_id("source");
+        let receiver = node_id("sink");
+
+        // `source/out` is consumed by `sink/in`.
+        df.mappings.insert(
+            OutputId(failed.clone(), data_id("out")),
+            BTreeSet::from([(receiver.clone(), data_id("in"))]),
+        );
+
+        // The receiver is subscribed and idle: its pending counter starts at 0.
+        let (tx, mut rx) = mpsc::channel(16);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        let counter = Arc::new(AtomicU64::new(0));
+        df.pending_messages
+            .insert(receiver.clone(), counter.clone());
+
+        let clock = HLC::default();
+        df.propagate_node_failed(&failed, "boom", &clock);
+
+        // The successful enqueue must have incremented the counter to match the
+        // in-flight event.
+        assert_eq!(counter.load(atomic::Ordering::Relaxed), 1);
+
+        // Drain the event exactly as the Listener does: one unconditional
+        // decrement per drained event. With the matching increment in place the
+        // counter returns to 0; without it, this decrement would wrap to
+        // `u64::MAX`.
+        let mut drained = 0;
+        while let Ok(event) = rx.try_recv() {
+            counter.fetch_sub(1, atomic::Ordering::Relaxed);
+            assert!(matches!(event.inner, NodeEvent::NodeFailed { .. }));
+            drained += 1;
+        }
+        assert_eq!(drained, 1, "receiver should get exactly one NodeFailed");
+        assert_eq!(
+            counter.load(atomic::Ordering::Relaxed),
+            0,
+            "pending counter must stay consistent (no u64::MAX underflow)"
+        );
     }
 
     const TEST_GRACE: Duration = Duration::from_millis(100);

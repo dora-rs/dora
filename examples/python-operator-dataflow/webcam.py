@@ -75,13 +75,39 @@ class Operator:
             # camera, read() above is skipped, keeping the operator responsive.
             headless = frame is None
             if headless:
+                # Diagnostic (dora-rs/dora#2742): the Windows nightly wedges the
+                # webcam operator without ever reaching STOP. These flushed
+                # prints pin *which* call parks on the stuck tick — the native
+                # frame build (`cv2.putText`), the pyarrow encode, or dora's
+                # `send_output` (a blocked daemon-path TCP write). Gated on
+                # `headless` so a real-camera run is unaffected; remove once
+                # #2742 is understood.
+                print(
+                    f"webcam-diag: t={time.time() - self.start_time:.2f}s building placeholder",
+                    flush=True,
+                )
                 frame = self._placeholder_frame()
+                print(
+                    f"webcam-diag: t={time.time() - self.start_time:.2f}s encoding pa.array",
+                    flush=True,
+                )
 
+            payload = pa.array(frame.ravel())
+            if headless:
+                print(
+                    f"webcam-diag: t={time.time() - self.start_time:.2f}s send_output START",
+                    flush=True,
+                )
             send_output(
                 "image",
-                pa.array(frame.ravel()),
+                payload,
                 dora_event["metadata"],
             )
+            if headless:
+                print(
+                    f"webcam-diag: t={time.time() - self.start_time:.2f}s send_output DONE",
+                    flush=True,
+                )
 
             # Stop promptly under CI when there is no real camera, so the node
             # exits well inside the daemon's `--stop-after`/grace instead of
@@ -93,7 +119,9 @@ class Operator:
             ):
                 return DoraStatus.STOP
         elif event_type == "STOP":
-            print("received stop")
+            # `flush=True` so this is never lost in a buffer if the process is
+            # force-killed shortly after (dora-rs/dora#2742 diagnostic).
+            print("received stop", flush=True)
             return DoraStatus.STOP
         else:
             print("received unexpected event:", event_type)
