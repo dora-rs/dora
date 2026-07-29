@@ -1288,10 +1288,15 @@ impl Node {
                 .remove(&buffer_id);
 
             // Sender-side cleanup (PINNED_POOL, GPU/transit buffers).
-            if let Some(c) = buffer_id
-                .strip_prefix("pool_")
-                .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
-                .and_then(|c| c.parse::<u64>().ok())
+            // Guard against cross-process counter aliasing: buffer ids are
+            // pool_{node_id}_{counter}, and counters are per-process — a
+            // FreeMemoryPool event for pool_S_5 must not free pool_R_5 in
+            // the receiving process.
+            if buffer_id.starts_with(&format!("pool_{}_", self.node_id))
+                && let Some(c) = buffer_id
+                    .strip_prefix("pool_")
+                    .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
+                    .and_then(|c| c.parse::<u64>().ok())
                 && let Some(slot) = PINNED_POOL
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
