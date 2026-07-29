@@ -10,6 +10,36 @@ use dora_node_api::{DoraNode, Event, arrow::datatypes::DataType, arrow_utils};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
 
+/// Parse `DORA_RECORD_TOPICS` (`{ "input_id": "source_node/source_output" }`)
+/// into a lookup from the record node's own input id to the validated
+/// `(source_node, source_output)` ids.
+///
+/// The node and output ids are parsed via [`str::parse`] (`FromStr`), which
+/// *validates* the character set and returns an error, rather than the
+/// panicking `NodeId::from`/`DataId::from` (`From<String>`) conversions. A
+/// malformed topic (e.g. a source node id containing a space) therefore fails
+/// the node cleanly at startup instead of panicking mid-run when the offending
+/// event is first recorded.
+fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId, DataId)>> {
+    let topic_map: HashMap<String, String> =
+        serde_json::from_str(topics_json).wrap_err("failed to parse DORA_RECORD_TOPICS")?;
+
+    let mut reverse_map: HashMap<String, (NodeId, DataId)> = HashMap::new();
+    for (input_id, source) in &topic_map {
+        let (node_id, output_id) = source
+            .split_once('/')
+            .ok_or_else(|| eyre::eyre!("invalid topic format: {source}"))?;
+        let node_id: NodeId = node_id
+            .parse()
+            .wrap_err_with(|| format!("invalid source node id in topic `{source}`"))?;
+        let output_id: DataId = output_id
+            .parse()
+            .wrap_err_with(|| format!("invalid source output id in topic `{source}`"))?;
+        reverse_map.insert(input_id.clone(), (node_id, output_id));
+    }
+    Ok(reverse_map)
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -17,21 +47,8 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
     let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
 
-    // Parse topic map: { "input_id_on_record_node": "source_node/source_output" }
-    let topic_map: HashMap<String, String> =
-        serde_json::from_str(&topics_json).wrap_err("failed to parse DORA_RECORD_TOPICS")?;
-
-    // Build reverse map: input_id -> (source_node_id, source_output_id)
-    let mut reverse_map: HashMap<String, (String, String)> = HashMap::new();
-    for (input_id, source) in &topic_map {
-        let (node_id, output_id) = source
-            .split_once('/')
-            .ok_or_else(|| eyre::eyre!("invalid topic format: {source}"))?;
-        reverse_map.insert(
-            input_id.clone(),
-            (node_id.to_string(), output_id.to_string()),
-        );
-    }
+    // Build reverse map: input_id -> (source_node_id, source_output_id).
+    let reverse_map = build_reverse_map(&topics_json)?;
 
     let (_node, mut events) = DoraNode::init_from_env()?;
 
@@ -86,8 +103,8 @@ fn main() -> eyre::Result<()> {
                 let timestamp = metadata.timestamp();
                 let inter_event = InterDaemonEvent::Output {
                     dataflow_id: uuid::Uuid::nil(),
-                    node_id: NodeId::from(source_node.clone()),
-                    output_id: DataId::from(source_output.clone()),
+                    node_id: source_node.clone(),
+                    output_id: source_output.clone(),
                     metadata,
                     data: raw_data,
                 };
@@ -104,8 +121,8 @@ fn main() -> eyre::Result<()> {
                     .as_nanos() as u64;
 
                 let entry = RecordEntry {
-                    node_id: source_node.clone(),
-                    output_id: source_output.clone(),
+                    node_id: source_node.to_string(),
+                    output_id: source_output.to_string(),
                     timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
                     event_bytes,
                 };
@@ -124,4 +141,43 @@ fn main() -> eyre::Result<()> {
     eprintln!("  File:     {output_file}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_reverse_map;
+
+    #[test]
+    fn valid_topics_parse() {
+        let map = build_reverse_map(r#"{"in":"camera/image"}"#).unwrap();
+        let (node, output) = map.get("in").unwrap();
+        assert_eq!(node.to_string(), "camera");
+        assert_eq!(output.to_string(), "image");
+    }
+
+    #[test]
+    fn missing_slash_is_an_error() {
+        assert!(build_reverse_map(r#"{"in":"camera"}"#).is_err());
+    }
+
+    // A source node id with an invalid character (a space) must yield a clean
+    // startup error, not a panic from the `NodeId::from(String)` conversion
+    // that the recorder used to call in its hot loop.
+    #[test]
+    fn invalid_node_id_is_an_error_not_a_panic() {
+        let err = build_reverse_map(r#"{"in":"my node/image"}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid source node id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn invalid_output_id_is_an_error_not_a_panic() {
+        let err = build_reverse_map(r#"{"in":"camera/bad output"}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid source output id"),
+            "unexpected error: {err:#}"
+        );
+    }
 }
