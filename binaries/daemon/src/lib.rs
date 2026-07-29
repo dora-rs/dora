@@ -4025,16 +4025,14 @@ impl Daemon {
                                 for (node, channel) in &dataflow.subscribe_channels {
                                     if touched.contains(node.as_ref())
                                         && node.as_ref() != node_id.as_ref()
-                                    {
-                                        if let Err(e) =
+                                        && let Err(e) =
                                             send_with_timestamp(channel, event.clone(), &self.clock)
-                                        {
-                                            tracing::warn!(
-                                                node_id = %node,
-                                                pool = %shared_memory_id,
-                                                "failed to deliver FreeMemoryPool: {e}"
-                                            );
-                                        }
+                                    {
+                                        tracing::warn!(
+                                            node_id = %node,
+                                            pool = %shared_memory_id,
+                                            "failed to deliver FreeMemoryPool: {e}"
+                                        );
                                     }
                                 }
                             }

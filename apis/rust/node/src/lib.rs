@@ -122,6 +122,7 @@ use tokio::sync::oneshot;
 
 mod daemon_connection;
 mod error;
+/// Asynchronous event stream, daemon communication, and memory-pool coordination.
 pub mod event_stream;
 pub mod integration_testing;
 mod node;
