@@ -89,70 +89,138 @@ fn prefix_output_with_operator_id(op_name: &OperatorId, output: &DataId) -> eyre
         })
 }
 
-impl DescriptorExt for Descriptor {
-    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
-        let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+/// Like [`DescriptorExt::resolve_aliases_and_set_defaults`], but resolves
+/// `desc` as a node (or nodes) being added to an already-running dataflow
+/// whose current node set is `topology_nodes`.
+///
+/// Whole-descriptor resolution rewrites an input that references a
+/// single-`operator:` producer from the bare output name to the
+/// operator-qualified one (`result` -> `op/result`). The dynamic-topology
+/// `AddNode` path resolves the new node in isolation, so that producer is not
+/// present in the descriptor being resolved and the rewrite is skipped —
+/// leaving the added node subscribed to an output name nobody publishes
+/// (silent data loss, #2877). Supplying the surrounding `topology_nodes` makes
+/// those producers visible so the prefixing is applied.
+///
+/// `topology_nodes` contribute *only* to the single-operator output-prefixing
+/// lookup — they are never themselves resolved or emitted, and nothing else on
+/// the surrounding descriptor (`env`, `deploy`, …) is consulted. Callers that
+/// want the running dataflow's `env` merged in must set it on `desc` (the
+/// `AddNode` handler does, see #2919). `desc`'s own nodes take precedence in
+/// the lookup, so a node id present in both resolves against the copy being
+/// added.
+pub fn resolve_aliases_and_set_defaults_in_topology(
+    desc: &Descriptor,
+    topology_nodes: &[Node],
+) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
 
-        let single_operator_nodes: HashMap<_, _> = self
-            .nodes
-            .iter()
-            .filter_map(|n| {
-                n.operator
-                    .as_ref()
-                    .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
+    let single_operator_nodes: HashMap<_, _> = topology_nodes
+        .iter()
+        .chain(desc.nodes.iter())
+        .filter_map(|n| {
+            n.operator
+                .as_ref()
+                .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
+        })
+        .collect();
+
+    let mut resolved = BTreeMap::new();
+    for mut node in desc.nodes.clone() {
+        // adjust ROS2 bridge input mappings early (before node_kind borrows node)
+        if node.ros2.is_some() {
+            for input in node.inputs.values_mut() {
+                if let InputMapping::User(m) = &mut input.mapping
+                    && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
+                {
+                    m.output = prefix_output_with_operator_id(op_name, &m.output)?;
+                }
+            }
+        }
+
+        // adjust input mappings
+        let mut node_kind = node_kind_mut(&mut node)?;
+        let input_mappings: Vec<_> = match &mut node_kind {
+            NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
+            NodeKindMut::Runtime(node) => node
+                .operators
+                .iter_mut()
+                .flat_map(|op| op.config.inputs.values_mut())
+                .collect(),
+            NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
+            NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
+            NodeKindMut::Ros2Bridge(_) => vec![],
+        };
+        for mapping in input_mappings
+            .into_iter()
+            .filter_map(|i| match &mut i.mapping {
+                InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
+                InputMapping::User(m) => Some(m),
             })
-            .collect();
-
-        let mut resolved = BTreeMap::new();
-        for mut node in self.nodes.clone() {
-            // adjust ROS2 bridge input mappings early (before node_kind borrows node)
-            if node.ros2.is_some() {
-                for input in node.inputs.values_mut() {
-                    if let InputMapping::User(m) = &mut input.mapping
-                        && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
-                    {
-                        m.output = prefix_output_with_operator_id(op_name, &m.output)?;
-                    }
-                }
+        {
+            if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
+                mapping.output = prefix_output_with_operator_id(op_name, &mapping.output)?;
             }
+        }
 
-            // adjust input mappings
-            let mut node_kind = node_kind_mut(&mut node)?;
-            let input_mappings: Vec<_> = match &mut node_kind {
-                NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
-                NodeKindMut::Runtime(node) => node
-                    .operators
-                    .iter_mut()
-                    .flat_map(|op| op.config.inputs.values_mut())
-                    .collect(),
-                NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
-                NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
-                NodeKindMut::Ros2Bridge(_) => vec![],
-            };
-            for mapping in input_mappings
-                .into_iter()
-                .filter_map(|i| match &mut i.mapping {
-                    InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
-                    InputMapping::User(m) => Some(m),
-                })
-            {
-                if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = prefix_output_with_operator_id(op_name, &mapping.output)?;
-                }
-            }
+        // resolve nodes
+        let kind = match node_kind {
+            NodeKindMut::Standard {
+                path,
+                source,
+                inputs: _,
+            } => CoreNodeKind::Custom(CustomNode {
+                path: path.clone(),
+                source,
+                path_sha256: node.path_sha256,
+                args: node.args,
+                build: node.build,
+                send_stdout_as: node.send_stdout_as,
+                send_logs_as: node.send_logs_as,
+                min_log_level: node.min_log_level,
+                max_log_size: node.max_log_size,
+                max_rotated_files: node.max_rotated_files,
+                run_config: NodeRunConfig {
+                    inputs: node.inputs,
+                    outputs: node.outputs,
+                    output_types: node.output_types,
+                    output_framing: node.output_framing,
+                    input_types: node.input_types,
+                    shared_memory_pool_size: node.shared_memory_pool_size,
+                },
+                envs: None,
+                restart_policy: node.restart_policy,
+                max_restarts: node.max_restarts,
+                restart_delay: node.restart_delay,
+                max_restart_delay: node.max_restart_delay,
+                restart_window: node.restart_window,
+                health_check_timeout: node.health_check_timeout,
+                finish_grace_secs: node.finish_grace_secs,
+            }),
+            NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
+            NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
+            NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
+                operators: vec![OperatorDefinition {
+                    id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                    config: op.config.clone(),
+                }],
+            }),
+            NodeKindMut::Ros2Bridge(config) => {
+                let bridge_config_json = serde_json::to_string(&config)
+                    .context("failed to serialize ROS2 bridge config")?;
 
-            // resolve nodes
-            let kind = match node_kind {
-                NodeKindMut::Standard {
-                    path,
-                    source,
-                    inputs: _,
-                } => CoreNodeKind::Custom(CustomNode {
-                    path: path.clone(),
-                    source,
-                    path_sha256: node.path_sha256,
+                let mut envs = BTreeMap::new();
+                envs.insert(
+                    "DORA_ROS2_BRIDGE_CONFIG".to_string(),
+                    EnvValue::String(bridge_config_json),
+                );
+
+                CoreNodeKind::Custom(CustomNode {
+                    path: "dora-ros2-bridge-node".to_string(),
+                    source: NodeSource::Local,
+                    path_sha256: None,
                     args: node.args,
-                    build: node.build,
+                    build: None,
                     send_stdout_as: node.send_stdout_as,
                     send_logs_as: node.send_logs_as,
                     min_log_level: node.min_log_level,
@@ -166,7 +234,7 @@ impl DescriptorExt for Descriptor {
                         input_types: node.input_types,
                         shared_memory_pool_size: node.shared_memory_pool_size,
                     },
-                    envs: None,
+                    envs: Some(envs),
                     restart_policy: node.restart_policy,
                     max_restarts: node.max_restarts,
                     restart_delay: node.restart_delay,
@@ -174,81 +242,40 @@ impl DescriptorExt for Descriptor {
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
                     finish_grace_secs: node.finish_grace_secs,
-                }),
-                NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
-                NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
-                NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
-                    operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
-                    }],
-                }),
-                NodeKindMut::Ros2Bridge(config) => {
-                    let bridge_config_json = serde_json::to_string(&config)
-                        .context("failed to serialize ROS2 bridge config")?;
-
-                    let mut envs = BTreeMap::new();
-                    envs.insert(
-                        "DORA_ROS2_BRIDGE_CONFIG".to_string(),
-                        EnvValue::String(bridge_config_json),
-                    );
-
-                    CoreNodeKind::Custom(CustomNode {
-                        path: "dora-ros2-bridge-node".to_string(),
-                        source: NodeSource::Local,
-                        path_sha256: None,
-                        args: node.args,
-                        build: None,
-                        send_stdout_as: node.send_stdout_as,
-                        send_logs_as: node.send_logs_as,
-                        min_log_level: node.min_log_level,
-                        max_log_size: node.max_log_size,
-                        max_rotated_files: node.max_rotated_files,
-                        run_config: NodeRunConfig {
-                            inputs: node.inputs,
-                            outputs: node.outputs,
-                            output_types: node.output_types,
-                            output_framing: node.output_framing,
-                            input_types: node.input_types,
-                            shared_memory_pool_size: node.shared_memory_pool_size,
-                        },
-                        envs: Some(envs),
-                        restart_policy: node.restart_policy,
-                        max_restarts: node.max_restarts,
-                        restart_delay: node.restart_delay,
-                        max_restart_delay: node.max_restart_delay,
-                        restart_window: node.restart_window,
-                        health_check_timeout: node.health_check_timeout,
-                        finish_grace_secs: node.finish_grace_secs,
-                    })
-                }
-            };
-
-            if resolved.contains_key(&node.id) {
-                eyre::bail!(
-                    "duplicate node ID `{}` — each node must have a unique `id`",
-                    node.id
-                );
+                })
             }
-            resolved.insert(
-                node.id.clone(),
-                ResolvedNode {
-                    id: node.id,
-                    name: node.name,
-                    description: node.description,
-                    // Merge the dataflow-level `env` into the per-node `env`.
-                    // Per-node keys win on conflict so a node can override a
-                    // shared default (e.g. global `RUST_LOG=info` with one
-                    // verbose node setting `RUST_LOG=debug`).
-                    env: merge_env(self.env.as_ref(), node.env),
-                    cpu_affinity: node.cpu_affinity,
-                    deploy: node.deploy,
-                    kind,
-                },
+        };
+
+        if resolved.contains_key(&node.id) {
+            eyre::bail!(
+                "duplicate node ID `{}` — each node must have a unique `id`",
+                node.id
             );
         }
+        resolved.insert(
+            node.id.clone(),
+            ResolvedNode {
+                id: node.id,
+                name: node.name,
+                description: node.description,
+                // Merge the dataflow-level `env` into the per-node `env`.
+                // Per-node keys win on conflict so a node can override a
+                // shared default (e.g. global `RUST_LOG=info` with one
+                // verbose node setting `RUST_LOG=debug`).
+                env: merge_env(desc.env.as_ref(), node.env),
+                cpu_affinity: node.cpu_affinity,
+                deploy: node.deploy,
+                kind,
+            },
+        );
+    }
 
-        Ok(resolved)
+    Ok(resolved)
+}
+
+impl DescriptorExt for Descriptor {
+    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+        resolve_aliases_and_set_defaults_in_topology(self, &[])
     }
 
     fn visualize_as_mermaid_with_boundaries(
@@ -707,6 +734,129 @@ mod tests {
         assert_eq!(merged.get("A"), Some(&EnvValue::String("node".into())));
         assert_eq!(merged.get("B"), Some(&EnvValue::String("global".into())));
         assert_eq!(merged.get("C"), Some(&EnvValue::String("node".into())));
+    }
+
+    fn resolved_input_mapping<'a>(
+        resolved: &'a BTreeMap<NodeId, ResolvedNode>,
+        node: &str,
+        input: &str,
+    ) -> &'a InputMapping {
+        let node = resolved
+            .get(&NodeId::from(node.to_string()))
+            .expect("node resolved");
+        let inputs = match &node.kind {
+            CoreNodeKind::Custom(n) => &n.run_config.inputs,
+            CoreNodeKind::Runtime(_) => panic!("expected custom node"),
+        };
+        &inputs
+            .get(&DataId::from(input.to_string()))
+            .expect("input present")
+            .mapping
+    }
+
+    #[test]
+    fn add_node_prefixes_single_operator_producer_input_via_topology() {
+        // A node added to a running dataflow via `AddNode` is resolved against a
+        // single-node descriptor. If its input references an existing
+        // single-`operator:` producer, the `op/` output prefix that
+        // whole-descriptor resolution applies must still be added — sourced
+        // from the surrounding topology — or the node subscribes to an output
+        // name nobody publishes and silently receives no data (#2877).
+        let topology: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+",
+        )
+        .expect("parse topology");
+
+        let added: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: consumer
+    path: consumer
+    inputs:
+      reading: producer/result
+",
+        )
+        .expect("parse added node");
+
+        // With the topology the input is prefixed to the operator-qualified
+        // output name the runtime actually publishes under (`op/result`).
+        let resolved = resolve_aliases_and_set_defaults_in_topology(&added, &topology.nodes)
+            .expect("resolve in topology");
+        match resolved_input_mapping(&resolved, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.source, NodeId::from("producer".to_string()));
+                assert_eq!(m.output, DataId::from("op/result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
+
+        // Contrast: with no topology the producer is not in scope at all, so
+        // there is nothing to key the rewrite off and the name stays bare.
+        // That is the correct answer for the inputs given — which is exactly
+        // why the `AddNode` path had to stop resolving in isolation.
+        let resolved_isolated = added
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve isolated");
+        match resolved_input_mapping(&resolved_isolated, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.output, DataId::from("result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topology_lookup_prefers_the_node_being_added_over_a_same_id_topology_entry() {
+        // The lookup chains topology nodes *before* `desc`'s own, so a node id
+        // present in both resolves against the copy being added rather than a
+        // stale topology entry. Unreachable through `AddNode` today (duplicate
+        // ids are rejected up front and `RemoveNode` prunes the stored
+        // descriptor), but the precedence should not depend on that.
+        let topology: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      id: stale
+      python: producer.py
+      outputs:
+        - result
+",
+        )
+        .expect("parse topology");
+
+        let added: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      id: fresh
+      python: producer.py
+      outputs:
+        - result
+  - id: consumer
+    path: consumer
+    inputs:
+      reading: producer/result
+",
+        )
+        .expect("parse added nodes");
+
+        let resolved = resolve_aliases_and_set_defaults_in_topology(&added, &topology.nodes)
+            .expect("resolve in topology");
+        match resolved_input_mapping(&resolved, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.output, DataId::from("fresh/result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
     }
 
     #[test]

@@ -25,6 +25,7 @@ use dora_message::{
         DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
+    descriptor::{Descriptor, Node, ResolvedNode},
     id::NodeId,
 };
 pub use events::{DaemonRequest, DataflowEvent, Event};
@@ -1583,13 +1584,12 @@ async fn start_inner(
                                         // node).
                                         let original_node = node.clone();
 
-                                        // See `resolve_single_node` for the
-                                        // env carry-through rationale
-                                        // (dora-rs/dora#2919).
-                                        match resolve_single_node(
-                                            node,
-                                            dataflow.descriptor.env.clone(),
-                                        ) {
+                                        // See `resolve_single_node` for what
+                                        // the running descriptor contributes
+                                        // (env carry-through #2919,
+                                        // single-operator output prefixing
+                                        // #2877).
+                                        match resolve_single_node(node, &dataflow.descriptor) {
                                             Ok((node_id, resolved_node)) => {
                                                 // Pick the first daemon (single-daemon case)
                                                 // TODO: use machine label or load balancing for multi-daemon
@@ -1789,7 +1789,12 @@ async fn start_inner(
                                 // Route to the daemon that OWNS the id — a
                                 // replace targets an existing node, unlike
                                 // AddNode's first-daemon placement.
-                                let (daemon_id, uv, dataflow_env) = {
+                                let original_node = node.clone();
+                                // Resolve inside the borrow so the running
+                                // descriptor can be passed by reference; the
+                                // borrow ends before `daemon_connections` is
+                                // taken mutably below.
+                                let (daemon_id, uv, node_id, resolved_node) = {
                                     let dataflow =
                                         running_dataflows.get(&dataflow_id).ok_or_else(|| {
                                             eyre!("no running dataflow with ID {dataflow_id}")
@@ -1805,11 +1810,10 @@ async fn start_inner(
                                                 node.id
                                             )
                                         })?;
-                                    (daemon_id, dataflow.uv, dataflow.descriptor.env.clone())
+                                    let (node_id, resolved_node) =
+                                        resolve_single_node(node, &dataflow.descriptor)?;
+                                    (daemon_id, dataflow.uv, node_id, resolved_node)
                                 };
-                                let original_node = node.clone();
-                                let (node_id, resolved_node) =
-                                    resolve_single_node(node, dataflow_env)?;
                                 let msg = serde_json::to_vec(&Timestamped {
                                     inner: DaemonCoordinatorEvent::ReplaceNode {
                                         dataflow_id,
@@ -4233,18 +4237,29 @@ fn ensure_add_node_applied(
 }
 
 /// Resolve a single dynamically-supplied node definition via a temporary
-/// one-node descriptor, carrying the running dataflow's own `env:` so the
-/// node inherits it exactly as statically declared peers do
-/// (dora-rs/dora#2919). Shared by the AddNode and ReplaceNode arms so the
-/// two commands can never resolve differently.
+/// one-node descriptor, in the context of the dataflow it is joining.
+/// Shared by the AddNode and ReplaceNode arms so the two commands can never
+/// resolve differently.
+///
+/// `running_descriptor` is the dataflow's stored descriptor, which at call
+/// time holds exactly the nodes already in the dataflow. Two things must come
+/// from it rather than from the supplied node alone, and each was a silent
+/// data-loss bug while they didn't:
+///
+/// - **`env`**: carried onto the temporary descriptor so the resolver's
+///   dataflow-into-node merge gives the node the same environment its
+///   statically declared peers got, including anything set via `dora start
+///   --env`. Node keys still win on conflict (dora-rs/dora#2919).
+/// - **Single-`operator:` output prefixing**: whole-descriptor resolution
+///   rewrites an input referencing such a producer from the bare output name
+///   to the operator-qualified one (`result` -> `op/result`). Resolving in
+///   isolation left that producer invisible, so the node subscribed to a name
+///   nobody publishes and silently received no data (dora-rs/dora#2877).
 fn resolve_single_node(
-    node: dora_message::descriptor::Node,
-    dataflow_env: Option<std::collections::BTreeMap<String, dora_message::descriptor::EnvValue>>,
-) -> eyre::Result<(
-    dora_core::config::NodeId,
-    dora_message::descriptor::ResolvedNode,
-)> {
-    let tmp_desc = dora_message::descriptor::Descriptor {
+    node: Node,
+    running_descriptor: &Descriptor,
+) -> eyre::Result<(NodeId, ResolvedNode)> {
+    let tmp_desc = Descriptor {
         nodes: vec![node],
         communication: Default::default(),
         deploy: None,
@@ -4252,15 +4267,16 @@ fn resolve_single_node(
         health_check_interval: None,
         strict_types: None,
         type_rules: Vec::new(),
-        env: dataflow_env,
+        env: running_descriptor.env.clone(),
         exit_when_nodes_finish: None,
     };
-    let mut resolved_map = tmp_desc
-        .resolve_aliases_and_set_defaults()
-        .map_err(|e| eyre!("failed to resolve node: {e}"))?;
-    resolved_map
-        .pop_first()
-        .ok_or_else(|| eyre!("node descriptor resolved to empty map"))
+    dora_core::descriptor::resolve_aliases_and_set_defaults_in_topology(
+        &tmp_desc,
+        &running_descriptor.nodes,
+    )
+    .map_err(|e| eyre!("failed to resolve node: {e}"))?
+    .pop_first()
+    .ok_or_else(|| eyre!("node descriptor resolved to empty map"))
 }
 
 /// Validate that the daemon's reply to `DaemonCoordinatorEvent::ReplaceNode`
@@ -4822,6 +4838,97 @@ mod tests {
     use std::collections::HashMap;
     use tokio::time::{Duration as TokioDuration, timeout};
     use uuid::Uuid;
+
+    /// The single input mapping of a resolved custom node.
+    fn only_input_mapping(
+        resolved: &ResolvedNode,
+        input: &str,
+    ) -> dora_message::config::InputMapping {
+        let inputs = match &resolved.kind {
+            dora_message::descriptor::CoreNodeKind::Custom(n) => &n.run_config.inputs,
+            dora_message::descriptor::CoreNodeKind::Runtime(_) => panic!("expected custom node"),
+        };
+        inputs
+            .get(&dora_message::id::DataId::from(input.to_string()))
+            .expect("input present")
+            .mapping
+            .clone()
+    }
+
+    /// A running dataflow consisting of one single-`operator:` producer, plus
+    /// an optional dataflow-level `env:`.
+    fn running_descriptor_with_operator_producer(env: serde_json::Value) -> Descriptor {
+        serde_json::from_value(serde_json::json!({
+            "nodes": [{
+                "id": "producer",
+                "operator": { "python": "producer.py", "outputs": ["result"] },
+            }],
+            "env": env,
+        }))
+        .expect("valid running descriptor")
+    }
+
+    #[test]
+    fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
+        // Regression guard for #2877 at the call site: a node joining a running
+        // dataflow must end up subscribed to the operator-qualified output name
+        // the runtime actually publishes under (`op/result`). Resolving it in
+        // isolation leaves the reference bare and it silently receives no data.
+        // `resolve_single_node` is shared, so this covers both `dora node add`
+        // and `dora node replace`.
+        let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+
+        let added: Node = serde_json::from_value(serde_json::json!({
+            "id": "consumer",
+            "path": "consumer",
+            "inputs": { "reading": "producer/result" },
+        }))
+        .expect("valid node");
+
+        let (node_id, resolved) =
+            resolve_single_node(added, &running).expect("node resolves against the topology");
+
+        assert_eq!(node_id.to_string(), "consumer");
+        match only_input_mapping(&resolved, "reading") {
+            dora_message::config::InputMapping::User(m) => {
+                assert_eq!(m.source.to_string(), "producer");
+                assert_eq!(m.output.to_string(), "op/result");
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dynamic_node_inherits_the_running_dataflow_env() {
+        // Regression guard for #2919, which shares this resolution path: the
+        // node inherits the dataflow-level `env:` (including anything from
+        // `dora start --env`), with its own keys winning on conflict.
+        let running = running_descriptor_with_operator_producer(
+            serde_json::json!({ "SHARED": "from-dataflow", "RUST_LOG": "info" }),
+        );
+
+        let added: Node = serde_json::from_value(serde_json::json!({
+            "id": "consumer",
+            "path": "consumer",
+            "env": { "RUST_LOG": "debug" },
+        }))
+        .expect("valid node");
+
+        let (_, resolved) = resolve_single_node(added, &running).expect("node resolves");
+
+        let env = resolved.env.expect("merged env present");
+        assert_eq!(
+            env.get("SHARED"),
+            Some(&dora_message::descriptor::EnvValue::String(
+                "from-dataflow".into()
+            )),
+        );
+        assert_eq!(
+            env.get("RUST_LOG"),
+            Some(&dora_message::descriptor::EnvValue::String("debug".into())),
+            "per-node key must win over the dataflow-level default",
+        );
+    }
 
     fn test_running_dataflow(
         dataflow_id: DataflowId,
