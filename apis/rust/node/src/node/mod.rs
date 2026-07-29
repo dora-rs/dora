@@ -2338,16 +2338,16 @@ pub(crate) fn teardown_with_timeout(
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
-        // Stop the startup handshake first: joining its marker thread releases
-        // the thread's `Arc` clone of the publishers, so the teardown below
-        // holds the last reference and actually undeclares them.
-        let ack_subscribers = match self.startup_handshake.take() {
-            Some(mut handshake) => {
-                handshake.shutdown();
-                std::mem::take(&mut handshake.ack_subscribers)
-            }
-            None => Vec::new(),
-        };
+        // The startup handshake's marker thread holds an `Arc` clone of the
+        // publishers, so it must be stopped and joined before the publishers
+        // are dropped for the undeclare below to see the last reference. Do
+        // that join *inside* the bounded teardown: `shutdown()` sets the stop
+        // flag but cannot interrupt an in-progress `publisher.put().wait()`, so
+        // on a wedged zenoh net runtime the join could otherwise hang node
+        // shutdown (and with it the daemon, which waits for `InputClosed`) —
+        // the exact hang `teardown_with_timeout` exists to bound (#2425). The
+        // consumer side already joins its acker thread under the same deadline.
+        let startup_handshake = self.startup_handshake.take();
         // Tear down zenoh before notifying the daemon below, so that
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
@@ -2356,8 +2356,10 @@ impl Drop for DoraNode {
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
         if session.is_none() && shm_provider.is_none() && publishers.is_empty() {
-            // no zenoh state (interactive/testing mode): drop inline
-            drop(ack_subscribers);
+            // no zenoh state (interactive/testing mode): drop inline. A node
+            // without a zenoh session never has a handshake, but drop it here
+            // too so this branch stays self-contained.
+            drop(startup_handshake);
             drop(runtime);
         } else {
             // A wedged zenoh net runtime stalls `Session` close beyond its
@@ -2365,12 +2367,18 @@ impl Drop for DoraNode {
             // hang node shutdown (and with it the daemon, which waits for
             // `InputClosed`). Bound the teardown with a deadline instead.
             let completed = teardown_with_timeout("zenoh", ZENOH_TEARDOWN_TIMEOUT, move || {
-                // documented drop order: subscribers and publishers (data +
-                // schema) before the session, owned runtime last so async
-                // cleanup can still run. The handshake thread was joined
-                // above, so the publishers `Arc` is the last reference and
-                // dropping it undeclares them here.
-                drop(ack_subscribers);
+                // Stop + join the marker thread first (bounded by this
+                // deadline), which releases its publishers `Arc` clone so the
+                // `drop(publishers)` below holds the last reference and
+                // undeclares them. Then the documented drop order: subscribers
+                // (dropped with the handshake) and publishers (data + schema)
+                // before the session, owned runtime last so async cleanup can
+                // still run.
+                if let Some(mut handshake) = startup_handshake {
+                    handshake.shutdown();
+                    // Undeclare the ack subscribers before the session below.
+                    drop(std::mem::take(&mut handshake.ack_subscribers));
+                }
                 drop(publishers);
                 drop(schema_publishers);
                 drop(shm_provider);
