@@ -1975,10 +1975,25 @@ impl Node {
             if is_cuda {
                 if let Ok(helpers) = get_cuda_helpers(py) {
                     let bound = helpers.bind(py);
-                    let _ = bound.call_method1(
-                        "_cuda_memcpy",
-                        (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
-                    );
+                    let copy_ok = bound
+                        .call_method1(
+                            "_cuda_memcpy",
+                            (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
+                        )
+                        .is_ok();
+                    if !copy_ok {
+                        if !is_pinned {
+                            let _ = bound
+                                .call_method1("_unregister_host", (shmem_ptr as u64, total_size));
+                        }
+                        shmem.set_owner(true);
+                        eyre::bail!(
+                            "[{}] register_memory_pool: DtoH copy failed ({} → CPU shmem, {} bytes)",
+                            self.node_id,
+                            tensor_device,
+                            size
+                        );
+                    }
                 }
             } else {
                 unsafe {
@@ -2026,13 +2041,16 @@ impl Node {
             let bound = helpers.bind(py);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
-            // _ensure_p2p_pair saves/restores the caller's device internally,
-            // but both the transit and same-device branches below start their
-            // device management from this point — explicitly restore the sender
-            // device so neither branch implicitly depends on the Python helper.
-            let _ =
-                bound.call_method1("_ensure_p2p_pair", (sender_device_idx, receiver_device_idx));
-            let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
+            // Gate on a CUDA source: for a CPU source sender_device_idx defaults
+            // to 0, and enabling a spurious GPU0↔receiver P2P pair creates an
+            // unnecessary CUDA context.  CPU-source registration snapshots the
+            // ambient device in the else branch below — running _set_cuda_device
+            // first would clobber the original value saved there.
+            if is_cuda {
+                let _ = bound
+                    .call_method1("_ensure_p2p_pair", (sender_device_idx, receiver_device_idx));
+                let _ = bound.call_method1("_set_cuda_device", (sender_device_idx,));
+            }
 
             // Resolve transport path.  classify_transport encodes the full
             // 2³ decision matrix (pure, CI-tested); here we only need the
