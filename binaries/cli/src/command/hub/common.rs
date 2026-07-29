@@ -7,10 +7,29 @@ use dora_hub_client::{
 };
 use eyre::Context;
 
-/// Strip control characters from index-supplied strings before printing them
-/// (a hostile index entry could otherwise inject terminal escapes).
+/// Strip control and bidirectional/format characters from index-supplied
+/// strings before printing them (a hostile index entry could otherwise inject
+/// terminal escapes or visually reorder the rendered line).
+///
+/// `char::is_control` only covers Unicode category **Cc** (C0/C1 controls such
+/// as ESC). It does *not* cover the bidi and separator format characters used
+/// in Trojan-Source-style spoofing (CVE-2021-42574) — right-to-left overrides,
+/// isolates, and line/paragraph separators — which can reorder or split a line
+/// on the terminal even after the controls are gone. Drop those too.
 pub fn sanitize(s: &str) -> String {
-    s.chars().filter(|c| !c.is_control()).collect()
+    s.chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(
+                    *c,
+                    '\u{061C}'                // arabic letter mark
+                        | '\u{200E}'..='\u{200F}' // left/right-to-left mark
+                        | '\u{2028}'..='\u{2029}' // line / paragraph separator
+                        | '\u{202A}'..='\u{202E}' // bidi embeddings + overrides
+                        | '\u{2066}'..='\u{2069}' // bidi isolates
+                )
+        })
+        .collect()
 }
 
 /// Loaded hub configuration plus a fetcher, shared by the discovery commands.
@@ -64,5 +83,33 @@ impl HubContext {
         for warning in self.fetcher.warnings.drain(..) {
             eprintln!("  warning: {warning}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize;
+
+    #[test]
+    fn strips_c0_control_and_escape() {
+        assert_eq!(sanitize("a\x1b[31mred\x07b"), "a[31mredb");
+        assert_eq!(sanitize("line1\nline2\t!"), "line1line2!");
+    }
+
+    #[test]
+    fn strips_bidi_and_separator_format_chars() {
+        // Right-to-left override (the classic Trojan-Source vector) and an
+        // isolate must be removed even though they are not Cc controls.
+        assert_eq!(sanitize("safe\u{202E}txet.js"), "safetxet.js");
+        assert_eq!(sanitize("a\u{2066}b\u{2069}c"), "abc");
+        assert_eq!(sanitize("x\u{2028}y\u{2029}z"), "xyz");
+        assert_eq!(sanitize("\u{200E}\u{200F}\u{061C}ok"), "ok");
+    }
+
+    #[test]
+    fn keeps_ordinary_text_untouched() {
+        assert_eq!(sanitize("dora-yolo v1.2.3"), "dora-yolo v1.2.3");
+        // Ordinary non-ASCII (accents, CJK) is preserved.
+        assert_eq!(sanitize("café 日本語"), "café 日本語");
     }
 }

@@ -33,6 +33,18 @@ struct LocalDoraPythonSource {
     fingerprint: String,
 }
 
+/// Split a (possibly multi-line) `build:` command into the individual command
+/// lines to execute.
+///
+/// Each line is spawned as a separate command, so blank or whitespace-only
+/// lines carry no program to run. They are skipped here rather than passed on
+/// to the splitter, where an empty token stream would otherwise abort the whole
+/// build with `build command is empty` — a surprising failure for a multi-line
+/// block that merely uses blank lines for readability.
+fn build_command_lines(build: &str) -> impl Iterator<Item = &str> {
+    build.lines().filter(|line| !line.trim().is_empty())
+}
+
 pub async fn run_build_command(
     build: &str,
     working_dir: &Path,
@@ -43,8 +55,7 @@ pub async fn run_build_command(
 ) -> eyre::Result<()> {
     std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
 
-    let lines = build.lines().collect::<Vec<_>>();
-    for build_line in lines {
+    for build_line in build_command_lines(build) {
         let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
         let program = split
@@ -767,7 +778,7 @@ async fn forward_build_output<R1, R2>(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_local_dora_python_wheel_dirs, dora_runtime_install_args,
+        build_command_lines, cleanup_stale_local_dora_python_wheel_dirs, dora_runtime_install_args,
         find_local_dora_python_wheel, forward_build_output, local_dora_python_package_dir,
         local_dora_python_shared_wheel_dir, local_dora_python_source_fingerprint,
         local_dora_python_wheel_root, local_runtime_marker_matches,
@@ -775,6 +786,29 @@ mod tests {
     };
     use std::{ffi::OsString, fs, time::Duration};
     use tokio::io::{AsyncWriteExt, BufReader};
+
+    #[test]
+    fn build_command_lines_skips_blank_and_whitespace_lines() {
+        let build = "pip install -r requirements.txt\n\n  \t \nmaturin develop\n";
+        let lines: Vec<&str> = build_command_lines(build).collect();
+        assert_eq!(
+            lines,
+            vec!["pip install -r requirements.txt", "maturin develop"]
+        );
+    }
+
+    #[test]
+    fn build_command_lines_single_line_is_unchanged() {
+        assert_eq!(
+            build_command_lines("cargo build --release").collect::<Vec<_>>(),
+            vec!["cargo build --release"]
+        );
+    }
+
+    #[test]
+    fn build_command_lines_empty_input_yields_no_commands() {
+        assert!(build_command_lines("\n   \n\t\n").next().is_none());
+    }
 
     #[test]
     fn local_runtime_install_discovers_workspace_package() {

@@ -662,10 +662,11 @@ jobs:
           # command didn't even start the check path.
           echo "$out" | grep -q "Checking for updates" \
             || { echo "ERROR: --check-only didn't enter update-check path"; exit 1; }
-          # One of the two valid outcomes must print. If neither appears,
-          # either GitHub rate-limited us (tolerated) or the output format
-          # regressed (fail).
-          if echo "$out" | grep -qE "latest version|update is available"; then
+          # One of the valid outcomes must print — "up to date" / "update is
+          # available" (#2512 reworded the up-to-date line to "Dora CLI is up to
+          # date (current: X, latest release: Y)"). If none appears, either
+          # GitHub rate-limited us (tolerated) or the output format regressed.
+          if echo "$out" | grep -qE "up to date|latest version|update is available"; then
             echo "OK: check-only produced a valid outcome message"
           elif echo "$out" | grep -qE "rate limit|403|429"; then
             echo "WARN: GitHub API rate-limited on shared runner IP — skipping outcome assertion"
@@ -1264,7 +1265,10 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    timeout-minutes: 90
+    # Raised alongside the Multiple Daemons step bump (30->45 min) so the whole
+    # sequence of from-scratch example builds still fits under the job cap on a
+    # cold Windows runner (#2742).
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -1310,7 +1314,12 @@ jobs:
         timeout-minutes: 30
         run: cargo run --example rust-dataflow-git
       - name: Multiple Daemons example
-        timeout-minutes: 30
+        # `dora build` recompiles the node/operator crates (zenoh, arrow,
+        # rustls, quinn) from scratch in release, which on a cold Windows
+        # runner can outrun a 30-min step budget — the 2026-07-23 nightly was
+        # still compiling zenoh when the step was force-killed (#2742). 45 min
+        # gives the release build margin without masking a genuine hang.
+        timeout-minutes: 45
         run: cargo run --example multiple-daemons
       - name: C Dataflow example
         timeout-minutes: 15
@@ -1777,6 +1786,41 @@ jobs:
         run: cargo test -p dora-ros2-bridge-python
 
   # ===== MSRV check =====
+  ros2-zenoh-humble:
+    name: ROS2 Zenoh Interop (Humble)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: scripts/ros2-zenoh-interop.sh humble all
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ros2-zenoh-humble-logs
+          path: target/ros2-zenoh-logs
+
+  ros2-zenoh-kilted:
+    name: ROS2 Zenoh Interop (Kilted)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: scripts/ros2-zenoh-interop.sh kilted all
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ros2-zenoh-kilted-logs
+          path: target/ros2-zenoh-logs
+
+  # ===== MSRV check =====
   # Restored from upstream dora CI — verifies the minimum supported
   # Rust version declared in Cargo.toml.
   msrv:
@@ -1832,6 +1876,8 @@ jobs:
       - bench-example
       - cross-check
       - ros2-bridge
+      - ros2-zenoh-humble
+      - ros2-zenoh-kilted
       - msrv
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get

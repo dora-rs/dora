@@ -2,7 +2,7 @@ use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition, OperatorSource},
 };
-use dora_node_api::{DataSample, Event, MetadataParameters, arrow::array::ArrayData};
+use dora_node_api::{Event, MetadataParameters, arrow::array::ArrayData};
 use eyre::{Context, Result};
 use std::any::Any;
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -12,6 +12,12 @@ pub mod channel;
 mod python;
 mod shared_lib;
 
+/// Runs the operator to completion. Returns a shared library that the caller
+/// **must keep alive until after the runtime's main event loop has joined**: a
+/// shared-library operator's outputs are Arrow arrays whose FFI `release`
+/// callbacks point into the `.so`, and the main loop (on another thread) may
+/// still hold in-flight arrays when this returns. See `shared_lib::run`. Returns
+/// `None` for operator kinds with no such library (Python).
 #[allow(unused_variables)]
 pub fn run_operator(
     node_id: &NodeId,
@@ -20,10 +26,10 @@ pub fn run_operator(
     events_tx: Sender<OperatorEvent>,
     init_done: oneshot::Sender<Result<()>>,
     dataflow_descriptor: &Descriptor,
-) -> eyre::Result<()> {
-    match &operator_definition.config.source {
+) -> eyre::Result<Option<libloading::Library>> {
+    let library = match &operator_definition.config.source {
         OperatorSource::SharedLibrary(source) => {
-            shared_lib::run(
+            let library = shared_lib::run(
                 node_id,
                 &operator_definition.id,
                 source,
@@ -37,44 +43,49 @@ pub fn run_operator(
                     operator_definition.id
                 )
             })?;
+            Some(library)
         }
         #[allow(unused_variables)]
         OperatorSource::Python(source) => {
             #[cfg(feature = "python")]
-            python::run(
-                node_id,
-                &operator_definition.id,
-                source,
-                events_tx,
-                incoming_events,
-                init_done,
-                dataflow_descriptor,
-            )
-            .wrap_err_with(|| {
-                format!(
-                    "failed to spawn Python operator for {}",
-                    operator_definition.id
+            {
+                python::run(
+                    node_id,
+                    &operator_definition.id,
+                    source,
+                    events_tx,
+                    incoming_events,
+                    init_done,
+                    dataflow_descriptor,
                 )
-            })?;
+                .wrap_err_with(|| {
+                    format!(
+                        "failed to spawn Python operator for {}",
+                        operator_definition.id
+                    )
+                })?;
+                None
+            }
             #[cfg(not(feature = "python"))]
-            tracing::error!(
-                "Dora runtime tried spawning Python Operator outside of python environment."
+            eyre::bail!(
+                "operator `{}` uses a Python source, but this dora-runtime was \
+                 built without the `python` feature",
+                operator_definition.id
             );
         }
         OperatorSource::Wasm(_) => {
-            tracing::error!("WASM operators are not supported yet");
+            eyre::bail!(
+                "operator `{}` uses a WASM source, which is not supported yet",
+                operator_definition.id
+            );
         }
-    }
-    Ok(())
+    };
+    Ok(library)
 }
 
 #[derive(Debug)]
-#[allow(dead_code, clippy::large_enum_variant)]
+#[allow(clippy::large_enum_variant)]
 pub enum OperatorEvent {
-    AllocateOutputSample {
-        len: usize,
-        sample: oneshot::Sender<eyre::Result<DataSample>>,
-    },
     Output {
         output_id: DataId,
         parameters: MetadataParameters,
@@ -95,4 +106,44 @@ pub enum StopReason {
     InputsClosed,
     ExplicitStop,
     ExplicitStopAll,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An unsupported operator source must surface a descriptive error from
+    /// `run_operator` rather than returning `Ok(())` while silently dropping
+    /// the `init_done` sender — which would leave the runtime task blocked in
+    /// `init_done.await` until it fails with the misleading "the `init_done`
+    /// channel was closed unexpectedly".
+    #[test]
+    fn wasm_source_returns_descriptive_error() {
+        let operator_definition: OperatorDefinition =
+            serde_yaml::from_str("id: op\nwasm: model.wasm\n").expect("operator definition parses");
+        let dataflow: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: a\n").expect("descriptor parses");
+        let (_events_in_tx, incoming_events) = flume::unbounded::<Event>();
+        let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
+        let (init_done_tx, mut init_done_rx) = oneshot::channel();
+
+        let err = run_operator(
+            &NodeId::from("node".to_string()),
+            operator_definition,
+            incoming_events,
+            events_tx,
+            init_done_tx,
+            &dataflow,
+        )
+        .expect_err("WASM operator source must return an error");
+        assert!(
+            err.to_string().contains("WASM"),
+            "expected a descriptive WASM error, got: {err}"
+        );
+        // The init_done sender must not have signalled readiness.
+        assert!(
+            init_done_rx.try_recv().is_err(),
+            "init_done must not receive a value for an unsupported source"
+        );
+    }
 }

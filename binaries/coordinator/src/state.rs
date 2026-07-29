@@ -113,6 +113,15 @@ pub(crate) struct DaemonConnection {
     pub(crate) connection_id: Uuid,
 }
 
+/// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
+/// daemon replies with a WS-level `error` instead of a result. `deny_unknown_fields`
+/// keeps it from ever matching a real `DaemonCoordinatorReply` payload.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsErrorEnvelope {
+    ws_error: String,
+}
+
 impl DaemonConnection {
     pub(crate) fn new(
         sender: mpsc::Sender<String>,
@@ -179,6 +188,18 @@ impl DaemonConnection {
                     return Err(eyre!("timeout waiting for daemon WS reply"));
                 }
             };
+
+        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+        // make every caller fail with an opaque "failed to deserialize ... reply"
+        // and drop the daemon's real error text (it would survive only in a log
+        // line). Surface it as an `Err` carrying that text instead.
+        if let Ok(WsErrorEnvelope { ws_error }) =
+            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+        {
+            return Err(eyre!("daemon returned error: {ws_error}"));
+        }
 
         Ok(response_json.into_bytes())
     }
@@ -379,10 +400,19 @@ impl RunningDataflow {
 
     /// Prune log entries that all daemons have acknowledged.
     pub(crate) fn prune_state_log(&mut self) {
+        // Gate pruning on the acks of *live* daemons only. A daemon that
+        // disconnects is removed from `self.daemons`, but its (now frozen)
+        // `daemon_ack_sequence` entry is deliberately retained for a possible
+        // reclaim. Counting that stale entry here would pin `min_ack` at the
+        // disconnected daemon's last ack forever, so the log could never shrink
+        // — it would grow until the `MAX_STATE_LOG_ENTRIES` hard cap, forcing a
+        // full param replay for *every* daemon (including healthy ones). If a
+        // disconnected daemon reconnects after its missed entries were pruned,
+        // `state_log_delta` already falls back to a full replay for it.
         let min_ack = self
-            .daemon_ack_sequence
-            .values()
-            .copied()
+            .daemons
+            .iter()
+            .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
@@ -393,6 +423,18 @@ impl RunningDataflow {
     /// should fall back to a full param replay).
     pub(crate) fn state_log_delta(&self, last_ack: u64) -> Option<Vec<StateCatchUpEntry>> {
         if self.state_log.is_empty() {
+            // An empty log only means "up to date" when nothing newer than
+            // `last_ack` ever existed. If `last_ack < state_log_sequence`, the
+            // entries the daemon still needs (`last_ack+1..=state_log_sequence`)
+            // were pruned away — the daemon must fall back to a full replay,
+            // not be told it is current. This happens on relink: a daemon that
+            // was never seeded into `daemon_ack_sequence` queries with
+            // `last_ack == 0` after peers acked and drained the log
+            // (dora-rs/dora#2601). It also covers a disconnected daemon whose
+            // stale ack is now excluded from pruning (see `prune_state_log`).
+            if last_ack < self.state_log_sequence {
+                return None;
+            }
             return Some(Vec::new());
         }
         let oldest = self.state_log[0].sequence;
@@ -588,14 +630,6 @@ impl From<&RunningDataflow> for ArchivedDataflow {
     }
 }
 
-impl PartialEq for RunningDataflow {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.uuid == other.uuid && self.daemons == other.daemons
-    }
-}
-
-impl Eq for RunningDataflow {}
-
 #[cfg(test)]
 mod hub_capability_tests {
     use super::*;
@@ -645,6 +679,46 @@ mod send_and_receive_tests {
         assert!(
             pending.lock().await.is_empty(),
             "pending reply leaked after send failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_error_envelope_surfaces_as_err() {
+        // The daemon-side WS error path delivers a `{"ws_error": ...}` string to
+        // the pending reply (see `handle_daemon_response` in `ws_daemon.rs`).
+        // `send_and_receive` must turn that into an `Err` carrying the daemon's
+        // text — not return an envelope its callers cannot deserialize, which
+        // would surface as an opaque "failed to deserialize ... reply".
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let conn = DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+
+        let pending_bg = pending.clone();
+        tokio::spawn(async move {
+            let outgoing = rx.recv().await.expect("request should be sent");
+            let value: serde_json::Value =
+                serde_json::from_str(&outgoing).expect("outgoing request is JSON");
+            let id: Uuid = value["id"]
+                .as_str()
+                .expect("request carries an id")
+                .parse()
+                .expect("id is a UUID");
+            let sender = pending_bg
+                .lock()
+                .await
+                .remove(&id)
+                .expect("pending reply is registered before the send");
+            let _ = sender.send(r#"{"ws_error":"daemon blew up"}"#.to_string());
+        });
+
+        let err = conn
+            .send_and_receive(b"{}")
+            .await
+            .expect_err("ws_error envelope must be surfaced as an error");
+        assert!(
+            err.to_string().contains("daemon blew up"),
+            "error should carry the daemon's message, got: {err}"
         );
     }
 }

@@ -1,0 +1,45 @@
+services:
+  humble-router:
+    profiles: [humble]
+    image: ros:humble-ros-base@sha256:afb40d6be65331c20a114d4e229a7ef099fed1b17bf6370daee193514b32aa16
+    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
+    network_mode: host
+    command: >-
+      bash -lc 'architecture=$$(dpkg --print-architecture) &&
+      case "$$architecture" in
+      amd64) rmw_version=0.1.8-1jammy.20260605.110455 ;;
+      arm64) rmw_version=0.1.8-1jammy.20260605.110613 ;;
+      *) echo "unsupported architecture: $$architecture" >&2; exit 1 ;;
+      esac && apt-get update -qq && apt-get install -y --no-install-recommends
+      "ros-humble-rmw-zenoh-cpp=$$rmw_version" ros-humble-rclpy
+      ros-humble-example-interfaces &&
+      source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
+    healthcheck:
+      test: [CMD-SHELL, "test -x /opt/ros/humble/lib/rmw_zenoh_cpp/rmw_zenohd && pgrep -x rmw_zenohd >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - .:/workspace:ro
+  kilted-router:
+    profiles: [kilted]
+    image: ros:kilted-ros-base@sha256:5a91562b35fe8ce33082df7221ec564c0172ae9b242352a45562deb1ddbf2702
+    environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
+    network_mode: host
+    command: >-
+      bash -lc 'architecture=$$(dpkg --print-architecture) &&
+      case "$$architecture" in
+      amd64) rmw_version=0.6.6-1noble.20260603.151244 ;;
+      arm64) rmw_version=0.6.6-1noble.20260603.150157 ;;
+      *) echo "unsupported architecture: $$architecture" >&2; exit 1 ;;
+      esac && apt-get update -qq && apt-get install -y --no-install-recommends
+      "ros-kilted-rmw-zenoh-cpp=$$rmw_version" ros-kilted-rclpy
+      ros-kilted-example-interfaces &&
+      source /opt/ros/kilted/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
+    healthcheck:
+      test: [CMD-SHELL, "test -x /opt/ros/kilted/lib/rmw_zenoh_cpp/rmw_zenohd && pgrep -x rmw_zenohd >/dev/null"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - .:/workspace:ro

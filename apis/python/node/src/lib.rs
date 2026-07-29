@@ -1026,6 +1026,19 @@ fn timeout_to_duration(timeout: Option<f32>) -> PyResult<Option<Duration>> {
         .transpose()
 }
 
+/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96):
+/// marks the generation "writing" (even -> odd) and returns the pre-write
+/// (even) value so the matching [`seqlock_end_write`] call can either
+/// publish the next generation or roll back to this one.
+unsafe fn seqlock_begin_write(gen_ptr: *mut u64) -> u64 {
+    unsafe {
+        let pre_write_gen = std::ptr::read_volatile(gen_ptr);
+        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(1));
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        pre_write_gen
+    }
+}
+
 /// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
 /// **if the generation is even**.  Returns the **even** pre-write
 /// generation — i.e., the generation value before the write cycle
@@ -1837,7 +1850,7 @@ impl Node {
         let stream = futures::stream::poll_fn(move |cx| {
             let s = subscription.as_stream().map(|item| {
                 match item.context("failed to read ROS2 message") {
-                    Ok((value, _info)) => Python::attach(|py| {
+                    Ok(value) => Python::attach(|py| {
                         value
                             .to_pyarrow(py)
                             .map(|b| b.unbind())

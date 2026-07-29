@@ -17,7 +17,7 @@ use super::{StructDeserializer, error};
 /// Maximum number of elements allowed in a deserialized sequence.
 /// This prevents unbounded allocations from malformed CDR packets.
 /// 16 million elements is ~128 MB for f64 or ~16 MB for u8.
-const MAX_SEQUENCE_ELEMENTS: usize = 16_000_000;
+pub(super) const MAX_SEQUENCE_ELEMENTS: usize = 16_000_000;
 
 pub struct SequenceDeserializer<'a> {
     pub item_type: &'a NestableType,

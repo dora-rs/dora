@@ -236,16 +236,27 @@ impl MemoryPoolManager {
         #[cfg(target_os = "linux")]
         {
             let prefix = format!("dora_pool_{}_", dataflow_id);
-            if let Ok(entries) = std::fs::read_dir("/dev/shm") {
-                for entry in entries.flatten() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.starts_with(&prefix)
-                        && let Err(err) = std::fs::remove_file(entry.path())
-                        && err.kind() != std::io::ErrorKind::NotFound
-                    {
-                        tracing::debug!("Orphan sweep: could not unlink {}: {}", name, err);
+            match std::fs::read_dir("/dev/shm") {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name();
+                        let name = name.to_string_lossy();
+                        if name.starts_with(&prefix)
+                            && let Err(err) = std::fs::remove_file(entry.path())
+                            && err.kind() != std::io::ErrorKind::NotFound
+                        {
+                            tracing::debug!(
+                                "Orphan sweep: could not unlink {} at {}: {}",
+                                name,
+                                entry.path().display(),
+                                err
+                            );
+                        }
                     }
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    tracing::debug!("Orphan sweep: failed to read /dev/shm directory: {}", err);
                 }
             }
         }
@@ -258,8 +269,12 @@ impl MemoryPoolManager {
     /// Cleanup all memory pools on shutdown.
     pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
         let mut table = self.lock_table();
-        let ids: Vec<MemoryPoolId> = table.keys().cloned().collect();
-        let unreleased_count = ids.len();
+        // Drain the table in one move instead of cloning every key into a
+        // `Vec` only to look each one back up and remove it. The guard is held
+        // for the rest of the function (matching the previous locking window);
+        // `free_shared_memory` does not re-enter the table.
+        let drained = std::mem::take(&mut *table);
+        let unreleased_count = drained.len();
         let mut errors = Vec::new();
 
         if unreleased_count > 0 {
@@ -269,9 +284,8 @@ impl MemoryPoolManager {
             );
         }
 
-        for id in &ids {
-            if let Some(entry) = table.remove(id)
-                && let Some(shm_name) = &entry.metadata.shared_memory_name
+        for (_id, entry) in drained {
+            if let Some(shm_name) = &entry.metadata.shared_memory_name
                 && !shm_name.is_empty()
                 && let Err(err) = self.free_shared_memory(shm_name)
             {
@@ -494,5 +508,11 @@ mod tests {
             // Guard held; drop it before testing further operations.
         }
         assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn cleanup_orphans_runs_without_panic() {
+        // Sweep should run cleanly without panicking regardless of platform.
+        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
     }
 }

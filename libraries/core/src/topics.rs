@@ -31,6 +31,60 @@ pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 /// deterministic instead of racy.
 pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 
+/// Opt out of zenoh multicast scouting for this process, regardless of whether
+/// explicit connect endpoints replaced it.
+///
+/// Set to `off`, `0`, `false`, or `no` to disable. Any other value (including
+/// unset) leaves the default behaviour, where multicast is dropped only once
+/// [`DORA_ZENOH_CONNECT_ENV`] gives the session something to dial instead.
+///
+/// Exists for networks where the scouting socket itself is the problem: a busy
+/// DDS/ROS2 multicast graph can keep zenoh from binding its scouting group,
+/// which fails `zenoh::open` outright. Disabling scouting sidesteps that bind
+/// entirely — but it removes a discovery mechanism, so a session that has no
+/// connect endpoints *and* no multicast can reach nobody. Set it only where
+/// every link is established explicitly (the daemon injects
+/// [`DORA_ZENOH_CONNECT_ENV`] into the nodes it spawns, so those are covered).
+///
+/// The daemon sets this on the nodes it spawns when started with
+/// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
+pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
+
+/// Whether a session may discover peers by multicast scouting.
+///
+/// Spelled as an enum rather than a bool because the concept flips polarity at
+/// every hop it crosses — `--zenoh-no-multicast`, `DORA_ZENOH_MULTICAST=off`,
+/// `scouting/multicast/enabled=false` — and an inverted bool would not fail a
+/// test, it would silently partition the dataflow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MulticastScouting {
+    /// Scout unless explicit connect endpoints replace it. The default
+    /// everywhere; [`DORA_ZENOH_MULTICAST_ENV`] can still turn it off.
+    #[default]
+    Allowed,
+    /// The caller establishes every link explicitly and wants no scouting.
+    Disabled,
+}
+
+/// Whether [`DORA_ZENOH_MULTICAST_ENV`] asks for multicast scouting to be off.
+#[cfg(feature = "zenoh")]
+fn multicast_disabled_by_env() -> bool {
+    multicast_disabled_by_value(std::env::var(DORA_ZENOH_MULTICAST_ENV).ok().as_deref())
+}
+
+/// Parse a [`DORA_ZENOH_MULTICAST_ENV`] value (`None` when the var is unset).
+///
+/// Split from [`multicast_disabled_by_env`] so it is testable without mutating
+/// the process environment, which is `unsafe` in edition 2024 and racy against
+/// other tests in the same binary.
+#[cfg(feature = "zenoh")]
+fn multicast_disabled_by_value(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("off" | "0" | "false" | "no")
+    )
+}
+
 /// Split a comma-separated endpoint list env var, ignoring empty entries.
 #[cfg(feature = "zenoh")]
 fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
@@ -43,7 +97,11 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
 
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
-    let (session, _) = open_zenoh_session_with_listen(coordinator_addr, None, None).await?;
+    // Nodes and the coordinator have no in-process way to know, so
+    // [`DORA_ZENOH_MULTICAST_ENV`] (honored inside) is their only channel.
+    let (session, _) =
+        open_zenoh_session_with_listen(coordinator_addr, None, None, MulticastScouting::Allowed)
+            .await?;
     Ok(session)
 }
 
@@ -76,11 +134,17 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 /// part of the returned endpoint — it is cluster-wide configuration
 /// shared by the caller (e.g. `dora cluster up`), not per-daemon
 /// state to advertise back to nodes.
+///
+/// `multicast` lets a caller that establishes every link explicitly opt out of
+/// scouting — see [`DORA_ZENOH_MULTICAST_ENV`], honored in addition to this
+/// argument. It is a request, not a command: it is ignored unless this session
+/// ends up reachable some other way (see the `#1856` guard below).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
     coordinator_addr: Option<IpAddr>,
     listen_endpoint: Option<&str>,
     inter_daemon_peer: Option<&str>,
+    multicast: MulticastScouting,
 ) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
@@ -192,15 +256,6 @@ pub async fn open_zenoh_session_with_listen(
                     }
                 }
             }
-            // Only disable multicast scouting if we successfully replaced
-            // it with explicit connect endpoints — otherwise we'd end up
-            // with no discovery at all (#1856).
-            if connect_inserted
-                && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
-            {
-                warn!("failed to disable zenoh scouting/multicast: {err}");
-            }
-
             // Track whether listen/endpoints was accepted into THIS config.
             // We don't promote it to `effective_listen_endpoint` until the
             // configured open succeeds — the fallback default-config path
@@ -212,6 +267,10 @@ pub async fn open_zenoh_session_with_listen(
             // wrong (nodes would try to reach it through what may be a
             // remote address, defeating the loopback shortcut).
             let mut listen_inserted_into_configured: Option<String> = None;
+            // Any accepted listener, including the cluster-wide rendezvous that
+            // is deliberately absent from `listen_inserted_into_configured`.
+            // Reachability, not advertisability, is what the #1856 guard needs.
+            let mut listen_configured = false;
 
             // Build the listen-endpoint list (loopback for spawned nodes +
             // optional inter-daemon rendezvous). With multiple entries,
@@ -247,6 +306,7 @@ pub async fn open_zenoh_session_with_listen(
                 let listen_inserted = match zenoh_config.insert_json5("listen/endpoints", &json) {
                     Ok(()) => {
                         listen_inserted_into_configured = listen_endpoint.map(String::from);
+                        listen_configured = true;
                         true
                     }
                     Err(err) => {
@@ -264,6 +324,29 @@ pub async fn open_zenoh_session_with_listen(
                 {
                     warn!("failed to set zenoh listen/exit_on_failure: {err}");
                 }
+            }
+
+            // Drop multicast scouting only once this session is reachable some
+            // other way — otherwise it has no endpoints to dial and no way to
+            // be found, which is the silent partition #1856 exists to prevent.
+            //
+            // Two things make it reachable. `connect_inserted`: explicit
+            // endpoints replaced scouting (the pre-existing rule). Or an
+            // accepted listener plus a caller that asked to stop scouting —
+            // `dora run` without dynamic nodes, or `--zenoh-no-multicast` on a
+            // network where the scouting bind itself fails; a listener means
+            // peers that hold the endpoint can dial in.
+            //
+            // Deliberately *not* honoring the request when neither holds: the
+            // reservation-failure paths in `build_daemon` log "falling back to
+            // multicast scouting only" and mean it. Treating the request as
+            // absolute would disarm that recovery and strand the daemon.
+            let requested_off =
+                matches!(multicast, MulticastScouting::Disabled) || multicast_disabled_by_env();
+            if (connect_inserted || (requested_off && listen_configured))
+                && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
+            {
+                warn!("failed to disable zenoh scouting/multicast: {err}");
             }
 
             if let Some(addr) = coordinator_addr
@@ -330,11 +413,31 @@ pub async fn open_zenoh_session_with_listen(
                             .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
                         if bound {
                             effective_listen_endpoint = Some(requested);
+                        } else if connect_inserted {
+                            // We set explicit `connect/endpoints` above, so
+                            // multicast scouting was disabled for this session
+                            // (#1856). There is therefore NO discovery fallback:
+                            // peers already told to dial `{requested}` (e.g. via
+                            // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
+                            // cannot reach this now-listener-less session, and it
+                            // cannot be scouted either — that edge is silently
+                            // partitioned. Do not claim "multicast scouting only"
+                            // here; that fallback does not exist in this mode and
+                            // the old message pointed debuggers the wrong way
+                            // (#2762).
+                            warn!(
+                                "zenoh session opened but listener for `{requested}` \
+                                 did not bind (actually bound: {bound_locators:?}); \
+                                 multicast scouting is disabled for this session \
+                                 (explicit connect endpoints are set), so peers told \
+                                 to dial `{requested}` have no fallback path to reach \
+                                 it (#2762)"
+                            );
                         } else {
                             warn!(
                                 "zenoh session opened but listener for `{requested}` \
                                  did not bind (actually bound: {bound_locators:?}); \
-                                 spawned nodes will use multicast scouting only"
+                                 falling back to multicast scouting for discovery"
                             );
                         }
                     }
@@ -527,6 +630,30 @@ pub fn zenoh_output_schema_topic(
     )
 }
 
+/// Zenoh key on which consumers acknowledge a producer's startup route-probe
+/// markers, as a `/@ack` sub-key of [`zenoh_output_publish_topic`].
+///
+/// The producer declares one **exact-key** subscriber here per output and the
+/// consumers of that output publish their acks to the same exact key, with the
+/// acking consumer's identity in the attachment (never in the key). Exact-key
+/// matching means `.../cmd/@ack` and `.../cmd/vel/@ack` can never
+/// cross-deliver even though `cmd` is a chunk-prefix of `cmd/vel` — the
+/// collision that forced hex-encoded wildcard keys in the earlier
+/// liveliness-counting design (#2666) cannot arise without wildcards. The
+/// `@`-prefixed final chunk additionally keeps the key from matching any
+/// wildcard subscription on the data-topic namespace.
+#[cfg(feature = "zenoh")]
+pub fn zenoh_output_ack_topic(
+    dataflow_id: uuid::Uuid,
+    node_id: &dora_message::id::NodeId,
+    output_id: &dora_message::id::DataId,
+) -> String {
+    format!(
+        "{}/@ack",
+        zenoh_output_publish_topic(dataflow_id, node_id, output_id)
+    )
+}
+
 /// Zenoh key for control frames associated with a node output.
 ///
 /// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh
@@ -544,83 +671,35 @@ pub fn zenoh_daemon_control_topic(
     format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
-/// Hex-encode a `DataId` so it occupies exactly one zenoh key chunk.
-///
-/// A `DataId` may legally contain `/` (unlike a `NodeId`), so embedding one
-/// verbatim as a key segment would spill into extra chunks and let a producer's
-/// wildcard readiness subscription collide across outputs whose names nest —
-/// e.g. output `cmd` would over-count tokens belonging to output `cmd/vel`,
-/// which in the startup barrier could switch `cmd` to the direct path before all
-/// of *its* subscribers are wired and drop messages. Hex is unambiguous
-/// (`[0-9a-f]`, never `/`), collision-free, and computed identically by the
-/// subscriber (declaring the token) and the producer (matching it).
-#[cfg(feature = "zenoh")]
-fn hex_key_segment(id: &dora_message::id::DataId) -> String {
-    use std::fmt::Write;
-    let s: &str = id.as_ref();
-    let mut out = String::with_capacity(s.len() * 2);
-    for b in s.bytes() {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}
-
-/// Zenoh **liveliness** key a subscriber declares once it has wired up its
-/// data-plane subscriber for `source_node`'s `source_output`.
-///
-/// The data plane is direct node-to-node zenoh pub/sub, so a producer that
-/// starts publishing before a consumer's subscription has propagated would drop
-/// those early samples (zenoh does not buffer for not-yet-declared subscribers).
-/// Each subscriber therefore declares a liveliness token here right after
-/// declaring its data subscriber; the producer counts these tokens (via
-/// [`zenoh_output_ready_liveliness_prefix`]) and keeps delivering over the
-/// reliable daemon path until every expected subscriber is present, only then
-/// switching to the fast zenoh path. This gives startup a lossless barrier that
-/// the daemon control-plane "all nodes ready" gate cannot (it does not observe
-/// the zenoh data plane). The `<subscriber_node>/<subscriber_input>` suffix makes
-/// each link's token unique so producers can count distinct subscribers.
-///
-/// `source_output` is [hex-encoded](hex_key_segment) into a single chunk so it
-/// cannot collide with a differently-named output whose key would nest under the
-/// producer's wildcard subscription.
-#[cfg(feature = "zenoh")]
-pub fn zenoh_input_ready_liveliness_topic(
-    dataflow_id: uuid::Uuid,
-    source_node: &dora_message::id::NodeId,
-    source_output: &dora_message::id::DataId,
-    subscriber_node: &dora_message::id::NodeId,
-    subscriber_input: &dora_message::id::DataId,
-) -> String {
-    let network_id = "default";
-    let output = hex_key_segment(source_output);
-    let input = hex_key_segment(subscriber_input);
-    format!(
-        "dora/{network_id}/{dataflow_id}/ready/{source_node}/{output}/{subscriber_node}/{input}"
-    )
-}
-
-/// Wildcard liveliness key matching every subscriber-ready token for
-/// `source_node`'s `source_output` (see [`zenoh_input_ready_liveliness_topic`]).
-/// The producer subscribes to / queries this to count how many subscribers have
-/// wired up their data-plane subscription.
-#[cfg(feature = "zenoh")]
-pub fn zenoh_output_ready_liveliness_prefix(
-    dataflow_id: uuid::Uuid,
-    source_node: &dora_message::id::NodeId,
-    source_output: &dora_message::id::DataId,
-) -> String {
-    let network_id = "default";
-    let output = hex_key_segment(source_output);
-    // `source_output` is hex-encoded to a single chunk (see
-    // `zenoh_input_ready_liveliness_topic`), so `**` matches exactly the
-    // `<subscriber_node>/<subscriber_input>` suffix of tokens for *this* output
-    // and nothing from a nested-named output.
-    format!("dora/{network_id}/{dataflow_id}/ready/{source_node}/{output}/**")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn multicast_disable_spellings_are_recognized() {
+        for value in ["off", "0", "false", "no", "OFF", "False", "  off  "] {
+            assert!(
+                multicast_disabled_by_value(Some(value)),
+                "{value:?} should disable multicast scouting"
+            );
+        }
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn unset_or_unrecognized_multicast_value_keeps_default() {
+        // Anything that is not an explicit disable spelling must leave the
+        // default behaviour: silently dropping discovery because of a typo
+        // would be a partition with no error to point at (#1856).
+        assert!(!multicast_disabled_by_value(None));
+        for value in ["on", "1", "true", "yes", "", "maybe"] {
+            assert!(
+                !multicast_disabled_by_value(Some(value)),
+                "{value:?} must not disable multicast scouting"
+            );
+        }
+    }
 
     #[test]
     fn reserve_loopback_endpoint_returns_loopback_tcp() {
@@ -761,46 +840,56 @@ mod tests {
         );
     }
 
-    // The readiness barrier counts a producer's subscriber tokens via a wildcard
-    // key. Because a `DataId` may contain `/`, a naive `.../{output}/**` prefix
-    // would also match tokens of a nested-named output (`cmd` matching
-    // `cmd/vel`), over-counting and letting the producer switch `cmd` to the
-    // direct path before all of *its* subscribers are wired — dropping startup
-    // messages. Hex-encoding the output segment must prevent that collision while
-    // still matching the output's own tokens (incl. slash-containing inputs).
+    // Data, schema, ack, and control keys for the same (node, output) must all
+    // be distinct: each carries a different payload format for a different
+    // consumer, and any overlap would cross-deliver frames to a decoder that
+    // cannot parse them.
     #[cfg(feature = "zenoh")]
     #[test]
-    fn ready_prefix_isolates_nested_output_names() {
+    fn per_output_topics_are_distinct() {
         use dora_message::id::{DataId, NodeId};
-        use zenoh::key_expr::KeyExpr;
 
-        let df = uuid::Uuid::nil();
-        let source = NodeId::from("source".to_string());
-        let sub_node = NodeId::from("sink".to_string());
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+
+        let topics = [
+            zenoh_output_publish_topic(dataflow_id, &node, &output),
+            zenoh_output_schema_topic(dataflow_id, &node, &output),
+            zenoh_output_ack_topic(dataflow_id, &node, &output),
+            zenoh_daemon_control_topic(dataflow_id, &node, &output),
+        ];
+        for (i, a) in topics.iter().enumerate() {
+            for b in &topics[i + 1..] {
+                assert_ne!(a, b, "per-output zenoh keys must not overlap");
+            }
+        }
+    }
+
+    // The ack design relies on exact-key matching instead of wildcards, so an
+    // output id that is a chunk-prefix of another (`cmd` vs `cmd/vel` — the
+    // collision that forced hex-encoded keys in the #2666 liveliness design)
+    // must yield distinct ack keys with no subsumption possible.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn ack_topics_of_prefix_outputs_are_distinct() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
         let cmd = DataId::from("cmd".to_string());
         let cmd_vel = DataId::from("cmd/vel".to_string());
-        // A namespaced runtime-node input (`operator/input`) exercises a
-        // slash-containing subscriber input on the token side.
-        let sub_input = DataId::from("op/in".to_string());
 
-        let cmd_prefix =
-            KeyExpr::new(zenoh_output_ready_liveliness_prefix(df, &source, &cmd)).unwrap();
-        let cmd_token = KeyExpr::new(zenoh_input_ready_liveliness_topic(
-            df, &source, &cmd, &sub_node, &sub_input,
-        ))
-        .unwrap();
-        let cmd_vel_token = KeyExpr::new(zenoh_input_ready_liveliness_topic(
-            df, &source, &cmd_vel, &sub_node, &sub_input,
-        ))
-        .unwrap();
+        let cmd_ack = zenoh_output_ack_topic(dataflow_id, &node, &cmd);
+        let cmd_vel_ack = zenoh_output_ack_topic(dataflow_id, &node, &cmd_vel);
 
-        assert!(
-            cmd_prefix.intersects(&cmd_token),
-            "producer of `cmd` must count its own subscriber's token (even with a `/`-containing input)"
-        );
-        assert!(
-            !cmd_prefix.intersects(&cmd_vel_token),
-            "producer of `cmd` must NOT count a token of the nested output `cmd/vel`"
-        );
+        assert_ne!(cmd_ack, cmd_vel_ack);
+        // `cmd`'s ack key ends in `cmd/@ack`; the nested output's key contains
+        // `cmd/vel/@ack`. Neither is a prefix of the other, so exact-key
+        // subscribers can never receive the other output's acks.
+        assert!(cmd_ack.ends_with("/cmd/@ack"));
+        assert!(cmd_vel_ack.ends_with("/cmd/vel/@ack"));
+        assert!(!cmd_vel_ack.starts_with(&cmd_ack));
+        assert!(!cmd_ack.starts_with(&cmd_vel_ack));
     }
 }

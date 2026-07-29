@@ -1,4 +1,8 @@
-use std::{net::SocketAddr, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::SocketAddr,
+    path::PathBuf,
+};
 
 use std::sync::Arc;
 
@@ -31,6 +35,44 @@ pub struct NodeConfig {
     /// Number of times this node has been restarted. 0 on first run.
     #[serde(default)]
     pub restart_count: u32,
+    /// Per-output data-plane routing for the startup handshake, computed by the
+    /// daemon from the **actual** placement of the dataflow's nodes at spawn
+    /// time (the descriptor's `deploy` section is intent, not placement — label
+    /// scheduling can resolve differently).
+    ///
+    /// `None` means the node was spawned by an older daemon that doesn't
+    /// provide routing; the node then keeps every output on the reliable daemon
+    /// path (correct, just without the direct-zenoh fast path).
+    #[serde(default)]
+    pub output_routing: Option<BTreeMap<DataId, OutputRouting>>,
+}
+
+/// Data-plane routing for one node output — see
+/// [`NodeConfig::output_routing`].
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OutputRouting {
+    /// Some consumer of this output runs under another daemon. All sends must
+    /// then go through this node's daemon so its inter-daemon forwarding can
+    /// reach them (dora #2738) — the direct node-to-node zenoh mesh is
+    /// same-machine only.
+    #[serde(default)]
+    pub daemon_only: bool,
+    /// The static same-daemon consumers whose startup acks the producer must
+    /// collect before switching this output from the reliable daemon path to
+    /// the direct node-to-node zenoh path. Dynamic consumers are never
+    /// required: they join at arbitrary times (or never), and nothing may wait
+    /// on them.
+    #[serde(default)]
+    pub required_ackers: BTreeSet<RequiredAcker>,
+}
+
+/// Identity of one consumer input that must ack a producer's startup markers
+/// before the producer may switch the corresponding output to the direct zenoh
+/// path — see [`OutputRouting::required_ackers`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct RequiredAcker {
+    pub node_id: NodeId,
+    pub input_id: DataId,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

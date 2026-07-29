@@ -15,11 +15,36 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_VERSION: "1.97.1"
+  # The workspace pins PyO3's abi3 floor to Python 3.11 (see pip-release.yml).
+  PYTHON_VERSION: "3.11"
 
 jobs:
+  # ── 0. Fail fast if the tag doesn't match the workspace version ──────────
+  # Guards against tag/version skew (the v1.0.0-rc.3 tag shipped rc.2
+  # artifacts). Only the publish jobs gate on this — build jobs have no
+  # irreversible side effects, so they start immediately.
+  check-version:
+    name: Verify tag matches workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Compare tag with workspace version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          # dora-cli inherits [workspace.package].version, so it stands in
+          # for the workspace version here.
+          crate_version=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "dora-cli") | .version')
+          if [ "$tag_version" != "$crate_version" ]; then
+            echo "::error::tag v$tag_version does not match workspace version $crate_version — bump [workspace.package].version before tagging"
+            exit 1
+          fi
+          echo "tag v$tag_version matches workspace version"
+
   # ── 1. Publish Rust crates to crates.io ──────────────────────────────────
   publish-crates:
     name: Publish crates
+    needs: check-version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -71,22 +96,35 @@ jobs:
           )
           # `cargo publish` blocks until the crate is available in the
           # index, so no propagation sleep is needed. Tolerate only
-          # already-published versions (idempotent re-runs); any other
-          # failure must fail the job instead of silently producing a
-          # partial release.
+          # already-published versions (idempotent re-runs) and retry on
+          # crates.io's new-crate rate limit (429, refills ~1 new crate per
+          # 10 min after the initial burst); any other failure must fail the
+          # job instead of silently producing a partial release.
+          max_attempts=4
+          backoff=630 # rate-limit window is 10 min, plus 30s slack
           for crate in "${CRATES[@]}"; do
             echo "::group::Publishing $crate"
-            if ! output=$(cargo publish -p "$crate" --no-verify 2>&1); then
+            for attempt in $(seq 1 "$max_attempts"); do
+              if output=$(cargo publish -p "$crate" --no-verify 2>&1); then
+                echo "$output" | tail -5
+                break
+              fi
               echo "$output"
               if echo "$output" | grep -qi "already uploaded\|is already uploaded\|already exists"; then
                 echo "::warning::$crate already published, skipping"
+                break
+              elif echo "$output" | grep -qi "429 Too Many Requests"; then
+                if [ "$attempt" -eq "$max_attempts" ]; then
+                  echo "::error::still rate limited publishing $crate after $attempt attempts"
+                  exit 1
+                fi
+                echo "::warning::crates.io rate limit hit for $crate; retrying in ${backoff}s (attempt $attempt)"
+                sleep "$backoff"
               else
                 echo "::error::failed to publish $crate"
                 exit 1
               fi
-            else
-              echo "$output" | tail -5
-            fi
+            done
             echo "::endgroup::"
           done
 
@@ -113,7 +151,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -140,7 +178,7 @@ jobs:
   # ── 3. Publish wheels to PyPI ─────────────────────────────────────────────
   publish-pypi:
     name: Publish to PyPI
-    needs: build-wheels
+    needs: [build-wheels, check-version]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -151,8 +189,14 @@ jobs:
           pattern: dora-rs*
           merge-multiple: true
           path: dist/
+      # Authenticate with the PYPI_PASS API token (same mechanism as
+      # pip-release.yml). Keyless trusted publishing needs a publisher
+      # registered on PyPI first — to switch later, register one on
+      # https://pypi.org/manage/project/dora-rs/settings/publishing/ with
+      # workflow `release.yml` and environment `pypi`, then drop `password`.
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
+          password: ${{ secrets.PYPI_PASS }}
           packages-dir: dist/
           skip-existing: true
 

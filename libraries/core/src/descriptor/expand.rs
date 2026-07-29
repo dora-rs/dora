@@ -46,6 +46,12 @@ const MAX_MODULE_FILE_SIZE: u64 = 1_048_576;
 /// Usage in module YAML: `_mod/port_name`
 const MODULE_INPUT_SOURCE: &str = "_mod";
 
+/// Where the outputs a module declares end up after expansion: maps each
+/// declared output name to the mapping a consumer must use to read it — the
+/// prefixed inner node ID plus the output name as that node addresses it
+/// (see [`node_output_refs`]).
+type ModuleOutputMap = BTreeMap<String, UserInputMapping>;
+
 /// Header section of a module definition file.
 #[derive(Debug, Clone, Deserialize)]
 struct ModuleHeader {
@@ -112,7 +118,7 @@ pub fn expand_modules_with_boundaries(
         .with_context(|| format!("failed to resolve base directory: {}", base_dir.display()))?;
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
-    let mut output_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
     let mut boundaries = ModuleBoundaries::default();
 
     for node in &descriptor.nodes {
@@ -196,11 +202,14 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
 
     // Check outputs: each declared output should be produced by some inner node.
     // For nested module children, recursively load their declared outputs.
+    // Runtime (operator) and legacy custom nodes declare their outputs in
+    // config.outputs / run_config.outputs rather than the node-level `outputs`
+    // set, so `node_output_refs` collects those too (see #2817).
     let mut inner_outputs: BTreeSet<String> = module_file
         .nodes
         .iter()
         .filter(|n| n.module.is_none())
-        .flat_map(|n| n.outputs.iter().map(|o| o.to_string()))
+        .flat_map(|n| node_output_refs(n).into_iter().map(|(name, _)| name))
         .collect();
 
     // Check nested module files exist and collect their declared outputs
@@ -221,15 +230,21 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
                     module_file.module.name, mod_path, node.id,
                 )
             })?;
-            let base_canonical = module_dir.canonicalize()?;
-            if !nested_canonical.starts_with(&base_canonical) {
-                bail!(
-                    "module `{}`: nested module path `{}` escapes the module directory",
-                    module_file.module.name,
-                    mod_path,
-                );
-            }
-            // Load nested module to collect its declared outputs
+            // Note: unlike `expand_module_node`, we intentionally do NOT reject
+            // a nested reference that leaves `module_dir`. The real expansion
+            // path confines nested modules to the *project root*
+            // (`canonical_base`, threaded through recursion), which routinely
+            // sits above an individual module's directory -- a module in
+            // `modules/a/` may reference a sibling module in `modules/shared/`
+            // via `../shared/base.yml`. This linter runs on a module file in
+            // isolation, with no project root to bound against, so a
+            // `module_dir` containment check would spuriously reject
+            // cross-directory references that `dora run` / `dora build` accept
+            // and run fine (see #2851). We keep the absolute-path rejection and
+            // the `canonicalize()` existence check above; the containment
+            // boundary is enforced by the real expansion path, not this lint.
+            //
+            // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
             for output in &nested_module.module.outputs {
                 inner_outputs.insert(output.to_string());
@@ -323,17 +338,54 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
     maps
 }
 
+/// Every output an inner node produces, as `(output_name, output_ref)` pairs
+/// where `output_ref` is how a consumer addresses that output on this node.
+///
+/// The two differ only for multi-operator runtime nodes: their outputs live in
+/// `operators[].config.outputs` and must be referenced as
+/// `<operator_id>/<output>`. Node-level `outputs`, legacy `custom:`
+/// `run_config.outputs`, and single `operator:` outputs are all referenced by
+/// their bare name — for `operator:` the `op/` prefix is injected later by
+/// `resolve_aliases_and_set_defaults`, so adding it here would double it up.
+///
+/// Output-side counterpart of [`node_input_maps`]: centralizes the node-kind
+/// enumeration so module output resolution stays in sync as node kinds are
+/// added or change (see #2817).
+fn node_output_refs(node: &Node) -> Vec<(String, String)> {
+    fn bare(outputs: &BTreeSet<DataId>) -> impl Iterator<Item = (String, String)> {
+        outputs.iter().map(|o| (o.to_string(), o.to_string()))
+    }
+
+    let mut refs: Vec<(String, String)> = bare(&node.outputs).collect();
+    if let Some(ref operators) = node.operators {
+        for op in &operators.operators {
+            refs.extend(
+                op.config
+                    .outputs
+                    .iter()
+                    .map(|o| (o.to_string(), format!("{}/{o}", op.id))),
+            );
+        }
+    }
+    if let Some(ref operator) = node.operator {
+        refs.extend(bare(&operator.config.outputs));
+    }
+    if let Some(ref custom) = node.custom {
+        refs.extend(bare(&custom.run_config.outputs));
+    }
+    refs
+}
+
 /// Expand a single module node into its constituent flat nodes.
 ///
-/// Returns `(expanded_nodes, output_map)` where output_map maps each declared
-/// module output name to the prefixed inner node ID that produces it.
+/// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
 fn expand_module_node(
     node: &Node,
     base_dir: &Path,
     canonical_base: &Path,
     depth: u8,
     seen: &mut HashSet<PathBuf>,
-) -> eyre::Result<(Vec<Node>, BTreeMap<String, String>)> {
+) -> eyre::Result<(Vec<Node>, ModuleOutputMap)> {
     if depth >= MAX_MODULE_DEPTH {
         bail!(
             "module nesting exceeds depth limit of {MAX_MODULE_DEPTH} \
@@ -411,6 +463,7 @@ fn expand_module_node(
         .collect();
 
     // Validate and collect params
+    let mut seen_upper: BTreeMap<String, &String> = BTreeMap::new();
     for key in node.params.keys() {
         if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || key.is_empty() {
             bail!(
@@ -418,6 +471,22 @@ fn expand_module_node(
                  contain only [A-Za-z0-9_]",
                 key,
                 node.id
+            );
+        }
+        // Params are injected into the node env as `PARAM_<KEY>` with the key
+        // upper-cased (see `substitute_params_in_node`). Two keys that differ
+        // only in case (e.g. `mode` and `Mode`) would both map to `PARAM_MODE`,
+        // so one would silently overwrite the other. Reject the collision
+        // instead of dropping a param.
+        let upper = key.to_uppercase();
+        if let Some(existing) = seen_upper.insert(upper.clone(), key) {
+            bail!(
+                "param keys `{}` and `{}` in node `{}` collide: both map to the \
+                 env var `PARAM_{}`. Param keys must be unique case-insensitively.",
+                existing,
+                key,
+                node.id,
+                upper
             );
         }
     }
@@ -496,7 +565,7 @@ fn expand_module_node(
     // Phase 2: recursively expand nested modules (before building output map)
     // Collect nested output maps so sibling nodes can reference nested module
     // outputs correctly via rewrite_external_refs.
-    let mut nested_output_maps: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
+    let mut nested_output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
     let mut final_nodes = Vec::new();
     for inner_node in prefixed_nodes {
         if inner_node.module.is_some() {
@@ -527,12 +596,24 @@ fn expand_module_node(
         rewrite_external_refs(&mut final_nodes, &nested_output_maps)?;
     }
 
-    // Phase 3: build output map from fully-expanded flat nodes
-    let mut output_map: BTreeMap<String, String> = BTreeMap::new();
+    // Phase 3: build output map from fully-expanded flat nodes. A producer may
+    // be a plain node, a runtime node's operator, or a legacy custom node, so
+    // the lookup goes through `node_output_refs` — which also yields the form
+    // consumers must use to address the output (see #2817).
+    let mut output_map = ModuleOutputMap::new();
     for declared_output in &module_file.module.outputs {
-        let producer = final_nodes
+        let declared = declared_output.to_string();
+        let target = final_nodes
             .iter()
-            .find(|n| n.outputs.contains(declared_output))
+            .find_map(|n| {
+                node_output_refs(n)
+                    .into_iter()
+                    .find(|(name, _)| *name == declared)
+                    .map(|(_, output_ref)| UserInputMapping {
+                        source: n.id.clone(),
+                        output: output_ref.into(),
+                    })
+            })
             .ok_or_else(|| {
                 eyre::eyre!(
                     "module `{}` declares output `{}` but no inner node produces it",
@@ -540,7 +621,7 @@ fn expand_module_node(
                     declared_output,
                 )
             })?;
-        output_map.insert(declared_output.to_string(), producer.id.to_string());
+        output_map.insert(declared, target);
     }
 
     // Remove from seen so the same module file can be used in different
@@ -665,10 +746,12 @@ fn rewrite_module_inputs_map(
 ///
 /// If node X has input `nav_stack/cmd_vel` and `nav_stack` was a module whose
 /// output `cmd_vel` is produced by inner node `controller`, rewrite to
-/// `nav_stack.controller/cmd_vel`.
+/// `nav_stack.controller/cmd_vel`. If the producer is an operator of a runtime
+/// node, the rewritten output keeps the operator segment the runtime node
+/// requires: `nav_stack.runtime/controller_op/cmd_vel`.
 fn rewrite_external_refs(
     nodes: &mut [Node],
-    output_maps: &BTreeMap<String, BTreeMap<String, String>>,
+    output_maps: &BTreeMap<String, ModuleOutputMap>,
 ) -> eyre::Result<()> {
     if output_maps.is_empty() {
         return Ok(());
@@ -694,7 +777,7 @@ fn rewrite_external_refs(
 
 fn rewrite_inputs_map(
     inputs: &mut BTreeMap<DataId, Input>,
-    output_maps: &BTreeMap<String, BTreeMap<String, String>>,
+    output_maps: &BTreeMap<String, ModuleOutputMap>,
     node_id: &NodeId,
 ) -> eyre::Result<()> {
     let mut new_inputs = BTreeMap::new();
@@ -704,12 +787,9 @@ fn rewrite_inputs_map(
                 let source_str = user_mapping.source.to_string();
                 if let Some(omap) = output_maps.get(&source_str) {
                     let output_str = user_mapping.output.to_string();
-                    if let Some(prefixed_node) = omap.get(&output_str) {
+                    if let Some(target) = omap.get(&output_str) {
                         Input {
-                            mapping: InputMapping::User(UserInputMapping {
-                                source: prefixed_node.clone().into(),
-                                output: user_mapping.output.clone(),
-                            }),
+                            mapping: InputMapping::User(target.clone()),
                             queue_size: input.queue_size,
                             input_timeout: input.input_timeout,
                             queue_policy: input.queue_policy,
@@ -1708,6 +1788,55 @@ nodes:
         assert!(result.unwrap_err().to_string().contains("missing"));
     }
 
+    /// Regression test for #2851: `check_module_file` must accept a nested
+    /// module reference that points to a sibling directory inside the same
+    /// project (e.g. `../shared/base.yml`). The real expansion path
+    /// (`expand_module_node`) confines nested modules to the project root, not
+    /// to the referencing module's own directory, so such a reference is valid
+    /// and runnable -- the standalone linter must not spuriously reject it.
+    #[test]
+    fn check_module_file_accepts_cross_directory_nested_ref() {
+        let tmp = TempDir::new().unwrap();
+
+        // project/modules/shared/base.yml -- the nested module.
+        write_file(
+            tmp.path(),
+            "modules/shared/base.yml",
+            r#"
+module:
+  name: base
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: inner
+    path: inner.py
+    outputs:
+      - y
+"#,
+        );
+
+        // project/modules/a/mod.yml -- references the sibling module via `..`.
+        let path = write_file(
+            tmp.path(),
+            "modules/a/mod.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: nested
+    module: ../shared/base.yml
+"#,
+        );
+
+        // Must pass: the nested reference leaves `modules/a/` but stays inside
+        // the project, exactly what real expansion accepts.
+        check_module_file(&path).unwrap();
+    }
+
     // ---- Security tests ----
 
     #[test]
@@ -1828,6 +1957,52 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("invalid param key"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_case_colliding_param_keys() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "param_mod.yml",
+            r#"
+module:
+  name: p
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: n
+    path: n.py
+    inputs:
+      x: _mod/x
+    outputs: [y]
+"#,
+        );
+
+        // `mode` and `Mode` are both valid keys but both map to `PARAM_MODE`,
+        // so one would silently overwrite the other in the node env.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: param_mod.yml
+    inputs:
+      x: src/v
+    params:
+      mode: safe
+      Mode: turbo
+"#,
+        );
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("PARAM_MODE"), "got: {msg}");
     }
 
     #[test]
@@ -2177,5 +2352,203 @@ nodes:
             }
             _ => panic!("expected user mapping"),
         }
+    }
+
+    /// Expand a dataflow whose single module node `m` re-exports `result`, and
+    /// return the mapping the downstream `sink` node ends up with. Also asserts
+    /// that the expanded dataflow passes wiring validation, which is what
+    /// catches a producer reference that is syntactically plausible but wrong
+    /// for the producer's node kind (e.g. a missing operator segment).
+    fn expand_and_resolve_sink_input(base: &Path) -> UserInputMapping {
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: mod.yml
+    inputs:
+      data: src/val
+  - id: sink
+    path: sink.py
+    inputs:
+      r: m/result
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        crate::descriptor::validate::check_wiring(&expanded).unwrap();
+
+        let sink = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "sink")
+            .unwrap();
+        match &sink.inputs[&DataId::from("r".to_string())].mapping {
+            InputMapping::User(m) => m.clone(),
+            _ => panic!("expected user mapping"),
+        }
+    }
+
+    /// Regression test for #2817: a module output produced by an operator of a
+    /// multi-operator runtime node must resolve. Consumers of a runtime node
+    /// address outputs as `<node>/<operator>/<output>`, so the rewritten
+    /// reference has to keep the `proc/` segment.
+    #[test]
+    fn expand_resolves_operator_produced_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "mod.yml",
+            r#"
+module:
+  name: rt
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - result
+"#,
+        );
+
+        let mapping = expand_and_resolve_sink_input(base);
+        assert_eq!(mapping.source.to_string(), "m.runtime");
+        assert_eq!(mapping.output.to_string(), "proc/result");
+    }
+
+    /// Regression test for #2817: same for a single `operator:` node. Here the
+    /// output stays bare — `resolve_aliases_and_set_defaults` injects the `op/`
+    /// prefix afterwards, so adding it during expansion would double it up.
+    #[test]
+    fn expand_resolves_single_operator_produced_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "mod.yml",
+            r#"
+module:
+  name: rt
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runtime
+    operator:
+      shared-library: proc.so
+      inputs:
+        x: _mod/data
+      outputs:
+        - result
+"#,
+        );
+
+        let mapping = expand_and_resolve_sink_input(base);
+        assert_eq!(mapping.source.to_string(), "m.runtime");
+        assert_eq!(mapping.output.to_string(), "result");
+    }
+
+    /// Regression test for #2817: same for a legacy `custom:` inner node, whose
+    /// outputs live in `run_config.outputs`.
+    #[test]
+    fn expand_resolves_custom_produced_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "mod.yml",
+            r#"
+module:
+  name: legacy
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: runner
+    custom:
+      path: node.py
+      source: Local
+      inputs:
+        x: _mod/data
+      outputs:
+        - result
+"#,
+        );
+
+        let mapping = expand_and_resolve_sink_input(base);
+        assert_eq!(mapping.source.to_string(), "m.runner");
+        assert_eq!(mapping.output.to_string(), "result");
+    }
+
+    /// Regression test for #2817: `check_module_file` must accept a declared
+    /// output produced by an operator or legacy custom inner node, and still
+    /// reject one nothing produces.
+    #[test]
+    fn check_module_file_accepts_operator_and_custom_produced_outputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        let path = write_file(
+            base,
+            "mixed_module.yml",
+            r#"
+module:
+  name: mixed
+  inputs: [data]
+  outputs: [from_operator, from_custom]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - from_operator
+
+  - id: runner
+    custom:
+      path: node.py
+      source: Local
+      inputs:
+        y: _mod/data
+      outputs:
+        - from_custom
+"#,
+        );
+        check_module_file(&path).unwrap();
+
+        let missing = write_file(
+            base,
+            "missing_module.yml",
+            r#"
+module:
+  name: missing
+  outputs: [nobody_produces_this]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc.so
+        outputs:
+          - something_else
+"#,
+        );
+        let err = check_module_file(&missing).unwrap_err().to_string();
+        assert!(err.contains("no inner node produces it"), "{err}");
     }
 }

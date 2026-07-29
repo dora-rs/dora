@@ -84,12 +84,11 @@ pub struct EventStream {
     /// Per-input `@schema` subscribers (zenoh-ext AdvancedSubscriber) that prime
     /// the data subscribers' decoders. Kept alive like `_zenoh_subscribers`.
     _zenoh_schema_subscribers: Vec<zenoh_ext::AdvancedSubscriber<()>>,
-    /// Per-input liveliness tokens announcing "my data subscriber is declared"
-    /// so producers can count subscribers and only switch an output to the direct
-    /// zenoh data plane once every subscriber is wired (startup no-loss barrier;
-    /// see [`dora_core::topics::zenoh_input_ready_liveliness_topic`]). Kept alive
-    /// for the EventStream's lifetime; dropping a token undeclares it.
-    _zenoh_liveliness_tokens: Vec<zenoh::liveliness::LivelinessToken>,
+    /// The `dora-startup-acker` thread (see [`spawn_startup_acker`]). Exits
+    /// once the data subscribers — the only senders into its queue — are
+    /// dropped; joined in `EventStream::drop` inside the bounded zenoh
+    /// teardown, right after those subscribers are dropped.
+    startup_acker: Option<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
@@ -114,6 +113,72 @@ pub struct EventStream {
     stop_received: bool,
 }
 
+/// Spawn the consumer half of the startup handshake: a thread that answers
+/// every startup marker with an ack on the marked output's `@ack` topic.
+///
+/// The data callbacks `try_send` the input id of each received marker into
+/// `ack_rx` (a zenoh callback must never `put` itself — it runs on zenoh's IO
+/// worker); this thread publishes the corresponding ack, identifying this
+/// (node, input) in the attachment. The producer switches the output from the
+/// lossless daemon path to direct zenoh once all its required consumers acked.
+///
+/// The thread acks *every* marker for the stream's whole lifetime: markers
+/// keep coming until the producer has this ack, so ack-route establishment
+/// races self-heal, and late producers (dynamic nodes, restarts) get their
+/// acks whenever they run their handshake. It exits when the data subscribers
+/// (the only senders) are dropped.
+fn spawn_startup_acker(
+    node_id: NodeId,
+    ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,
+    mut ack_rx: tokio::sync::mpsc::Receiver<DataId>,
+    clock: Arc<uhlc::HLC>,
+) -> Option<std::thread::JoinHandle<()>> {
+    use dora_message::metadata::Metadata;
+    use zenoh::Wait;
+
+    if ack_publishers.is_empty() {
+        return None;
+    }
+    let handle = std::thread::Builder::new()
+        .name("dora-startup-acker".into())
+        .spawn(move || {
+            while let Some(input_id) = ack_rx.blocking_recv() {
+                let Some(publisher) = ack_publishers.get(&input_id) else {
+                    continue;
+                };
+                let metadata = Metadata::startup_ack(
+                    clock.new_timestamp(),
+                    node_id.as_ref(),
+                    input_id.as_ref(),
+                );
+                let attachment = match bincode::serialize(&metadata) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::debug!(input = %input_id, "failed to serialize startup ack ({e})");
+                        continue;
+                    }
+                };
+                if let Err(e) = publisher.put(&[][..]).attachment(&attachment[..]).wait() {
+                    // Expected while the ack route is still coming up; the
+                    // producer's next marker triggers a retry.
+                    tracing::trace!(input = %input_id, "startup ack put failed ({e})");
+                }
+            }
+        });
+    match handle {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            // Without acks the producers keep this node's inputs on the
+            // reliable daemon path — correct, just without the fast path.
+            tracing::warn!(
+                "failed to spawn startup-acker thread ({e}); \
+                 producers keep this node's inputs on the daemon path"
+            );
+            None
+        }
+    }
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -126,7 +191,6 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
@@ -271,7 +335,6 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
-            dynamic,
         )
     }
 
@@ -288,7 +351,6 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
-        dynamic: bool,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -310,9 +372,16 @@ impl EventStream {
         // them in `_zenoh_subscribers` and drop them after `receiver`.
         let mut zenoh_subscribers = Vec::new();
         let mut zenoh_schema_subscribers = Vec::new();
-        let mut zenoh_liveliness_tokens = Vec::new();
+        // Consumer half of the startup handshake: the data callbacks enqueue
+        // the input id of every received startup marker here, and the
+        // `dora-startup-acker` thread answers each with an ack on the output's
+        // `@ack` topic (see `spawn_startup_acker`). Bounded and `try_send`-fed:
+        // a full queue just delays the ack until the producer's next marker.
+        let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<DataId>(256);
+        let mut ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>> = HashMap::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
+            use zenoh::qos::CongestionControl;
             for (input_id, input) in input_config {
                 let mapping = &input.mapping;
                 if let dora_message::config::InputMapping::User(user_mapping) = mapping {
@@ -330,6 +399,33 @@ impl EventStream {
                             continue;
                         }
                     };
+                    // Ack publisher for this input, declared eagerly so its
+                    // route wires while the node is parked in the barrier.
+                    // `express` + `Drop` QoS: a lost ack is retried on the
+                    // producer's next marker. On failure the producer's ack
+                    // deadline keeps the output on the (correct) daemon path.
+                    let ack_topic = dora_core::topics::zenoh_output_ack_topic(
+                        dataflow_id,
+                        source_node,
+                        source_output,
+                    );
+                    match session
+                        .declare_publisher(ack_topic)
+                        .congestion_control(CongestionControl::Drop)
+                        .express(true)
+                        .wait()
+                    {
+                        Ok(publisher) => {
+                            ack_publishers.insert(input_id.clone(), publisher);
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                input = %input_id,
+                                "failed to declare startup-ack publisher ({e}); \
+                                 the producer keeps this input on the daemon path"
+                            );
+                        }
+                    }
                     // Per-input persistent decoder for the schema-once path,
                     // shared between this data subscriber (which decodes batches
                     // in zenoh receipt order) and the `@schema` subscriber (which
@@ -369,6 +465,7 @@ impl EventStream {
                         &mut zenoh_schema_subscribers,
                     );
 
+                    let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
                     let decoder = decoder.clone();
@@ -426,6 +523,18 @@ impl EventStream {
                                             return;
                                         }
                                     };
+                                    // Startup marker: its arrival proves this input's
+                                    // zenoh route carries data end-to-end. Answer with
+                                    // an ack (via the acker thread — a zenoh callback
+                                    // must not `put` itself) so the producer can switch
+                                    // the output to the direct zenoh path, and stop — a
+                                    // marker has no payload and must never reach the
+                                    // (stateful) decoder or user code. A full ack queue
+                                    // is fine: the producer's next marker retries.
+                                    if metadata.is_startup_marker() {
+                                        let _ = ack_tx_cb.try_send(input_id_cb.clone());
+                                        return;
+                                    }
                                     let payload = sample.payload().clone();
                                     // Decode here (receipt order) so the per-input
                                     // persistent decoder stays in sync. This runs on
@@ -570,39 +679,12 @@ impl EventStream {
                         Ok(s) => {
                             tracing::debug!(input = %input_id, %topic, "zenoh subscriber declared (callback)");
                             zenoh_subscribers.push(s);
-
-                            // Announce readiness for this link so the producer
-                            // counts us before switching the output to the direct
-                            // zenoh data plane. Declared only after a *successful*
-                            // data subscriber (so a counted token always implies
-                            // the subscription is in flight) and never for dynamic
-                            // nodes — they connect at arbitrary times and are not
-                            // part of the startup barrier (the producer reaches
-                            // them via normal matching once they join). A failure
-                            // here is non-fatal: the producer just keeps this
-                            // output on the reliable daemon path.
-                            if !dynamic {
-                                let ready_key =
-                                    dora_core::topics::zenoh_input_ready_liveliness_topic(
-                                        dataflow_id,
-                                        source_node,
-                                        source_output,
-                                        node_id,
-                                        input_id,
-                                    );
-                                match session.liveliness().declare_token(ready_key).wait() {
-                                    Ok(token) => zenoh_liveliness_tokens.push(token),
-                                    Err(e) => {
-                                        tracing::warn!(
-                                            input = %input_id,
-                                            "failed to declare zenoh readiness token ({e}); \
-                                             producer will keep this output on the daemon path"
-                                        );
-                                    }
-                                }
-                            }
                         }
                         Err(e) => {
+                            // No zenoh subscriber for this input: no marker can
+                            // ever arrive, so this node never acks it and the
+                            // producer keeps the output on the reliable daemon
+                            // path — the input is served via daemon events.
                             tracing::warn!(
                                 input = %input_id,
                                 "failed to declare zenoh subscriber ({e}), using daemon path"
@@ -612,6 +694,17 @@ impl EventStream {
                 }
             }
         }
+
+        // Consumer half of the startup handshake: from here on, every startup
+        // marker received by a data callback above is answered with an ack.
+        // Nothing blocks and nothing can fail init: a route that never
+        // delivers a marker simply never gets acked, and the producer keeps
+        // that output on the lossless daemon path (see `StartupHandshake` on
+        // the producer side). The acker runs for the stream's whole lifetime
+        // so late producers (dynamic nodes, restarts) get acks too.
+        drop(ack_tx); // the callbacks hold the only remaining senders
+        let startup_acker =
+            spawn_startup_acker(node_id.clone(), ack_publishers, ack_rx, clock.clone());
 
         let reply = channel
             .request(&Timestamped {
@@ -639,7 +732,7 @@ impl EventStream {
             _thread_handle: thread_handle,
             _zenoh_subscribers: zenoh_subscribers,
             _zenoh_schema_subscribers: zenoh_schema_subscribers,
-            _zenoh_liveliness_tokens: zenoh_liveliness_tokens,
+            startup_acker,
             close_channel,
             start_timestamp: clock.new_timestamp(),
             clock,
@@ -717,6 +810,23 @@ impl EventStream {
         if let Some(event) = self.pending_passthrough.pop_front() {
             return Some(event);
         }
+        self.recv_from_stream().await
+    }
+
+    /// Receive the next event straight from the scheduler/receiver,
+    /// **without** draining `pending_passthrough` first.
+    ///
+    /// The pattern-aware wait loop ([`wait_for_correlation`](Self::wait_for_correlation))
+    /// buffers every non-matching event into `pending_passthrough` itself. If
+    /// it pumped the stream through [`recv_async`](Self::recv_async), that
+    /// drain would immediately hand the just-buffered event straight back, the
+    /// classifier would re-buffer it, and the loop would spin on the same event
+    /// forever — never reading the awaited response off the receiver — until it
+    /// hit its deadline and wrongly reported a timeout (while pinning a CPU
+    /// core). Reading through this bypass keeps the buffered events reserved for
+    /// the caller's own `recv`/`recv_async` while the wait loop makes real
+    /// progress.
+    async fn recv_from_stream(&mut self) -> Option<Event> {
         // Close the stream after a Stop event: the daemon thread has
         // already dropped its sender, but zenoh subscriber threads
         // hold clones that would otherwise keep `receiver` open.
@@ -776,51 +886,50 @@ impl EventStream {
             self.scheduler.next().map(Self::convert_event_item)
         };
 
+        if let Some(ref event) = event {
+            self.note_produced_event(event);
+        }
+        event
+    }
+
+    /// Post-process an event just produced by `recv_async` / `poll_next`: run
+    /// the one-shot, first-message input type check and update the
+    /// stop-tracking flag. Shared by both receive paths so they cannot drift —
+    /// the two paths must stay in lockstep (dora-rs/adora#172, #174).
+    fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
-        // Zero cost after first message per input.
+        // `contains_key` short-circuits cheaply once the check is consumed, so
+        // steady-state topic messages pay a single map lookup (zero extra cost
+        // after the first message per input).
         //
-        // Skip the check when the message carries pattern metadata
-        // (`request_id`, `goal_id`, or `goal_status`) — the input is
-        // polymorphic by pattern design and a single declared type
-        // cannot cover all variants. The check stays armed so a later
-        // non-pattern message can still validate (dora-rs/adora#150).
-        if let Some(Event::Input {
-            ref id,
-            ref metadata,
-            ref data,
-        }) = event
-            && let Some(expected) = self.input_type_checks.get(id).cloned()
+        // Skip the check (and keep it armed) when the message carries pattern
+        // metadata (`request_id`, `goal_id`, or `goal_status`) — the input is
+        // polymorphic by pattern design and a single declared type cannot cover
+        // all variants (dora-rs/adora#150). The membership test runs before the
+        // pattern predicate so the common consumed-check path avoids the
+        // parameter lookups, and before `remove` so an armed pattern input's
+        // stored `DataType` is never cloned.
+        if let Event::Input { id, metadata, data } = event
+            && self.input_type_checks.contains_key(id)
+            && !crate::node::carries_pattern_correlation(&metadata.parameters)
+            && let Some(expected) = self.input_type_checks.remove(id)
         {
-            let is_pattern_message = metadata
-                .parameters
-                .contains_key(dora_message::metadata::REQUEST_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_STATUS);
-            if !is_pattern_message {
-                // Consume the check and validate.
-                self.input_type_checks.remove(id);
-                let actual = data.data_type();
-                // Skip check for Null type (timer ticks, empty payloads)
-                // to avoid spurious warnings on annotated timer inputs.
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message"
-                    );
-                }
+            let actual = data.data_type();
+            // Skip check for Null type (timer ticks, empty payloads)
+            // to avoid spurious warnings on annotated timer inputs.
+            if *actual != arrow_schema::DataType::Null && *actual != expected {
+                tracing::warn!(
+                    input = %id,
+                    expected = ?expected,
+                    actual = ?actual,
+                    "input type mismatch on first message"
+                );
             }
         }
 
-        if matches!(&event, Some(Event::Stop(_))) {
+        if matches!(event, Event::Stop(_)) {
             self.stop_received = true;
         }
-        event
     }
 
     /// Check if there are any buffered events in the scheduler, the
@@ -1138,13 +1247,41 @@ impl EventStream {
     where
         F: Fn(&Event, &str) -> bool,
     {
+        // A previous pattern-aware wait may already have buffered the event
+        // we are now looking for. With pipelined requests, the response to
+        // `req-2` can arrive — and be classified non-matching, so buffered
+        // into `pending_passthrough` — *during* the wait for `req-1`. The loop
+        // below pumps `recv_from_stream`, which never reads
+        // `pending_passthrough`, so without this scan that already-buffered
+        // response would be invisible and the wait would wrongly time out.
+        // Extract a buffered match in place (preserving the order of the
+        // remaining events for the caller's own `recv()`/`recv_async()`).
+        //
+        // Only a `Match` is pulled from the buffer: a buffered `Stop` is
+        // already handled by the `stop_received` short-circuit in
+        // `recv_from_stream`, and a buffered `NodeRestarted` was reported to
+        // the caller when it was first seen, so it is left for the caller's
+        // own event loop rather than re-surfaced here.
+        if let Some(pos) = self
+            .pending_passthrough
+            .iter()
+            .position(|event| is_match(event, needle))
+            && let Some(event) = self.pending_passthrough.remove(pos)
+        {
+            return Ok(event);
+        }
+
         let deadline = std::time::Instant::now() + timeout;
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
                 return Err(PatternError::Timeout);
             }
-            let event = match select(Delay::new(remaining), pin!(self.recv_async())).await {
+            // Pump the stream via `recv_from_stream`, NOT `recv_async`: the
+            // latter drains `pending_passthrough` first, which would re-hand us
+            // the very events we buffer below and livelock the loop (see
+            // `recv_from_stream`'s docs).
+            let event = match select(Delay::new(remaining), pin!(self.recv_from_stream())).await {
                 Either::Left((_elapsed, _)) => return Err(PatternError::Timeout),
                 Either::Right((None, _)) => return Err(PatternError::StreamEnded),
                 Either::Right((Some(e), _)) => e,
@@ -1542,43 +1679,11 @@ impl Stream for EventStream {
             .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item));
 
-        // Run first-message type check on the Stream path too.
-        //
-        // Mirror the recv_async() logic: skip the check (and keep it
-        // armed) when the message carries pattern metadata, so a later
-        // non-pattern message can still validate (dora-rs/adora#174).
-        if let std::task::Poll::Ready(Some(Event::Input {
-            ref id,
-            ref metadata,
-            ref data,
-        })) = poll
-            && let Some(expected) = self.input_type_checks.get(id).cloned()
-        {
-            let is_pattern_message = metadata
-                .parameters
-                .contains_key(dora_message::metadata::REQUEST_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_ID)
-                || metadata
-                    .parameters
-                    .contains_key(dora_message::metadata::GOAL_STATUS);
-            if !is_pattern_message {
-                self.input_type_checks.remove(id);
-                let actual = data.data_type();
-                if *actual != arrow_schema::DataType::Null && *actual != expected {
-                    tracing::warn!(
-                        input = %id,
-                        expected = ?expected,
-                        actual = ?actual,
-                        "input type mismatch on first message (Stream path)"
-                    );
-                }
-            }
-        }
-
-        if matches!(&poll, std::task::Poll::Ready(Some(Event::Stop(_)))) {
-            self.stop_received = true;
+        // Mirror recv_async(): run the first-message type check and stop
+        // tracking on the Stream path too, via the shared helper so the two
+        // paths stay in lockstep (dora-rs/adora#172, #174).
+        if let std::task::Poll::Ready(Some(ref event)) = poll {
+            self.note_produced_event(event);
         }
         poll
     }
@@ -1605,35 +1710,23 @@ impl Drop for EventStream {
         // implicit field-drop phase after this `Drop` body returns (#2583).
         let subscribers = std::mem::take(&mut self._zenoh_subscribers);
         let schema_subscribers = std::mem::take(&mut self._zenoh_schema_subscribers);
-        if !subscribers.is_empty() || !schema_subscribers.is_empty() {
+        let startup_acker = self.startup_acker.take();
+        if !subscribers.is_empty() || !schema_subscribers.is_empty() || startup_acker.is_some() {
             let completed =
                 teardown_with_timeout("zenoh-subscribers", ZENOH_TEARDOWN_TIMEOUT, move || {
                     drop(subscribers);
                     drop(schema_subscribers);
+                    // Dropping the subscribers dropped their callbacks — the
+                    // only senders into the acker's queue — so the acker
+                    // thread exits (undeclaring its ack publishers, also
+                    // bounded by this deadline) and can be joined.
+                    if let Some(handle) = startup_acker {
+                        let _ = handle.join();
+                    }
                 });
             if !completed {
                 tracing::warn!(
                     "zenoh subscriber teardown timed out after {}s; continuing node shutdown",
-                    ZENOH_TEARDOWN_TIMEOUT.as_secs()
-                );
-            }
-        }
-
-        // Undeclare readiness tokens under the same deadline: like subscriber
-        // teardown, `LivelinessToken::drop` undeclares on the shared session and
-        // can block if zenoh's net runtime is wedged (dora-rs/dora#2425).
-        let tokens = std::mem::take(&mut self._zenoh_liveliness_tokens);
-        if !tokens.is_empty() {
-            let completed = teardown_with_timeout(
-                "zenoh-liveliness-tokens",
-                ZENOH_TEARDOWN_TIMEOUT,
-                move || {
-                    drop(tokens);
-                },
-            );
-            if !completed {
-                tracing::warn!(
-                    "zenoh readiness-token teardown timed out after {}s; continuing node shutdown",
                     ZENOH_TEARDOWN_TIMEOUT.as_secs()
                 );
             }
@@ -2283,6 +2376,157 @@ mod tests {
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
         );
+    }
+
+    /// Regression: a pattern-aware wait (`recv_service_response`) must make
+    /// progress when a non-matching event arrives *before* the correlated
+    /// response.
+    ///
+    /// The wait loop buffers every non-matching event into
+    /// `pending_passthrough` so the caller's own event loop can still see it.
+    /// Before the fix the loop pumped the stream via `recv_async`, which
+    /// drains `pending_passthrough` first — so it kept re-serving the buffered
+    /// non-matching event, re-buffering it, and spinning forever without ever
+    /// reading the response off the receiver. Every such call pinned a CPU core
+    /// and returned `Timeout`. The fix pumps via `recv_from_stream`, which
+    /// bypasses the passthrough buffer.
+    #[test]
+    fn recv_service_response_matches_after_non_matching_event() {
+        // Delivered FIFO (integration tests disable the reordering scheduler):
+        // the non-matching "sensor" input, then the correlated "response".
+        let events = vec![
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "sensor".parse().unwrap(),
+                    metadata: None,
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-1")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            },
+        ];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (_node, mut events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
+
+        let server = NodeId::from("calc".to_string());
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match response {
+            Ok(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
+            other => panic!("expected the correlated response Input, got {other:?}"),
+        }
+
+        // The non-matching "sensor" input must not be lost — it is replayed
+        // to the caller's own event loop after the wait returns.
+        let buffered = events.recv();
+        assert!(
+            matches!(&buffered, Some(Event::Input { id, .. }) if id.as_str() == "sensor"),
+            "expected the buffered non-matching 'sensor' input, got {buffered:?}"
+        );
+    }
+
+    /// Regression: a pattern-aware wait must find its correlated response even
+    /// when a *previous* wait already buffered it.
+    ///
+    /// This is the pipelined / out-of-order case: two requests are in flight,
+    /// and `req-2`'s response arrives before `req-1`'s. The wait for `req-1`
+    /// buffers `resp-2` into `pending_passthrough` as non-matching, then
+    /// returns `resp-1`. The subsequent wait for `req-2` must return the
+    /// already-buffered `resp-2` — the wait loop pumps `recv_from_stream`,
+    /// which never reads `pending_passthrough`, so `wait_for_correlation`
+    /// scans the buffer for a match before reading the stream. Without that
+    /// scan the buffered response is invisible and the wait wrongly times out.
+    #[test]
+    fn recv_service_response_matches_buffered_response_from_prior_wait() {
+        // Delivered FIFO: `resp-2` arrives before `resp-1`, then `Stop`.
+        let events = vec![
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-2")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Input {
+                    id: "response".parse().unwrap(),
+                    metadata: Some(request_id_params("req-1")),
+                    data: None,
+                },
+            },
+            TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            },
+        ];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = flume::unbounded();
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (_node, mut events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
+
+        let server = NodeId::from("calc".to_string());
+        let request_id_of = |event: &Event| match event {
+            Event::Input { metadata, .. } => dora_message::metadata::get_string_param(
+                &metadata.parameters,
+                dora_message::metadata::REQUEST_ID,
+            )
+            .map(str::to_owned),
+            _ => None,
+        };
+
+        // Wait for `req-1`: reads `resp-2` (buffered as non-matching), then
+        // returns `resp-1`.
+        let first = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match &first {
+            Ok(event) => assert_eq!(request_id_of(event).as_deref(), Some("req-1")),
+            other => panic!("expected the req-1 response, got {other:?}"),
+        }
+
+        // Wait for `req-2`: `resp-2` is already in `pending_passthrough`, so
+        // this must return it from the buffer rather than time out.
+        let second = futures::executor::block_on(events.recv_service_response(
+            "req-2",
+            &server,
+            Duration::from_secs(5),
+        ));
+        match &second {
+            Ok(event) => assert_eq!(request_id_of(event).as_deref(), Some("req-2")),
+            other => panic!("expected the buffered req-2 response, got {other:?}"),
+        }
     }
 
     /// After a `Stop` event is delivered, subsequent `recv` calls must

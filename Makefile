@@ -52,7 +52,7 @@
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
-        qa-examples qa-cluster-e2e qa-cluster-record-replay \
+        qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
         qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
 
@@ -72,6 +72,12 @@ qa-tier1: qa-deep
 
 qa-nightly:
 	@scripts/qa/all.sh --nightly
+
+ros2-zenoh-humble:
+	@scripts/ros2-zenoh-interop.sh humble all
+
+ros2-zenoh-kilted:
+	@scripts/ros2-zenoh-interop.sh kilted all
 
 qa-release-gate:
 	@scripts/qa/all.sh --release-gate

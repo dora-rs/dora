@@ -3,6 +3,70 @@ use std::{borrow::Cow, cell::RefCell, collections::HashMap, sync::Arc};
 
 pub use serialize::TypedValue;
 
+const CDR_LE_ENCAPSULATION: [u8; 4] = [0, 1, 0, 0];
+
+pub fn serialize_cdr<T: serde::Serialize>(value: &T) -> eyre::Result<Vec<u8>> {
+    let body = cdr_encoding::to_vec::<_, byteorder::LittleEndian>(value)
+        .map_err(|error| eyre::eyre!("failed to serialize ROS2 CDR: {error}"))?;
+    let mut payload = Vec::with_capacity(CDR_LE_ENCAPSULATION.len() + body.len());
+    payload.extend_from_slice(&CDR_LE_ENCAPSULATION);
+    payload.extend_from_slice(&body);
+    Ok(payload)
+}
+
+pub fn deserialize_cdr<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> eyre::Result<T> {
+    let body = cdr_little_endian_body(bytes)?;
+    let (value, consumed) = cdr_encoding::from_bytes::<T, byteorder::LittleEndian>(body)
+        .map_err(|error| eyre::eyre!("failed to deserialize ROS2 CDR: {error}"))?;
+    if consumed != body.len() {
+        eyre::bail!(
+            "ROS2 CDR payload has {} trailing bytes",
+            body.len() - consumed
+        );
+    }
+    Ok(value)
+}
+
+pub fn serialize_raw_cdr(value: &TypedValue<'_>) -> eyre::Result<Vec<u8>> {
+    serialize_cdr(value)
+}
+
+pub fn deserialize_raw_cdr(
+    bytes: &[u8],
+    type_info: TypeInfo<'static>,
+    max_payload_size: usize,
+) -> eyre::Result<arrow::array::ArrayData> {
+    if bytes.len() > max_payload_size {
+        return Err(eyre::eyre!(
+            "ROS2 CDR payload is {} bytes, limit is {max_payload_size}",
+            bytes.len()
+        ));
+    }
+    let body = cdr_little_endian_body(bytes)?;
+    let seed = deserialize::StructDeserializer::new(Cow::Owned(type_info));
+    let mut deserializer = cdr_encoding::CdrDeserializer::<byteorder::LittleEndian>::new(body);
+    let value = serde::de::DeserializeSeed::deserialize(seed, &mut deserializer)
+        .map_err(|error| eyre::eyre!("failed to deserialize ROS2 CDR: {error}"))?;
+    let consumed = deserializer.bytes_consumed();
+    if consumed != body.len() {
+        return Err(eyre::eyre!(
+            "ROS2 CDR payload has {} trailing bytes",
+            body.len() - consumed
+        ));
+    }
+    Ok(value)
+}
+
+fn cdr_little_endian_body(bytes: &[u8]) -> eyre::Result<&[u8]> {
+    let header = bytes
+        .get(..CDR_LE_ENCAPSULATION.len())
+        .ok_or_else(|| eyre::eyre!("ROS2 CDR payload is missing its encapsulation header"))?;
+    if header != CDR_LE_ENCAPSULATION {
+        eyre::bail!("unsupported ROS2 CDR encapsulation header {header:02x?}");
+    }
+    Ok(&bytes[CDR_LE_ENCAPSULATION.len()..])
+}
+
 pub mod deserialize;
 pub mod serialize;
 
@@ -169,6 +233,74 @@ impl ros2_client::Service for BridgeServiceType {
 
     fn response_type_name(&self) -> &str {
         &self.response_type_name
+    }
+}
+
+#[cfg(test)]
+mod raw_cdr_tests {
+    use arrow::array::{ArrayRef, Int32Array, StructArray};
+    use arrow::datatypes::{DataType, Field, Fields};
+    use dora_ros2_bridge_msg_gen::types::{Member, Message, primitives::BasicType};
+    use std::{borrow::Cow, collections::HashMap, sync::Arc};
+
+    use super::{
+        CDR_LE_ENCAPSULATION, TypeInfo, TypedValue, deserialize_raw_cdr, serialize_raw_cdr,
+    };
+
+    fn fixture() -> (ArrayRef, TypeInfo<'static>) {
+        let message = Message {
+            package: "test_pkg".into(),
+            name: "Primitive".into(),
+            members: vec![Member {
+                name: "value".into(),
+                r#type: BasicType::I32.into(),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("Primitive".into(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".into(), package);
+        let fields = Fields::from(vec![Field::new("value", DataType::Int32, true)]);
+        let value: ArrayRef = Arc::new(StructArray::new(
+            fields,
+            vec![Arc::new(Int32Array::from(vec![42]))],
+            None,
+        ));
+        (
+            value,
+            TypeInfo {
+                package_name: Cow::Borrowed("test_pkg"),
+                message_name: Cow::Borrowed("Primitive"),
+                messages: Arc::new(messages),
+            },
+        )
+    }
+
+    #[test]
+    fn raw_cdr_uses_rustdds_little_endian_layout() {
+        let (value, type_info) = fixture();
+        let bytes = serialize_raw_cdr(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .unwrap();
+        assert_eq!(
+            bytes,
+            [CDR_LE_ENCAPSULATION.as_slice(), &42_i32.to_le_bytes()].concat()
+        );
+        let decoded = deserialize_raw_cdr(&bytes, type_info, 1024).unwrap();
+        assert_eq!(decoded, value.to_data());
+    }
+
+    #[test]
+    fn raw_cdr_rejects_payload_limit_truncation_and_trailing_bytes() {
+        let (_, type_info) = fixture();
+        assert!(deserialize_raw_cdr(&[0; 5], type_info.clone(), 4).is_err());
+        assert!(deserialize_raw_cdr(&[0; 3], type_info.clone(), 4).is_err());
+        assert!(deserialize_raw_cdr(&[0, 0, 0, 0, 42, 0, 0, 0], type_info.clone(), 8).is_err());
+        assert!(deserialize_raw_cdr(&[0, 1, 0, 0, 42, 0, 0, 0, 1], type_info, 9).is_err());
     }
 }
 
