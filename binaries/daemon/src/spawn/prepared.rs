@@ -267,7 +267,11 @@ impl PreparedNode {
         let mut window_count: u32 = 0;
 
         loop {
-            let Ok(NodeProcessFinished { exit_status }) = finished_rx.await else {
+            let Ok(NodeProcessFinished {
+                exit_status,
+                pid: exited_pid,
+            }) = finished_rx.await
+            else {
                 logger
                     .log(
                         LogLevel::Error,
@@ -351,6 +355,7 @@ impl PreparedNode {
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
                 restart_count,
+                pid: exited_pid,
             }
             .into();
             let event = Timestamped {
@@ -774,7 +779,7 @@ impl PreparedNode {
             // `submit()` instead of routing operations to the
             // subsequent incarnation (dora-rs/adora#152).
             drop(op_rx);
-            let _ = finished_tx.send(NodeProcessFinished { exit_status });
+            let _ = finished_tx.send(NodeProcessFinished { exit_status, pid });
         });
 
         let node_id = self.node.id.clone();
@@ -1049,6 +1054,7 @@ enum NodeKind {
 
 struct NodeProcessFinished {
     exit_status: NodeExitStatus,
+    pid: u32,
     // Note: `op_rx` used to be returned here and recycled for the next
     // incarnation. That allowed a grace-kill task holding the old
     // `op_tx` to send SoftKill/Kill to the *new* process after a

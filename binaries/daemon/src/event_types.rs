@@ -179,6 +179,7 @@ pub enum DoraEvent {
         exit_status: NodeExitStatus,
         restart: bool,
         restart_count: u32,
+        pid: u32,
     },
     /// The per-node `restart_loop` spawned a fresh process after an exit
     /// and now wants the daemon to swap the tracked `ProcessHandle` in

@@ -4740,6 +4740,7 @@ impl Daemon {
                 exit_status,
                 restart,
                 restart_count,
+                pid,
             } => {
                 let mut logger = self
                     .logger
@@ -4752,6 +4753,31 @@ impl Daemon {
                         format!("handling node stop with exit status {exit_status:?} (restart: {restart}, restart_count: {restart_count})"),
                     )
                     .await;
+
+                if !restart
+                    && self
+                        .running
+                        .get(&dataflow_id)
+                        .and_then(|dataflow| dataflow.running_nodes.get(&node_id))
+                        .and_then(|node| node.pid.as_ref())
+                        .is_some_and(|current_pid| {
+                            current_pid.load(atomic::Ordering::Acquire) != pid
+                        })
+                {
+                    logger
+                        .log(
+                            LogLevel::Debug,
+                            Some("daemon".into()),
+                            format!(
+                                "ignoring stale exit from pid {pid}; `{node_id}` has already been re-added"
+                            ),
+                        )
+                        .await;
+                    if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                        dataflow.grace_duration_kills.remove(&node_id);
+                    }
+                    return Ok(());
+                }
 
                 let node_result = match exit_status {
                     NodeExitStatus::Success => Ok(()),
