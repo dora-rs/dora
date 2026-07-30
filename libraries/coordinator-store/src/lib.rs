@@ -18,6 +18,23 @@ pub const MAX_PARAM_VALUE_BYTES: usize = 65_536;
 /// internal composite-key separator (see `redb_store::KEY_SEPARATOR`); without
 /// this check `put_node_param` with a `\0`-containing key would succeed on the
 /// in-memory backend but fail on redb.
+///
+/// # Examples
+///
+/// ```
+/// use dora_coordinator_store::{validate_param_limits, MAX_PARAM_KEY_BYTES};
+///
+/// // Ordinary keys and values are accepted.
+/// assert!(validate_param_limits("robot_pose", b"{...}").is_ok());
+///
+/// // A key exactly at the limit is fine; one byte over is rejected.
+/// assert!(validate_param_limits(&"k".repeat(MAX_PARAM_KEY_BYTES), b"v").is_ok());
+/// assert!(validate_param_limits(&"k".repeat(MAX_PARAM_KEY_BYTES + 1), b"v").is_err());
+///
+/// // A null byte in the key is rejected so every backend behaves identically
+/// // (redb uses `\0` as a composite-key separator).
+/// assert!(validate_param_limits("a\0b", b"v").is_err());
+/// ```
 pub fn validate_param_limits(key: &str, value: &[u8]) -> Result<()> {
     if key.len() > MAX_PARAM_KEY_BYTES {
         eyre::bail!("param key too long (max {MAX_PARAM_KEY_BYTES} bytes)");
