@@ -2056,28 +2056,37 @@ impl Node {
         // a redundant CPU-memcpy or GPU-DtoH transfer on every
         // registration (cpu2cuda and cuda2cuda respectively).
         if !receiver_is_cuda {
+            // The DtoH copy must publish either a fully-initialized data
+            // region or nothing — uninitialized shmem exposed as a valid
+            // frame is data corruption.  Both a failed cudaMemcpy and a
+            // missing CUDA helper module are treated as copy failures.
+            let mut dtoh_copy_ok = true;
             if is_cuda {
                 if let Ok(helpers) = get_cuda_helpers(py) {
                     let bound = helpers.bind(py);
-                    let copy_ok = bound
+                    dtoh_copy_ok = bound
                         .call_method1(
                             "_cuda_memcpy",
                             (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                         )
                         .is_ok();
-                    if !copy_ok {
-                        if !is_pinned {
-                            let _ = bound
-                                .call_method1("_unregister_host", (shmem_ptr as u64, total_size));
+                } else {
+                    dtoh_copy_ok = false;
+                }
+                if !dtoh_copy_ok {
+                    if !is_pinned {
+                        if let Ok(helpers) = get_cuda_helpers(py) {
+                            let bound = helpers.bind(py);
+                            let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
                         }
-                        shmem.set_owner(true);
-                        eyre::bail!(
-                            "[{}] register_memory_pool: DtoH copy failed ({} → CPU shmem, {} bytes)",
-                            self.node_id,
-                            tensor_device,
-                            size
-                        );
                     }
+                    shmem.set_owner(true);
+                    eyre::bail!(
+                        "[{}] register_memory_pool: DtoH copy failed ({} → CPU shmem, {} bytes)",
+                        self.node_id,
+                        tensor_device,
+                        size
+                    );
                 }
             } else {
                 unsafe {
