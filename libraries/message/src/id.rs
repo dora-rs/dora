@@ -18,6 +18,19 @@ fn validate_node_id(id: &str) -> Result<(), InvalidId> {
     if id.is_empty() {
         return Err(InvalidId("identifier must not be empty".into()));
     }
+    // `dora` is reserved for built-in input namespaces (`dora/timer/...`,
+    // `dora/logs`). A user node literally named `dora` would be silently
+    // unusable as an input source: `InputMapping::from_str` treats any
+    // `dora/<output>` mapping as a built-in and fails to parse the
+    // subscription. Reject the id up front with a clear message instead of
+    // surfacing an opaque input-parse error later.
+    if id == "dora" {
+        return Err(InvalidId(
+            "identifier 'dora' is reserved for built-in inputs \
+             (dora/timer/..., dora/logs) and cannot be used as a node id"
+                .into(),
+        ));
+    }
     if id.starts_with('.') {
         return Err(InvalidId(format!(
             "identifier '{id}' must not start with '.' \
@@ -342,6 +355,17 @@ mod tests {
         assert!(validate_node_id("node name").is_err());
         assert!(validate_node_id("node;rm").is_err());
         assert!(validate_node_id("node\0").is_err());
+    }
+
+    #[test]
+    fn node_id_rejects_reserved_dora() {
+        // `dora` collides with the built-in input namespace and would make the
+        // node's outputs unsubscribable, so it is rejected up front.
+        assert!(validate_node_id("dora").is_err(), "dora must be rejected");
+        // Names that merely contain or extend `dora` are still fine.
+        assert!(validate_node_id("dora-node").is_ok());
+        assert!(validate_node_id("my-dora").is_ok());
+        assert!(validate_node_id("Dora").is_ok());
     }
 
     #[test]
