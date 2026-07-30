@@ -121,11 +121,16 @@ pub struct EventStream {
 /// (node, input) in the attachment. The producer switches the output from the
 /// lossless daemon path to direct zenoh once all its required consumers acked.
 ///
-/// The thread acks *every* marker for the stream's whole lifetime: markers
-/// keep coming until the producer has this ack, so ack-route establishment
-/// races self-heal, and late producers (dynamic nodes, restarts) get their
-/// acks whenever they run their handshake. It exits when the data subscribers
-/// (the only senders) are dropped.
+/// The thread acks *every* marker for the stream's whole lifetime, so late
+/// producers (dynamic nodes, restarts) get their acks whenever they run their
+/// handshake. Note that the producer's markers are **not** unbounded: it stops
+/// marking an output at its startup grace boundary and pins any still-un-acked
+/// output to the daemon path for the rest of its run (dora-rs/dora#2891). So
+/// acking promptly is what preserves the fast path — an ack-route race that
+/// outlasts the producer's grace does not self-heal, and a dropped ack (the
+/// bounded-queue `try_send` fallback below) costs that output direct zenoh for
+/// the producer's whole run. The thread exits when the data subscribers (the
+/// only senders) are dropped.
 fn spawn_startup_acker(
     node_id: NodeId,
     ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>>,

@@ -16,7 +16,11 @@
 //!   reached through forwarding.
 //! - a **local static** consumer becomes a required acker: the producer keeps
 //!   the output on the lossless daemon path until this consumer's startup ack
-//!   proves the direct zenoh route end-to-end.
+//!   proves the direct zenoh route end-to-end. The producer gives that proof a
+//!   bounded startup window and pins the output to the daemon path for the run
+//!   if it does not arrive in time, so adding a required acker that is slow to
+//!   answer costs the fast path rather than reordering a live topic
+//!   (dora-rs/dora#2891).
 //! - **local dynamic** consumers are neither: they join at arbitrary times (or
 //!   never), so nothing may wait on them, and their pre-join messages are
 //!   inherently out of scope.
