@@ -137,8 +137,8 @@ pub fn to_rustdds_qos(qos: &Ros2Qos) -> rustdds::QosPolicies {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn default_ros2_bridge_build_uses_humble_compatible_gid_length() {
-        assert!(cfg!(feature = "pre-iron-gid"));
+    fn default_ros2_bridge_build_keeps_pre_iron_gid_opt_in() {
+        assert!(!cfg!(feature = "pre-iron-gid"));
     }
 }
 
