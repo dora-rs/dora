@@ -62,6 +62,10 @@ pub struct OutputRouting {
     /// the direct node-to-node zenoh path. Dynamic consumers are never
     /// required: they join at arbitrary times (or never), and nothing may wait
     /// on them.
+    ///
+    /// The producer only collects these during a bounded startup window; an
+    /// acker that is slow to answer costs this output the fast path for the
+    /// whole run rather than upgrading it mid-stream (dora-rs/dora#2891).
     #[serde(default)]
     pub required_ackers: BTreeSet<RequiredAcker>,
 }

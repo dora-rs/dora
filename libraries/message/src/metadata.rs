@@ -116,8 +116,11 @@ impl Metadata {
 /// marker with an ack (see [`STARTUP_ACK_PARAM`]): an ack arriving back at the
 /// producer is end-to-end proof that the route pair carries data. The producer
 /// stops marking an output — and switches it to the direct zenoh path — once
-/// all its required consumers have acked; a route that never proves itself
-/// just keeps the output on the daemon path.
+/// all its required consumers have acked, but only within a bounded startup
+/// window: an output still un-acked when the window closes is pinned to the
+/// daemon path for the rest of the run, so a topic's messages never straddle a
+/// path switch (dora-rs/dora#2891). A route that never proves itself just keeps
+/// the output on the daemon path.
 ///
 /// The `__dora_` prefix is reserved; user parameters must not use it. Receivers
 /// filter markers before decoding the payload, so they never reach user code.
@@ -131,9 +134,11 @@ pub const STARTUP_MARKER_PARAM: &str = "__dora_startup_marker";
 /// output's dedicated `@ack` topic. An ack arriving back at the producer is
 /// end-to-end proof that the route works in *both* directions; once every
 /// required consumer of an output has acked, the producer switches that output
-/// from the reliable daemon path to the direct node-to-node zenoh path. A
-/// missing ack never fails anything — the output simply stays on the daemon
-/// path.
+/// from the reliable daemon path to the direct node-to-node zenoh path. Ack
+/// timing is load-bearing: the switch can only happen inside the producer's
+/// bounded startup window (see [`STARTUP_MARKER_PARAM`]), so a consumer that
+/// acks late costs that output the fast path for the whole run. A missing or
+/// late ack never fails anything — the output simply stays on the daemon path.
 ///
 /// Acks travel as an empty-payload message whose attachment carries this flag
 /// plus the acking consumer's identity under [`STARTUP_ACK_CONSUMER_PARAM`] and

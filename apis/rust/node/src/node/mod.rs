@@ -147,31 +147,32 @@ const LARGE_SEND_DIAG_LIMIT: u32 = 3;
 /// How often a starting node re-publishes its startup route-probe markers.
 ///
 /// See [`StartupHandshake`]. Markers stop per output as soon as that output's
-/// required acks have arrived (or the deadline froze it on the daemon path),
-/// so this rate only applies while the handshake is in flight.
+/// required acks have arrived (or the grace boundary froze it on the daemon
+/// path), so this rate only applies while the handshake is in flight.
 const ZENOH_STARTUP_MARKER_INTERVAL: Duration = Duration::from_millis(5);
 
-/// How long a producer keeps publishing markers for an un-acked output before
-/// freezing it on the reliable daemon path.
+/// The whole budget the startup handshake gets, measured from the daemon's
+/// "all nodes ready" barrier: `init` waits this long for the handshake, and
+/// whatever is still un-acked at the end is frozen on the daemon path for the
+/// run (see [`wait_for_grace`] for why the freeze is unconditional).
 ///
-/// Armed only once the daemon's "all nodes ready" barrier has released — i.e.
-/// once every static consumer has declared its subscribers and ack publishers
-/// — so a consumer that is merely slow to *start* (a Python node importing
-/// heavy libraries for a minute) cannot burn the deadline. From arming, this
-/// long with 5 ms markers and no ack means the route is genuinely broken, not
-/// slow. Nothing fails on the deadline: the output just keeps riding the
-/// lossless daemon path.
-const ZENOH_STARTUP_ACK_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// How long `init` waits after the barrier for the handshake to complete
-/// before returning control to user code.
+/// The window starts at the barrier, not at spawn: by then every static
+/// consumer has declared its subscribers and ack publishers, so a consumer
+/// that is merely slow to *start* (a Python node importing heavy libraries for
+/// a minute) cannot burn it. The healthy case completes in one marker→ack
+/// round-trip (single-digit milliseconds); half a second of 5 ms markers with
+/// no ack means the route is broken, not slow. Nothing fails at the boundary —
+/// a frozen output just keeps riding the lossless daemon path, trading the
+/// fast path for ordering. This is the single knob for that trade: raising it
+/// gives slow-to-establish routes more chance at direct zenoh, at the cost of
+/// delaying every node whose routes are genuinely broken.
 ///
-/// The healthy case completes in one marker→ack round-trip (single-digit
-/// milliseconds), which makes switch-before-first-send the overwhelmingly
-/// common case — messages then never straddle the daemon→zenoh path switch,
-/// so cross-path reordering cannot occur. When a route is genuinely broken
-/// this costs half a second once and the affected outputs keep riding the
-/// daemon path (still upgrading later if acks arrive before the deadline).
+/// For a **dynamic or restarted** producer the barrier releases immediately —
+/// its consumers have long been running — so this window instead starts a few
+/// milliseconds after the zenoh session opens, while the peer links it needs
+/// may still be dialing. Such a producer is therefore the most likely to end
+/// up frozen on the daemon path; if that shows up as a measurable regression,
+/// this constant (not a late upgrade) is the thing to raise.
 const ZENOH_STARTUP_GRACE: Duration = Duration::from_millis(500);
 
 /// Poll interval for the post-barrier grace wait.
@@ -182,8 +183,9 @@ struct DirectOutput {
     publisher: zenoh::pubsub::Publisher<'static>,
     /// `false` until the startup handshake proves this output's routes — every
     /// required consumer acked one of its markers (see [`StartupHandshake`]).
-    /// The send path consults this per message and takes the reliable daemon
-    /// path while it is `false`.
+    /// Settled by [`wait_for_grace`] before `init` returns and immutable from
+    /// then on, so every send of a given output takes the same path: direct
+    /// zenoh when `true`, the reliable daemon path when `false`.
     ready: Arc<AtomicBool>,
 }
 
@@ -274,7 +276,7 @@ fn declare_output_publishers(
 ///
 /// Shared between the output's ack-subscriber callback (which records incoming
 /// acks) and the [`StartupHandshake`] thread (which publishes markers until
-/// completion and checks the deadline).
+/// completion or the freeze).
 struct AckState {
     output_id: DataId,
     /// The (consumer node, input) identities that must ack before the output
@@ -284,8 +286,12 @@ struct AckState {
     /// Identities that have acked so far.
     received: Mutex<BTreeSet<(String, String)>>,
     /// The same flag as the output's [`DirectOutput::ready`]; flipped exactly
-    /// once, when `received` covers `required`.
+    /// once, when `received` covers `required` before the freeze.
     ready: Arc<AtomicBool>,
+    /// Set once the grace boundary passed with this output still un-acked: the
+    /// output is pinned to the daemon path and can never upgrade (see
+    /// [`Self::freeze`]).
+    frozen: AtomicBool,
 }
 
 impl AckState {
@@ -302,33 +308,70 @@ impl AckState {
                 .collect(),
             received: Mutex::new(BTreeSet::new()),
             ready,
+            frozen: AtomicBool::new(false),
         }
+    }
+
+    /// The ack lock, recovered from poisoning: a panicking callback leaves the
+    /// set intact and losing acks would silently cost the fast path.
+    ///
+    /// Holding this guard is what makes [`Self::record`] and [`Self::freeze`]
+    /// atomic against each other, so every method that touches `received` or
+    /// `frozen` goes through here.
+    fn received(&self) -> std::sync::MutexGuard<'_, BTreeSet<(String, String)>> {
+        self.received
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// Records one ack. Identities outside the required set — a dynamic or
     /// debug consumer may ack too — are ignored; they must never count toward
-    /// completion. Flips `ready` once the required set is covered.
+    /// completion. Flips `ready` once the required set is covered, unless the
+    /// output was already frozen on the daemon path.
     fn record(&self, consumer_node: &str, input_id: &str) {
         let identity = (consumer_node.to_owned(), input_id.to_owned());
         if !self.required.contains(&identity) {
             return;
         }
-        let mut received = self
-            .received
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut received = self.received();
+        // Read under the same lock `freeze` takes, so the two can't interleave
+        // into a `ready` flip that outlives the freeze.
+        if self.frozen.load(Ordering::Relaxed) {
+            return;
+        }
         received.insert(identity);
         if received.len() == self.required.len() {
             self.ready.store(true, Ordering::Relaxed);
         }
     }
 
-    /// The required identities that have not acked (for the deadline warning).
+    /// Pins this output to the daemon path for the rest of the run: no later
+    /// ack may flip `ready`. Called once, at the grace boundary — see
+    /// [`wait_for_grace`].
+    ///
+    /// Returns whether the output was actually frozen — `false` means it had
+    /// already completed its handshake and keeps the direct-zenoh path. The
+    /// `received` lock makes that decision atomic against a concurrent
+    /// [`Self::record`]: either the ack completed the set before the freeze, or
+    /// it is ignored.
+    fn freeze(&self) -> bool {
+        let _guard = self.received();
+        if self.ready.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.frozen.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// Whether this output was frozen on the daemon path (marker-thread view;
+    /// no lock needed, a stale `false` just costs one more marker).
+    fn is_frozen(&self) -> bool {
+        self.frozen.load(Ordering::Relaxed)
+    }
+
+    /// The required identities that have not acked (for the freeze warning).
     fn missing(&self) -> Vec<String> {
-        let received = self
-            .received
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let received = self.received();
         self.required
             .difference(&received)
             .map(|(node, input)| format!("{node}/{input}"))
@@ -406,7 +449,10 @@ fn declare_ack_subscribers(
 /// consumer's ack rides the output's `@ack` topic back — an arrived ack is
 /// evidence that the route pair carries data. Until then every send takes the
 /// daemon path, so nothing is ever lost; a route that never proves itself only
-/// costs the fast path, never correctness ([`ZENOH_STARTUP_ACK_TIMEOUT`]).
+/// costs the fast path, never correctness ([`ZENOH_STARTUP_GRACE`]).
+///
+/// The handshake is over by the time `init` returns: [`Self::settle`] either
+/// sees an output acked or freezes it on the daemon path.
 ///
 /// Runs on its own thread because the node blocks inside the daemon's "all
 /// nodes ready" barrier while markers must already be flowing: consumers ack
@@ -422,10 +468,6 @@ fn declare_ack_subscribers(
 /// (their ack publishers answer markers for the consumer's whole lifetime).
 struct StartupHandshake {
     stop: Arc<AtomicBool>,
-    /// Deadline for un-acked outputs; unset until armed post-barrier (see
-    /// [`Self::arm_deadline`]). Written exactly once, hence a lock-free
-    /// `OnceLock` rather than a mutex.
-    deadline: Arc<std::sync::OnceLock<Instant>>,
     /// The outputs whose handshake is (or was) in flight.
     ack_states: Vec<Arc<AckState>>,
     handle: Option<std::thread::JoinHandle<()>>,
@@ -446,7 +488,6 @@ impl StartupHandshake {
         use zenoh::Wait;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let deadline = Arc::new(std::sync::OnceLock::new());
         let ack_subscribers =
             declare_ack_subscribers(session, dataflow_id, node_id, &mut ack_states);
         if ack_states.is_empty() {
@@ -454,7 +495,6 @@ impl StartupHandshake {
             // failed): no markers to publish, nothing to stop.
             return Self {
                 stop,
-                deadline,
                 ack_states,
                 handle: None,
                 ack_subscribers,
@@ -462,7 +502,6 @@ impl StartupHandshake {
         }
 
         let thread_stop = stop.clone();
-        let thread_deadline = deadline.clone();
         let thread_states = ack_states.clone();
         let thread_publishers = publishers.clone();
         let handle = std::thread::Builder::new()
@@ -472,27 +511,12 @@ impl StartupHandshake {
                     if thread_stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    let deadline_passed = thread_deadline
-                        .get()
-                        .is_some_and(|deadline| Instant::now() >= *deadline);
                     let mut awaiting = false;
                     for state in &thread_states {
-                        if state.ready.load(Ordering::Relaxed) {
-                            continue;
-                        }
-                        if deadline_passed {
-                            // Freeze: no more markers and no late upgrade — a
-                            // route that produced no ack in 10s of 5ms markers
-                            // after every consumer subscribed is broken, and
-                            // upgrading minutes in would trade a working
-                            // (slower) path for a mid-run reorder.
-                            warn!(
-                                output = %state.output_id,
-                                missing = ?state.missing(),
-                                "startup handshake incomplete after {}s; \
-                                 output stays on the reliable daemon path",
-                                ZENOH_STARTUP_ACK_TIMEOUT.as_secs()
-                            );
+                        // A frozen output can never upgrade, so its markers can
+                        // only cost bandwidth; `wait_for_grace` already logged
+                        // why it stays on the daemon path.
+                        if state.ready.load(Ordering::Relaxed) || state.is_frozen() {
                             continue;
                         }
                         awaiting = true;
@@ -527,7 +551,6 @@ impl StartupHandshake {
         match handle {
             Ok(handle) => Self {
                 stop,
-                deadline,
                 ack_states,
                 handle: Some(handle),
                 ack_subscribers,
@@ -541,7 +564,6 @@ impl StartupHandshake {
                 );
                 Self {
                     stop,
-                    deadline,
                     ack_states,
                     handle: None,
                     ack_subscribers,
@@ -550,54 +572,15 @@ impl StartupHandshake {
         }
     }
 
-    /// Arm the handshake deadline.
+    /// Settle every output's transport: wait out `grace`, then freeze whatever
+    /// has not proven its routes. See [`wait_for_grace`].
     ///
-    /// Called once `EventStream::init` has returned, i.e. once the daemon's
-    /// "all nodes ready" barrier has released: from that point every static
-    /// consumer has declared its subscribers and ack publishers, so a bounded
-    /// wait is meaningful. (For a dynamic or restarted producer the barrier
-    /// releases immediately — its consumers have long been running.)
-    fn arm_deadline(&self) {
-        let _ = self
-            .deadline
-            .set(Instant::now() + ZENOH_STARTUP_ACK_TIMEOUT);
-    }
-
-    /// Post-barrier grace wait: give the handshake a moment to complete before
-    /// user code runs, so outputs switch to the direct zenoh path *before*
-    /// their first real send and no message straddles the daemon→zenoh switch.
-    /// Returns as soon as every awaited output is ready; bounded by
-    /// [`ZENOH_STARTUP_GRACE`].
-    fn wait_for_grace(&self) {
-        if self.ack_states.is_empty() {
-            return;
-        }
-        let grace_deadline = Instant::now() + ZENOH_STARTUP_GRACE;
-        loop {
-            if self
-                .ack_states
-                .iter()
-                .all(|state| state.ready.load(Ordering::Relaxed))
-            {
-                return;
-            }
-            if Instant::now() >= grace_deadline {
-                let pending: Vec<_> = self
-                    .ack_states
-                    .iter()
-                    .filter(|state| !state.ready.load(Ordering::Relaxed))
-                    .map(|state| state.output_id.to_string())
-                    .collect();
-                debug!(
-                    outputs = ?pending,
-                    "startup handshake still in flight after the {}ms grace; \
-                     these outputs start on the daemon path and upgrade when acked",
-                    ZENOH_STARTUP_GRACE.as_millis()
-                );
-                return;
-            }
-            std::thread::sleep(ZENOH_STARTUP_GRACE_POLL_INTERVAL);
-        }
+    /// `DoraNode::init` **must** call this before returning to user code —
+    /// that is what makes an output's path constant for the run
+    /// (dora-rs/dora#2891). It is a method (rather than only the free function
+    /// the tests drive) so the requirement is discoverable from the type.
+    fn settle(&self, grace: Duration) {
+        wait_for_grace(&self.ack_states, grace);
     }
 
     /// Signal the handshake thread to stop and wait for it to exit, so its
@@ -616,6 +599,57 @@ impl Drop for StartupHandshake {
         // a failed `EventStream::init`). Without this the handshake thread
         // would keep publishing and keep the publishers (and session) alive.
         self.shutdown();
+    }
+}
+
+/// Post-barrier grace wait: give the handshake `grace` to complete, then freeze
+/// whatever is left. This is the boundary that settles every output's transport
+/// before user code runs.
+///
+/// Returns as soon as every awaited output is ready. Anything still un-acked
+/// when `grace` expires is pinned to the daemon path for the rest of the run
+/// ([`AckState::freeze`]) rather than left to upgrade later. Upgrading later is
+/// the bug in dora-rs/dora#2891: user code sends from the moment this returns,
+/// so *any* subsequent upgrade is mid-stream, and the direct-zenoh path has
+/// fewer hops than the daemon-relay path — a message sent just after the switch
+/// can overtake an earlier one still in flight on the daemon path, which the
+/// consumer merges into a single arrival-ordered channel with no cross-path
+/// resequencing. Freezing keeps a topic's per-input FIFO order unconditional;
+/// the cost is the fast path for routes that fail to establish within `grace`.
+///
+/// A free function taking the states (rather than a `StartupHandshake` method)
+/// so tests can exercise the boundary without zenoh, with a `grace` shorter
+/// than [`ZENOH_STARTUP_GRACE`].
+fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
+    let grace_deadline = Instant::now() + grace;
+    loop {
+        // Vacuously true when nothing awaits acks (no consumers, or every ack
+        // subscriber failed to declare): there is nothing to wait for.
+        if ack_states
+            .iter()
+            .all(|state| state.ready.load(Ordering::Relaxed))
+        {
+            return;
+        }
+        if Instant::now() >= grace_deadline {
+            break;
+        }
+        std::thread::sleep(ZENOH_STARTUP_GRACE_POLL_INTERVAL);
+    }
+
+    for state in ack_states {
+        // `freeze` re-checks readiness under the ack lock, so an ack landing
+        // right now either completes the handshake or is ignored — never a
+        // half-applied upgrade.
+        if state.freeze() {
+            warn!(
+                output = %state.output_id,
+                missing = ?state.missing(),
+                "startup handshake incomplete after {}ms; output stays on the \
+                 reliable daemon path for the rest of the run",
+                grace.as_millis()
+            );
+        }
     }
 }
 
@@ -1291,12 +1325,11 @@ impl DoraNode {
         .wrap_err("failed to init event stream")?;
 
         // The barrier has released: every static consumer is subscribed and
-        // acking. Arm the bounded handshake deadline and give the handshake a
-        // moment to complete, so outputs switch to direct zenoh before the
-        // first real send.
+        // acking, so the handshake now gets its bounded window. This settles
+        // every output's transport — acked onto direct zenoh, or frozen on the
+        // daemon path — before user code sends its first message.
         if let Some(handshake) = &startup_handshake {
-            handshake.arm_deadline();
-            handshake.wait_for_grace();
+            handshake.settle(ZENOH_STARTUP_GRACE);
         }
         let control_channel =
             ControlChannel::init(dataflow_id, &node_id, &daemon_communication, clock.clone())
@@ -1659,8 +1692,9 @@ impl DoraNode {
         // `StartupHandshake`). Everything else takes the reliable daemon path:
         // no zenoh session (interactive/testing mode), an output the daemon
         // pinned there (a consumer on another daemon needs inter-daemon
-        // forwarding, which only daemon-path sends feed — #2738), or a
-        // handshake still in flight or frozen. An SHM-backed sample is moved
+        // forwarding, which only daemon-path sends feed — #2738), or an output
+        // whose handshake did not complete before `init` returned and is
+        // therefore frozen there for the run. An SHM-backed sample is moved
         // straight into zenoh's `put` (no extra copy); only the daemon path
         // copies it out into a `DataMessage::Vec`.
         let delivery = match finalized {
@@ -1779,7 +1813,9 @@ impl DoraNode {
 
     /// Whether `output_id` may take the direct zenoh path: its publisher exists
     /// (declared at init, not pinned to the daemon path) and the startup
-    /// handshake has proven its routes — see [`StartupHandshake`].
+    /// handshake proved its routes — see [`StartupHandshake`].
+    ///
+    /// Constant for the node's lifetime — see [`wait_for_grace`].
     fn output_direct_ready(&self, output_id: &DataId) -> bool {
         self.zenoh_publishers
             .get(output_id)
@@ -3026,6 +3062,15 @@ mod tests {
         }
     }
 
+    /// A not-yet-ready `AckState` for `output` awaiting a single `acker`.
+    fn test_ack_state(output: &str, acker: (&str, &str)) -> Arc<AckState> {
+        Arc::new(AckState::new(
+            DataId::from(output.to_string()),
+            &BTreeSet::from([required_acker(acker.0, acker.1)]),
+            Arc::new(AtomicBool::new(false)),
+        ))
+    }
+
     #[test]
     fn ack_state_completes_only_when_required_set_is_covered() {
         let ready = Arc::new(AtomicBool::new(false));
@@ -3066,6 +3111,82 @@ mod tests {
 
         state.record("sink", "camera");
         assert!(ready.load(Ordering::Relaxed));
+    }
+
+    // Regression guard for dora-rs/dora#2891: a frozen output must never
+    // upgrade. Before the fix an ack arriving after the grace (but before the
+    // old 10s deadline) flipped `ready` while user code was already sending,
+    // so a message on the shorter direct-zenoh path could overtake an earlier
+    // one still relaying through the daemon.
+    #[test]
+    fn ack_state_freeze_blocks_a_late_upgrade() {
+        let state = test_ack_state("image", ("sink", "camera"));
+
+        assert!(state.freeze(), "an un-acked output is frozen");
+        assert!(state.is_frozen());
+
+        // The consumer's ack arrives late — it must not move the output onto
+        // the direct path mid-stream.
+        state.record("sink", "camera");
+        assert!(
+            !state.ready.load(Ordering::Relaxed),
+            "a frozen output must stay on the daemon path for the rest of the run"
+        );
+        assert_eq!(state.missing(), vec!["sink/camera".to_string()]);
+    }
+
+    #[test]
+    fn ack_state_freeze_spares_an_output_that_acked_in_time() {
+        let state = test_ack_state("image", ("sink", "camera"));
+
+        state.record("sink", "camera");
+        assert!(!state.freeze(), "a ready output is not frozen");
+        assert!(!state.is_frozen());
+        assert!(
+            state.ready.load(Ordering::Relaxed),
+            "an output that proved its routes keeps the direct zenoh path"
+        );
+    }
+
+    // dora-rs/dora#2891: whatever has not proven its routes when the grace
+    // expires is pinned to the daemon path, so every output's transport is
+    // decided before user code sends its first message.
+    #[test]
+    fn grace_boundary_freezes_unacked_outputs_only() {
+        let acked = test_ack_state("image", ("sink", "camera"));
+        let unacked = test_ack_state("status", ("sink", "state"));
+        acked.record("sink", "camera");
+
+        wait_for_grace(&[acked.clone(), unacked.clone()], Duration::from_millis(20));
+
+        assert!(acked.ready.load(Ordering::Relaxed));
+        assert!(!acked.is_frozen());
+        assert!(unacked.is_frozen());
+
+        // The straggler's ack lands after the boundary and is ignored.
+        unacked.record("sink", "state");
+        assert!(!unacked.ready.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn grace_returns_early_once_every_output_is_acked() {
+        // Also covers the no-awaited-outputs case (no consumers, or every ack
+        // subscriber failed to declare): `all` is vacuously true on an empty
+        // slice, so there is nothing to wait for and nothing to freeze.
+        let state = test_ack_state("image", ("sink", "camera"));
+        state.record("sink", "camera");
+
+        let start = Instant::now();
+        wait_for_grace(&[state.clone()], Duration::from_secs(30));
+        wait_for_grace(&[], Duration::from_secs(30));
+
+        assert!(!state.is_frozen());
+        assert!(state.ready.load(Ordering::Relaxed));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a completed handshake must not wait out the grace, took {:?}",
+            start.elapsed()
+        );
     }
 
     #[test]
