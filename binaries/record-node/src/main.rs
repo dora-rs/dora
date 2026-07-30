@@ -152,6 +152,17 @@ fn main() -> eyre::Result<()> {
                 };
                 writer.write_entry(&entry)?;
                 msg_count += 1;
+
+                // Flush the BufWriter periodically so an abrupt termination
+                // (SIGKILL / Ctrl-C without a clean Stop) loses at most the
+                // records buffered since the last flush, rather than a whole
+                // BufWriter's worth. This keeps the on-disk file within the
+                // reader's torn-tail recovery model (see
+                // `dora_recording::RecordingReader`), matching the proxy
+                // recorder in `dora-cli` which flushes every 100 messages.
+                if msg_count.is_multiple_of(100) {
+                    writer.flush()?;
+                }
             }
             Event::Stop(_) => break,
             _ => {}
