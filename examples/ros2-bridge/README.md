@@ -82,6 +82,23 @@ cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-action-server --featur
 See each language subdirectory's `README.md` for the per-example commands and
 prerequisites.
 
+## Local ROS2 runtime checks
+
+The repository includes two local-only harnesses for validating the YAML
+service/action bridge against real `rclcpp` peers:
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-service-loop.sh --domains default,23 --runs 10
+scripts/ros2-bridge-action-loop.sh --domains default,23 --runs 10
+```
+
+These scripts are not part of the normal smoke suite because they require a
+sourced ROS2 runtime and example packages on the host. They are intended for
+manual regression checks when changing ROS2 bridge discovery, QoS, service, or
+action behavior. For step-by-step manual validation, see
+[`docs/ros2-bridge-manual-test-checklist.md`](../../docs/ros2-bridge-manual-test-checklist.md).
+
 ## Platform notes
 
 Some examples have platform caveats (full detail in

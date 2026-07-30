@@ -2537,6 +2537,20 @@ mod peer_failure_tests {
     }
 
     #[test]
+    fn binary_manifest_keeps_pre_iron_gid_opt_in() {
+        let manifest = include_str!("../Cargo.toml");
+        let bridge_dependency = manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with("dora-ros2-bridge ="))
+            .expect("dora-ros2-bridge dependency should be present");
+
+        assert!(
+            !bridge_dependency.contains("\"pre-iron-gid\""),
+            "dora-ros2-bridge-node must not hard-enable the pre-Iron GID ABI"
+        );
+    }
+
+    #[test]
     fn service_default_qos_is_reliable_without_changing_topic_default_detection() {
         let topic_default = Ros2QosConfig::default();
         assert!(topic_default.is_default_topic_qos());

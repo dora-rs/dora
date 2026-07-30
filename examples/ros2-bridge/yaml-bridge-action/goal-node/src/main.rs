@@ -10,6 +10,8 @@ use arrow::array::{Array, Int32Array, ListArray, StructArray};
 use arrow::datatypes::{DataType, Field};
 use dora_node_api::{self, DoraNode, Event, dora_core::config::DataId};
 
+const MAX_SKIPPED_TICKS: u8 = 6;
+
 fn main() -> eyre::Result<()> {
     let (mut node, mut events) = DoraNode::init_from_env()?;
     let output = DataId::from("goal".to_owned());
@@ -99,20 +101,29 @@ fn int32_list_values(struct_array: &StructArray, field_name: &str) -> eyre::Resu
 #[derive(Debug, Default)]
 struct GoalSendState {
     in_flight: bool,
+    skipped_ticks: u8,
 }
 
 impl GoalSendState {
     fn on_tick(&mut self) -> bool {
         if self.in_flight {
-            false
+            self.skipped_ticks = self.skipped_ticks.saturating_add(1);
+            if self.skipped_ticks <= MAX_SKIPPED_TICKS {
+                false
+            } else {
+                self.skipped_ticks = 0;
+                true
+            }
         } else {
             self.in_flight = true;
+            self.skipped_ticks = 0;
             true
         }
     }
 
     fn on_result(&mut self) {
         self.in_flight = false;
+        self.skipped_ticks = 0;
     }
 }
 
@@ -152,6 +163,18 @@ mod tests {
         assert!(!state.on_tick());
 
         state.on_result();
+
+        assert!(state.on_tick());
+    }
+
+    #[test]
+    fn goal_send_state_recovers_if_result_never_arrives() {
+        let mut state = GoalSendState::default();
+
+        assert!(state.on_tick());
+        for _ in 0..MAX_SKIPPED_TICKS {
+            assert!(!state.on_tick());
+        }
 
         assert!(state.on_tick());
     }
