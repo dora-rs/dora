@@ -177,6 +177,9 @@ venv.bak/
 # mkdocs documentation
 /site
 
+# Local agent planning notes
+docs/superpowers/plans/2026-07-28-ros2-bridge-strict-diagnostics.md
+
 # mypy
 .mypy_cache/
 .dmypy.json
