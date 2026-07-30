@@ -17,6 +17,7 @@
 //! binary and `--test-threads=1` is required for safety against other
 //! integration-test binaries that also use the default port.
 
+use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, Once};
@@ -63,6 +64,24 @@ fn ensure_cli_built() {
 }
 
 static BUILD_RUST_FILTER: Once = Once::new();
+static BUILD_FIRE_AND_FORGET: Once = Once::new();
+
+fn ensure_fire_and_forget_built() {
+    BUILD_FIRE_AND_FORGET.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let target_dir = dora_root.join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "fire-and-forget-source-node"])
+            .arg("--target-dir")
+            .arg(&target_dir)
+            .status()
+            .expect("failed to run cargo build for fire-and-forget-source-node");
+        assert!(
+            status.success(),
+            "failed to build fire-and-forget-source-node"
+        );
+    });
+}
 
 /// Build the `rust-dynamic-add-remove-filter` workspace binary that
 /// `lifecycle_rust_dynamic_add_remove` adds via `dora node add
@@ -266,26 +285,23 @@ impl Drop for CleanupGuard<'_> {
     }
 }
 
-fn run_lifecycle(fixture: LifecycleFixture<'_>) {
-    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+struct StartedLifecycle {
+    dora: String,
+    sender_initial_pid: String,
+    receiver_initial_pid: String,
+}
+
+fn start_lifecycle(fixture: &LifecycleFixture<'_>) -> StartedLifecycle {
     ensure_cli_built();
     let dora = dora_bin();
     let dataflow = fixture.dataflow_path;
-    let filter_yml = fixture.filter_yml_path;
     let name = fixture.name;
 
     cleanup_stale(&dora);
-    // Arm panic-safe teardown BEFORE `dora up` so any assertion
-    // between here and the normal end of the function still leaves
-    // the cluster torn down.
-    let _cleanup = CleanupGuard { dora: &dora };
 
-    // `dora up` starts coordinator + daemon on port 6013.
     let (ok, _, stderr) = run_capture(Command::new(&dora).arg("up"), "dora up");
     assert!(ok, "dora up failed.\nstderr:\n{stderr}");
 
-    // `dora build` — provisions the Python venv (Python) or runs
-    // the per-node `build:` cargo commands (Rust).
     let mut build_args = vec!["build", dataflow.to_str().unwrap()];
     if fixture.use_uv {
         build_args.push("--uv");
@@ -306,16 +322,10 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
     let (ok, _, stderr) = run_capture(Command::new(&dora).args(&start_args), "dora start");
     assert!(ok, "dora start failed.\nstderr:\n{stderr}");
 
-    // Make sure both base nodes are Running before exercising the matrix.
     let list_out = wait_for_list(&dora, name, Duration::from_secs(30), |m| {
         m.get("sender").is_some_and(|(s, _, _)| s == "Running")
             && m.get("receiver").is_some_and(|(s, _, _)| s == "Running")
     });
-    // Tight assertion: `wait_for_list` returns the last stdout on
-    // timeout regardless of whether the predicate held, so check the
-    // actual status here rather than just node existence — otherwise a
-    // Failed or never-spawned base node would pass this checkpoint and
-    // surface a misleading failure several subcommands later.
     let nodes = parse_node_list(&list_out);
     let sender_state = nodes.get("sender").cloned();
     let receiver_state = nodes.get("receiver").cloned();
@@ -327,8 +337,24 @@ fn run_lifecycle(fixture: LifecycleFixture<'_>) {
         matches!(&receiver_state, Some((s, _, _)) if s == "Running"),
         "receiver did not reach Running within 30s; got {receiver_state:?}\nlist:\n{list_out}"
     );
-    let sender_initial_pid = sender_state.unwrap().1;
-    let receiver_initial_pid = receiver_state.unwrap().1;
+
+    StartedLifecycle {
+        dora,
+        sender_initial_pid: sender_state.unwrap().1,
+        receiver_initial_pid: receiver_state.unwrap().1,
+    }
+}
+
+fn run_lifecycle(fixture: LifecycleFixture<'_>) {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let filter_yml = fixture.filter_yml_path;
+    let name = fixture.name;
+    let StartedLifecycle {
+        dora,
+        sender_initial_pid,
+        receiver_initial_pid,
+    } = start_lifecycle(&fixture);
+    let _cleanup = CleanupGuard { dora: &dora };
 
     // --- 1. dora node list ----------------------------------------------
     let (ok, stdout, stderr) = run_capture(
@@ -604,6 +630,97 @@ fn lifecycle_rust_dynamic_add_remove() {
         sender_path_marker: "rust-dynamic-add-remove-sender",
         use_uv: false,
     });
+}
+
+#[test]
+fn rust_dynamic_node_readd_same_id_ignores_stale_exit() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
+    let filter_yml = std::env::temp_dir().join(format!(
+        "dora-fire-and-forget-filter-{}.yml",
+        std::process::id()
+    ));
+    fs::write(
+        &filter_yml,
+        format!(
+            "id: filter\npath: {}/target/debug/fire-and-forget-source-node\noutputs:\n  - value\n",
+            manifest_dir
+        ),
+    )
+    .expect("failed to write dynamic node spec");
+
+    ensure_fire_and_forget_built();
+    let name = "rustlc-readd";
+    let fixture = LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &filter_yml,
+        name,
+        sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    };
+    let StartedLifecycle { dora, .. } = start_lifecycle(&fixture);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            filter_yml.to_str().unwrap(),
+        ]),
+        "dora node add filter",
+    );
+    assert!(ok, "dora node add failed.\nstderr:\n{stderr}");
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(10), |m| {
+        m.get("filter").is_some_and(|(s, _, _)| s == "Running")
+    });
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("filter"), Some((s, _, _)) if s == "Running"),
+        "filter did not reach Running before remove/re-add; list:\n{list_out}"
+    );
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "remove",
+            "--dataflow",
+            name,
+            "--grace",
+            "3",
+            "filter",
+        ]),
+        "dora node remove filter",
+    );
+    assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            filter_yml.to_str().unwrap(),
+        ]),
+        "dora node re-add filter",
+    );
+    assert!(ok, "dora node re-add failed.\nstderr:\n{stderr}");
+
+    std::thread::sleep(Duration::from_secs(6));
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after stale exit",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("filter"), Some((s, _, _)) if s == "Running"),
+        "re-added filter must remain Running after the previous incarnation exits; list:\n{list_out}"
+    );
 }
 
 #[test]
