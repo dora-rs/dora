@@ -266,7 +266,7 @@ pub(crate) async fn stop_dataflow<'a>(
         }
     }
 
-    if let Some((_, first)) = errors.first() {
+    if !errors.is_empty() {
         let daemon_list = errors
             .iter()
             .map(|(id, err)| format!("{id}: {err:#}"))
@@ -276,8 +276,7 @@ pub(crate) async fn stop_dataflow<'a>(
             "failed to stop dataflow `{dataflow_uuid}` on {} of {} daemon(s): {daemon_list}",
             errors.len(),
             dataflow.daemons.len(),
-        )
-        .wrap_err(format!("first failure: {first:#}")));
+        ));
     }
 
     tracing::info!("successfully send stop dataflow `{dataflow_uuid}` to all daemons");
