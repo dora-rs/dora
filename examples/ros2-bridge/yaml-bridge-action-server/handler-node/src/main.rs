@@ -56,9 +56,9 @@ fn main() -> eyre::Result<()> {
                         };
                         sequence.push(val);
 
-                        let feedback = make_list_struct("partial_sequence", &sequence)?;
+                        let feedback = make_list_struct("sequence", &sequence)?;
                         node.send_output(feedback_output.clone(), params.clone(), feedback)?;
-                        println!("Feedback: partial_sequence={sequence:?}");
+                        println!("Feedback: sequence={sequence:?}");
                     }
 
                     // Send final result
@@ -93,4 +93,17 @@ fn make_list_struct(field_name: &str, values: &[i32]) -> eyre::Result<StructArra
     ))];
     let arrays: Vec<Arc<dyn Array>> = vec![Arc::new(list_array)];
     Ok(StructArray::try_new(fields.into(), arrays, None)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fibonacci_feedback_uses_sequence_field() {
+        let feedback = make_list_struct("sequence", &[0, 1, 1, 2]).unwrap();
+
+        assert!(feedback.column_by_name("sequence").is_some());
+        assert!(feedback.column_by_name("partial_sequence").is_none());
+    }
 }
