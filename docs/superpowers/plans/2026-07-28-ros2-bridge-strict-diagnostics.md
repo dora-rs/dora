@@ -1,3 +1,737 @@
+# 2026-07-29 ROS2 Bridge YAML Action Server 修复记录
+
+## 现象
+
+运行：
+
+```bash
+source /opt/ros/humble/setup.bash
+unset ROS_DOMAIN_ID
+dora run examples/ros2-bridge/yaml-bridge-action-server/dataflow.yml
+```
+
+另一个终端执行：
+
+```bash
+ros2 action list -t
+ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}" --feedback
+```
+
+曾出现：
+
+```text
+/fibonacci [example_interfaces/action/Fibonacci]
+Waiting for an action server to become available...
+```
+
+也就是 ROS2 graph 能看到 action 名，但 `ros2 action send_goal` 认为 server
+不可用。
+
+## 根因
+
+对比真实 `examples_rclcpp_minimal_action_server/action_server_member_functions`
+后发现，Dora YAML action server 的：
+
+```text
+/fibonacci/_action/status
+```
+
+publisher QoS 是 `VOLATILE`，而 rclcpp action server 是 `TRANSIENT_LOCAL`。
+ROS2 action client 的 server-availability 检查依赖 action status channel；
+status QoS 不兼容时，即使 action endpoint 能被 graph 列出，CLI 仍会等待可用
+server。
+
+同时，`yaml-bridge-action-server` handler 的 Fibonacci feedback 字段仍使用旧名：
+
+```text
+partial_sequence
+```
+
+但 ROS2 Humble 的 `example_interfaces/action/Fibonacci` 定义是：
+
+```text
+Feedback:
+int32[] sequence
+```
+
+## 修改
+
+- `binaries/ros2-bridge-node/src/main.rs`
+  - 新增 `action_status_qos_config` / `action_status_qos`。
+  - action status channel 默认使用 `reliable + transient_local + keep_last(10)`。
+  - action client 的 `status_subscription` 和 action server 的 `status_publisher`
+    都使用该标准 status QoS。
+  - 新增单元测试：
+    `action_status_default_qos_is_transient_local_for_rcl_clients`。
+
+- `examples/ros2-bridge/yaml-bridge-action-server/handler-node/src/main.rs`
+  - feedback 字段从 `partial_sequence` 改为 `sequence`。
+  - 新增单元测试：
+    `fibonacci_feedback_uses_sequence_field`。
+
+## 验证
+
+单元测试：
+
+```bash
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+cargo test -p yaml-bridge-action-server-handler
+```
+
+结果：
+
+```text
+dora-ros2-bridge-node peer_failure_tests: 13 passed
+yaml-bridge-action-server-handler: 1 passed
+```
+
+安装修复后的 bridge：
+
+```bash
+cargo install --path binaries/ros2-bridge-node --locked
+```
+
+真实 ROS2 CLI 复测：
+
+```bash
+source /opt/ros/humble/setup.bash
+unset ROS_DOMAIN_ID
+dora run examples/ros2-bridge/yaml-bridge-action-server/dataflow.yml
+ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 5}" --feedback
+```
+
+结果：
+
+```text
+Goal accepted
+Feedback:
+    sequence:
+Result:
+    sequence:
+Goal finished with status: SUCCEEDED
+```
+
+`ROS_DOMAIN_ID=23` 下同样验证：
+
+```text
+Goal accepted
+Feedback:
+    sequence:
+Result:
+    sequence:
+Goal finished with status: SUCCEEDED
+```
+
+action client 快速回归：
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-action-loop.sh --domains default,23 --runs 1 --stop-after 35 --timeout 65
+```
+
+结果：
+
+```text
+default(unset=>0): pass=1 fail=0
+ROS_DOMAIN_ID=23:  pass=1 fail=0
+```
+
+# 2026-07-29 ROS2 Bridge Action Loop 全面测试记录
+
+## 本次测试
+
+在确认没有残留 ROS2 action/service server 后，运行 YAML action client 的完整循环测试：
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-action-loop.sh --domains default,23 --runs 10 --stop-after 35 --timeout 65
+```
+
+脚本为每个 domain 自行启动 `examples_rclcpp_minimal_action_server/action_server_member_functions`，
+并对每轮检查：
+
+- `/fibonacci/_action/send_goal` connected。
+- `/fibonacci/_action/get_result` connected。
+- `/fibonacci/_action/cancel_goal` connected。
+- Dora 发出 Fibonacci goal。
+- Dora 收到 feedback。
+- Dora 收到 result。
+
+## 结果
+
+```text
+default(unset=>0): pass=10 fail=0
+ROS_DOMAIN_ID=23:  pass=10 fail=0
+total:             pass=20 fail=0
+```
+
+日志：
+
+```text
+target/ros2-bridge-action-loop/20260729T063751Z/summary.md
+target/ros2-bridge-action-loop/20260729T063751Z/summary.jsonl
+```
+
+抽查日志显示 default 和 domain 23 下均有完整 action 链路：
+
+```text
+ROS2 action service connected: /fibonacci/_action/send_goal
+ROS2 action service connected: /fibonacci/_action/get_result
+ROS2 action service connected: /fibonacci/_action/cancel_goal
+Sending Fibonacci goal: order=5
+Feedback: sequence=[...]
+Result: sequence=[...]
+```
+
+# 2026-07-29 ROS2 Bridge Action Loop Harness 记录
+
+## 本次新增
+
+新增脚本：
+
+```text
+scripts/ros2-bridge-action-loop.sh
+```
+
+用途：
+
+- 专门验证 YAML ROS2 action-client bridge 与真实 `rclcpp` Fibonacci action server
+  的互操作。
+- 通过重复运行 action dataflow 暴露 discovery、feedback、result/get_result 路径的
+  间歇性问题。
+- 不加入普通 smoke suite，因为它依赖本机 ROS2 runtime。
+
+### 使用方式
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-action-loop.sh --domains default,23 --runs 30
+```
+
+如果当前终端已经启动了同 domain 的 action server：
+
+```bash
+scripts/ros2-bridge-action-loop.sh --domains 23 --runs 5 --use-existing-server
+```
+
+### 判定标准
+
+每轮必须同时满足：
+
+- `dora run` 退出码为 0。
+- Dora 日志包含三个 action service connected 标识：
+  - `/fibonacci/_action/send_goal`
+  - `/fibonacci/_action/get_result`
+  - `/fibonacci/_action/cancel_goal`
+- Dora 日志包含 `Sending Fibonacci goal:`。
+- Dora 日志包含 `Feedback: sequence=`。
+- Dora 日志包含 `Result: sequence=`。
+
+失败会分类为：
+
+- `action_not_visible`
+- `ros2_action_send_goal_failed`
+- `ros2_action_goal_not_succeeded`
+- `action_discovery_failed`
+- `action_goal_send_timed_out`
+- `action_goal_send_failed`
+- `missing_send_goal_connected_marker`
+- `missing_get_result_connected_marker`
+- `missing_cancel_goal_connected_marker`
+- `missing_goal_send`
+- `missing_feedback`
+- `missing_result`
+- `action_node_panic`
+- `dora_exit_<code>`
+
+## 额外修正
+
+循环测试首次运行时复现到：
+
+```text
+pass=0 fail=2
+reason=missing_result
+```
+
+日志显示三个 action service endpoint 都已连接，feedback 持续收到，但没有 result。
+该失败与 `goal_sender` 每 5 秒连续发送新 goal 有关，会放大 action `get_result`
+并发路径的不稳定性。示例节点已经改为同一时间只保留一个 in-flight goal：
+
+- tick 到来时，如果前一个 goal 还没有 result，则跳过本次发送。
+- 收到 `Result: sequence=...` 后再允许发送下一个 goal。
+
+这让 YAML action example 更适合作为 basic action client 稳定性测试；并发 action
+应单独用专门并发用例测试。
+
+## 已验证
+
+脚本检查：
+
+```bash
+bash -n scripts/ros2-bridge-action-loop.sh
+scripts/ros2-bridge-action-loop.sh --help
+```
+
+单元测试：
+
+```bash
+cargo test -p yaml-bridge-action-goal
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+```
+
+结果：
+
+```text
+yaml-bridge-action-goal: 3 passed
+dora-ros2-bridge-node peer_failure_tests: 12 passed
+```
+
+实机 action loop：
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-action-loop.sh --domains 23 --runs 2 --stop-after 35 --timeout 65 --use-existing-server
+```
+
+结果：
+
+```text
+ROS_DOMAIN_ID=23: pass=2 fail=0
+```
+
+日志：
+
+```text
+target/ros2-bridge-action-loop/20260729T063312Z/summary.md
+target/ros2-bridge-action-loop/20260729T063312Z/summary.jsonl
+```
+
+# 2026-07-29 ROS2 Bridge YAML Action Client 记录
+
+## 本次新增
+
+针对 YAML ROS2 action client 测试，修复两个问题：
+
+- `examples/ros2-bridge/yaml-bridge-action/goal-node/src/main.rs`
+  - `example_interfaces/action/Fibonacci` 在 ROS2 Humble 中 feedback 字段名是
+    `sequence`，不是 `partial_sequence`。
+  - 示例节点改为读取 `sequence`，避免收到 feedback 后 panic：
+
+```text
+missing 'partial_sequence' field
+```
+
+- `binaries/ros2-bridge-node/src/main.rs`
+  - action client 启动时不再只等待 `/fibonacci/_action/send_goal`。
+  - 现在会等待三个 action service endpoint：
+
+```text
+/fibonacci/_action/send_goal
+/fibonacci/_action/get_result
+/fibonacci/_action/cancel_goal
+```
+
+原因：实测发现只等待 `send_goal` 时，goal 和 feedback 可以正常工作，但 result
+没有回到 Dora；这与已有文档中提到的 `get_result` round-trip 不稳定区域一致。
+将 `get_result` service discovery 前置后，实机测试中已收到 result。
+
+## 已验证
+
+ROS2 CLI action server 预检：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=23
+ros2 action list -t
+ros2 action send_goal /fibonacci example_interfaces/action/Fibonacci "{order: 10}" --feedback
+```
+
+结果：ROS2 CLI 能收到 feedback 和 final result。
+
+单元测试：
+
+```bash
+cargo test -p yaml-bridge-action-goal
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+```
+
+结果：
+
+```text
+yaml-bridge-action-goal: 2 passed
+dora-ros2-bridge-node peer_failure_tests: 12 passed
+```
+
+构建和格式：
+
+```bash
+cargo fmt --all -- --check
+cargo build -p dora-ros2-bridge-node -p yaml-bridge-action-goal
+cargo install --path binaries/ros2-bridge-node --locked
+```
+
+实机 Dora action 测试：
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=23
+dora run examples/ros2-bridge/yaml-bridge-action/dataflow.yml --stop-after 35s
+```
+
+关键输出：
+
+```text
+ROS2 action service connected: /fibonacci/_action/send_goal, ROS_DOMAIN_ID=23
+ROS2 action service connected: /fibonacci/_action/get_result, ROS_DOMAIN_ID=23
+ROS2 action service connected: /fibonacci/_action/cancel_goal, ROS_DOMAIN_ID=23
+Feedback: sequence=[0, 1, 1, 2]
+Result: sequence=[0, 1, 1, 2, 3, 5, 8]
+```
+
+# 2026-07-29 ROS2 Bridge Service Discovery Fallback 记录
+
+## 本次新增
+
+针对 YAML ROS2 service-client bridge 的间歇性 `service_discovery_failed`，在
+`binaries/ros2-bridge-node/src/main.rs` 增加 service discovery 失败诊断和 fallback。
+
+修改点：
+
+- `create_ros_node` 现在把 `ros2_client::Context` 一并返回给 service 等待逻辑。
+- `wait_for_service` 失败时读取 `Context::discovered_topics()`，在错误消息中输出：
+  - `discovered_service_topics=<n>/2`
+  - `request_topic=rq/<service>Request:{found|missing}`
+  - `response_topic=rr/<service>Reply:{found|missing}`
+- 如果 `ros2-client::Client::wait_for_service()` 在单次等待窗口内没有完成，但 DDS
+  已经发现了 request 和 response 两个 service topic，则认为 service discovery
+  已经足够继续进入请求流程，并打印原有成功标识：
+
+```text
+ROS2 service connected: /add_two_ints [example_interfaces/AddTwoInts], ROS_DOMAIN_ID=23
+```
+
+## 根因定位进展
+
+循环测试在修复前抓到失败样本：
+
+```text
+ROS2 service not available after 10 retries: /add_two_ints [example_interfaces/AddTwoInts], ROS_DOMAIN_ID=23,
+discovered_service_topics=2/2,
+request_topic=rq/add_two_intsRequest:found,
+response_topic=rr/add_two_intsReply:found
+```
+
+这说明失败时不是 service server 不存在，也不是 `ROS_DOMAIN_ID` 错误；DDS 已经发现了
+ROS2 service 的 request/response topics，但 `ros2-client::wait_for_service()` 仍未完成。
+因此当前修复避开了 `wait_for_service` matched-event 等待可能漏醒的问题：只在两个 service
+topic 都已发现时 fallback，缺任意一侧仍按原逻辑报错。
+
+## 已验证
+
+单元测试：
+
+```bash
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+```
+
+结果：
+
+```text
+11 passed
+```
+
+构建和格式：
+
+```bash
+cargo fmt --all -- --check
+cargo build -p dora-ros2-bridge-node
+cargo install --path binaries/ros2-bridge-node --locked
+```
+
+实机循环测试：
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-service-loop.sh --domains default,23 --runs 20 --stop-after 20 --timeout 50
+```
+
+结果：
+
+```text
+default(unset=>0): pass=20 fail=0
+ROS_DOMAIN_ID=23:  pass=20 fail=0
+total:             pass=40 fail=0
+```
+
+日志：
+
+```text
+target/ros2-bridge-service-loop/20260729T042500Z/summary.md
+target/ros2-bridge-service-loop/20260729T042500Z/summary.jsonl
+```
+
+# 2026-07-29 ROS2 Bridge Service Loop Harness 记录
+
+## 本次新增
+
+新增脚本：
+
+```text
+scripts/ros2-bridge-service-loop.sh
+```
+
+用途：
+
+- 专门验证 YAML ROS2 service-client bridge 与真实 `rclcpp` `AddTwoInts` service server 的互操作。
+- 通过重复运行同一个 service bridge 场景来暴露 DDS/RustDDS discovery flake。
+- 不加入普通 `example-smoke`，因为它依赖本机 ROS2 runtime。
+
+### 使用方式
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-service-loop.sh --domains default,23 --runs 30
+```
+
+参数：
+
+- `--domains default,23,24`
+  - `default` 表示 unset `ROS_DOMAIN_ID`，即 ROS2 默认 domain 0。
+  - 数字 domain 会显式设置 `ROS_DOMAIN_ID=<n>`。
+- `--runs N`
+  - 每个 domain 重复运行 N 次。
+- `--stop-after SECS`
+  - 每次 `dora run` 的运行窗口。
+- `--timeout SECS`
+  - 每次 `dora run` 外层超时。
+- `--artifacts DIR`
+  - 指定日志输出目录。
+
+### 输出
+
+默认写入：
+
+```text
+target/ros2-bridge-service-loop/<timestamp>/
+```
+
+每个 domain 下包含：
+
+- `server.log`
+- `ros2-service-list.txt`
+- `ros2-service-call.txt`
+- `run-N/dora.log`
+- `run-N/dora-tail.txt`，仅失败时生成
+
+根目录包含：
+
+- `summary.md`
+- `summary.jsonl`
+
+### 判定标准
+
+每轮必须同时满足：
+
+- `dora run` 退出码为 0。
+- Dora 日志包含 `ROS2 service connected:`。
+- Dora 日志包含 `Received response: sum =`。
+- ROS2 service server 日志不包含 `sequence size exceeds remaining buffer`。
+
+失败会分类为：
+
+- `service_discovery_failed`
+- `service_response_timed_out`
+- `missing_connected_marker`
+- `missing_response`
+- `server_sequence_buffer_error`
+- `dora_exit_<code>`
+
+### 已验证
+
+已运行最小 smoke：
+
+```bash
+source /opt/ros/humble/setup.bash
+scripts/ros2-bridge-service-loop.sh --domains default --runs 1 --stop-after 8 --timeout 35
+```
+
+结果：
+
+```text
+domain default(unset=>0): PASS 1/1
+```
+
+---
+
+# 2026-07-29 ROS2 Bridge 默认 Domain Service Discovery 修复记录
+
+## 本次实际定位
+
+用户在不设置 `ROS_DOMAIN_ID` 时复测 service：
+
+```text
+Error: ROS2 service not available after 10 retries: /add_two_ints [example_interfaces/AddTwoInts], ROS_DOMAIN_ID=0
+```
+
+同时 `ros2 service list -t` 和 `ros2 service call` 都能看到并调用 `/add_two_ints`，说明 ROS2 C++ service server 本身正常，问题在 Dora bridge 的 RustDDS/ros2-client discovery 路径。
+
+### 1. 排除项
+
+- 不是 service server 没启动：
+  - `pgrep` 确认 `examples_rclcpp_minimal_service/service_main` 仍在运行。
+- 不是 ROS2 CLI 缓存：
+  - `ros2 service call /add_two_ints ...` 实时返回 `sum=42`。
+- 不是 `pre-iron-gid` 直接导致：
+  - 临时去掉 binary 侧 `pre-iron-gid` 后，Dora 仍然发现不到 service。
+- 不是 service QoS history depth：
+  - 临时把 service 默认 `keep_last` 从 10 改成 1 后，Dora 仍然发现不到 service。
+- 不是把 FastDDS service mapping 改成 `Basic` 就能解决：
+  - 临时切到 `ServiceMapping::Basic` 后，Dora 能认为 endpoint ready，但请求没有正常响应，并且 server 端出现 payload size 错误；因此 Basic 不是正确修复。
+
+### 2. 根因
+
+`ros2-client` 自带 `async_service_client` 示例在默认 domain 0 下可以正常发现并调用同一个 `/add_two_ints` service。
+
+对比发现：
+
+- `ros2-client` 示例使用 `ros2_client::Context::new()`。
+- Dora bridge 之前在 unset `ROS_DOMAIN_ID` 时解析为 `0`，然后使用：
+
+```rust
+ros2_client::Context::with_options(
+    ros2_client::ContextOptions::new().domain_id(0),
+)
+```
+
+实际验证表明，在 ROS2 Humble/FastDDS service discovery 场景下，`Context::new()` 与 `ContextOptions::domain_id(0)` 行为不等价。后者会导致 Dora bridge 间歇性或稳定地等不到 service request/response endpoints。
+
+### 3. 修改
+
+- `binaries/ros2-bridge-node/src/main.rs`
+  - 新增 `create_ros_context(domain_id)`。
+  - 新增 `RosContextCreation` 和 `ros_context_creation(domain_id)`。
+  - domain 0 使用 `ros2_client::Context::new()`。
+  - 非零 domain 继续使用 `Context::with_options(ContextOptions::new().domain_id(domain_id))`。
+
+核心行为：
+
+```text
+ROS_DOMAIN_ID unset / 0 -> Context::new()
+ROS_DOMAIN_ID non-zero -> Context::with_options(domain_id)
+```
+
+### 4. 验证结果
+
+已运行：
+
+```bash
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+cargo build -p dora-ros2-bridge-node
+cargo fmt --all -- --check
+cargo install --path binaries/ros2-bridge-node --locked
+```
+
+结果：
+
+- `peer_failure_tests` 8 个测试通过。
+- `dora-ros2-bridge-node` 构建通过。
+- 格式检查通过。
+- `/home/dora/.cargo/bin/dora-ros2-bridge-node` 已安装。
+
+手工 smoke：
+
+- 默认 domain 0：
+  - 第一次短 `--stop-after 15s` 仍遇到一次 discovery 未命中。
+  - 立即重跑 `--stop-after 35s` 成功，连续收到 response 到 `sum = 363`。
+- 非零 domain 24：
+  - 重启干净 service server 后成功，连续收到 response 到 `sum = 242`。
+
+### 5. 后续注意
+
+这次修复解决了默认 domain 0 走 `ContextOptions::domain_id(0)` 的确定性风险，但 RustDDS/FastDDS service endpoint discovery 仍存在偶发慢/漏发现现象。后续如果要继续工程化，应考虑：
+
+- service discovery 失败前输出更完整的 endpoint/mapping/QoS 诊断。
+- 避免 `--stop-after` 小于 discovery 最大等待时间时产生误导。
+- 对 service/action discovery 做更稳健的等待策略或独立 graph probe。
+
+---
+
+# 2026-07-29 ROS2 Bridge 连接提示增强记录
+
+## 本次实际修改
+
+这次只增强 ROS2 service/action discovery 的用户可见提示，不改变协议、QoS 或数据格式。
+
+### 1. 成功连接时打印明确标识
+
+问题：
+
+- Dora service/action bridge 成功建立 ROS2 discovery 连接时，之前只打印泛泛的 `service is ready` 或 `action goal service is ready`。
+- 用户无法直接确认 bridge 连接的是哪个 ROS2 endpoint、使用哪个 `ROS_DOMAIN_ID`。
+- 如果第一次 discovery 失败、第二次成功，日志不够解释“现在已经连上了”。
+
+修改：
+
+- `binaries/ros2-bridge-node/src/main.rs`
+  - service client discovery 成功时打印：
+
+```text
+ROS2 service connected: /add_two_ints [example_interfaces/srv/AddTwoInts], ROS_DOMAIN_ID=23
+```
+
+  - action goal service discovery 成功时打印：
+
+```text
+ROS2 action goal service connected: /fibonacci/_action/send_goal, ROS_DOMAIN_ID=23
+```
+
+设计取舍：
+
+- 成功日志不显示 retry 次数，避免把 DDS discovery 的内部抖动暴露为用户感知的“慢”。
+- 失败日志保留 retry 次数，因为失败诊断需要知道等待上限。
+
+### 2. 等待和失败提示带 endpoint/domain 信息
+
+修改：
+
+- service 等待开始时打印：
+
+```text
+Waiting for ROS2 service: /add_two_ints [example_interfaces/srv/AddTwoInts], ROS_DOMAIN_ID=23
+```
+
+- service 失败时从泛泛的：
+
+```text
+service not available after 10 retries
+```
+
+增强为：
+
+```text
+ROS2 service not available after 10 retries: /add_two_ints [example_interfaces/srv/AddTwoInts], ROS_DOMAIN_ID=23
+```
+
+- action goal service 失败时同样带 action goal service endpoint 和 `ROS_DOMAIN_ID`。
+
+### 3. 已运行验证命令
+
+```bash
+cargo test -p dora-ros2-bridge-node peer_failure_tests
+```
+
+结果：
+
+- `peer_failure_tests` 7 个测试通过。
+- 新增测试确认：
+  - service 成功消息包含 endpoint/type/domain。
+  - service 成功消息不包含 `retry`。
+  - service 失败消息包含 retry 次数。
+  - action goal service 成功消息包含 endpoint/domain。
+  - action 成功消息不包含 `retry`。
+
+---
+
 # 2026-07-28 ROS2 Bridge 修复记录
 
 ## 本次实际修改
