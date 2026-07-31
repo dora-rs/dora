@@ -163,7 +163,19 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     let canonical = module_path
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
-    let module_file = load_module_file(&canonical)?;
+    let mut seen = HashSet::new();
+    check_module_file_inner(&canonical, &mut seen)
+}
+
+fn check_module_file_inner(canonical: &Path, seen: &mut HashSet<PathBuf>) -> eyre::Result<()> {
+    if !seen.insert(canonical.to_path_buf()) {
+        bail!(
+            "circular module reference detected while checking module file: {}",
+            canonical.display()
+        );
+    }
+
+    let module_file = load_module_file(canonical)?;
     validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
@@ -240,6 +252,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
                 &nested_module.module,
                 &node.inputs,
             )?;
+            check_module_file_inner(&nested_canonical, seen)?;
             for output in &nested_module.module.outputs {
                 inner_outputs.insert(output.to_string());
             }
@@ -257,6 +270,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    seen.remove(canonical);
     Ok(())
 }
 
@@ -2302,6 +2316,50 @@ nodes:
         assert!(msg.contains("leaf"), "got: {msg}");
         assert!(msg.contains("data"), "got: {msg}");
         assert!(msg.contains("nested"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_invalid_nested_module() {
+        let tmp = TempDir::new().unwrap();
+
+        write_file(
+            tmp.path(),
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - other
+"#,
+        );
+
+        let path = write_file(
+            tmp.path(),
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("leaf"), "got: {msg}");
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("no inner node produces it"), "got: {msg}");
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested
