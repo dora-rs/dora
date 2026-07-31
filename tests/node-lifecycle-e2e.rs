@@ -723,6 +723,410 @@ fn rust_dynamic_node_readd_same_id_ignores_stale_exit() {
     );
 }
 
+static BUILD_STOP_DELAY: Once = Once::new();
+
+/// Build the `stop-delay-node` fixture used by the #2916 hot-swap
+/// tests. Same rationale as `ensure_rust_filter_built`: `dora node add`
+/// never runs a `build:` field, so the binary has to exist beforehand.
+fn ensure_stop_delay_built() {
+    BUILD_STOP_DELAY.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let status = Command::new("cargo")
+            .args(["build", "-p", "stop-delay-node"])
+            .arg("--target-dir")
+            .arg(dora_root.join("target"))
+            .status()
+            .expect("failed to run cargo build for stop-delay-node");
+        assert!(status.success(), "failed to build stop-delay-node");
+    });
+}
+
+/// A `stop-delay-node` spec plus the marker file its incarnation writes
+/// its exit code to.
+struct StopDelaySpec {
+    yml: std::path::PathBuf,
+    marker: std::path::PathBuf,
+}
+
+impl StopDelaySpec {
+    /// The exit codes recorded by every incarnation spawned from this
+    /// spec, oldest first. Empty until one actually exits.
+    fn recorded_exits(&self) -> Vec<String> {
+        fs::read_to_string(&self.marker)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect()
+    }
+}
+
+/// Write a `dora node add --from-yaml` spec for the `stop-delay-node`
+/// fixture, wiring its shutdown knobs through the descriptor's `env:`
+/// block.
+///
+/// Artifacts land under `target/` rather than the system temp dir: the
+/// tests never delete them (a failed run's spec is worth keeping), and
+/// `target/` is both gitignored and cleaned by `cargo clean`, so they
+/// don't accumulate in `/tmp` run after run.
+fn write_stop_delay_yml(file_stem: &str, delay_ms: u64, exit_code: i32) -> StopDelaySpec {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dir = Path::new(manifest_dir).join("target");
+    let stem = format!("dora-stop-delay-{file_stem}-{}", std::process::id());
+    let yml = dir.join(format!("{stem}.yml"));
+    let marker = dir.join(format!("{stem}.exits"));
+    // A rerun in the same process would otherwise append to the
+    // previous run's exit records.
+    let _ = fs::remove_file(&marker);
+    fs::write(
+        &yml,
+        format!(
+            "id: filter\n\
+             path: {manifest_dir}/target/debug/stop-delay-node\n\
+             env:\n  \
+               DORA_TEST_STOP_DELAY_MS: {delay_ms}\n  \
+               DORA_TEST_STOP_EXIT_CODE: {exit_code}\n  \
+               DORA_TEST_MARKER_FILE: {marker}\n\
+             outputs:\n  - value\n",
+            marker = marker.display()
+        ),
+    )
+    .expect("failed to write stop-delay node spec");
+    StopDelaySpec { yml, marker }
+}
+
+/// Run `dora node add` for the `filter` node from `spec`. Returns once
+/// the CLI call completes, without waiting for the node to come up, so
+/// a caller can observe state that is only true in the moments right
+/// after the add.
+fn add_filter(dora: &str, name: &str, spec: &Path, label: &str) {
+    let (ok, _, stderr) = run_capture(
+        Command::new(dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            spec.to_str().unwrap(),
+        ]),
+        label,
+    );
+    assert!(ok, "{label} failed.\nstderr:\n{stderr}");
+}
+
+/// Wait for `filter` to report `Running` and return its pid.
+fn wait_for_filter_pid(dora: &str, name: &str, label: &str) -> String {
+    let list_out = wait_for_list(dora, name, Duration::from_secs(10), |m| {
+        m.get("filter").is_some_and(|(s, _, _)| s == "Running")
+    });
+    parse_node_list(&list_out)
+        .get("filter")
+        .cloned()
+        .filter(|(s, _, _)| s == "Running")
+        .unwrap_or_else(|| panic!("filter did not reach Running after {label}; list:\n{list_out}"))
+        .1
+}
+
+/// Add the `filter` node from `spec`, then wait for it to report
+/// `Running` and return its pid.
+fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> String {
+    add_filter(dora, name, spec, label);
+    wait_for_filter_pid(dora, name, label)
+}
+
+/// Whether `pid` still names a live process.
+///
+/// Used to prove a test actually entered the window it claims to cover,
+/// rather than passing because the race never happened.
+///
+/// Deliberately NOT `kill -0`: that succeeds for a zombie — a process
+/// that has already exited but whose parent (here the daemon) hasn't
+/// reaped it yet. Under load the daemon's reaping task is exactly what
+/// falls behind, so `kill -0` would report a dead predecessor as alive
+/// and let a test claim a window it never had. `ps -o state=` reports
+/// `Z` for that case, which is what makes this check honest.
+///
+/// A failure to run `ps` at all panics rather than reading as "dead" —
+/// silently degrading the liveness check to a no-op would turn the
+/// anti-vacuity guards below back into the thing they exist to prevent.
+#[cfg(unix)]
+fn process_alive(pid: &str) -> bool {
+    let out = Command::new("ps")
+        .args(["-o", "state=", "-p", pid])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to run `ps -o state= -p {pid}`: {e}"));
+    if !out.status.success() {
+        return false; // no such process
+    }
+    let state = String::from_utf8_lossy(&out.stdout);
+    let state = state.trim();
+    !state.is_empty() && !state.starts_with('Z')
+}
+
+/// Block until `pid` is gone, panicking if it outlives `timeout`.
+///
+/// `dora node remove` returns once the daemon has scheduled `Stop`, not
+/// once the process is reaped, so a test that needs the predecessor's
+/// exit to be accounted *before* its next CLI call has to wait for it
+/// explicitly. `dora node list` is no help: the row disappears the
+/// moment the node is removed and never reappears to report the later
+/// exit, so process liveness is the observable.
+#[cfg(unix)]
+fn wait_for_process_exit(pid: &str, timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while process_alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "predecessor pid {pid} was still alive {timeout:?} after `node remove`"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Shared setup for the #2916 hot-swap tests: bring up the rust
+/// dynamic-add-remove dataflow, with the `stop-delay-node` fixture
+/// built and ready to be added as `filter`. The caller owns the
+/// returned `dora` path so it can attach its own `CleanupGuard`.
+fn start_hot_swap_fixture(name: &str) -> String {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
+    // `start_lifecycle` reads neither `filter_yml_path` nor
+    // `sender_path_marker` (only `run_lifecycle` does), so this path is
+    // a placeholder to satisfy the struct — the hot-swap tests add
+    // their own `stop-delay-node` spec instead, and the example's
+    // filter binary is never built or spawned here.
+    let unused_filter_yml =
+        Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/filter-node.yml");
+    ensure_stop_delay_built();
+    let fixture = LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &unused_filter_yml,
+        name,
+        sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    };
+    start_lifecycle(&fixture).dora
+}
+
+/// Hot-swap regression guard for dora-rs/dora#2916: the predecessor's
+/// exit lands *after* the same-id re-add.
+///
+/// This is the ordering the issue reported. The removed Python node's
+/// interpreter teardown outlived the CLI's `node add` round trip, so by
+/// the time its exit reached the daemon, `running_nodes["filter"]` had
+/// already been replaced by the new incarnation. Every lifecycle
+/// bookkeeping path is keyed by node id alone, so the dead
+/// predecessor's exit was accounted against the live successor:
+/// `handle_node_stop` removed the *new* `running_nodes` entry, whose
+/// `ProcessHandle::drop` SIGKILLed the new process ("process was killed
+/// on drop because it was still running"), and the resulting `Signal(9)`
+/// was recorded under the same id so `dora stop` failed the dataflow.
+///
+/// `DORA_TEST_STOP_DELAY_MS` pins the ordering rather than relying on a
+/// language runtime happening to be slow, and the test asserts the
+/// predecessor was still alive when the re-add returned — so a runner
+/// slow enough to close the window fails the test instead of passing it
+/// vacuously. An explicit long `--grace` on the remove decouples that
+/// window from `DEFAULT_STOP_GRACE`, so the delay can carry real margin
+/// over a slow CLI round trip while the predecessor still exits on its
+/// own rather than being SIGTERMed (which is the shape
+/// `rust_dynamic_node_readd_same_id_ignores_stale_exit` already covers).
+///
+/// No sleep between remove and add — the gap is the bug, and the
+/// workaround the issue reports shipping (sleep ~2s) is exactly what
+/// this must not need.
+#[test]
+#[cfg(unix)]
+fn hot_swap_survives_predecessor_exit_after_readd() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-swap-late";
+    // The predecessor must outlive the `node add` round trip (two debug
+    // CLI process lifecycles plus a daemon spawn the daemon awaits
+    // before replying). 10s is generous for a cold 2-vCPU runner; the
+    // `--grace 60` below keeps it well clear of the kill escalation.
+    let spec = write_stop_delay_yml("late", 10_000, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let old_pid = add_filter_and_wait(&dora, name, &spec.yml, "dora node add filter");
+
+    // --- the hot swap: remove immediately followed by add ---------------
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "remove",
+            "--dataflow",
+            name,
+            "--grace",
+            "60",
+            "filter",
+        ]),
+        "dora node remove filter",
+    );
+    assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+    add_filter(&dora, name, &spec.yml, "dora node re-add filter");
+
+    // Prove the window this test exists to cover was actually open: the
+    // predecessor must still be alive at the moment the re-add returns,
+    // so its exit is necessarily accounted *after* the successor was
+    // installed. Without this the test would pass vacuously on a runner
+    // slow enough that `node add` outlasts the fixture's shutdown delay
+    // — it would then be exercising the pre-add ordering, which the
+    // sibling test already covers.
+    assert!(
+        process_alive(&old_pid),
+        "predecessor pid {old_pid} already exited before `node add` returned, so this \
+         run did not exercise the exit-after-re-add ordering; raise \
+         DORA_TEST_STOP_DELAY_MS in the fixture spec"
+    );
+
+    let new_pid = wait_for_filter_pid(&dora, name, "dora node re-add filter");
+    assert_ne!(
+        new_pid, old_pid,
+        "re-added filter should be a new process; the daemon reused pid {old_pid}"
+    );
+
+    // Wait for the predecessor to actually exit rather than sleeping
+    // past its configured delay and hoping. A blind sleep would assert
+    // the successor survived an exit that may not have happened yet,
+    // which is the same vacuous pass the liveness check above exists to
+    // prevent. `process_alive` returns false once the daemon has reaped
+    // it, which is exactly when the exit event reaches the event loop.
+    wait_for_process_exit(&old_pid, Duration::from_secs(60));
+    assert_eq!(
+        spec.recorded_exits(),
+        vec!["0"],
+        "the predecessor should have exited 0 exactly once; \
+         marker file {:?} says otherwise",
+        spec.marker
+    );
+    // Settle: let the daemon account the exit (and, if the pid guard
+    // regressed, kill the successor) before observing.
+    std::thread::sleep(Duration::from_secs(2));
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after swap",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, pid, _)) if s == "Running" && pid == &new_pid),
+        "the re-added filter (pid {new_pid}) must still be Running after the \
+         predecessor's exit is accounted; got {filter_state:?}\nlist:\n{list_out}"
+    );
+
+    // The predecessor's exit must not poison the dataflow result either:
+    // `dora stop` fails with "Dataflow <uuid> failed: Node filter failed:
+    // exited because of signal SIGKILL" when it does.
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "dora stop reported the dataflow as failed after a hot swap.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// The other ordering in dora-rs/dora#2916: the predecessor's exit
+/// lands *before* the same-id re-add.
+///
+/// The daemon's stale-exit guard compares the exiting pid against
+/// `running_nodes[node_id]`, so it can only fire once the successor is
+/// installed. Here there is nothing to compare against — `RemoveNode`
+/// took the entry out and `AddNode` has not arrived yet — so the
+/// removed incarnation's failure *is* recorded under the bare node id
+/// (`dataflow_node_results[node_id] = Err`), and nothing clears it when
+/// the id is re-added. What keeps this benign today is incidental: the
+/// successor's own clean exit overwrites that map entry at teardown.
+/// The assertion pins the survivable outcome so a future change to how
+/// node results are keyed or aggregated can't quietly turn it into the
+/// contradiction the issue reports — `dora node list` saying `filter`
+/// is Running while `dora stop` blames `filter` for a dead
+/// predecessor's exit code.
+///
+/// Modelled on the workflow the issue describes: swap a node that fails
+/// on the way out for a fixed build. The predecessor exits 1 the
+/// instant it sees `Stop` (`DORA_TEST_STOP_DELAY_MS: 0`) and the test
+/// waits for that exit before re-adding, so the ordering is enforced
+/// rather than assumed; the replacement exits cleanly, so the only
+/// failure in the dataflow's history belongs to an incarnation the
+/// operator explicitly removed.
+#[test]
+#[cfg(unix)]
+fn hot_swap_survives_predecessor_exit_before_readd() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-swap-early";
+    let broken = write_stop_delay_yml("early-broken", 0, 1);
+    let fixed = write_stop_delay_yml("early-fixed", 0, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let old_pid = add_filter_and_wait(&dora, name, &broken.yml, "dora node add filter (broken)");
+
+    // --- the hot swap: remove the broken build, add the fixed one -------
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args(["node", "remove", "--dataflow", name, "filter"]),
+        "dora node remove filter",
+    );
+    assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+
+    // `node remove` returns once `Stop` is scheduled, not once the
+    // process is gone, so re-adding immediately would leave the
+    // ordering to chance: if the daemon handled `AddNode` first, the
+    // pid guard would discard the predecessor's failure and this test
+    // would silently re-run the sibling test's ordering instead of the
+    // one it documents. Waiting for the process to exit rules that out
+    // — the exit event is queued before the replacement's CLI round
+    // trip even begins, and a slower runner only widens that margin.
+    wait_for_process_exit(&old_pid, Duration::from_secs(30));
+
+    // Pin the premise: this test is only meaningful if the removed
+    // incarnation exited NON-ZERO, i.e. there is a real failure that
+    // could be misattributed to the successor. Without this the
+    // scenario degrades silently into a plain remove/add — the
+    // `DORA_TEST_STOP_EXIT_CODE` knob getting dropped (env denylisted,
+    // renamed, typo'd) would leave every other assertion below
+    // unchanged and still green.
+    assert_eq!(
+        broken.recorded_exits(),
+        vec!["1"],
+        "the removed incarnation must have exited 1 for this test to mean \
+         anything; marker file {:?} says otherwise",
+        broken.marker
+    );
+
+    let new_pid = add_filter_and_wait(&dora, name, &fixed.yml, "dora node re-add filter (fixed)");
+    assert_ne!(
+        new_pid, old_pid,
+        "re-added filter should be a new process; the daemon reused pid {old_pid}"
+    );
+
+    std::thread::sleep(Duration::from_secs(3));
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after swap",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, pid, _)) if s == "Running" && pid == &new_pid),
+        "the re-added filter (pid {new_pid}) must be Running; got {filter_state:?}\nlist:\n{list_out}"
+    );
+
+    // The removed incarnation's exit code must not be attributed to the
+    // healthy successor that now owns the id.
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "`dora node list` reports filter Running, but `dora stop` blames it for \
+         the removed incarnation's exit.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 #[test]
 // C++ fixture is deliberately Unix-only: the existing cmake-dataflow
 // example in this repo explicitly skips Windows

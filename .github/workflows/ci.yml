@@ -379,18 +379,29 @@ jobs:
       # `dora node` lifecycle E2E (issue #1703). The shared test
       # binary lives under the `dora-examples` package which the bulk
       # `cargo test --all` step excludes, so it needs an explicit
-      # invocation here. Filter to the Rust + C++ variants because
-      # the Python variant requires uv (handled in `contract-tests`
-      # below where uv is already installed).
-      - name: Run dora node lifecycle E2E (Rust + C++)
-        # Cargo's TESTNAME positional is single-valued; multiple
-        # substring filters go after `--` for libtest.
+      # invocation here.
+      #
+      # Excludes rather than enumerates: the Python variant is the only
+      # test in the file this job can't run (it needs uv — handled in
+      # `contract-tests` below where uv is already installed), so
+      # `--skip` closes the file by default. The previous positive
+      # filters (`lifecycle_rust lifecycle_cxx`) silently dropped every
+      # test whose name didn't start with `lifecycle_` — including
+      # `rust_dynamic_node_readd_same_id_ignores_stale_exit`, the
+      # regression test that shipped with the #2893 stale-exit fix,
+      # which therefore never ran here.
+      - name: Run dora node lifecycle E2E (non-Python)
         run: >
           cargo test -p dora-examples --test node-lifecycle-e2e
           --
           --test-threads=1
-          lifecycle_rust lifecycle_cxx
-        timeout-minutes: 15
+          --skip lifecycle_python
+        # 5 tests, each driving a real coordinator + daemon + node
+        # processes, plus nested `cargo build` calls for the fixtures.
+        # ~4 min on a warm dev machine; a cold 2-vCPU runner is several
+        # times that, and a step killed at the cap leaves a detached
+        # coordinator holding port 6013 for the next step.
+        timeout-minutes: 30
       # Finish-straggler watchdog regression (#2270): a deterministic wedge
       # (source exits, downstream node hangs) must be escalated/killed by the
       # watchdog rather than hanging until stop_after. Lives in `dora-examples`
@@ -494,8 +505,14 @@ jobs:
           --test-threads=1
           --nocapture
       # Python variant of the lifecycle test piggybacks on this job
-      # because it needs uv (already set up above). See the e2e job
-      # for the Rust + C++ variants.
+      # because it needs uv (already set up above). The e2e job runs
+      # every OTHER test in the file via `--skip lifecycle_python`, so
+      # the two jobs partition it by that one substring: any test in
+      # node-lifecycle-e2e.rs that needs uv MUST be named
+      # `lifecycle_python*`, or it lands in the uv-less e2e job instead.
+      # Note libtest exits 0 when a filter matches nothing, so renaming
+      # the Python test without updating this filter would make the step
+      # silently run zero tests.
       - name: Run dora node lifecycle E2E (Python)
         run: >
           cargo test -p dora-examples --test node-lifecycle-e2e

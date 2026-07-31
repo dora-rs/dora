@@ -7372,6 +7372,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "stop-delay-node"
+version = "1.0.0-rc.4"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
