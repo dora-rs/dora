@@ -675,6 +675,8 @@ fn expand_module_node(
     // Collect nested output maps so sibling nodes can reference nested module
     // outputs correctly via rewrite_external_refs.
     let mut nested_output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
+    let mut direct_output_targets: BTreeMap<String, Vec<(String, UserInputMapping)>> =
+        BTreeMap::new();
     let mut final_nodes = Vec::new();
     for inner_node in prefixed_nodes {
         if inner_node.module.is_some() {
@@ -689,9 +691,24 @@ fn expand_module_node(
                     prepend_module_build_to_node(nested_node, outer_build);
                 }
             }
+            for (output, target) in &nested_omap {
+                direct_output_targets
+                    .entry(output.clone())
+                    .or_default()
+                    .push((format!("{nested_id}/{output}"), target.clone()));
+            }
             nested_output_maps.insert(nested_id, nested_omap);
             final_nodes.extend(nested);
         } else {
+            for (name, output_ref) in node_output_refs(&inner_node) {
+                direct_output_targets.entry(name).or_default().push((
+                    format!("{}/{}", inner_node.id, output_ref),
+                    UserInputMapping {
+                        source: inner_node.id.clone(),
+                        output: output_ref.into(),
+                    },
+                ));
+            }
             final_nodes.push(inner_node);
         }
     }
@@ -708,34 +725,16 @@ fn expand_module_node(
     let mut output_map = ModuleOutputMap::new();
     for declared_output in &module_file.module.outputs {
         let declared = declared_output.to_string();
-        let targets = final_nodes
-            .iter()
-            .flat_map(|n| {
-                let declared = declared.clone();
-                node_output_refs(n)
-                    .into_iter()
-                    .filter(move |(name, _)| *name == declared)
-                    .map(|(_, output_ref)| {
-                        (
-                            format!("{}/{}", n.id, output_ref),
-                            UserInputMapping {
-                                source: n.id.clone(),
-                                output: output_ref.into(),
-                            },
-                        )
-                    })
-            })
-            .collect::<Vec<_>>();
-        let target = match targets.as_slice() {
-            [] => {
+        let target = match direct_output_targets.get(&declared).map(Vec::as_slice) {
+            None | Some([]) => {
                 return Err(eyre::eyre!(
                     "module `{}` declares output `{}` but no inner node produces it",
                     module_file.module.name,
                     declared_output,
                 ));
             }
-            [(_, target)] => target.clone(),
-            _ => {
+            Some([(_, target)]) => target.clone(),
+            Some(targets) => {
                 let producers = targets
                     .iter()
                     .map(|(producer, _)| producer.as_str())
@@ -3262,6 +3261,63 @@ nodes:
         assert!(msg.contains("multiple"), "got: {msg}");
         assert!(msg.contains("m.first"), "got: {msg}");
         assert!(msg.contains("m.second"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_rejects_nested_module_private_output_export() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [public]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - public
+      - private
+"#,
+        );
+
+        write_file(
+            base,
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [private]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: outer.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      value: m/private
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("private"), "got: {msg}");
+        assert!(msg.contains("no inner node produces it"), "got: {msg}");
     }
 
     /// Regression test for #2817: `check_module_file` must accept a declared
