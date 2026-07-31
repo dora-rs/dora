@@ -177,6 +177,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
         .expect("module file must have a parent directory");
@@ -263,6 +264,36 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_module_header(module: &ModuleHeader) -> eyre::Result<()> {
+    reject_duplicate_ports(&module.name, "inputs", &module.inputs)?;
+    reject_duplicate_ports(&module.name, "inputs_optional", &module.inputs_optional)?;
+    reject_duplicate_ports(&module.name, "outputs", &module.outputs)?;
+
+    let required: BTreeSet<_> = module.inputs.iter().collect();
+    if let Some(overlap) = module
+        .inputs_optional
+        .iter()
+        .find(|input| required.contains(input))
+    {
+        bail!(
+            "module `{}` input `{}` is declared as both required and optional",
+            module.name,
+            overlap
+        );
+    }
+    Ok(())
+}
+
+fn reject_duplicate_ports(module_name: &str, field: &str, ports: &[DataId]) -> eyre::Result<()> {
+    let mut seen = BTreeSet::new();
+    for port in ports {
+        if !seen.insert(port) {
+            bail!("module `{module_name}` has duplicate `{field}` entry `{port}`");
+        }
+    }
     Ok(())
 }
 
@@ -432,6 +463,7 @@ fn expand_module_node(
     }
 
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
     let module_dir = canonical
         .parent()
@@ -1159,6 +1191,51 @@ nodes:
     }
 
     #[test]
+    fn expand_rejects_duplicate_module_header_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "dup_header_module.yml",
+            r#"
+module:
+  name: dup_header
+  inputs: [data, data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    path: inner.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: dup_header_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+    }
+
+    #[test]
     fn expand_undefined_output_port() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -1761,6 +1838,87 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_duplicate_header_ports() {
+        let tmp = TempDir::new().unwrap();
+
+        let duplicate_inputs = write_file(
+            tmp.path(),
+            "duplicate_inputs.yml",
+            r#"
+module:
+  name: duplicate_inputs
+  inputs: [data, data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_inputs)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+
+        let duplicate_optional = write_file(
+            tmp.path(),
+            "duplicate_optional.yml",
+            r#"
+module:
+  name: duplicate_optional
+  inputs: [data]
+  inputs_optional: [cfg, cfg]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_optional)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs_optional"), "got: {msg}");
+        assert!(msg.contains("cfg"), "got: {msg}");
+
+        let duplicate_outputs = write_file(
+            tmp.path(),
+            "duplicate_outputs.yml",
+            r#"
+module:
+  name: duplicate_outputs
+  inputs: [data]
+  outputs: [out, out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_outputs)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("outputs"), "got: {msg}");
+        assert!(msg.contains("out"), "got: {msg}");
     }
 
     #[test]
