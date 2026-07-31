@@ -21,4 +21,14 @@ pub enum InterDaemonEvent {
         node_id: NodeId,
         output_id: DataId,
     },
+    /// Cross-machine memory pool write — the sender daemon forwards
+    /// serialised tensor data to the remote daemon, which stores it
+    /// in a proxy pool until the receiver calls `read_memory_pool`.
+    MemoryPoolWrite {
+        dataflow_id: DataflowId,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        device: String,
+    },
 }

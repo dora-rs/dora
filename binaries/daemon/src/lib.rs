@@ -185,6 +185,16 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
+/// Proxy pool for cross-machine memory pool tensor data.
+/// Keyed by `shared_memory_id`, populated by incoming
+/// `InterDaemonEvent::MemoryPoolWrite` and consumed by
+/// `ReadPinnedMemory`.  Stores both the serialised tensor bytes
+/// and the metadata needed to reconstruct the receiver's view.
+static PROXY_POOL_DATA: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, usize, String)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+// (tensor_bytes, size, device)
+
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
@@ -2940,6 +2950,19 @@ impl Daemon {
                 }
                 Ok(())
             }
+            InterDaemonEvent::MemoryPoolWrite {
+                shared_memory_id,
+                tensor_data,
+                size,
+                device,
+                ..
+            } => {
+                PROXY_POOL_DATA
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(shared_memory_id, (tensor_data, size, device));
+                Ok(())
+            }
         }
     }
 
@@ -4041,6 +4064,19 @@ impl Daemon {
                         Err(e) => Err(e),
                     };
                 let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::WriteMemoryPool {
+                shared_memory_id,
+                tensor_data,
+                size,
+                device,
+                reply_sender,
+            } => {
+                PROXY_POOL_DATA
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(shared_memory_id, (tensor_data, size, device));
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }
         Ok(())
