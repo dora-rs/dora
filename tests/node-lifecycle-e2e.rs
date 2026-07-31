@@ -765,9 +765,11 @@ fn write_stop_delay_yml(file_stem: &str, delay_ms: u64, exit_code: i32) -> std::
     path
 }
 
-/// Add the `filter` node from `spec`, then wait for it to report
-/// `Running` and return its pid.
-fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> String {
+/// Run `dora node add` for the `filter` node from `spec`. Returns once
+/// the CLI call completes, without waiting for the node to come up, so
+/// a caller can observe state that is only true in the moments right
+/// after the add.
+fn add_filter(dora: &str, name: &str, spec: &Path, label: &str) {
     let (ok, _, stderr) = run_capture(
         Command::new(dora).args([
             "node",
@@ -780,6 +782,10 @@ fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> Stri
         label,
     );
     assert!(ok, "{label} failed.\nstderr:\n{stderr}");
+}
+
+/// Wait for `filter` to report `Running` and return its pid.
+fn wait_for_filter_pid(dora: &str, name: &str, label: &str) -> String {
     let list_out = wait_for_list(dora, name, Duration::from_secs(10), |m| {
         m.get("filter").is_some_and(|(s, _, _)| s == "Running")
     });
@@ -789,6 +795,28 @@ fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> Stri
         .filter(|(s, _, _)| s == "Running")
         .unwrap_or_else(|| panic!("filter did not reach Running after {label}; list:\n{list_out}"))
         .1
+}
+
+/// Add the `filter` node from `spec`, then wait for it to report
+/// `Running` and return its pid.
+fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> String {
+    add_filter(dora, name, spec, label);
+    wait_for_filter_pid(dora, name, label)
+}
+
+/// Whether `pid` still names a live process.
+///
+/// Used to prove a test actually entered the window it claims to
+/// cover, rather than passing because the race never happened.
+#[cfg(unix)]
+fn process_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 /// Shared setup for the #2916 hot-swap tests: bring up the rust
@@ -826,10 +854,12 @@ fn start_hot_swap_fixture(name: &str) -> String {
 /// was recorded under the same id so `dora stop` failed the dataflow.
 ///
 /// `DORA_TEST_STOP_DELAY_MS` pins the ordering rather than relying on a
-/// language runtime happening to be slow: 1500ms comfortably outlasts
-/// the `node add` round trip while staying well inside the 10s stop
-/// grace, so the predecessor exits cleanly on its own rather than being
-/// SIGTERMed (which is the shape
+/// language runtime happening to be slow, and the test asserts the
+/// predecessor was still alive when the re-add returned — so a runner
+/// slow enough to close the window fails the test instead of passing it
+/// vacuously. The delay stays well inside the 10s stop grace, so the
+/// predecessor exits cleanly on its own rather than being SIGTERMed
+/// (which is the shape
 /// `rust_dynamic_node_readd_same_id_ignores_stale_exit` already covers).
 ///
 /// No sleep between remove and add — the gap is the bug, and the
@@ -839,7 +869,10 @@ fn start_hot_swap_fixture(name: &str) -> String {
 fn hot_swap_survives_predecessor_exit_after_readd() {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let name = "rustlc-swap-late";
-    let spec = write_stop_delay_yml("late", 1500, 0);
+    // 4s of margin over the `node add` round trip: generous for a
+    // loaded CI runner, still far inside the 10s stop grace so the
+    // predecessor exits on its own rather than being SIGTERMed.
+    let spec = write_stop_delay_yml("late", 4000, 0);
     let dora = start_hot_swap_fixture(name);
     let _cleanup = CleanupGuard { dora: &dora };
 
@@ -851,14 +884,31 @@ fn hot_swap_survives_predecessor_exit_after_readd() {
         "dora node remove filter",
     );
     assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
-    let new_pid = add_filter_and_wait(&dora, name, &spec, "dora node re-add filter");
+    add_filter(&dora, name, &spec, "dora node re-add filter");
+
+    // Prove the window this test exists to cover was actually open: the
+    // predecessor must still be alive at the moment the re-add returns,
+    // so its exit is necessarily accounted *after* the successor was
+    // installed. Without this the test would pass vacuously on a runner
+    // slow enough that `node add` outlasts the fixture's shutdown delay
+    // — it would then be exercising the pre-add ordering, which the
+    // sibling test already covers.
+    #[cfg(unix)]
+    assert!(
+        process_alive(&old_pid),
+        "predecessor pid {old_pid} already exited before `node add` returned, so this \
+         run did not exercise the exit-after-re-add ordering; raise \
+         DORA_TEST_STOP_DELAY_MS in the fixture spec"
+    );
+
+    let new_pid = wait_for_filter_pid(&dora, name, "dora node re-add filter");
     assert_ne!(
         new_pid, old_pid,
         "re-added filter should be a new process; the daemon reused pid {old_pid}"
     );
 
-    // Outlast the predecessor's 1500ms shutdown delay, then confirm its
-    // exit did not take the successor down with it.
+    // Outlast the predecessor's shutdown delay, then confirm its exit
+    // did not take the successor down with it.
     std::thread::sleep(Duration::from_secs(5));
     let (ok, list_out, stderr) = run_capture(
         Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
