@@ -552,11 +552,7 @@ fn expand_module_node(
 
         // Prepend module-level build command to inner node builds
         if let Some(ref module_build) = module_file.build {
-            let inner_build = inner_node.build.take();
-            inner_node.build = Some(match inner_build {
-                Some(existing) => format!("{module_build}\n{existing}"),
-                None => module_build.clone(),
-            });
+            prepend_module_build_to_node(&mut inner_node, module_build);
         }
 
         prefixed_nodes.push(inner_node);
@@ -577,11 +573,7 @@ fn expand_module_node(
             // mirroring how `deploy` is propagated through recursion.
             if let Some(ref outer_build) = accumulated_build {
                 for nested_node in &mut nested {
-                    let inner_build = nested_node.build.take();
-                    nested_node.build = Some(match inner_build {
-                        Some(existing) => format!("{outer_build}\n{existing}"),
-                        None => outer_build.clone(),
-                    });
+                    prepend_module_build_to_node(nested_node, outer_build);
                 }
             }
             nested_output_maps.insert(nested_id, nested_omap);
@@ -629,6 +621,29 @@ fn expand_module_node(
     seen.remove(&canonical);
 
     Ok((final_nodes, output_map))
+}
+
+fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
+    prepend_build(&mut node.build, module_build);
+    if let Some(ref mut operators) = node.operators {
+        for op in &mut operators.operators {
+            prepend_build(&mut op.config.build, module_build);
+        }
+    }
+    if let Some(ref mut operator) = node.operator {
+        prepend_build(&mut operator.config.build, module_build);
+    }
+    if let Some(ref mut custom) = node.custom {
+        prepend_build(&mut custom.build, module_build);
+    }
+}
+
+fn prepend_build(build: &mut Option<String>, module_build: &str) {
+    let existing = build.take();
+    *build = Some(match existing {
+        Some(existing) => format!("{module_build}\n{existing}"),
+        None => module_build.to_string(),
+    });
 }
 
 /// Substitute `${_param.name}` references in a node's args and inject params
@@ -1657,6 +1672,98 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    #[test]
+    fn expand_module_build_prepended_to_operator_and_custom_builds() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "inner_kind_build_module.yml",
+            r#"
+module:
+  name: inner_kind_builds
+  inputs: [data]
+  outputs: [from_runtime, from_operator, from_custom]
+
+build: pip install shared
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: libproc.so
+        build: make proc
+        inputs:
+          data: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      build: pip install single
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_operator
+
+  - id: runner
+    custom:
+      path: runner.py
+      source: Local
+      build: pip install runner
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_custom
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: inner_kind_build_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        let runtime_build = runtime.operators.as_ref().unwrap().operators[0]
+            .config
+            .build
+            .as_deref()
+            .unwrap();
+        assert_eq!(runtime_build, "pip install shared\nmake proc");
+
+        let single = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.single")
+            .unwrap();
+        let single_build = single.operator.as_ref().unwrap().config.build.as_deref();
+        assert_eq!(single_build, Some("pip install shared\npip install single"));
+
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        let custom_build = runner.custom.as_ref().unwrap().build.as_deref();
+        assert_eq!(custom_build, Some("pip install shared\npip install runner"));
     }
 
     // ---- Feature 1: boundaries metadata ----
