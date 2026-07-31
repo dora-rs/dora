@@ -69,8 +69,35 @@ macro_rules! register_array_handlers {
     ($(($variant:path, $array_type:ty, $type_name:expr)),* $(,)?) => {
         /// Tries to convert the given Arrow array into a `Vec` of integers or floats.
         ///
-        /// Returns an error if the array contains any null values, consistent
-        /// with every other [`TryFrom<&ArrowData>`] impl in this crate.
+        /// The array's element type is cast to `T` per element via [`num::NumCast`],
+        /// so the source and target types need not match (e.g. a `UInt64Array`
+        /// into a `Vec<f64>`).
+        ///
+        /// # Errors
+        ///
+        /// Returns an error if the array contains any null values (consistent
+        /// with every other [`TryFrom<&ArrowData>`] impl in this crate), if the
+        /// array's data type is not a supported integer or float type, or if any
+        /// element cannot be represented in `T` (an out-of-range cast).
+        ///
+        /// ```
+        /// use std::sync::Arc;
+        /// use arrow::array::{UInt64Array, StringArray};
+        /// use dora_arrow_convert::{ArrowData, into_vec};
+        ///
+        /// // Values are cast element-wise to the requested target type.
+        /// let data = ArrowData(Arc::new(UInt64Array::from(vec![1u64, 2, 3])));
+        /// assert_eq!(into_vec::<u64>(&data).unwrap(), vec![1, 2, 3]);
+        /// assert_eq!(into_vec::<f64>(&data).unwrap(), vec![1.0, 2.0, 3.0]);
+        ///
+        /// // Any null in the array is rejected.
+        /// let with_null = ArrowData(Arc::new(UInt64Array::from(vec![Some(1u64), None])));
+        /// assert!(into_vec::<u64>(&with_null).is_err());
+        ///
+        /// // Unsupported (non-numeric) array types are rejected.
+        /// let strings = ArrowData(Arc::new(StringArray::from(vec!["a", "b"])));
+        /// assert!(into_vec::<u64>(&strings).is_err());
+        /// ```
         pub fn into_vec<T>(data: &ArrowData) -> Result<Vec<T>>
         where
             T: Copy + NumCast + 'static,
