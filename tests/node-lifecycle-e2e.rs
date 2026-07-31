@@ -819,6 +819,26 @@ fn process_alive(pid: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Block until `pid` is gone, panicking if it outlives `timeout`.
+///
+/// `dora node remove` returns once the daemon has scheduled `Stop`, not
+/// once the process is reaped, so a test that needs the predecessor's
+/// exit to be accounted *before* its next CLI call has to wait for it
+/// explicitly. `dora node list` is no help: the row disappears the
+/// moment the node is removed and never reappears to report the later
+/// exit, so process liveness is the observable.
+#[cfg(unix)]
+fn wait_for_process_exit(pid: &str, timeout: Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while process_alive(pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "predecessor pid {pid} was still alive {timeout:?} after `node remove`"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Shared setup for the #2916 hot-swap tests: bring up the rust
 /// dynamic-add-remove dataflow, with the `stop-delay-node` fixture
 /// built and ready to be added as `filter`. The caller owns the
@@ -954,10 +974,11 @@ fn hot_swap_survives_predecessor_exit_after_readd() {
 ///
 /// Modelled on the workflow the issue describes: swap a node that fails
 /// on the way out for a fixed build. The predecessor exits 1 the
-/// instant it sees `Stop` (`DORA_TEST_STOP_DELAY_MS: 0`), comfortably
-/// ahead of the next CLI round trip; the replacement exits cleanly, so
-/// the only failure in the dataflow's history belongs to an incarnation
-/// the operator explicitly removed.
+/// instant it sees `Stop` (`DORA_TEST_STOP_DELAY_MS: 0`) and the test
+/// waits for that exit before re-adding, so the ordering is enforced
+/// rather than assumed; the replacement exits cleanly, so the only
+/// failure in the dataflow's history belongs to an incarnation the
+/// operator explicitly removed.
 #[test]
 fn hot_swap_survives_predecessor_exit_before_readd() {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -975,6 +996,18 @@ fn hot_swap_survives_predecessor_exit_before_readd() {
         "dora node remove filter",
     );
     assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+
+    // `node remove` returns once `Stop` is scheduled, not once the
+    // process is gone, so re-adding immediately would leave the
+    // ordering to chance: if the daemon handled `AddNode` first, the
+    // pid guard would discard the predecessor's failure and this test
+    // would silently re-run the sibling test's ordering instead of the
+    // one it documents. Waiting for the process to exit rules that out
+    // — the exit event is queued before the replacement's CLI round
+    // trip even begins, and a slower runner only widens that margin.
+    #[cfg(unix)]
+    wait_for_process_exit(&old_pid, Duration::from_secs(10));
+
     let new_pid = add_filter_and_wait(&dora, name, &fixed, "dora node re-add filter (fixed)");
     assert_ne!(
         new_pid, old_pid,
