@@ -206,12 +206,15 @@ fn check_module_file_inner(canonical: &Path, seen: &mut HashSet<PathBuf>) -> eyr
     // Runtime (operator) and legacy custom nodes declare their outputs in
     // config.outputs / run_config.outputs rather than the node-level `outputs`
     // set, so `node_output_refs` collects those too (see #2817).
-    let mut inner_outputs: BTreeSet<String> = module_file
-        .nodes
-        .iter()
-        .filter(|n| n.module.is_none())
-        .flat_map(|n| node_output_refs(n).into_iter().map(|(name, _)| name))
-        .collect();
+    let mut inner_outputs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node in module_file.nodes.iter().filter(|n| n.module.is_none()) {
+        for (name, output_ref) in node_output_refs(node) {
+            inner_outputs
+                .entry(name)
+                .or_default()
+                .push(format!("{}/{}", node.id, output_ref));
+        }
+    }
 
     // Check nested module files exist and collect their declared outputs
     for node in &module_file.nodes {
@@ -255,19 +258,33 @@ fn check_module_file_inner(canonical: &Path, seen: &mut HashSet<PathBuf>) -> eyr
             )?;
             check_module_file_inner(&nested_canonical, seen)?;
             for output in &nested_module.module.outputs {
-                inner_outputs.insert(output.to_string());
+                inner_outputs
+                    .entry(output.to_string())
+                    .or_default()
+                    .push(format!("{}/{}", node.id, output));
             }
         }
     }
 
     for declared_output in &module_file.module.outputs {
         let output_str = declared_output.to_string();
-        if !inner_outputs.contains(&output_str) {
-            bail!(
-                "module `{}` declares output `{}` but no inner node produces it",
-                module_file.module.name,
-                declared_output,
-            );
+        match inner_outputs.get(&output_str) {
+            None => {
+                bail!(
+                    "module `{}` declares output `{}` but no inner node produces it",
+                    module_file.module.name,
+                    declared_output,
+                );
+            }
+            Some(producers) if producers.len() > 1 => {
+                bail!(
+                    "module `{}` declares output `{}` but multiple inner nodes produce it: {}",
+                    module_file.module.name,
+                    declared_output,
+                    producers.join(", "),
+                );
+            }
+            Some(_) => {}
         }
     }
 
@@ -680,24 +697,47 @@ fn expand_module_node(
     let mut output_map = ModuleOutputMap::new();
     for declared_output in &module_file.module.outputs {
         let declared = declared_output.to_string();
-        let target = final_nodes
+        let targets = final_nodes
             .iter()
-            .find_map(|n| {
+            .flat_map(|n| {
+                let declared = declared.clone();
                 node_output_refs(n)
                     .into_iter()
-                    .find(|(name, _)| *name == declared)
-                    .map(|(_, output_ref)| UserInputMapping {
-                        source: n.id.clone(),
-                        output: output_ref.into(),
+                    .filter(move |(name, _)| *name == declared)
+                    .map(|(_, output_ref)| {
+                        (
+                            format!("{}/{}", n.id, output_ref),
+                            UserInputMapping {
+                                source: n.id.clone(),
+                                output: output_ref.into(),
+                            },
+                        )
                     })
             })
-            .ok_or_else(|| {
-                eyre::eyre!(
+            .collect::<Vec<_>>();
+        let target = match targets.as_slice() {
+            [] => {
+                return Err(eyre::eyre!(
                     "module `{}` declares output `{}` but no inner node produces it",
                     module_file.module.name,
                     declared_output,
-                )
-            })?;
+                ));
+            }
+            [(_, target)] => target.clone(),
+            _ => {
+                let producers = targets
+                    .iter()
+                    .map(|(producer, _)| producer.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "module `{}` declares output `{}` but multiple inner nodes produce it: {}",
+                    module_file.module.name,
+                    declared_output,
+                    producers,
+                );
+            }
+        };
         output_map.insert(declared, target);
     }
 
@@ -2274,6 +2314,39 @@ nodes:
     }
 
     #[test]
+    fn check_module_file_rejects_ambiguous_declared_output() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "ambiguous_output.yml",
+            r#"
+module:
+  name: ambiguous
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: first
+    path: first.py
+    outputs:
+      - out
+  - id: second
+    path: second.py
+    outputs:
+      - out
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("multiple"), "got: {msg}");
+        assert!(msg.contains("first"), "got: {msg}");
+        assert!(msg.contains("second"), "got: {msg}");
+    }
+
+    #[test]
     fn check_module_file_rejects_unknown_module_header_field() {
         let tmp = TempDir::new().unwrap();
         let path = write_file(
@@ -3092,6 +3165,53 @@ nodes:
         let mapping = expand_and_resolve_sink_input(base);
         assert_eq!(mapping.source.to_string(), "m.runner");
         assert_eq!(mapping.output.to_string(), "result");
+    }
+
+    #[test]
+    fn expand_rejects_ambiguous_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "mod.yml",
+            r#"
+module:
+  name: ambiguous
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: first
+    path: first.py
+    outputs:
+      - out
+  - id: second
+    path: second.py
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      value: m/out
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("multiple"), "got: {msg}");
+        assert!(msg.contains("m.first"), "got: {msg}");
+        assert!(msg.contains("m.second"), "got: {msg}");
     }
 
     /// Regression test for #2817: `check_module_file` must accept a declared
