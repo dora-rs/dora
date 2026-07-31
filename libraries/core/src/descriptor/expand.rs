@@ -240,6 +240,7 @@ fn check_module_file_inner(
     }
 
     // Check nested module files exist and collect their declared outputs
+    let mut nested_module_outputs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for node in &module_file.nodes {
         if let Some(ref mod_path) = node.module {
             if is_absolute_any_platform(mod_path) {
@@ -274,12 +275,26 @@ fn check_module_file_inner(
             // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
             check_module_file_inner(&nested_canonical, depth + 1, seen)?;
+            let mut declared_outputs = BTreeSet::new();
             for output in &nested_module.module.outputs {
+                declared_outputs.insert(output.to_string());
                 inner_outputs
                     .entry(output.to_string())
                     .or_default()
                     .push(format!("{}/{}", node.id, output));
             }
+            nested_module_outputs.insert(node.id.to_string(), declared_outputs);
+        }
+    }
+
+    for node in &module_file.nodes {
+        for inputs in node_input_maps(node) {
+            check_nested_module_output_refs(
+                &module_file.module.name,
+                &node.id,
+                inputs,
+                &nested_module_outputs,
+            )?;
         }
     }
 
@@ -306,6 +321,35 @@ fn check_module_file_inner(
     }
 
     seen.remove(canonical);
+    Ok(())
+}
+
+fn check_nested_module_output_refs(
+    module_name: &str,
+    node_id: &NodeId,
+    inputs: &BTreeMap<DataId, Input>,
+    nested_module_outputs: &BTreeMap<String, BTreeSet<String>>,
+) -> eyre::Result<()> {
+    for input in inputs.values() {
+        if let InputMapping::User(m) = &input.mapping {
+            let source = m.source.to_string();
+            if let Some(outputs) = nested_module_outputs.get(&source) {
+                let output = m.output.to_string();
+                if !outputs.contains(&output) {
+                    bail!(
+                        "module `{}`: node `{}` references `{}/{}` but module `{}` \
+                         does not declare output `{}`",
+                        module_name,
+                        node_id,
+                        source,
+                        output,
+                        source,
+                        output,
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1955,6 +1999,57 @@ nodes:
         assert!(msg.contains("leaf"), "got: {msg}");
         assert!(msg.contains("out"), "got: {msg}");
         assert!(msg.contains("no inner node produces it"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_nested_module_private_sibling_output() {
+        let tmp = TempDir::new().unwrap();
+
+        write_file(
+            tmp.path(),
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [public]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - public
+      - private
+"#,
+        );
+
+        let path = write_file(
+            tmp.path(),
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [done]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+  - id: consumer
+    path: consumer.py
+    inputs:
+      value: nested/private
+    outputs:
+      - done
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("consumer"), "got: {msg}");
+        assert!(msg.contains("nested/private"), "got: {msg}");
+        assert!(msg.contains("does not declare output"), "got: {msg}");
     }
 
     #[test]
