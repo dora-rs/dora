@@ -199,6 +199,12 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
             check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
         }
     }
+    let module_outputs = collect_module_source_outputs(&module_file, module_dir)?;
+    check_internal_wiring(
+        &module_file.module.name,
+        &module_file.nodes,
+        &module_outputs,
+    )?;
 
     // Check outputs: each declared output should be produced by some inner node.
     // For nested module children, recursively load their declared outputs.
@@ -263,6 +269,90 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn collect_module_source_outputs(
+    module_file: &ModuleFile,
+    module_dir: &Path,
+) -> eyre::Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut outputs = BTreeMap::new();
+    for node in &module_file.nodes {
+        let node_id = node.id.to_string();
+        if outputs.contains_key(&node_id) {
+            bail!(
+                "module `{}` has duplicate node ID `{}`",
+                module_file.module.name,
+                node.id,
+            );
+        }
+
+        let node_outputs = if let Some(ref mod_path) = node.module {
+            if is_absolute_any_platform(mod_path) {
+                bail!(
+                    "module `{}`: nested module path `{}` must be relative (node `{}`)",
+                    module_file.module.name,
+                    mod_path,
+                    node.id,
+                );
+            }
+            let nested = module_dir.join(mod_path);
+            let nested_canonical = nested.canonicalize().with_context(|| {
+                format!(
+                    "module `{}`: nested module `{}` referenced by node `{}` not found",
+                    module_file.module.name, mod_path, node.id,
+                )
+            })?;
+            let nested_module = load_module_file(&nested_canonical)?;
+            nested_module
+                .module
+                .outputs
+                .iter()
+                .map(|output| output.to_string())
+                .collect()
+        } else {
+            node_output_refs(node)
+                .into_iter()
+                .map(|(_, output_ref)| output_ref)
+                .collect()
+        };
+
+        outputs.insert(node_id, node_outputs);
+    }
+    Ok(outputs)
+}
+
+fn check_internal_wiring(
+    module_name: &str,
+    nodes: &[Node],
+    module_outputs: &BTreeMap<String, BTreeSet<String>>,
+) -> eyre::Result<()> {
+    for node in nodes {
+        for inputs in node_input_maps(node) {
+            for (input_id, input) in inputs {
+                if let InputMapping::User(mapping) = &input.mapping {
+                    let source = mapping.source.to_string();
+                    if source == MODULE_INPUT_SOURCE {
+                        continue;
+                    }
+                    if let Some(outputs) = module_outputs.get(&source) {
+                        let output = mapping.output.to_string();
+                        if !outputs.contains(&output) {
+                            bail!(
+                                "module `{}`: node `{}` input `{}` references \
+                                 `{}/{}` but that output is not produced",
+                                module_name,
+                                node.id,
+                                input_id,
+                                source,
+                                output,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1786,6 +1876,79 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_duplicate_inner_node_ids() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "duplicate_inner_nodes.yml",
+            r#"
+module:
+  name: duplicate_inner_nodes
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: proc
+    path: a.py
+    outputs:
+      - y
+  - id: proc
+    path: b.py
+    outputs:
+      - z
+"#,
+        );
+
+        let err = check_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("duplicate node ID"), "{err}");
+        assert!(err.contains("proc"), "{err}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_invalid_internal_wiring() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "bad_internal_wiring.yml",
+            r#"
+module:
+  name: bad_internal_wiring
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: preprocessor
+    path: preprocessor.py
+    outputs:
+      - cleaned
+  - id: producer
+    path: producer.py
+    inputs:
+      data: preprocessor/cleaned
+    outputs:
+      - y
+  - id: valid_consumer
+    path: valid_consumer.py
+    inputs:
+      data: producer/y
+    outputs:
+      - z
+  - id: consumer
+    path: consumer.py
+    inputs:
+      data: producer/missing
+  - id: independent
+    path: independent.py
+    outputs:
+      - side
+"#,
+        );
+
+        let err = check_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("producer/missing"), "{err}");
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested
