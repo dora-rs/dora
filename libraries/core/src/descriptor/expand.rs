@@ -54,6 +54,7 @@ type ModuleOutputMap = BTreeMap<String, UserInputMapping>;
 
 /// Header section of a module definition file.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ModuleHeader {
     name: String,
     #[serde(default)]
@@ -1800,6 +1801,33 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_unknown_module_header_field() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "unknown_header_field.yml",
+            r#"
+module:
+  name: bad
+  inputz: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - out
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(msg.contains("inputz"), "got: {msg}");
+        assert!(msg.contains("unknown field"), "got: {msg}");
     }
 
     #[test]
