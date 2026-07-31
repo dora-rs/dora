@@ -91,8 +91,19 @@ pub enum DaemonCommunication {
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
-    PinnedMemoryMetadata { metadata: Metadata },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    PinnedMemoryMetadata {
+        metadata: Metadata,
+    },
+    /// Cross-machine: the daemon returns serialised tensor bytes from
+    /// its proxy pool when the local pool is on a different host.
+    PinnedMemoryData {
+        tensor_data: Vec<u8>,
+        size: usize,
+        device: String,
+    },
     Empty,
 }
 

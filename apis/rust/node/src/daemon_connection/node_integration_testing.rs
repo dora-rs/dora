@@ -134,7 +134,8 @@ impl IntegrationTestingEvents {
             }
             DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

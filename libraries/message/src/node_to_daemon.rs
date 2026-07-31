@@ -39,6 +39,12 @@ pub enum DaemonRequest {
     FreePinnedMemory {
         shared_memory_id: String,
     },
+    WritePinnedMemory {
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        device: String,
+    },
 }
 
 impl DaemonRequest {
@@ -56,7 +62,8 @@ impl DaemonRequest {
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => true,
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. } => true,
         }
     }
 
@@ -74,7 +81,8 @@ impl DaemonRequest {
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => false,
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. } => false,
         }
     }
 }

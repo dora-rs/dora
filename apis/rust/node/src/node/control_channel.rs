@@ -179,6 +179,24 @@ impl ControlChannel {
             .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
         match reply {
             DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
+            DaemonReply::PinnedMemoryData {
+                tensor_data,
+                size,
+                device,
+            } => {
+                use dora_message::metadata::Parameter;
+                let data_hex: String = tensor_data.iter().fold(String::new(), |mut s, b| {
+                    use std::fmt::Write;
+                    let _ = write!(s, "{b:02x}");
+                    s
+                });
+                let mut params = dora_message::metadata::MetadataParameters::new();
+                params.insert("proxy_data".into(), Parameter::String(data_hex));
+                params.insert("size".into(), Parameter::Integer(size as i64));
+                params.insert("pinned_type".into(), Parameter::String(device));
+                let ts = self.clock.new_timestamp();
+                Ok(Metadata::from_parameters(ts, params))
+            }
             DaemonReply::Result(Err(e)) => bail!("{e}"),
             other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
         }
@@ -197,6 +215,33 @@ impl ControlChannel {
             DaemonReply::Result(Ok(())) => Ok(()),
             DaemonReply::Result(Err(e)) => bail!("{e}"),
             other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
+        }
+    }
+
+    pub fn write_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        device: String,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::WritePinnedMemory {
+            shared_memory_id,
+            tensor_data,
+            size,
+            device,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send WritePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected WritePinnedMemory reply: {other:?}"),
         }
     }
 }

@@ -2783,6 +2783,18 @@ impl Node {
                                 .insert(counter, slot_data);
                         }
 
+                        // Cross-machine: serialise tensor data and push
+                        // through the daemon so remote receivers can read
+                        // from their local proxy pool.
+                        let tensor_bytes =
+                            unsafe { std::slice::from_raw_parts(ptr_val as *const u8, size) };
+                        let _ = self.node.get_mut().write_pinned_memory(
+                            buffer_id.clone(),
+                            tensor_bytes.to_vec(),
+                            size,
+                            tensor_device.clone(),
+                        );
+
                         return Ok(());
                     }
                 }
@@ -3109,6 +3121,54 @@ impl Node {
                 .get_mut()
                 .read_pinned_memory(buffer_id.clone(), false)
             {
+                // Cross-machine proxy pool: the daemon returned
+                // serialised tensor data (hex-encoded) because the
+                // sender is on a different host.
+                if let Some(hex_data) = metadata.parameters.get("proxy_data").and_then(|p| {
+                    if let Parameter::String(s) = p {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                }) {
+                    let tensor_bytes: Vec<u8> = (0..hex_data.len())
+                        .step_by(2)
+                        .filter_map(|i| {
+                            u8::from_str_radix(&hex_data[i..(i + 2).min(hex_data.len())], 16).ok()
+                        })
+                        .collect();
+                    let size = metadata
+                        .parameters
+                        .get("size")
+                        .and_then(|p| {
+                            if let Parameter::Integer(v) = p {
+                                Some(*v)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(tensor_bytes.len());
+                    let pinned_type = metadata
+                        .parameters
+                        .get("pinned_type")
+                        .and_then(|p| {
+                            if let Parameter::String(s) = p {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_else(|| "cpu".to_string());
+                    let bytes = PyBytes::new(py, &tensor_bytes);
+                    let dict = PyDict::new(py);
+                    dict.set_item("ptr", bytes.as_ptr() as i64)?;
+                    dict.set_item("size", size)?;
+                    dict.set_item("dtype", "uint8")?;
+                    dict.set_item("shape", vec![size])?;
+                    dict.set_item("device", pinned_type)?;
+                    return Ok(dict.into());
+                }
+
                 let size = metadata
                     .parameters
                     .get("size")

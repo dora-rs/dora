@@ -2369,6 +2369,17 @@ impl DoraNode {
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
         self.control_channel.free_pinned_memory(shared_memory_id)
     }
+
+    pub fn write_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        device: String,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .write_pinned_memory(shared_memory_id, tensor_data, size, device)
+    }
 }
 
 /// Builder for initializing a node with custom connection parameters.

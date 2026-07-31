@@ -380,6 +380,26 @@ impl Listener {
                 )
                 .await?;
             }
+            DaemonRequest::WritePinnedMemory {
+                shared_memory_id,
+                tensor_data,
+                size,
+                device,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::WriteMemoryPool {
+                        shared_memory_id,
+                        tensor_data,
+                        size,
+                        device,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
         }
         Ok(())
     }

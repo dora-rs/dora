@@ -3980,47 +3980,61 @@ impl Daemon {
                 free,
                 reply_sender,
             } => {
-                let result = (|| -> Result<dora_message::metadata::Metadata, String> {
-                    let id = MemoryPoolId {
-                        dataflow_id: dataflow_id.to_string(),
-                        id: shared_memory_id.clone(),
-                    };
-                    let metadata = self
-                        .memory_pool
-                        .read_memory_pool(&id, node_id.as_ref())
-                        .ok_or_else(|| {
-                            format!("memory pool with ID {} not found", shared_memory_id)
-                        })?;
+                // Check proxy pool first — cross-machine pools are
+                // populated by remote daemons via Zenoh and cached here.
+                if let Some((tensor_data, size, device)) = PROXY_POOL_DATA
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&shared_memory_id)
+                {
+                    let _ = reply_sender.send(DaemonReply::PinnedMemoryData {
+                        tensor_data,
+                        size,
+                        device,
+                    });
+                } else {
+                    let result = (|| -> Result<dora_message::metadata::Metadata, String> {
+                        let id = MemoryPoolId {
+                            dataflow_id: dataflow_id.to_string(),
+                            id: shared_memory_id.clone(),
+                        };
+                        let metadata = self
+                            .memory_pool
+                            .read_memory_pool(&id, node_id.as_ref())
+                            .ok_or_else(|| {
+                                format!("memory pool with ID {} not found", shared_memory_id)
+                            })?;
 
-                    if free
-                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
-                    {
-                        tracing::warn!(
-                            "Failed to free memory pool {} after reading: {}",
-                            shared_memory_id,
-                            err
-                        );
-                    }
+                        if free
+                            && let Err(err) =
+                                self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                        {
+                            tracing::warn!(
+                                "Failed to free memory pool {} after reading: {}",
+                                shared_memory_id,
+                                err
+                            );
+                        }
 
-                    let mut parameters = pool_metadata_to_params(&metadata);
-                    // When freeing, drop shared_memory_name — the segment has
-                    // been unlinked and the name is a dangling reference.
-                    if free {
-                        parameters.remove("shared_memory_name");
-                    }
+                        let mut parameters = pool_metadata_to_params(&metadata);
+                        if free {
+                            parameters.remove("shared_memory_name");
+                        }
 
-                    let timestamp = self.clock.new_timestamp();
-                    Ok(dora_message::metadata::Metadata::from_parameters(
-                        timestamp, parameters,
-                    ))
-                })();
+                        let timestamp = self.clock.new_timestamp();
+                        Ok(dora_message::metadata::Metadata::from_parameters(
+                            timestamp, parameters,
+                        ))
+                    })();
 
-                match result {
-                    Ok(metadata) => {
-                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
-                    }
-                    Err(err) => {
-                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                    match result {
+                        Ok(metadata) => {
+                            let _ =
+                                reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
+                        }
+                        Err(err) => {
+                            let _ = reply_sender.send(DaemonReply::Result(Err(err)));
+                        }
                     }
                 }
             }
