@@ -6,7 +6,10 @@ use std::{
 
 use crate::common::resolve_dataflow_identifier_interactive;
 use crate::ws_client::WsSession;
-use dora_core::{config::InputMapping, descriptor::Descriptor};
+use dora_core::{
+    config::InputMapping,
+    descriptor::{Descriptor, Node},
+};
 use dora_message::{
     DataflowId,
     cli_to_coordinator::ControlRequest,
@@ -66,6 +69,30 @@ impl fmt::Display for TopicIdentifier {
     }
 }
 
+pub(crate) fn node_topic_outputs(node: &Node) -> BTreeSet<DataId> {
+    let mut outputs = node.outputs.clone();
+
+    if let Some(custom) = &node.custom {
+        outputs.extend(custom.run_config.outputs.iter().cloned());
+    }
+    if let Some(operator) = &node.operator {
+        outputs.extend(operator.config.outputs.iter().cloned());
+    }
+    if let Some(runtime) = &node.operators {
+        for operator in &runtime.operators {
+            outputs.extend(
+                operator
+                    .config
+                    .outputs
+                    .iter()
+                    .map(|output| DataId::from(format!("{}/{}", operator.id, output))),
+            );
+        }
+    }
+
+    outputs
+}
+
 impl TopicSelector {
     pub fn resolve(
         &self,
@@ -95,10 +122,12 @@ impl TopicSelector {
         let mut data = BTreeSet::new();
         if self.data.is_empty() {
             data.extend(dataflow_descriptor.nodes.iter().flat_map(|node| {
-                node.outputs.iter().map(|output| TopicIdentifier {
-                    node_id: node.id.clone(),
-                    data_id: output.clone(),
-                })
+                node_topic_outputs(node)
+                    .into_iter()
+                    .map(|output| TopicIdentifier {
+                        node_id: node.id.clone(),
+                        data_id: output,
+                    })
             }));
             return Ok((dataflow_id, data, dataflow_descriptor));
         }
@@ -122,12 +151,13 @@ impl TopicSelector {
                                 .join(", ")
                         )
                     })?;
+                    let outputs = node_topic_outputs(node);
                     if user.output.is_empty() {
-                        data.extend(node.outputs.iter().map(|output| TopicIdentifier {
+                        data.extend(outputs.into_iter().map(|output| TopicIdentifier {
                             node_id: user.source.clone(),
-                            data_id: output.clone(),
+                            data_id: output,
                         }));
-                    } else if node.outputs.contains(&user.output) {
+                    } else if outputs.contains(&user.output) {
                         data.insert(TopicIdentifier {
                             node_id: user.source,
                             data_id: user.output,
@@ -138,7 +168,7 @@ impl TopicSelector {
                              hint: available outputs: {}",
                             user.source,
                             user.output,
-                            node.outputs
+                            outputs
                                 .iter()
                                 .map(|o| o.to_string())
                                 .collect::<Vec<_>>()
@@ -161,5 +191,61 @@ impl TopicSelector {
         }
 
         Ok((dataflow_id, data, dataflow_descriptor))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_topic_outputs_include_all_descriptor_node_kinds() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: standard
+    path: ./source
+    outputs:
+      - status
+  - id: single
+    operator:
+      python: single.py
+      outputs:
+        - image
+  - id: legacy
+    custom:
+      path: legacy.py
+      source: Local
+      outputs:
+        - buffer
+  - id: runtime
+    operators:
+      - id: op
+        python: runtime.py
+        outputs:
+          - status
+",
+        )
+        .expect("valid descriptor");
+
+        let topics: Vec<String> = descriptor
+            .nodes
+            .iter()
+            .flat_map(|node| {
+                node_topic_outputs(node)
+                    .into_iter()
+                    .map(|output| format!("{}/{}", node.id, output))
+            })
+            .collect();
+
+        assert_eq!(
+            topics,
+            vec![
+                "standard/status",
+                "single/image",
+                "legacy/buffer",
+                "runtime/op/status",
+            ]
+        );
     }
 }

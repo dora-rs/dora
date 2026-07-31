@@ -7,7 +7,10 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 
 use crate::{
-    command::{Executable, default_tracing, topic::selector::DataflowSelector},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{DataflowSelector, node_topic_outputs},
+    },
     common::CoordinatorOptions,
     formatting::OutputFormat,
 };
@@ -57,26 +60,26 @@ fn list(
     let session = coordinator.connect()?;
     let (_dataflow_id, descriptor) = selector.resolve(&session)?;
 
-    let mut subscribers = BTreeMap::<(&NodeId, &DataId), Vec<(&NodeId, &DataId)>>::new();
+    let mut subscribers = BTreeMap::<(NodeId, DataId), Vec<(NodeId, DataId)>>::new();
     for node in &descriptor.nodes {
         for (input_id, input) in &node.inputs {
             if let InputMapping::User(user) = &input.mapping {
                 subscribers
-                    .entry((&user.source, &user.output))
+                    .entry((user.source.clone(), user.output.clone()))
                     .or_default()
-                    .push((&node.id, input_id));
+                    .push((node.id.clone(), input_id.clone()));
             }
         }
     }
 
     let mut entries = Vec::new();
     for node in &descriptor.nodes {
-        for output in &node.outputs {
+        for output in node_topic_outputs(node) {
+            let subscribers_for_output = subscribers.remove(&(node.id.clone(), output.clone()));
             entries.push(OutputEntry {
                 node: node.id.clone(),
-                name: output.clone(),
-                subscribers: subscribers
-                    .remove(&(&node.id, output))
+                name: output,
+                subscribers: subscribers_for_output
                     .unwrap_or_default()
                     .into_iter()
                     .map(|(node, data)| format!("{node}/{data}"))
