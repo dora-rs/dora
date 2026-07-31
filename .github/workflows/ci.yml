@@ -379,18 +379,24 @@ jobs:
       # `dora node` lifecycle E2E (issue #1703). The shared test
       # binary lives under the `dora-examples` package which the bulk
       # `cargo test --all` step excludes, so it needs an explicit
-      # invocation here. Filter to the Rust + C++ variants because
-      # the Python variant requires uv (handled in `contract-tests`
-      # below where uv is already installed).
-      - name: Run dora node lifecycle E2E (Rust + C++)
-        # Cargo's TESTNAME positional is single-valued; multiple
-        # substring filters go after `--` for libtest.
+      # invocation here.
+      #
+      # Excludes rather than enumerates: the Python variant is the only
+      # test in the file this job can't run (it needs uv — handled in
+      # `contract-tests` below where uv is already installed), so
+      # `--skip` closes the file by default. The previous positive
+      # filters (`lifecycle_rust lifecycle_cxx`) silently dropped every
+      # test whose name didn't start with `lifecycle_` — including
+      # `rust_dynamic_node_readd_same_id_ignores_stale_exit`, the
+      # regression test that shipped with the #2893 stale-exit fix,
+      # which therefore never ran here.
+      - name: Run dora node lifecycle E2E (non-Python)
         run: >
           cargo test -p dora-examples --test node-lifecycle-e2e
           --
           --test-threads=1
-          lifecycle_rust lifecycle_cxx
-        timeout-minutes: 15
+          --skip lifecycle_python
+        timeout-minutes: 20
       # Finish-straggler watchdog regression (#2270): a deterministic wedge
       # (source exits, downstream node hangs) must be escalated/killed by the
       # watchdog rather than hanging until stop_after. Lives in `dora-examples`
