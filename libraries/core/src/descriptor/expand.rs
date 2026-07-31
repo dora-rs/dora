@@ -230,13 +230,17 @@ fn check_module_file_inner(
     // config.outputs / run_config.outputs rather than the node-level `outputs`
     // set, so `node_output_refs` collects those too (see #2817).
     let mut inner_outputs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut inner_node_output_refs: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for node in module_file.nodes.iter().filter(|n| n.module.is_none()) {
+        let mut output_refs = BTreeSet::new();
         for (name, output_ref) in node_output_refs(node) {
+            output_refs.insert(output_ref.clone());
             inner_outputs
                 .entry(name)
                 .or_default()
                 .push(format!("{}/{}", node.id, output_ref));
         }
+        inner_node_output_refs.insert(node.id.to_string(), output_refs);
     }
 
     // Check nested module files exist and collect their declared outputs
@@ -289,6 +293,12 @@ fn check_module_file_inner(
 
     for node in &module_file.nodes {
         for inputs in node_input_maps(node) {
+            check_inner_node_output_refs(
+                &module_file.module.name,
+                &node.id,
+                inputs,
+                &inner_node_output_refs,
+            )?;
             check_nested_module_output_refs(
                 &module_file.module.name,
                 &node.id,
@@ -321,6 +331,35 @@ fn check_module_file_inner(
     }
 
     seen.remove(canonical);
+    Ok(())
+}
+
+fn check_inner_node_output_refs(
+    module_name: &str,
+    node_id: &NodeId,
+    inputs: &BTreeMap<DataId, Input>,
+    inner_node_output_refs: &BTreeMap<String, BTreeSet<String>>,
+) -> eyre::Result<()> {
+    for input in inputs.values() {
+        if let InputMapping::User(m) = &input.mapping {
+            let source = m.source.to_string();
+            if let Some(outputs) = inner_node_output_refs.get(&source) {
+                let output = m.output.to_string();
+                if !outputs.contains(&output) {
+                    bail!(
+                        "module `{}`: node `{}` references `{}/{}` but node `{}` \
+                         does not declare output `{}`",
+                        module_name,
+                        node_id,
+                        source,
+                        output,
+                        source,
+                        output,
+                    );
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1895,6 +1934,40 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_missing_inner_sibling_output() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "bad_sibling_output.yml",
+            r#"
+module:
+  name: bad_sibling
+  inputs: []
+  outputs: [done]
+
+nodes:
+  - id: producer
+    path: producer.py
+    outputs:
+      - actual
+  - id: consumer
+    path: consumer.py
+    inputs:
+      value: producer/missing
+    outputs:
+      - done
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("consumer"), "got: {msg}");
+        assert!(msg.contains("producer/missing"), "got: {msg}");
+        assert!(msg.contains("does not declare output"), "got: {msg}");
     }
 
     #[test]
