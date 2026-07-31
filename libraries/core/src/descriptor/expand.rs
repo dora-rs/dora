@@ -545,6 +545,8 @@ fn expand_module_node(
             inner_node.deploy = node.deploy.clone();
         }
 
+        propagate_module_node_env(&mut inner_node, node.env.as_ref());
+
         // Substitute params in env values
         if !params.is_empty() {
             substitute_params_in_node(&mut inner_node, params);
@@ -629,6 +631,18 @@ fn expand_module_node(
     seen.remove(&canonical);
 
     Ok((final_nodes, output_map))
+}
+
+fn propagate_module_node_env(
+    inner_node: &mut Node,
+    module_env: Option<&BTreeMap<String, EnvValue>>,
+) {
+    if let Some(module_env) = module_env {
+        let env = inner_node.env.get_or_insert_with(BTreeMap::new);
+        for (key, value) in module_env {
+            env.insert(key.clone(), value.clone());
+        }
+    }
 }
 
 /// Substitute `${_param.name}` references in a node's args and inject params
@@ -1556,6 +1570,133 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --verbose"));
+    }
+
+    #[test]
+    fn expand_module_node_env_propagates_to_inner_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "env_module.yml",
+            r#"
+module:
+  name: env_module
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    env:
+      INNER_ONLY: from-inner
+      SHARED: inner
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: env_module.yml
+    env:
+      WRAPPER_ONLY: from-wrapper
+      SHARED: wrapper
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(
+            env["INNER_ONLY"],
+            EnvValue::String("from-inner".to_string())
+        );
+        assert_eq!(
+            env["WRAPPER_ONLY"],
+            EnvValue::String("from-wrapper".to_string())
+        );
+        assert_eq!(env["SHARED"], EnvValue::String("wrapper".to_string()));
+    }
+
+    #[test]
+    fn expand_outer_params_reach_nested_module_inner_nodes_as_env() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "inner.yml",
+            r#"
+module:
+  name: inner
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        write_file(
+            base,
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    module: inner.yml
+    inputs:
+      data: _mod/data
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: outer
+    module: outer.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "outer.inner.worker")
+            .unwrap();
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
     }
 
     // ---- Feature 5: module-level build ----
