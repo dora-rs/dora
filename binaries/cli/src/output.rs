@@ -46,6 +46,22 @@ fn should_display(
     msg_level.passes(effective_level)
 }
 
+/// Returns whether `msg` passes the configured minimum-level / per-node level
+/// filters. Exposed so the `logs` command can drop filtered-out messages
+/// *before* applying `--tail`, so tail counts only lines that will be shown.
+pub(crate) fn message_passes_level_filter(msg: &LogMessage, config: &LogOutputConfig) -> bool {
+    let node_id_str = msg.node_id.as_ref().map(|n| n.to_string());
+    should_display(&msg.level, node_id_str.as_deref(), config)
+}
+
+/// Returns whether the configured level filters can drop any message. When
+/// this is true, `--tail` must be applied client-side (after filtering) rather
+/// than pre-tailed at the coordinator, otherwise older matching lines are
+/// trimmed away before the level filter ever sees them.
+pub(crate) fn level_filter_is_active(config: &LogOutputConfig) -> bool {
+    !matches!(config.min_level, LogLevelOrStdout::Stdout) || !config.node_filters.is_empty()
+}
+
 pub fn print_log_message(log_message: LogMessage, config: &LogOutputConfig) {
     let node_id_str = log_message.node_id.as_ref().map(|n| n.to_string());
     if !should_display(&log_message.level, node_id_str.as_deref(), config) {
