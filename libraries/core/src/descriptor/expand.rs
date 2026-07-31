@@ -461,6 +461,30 @@ fn expand_module_node(
         .iter()
         .map(|d| d.to_string())
         .collect();
+    let declared_inputs: BTreeSet<String> = module_file
+        .module
+        .inputs
+        .iter()
+        .chain(module_file.module.inputs_optional.iter())
+        .map(|d| d.to_string())
+        .collect();
+    for provided_input in node.inputs.keys() {
+        let provided = provided_input.to_string();
+        if !declared_inputs.contains(&provided) {
+            bail!(
+                "module `{}` does not declare input `{}` provided by node `{}`\n\
+                 hint: declared inputs are: {}",
+                module_file.module.name,
+                provided_input,
+                node.id,
+                declared_inputs
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+    }
 
     // Validate and collect params
     let mut seen_upper: BTreeMap<String, &String> = BTreeMap::new();
@@ -1453,6 +1477,54 @@ nodes:
                 .inputs
                 .contains_key(&DataId::from("data".to_string()))
         );
+    }
+
+    #[test]
+    fn expand_rejects_module_input_not_declared_required_or_optional() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "strict_inputs_module.yml",
+            r#"
+module:
+  name: strict_inputs
+  inputs: [required]
+  inputs_optional: [config]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/required
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [data, extra]
+  - id: m
+    module: strict_inputs_module.yml
+    inputs:
+      required: src/data
+      typo: src/extra
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("does not declare input"), "got: {msg}");
+        assert!(msg.contains("typo"), "got: {msg}");
+        assert!(msg.contains("required"), "got: {msg}");
+        assert!(msg.contains("config"), "got: {msg}");
     }
 
     // ---- Feature 4: params substitution ----
