@@ -318,26 +318,34 @@ enum TransportPath {
     P2PPeerAccess,
     /// Cross-device without P2P — CPU page-locked transit (DtoH → HtoD).
     HostStagingTransit,
+    /// Cross-machine — sender and receiver on different hosts; data
+    /// serialised and routed through the daemon's Zenoh channel.
+    NetworkZenohTransport,
 }
 
 /// Classify which transport path a GPU-pool write should take at
 /// registration time.
 ///
-/// Decision matrix (2³ = 8 cases, `is_cuda_source` dominates):
+/// Decision matrix (2⁴ = 16 cases, `is_cross_machine` checked first):
 ///
-/// | src CUDA | same dev | P2P | path                |
-/// |----------|----------|-----|---------------------|
-/// | false    | *        | *   | `SameDeviceDtoD`    |
-/// | true     | true     | *   | `SameDeviceDtoD`    |
-/// | true     | false    | yes | `P2PPeerAccess`     |
-/// | true     | false    | no  | `HostStagingTransit`|
+/// | cross machine | src CUDA | same dev | P2P | path                     |
+/// |---------------|----------|----------|-----|--------------------------|
+/// | true          | *        | *        | *   | `NetworkZenohTransport`  |
+/// | false         | false    | *        | *   | `SameDeviceDtoD`         |
+/// | false         | true     | true     | *   | `SameDeviceDtoD`         |
+/// | false         | true     | false    | yes | `P2PPeerAccess`          |
+/// | false         | true     | false    | no  | `HostStagingTransit`     |
 #[inline]
 fn classify_transport(
     sender_device: i32,
     receiver_device: i32,
     p2p_available: bool,
     is_cuda_source: bool,
+    is_cross_machine: bool,
 ) -> TransportPath {
+    if is_cross_machine {
+        return TransportPath::NetworkZenohTransport;
+    }
     if !is_cuda_source {
         return TransportPath::SameDeviceDtoD;
     }
@@ -439,11 +447,11 @@ mod transport_tests {
     fn same_device_no_transit() {
         // Same GPU — never transit, regardless of P2P
         assert_eq!(
-            classify_transport(0, 0, false, true),
+            classify_transport(0, 0, false, true, false),
             TransportPath::SameDeviceDtoD
         );
         assert_eq!(
-            classify_transport(1, 1, true, true),
+            classify_transport(1, 1, true, true, false),
             TransportPath::SameDeviceDtoD
         );
     }
@@ -452,11 +460,11 @@ mod transport_tests {
     fn cpu_source_never_transit() {
         // CPU→GPU always uses dma_copy, no transit needed
         assert_eq!(
-            classify_transport(0, 1, false, false),
+            classify_transport(0, 1, false, false, false),
             TransportPath::SameDeviceDtoD
         );
         assert_eq!(
-            classify_transport(0, 2, true, false),
+            classify_transport(0, 2, true, false, false),
             TransportPath::SameDeviceDtoD
         );
     }
@@ -464,7 +472,7 @@ mod transport_tests {
     #[test]
     fn cross_device_with_p2p() {
         assert_eq!(
-            classify_transport(0, 1, true, true),
+            classify_transport(0, 1, true, true, false),
             TransportPath::P2PPeerAccess
         );
     }
@@ -474,33 +482,51 @@ mod transport_tests {
         // This is the RTX 5090 / Blackwell path — the flag-ship non-P2P
         // fallback that must NOT be dead code.
         assert_eq!(
-            classify_transport(0, 1, false, true),
+            classify_transport(0, 1, false, true, false),
             TransportPath::HostStagingTransit
         );
         assert_eq!(
-            classify_transport(2, 0, false, true),
+            classify_transport(2, 0, false, true, false),
             TransportPath::HostStagingTransit
         );
     }
 
     #[test]
+    fn cross_machine_uses_zenoh() {
+        // When sender and receiver are on different hosts, all paths
+        // go through the Zenoh network transport — regardless of GPU
+        // topology.
+        assert_eq!(
+            classify_transport(0, 0, false, false, true),
+            TransportPath::NetworkZenohTransport
+        );
+        assert_eq!(
+            classify_transport(0, 1, true, true, true),
+            TransportPath::NetworkZenohTransport
+        );
+    }
+
+    #[test]
     fn classify_transport_full_8_case_matrix() {
-        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
-            // (src_dev, dst_dev, p2p, is_cuda) → expected
-            ((0, 0, false, false), TransportPath::SameDeviceDtoD),
-            ((0, 0, false, true), TransportPath::SameDeviceDtoD),
-            ((0, 0, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 0, true, true), TransportPath::SameDeviceDtoD),
-            ((0, 1, false, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, false, true), TransportPath::HostStagingTransit),
-            ((0, 1, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, true, true), TransportPath::P2PPeerAccess),
+        let cases: &[((i32, i32, bool, bool, bool), TransportPath)] = &[
+            // (src_dev, dst_dev, p2p, is_cuda, cross_machine) → expected
+            ((0, 0, false, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, false, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, false, false, false), TransportPath::SameDeviceDtoD),
+            (
+                (0, 1, false, true, false),
+                TransportPath::HostStagingTransit,
+            ),
+            ((0, 1, true, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, true, true, false), TransportPath::P2PPeerAccess),
         ];
-        for ((s, r, p2p, cuda), expected) in cases {
-            let got = classify_transport(*s, *r, *p2p, *cuda);
+        for ((s, r, p2p, cuda, cross), expected) in cases {
+            let got = classify_transport(*s, *r, *p2p, *cuda, *cross);
             assert_eq!(
                 got, *expected,
-                "classify_transport(s={s}, r={r}, p2p={p2p}, cuda={cuda}) → {got:?}, expected {expected:?}"
+                "classify_transport(s={s}, r={r}, p2p={p2p}, cuda={cuda}, cross={cross}) → {got:?}, expected {expected:?}"
             );
         }
     }
@@ -2158,6 +2184,7 @@ impl Node {
                 receiver_device_idx,
                 p2p_available,
                 is_cuda,
+                /*is_cross_machine=*/ false,
             );
             let use_transit = transport_path == TransportPath::HostStagingTransit;
 

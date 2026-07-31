@@ -1,0 +1,31 @@
+# GPU-to-GPU cross-machine throughput test.
+# Sender (GPU) on machine A, receiver (GPU) on machine B.
+# Data path: GPU_A → CPU_A → Zenoh TCP → CPU_B → GPU_B.
+nodes:
+  - id: sender_node
+    _unstable_deploy:
+      machine: A
+    build: pip install torch numpy
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+    env:
+      sender_device: cuda:0
+      receiver_device: cuda:0
+      message_num: 100
+
+  - id: receiver_node
+    _unstable_deploy:
+      machine: B
+    build: pip install torch numpy tqdm
+    path: receiver.py
+    inputs:
+      data: sender_node/data
+    outputs:
+      - next_require
+    env:
+      sender_device: cuda:0
+      receiver_device: cuda:0
+      message_num: 100
