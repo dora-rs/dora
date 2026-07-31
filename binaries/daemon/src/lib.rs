@@ -11,7 +11,8 @@ use dora_core::{
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
         open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
-        zenoh_bind_address_for, zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        zenoh_bind_address_for, dataflow_memory_pool_topic,
+        zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -3598,6 +3599,54 @@ impl Daemon {
             self.clock.clone(),
         );
 
+        // Subscribe to the dataflow's memory-pool topic so cross-machine
+        // WriteMemoryPool events reach this daemon via Zenoh.
+        {
+            let mp_topic = dataflow_memory_pool_topic(&dataflow_id);
+            let mp_session = self.zenoh_session.clone();
+            let mp_events_tx = self.events_tx.clone();
+            let mp_clock = self.clock.clone();
+            match mp_session
+                .declare_subscriber(&mp_topic)
+                .await
+            {
+                Ok(subscriber) => {
+                    tokio::spawn(async move {
+                        loop {
+                            match subscriber.recv_async().await {
+                                Ok(sample) => {
+                                    let bytes = sample.payload().to_bytes();
+                                    if let Ok(event) =
+                                        Timestamped::<
+                                            InterDaemonEvent,
+                                        >::deserialize_inter_daemon_event(
+                                            &bytes
+                                        )
+                                    {
+                                        let ts = event.timestamp;
+                                        let _ = mp_events_tx
+                                            .send(Timestamped {
+                                                inner: Event::Daemon(
+                                                    event.inner,
+                                                ),
+                                                timestamp: ts,
+                                            })
+                                            .await;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                    }));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to subscribe to memory pool topic {mp_topic}: {e}"
+                    );
+                }
+            }
+        }
+
         Ok(spawn_result)
     }
 
@@ -4089,12 +4138,30 @@ impl Daemon {
                 PROXY_POOL_DATA
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(shared_memory_id, (tensor_data, size, device));
-                // NOTE: Zenoh cross-daemon forwarding of
-                // InterDaemonEvent::MemoryPoolWrite is deferred to a
-                // follow-up PR — the current daemon↔daemon publish
-                // path requires a per-dataflow publisher that is not
-                // yet lazily created for memory pool events.
+                    .insert(shared_memory_id.clone(), (tensor_data.clone(), size, device));
+
+                // Forward to remote daemons via Zenoh.
+                if let Ok(serialized) = bincode::serialize(
+                    &InterDaemonEvent::MemoryPoolWrite {
+                        dataflow_id: dataflow_id.into(),
+                        shared_memory_id,
+                        tensor_data,
+                        size,
+                        device,
+                    },
+                ) {
+                    // Publish on the dataflow-global memory pool topic —
+                    // all daemons subscribe to this topic at startup.
+                    let topic = dataflow_memory_pool_topic(&dataflow_id);
+                    if let Ok(publisher) = self
+                        .zenoh_session
+                        .declare_publisher(&topic)
+                        .congestion_control(CongestionControl::Drop)
+                        .await
+                    {
+                        let _ = publisher.put(serialized).await;
+                    }
+                }
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }
