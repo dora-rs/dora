@@ -144,6 +144,14 @@ fn event_stream_loop(
                 close_tx = true;
             }
 
+            // FreeMemoryPool is an internal daemon→node notification —
+            // do not forward to user code.  The language binding is
+            // expected to poll for pending frees before each event.
+            if let NodeEvent::FreeMemoryPool { shared_memory_id } = &inner {
+                crate::event_stream::memory_pool::push_freed_pool(shared_memory_id.clone());
+                continue;
+            }
+
             if let Some(tx) = tx.as_ref() {
                 // `blocking_send` is used because this function runs on a
                 // dedicated `std::thread` (not a tokio worker). Using

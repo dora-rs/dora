@@ -547,6 +547,9 @@ fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
     if let Some(ref n) = meta.shared_memory_name {
         p.insert("shared_memory_name".into(), Parameter::String(n.clone()));
     }
+    if let Some(ipc) = meta.ipc_present {
+        p.insert("ipc_present".into(), Parameter::Bool(ipc));
+    }
     if let Some(ref b) = meta.buffer_id {
         p.insert("buffer_id".into(), Parameter::String(b.clone()));
     }
@@ -600,7 +603,49 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
         is_pinned: get_bool("is_pinned").unwrap_or(false),
         shared_memory_name: get_str("shared_memory_name"),
         buffer_id: get_str("buffer_id"),
+        ipc_present: get_bool("ipc_present"),
         pinned_type: get_str("pinned_type"),
+    }
+}
+
+#[cfg(test)]
+mod metadata_roundtrip_tests {
+    use super::*;
+    use dora_memory_pool::MemoryPoolMetadata;
+
+    /// `ipc_present` must survive a to_params → from_params round-trip
+    /// so the read path receives the trusted flag from daemon metadata.
+    #[test]
+    fn ipc_present_survives_roundtrip_true() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: Some(true),
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, Some(true));
+    }
+
+    #[test]
+    fn ipc_present_survives_roundtrip_false() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: Some(false),
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, Some(false));
+    }
+
+    #[test]
+    fn ipc_present_survives_roundtrip_none() {
+        let meta = MemoryPoolMetadata {
+            ipc_present: None,
+            ..Default::default()
+        };
+        let params = pool_metadata_to_params(&meta);
+        let restored = pool_metadata_from_params(&params);
+        assert_eq!(restored.ipc_present, None);
     }
 }
 
@@ -3966,7 +4011,33 @@ impl Daemon {
                 };
                 let result: Result<(), String> =
                     match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
-                        Ok(_) => Ok(()),
+                        Ok((_meta, touched)) => {
+                            // Send targeted cleanup to every node that
+                            // registered or read this pool — a single
+                            // free_memory_pool call by any node releases
+                            // per-process resources in all relevant nodes.
+                            // The initiator already released synchronously;
+                            // exclude it to avoid redundant work.
+                            if let Some(dataflow) = self.running.get(&dataflow_id) {
+                                let event = NodeEvent::FreeMemoryPool {
+                                    shared_memory_id: shared_memory_id.clone(),
+                                };
+                                for (node, channel) in &dataflow.subscribe_channels {
+                                    if touched.contains(node.as_ref())
+                                        && node.as_ref() != node_id.as_ref()
+                                        && let Err(e) =
+                                            send_with_timestamp(channel, event.clone(), &self.clock)
+                                    {
+                                        tracing::warn!(
+                                            node_id = %node,
+                                            pool = %shared_memory_id,
+                                            "failed to deliver FreeMemoryPool: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                            Ok(())
+                        }
                         Err(e) => Err(e),
                     };
                 let _ = reply_sender.send(DaemonReply::Result(result));
