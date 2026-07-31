@@ -178,10 +178,21 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
     let mut seen = HashSet::new();
-    check_module_file_inner(&canonical, &mut seen)
+    check_module_file_inner(&canonical, 0, &mut seen)
 }
 
-fn check_module_file_inner(canonical: &Path, seen: &mut HashSet<PathBuf>) -> eyre::Result<()> {
+fn check_module_file_inner(
+    canonical: &Path,
+    depth: u8,
+    seen: &mut HashSet<PathBuf>,
+) -> eyre::Result<()> {
+    if depth >= MAX_MODULE_DEPTH {
+        bail!(
+            "module nesting exceeds depth limit of {MAX_MODULE_DEPTH} while checking module file: {}",
+            canonical.display()
+        );
+    }
+
     if !seen.insert(canonical.to_path_buf()) {
         bail!(
             "circular module reference detected while checking module file: {}",
@@ -262,7 +273,7 @@ fn check_module_file_inner(canonical: &Path, seen: &mut HashSet<PathBuf>) -> eyr
             //
             // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
-            check_module_file_inner(&nested_canonical, seen)?;
+            check_module_file_inner(&nested_canonical, depth + 1, seen)?;
             for output in &nested_module.module.outputs {
                 inner_outputs
                     .entry(output.to_string())
@@ -1945,6 +1956,45 @@ nodes:
         assert!(msg.contains("leaf"), "got: {msg}");
         assert!(msg.contains("out"), "got: {msg}");
         assert!(msg.contains("no inner node produces it"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_depth_limit() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        for i in 0..=MAX_MODULE_DEPTH {
+            let next = if i < MAX_MODULE_DEPTH {
+                format!("  - id: inner\n    module: level{}_module.yml", i + 1)
+            } else {
+                "  - id: worker\n    path: worker.py\n    outputs:\n      - out".to_string()
+            };
+
+            write_file(
+                base,
+                &format!("level{i}_module.yml"),
+                &format!(
+                    r#"
+module:
+  name: level{i}
+  inputs: []
+  outputs: [out]
+
+nodes:
+{next}
+"#
+                ),
+            );
+        }
+
+        let result = check_module_file(&base.join("level0_module.yml"));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("nesting exceeds depth limit")
+        );
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested
