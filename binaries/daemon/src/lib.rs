@@ -4090,6 +4090,11 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(shared_memory_id, (tensor_data, size, device));
+                // NOTE: Zenoh cross-daemon forwarding of
+                // InterDaemonEvent::MemoryPoolWrite is deferred to a
+                // follow-up PR — the current daemon↔daemon publish
+                // path requires a per-dataflow publisher that is not
+                // yet lazily created for memory pool events.
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }
