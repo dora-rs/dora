@@ -195,7 +195,7 @@ impl Executable for Run {
         };
 
         let (log_tx, log_rx) = flume::bounded(100);
-        std::thread::spawn(move || {
+        let printer = std::thread::spawn(move || {
             for message in log_rx {
                 print_log_message(message, &log_config);
             }
@@ -237,14 +237,23 @@ impl Executable for Run {
             )
             .await
         });
-        let result = rt
-            .block_on(handle)
-            .context("dora-run daemon task panicked")??;
+        let result = rt.block_on(handle);
         // Bound runtime shutdown to prevent hanging on blocking Drop impls
         // (e.g. zenoh::Session::drop blocks tokio workers on macOS during
         // TCP teardown). Without this, `rt` drops implicitly at end of scope
         // and waits indefinitely for all worker threads to exit (#2287).
         rt.shutdown_timeout(Duration::from_secs(10));
+        // The daemon task has finished and the runtime is shut down, so every
+        // clone of the log-channel sender has been dropped and the channel is
+        // closed. Join the printer thread so the last messages still buffered
+        // in the channel are flushed before we return. Without this, the
+        // detached printer could be killed by process exit mid-drain and the
+        // final log lines of a short dataflow (often the ones the user cares
+        // about) would be lost.
+        if let Err(panic) = printer.join() {
+            std::panic::resume_unwind(panic);
+        }
+        let result = result.context("dora-run daemon task panicked")??;
         handle_dataflow_result(result, None)
     }
 }
