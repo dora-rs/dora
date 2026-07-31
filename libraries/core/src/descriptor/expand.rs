@@ -655,6 +655,14 @@ fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> Strin
         let pattern = format!("${{_param.{key}}}");
         result = result.replace(&pattern, value);
     }
+    let mut env_patterns: Vec<_> = params
+        .iter()
+        .map(|(key, value)| (format!("$PARAM_{}", key.to_uppercase()), value))
+        .collect();
+    env_patterns.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.len()));
+    for (pattern, value) in env_patterns {
+        result = result.replace(&pattern, value);
+    }
     result
 }
 
@@ -1556,6 +1564,106 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --verbose"));
+    }
+
+    #[test]
+    fn expand_params_in_documented_env_style_args() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --speed $PARAM_SPEED --mode $PARAM_MODE
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      mode: turbo
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --mode turbo"));
+    }
+
+    #[test]
+    fn expand_params_in_env_style_args_replaces_longest_names_first() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --short $PARAM_SPEED --long $PARAM_SPEED_LIMIT
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      speed_limit: "4.5"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--short 2.0 --long 4.5"));
     }
 
     // ---- Feature 5: module-level build ----
